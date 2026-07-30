@@ -1483,6 +1483,7 @@ mod tests {
             lag_one_q: 0,
             lag_one_half_width_q: 1,
             residual_magnitude_q2: 1,
+            span_x2_us: 0,
             tested_suffixes: 1,
         })
     }

@@ -61,6 +61,8 @@ pub struct StationarySuffix {
     pub lag_one_half_width_q: u32,
     /// Mean squared detrended residual in squared fixed-point rate units.
     pub residual_magnitude_q2: u128,
+    /// Doubled midpoint-to-midpoint regression span in microseconds.
+    pub span_x2_us: u64,
     /// Number of nested suffix candidates examined.
     pub tested_suffixes: u8,
 }
@@ -217,6 +219,7 @@ enum StationarityWorkStage {
         next_observation: u16,
         partial_block: Option<RateBlock>,
         cumulative_elapsed_us: u64,
+        first_block_elapsed_us: u64,
         slope_per_us: f32,
         intercept: f32,
         denominator: i128,
@@ -697,6 +700,7 @@ impl StationarityWork {
             next_observation: 0,
             partial_block: None,
             cumulative_elapsed_us: 0,
+            first_block_elapsed_us: 0,
             slope_per_us,
             intercept,
             denominator,
@@ -726,6 +730,7 @@ impl StationarityWork {
             mut next_observation,
             mut partial_block,
             mut cumulative_elapsed_us,
+            mut first_block_elapsed_us,
             slope_per_us,
             intercept,
             denominator,
@@ -737,6 +742,7 @@ impl StationarityWork {
             return Err(VelocityMeasurementError::ArithmeticOverflow);
         };
         let mut remaining_visits = work_observations_per_step(mode);
+        let mut last_block_elapsed_us = 0u64;
         while next_block < block_count && remaining_visits > 0 {
             let index = usize::from(suffix_start)
                 .checked_add(
@@ -764,6 +770,10 @@ impl StationarityWork {
             let block = partial_block
                 .take()
                 .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+            if next_block == 0 {
+                first_block_elapsed_us = block.elapsed_us;
+            }
+            last_block_elapsed_us = block.elapsed_us;
             let midpoint_us = cumulative_elapsed_us
                 .checked_add(block.elapsed_us / 2)
                 .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
@@ -791,6 +801,7 @@ impl StationarityWork {
                 next_observation,
                 partial_block,
                 cumulative_elapsed_us,
+                first_block_elapsed_us,
                 slope_per_us,
                 intercept,
                 denominator,
@@ -807,6 +818,11 @@ impl StationarityWork {
             mean_rate_q: selection.exact_totals.rate_q()?,
             half_width_rate_q: estimate_confidence(selection, 3)?.half_width_rate_q,
         };
+        let span_x2_us = cumulative_elapsed_us
+            .checked_mul(2)
+            .and_then(|value| value.checked_sub(first_block_elapsed_us))
+            .and_then(|value| value.checked_sub(last_block_elapsed_us))
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
         let metrics = calculate_stationarity_metrics(
             block_count as usize,
             denominator,
@@ -815,11 +831,7 @@ impl StationarityWork {
             lag_product_sum_q2,
             3,
             selection.variance_of_mean_q2,
-            // Placeholder. The streaming path cannot compute the span until the
-            // first block's elapsed time is carried in the stage state, which the
-            // next task adds. Nothing reads the ratio until the gate change, so
-            // this is unobservable in behaviour rather than wrong output.
-            0,
+            span_x2_us,
             settled,
         );
         match metrics {
@@ -868,6 +880,7 @@ impl StationarityWork {
                             lag_one_q: metrics.lag_one_q,
                             lag_one_half_width_q: metrics.lag_one_half_width_q,
                             residual_magnitude_q2: metrics.residual_magnitude_q2,
+                            span_x2_us: metrics.span_x2_us,
                             tested_suffixes: suffix_index.saturating_add(1),
                         };
                         if mode == StationarityWorkMode::RestWitness {
@@ -1399,6 +1412,7 @@ where
             lag_one_q: metrics.lag_one_q,
             lag_one_half_width_q: metrics.lag_one_half_width_q,
             residual_magnitude_q2: metrics.residual_magnitude_q2,
+            span_x2_us: metrics.span_x2_us,
             tested_suffixes,
         });
     }

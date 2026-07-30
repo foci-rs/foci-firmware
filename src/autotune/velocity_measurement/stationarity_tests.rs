@@ -232,8 +232,8 @@ fn suffix_family_is_fixed_and_dyadic() {
 
 #[test]
 fn scored_rest_state_stays_inside_the_existing_storage_seam() {
-    assert_eq!(core::mem::size_of::<StationarityWork>(), 240);
-    assert!(core::mem::size_of::<super::StationarityWorkOutput>() <= 112);
+    assert_eq!(core::mem::size_of::<StationarityWork>(), 256);
+    assert!(core::mem::size_of::<super::StationarityWorkOutput>() <= 128);
 }
 
 #[test]
@@ -334,6 +334,46 @@ fn cooperative_work_matches_synchronous_selection_across_multiple_polls() {
 
     assert_eq!(actual, expected);
     assert!(polls > 1, "a full capture must not be analyzed in one poll");
+}
+
+#[test]
+fn cooperative_polling_yields_the_same_span_as_the_synchronous_path() {
+    // The streaming state machine must not compute a different regression span
+    // from the synchronous selection, or the same capture would classify two ways
+    // depending on which path read it.
+    //
+    // The fixture is the one the neighbouring selection test already uses: a
+    // repeating pattern whose fitted slope is zero, so it passes the significance
+    // gate still in force at this point in the plan. Task 4 has not landed yet, and
+    // a decelerating fixture would be rejected before the span is ever compared.
+    let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
+
+    let mut synchronous_blocker = DyadicBlocker::<LEVELS>::new();
+    let expected = select_stationary_suffix(&samples, &mut synchronous_blocker).unwrap();
+    let StationarityResult::Usable(expected_suffix) = expected else {
+        panic!("fixture must produce a usable suffix");
+    };
+
+    let mut cooperative_blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+    let actual = loop {
+        match work.poll(&samples[..], &mut cooperative_blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::Complete { result, .. } => break result,
+            StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
+                panic!("moving mode returned a scored-rest result")
+            }
+        }
+    };
+    let StationarityResult::Usable(actual_suffix) = actual else {
+        panic!("cooperative path must produce a usable suffix");
+    };
+
+    assert_eq!(actual_suffix.span_x2_us, expected_suffix.span_x2_us);
+    assert_ne!(
+        actual_suffix.span_x2_us, 0,
+        "a zero span would pass vacuously"
+    );
 }
 
 #[test]

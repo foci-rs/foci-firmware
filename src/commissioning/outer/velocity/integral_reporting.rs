@@ -1108,6 +1108,7 @@ mod tests {
                 lag_one_q: 13,
                 lag_one_half_width_q: 17,
                 residual_magnitude_q2: 19,
+                span_x2_us: 0,
                 tested_suffixes: 3,
             }),
             active_settle: VelocitySettleMetrics {
@@ -1406,6 +1407,7 @@ mod tests {
             lag_one_q: -680_061,
             lag_one_half_width_q: 673_435,
             residual_magnitude_q2: 0,
+            span_x2_us: 0,
             tested_suffixes: 3,
         });
 

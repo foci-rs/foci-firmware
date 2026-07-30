@@ -1826,7 +1826,7 @@ mod tests {
             assert_eq!(size_of::<TraceSummarySeqs>(), 16);
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_784
+                2_816
             );
             assert!(
                 size_of::<
@@ -1841,24 +1841,25 @@ mod tests {
             );
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocitySweepData>(),
-                2_880
+                2_896
             );
             assert_eq!(
                 size_of::<crate::commissioning::types::VelocitySweepEvent>(),
-                304
+                320
             );
             // 224 before observations carried the rejection diagnostic, 256 before
-            // that diagnostic also carried the slope and its half-width. These
-            // events are transient, built and encoded on the stack, so this does
-            // not grow retained commissioning state: VelocitySweepData is
-            // unchanged. Frame budgets are checked by parity.
+            // that diagnostic also carried the slope and its half-width, 272 before
+            // the diagnostic also carried the regression span. These events are
+            // transient, built and encoded on the stack, so this does not grow
+            // retained commissioning state: VelocitySweepData is unchanged. Frame
+            // budgets are checked by parity.
             assert_eq!(
                 size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
-                272
+                288
             );
             assert_eq!(
                 size_of::<crate::commissioning::types::AcceptanceMatrixEvent>(),
-                272
+                288
             );
             assert_eq!(
                 size_of::<crate::commissioning::types::RestSelectionDiagnostic>(),
@@ -1869,9 +1870,9 @@ mod tests {
                 129
             );
             assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
-            assert_eq!(size_of::<CommissioningEngine>(), 4_528);
+            assert_eq!(size_of::<CommissioningEngine>(), 4_560);
         }
-        assert!(size_of::<CommissioningEngine>() <= 4_528);
+        assert!(size_of::<CommissioningEngine>() <= 4_560);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
