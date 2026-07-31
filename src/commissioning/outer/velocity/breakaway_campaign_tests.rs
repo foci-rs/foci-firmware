@@ -1,6 +1,6 @@
 use super::*;
 use crate::autotune::TmcMechanicalRpm;
-use crate::commission_dispatch::test_support::{MockBackend, current_limit};
+use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::breakaway_plan::plan_breakaway_probe;
 use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
@@ -230,6 +230,88 @@ fn directional_breakaways_one_step_apart_take_the_lower_endpoint() {
     assert_eq!(resolved.breakaway_index, 4);
     assert_eq!(resolved.forward.moving_index, 4);
     assert_eq!(resolved.reverse.moving_index, 5);
+}
+
+// --- WrongDirectionFault short-circuits before origin-recovery -----------------
+
+#[test]
+fn wrong_direction_short_circuits_without_recovering() {
+    let plan = test_plan();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session =
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::PlannedProbe;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count: i32 = 0;
+
+    loop {
+        let is_capture_phase = matches!(state, BreakawayProbeState::Capture { .. });
+        let result = pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            BreakawayProbeStep::ReadyNow => {}
+            BreakawayProbeStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                // The first stroke commands Forward. Move consistently in the
+                // opposite direction so the settled-rate CI excludes zero on the
+                // wrong side -- WrongDirectionFault, never a moving/inert verdict.
+                if is_capture_phase {
+                    encoder_count -= 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BreakawayProbeStep::Done(outcome) => {
+                let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
+                    panic!("expected a safety fault, got {outcome:?}");
+                };
+                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert!(safety.is_none());
+                break;
+            }
+        }
+    }
+
+    // Exactly one stroke's worth of velocity-target writes: the signed command from
+    // CommandTarget and the zero from CommandZero. A third write -- necessarily
+    // nonzero -- would be the origin-recovery motion this fault must never reach.
+    let target_writes: std::vec::Vec<u32> = backend
+        .spi_log
+        .iter()
+        .filter_map(|op| match op {
+            SpiOp::Write(addr, value) if *addr == PID_VELOCITY_TARGET.addr() => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        target_writes.len(),
+        2,
+        "no recovery stroke may follow a safety fault: {target_writes:?}"
+    );
+    assert_ne!(
+        target_writes[0], 0,
+        "the first write is the commanded stroke"
+    );
+    assert_eq!(target_writes[1], 0, "the second write is CommandZero");
+
+    // Exactly one gain write: recovery's own `WriteGains` state would add a second.
+    let gain_writes = backend
+        .spi_log
+        .iter()
+        .filter(
+            |op| matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_P_VELOCITY_I.addr()),
+        )
+        .count();
+    assert_eq!(
+        gain_writes, 1,
+        "no recovery gain write may follow a safety fault"
+    );
 }
 
 // --- AuthorityFailure: predicted torque crosses the usable-current boundary ----

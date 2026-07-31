@@ -69,7 +69,7 @@ use super::sweep_analysis::{
     ScoredRestPoll, VelocityObservationInputRequest, assemble_velocity_observation_input,
     bounded_rest_displacement, direction_sign, poll_scored_rest_confirmation, poll_stationarity,
 };
-use super::sweep_evidence::VelocityObservationClass;
+use super::sweep_evidence::{VelocityObservationClass, classify_velocity_observation};
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
     SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, ZERO_SETTLE_US,
@@ -537,6 +537,34 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(input) => input,
                 Err(error) => return fault(error),
             };
+            // Mirror sweep.rs's AnalyzeMoving `terminal_error` match (sweep.rs:1076):
+            // wrong-direction and hard-clip mean the direction-to-motion assumption
+            // origin-recovery relies on is untrustworthy, or that current is already
+            // clipped, so recovery must not run another energized stroke on top of
+            // this observation. Invalid controller-domain evidence is likewise an
+            // immediate terminal there. `classify_breakaway_observation`'s own
+            // `BreakawaySearchError::ProbeEvidenceExcluded` collapses
+            // `StationarityExcluded` and `InvalidEvidenceFault` into one variant, so
+            // the raw classification is inspected here to keep that distinction:
+            // sweep continues normally (settle + recovery) on `StationarityExcluded`,
+            // only short-circuiting on `InvalidEvidenceFault`. `CurrentHeadroom` is
+            // deliberately untouched: the sweep also runs settle + recovery for it.
+            match classify_velocity_observation(input).classification {
+                VelocityObservationClass::WrongDirectionFault => {
+                    return fault(CommissionError::VelocityValidationFailed);
+                }
+                VelocityObservationClass::HardClipFault => {
+                    return fault(CommissionError::SafetyEnvelopeViolation);
+                }
+                VelocityObservationClass::InvalidEvidenceFault => {
+                    return BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded);
+                }
+                VelocityObservationClass::Eligible
+                | VelocityObservationClass::Inert
+                | VelocityObservationClass::DeficitUnresolved
+                | VelocityObservationClass::CurrentHeadroom
+                | VelocityObservationClass::StationarityExcluded(_) => {}
+            }
             session.pending_lower_rate_q = commanded_side_lower_rate_q(
                 input.direction,
                 input.settled_rate_low_q,
