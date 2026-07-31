@@ -1030,6 +1030,10 @@ impl CommissioningEngine {
                 phase: OuterPhase::VelocityIntegral { data, .. },
                 ..
             } => Some(data.integrity.run_sequence()),
+            EngineMode::Outer {
+                phase: OuterPhase::BreakawayCampaign { campaign, .. },
+                ..
+            } => Some(campaign.run_sequence()),
             EngineMode::Inner { .. }
             | EngineMode::Outer {
                 phase:
@@ -1870,9 +1874,16 @@ mod tests {
                 129
             );
             assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
-            assert_eq!(size_of::<CommissioningEngine>(), 4_560);
+            // The breakaway campaign embeds the probe/discovery/confirmation
+            // state machine plus its one borrowed workspace as a new outer phase.
+            // Its retained footprint (the shared workspace coexisting with the
+            // discovery session's collected in-band evidence) exceeds the classic
+            // VelocitySweep variant, so it is now the largest outer payload. This
+            // is deliberate, bounded retained state, re-baselined once here; it
+            // stays well under the audited F407 ceiling asserted below.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_184);
         }
-        assert!(size_of::<CommissioningEngine>() <= 4_560);
+        assert!(size_of::<CommissioningEngine>() <= 5_184);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);

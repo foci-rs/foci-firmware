@@ -1339,3 +1339,304 @@ fn collected_in_band_rungs_shrinks_to_the_compact_bounds_representation() {
         "the reduction must actually shrink retained discovery evidence"
     );
 }
+
+// ================================================================================
+// 6e-2a: campaign orchestrator + Stage-C token route
+// ================================================================================
+
+use super::{
+    CampaignAdvance, confirmation_terminal, route_confirmed_accept, route_discovery_outcome,
+};
+use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
+use crate::commissioning::outer::velocity::sweep_plan::current_gain_span;
+
+/// A well-formed campaign request at the shared small target.
+fn campaign_request() -> BreakawayCampaignRequest {
+    BreakawayCampaignRequest {
+        target_velocity_rpm: TmcMechanicalRpm::from_register(100),
+        planned_velocity_mrev_s: 4_394,
+        hard_torque_limit: 2_448,
+        limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+        max_duration_ms: 3_000,
+        nominal_workflow_ms: 400_000,
+        maximum_workflow_ms: 450_000,
+        channel: 0,
+        run_sequence: 7,
+    }
+}
+
+/// Frozen inputs for the Stage-C token route, with a caller-chosen usable torque
+/// limit so a test can either admit or refuse the confirmed P at plan time.
+fn stage_c_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
+    BreakawayCampaignInputs {
+        p_start: gain(1),
+        p_top: gain(1_024),
+        target_velocity_rpm: TmcMechanicalRpm::from_register(100),
+        planned_velocity_mrev_s: 4_394,
+        hard_torque_limit: 2_448,
+        usable_torque_limit,
+        limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+        observations_per_direction: 4,
+        max_duration_ms: 3_000,
+        workflow_envelope_ms: 450_000,
+        channel: 0,
+        run_sequence: 7,
+    }
+}
+
+/// Drive a campaign against a scripted `MockBackend`, applying the probe's
+/// `is_moving` convention while the campaign is in its probe phase. Returns the
+/// campaign (for phase inspection) and the terminal step, if one is reached
+/// before the phase-transition sentinel `stop_at_discovery` fires.
+fn run_campaign_probe(
+    request: BreakawayCampaignRequest,
+    stop_at_discovery: bool,
+    mut is_moving: impl FnMut(VelocityDirection, u8) -> bool,
+) -> (BreakawayCampaign, Option<BreakawayCampaignOutcome>) {
+    let mut campaign = BreakawayCampaign::new(request).expect("valid campaign request");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+
+    let mut encoder_count: i32 = 0;
+    let mut stroke_moving = false;
+    let mut stroke_sign = 1_i32;
+
+    for _ in 0..1_000_000 {
+        if let BreakawayCampaignPhase::Probe {
+            state: BreakawayProbeState::CommandTarget,
+            session,
+        } = campaign.phase()
+        {
+            stroke_moving = is_moving(session.direction, session.pending_index);
+            stroke_sign = direction_sign(session.direction);
+        }
+        let is_capture_phase = matches!(
+            campaign.phase(),
+            BreakawayCampaignPhase::Probe {
+                state: BreakawayProbeState::Capture { .. },
+                ..
+            }
+        );
+        let step = pollster::block_on(step_breakaway_campaign(
+            &mut campaign,
+            &mut workspace,
+            &mut safety,
+            &mut backend,
+        ));
+        match step {
+            BreakawayCampaignStep::ReadyNow => {
+                if stop_at_discovery
+                    && matches!(campaign.phase(), BreakawayCampaignPhase::Discovery { .. })
+                {
+                    return (campaign, None);
+                }
+            }
+            BreakawayCampaignStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase && stroke_moving {
+                    encoder_count += stroke_sign;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BreakawayCampaignStep::Done(outcome) => return (campaign, Some(outcome)),
+        }
+    }
+    panic!("campaign run exceeded its bounded step budget");
+}
+
+// --- RED: no moving state is reachable before its Planned event ---------------
+
+#[test]
+fn a_new_campaign_starts_planned_and_its_first_step_issues_no_motion() {
+    let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
+    assert!(matches!(
+        campaign.phase(),
+        BreakawayCampaignPhase::Probe {
+            state: BreakawayProbeState::PlannedProbe,
+            ..
+        }
+    ));
+
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let step = pollster::block_on(step_breakaway_campaign(
+        &mut campaign,
+        &mut workspace,
+        &mut safety,
+        &mut backend,
+    ));
+
+    assert!(matches!(step, BreakawayCampaignStep::ReadyNow));
+    assert!(matches!(
+        campaign.phase(),
+        BreakawayCampaignPhase::Probe {
+            state: BreakawayProbeState::WriteGain,
+            ..
+        }
+    ));
+    assert!(
+        backend.spi_log.is_empty(),
+        "PlannedProbe must not touch the backend before its first stroke"
+    );
+}
+
+// --- Probe -> Discovery: a resolved breakaway freezes the discovery plan -------
+
+#[test]
+fn a_resolved_probe_breakaway_advances_the_campaign_into_the_discovery_phase() {
+    // A breakaway high on the grid keeps the additive discovery span (breakaway
+    // -> p_top) inside the ladder's resolution budget, so discovery is planned
+    // and entered rather than refused.
+    let (campaign, terminal) =
+        run_campaign_probe(campaign_request(), true, |_direction, index| index >= 18);
+
+    assert!(
+        terminal.is_none(),
+        "the campaign must reach discovery, not a terminal: {terminal:?}"
+    );
+    let BreakawayCampaignPhase::Discovery { state, session } = campaign.phase() else {
+        panic!("expected the discovery phase, got {:?}", campaign.phase());
+    };
+    // Each moving state is reachable only after its Planned event: discovery is
+    // entered at PlannedDiscovery with no stroke issued yet.
+    assert_eq!(*state, AdditiveDiscoveryState::PlannedDiscovery);
+    // The discovery ceiling is the retained plan-time p_top, not a probe-observed
+    // clamp: the ladder's exact final anchor is the campaign's p_top.
+    let (_p_start, p_top, _usable) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
+    assert_eq!(
+        session.plan.gains[usize::from(session.plan.rung_count) - 1],
+        p_top
+    );
+}
+
+// --- Probe failure -> campaign terminal, never Stage C ------------------------
+
+#[test]
+fn a_probe_that_never_moves_terminates_the_campaign_without_reaching_stage_c() {
+    let (_campaign, terminal) =
+        run_campaign_probe(campaign_request(), false, |_direction, _index| false);
+
+    let Some(outcome) = terminal else {
+        panic!("a never-moving probe must terminate the campaign");
+    };
+    assert!(
+        matches!(outcome, BreakawayCampaignOutcome::Terminal { .. }),
+        "no Stage-C plan may be constructed on a probe-failure path: {outcome:?}"
+    );
+}
+
+// --- Accept -> Stage C via the token route ------------------------------------
+
+/// Produce a genuine `(acceptance, plan)` by driving a full held-out
+/// confirmation block that accepts at the given candidate gain.
+fn accepted_confirmation(candidate_raw: u16) -> (BandConfirmationAcceptance, BandConfirmationPlan) {
+    let (outcome, _backend, _writes, _dirs) = run_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(candidate_raw)),
+        2_448,
+        |_direction, _stroke_index| 5, // 75%: comfortably inside the 70-80% band.
+    );
+    match outcome {
+        BandConfirmationOutcome::Accepted { acceptance, plan } => (acceptance, plan),
+        other => panic!("expected an accepted confirmation, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_accepted_confirmation_routes_through_the_token_chain_to_a_stage_c_plan() {
+    let (_p_start, _p_top, usable) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
+    let (acceptance, plan) = accepted_confirmation(512);
+    let inputs = stage_c_inputs(usable);
+    let safety = test_safety();
+    let backend = test_backend();
+
+    let outcome = route_confirmed_accept(acceptance, plan, &inputs, &safety, &backend);
+
+    let BreakawayCampaignOutcome::StageCPlanReady(stage_c_plan) = outcome else {
+        panic!("an accepted, transition-capable P must yield a Stage-C plan: {outcome:?}");
+    };
+    // The confirmed P is admitted unchanged, and the authority's digest is the
+    // accepted confirmation plan's digest (the token chain, not a fabricated
+    // value).
+    assert_eq!(stage_c_plan.final_p, 512);
+    assert_eq!(stage_c_plan.authority.stage_b_plan_digest, plan.plan_digest);
+    assert_eq!(
+        stage_c_plan.schema_revision,
+        crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+    );
+}
+
+// --- Accept whose P fails 6a safety refuses Stage C WITHOUT motion -------------
+
+#[test]
+fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_stage_c_without_motion() {
+    let (acceptance, plan) = accepted_confirmation(1_024);
+    // A torque authority of 1 cannot carry any nonzero I prefix at the confirmed
+    // P: `plan_breakaway_velocity_integral_response` refuses at plan time.
+    let inputs = stage_c_inputs(1);
+    let safety = test_safety();
+    let mut backend = test_backend();
+    let writes_before = backend.spi_log.len();
+
+    let outcome = route_confirmed_accept(acceptance, plan, &inputs, &safety, &backend);
+
+    assert!(
+        matches!(outcome, BreakawayCampaignOutcome::Terminal { .. }),
+        "a non-transition-capable confirmed P must refuse Stage C: {outcome:?}"
+    );
+    // The token route touches no backend excitation: refusal is a pure plan-time
+    // decision, so no motion (or any register traffic) can have happened.
+    let _ = &mut backend;
+    assert_eq!(backend.spi_log.len(), writes_before);
+    assert!(backend.spi_log.is_empty());
+}
+
+// --- Non-accept confirmation terminals never carry a Stage-C plan -------------
+
+#[test]
+fn no_non_accept_confirmation_terminal_carries_a_stage_c_plan() {
+    for outcome in [
+        BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
+        BandConfirmationOutcome::TargetBandNotReachedAtAuthority,
+        BandConfirmationOutcome::TargetBandConfirmationInconclusive(
+            BandConfirmationFailureCause::ResponseLocation,
+        ),
+        BandConfirmationOutcome::ConfirmationEvidenceExcluded,
+        BandConfirmationOutcome::SafetyFault {
+            error: CommissionError::SafetyEnvelopeViolation,
+            safety: None,
+        },
+    ] {
+        assert!(
+            matches!(
+                confirmation_terminal(outcome),
+                BreakawayCampaignOutcome::Terminal { .. }
+            ),
+            "a non-accept confirmation outcome must not build a Stage-C plan"
+        );
+    }
+}
+
+// --- 6d routing: an impossible discovery outcome maps to InvalidSchedule -------
+
+#[test]
+fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedule() {
+    let inputs = stage_c_inputs(2_448);
+
+    // `TargetBandSkipped` is a discovery-owned terminal that must never reach
+    // confirmation routing; if it does, it maps to the InvalidSchedule safety
+    // fault rather than silently proceeding.
+    let advance = route_discovery_outcome(AdditiveDiscoveryOutcome::TargetBandSkipped, 42, &inputs);
+    let CampaignAdvance::Step(BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
+        error,
+        safety,
+    })) = advance
+    else {
+        panic!("an impossible discovery outcome must be a Terminal step");
+    };
+    assert_eq!(error, CommissionError::InvalidSchedule);
+    assert!(safety.is_none());
+}

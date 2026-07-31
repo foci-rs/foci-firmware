@@ -201,8 +201,12 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 
 #[test]
 fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
+    // The trace-gated runtime holds the `CommissioningEngine`, so it grows by
+    // the breakaway campaign's deliberate retained-state increase: the engine's
+    // re-baselined 5_184 B plus the runtime's own fixed overhead. The non-trace
+    // runtime is unaffected: the campaign is trace-feature-gated, so that baseline is unchanged.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 4_656);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_280);
     #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_888);
 }

@@ -1001,6 +1001,17 @@ pub(crate) enum OuterPhase {
         data: VelocityIntegralData,
         safety: OuterSafetyLimits,
     },
+    /// Trace-gated breakaway-seeded campaign: probe, additive discovery, and
+    /// held-out confirmation, sequenced through one borrowed workspace before
+    /// the confirmed Stage-C continuation. On an accepted, admitted confirmation
+    /// this phase is replaced in place by [`Self::VelocityIntegral`], so
+    /// Stage-C execution state never occupies this variant's footprint.
+    #[cfg(feature = "trace-velocity-sweep")]
+    BreakawayCampaign {
+        campaign: super::velocity::breakaway_campaign::BreakawayCampaign,
+        workspace: super::velocity::breakaway_campaign::BreakawayProbeWorkspace,
+        safety: OuterSafetyLimits,
+    },
     /// Phase 9: Velocity-loop SIMC gain synthesis.
     VelocityTune {
         model: MechanicalModel,
@@ -1075,6 +1086,8 @@ impl OuterPhase {
             Self::VelocitySweep { .. } => Some(PhaseId::VelocityTune),
             #[cfg(feature = "trace-velocity-sweep")]
             Self::VelocityIntegral { .. } => Some(PhaseId::VelocityTune),
+            #[cfg(feature = "trace-velocity-sweep")]
+            Self::BreakawayCampaign { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityTune { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityValidate { .. } => Some(PhaseId::VelocityValidate),
             Self::PositionTune { .. } => Some(PhaseId::PositionTune),

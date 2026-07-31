@@ -734,7 +734,16 @@ fn representability_ceilings(
     })
 }
 
-fn current_gain_span(
+/// Resolve the current-representable `(p_start, p_top)` gain span and the
+/// derived usable torque limit from the requested target and hard torque limit.
+///
+/// Shared by the classic velocity sweep and the breakaway campaign so both use
+/// the identical current-representable ceiling machinery (`p_top ~ 256 *
+/// usable_torque_limit / target`, capped by encoder observability); see
+/// [`current_gain_span_with_limit`]. The breakaway orchestrator retains the
+/// returned `(p_start, p_top)` to plan the probe grid and to anchor the additive
+/// discovery ceiling.
+pub(crate) fn current_gain_span(
     target_velocity_rpm: TmcMechanicalRpm,
     hard_torque_limit: u16,
 ) -> Result<(PidPGain, PidPGain, u16), VelocityPlanError> {

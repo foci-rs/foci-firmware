@@ -72,9 +72,11 @@ use crate::autotune::velocity_measurement::{
 use crate::autotune::{CommissionError, EquivalentTorqueTargetInterval, TmcMechanicalRpm};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
-use crate::commissioning::outer::OuterSafetyLimits;
+use crate::commissioning::outer::state::{OuterPhase, VelocityIntegralData, VelocityIntegralState};
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
+use crate::commissioning::outer::{OuterSafetyLimits, fail_outer, fail_outer_with_safety};
 use crate::commissioning::schedule::next_grid_deadline;
+use crate::commissioning::types::StepResult;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
     OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
@@ -91,7 +93,8 @@ use super::band_confirmation::{
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan,
-    PROBE_CONFIDENCE_FAMILY_SIZE, plan_additive_discovery_ladder,
+    PROBE_CONFIDENCE_FAMILY_SIZE, plan_additive_discovery_ladder, plan_breakaway_probe,
+    resolve_grid_floor,
 };
 use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
@@ -103,6 +106,10 @@ use super::current_guard::{
     VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, begin_velocity_current_primitive,
     finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
     read_velocity_pid_input_abs, read_velocity_pid_output_abs,
+};
+use super::integral_plan::{
+    AcquisitionContext, CommissioningWorkflowPlan, StageCAuthority, VelocityIntegralPlan,
+    bind_breakaway_stage_c_authority, plan_breakaway_velocity_integral_response,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestSchedule, RecoveryStage,
@@ -120,6 +127,7 @@ use super::sweep_consensus::{
     depth_three_consensus,
 };
 use super::sweep_evidence::{VelocityObservationClass, classify_velocity_observation};
+use super::sweep_plan::current_gain_span;
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
     SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, ZERO_SETTLE_US,
@@ -2802,6 +2810,537 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
 
             BandConfirmationStep::Done(evaluate_confirmation_session(session))
         }
+    }
+}
+
+// ============================================================================
+// Campaign orchestrator
+// ============================================================================
+
+/// Frozen physical and envelope inputs the campaign retains across every phase.
+///
+/// Computed once at [`BreakawayCampaign::new`], before any probe motion: the
+/// current-representable `(p_start, p_top)` gain span (shared with the classic
+/// sweep via [`current_gain_span`]), the physical acquisition parameters the
+/// Stage-C tail needs, and the reserved command-level workflow envelope. The
+/// probe outcome supplies only the resolved breakaway grid index; every other
+/// discovery-plan input is derived from these retained values, matching the
+/// spec's plan-time authority-ceiling rule (`authority_ceiling = p_top`).
+#[derive(Debug, Clone, Copy, defmt::Format)]
+pub(crate) struct BreakawayCampaignInputs {
+    p_start: PidPGain,
+    p_top: PidPGain,
+    target_velocity_rpm: TmcMechanicalRpm,
+    planned_velocity_mrev_s: u32,
+    hard_torque_limit: u16,
+    usable_torque_limit: u16,
+    limit_evidence_capability: VelocityLimitEvidenceCapability,
+    observations_per_direction: u16,
+    max_duration_ms: u16,
+    workflow_envelope_ms: u32,
+    channel: u8,
+    run_sequence: u32,
+}
+
+/// Frozen command request the campaign is planned from.
+///
+/// Every field is a command-admission input; `nominal_workflow_ms` and
+/// `maximum_workflow_ms` are the worst-case sums reserved for the whole campaign
+/// (probe, discovery, confirmation, and the Stage-C continuation) before probe
+/// motion, so every phase plan must fit inside `maximum_workflow_ms`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BreakawayCampaignRequest {
+    /// Frozen signed-target magnitude in mechanical RPM register units.
+    pub(crate) target_velocity_rpm: TmcMechanicalRpm,
+    /// Frozen encoder-domain velocity amplitude.
+    pub(crate) planned_velocity_mrev_s: u32,
+    /// Configured hard torque-target limit.
+    pub(crate) hard_torque_limit: u16,
+    /// Available authority for proving absence of transient clamp contact.
+    pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
+    /// Host-declared per-primitive safety cap for each discovery rung.
+    pub(crate) max_duration_ms: u16,
+    /// Conservative fixed-schedule campaign duration.
+    pub(crate) nominal_workflow_ms: u32,
+    /// Reserved maximum campaign duration; every phase plan must fit inside it.
+    pub(crate) maximum_workflow_ms: u32,
+    /// Physical firmware channel bound into the Stage-C authority.
+    pub(crate) channel: u8,
+    /// Trace/run sequence carried into the Stage-C continuation.
+    pub(crate) run_sequence: u32,
+}
+
+/// The active campaign phase: exactly one committed driver's state plus its
+/// session at a time, so the largest retained footprint is one phase's session,
+/// never all three.
+#[derive(Debug, defmt::Format)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum BreakawayCampaignPhase {
+    /// The two-direction bisection probe locating the campaign breakaway.
+    Probe {
+        state: BreakawayProbeState,
+        session: BreakawayProbeSession,
+    },
+    /// The additive discovery ladder walking upward from the resolved breakaway.
+    Discovery {
+        state: AdditiveDiscoveryState,
+        session: AdditiveDiscoverySession,
+    },
+    /// The held-out eight-stroke confirmation block at the nominated candidate.
+    Confirmation {
+        state: BandConfirmationState,
+        session: BandConfirmationSession,
+    },
+}
+
+/// Frozen campaign inputs plus the active phase.
+#[derive(Debug, defmt::Format)]
+pub(crate) struct BreakawayCampaign {
+    inputs: BreakawayCampaignInputs,
+    phase: BreakawayCampaignPhase,
+}
+
+impl BreakawayCampaign {
+    /// Plan the campaign from a command request and start at the probe's
+    /// [`BreakawayProbeState::PlannedProbe`].
+    ///
+    /// This never touches a backend: planning is pure, and motion is only
+    /// reachable through [`step_breakaway_campaign`], and only once the probe's
+    /// state has left `PlannedProbe`. The command-level workflow envelope is
+    /// reserved here, before the probe's first stroke, via
+    /// [`CommissioningWorkflowPlan::new_breakaway`]; a malformed envelope
+    /// refuses the whole campaign without motion.
+    pub(crate) fn new(request: BreakawayCampaignRequest) -> Result<Self, CommissionError> {
+        let (p_start, p_top, usable_torque_limit) =
+            current_gain_span(request.target_velocity_rpm, request.hard_torque_limit)
+                .map_err(|_| CommissionError::InvalidSchedule)?;
+        // Reserve the command-level envelope before any probe motion; every
+        // phase plan must later fit inside `maximum_workflow_ms`.
+        CommissioningWorkflowPlan::new_breakaway(
+            request.run_sequence,
+            request.nominal_workflow_ms,
+            request.maximum_workflow_ms,
+        )
+        .map_err(|_| CommissionError::InvalidSchedule)?;
+        let probe_plan =
+            plan_breakaway_probe(p_start, p_top).map_err(|_| CommissionError::InvalidSchedule)?;
+        let session = BreakawayProbeSession::new(
+            probe_plan,
+            request.target_velocity_rpm,
+            request.planned_velocity_mrev_s,
+        )
+        .map_err(|_| CommissionError::InvalidSchedule)?;
+        Ok(Self {
+            inputs: BreakawayCampaignInputs {
+                p_start,
+                p_top,
+                target_velocity_rpm: request.target_velocity_rpm,
+                planned_velocity_mrev_s: request.planned_velocity_mrev_s,
+                hard_torque_limit: request.hard_torque_limit,
+                usable_torque_limit,
+                limit_evidence_capability: request.limit_evidence_capability,
+                observations_per_direction: CONSENSUS_OBSERVATIONS_PER_DIRECTION as u16,
+                max_duration_ms: request.max_duration_ms,
+                workflow_envelope_ms: request.maximum_workflow_ms,
+                channel: request.channel,
+                run_sequence: request.run_sequence,
+            },
+            phase: BreakawayCampaignPhase::Probe {
+                state: BreakawayProbeState::PlannedProbe,
+                session,
+            },
+        })
+    }
+
+    /// Trace/run sequence the Stage-C continuation is emitted under.
+    pub(crate) const fn run_sequence(&self) -> u32 {
+        self.inputs.run_sequence
+    }
+
+    /// The active campaign phase, for engine-adapter routing and test scripting.
+    pub(crate) const fn phase(&self) -> &BreakawayCampaignPhase {
+        &self.phase
+    }
+}
+
+/// Terminal result of a complete breakaway campaign.
+///
+/// [`Self::StageCPlanReady`] is the ONLY variant that authorizes Stage C, and it
+/// is reachable only from an accepted held-out confirmation whose confirmed P
+/// also passed the 6a plan-time safety admission. Every other terminal --
+/// including an accepted confirmation whose P the 6a constructor refuses WITHOUT
+/// motion -- is a [`Self::Terminal`] that carries NO Stage-C plan, so no
+/// failure or inconclusive path can begin Stage C.
+#[derive(Debug, defmt::Format)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum BreakawayCampaignOutcome {
+    /// The confirmed candidate P was accepted and admitted by 6a plan-time
+    /// safety; the exact Stage-C plan built through the token route is ready to
+    /// hand off to the `VelocityIntegral` phase.
+    StageCPlanReady(VelocityIntegralPlan),
+    /// A non-accept campaign terminal, or an accept whose confirmed P the 6a
+    /// constructor refused WITHOUT motion. Never carries a Stage-C plan.
+    Terminal {
+        error: CommissionError,
+        safety: Option<OuterSafetyFault>,
+    },
+}
+
+/// One cooperative result from [`step_breakaway_campaign`].
+#[derive(Debug, defmt::Format)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum BreakawayCampaignStep {
+    /// Call again immediately; no external wait is needed.
+    ReadyNow,
+    /// Call again no earlier than this `elapsed_us` deadline.
+    At(u64),
+    /// The campaign concluded.
+    Done(BreakawayCampaignOutcome),
+}
+
+/// Internal transition control: either a live per-tick step, or a new phase to
+/// enter (freezing the next phase's plan before its first stroke).
+///
+/// Both variants are large -- one carries a `Done` outcome, the other a phase
+/// with its session -- so there is no small variant to shrink toward; boxing is
+/// unavailable in this heapless crate, matching the sibling terminal enums here.
+#[allow(clippy::large_enum_variant)]
+enum CampaignAdvance {
+    Step(BreakawayCampaignStep),
+    EnterPhase(BreakawayCampaignPhase),
+}
+
+/// Map a non-`BreakawayFound` probe outcome to its campaign terminal.
+fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
+    match outcome {
+        BreakawayProbeOutcome::BreakawayFound(_) => {
+            unreachable!("BreakawayFound is advanced to discovery by the orchestrator")
+        }
+        BreakawayProbeOutcome::SafetyFault { error, safety } => {
+            BreakawayCampaignOutcome::Terminal { error, safety }
+        }
+        BreakawayProbeOutcome::NoMotionAtAuthority
+        | BreakawayProbeOutcome::UnstableBreakaway
+        | BreakawayProbeOutcome::DirectionalBreakawayDisagreement
+        | BreakawayProbeOutcome::ProbeEvidenceExcluded
+        | BreakawayProbeOutcome::AuthorityFailure => BreakawayCampaignOutcome::Terminal {
+            error: CommissionError::VelocityValidationFailed,
+            safety: None,
+        },
+    }
+}
+
+/// Map a non-`Accepted` confirmation outcome to its campaign terminal.
+fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignOutcome {
+    match outcome {
+        BandConfirmationOutcome::Accepted { .. } => {
+            unreachable!("Accepted is routed to Stage C by the orchestrator")
+        }
+        BandConfirmationOutcome::SafetyFault { error, safety } => {
+            BreakawayCampaignOutcome::Terminal { error, safety }
+        }
+        BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
+        | BandConfirmationOutcome::TargetBandNotReachedAtAuthority
+        | BandConfirmationOutcome::TargetBandConfirmationInconclusive(_)
+        | BandConfirmationOutcome::ConfirmationEvidenceExcluded => {
+            BreakawayCampaignOutcome::Terminal {
+                error: CommissionError::VelocityValidationFailed,
+                safety: None,
+            }
+        }
+    }
+}
+
+/// Route a finished discovery outcome into confirmation, or into its terminal.
+///
+/// Every discovery outcome -- whether a discovery-run `Done` or a discovery
+/// plan-time construction error -- is routed through the single
+/// [`begin_band_confirmation`] gate, so the discovery-to-confirmation mapping
+/// (including the impossible-outcome-to-`InvalidSchedule` safety fault) has
+/// exactly one implementation. `discovery_plan_digest` is only consulted on the
+/// `Ready` path; terminal outcomes ignore it.
+fn route_discovery_outcome(
+    outcome: AdditiveDiscoveryOutcome,
+    discovery_plan_digest: u64,
+    inputs: &BreakawayCampaignInputs,
+) -> CampaignAdvance {
+    match begin_band_confirmation(
+        outcome,
+        discovery_plan_digest,
+        inputs.target_velocity_rpm,
+        inputs.planned_velocity_mrev_s,
+    ) {
+        BandConfirmationEntry::Ready(session) => {
+            CampaignAdvance::EnterPhase(BreakawayCampaignPhase::Confirmation {
+                state: BandConfirmationState::PlannedConfirmation,
+                session,
+            })
+        }
+        BandConfirmationEntry::Done(outcome) => {
+            CampaignAdvance::Step(BreakawayCampaignStep::Done(confirmation_terminal(outcome)))
+        }
+    }
+}
+
+/// Route an accepted held-out confirmation through the ONE authorized Stage-C
+/// chain: [`bind_breakaway_stage_c_authority`] -> `ConfirmedAcquisitionDigest`
+/// -> [`StageCAuthority::new_breakaway`] ->
+/// [`plan_breakaway_velocity_integral_response`].
+///
+/// This is the sole breakaway path from a confirmed acceptance to a Stage-C
+/// plan. It is reachable only from [`BandConfirmationOutcome::Accepted`]; it
+/// takes the acceptance and its frozen plan by value, so no failure or
+/// inconclusive confirmation terminal can even be expressed as an argument, and
+/// no other campaign terminal constructs a [`StageCAuthority`]. The 6a
+/// constructor still applies its own plan-time safety admission and MAY refuse
+/// Stage C WITHOUT motion; that refusal is returned here as a
+/// [`BreakawayCampaignOutcome::Terminal`], never bypassed. This function touches
+/// no backend excitation and commands no motion; it only reads the frozen PWM
+/// timebase and encoder resolution.
+fn route_confirmed_accept<B: CommissioningBackend>(
+    acceptance: BandConfirmationAcceptance,
+    plan: BandConfirmationPlan,
+    inputs: &BreakawayCampaignInputs,
+    safety: &OuterSafetyLimits,
+    backend: &B,
+) -> BreakawayCampaignOutcome {
+    let digest = match bind_breakaway_stage_c_authority(plan.plan_digest, plan, Ok(acceptance)) {
+        Ok(digest) => digest,
+        Err(_) => {
+            return BreakawayCampaignOutcome::Terminal {
+                error: CommissionError::InvalidSchedule,
+                safety: None,
+            };
+        }
+    };
+    let authority = StageCAuthority::new_breakaway(inputs.channel, digest);
+    let context = AcquisitionContext {
+        planned_velocity_mrev_s: inputs.planned_velocity_mrev_s,
+        target_velocity_rpm: inputs.target_velocity_rpm.raw(),
+        hard_torque_limit: inputs.hard_torque_limit,
+        usable_torque_limit: inputs.usable_torque_limit,
+        limit_evidence_capability: inputs.limit_evidence_capability,
+    };
+    match plan_breakaway_velocity_integral_response(
+        authority,
+        plan,
+        context,
+        safety.budget,
+        backend.tmc_config().pwm_freq_hz(),
+        safety.counts_per_rev(),
+    ) {
+        Ok(stage_c_plan) => BreakawayCampaignOutcome::StageCPlanReady(stage_c_plan),
+        Err(_) => BreakawayCampaignOutcome::Terminal {
+            error: CommissionError::VelocityValidationFailed,
+            safety: None,
+        },
+    }
+}
+
+/// Build the additive discovery session from a resolved probe breakaway.
+///
+/// `authority_ceiling = p_top` (the retained plan-time ceiling), per the spec's
+/// plan-time authority rule: the Stage-C transition-authority guard is applied
+/// only at Stage C, by [`plan_breakaway_velocity_integral_response`], never as a
+/// pre-sweep discovery ceiling. On any plan-time failure the discovery outcome
+/// is routed through the same [`route_discovery_outcome`] gate as a discovery-run
+/// terminal, so a construction failure maps to the same
+/// `InvalidSchedule` safety fault.
+fn enter_discovery(
+    resolved: &ResolvedCampaignBreakaway,
+    probe_plan: &BreakawayProbePlan,
+    inputs: &BreakawayCampaignInputs,
+) -> CampaignAdvance {
+    let (floor, _origin) = match resolve_grid_floor(
+        inputs.p_start,
+        inputs.p_top,
+        probe_plan.search_count,
+        resolved.breakaway_index,
+    ) {
+        Ok(resolved_floor) => resolved_floor,
+        Err(_) => {
+            return CampaignAdvance::Step(BreakawayCampaignStep::Done(
+                BreakawayCampaignOutcome::Terminal {
+                    error: CommissionError::InvalidSchedule,
+                    safety: None,
+                },
+            ));
+        }
+    };
+    let Some(breakaway) = probe_plan
+        .search_gains
+        .get(usize::from(resolved.breakaway_index))
+        .copied()
+    else {
+        return CampaignAdvance::Step(BreakawayCampaignStep::Done(
+            BreakawayCampaignOutcome::Terminal {
+                error: CommissionError::InvalidSchedule,
+                safety: None,
+            },
+        ));
+    };
+    let request = AdditiveDiscoveryRequest {
+        floor,
+        breakaway,
+        authority_ceiling: inputs.p_top,
+        observations_per_direction: inputs.observations_per_direction,
+        max_duration_ms: inputs.max_duration_ms,
+        workflow_envelope_ms: inputs.workflow_envelope_ms,
+        probe_plan_digest: probe_plan.plan_digest,
+    };
+    match AdditiveDiscoverySession::new(
+        request,
+        inputs.target_velocity_rpm,
+        inputs.planned_velocity_mrev_s,
+    ) {
+        Ok(session) => CampaignAdvance::EnterPhase(BreakawayCampaignPhase::Discovery {
+            state: AdditiveDiscoveryState::PlannedDiscovery,
+            session,
+        }),
+        // A discovery plan-time refusal is routed through the same gate as a
+        // discovery-run terminal; the digest is unused for terminal outcomes.
+        Err(outcome) => route_discovery_outcome(outcome, 0, inputs),
+    }
+}
+
+/// Advance the breakaway campaign by one cooperative step.
+///
+/// Sequences the three committed drivers -- probe, additive discovery, held-out
+/// confirmation -- through the ONE borrowed `workspace`, then routes an accepted
+/// confirmation through the Stage-C token chain. `safety` and `workspace` are
+/// caller-owned; neither is allocated here. The caller runs
+/// [`crate::commissioning::outer::check_outer_safety`] against `safety` between
+/// ticks, exactly as it does for every other outer phase; this function never
+/// performs that check itself, matching the three underlying drivers.
+///
+/// Each MOVING state is reachable only after its owning `Planned` event: a new
+/// phase is always entered at its `PlannedProbe`/`PlannedDiscovery`/
+/// `PlannedConfirmation` state, and entering a phase returns `ReadyNow` without
+/// issuing that phase's first stroke, so the phase plan is always frozen before
+/// its first stroke.
+pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
+    campaign: &mut BreakawayCampaign,
+    workspace: &mut BreakawayProbeWorkspace,
+    safety: &mut OuterSafetyLimits,
+    backend: &mut B,
+) -> BreakawayCampaignStep {
+    let BreakawayCampaign { inputs, phase } = campaign;
+    let advance = match phase {
+        BreakawayCampaignPhase::Probe { state, session } => {
+            match step_breakaway_probe(state, workspace, session, safety, backend).await {
+                BreakawayProbeStep::ReadyNow => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
+                }
+                BreakawayProbeStep::At(deadline_us) => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                }
+                BreakawayProbeStep::Done(BreakawayProbeOutcome::BreakawayFound(resolved)) => {
+                    enter_discovery(&resolved, &session.plan, inputs)
+                }
+                BreakawayProbeStep::Done(outcome) => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::Done(probe_terminal(outcome)))
+                }
+            }
+        }
+        BreakawayCampaignPhase::Discovery { state, session } => {
+            match step_additive_discovery(state, workspace, session, safety, backend).await {
+                AdditiveDiscoveryStep::ReadyNow => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
+                }
+                AdditiveDiscoveryStep::At(deadline_us) => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                }
+                AdditiveDiscoveryStep::Done(outcome) => {
+                    route_discovery_outcome(outcome, session.plan.plan_digest, inputs)
+                }
+            }
+        }
+        BreakawayCampaignPhase::Confirmation { state, session } => {
+            match step_band_confirmation(state, workspace, session, safety, backend).await {
+                BandConfirmationStep::ReadyNow => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
+                }
+                BandConfirmationStep::At(deadline_us) => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                }
+                BandConfirmationStep::Done(BandConfirmationOutcome::Accepted {
+                    acceptance,
+                    plan,
+                }) => CampaignAdvance::Step(BreakawayCampaignStep::Done(route_confirmed_accept(
+                    acceptance, plan, inputs, safety, backend,
+                ))),
+                BandConfirmationStep::Done(outcome) => CampaignAdvance::Step(
+                    BreakawayCampaignStep::Done(confirmation_terminal(outcome)),
+                ),
+            }
+        }
+    };
+    match advance {
+        CampaignAdvance::Step(step) => step,
+        CampaignAdvance::EnterPhase(next) => {
+            *phase = next;
+            BreakawayCampaignStep::ReadyNow
+        }
+    }
+}
+
+/// Engine adapter: step the embedded breakaway campaign by one cooperative tick,
+/// then translate its terminal into the engine's [`StepResult`].
+///
+/// On an accepted, admitted confirmation this performs the Confirmed -> Stage C
+/// hand-off in place, mirroring
+/// [`crate::commissioning::CommissioningEngine::begin_stage_c_continuation_with_plan`]:
+/// it replaces the [`OuterPhase::BreakawayCampaign`] with the existing
+/// [`OuterPhase::VelocityIntegral`] variant carrying the exact Stage-C plan, so
+/// Stage-C execution state lives in that variant, off the campaign variant's
+/// retained budget. Every non-accept campaign terminal -- including an accept
+/// the 6a constructor refused WITHOUT motion -- fails the outer phase and never
+/// begins Stage C, so no failure or inconclusive path can reach a Stage-C
+/// stroke. Safe-state restoration on the resulting `Failed`/`FailedWithSafety`
+/// terminal happens at the surrounding engine/dispatch boundary, as it does for
+/// every other outer phase.
+pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
+    phase: &mut OuterPhase,
+    backend: &mut B,
+) -> StepResult {
+    let step = {
+        let OuterPhase::BreakawayCampaign {
+            campaign,
+            workspace,
+            safety,
+        } = phase
+        else {
+            unreachable!("step_breakaway_campaign_with_trace requires a breakaway campaign phase")
+        };
+        step_breakaway_campaign(campaign, workspace, safety, backend).await
+    };
+    match step {
+        BreakawayCampaignStep::ReadyNow => StepResult::ReadyNow,
+        BreakawayCampaignStep::At(deadline_us) => StepResult::At(deadline_us),
+        BreakawayCampaignStep::Done(BreakawayCampaignOutcome::StageCPlanReady(plan)) => {
+            let old =
+                core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
+            let OuterPhase::BreakawayCampaign {
+                campaign, safety, ..
+            } = old
+            else {
+                unreachable!("phase was matched as a breakaway campaign above")
+            };
+            *phase = OuterPhase::VelocityIntegral {
+                state: VelocityIntegralState::Setup,
+                data: VelocityIntegralData::new(campaign.run_sequence(), plan.execution_plan()),
+                safety,
+            };
+            StepResult::ReadyNow
+        }
+        BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
+            error,
+            safety: Some(fault),
+        }) => fail_outer_with_safety(phase, error, fault),
+        BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
+            error,
+            safety: None,
+        }) => fail_outer(phase, error),
     }
 }
 

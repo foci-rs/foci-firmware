@@ -746,6 +746,8 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
         OuterPhase::VelocitySweep { safety, .. } | OuterPhase::VelocityIntegral { safety, .. } => {
             Some(safety)
         }
+        #[cfg(feature = "trace-velocity-sweep")]
+        OuterPhase::BreakawayCampaign { safety, .. } => Some(safety),
         OuterPhase::Commit { .. }
         | OuterPhase::Done(_)
         | OuterPhase::Failed(_)

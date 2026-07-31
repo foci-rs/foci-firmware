@@ -167,6 +167,10 @@ fn velocity_timing_context(
             )
             .map(Some)
         }
+        // The breakaway campaign uses the plain outer-safety envelope check (no
+        // per-phase timing accumulator); its own drivers manage primitive-level
+        // safety timing internally, exactly as they do in their standalone tests.
+        OuterPhase::BreakawayCampaign { .. } => Ok(None),
         OuterPhase::MechanicalId { .. }
         | OuterPhase::VelocityTune { .. }
         | OuterPhase::VelocityValidate { .. }
@@ -318,6 +322,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::VelocityIntegral { .. } => {
             velocity::step_velocity_integral_with_trace(phase, buf, backend).await
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        OuterPhase::BreakawayCampaign { .. } => {
+            velocity::step_breakaway_campaign_with_trace(phase, backend).await
         }
         OuterPhase::VelocityTune { .. } => {
             velocity::step_velocity_tune(
