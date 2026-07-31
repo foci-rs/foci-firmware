@@ -422,3 +422,321 @@ fn safety_faults_propagate_unchanged() {
         }
     }
 }
+
+// ================================================================================
+// Additive discovery driver
+// ================================================================================
+
+/// The additive discovery ladder shared by every discovery test below.
+///
+/// Floor 181, breakaway 256, ceiling 574 -- the same floor/breakaway span as
+/// `breakaway_plan_tests.rs`'s own `generous_request` fixture, narrowed to a
+/// ceiling that resolves to exactly `MIN_STRUCTURAL_RUNGS` = 5 rungs
+/// (`[181, 256, 362, 468, 574]`) once `workflow_envelope_ms` is tightened to
+/// exclude every finer (6+ rung) candidate: at 8 slots/rung and the fixed
+/// per-primitive duration, 5 rungs need 49_920 ms and 6 rungs need 59_904 ms, so
+/// 50_000 ms admits only 5. Keeping the ladder small keeps every test's bounded
+/// step budget small too.
+fn discovery_request() -> AdditiveDiscoveryRequest {
+    AdditiveDiscoveryRequest {
+        floor: gain(181),
+        breakaway: gain(256),
+        authority_ceiling: gain(574),
+        observations_per_direction: 4,
+        max_duration_ms: u16::MAX,
+        workflow_envelope_ms: 50_000,
+        probe_plan_digest: 0,
+    }
+}
+
+/// Drive a complete additive discovery campaign against a scripted `MockBackend`.
+///
+/// `response_numerator(direction, rung_index)` returns the per-tick encoder delta,
+/// in encoder counts, for the stroke about to run. Every test below shares
+/// `target_velocity_rpm_raw = 100` and `counts_per_rev = 4_000` (`test_backend`'s
+/// default), so the commanded-side rate is exactly `100 * 4_000 / 60_000 = 20 / 3`
+/// counts per 1 ms tick: a numerator of `5` is exactly 75% of target (inside the
+/// confirmable 70-80% band), `2` is 30% (below it), and `8` is 120% (above it).
+/// `current_limit_raw` lets headroom-focused tests narrow the usable-current
+/// boundary without perturbing this ratio -- current headroom depends only on
+/// `p * target_rpm`, never on the encoder script.
+fn run_discovery(
+    request: AdditiveDiscoveryRequest,
+    current_limit_raw: u32,
+    mut response_numerator: impl FnMut(VelocityDirection, u8) -> i32,
+) -> (AdditiveDiscoveryOutcome, MockBackend) {
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    backend.current_limit_value = current_limit(current_limit_raw);
+
+    let mut encoder_count: i32 = 0;
+    let mut stroke_numerator = 0_i32;
+    let mut stroke_sign = 1_i32;
+
+    for _ in 0..1_000_000 {
+        if matches!(state, AdditiveDiscoveryState::CommandTarget) {
+            stroke_numerator = response_numerator(session.direction, session.rung_index);
+            stroke_sign = direction_sign(session.direction);
+        }
+        let is_capture_phase = matches!(state, AdditiveDiscoveryState::Capture { .. });
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::ReadyNow => {}
+            AdditiveDiscoveryStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase {
+                    encoder_count += stroke_sign * stroke_numerator;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            AdditiveDiscoveryStep::Done(outcome) => return (outcome, backend),
+        }
+    }
+    panic!("discovery run exceeded its bounded step budget");
+}
+
+// --- RED: no discovery motion is reachable before the plan is admitted --------
+
+#[test]
+fn no_discovery_motion_happens_before_the_planned_discovery_state_advances() {
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+
+    let result = pollster::block_on(step_additive_discovery(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+
+    assert!(matches!(result, AdditiveDiscoveryStep::ReadyNow));
+    assert_eq!(state, AdditiveDiscoveryState::WriteGain);
+    assert!(
+        backend.spi_log.is_empty(),
+        "PlannedDiscovery must not touch the backend"
+    );
+}
+
+// --- Plan-time terminals: no motion at all -------------------------------------
+
+#[test]
+fn insufficient_additive_span_is_a_plan_time_terminal_with_no_motion() {
+    // Matches `insufficient_additive_span_rejects_a_ceiling_one_step_above_breakaway`
+    // in `breakaway_plan_tests.rs`: a ceiling one grid step above breakaway cannot
+    // hold five structural rungs.
+    let request = AdditiveDiscoveryRequest {
+        authority_ceiling: gain(257),
+        ..discovery_request()
+    };
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+
+    let outcome = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+        .expect_err("a ceiling one step above breakaway cannot hold five structural rungs");
+
+    assert!(matches!(
+        outcome,
+        AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
+    ));
+}
+
+#[test]
+fn additive_ladder_resolution_budget_exceeded_is_a_plan_time_terminal_with_no_motion() {
+    // Matches `additive_ladder_resolution_budget_boundary` in
+    // `breakaway_plan_tests.rs`: ceiling 3_437 pushes the first additive gap one
+    // gain unit past the provisional resolution guard at every candidate rung
+    // count, including the finest (32).
+    let request = AdditiveDiscoveryRequest {
+        authority_ceiling: gain(3_437),
+        workflow_envelope_ms: u32::MAX,
+        ..discovery_request()
+    };
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+
+    let outcome = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+        .expect_err("every candidate's first additive gap exceeds the resolution guard");
+
+    assert!(matches!(
+        outcome,
+        AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
+    ));
+}
+
+// --- TargetBandSelected: at least one rung's own response is in 70-80% --------
+
+#[test]
+fn an_in_band_rung_produces_target_band_selected() {
+    let (outcome, _) = run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+        if rung_index == 0 {
+            5 // 75%: contained in 70-80%, retained.
+        } else {
+            8 // 120%: confidently above 80%, stopping exploration here.
+        }
+    });
+
+    let AdditiveDiscoveryOutcome::TargetBandSelected(collected) = outcome else {
+        panic!("expected TargetBandSelected, got {outcome:?}");
+    };
+    assert_eq!(collected.count(), 1);
+    assert_eq!(collected.as_slice()[0].p.raw(), 181);
+}
+
+// --- TargetBandSkipped: response crosses 70->80 with no in-band rung ----------
+
+#[test]
+fn a_response_crossing_the_band_between_rungs_produces_target_band_skipped() {
+    let (outcome, _) = run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+        if rung_index == 0 {
+            2 // 30%: clearly below the band.
+        } else {
+            8 // 120%: confidently above the band -- no in-band rung was ever found.
+        }
+    });
+
+    assert!(matches!(
+        outcome,
+        AdditiveDiscoveryOutcome::TargetBandSkipped
+    ));
+}
+
+// --- CurrentHeadroomBeforeBand: current authority binds first -----------------
+
+#[test]
+fn current_headroom_before_any_in_band_rung_reports_current_headroom_before_band() {
+    // current_limit_raw = 250 makes only the ceiling rung (574) predict a torque
+    // inside [225, 250) -- every earlier rung's predicted torque stays well below
+    // that usable-current boundary regardless of the encoder script.
+    let (outcome, _) = run_discovery(discovery_request(), 250, |_direction, rung_index| {
+        if rung_index < 4 {
+            2 // 30%: clearly below the band, never contained.
+        } else {
+            1 // any nonzero motion -- current headroom fires from predicted torque.
+        }
+    });
+
+    assert!(matches!(
+        outcome,
+        AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
+    ));
+}
+
+// --- Current headroom above an already-safe candidate retains it --------------
+
+#[test]
+fn current_headroom_after_an_in_band_rung_retains_the_candidate() {
+    let (outcome, _) = run_discovery(discovery_request(), 250, |_direction, rung_index| {
+        match rung_index {
+            2 => 5, // 75%: contained in 70-80%, retained.
+            4 => 1, // any nonzero motion -- current headroom fires at the ceiling rung.
+            _ => 2, // 30%: clearly below the band.
+        }
+    });
+
+    let AdditiveDiscoveryOutcome::TargetBandSelected(collected) = outcome else {
+        panic!(
+            "expected TargetBandSelected (headroom above a safe candidate must retain it), \
+             got {outcome:?}"
+        );
+    };
+    assert_eq!(collected.count(), 1);
+    assert_eq!(collected.as_slice()[0].p.raw(), 362);
+}
+
+// --- WrongDirectionFault short-circuits before origin-recovery -----------------
+
+#[test]
+fn wrong_direction_short_circuits_discovery_without_recovering() {
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count: i32 = 0;
+
+    loop {
+        let is_capture_phase = matches!(state, AdditiveDiscoveryState::Capture { .. });
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::ReadyNow => {}
+            AdditiveDiscoveryStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                // The first stroke commands Forward. Move consistently in the
+                // opposite direction so the settled-rate CI excludes zero on the
+                // wrong side -- WrongDirectionFault, never a moving/inert verdict.
+                if is_capture_phase {
+                    encoder_count -= 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            AdditiveDiscoveryStep::Done(outcome) => {
+                let AdditiveDiscoveryOutcome::SafetyFault { error, safety } = outcome else {
+                    panic!("expected a safety fault, got {outcome:?}");
+                };
+                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert!(safety.is_none());
+                break;
+            }
+        }
+    }
+
+    // Exactly one stroke's worth of velocity-target writes: the signed command from
+    // CommandTarget and the zero from CommandZero. A third write -- necessarily
+    // nonzero -- would be the origin-recovery motion this fault must never reach.
+    let target_writes: std::vec::Vec<u32> = backend
+        .spi_log
+        .iter()
+        .filter_map(|op| match op {
+            SpiOp::Write(addr, value) if *addr == PID_VELOCITY_TARGET.addr() => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        target_writes.len(),
+        2,
+        "no recovery stroke may follow a safety fault: {target_writes:?}"
+    );
+    assert_ne!(
+        target_writes[0], 0,
+        "the first write is the commanded stroke"
+    );
+    assert_eq!(target_writes[1], 0, "the second write is CommandZero");
+
+    // Exactly one gain write: recovery's own `WriteGains` state would add a second.
+    let gain_writes = backend
+        .spi_log
+        .iter()
+        .filter(
+            |op| matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_P_VELOCITY_I.addr()),
+        )
+        .count();
+    assert_eq!(
+        gain_writes, 1,
+        "no recovery gain write may follow a safety fault"
+    );
+}
