@@ -11,31 +11,9 @@
 //! `delta == 0` is exactly the false-`ENCODER_FAULT` shape; a settled-rate
 //! confidence interval that excludes zero on the commanded side is not.
 
-use super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION;
 use super::sweep_evidence::{
     VelocityObservationClass, VelocityObservationInput, classify_velocity_observation,
 };
-
-/// Largest search-grid rung count the seven-observation-per-direction budget can
-/// always resolve.
-///
-/// Binary-searching `n` candidate rungs for a first-moving index (or "no motion",
-/// an `n + 1`th outcome) needs up to `ceil(log2(n + 1))` observations in the
-/// worst case; this is an information-theoretic bound, not an artifact of this
-/// implementation. [`PROBE_MAX_OBSERVATIONS_PER_DIRECTION`] reserves exactly two
-/// observations for the mandatory bracket repeat, so at most
-/// `PROBE_MAX_OBSERVATIONS_PER_DIRECTION - 2` bisection observations remain.
-/// `2^(PROBE_MAX_OBSERVATIONS_PER_DIRECTION - 2) - 1` is therefore the largest
-/// grid every threshold on it is guaranteed to resolve within budget. A search
-/// grid larger than this (reachable up to
-/// [`super::sweep_plan::MAX_SWEEP_RUNGS`] = 32, one more than this bound) can
-/// need an eighth observation for a low threshold with a representable inert
-/// predecessor; [`BreakawaySearchCursor::start`] refuses such a grid before any
-/// motion rather than silently risking the reserved probe family.
-pub const MAX_SEARCHABLE_RUNGS: u8 =
-    ((1u16 << (PROBE_MAX_OBSERVATIONS_PER_DIRECTION - 2)) - 1) as u8;
-
-const _: () = assert!(MAX_SEARCHABLE_RUNGS == 31);
 
 /// Sign-correct motion verdict for one probe observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -66,9 +44,6 @@ pub struct DirectionalBreakaway {
 pub enum BreakawaySearchError {
     /// A required search input was zero or otherwise unusable.
     InvalidRequest,
-    /// The search grid has more rungs than [`MAX_SEARCHABLE_RUNGS`], the largest
-    /// grid the seven-observation-per-direction budget is guaranteed to resolve.
-    SearchGridTooLarge,
     /// Checked search-cursor arithmetic exceeded its representation.
     Arithmetic,
     /// The observation settled significantly opposite the command, or reached the
@@ -172,12 +147,15 @@ pub struct BreakawaySearchCursor {
 
 impl BreakawaySearchCursor {
     /// Construct a fresh cursor and the first grid index the caller must probe.
+    ///
+    /// `rung_count` may be any value up to [`super::sweep_plan::MAX_SWEEP_RUNGS`]:
+    /// [`super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION`] budgets a
+    /// worst case of 6 binary-search bisections plus the 2 mandatory
+    /// bracket-confirmation repeats, which resolves the full grid, so no rung count
+    /// needs refusing before motion on observation-budget grounds alone.
     pub fn start(rung_count: u8) -> Result<(Self, u8), BreakawaySearchError> {
         if rung_count == 0 {
             return Err(BreakawaySearchError::InvalidRequest);
-        }
-        if rung_count > MAX_SEARCHABLE_RUNGS {
-            return Err(BreakawaySearchError::SearchGridTooLarge);
         }
         let lo = 0;
         let hi = rung_count;

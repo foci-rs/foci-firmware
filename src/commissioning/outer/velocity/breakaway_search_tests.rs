@@ -1,10 +1,9 @@
 use super::super::sweep_evidence::VelocityObservationClass;
 use super::super::sweep_evidence::VelocityObservationInput;
-use super::super::sweep_plan::MIN_STRUCTURAL_RUNGS;
+use super::super::sweep_plan::{MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS};
 use super::{
     BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
-    DirectionalBreakaway, MAX_SEARCHABLE_RUNGS, classify_breakaway_observation,
-    resolve_campaign_breakaway,
+    DirectionalBreakaway, classify_breakaway_observation, resolve_campaign_breakaway,
 };
 use crate::autotune::velocity_measurement::{
     PlateauSelection, RateBlock, StationarityExclusion, StationarityResult, StationarySuffix,
@@ -15,7 +14,7 @@ use foci_tmc4671::pid::PidPGain;
 
 /// Maximum probed grid indices retained per simulated directional search. The
 /// audited worst case is [`super::super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION`]
-/// (7); the trace capacity leaves headroom so a runaway stub overflows loudly
+/// (8); the trace capacity leaves headroom so a runaway stub overflows loudly
 /// instead of silently truncating.
 const TRACE_CAPACITY: usize = 16;
 
@@ -242,7 +241,7 @@ fn bisection_confirms_each_bracket_endpoint_exactly_once_after_convergence() {
 fn all_inert_search_reports_no_motion_at_authority() {
     let (trace, result) = simulate_directional_search(20, None);
     assert_eq!(result, Err(BreakawaySearchError::NoMotionAtAuthority));
-    assert!(trace.len() <= 7, "trace: {trace:?}");
+    assert!(trace.len() <= 8, "trace: {trace:?}");
 }
 
 #[test]
@@ -259,7 +258,7 @@ fn all_moving_search_is_left_censored_at_the_grid_floor() {
 
 #[test]
 fn arithmetic_boundary_at_grid_floor_reports_the_missing_bracket_side() {
-    for rung_count in [MIN_STRUCTURAL_RUNGS as u8, MAX_SEARCHABLE_RUNGS] {
+    for rung_count in [MIN_STRUCTURAL_RUNGS as u8, MAX_SWEEP_RUNGS as u8] {
         let (_, result) = simulate_directional_search(rung_count, Some(0));
         let breakaway = result.expect("monotone axis resolves");
         assert_eq!(breakaway.inert_index, None, "rung_count={rung_count}");
@@ -268,8 +267,8 @@ fn arithmetic_boundary_at_grid_floor_reports_the_missing_bracket_side() {
 }
 
 #[test]
-fn exhaustive_search_resolves_every_monotone_axis_within_the_seven_observation_budget() {
-    for rung_count in MIN_STRUCTURAL_RUNGS..=usize::from(MAX_SEARCHABLE_RUNGS) {
+fn exhaustive_search_resolves_every_monotone_axis_within_the_eight_observation_budget() {
+    for rung_count in MIN_STRUCTURAL_RUNGS..=MAX_SWEEP_RUNGS {
         let rung_count = rung_count as u8;
         for true_breakaway in 0..=rung_count {
             let breakaway_option = if true_breakaway == rung_count {
@@ -279,7 +278,7 @@ fn exhaustive_search_resolves_every_monotone_axis_within_the_seven_observation_b
             };
             let (trace, result) = simulate_directional_search(rung_count, breakaway_option);
             assert!(
-                trace.len() <= 7,
+                trace.len() <= 8,
                 "rung_count={rung_count} breakaway={true_breakaway:?} trace={trace:?}"
             );
             match breakaway_option {
@@ -309,6 +308,24 @@ fn exhaustive_search_resolves_every_monotone_axis_within_the_seven_observation_b
                 }
             }
         }
+    }
+}
+
+#[test]
+fn full_max_sweep_rungs_grid_resolves_within_the_eight_observation_budget() {
+    // The full MAX_SWEEP_RUNGS grid is the worst case the family-16 probe budget was
+    // raised to cover: 6 binary-search bisections plus the 2 mandatory
+    // bracket-confirmation repeats.
+    let rung_count = MAX_SWEEP_RUNGS as u8;
+    for true_breakaway in 0..rung_count {
+        let (trace, result) = simulate_directional_search(rung_count, Some(true_breakaway));
+        let breakaway =
+            result.unwrap_or_else(|error| panic!("breakaway={true_breakaway} failed: {error:?}"));
+        assert_eq!(breakaway.moving_index, true_breakaway);
+        assert!(
+            trace.len() <= 8,
+            "breakaway={true_breakaway} trace={trace:?}"
+        );
     }
 }
 
@@ -384,16 +401,12 @@ fn zero_rung_count_is_rejected_before_any_probe() {
 }
 
 #[test]
-fn a_grid_one_rung_larger_than_the_budget_can_guarantee_is_rejected_before_any_probe() {
-    // MAX_SEARCHABLE_RUNGS itself must still be accepted...
-    assert!(BreakawaySearchCursor::start(MAX_SEARCHABLE_RUNGS).is_ok());
-    // ...but one rung more, still representable up to the shared MAX_SWEEP_RUNGS
-    // grid-size cap, cannot be guaranteed to resolve within seven observations and
-    // must be refused before any motion rather than discovered mid-search.
-    assert_eq!(
-        BreakawaySearchCursor::start(MAX_SEARCHABLE_RUNGS + 1).map(|(_, index)| index),
-        Err(BreakawaySearchError::SearchGridTooLarge)
-    );
+fn the_full_max_sweep_rungs_grid_is_accepted_before_any_probe() {
+    // The observation budget was raised specifically so the full MAX_SWEEP_RUNGS
+    // grid needs no pre-motion refusal; see
+    // full_max_sweep_rungs_grid_resolves_within_the_eight_observation_budget for the
+    // budget proof.
+    assert!(BreakawaySearchCursor::start(MAX_SWEEP_RUNGS as u8).is_ok());
 }
 
 // --- Campaign breakaway resolution ------------------------------------------------

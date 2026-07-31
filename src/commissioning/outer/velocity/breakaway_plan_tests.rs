@@ -57,10 +57,10 @@ fn probe_plan_matches_the_realized_half_octave_grid() {
 }
 
 #[test]
-fn probe_budgets_exactly_seven_observations_per_direction() {
-    assert_eq!(PROBE_MAX_OBSERVATIONS_PER_DIRECTION, 7);
-    assert_eq!(PROBE_CONFIDENCE_FAMILY_SIZE, 14);
-    assert_eq!(u16::from(PROBE_MAX_OBSERVATIONS_PER_DIRECTION) * 2, 14);
+fn probe_budgets_exactly_eight_observations_per_direction() {
+    assert_eq!(PROBE_MAX_OBSERVATIONS_PER_DIRECTION, 8);
+    assert_eq!(PROBE_CONFIDENCE_FAMILY_SIZE, 16);
+    assert_eq!(u16::from(PROBE_MAX_OBSERVATIONS_PER_DIRECTION) * 2, 16);
 }
 
 #[test]

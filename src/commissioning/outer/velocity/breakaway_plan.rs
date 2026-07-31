@@ -42,15 +42,17 @@ pub const MAX_ADDITIVE_GAIN_RATIO_DEN: u32 = 128;
 
 /// Joint two-direction confidence family reserved for the breakaway probe.
 ///
-/// Binary search over the ~20-step half-octave grid costs about 5 observations per
-/// direction; the mandatory bracket repeat adds 2 more, so the probe plan budgets
-/// the worst case of 7 per direction, 14 joint, regardless of how few observations
-/// a particular run actually executes.
-pub const PROBE_CONFIDENCE_FAMILY_SIZE: u16 = 14;
+/// The probe searches up to the full [`super::sweep_plan::MAX_SWEEP_RUNGS`] = 32-rung
+/// grid, so the worst case is 6 binary-search bisections; the mandatory bracket
+/// repeat adds 2 more, giving 8 per direction, 16 joint, regardless of how few
+/// observations a particular run actually executes.
+pub const PROBE_CONFIDENCE_FAMILY_SIZE: u16 = 16;
 /// Maximum probe observations permitted in a single direction.
 ///
-/// Five binary-search steps plus two mandatory bracket-confirmation repeats.
-pub const PROBE_MAX_OBSERVATIONS_PER_DIRECTION: u8 = 7;
+/// Six binary-search bisections (the worst case for the full
+/// [`super::sweep_plan::MAX_SWEEP_RUNGS`] = 32-rung grid, including the "no motion"
+/// outcome) plus two mandatory bracket-confirmation repeats.
+pub const PROBE_MAX_OBSERVATIONS_PER_DIRECTION: u8 = 8;
 
 /// Immutable, pre-motion plan for the breakaway probe's binary search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
