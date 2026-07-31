@@ -740,3 +740,50 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
         "no recovery gain write may follow a safety fault"
     );
 }
+
+// --- DiscoveryEvidenceExcluded: the zero-target settle never confirms rest ----
+
+#[test]
+fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count: i32 = 0;
+
+    loop {
+        let is_settle_phase = matches!(state, AdditiveDiscoveryState::SettleCapture { .. });
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::ReadyNow => {}
+            AdditiveDiscoveryStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                // Hold still during the moving capture (Inert is fine -- this test
+                // is about the settle window, not the moving classification), then
+                // drift continuously once the zero-target settle starts so rest is
+                // never confirmed.
+                if is_settle_phase {
+                    encoder_count += 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            AdditiveDiscoveryStep::Done(outcome) => {
+                assert!(matches!(
+                    outcome,
+                    AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded
+                ));
+                break;
+            }
+        }
+    }
+}

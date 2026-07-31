@@ -128,7 +128,7 @@ pub struct DiscoveryObservationAtom {
 
 /// Failure classifying one observation's percent response and relative SE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-enum ObservationStatisticError {
+pub(super) enum ObservationStatisticError {
     /// `target_rate_q` was not a positive magnitude.
     InvalidTarget,
     /// A zero or wrong-sign mean is not representable as a candidate response.
@@ -139,11 +139,11 @@ enum ObservationStatisticError {
 
 /// One observation's percent response and relative standard error.
 #[derive(Debug, Clone, Copy)]
-struct ObservationStatistic {
+pub(super) struct ObservationStatistic {
     /// `r = 100 * commanded_side(mean_rate_q) / target_rate_q`, in percent.
-    response_percent: f32,
+    pub(super) response_percent: f32,
     /// `SE = sqrt(variance_of_mean_q2) / abs(mean_rate_q)`, as a fraction.
-    relative_standard_error: f32,
+    pub(super) relative_standard_error: f32,
 }
 
 /// Sign-normalize one raw mean rate onto its commanded-direction magnitude.
@@ -162,7 +162,13 @@ const fn commanded_side_mean_rate_q(direction: VelocityDirection, mean_rate_q: i
 }
 
 /// Compute one observation's percent response and relative standard error.
-fn observation_statistic(
+///
+/// `pub(super)` (rather than private) so the additive discovery driver's own
+/// stop-rule containment check (`breakaway_campaign.rs`) can share this exact
+/// computation instead of forking it. See
+/// [`rung_response_bounds_percent`]'s doc comment for how the two callers
+/// diverge afterward.
+pub(super) fn observation_statistic(
     atom: DiscoveryObservationAtom,
 ) -> Result<ObservationStatistic, ObservationStatisticError> {
     if atom.target_rate_q <= 0 {
@@ -197,20 +203,35 @@ fn round_outward_upper(value: f32) -> f32 {
     libm::ceilf(value * INTERVAL_ENDPOINT_ROUNDING_SCALE) / INTERVAL_ENDPOINT_ROUNDING_SCALE
 }
 
-/// Build one nomination-screen interval: `h = m(8) * SE * c_sigma`, then
-/// `[r * (1 - h), r * (1 + h)]`, outward-rounded.
-fn nomination_interval_percent(
+/// Build one observation's percent-response interval: `h = multiplier * SE *
+/// c_sigma`, then `[r * (1 - h), r * (1 + h)]`, optionally rounded outward.
+///
+/// `pub(super)` so both callers of [`rung_response_bounds_percent`] build the
+/// SAME per-observation interval, differing only in the two parameters that
+/// carry a real, documented statistical meaning: `c_sigma` (an inflation
+/// factor predicting a FUTURE held-out interval from this one discovery
+/// observation) and `round_outward` (whether the 70/80 boundary comparison
+/// defends against floating-point rounding noise). See
+/// [`rung_response_bounds_percent`]'s doc comment for how confirmation and
+/// discovery set these two parameters differently, and why.
+pub(super) fn observation_interval_percent(
     atom: DiscoveryObservationAtom,
     multiplier: f32,
+    c_sigma: f32,
+    round_outward: bool,
 ) -> Option<(f32, f32)> {
     let statistic = observation_statistic(atom).ok()?;
-    let half_width_fraction =
-        multiplier * statistic.relative_standard_error * NOMINATION_SCREEN_C_SIGMA;
+    let half_width_fraction = multiplier * statistic.relative_standard_error * c_sigma;
     if !half_width_fraction.is_finite() {
         return None;
     }
-    let low = round_outward_lower(statistic.response_percent * (1.0 - half_width_fraction));
-    let high = round_outward_upper(statistic.response_percent * (1.0 + half_width_fraction));
+    let low_raw = statistic.response_percent * (1.0 - half_width_fraction);
+    let high_raw = statistic.response_percent * (1.0 + half_width_fraction);
+    let (low, high) = if round_outward {
+        (round_outward_lower(low_raw), round_outward_upper(high_raw))
+    } else {
+        (low_raw, high_raw)
+    };
     Some((low, high))
 }
 
@@ -252,16 +273,38 @@ pub struct NominatedConfirmationCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TargetBandUnconfirmableFromDiscovery;
 
-/// Fold one rung's discovery evidence into its pointwise confirmable margin.
+/// Fold one rung's included discovery observations (both directions) into a
+/// single combined percent-response interval.
 ///
-/// Returns `None` when the rung is not nominatable at all: either direction
+/// Returns `None` when the rung is not judgeable at all: either direction
 /// lacks `EligibleConsensus`, an included observation is missing, or an
 /// included observation's mean is zero or wrong-signed and therefore not
 /// representable as a candidate response.
-fn rung_confirmable_margin_percent(
+///
+/// `pub(super)`, parameterized by `c_sigma` and `round_outward`, so this one
+/// aggregation is shared rather than forked:
+///
+/// - Confirmation's own [`rung_confirmable_margin_percent`] calls this with
+///   `c_sigma = `[`NOMINATION_SCREEN_C_SIGMA`]` and `round_outward = true`: it
+///   is the conservative gate that actually authorizes Stage C, so it inflates
+///   for a FUTURE held-out family-eight test and defends the exact 70/80
+///   boundary against floating-point rounding noise.
+/// - The additive discovery driver's own stop-rule containment check
+///   (`breakaway_campaign.rs::classify_rung_band`) calls this with `c_sigma =
+///   1.0` and `round_outward = false`: discovery only decides which rungs to
+///   collect and hand to nomination, it never authorizes Stage C itself, and
+///   under-collecting a borderline-viable rung here is worse than collecting
+///   one that nomination's own (conservative) screen later rejects. The two
+///   callers' numeric results are therefore deliberately different at the band
+///   edge -- this parameterization is what keeps that difference intentional
+///   and in one place instead of silent, undocumented drift between two copies
+///   of the same math.
+pub(super) fn rung_response_bounds_percent(
     rung: &DiscoveryRungNominationInput,
     multiplier: f32,
-) -> Option<f32> {
+    c_sigma: f32,
+    round_outward: bool,
+) -> Option<(f32, f32)> {
     if rung.forward_consensus.classification != DirectionalConsensusClass::EligibleConsensus
         || rung.reverse_consensus.classification != DirectionalConsensusClass::EligibleConsensus
     {
@@ -273,19 +316,37 @@ fn rung_confirmable_margin_percent(
     for index in 0..CONSENSUS_OBSERVATIONS_PER_DIRECTION {
         if rung.forward_consensus.included_mask & (1 << index) != 0 {
             let atom = rung.forward_observations[index]?;
-            let (low, high) = nomination_interval_percent(atom, multiplier)?;
+            let (low, high) =
+                observation_interval_percent(atom, multiplier, c_sigma, round_outward)?;
             lower = Some(lower.map_or(low, |current| current.min(low)));
             upper = Some(upper.map_or(high, |current| current.max(high)));
         }
         if rung.reverse_consensus.included_mask & (1 << index) != 0 {
             let atom = rung.reverse_observations[index]?;
-            let (low, high) = nomination_interval_percent(atom, multiplier)?;
+            let (low, high) =
+                observation_interval_percent(atom, multiplier, c_sigma, round_outward)?;
             lower = Some(lower.map_or(low, |current| current.min(low)));
             upper = Some(upper.map_or(high, |current| current.max(high)));
         }
     }
 
-    let (lower, upper) = (lower?, upper?);
+    Some((lower?, upper?))
+}
+
+/// Fold one rung's discovery evidence into its pointwise confirmable margin.
+///
+/// Returns `None` when the rung is not nominatable at all: either direction
+/// lacks `EligibleConsensus`, an included observation is missing, or an
+/// included observation's mean is zero or wrong-signed and therefore not
+/// representable as a candidate response. Unchanged in behavior from before
+/// [`rung_response_bounds_percent`] was extracted -- same `c_sigma`, same
+/// outward rounding, same math.
+fn rung_confirmable_margin_percent(
+    rung: &DiscoveryRungNominationInput,
+    multiplier: f32,
+) -> Option<f32> {
+    let (lower, upper) =
+        rung_response_bounds_percent(rung, multiplier, NOMINATION_SCREEN_C_SIGMA, true)?;
     let lower_margin = lower - f32::from(CONFIRMATION_BAND_LOWER_PERCENT);
     let upper_margin = f32::from(CONFIRMATION_BAND_UPPER_PERCENT) - upper;
     Some(lower_margin.min(upper_margin))

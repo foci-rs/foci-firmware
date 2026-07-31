@@ -65,7 +65,7 @@ use crate::commissioning::types::{
 
 use super::band_confirmation::{
     CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT, DiscoveryObservationAtom,
-    DiscoveryRungNominationInput,
+    DiscoveryRungNominationInput, rung_response_bounds_percent,
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan,
@@ -1342,96 +1342,27 @@ fn discovery_target_rate_q(
         .ok_or(CommissionError::InvalidSchedule)
 }
 
-/// One discovery observation's percent response and relative standard error.
+/// Discovery's own containment multiplier is applied with NO confirmation-style
+/// inflation on top of it (`c_sigma = 1.0`, versus confirmation's
+/// [`super::band_confirmation::NOMINATION_SCREEN_C_SIGMA`]) and with NO outward
+/// endpoint rounding (versus confirmation's outward rounding at the exact 70/80
+/// boundary).
 ///
-/// Computed identically to `band_confirmation::observation_statistic`, which is
-/// private to its module and additionally inflates for a FUTURE family-eight
-/// nomination screen via `NOMINATION_SCREEN_C_SIGMA`. That inflation does not
-/// apply here: the discovery stop rule judges each rung against its OWN
-/// already-family-scaled discovery evidence (`plan.confidence_family_size`), never
-/// against a predicted confirmation interval. Kept as an intentionally separate
-/// primitive rather than a shared extraction across the two modules -- see
-/// [`sample_one_tick`]'s own doc comment above for the precedent on deferring
-/// cross-module unification of small numeric primitives rather than rushing it.
-fn discovery_observation_statistic(atom: DiscoveryObservationAtom) -> Option<(f32, f32)> {
-    if atom.target_rate_q <= 0 {
-        return None;
-    }
-    let commanded_magnitude_q = match atom.direction {
-        VelocityDirection::Forward if atom.mean_rate_q > 0 => atom.mean_rate_q as u64,
-        VelocityDirection::Reverse if atom.mean_rate_q < 0 => atom.mean_rate_q.unsigned_abs(),
-        VelocityDirection::Forward | VelocityDirection::Reverse => return None,
-    };
-    let variance = atom.variance_of_mean_q2 as f32;
-    if !variance.is_finite() {
-        return None;
-    }
-    let commanded_magnitude = commanded_magnitude_q as f32;
-    let target_magnitude = atom.target_rate_q as f32;
-    let response_percent = 100.0 * commanded_magnitude / target_magnitude;
-    let relative_standard_error = libm::sqrtf(variance) / commanded_magnitude;
-    if !response_percent.is_finite() || !relative_standard_error.is_finite() {
-        return None;
-    }
-    Some((response_percent, relative_standard_error))
-}
-
-/// One observation's own-family percent-response interval:
-/// `response_percent * (1 +/- multiplier * relative_standard_error)`, with no
-/// confirmation-screen inflation.
-fn discovery_observation_interval_percent(
-    atom: DiscoveryObservationAtom,
-    multiplier: f32,
-) -> Option<(f32, f32)> {
-    let (response_percent, relative_standard_error) = discovery_observation_statistic(atom)?;
-    let half_width_fraction = multiplier * relative_standard_error;
-    if !half_width_fraction.is_finite() {
-        return None;
-    }
-    let low = response_percent * (1.0 - half_width_fraction);
-    let high = response_percent * (1.0 + half_width_fraction);
-    (low.is_finite() && high.is_finite()).then_some((low, high))
-}
-
-/// Fold one rung's included discovery observations (both directions) into a
-/// single combined own-family percent-response interval.
-///
-/// Returns `None` when the rung is not judgeable at all: either direction lacks
-/// `EligibleConsensus`, an included observation is missing, or an included
-/// observation's mean is zero or wrong-signed and therefore not representable as
-/// a candidate response. Deliberately mirrors
-/// `band_confirmation::rung_confirmable_margin_percent`'s aggregation shape at a
-/// different (own, uninflated) confidence level -- see
-/// [`discovery_observation_statistic`].
-fn discovery_rung_bounds_percent(
-    rung: &DiscoveryRungNominationInput,
-    multiplier: f32,
-) -> Option<(f32, f32)> {
-    if rung.forward_consensus.classification != DirectionalConsensusClass::EligibleConsensus
-        || rung.reverse_consensus.classification != DirectionalConsensusClass::EligibleConsensus
-    {
-        return None;
-    }
-
-    let mut lower: Option<f32> = None;
-    let mut upper: Option<f32> = None;
-    for index in 0..CONSENSUS_OBSERVATIONS_PER_DIRECTION {
-        if rung.forward_consensus.included_mask & (1 << index) != 0 {
-            let atom = rung.forward_observations[index]?;
-            let (low, high) = discovery_observation_interval_percent(atom, multiplier)?;
-            lower = Some(lower.map_or(low, |current| current.min(low)));
-            upper = Some(upper.map_or(high, |current| current.max(high)));
-        }
-        if rung.reverse_consensus.included_mask & (1 << index) != 0 {
-            let atom = rung.reverse_observations[index]?;
-            let (low, high) = discovery_observation_interval_percent(atom, multiplier)?;
-            lower = Some(lower.map_or(low, |current| current.min(low)));
-            upper = Some(upper.map_or(high, |current| current.max(high)));
-        }
-    }
-
-    Some((lower?, upper?))
-}
+/// This is a deliberate, documented divergence from confirmation, not
+/// undocumented drift between two copies of the same math: both callers share
+/// one implementation
+/// ([`rung_response_bounds_percent`](super::band_confirmation::rung_response_bounds_percent)),
+/// parameterized exactly by these two values. Discovery is the *permissive
+/// collector* -- it only decides which rungs to hand to 6d/6e's nomination
+/// screen, and it never authorizes Stage C itself, so silently excluding a
+/// borderline-viable rung here (which discovery's own `Ambiguous` verdict would
+/// do) is worse than collecting one that nomination's own conservative screen
+/// rejects later. Confirmation is the *conservative gate* that actually
+/// authorizes Stage C, so it inflates for a future held-out family-eight test
+/// and defends the exact band boundary against floating-point rounding noise.
+/// Neither behavior may drift out of sync with the other by accident: both are
+/// two call sites into the same parameterized function.
+const DISCOVERY_CONTAINMENT_C_SIGMA: f32 = 1.0;
 
 /// One rung's classification against the 70-80% target band, judged entirely on
 /// its own containment -- no interval-separation or response-model requirement
@@ -1450,7 +1381,7 @@ enum RungBandVerdict {
 }
 
 fn classify_rung_band(rung: &DiscoveryRungNominationInput, own_multiplier: f32) -> RungBandVerdict {
-    match discovery_rung_bounds_percent(rung, own_multiplier) {
+    match rung_response_bounds_percent(rung, own_multiplier, DISCOVERY_CONTAINMENT_C_SIGMA, false) {
         Some((lower, upper))
             if lower >= f32::from(CONFIRMATION_BAND_LOWER_PERCENT)
                 && upper <= f32::from(CONFIRMATION_BAND_UPPER_PERCENT) =>
