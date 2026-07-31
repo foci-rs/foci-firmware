@@ -134,7 +134,10 @@ pub struct VelocitySweepRequest {
     pub negative_position_headroom_mrev: u32,
     /// Positive unwrapped position headroom from the Stage-2 anchor.
     pub positive_position_headroom_mrev: u32,
-    /// Host-declared upper workflow budget.
+    /// Host-declared per-primitive safety cap.
+    ///
+    /// This bounds one moving-plus-settle primitive, not the aggregate campaign
+    /// duration. The aggregate lives in the command-level `CommissioningWorkflowPlan`.
     pub max_duration_ms: u16,
 }
 
@@ -774,7 +777,12 @@ fn current_gain_span_with_limit(
     Ok((p_start, p_top))
 }
 
-fn build_gain_ladder(
+/// Build the anchored post-dedupe half-octave gain ladder between two raw gains.
+///
+/// Reused by the breakaway probe planner (`breakaway_plan.rs`) to derive the
+/// diagnostic search grid; the additive discovery ladder deliberately does not
+/// use this generator (see `breakaway_plan.rs` for why re-anchoring is unsound).
+pub(crate) fn build_gain_ladder(
     p_start_raw: u16,
     p_top_raw: u16,
 ) -> Result<Vec<PidPGain, MAX_SWEEP_RUNGS>, VelocityPlanError> {

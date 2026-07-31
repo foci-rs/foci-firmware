@@ -9,6 +9,7 @@ pub mod acceptance_plan;
 mod acceptance_plan_tests;
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod acceptance_reporting;
+pub mod breakaway_plan;
 pub mod combined_plan;
 #[cfg(test)]
 mod combined_plan_tests;
