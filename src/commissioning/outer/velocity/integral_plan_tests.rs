@@ -901,11 +901,38 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     )
     .unwrap();
 
-    assert_eq!(bound, confirmation_plan.plan_digest);
-    assert_ne!(bound, discovery_plan.plan_digest);
-    assert_ne!(bound, probe_plan.plan_digest);
+    assert_eq!(bound.get(), confirmation_plan.plan_digest);
+    assert_ne!(bound.get(), discovery_plan.plan_digest);
+    assert_ne!(bound.get(), probe_plan.plan_digest);
     assert_ne!(discovery_plan.plan_digest, probe_plan.plan_digest);
+
+    // The token is the only way to fill a breakaway authority's
+    // `stage_b_plan_digest`: `StageCAuthority::new_breakaway` takes a
+    // `ConfirmedAcquisitionDigest`, not a bare `u64`, so this call could not
+    // have compiled with a hand-picked digest, only with the value the gate
+    // above actually validated.
+    let authority = StageCAuthority::new_breakaway(0, bound);
+    assert_eq!(authority.stage_b_plan_digest, confirmation_plan.plan_digest);
+    assert_eq!(authority.stage_b_joint_membership, 0);
+    assert_eq!(authority.joint_membership, 0);
 }
+
+// `ConfirmedAcquisitionDigest`'s field is private to `integral_plan.rs`.
+// This file, `integral_plan_tests.rs`, is a *sibling* module declared in
+// `mod.rs` (`pub mod integral_plan; #[cfg(test)] mod integral_plan_tests;`),
+// not a descendant of `integral_plan`, so it has no access to that private
+// field: neither `ConfirmedAcquisitionDigest(42)` nor
+// `StageCAuthority::new_breakaway(0, ConfirmedAcquisitionDigest(42))` would
+// compile in this file (the compiler's own suggestion when the digest chain
+// test above was still returning a bare `u64` was literally to wrap it in
+// `ConfirmedAcquisitionDigest(..)` here, followed by a note that doing so
+// requires changing the field's privacy -- i.e. it does not compile as
+// written). There is no `compile_fail` doctest for this: the type is
+// `pub(crate)`, invisible outside the crate entirely, so an external doctest
+// binary can't even name it. The guarantee is structural, checked by every
+// build of this crate: every call site in every module other than
+// `integral_plan.rs` must obtain a `ConfirmedAcquisitionDigest` from
+// `bind_breakaway_stage_c_authority`, with no other route to one.
 
 #[test]
 fn stage_c_authority_rejects_a_discovery_or_probe_digest() {

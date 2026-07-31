@@ -211,8 +211,11 @@ pub struct StageCAuthority {
     /// ([`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`]) there is
     /// no Stage-B sweep plan: this field instead names the digest of the
     /// accepted [`BandConfirmationPlan`], and only
-    /// [`bind_breakaway_stage_c_authority`] may produce it. The field keeps
-    /// its historical name, position, and type so every existing
+    /// [`bind_breakaway_stage_c_authority`] may produce it -- see
+    /// [`StageCAuthority::new_breakaway`], which requires a
+    /// [`ConfirmedAcquisitionDigest`] and is the only in-tree constructor
+    /// that fills this field for a breakaway-schema authority. The field
+    /// keeps its historical name, position, and type so every existing
     /// [`VelocityIntegralPlan::digest`] stays byte for byte identical.
     pub stage_b_plan_digest: u64,
     /// Cross-run forward and reverse model-or-fragment intersections.
@@ -240,6 +243,36 @@ impl StageCAuthority {
             StageBDirectionalValidity::ReproducedRegionCoversFinalP
                 | StageBDirectionalValidity::ReproducedRegionTransferred
         )
+    }
+
+    /// Construct breakaway-campaign Stage-C authority bound to a confirmed
+    /// acquisition digest.
+    ///
+    /// The breakaway campaign has no reproduced Stage-B directional evidence,
+    /// so every directional field is the same empty/zero value
+    /// [`plan_combined_velocity_integral_response`] already uses for its
+    /// nonretained, same-command authority. The only way to obtain a
+    /// [`ConfirmedAcquisitionDigest`] is a successful call to
+    /// [`bind_breakaway_stage_c_authority`], so this constructor makes "Stage
+    /// C authorized by anything other than an accepted confirmation"
+    /// unrepresentable for every breakaway authority built this way -- there
+    /// is no other public path that fills `stage_b_plan_digest` from an
+    /// unvalidated `u64`.
+    #[allow(dead_code)]
+    pub(crate) const fn new_breakaway(
+        channel: u8,
+        confirmed_digest: ConfirmedAcquisitionDigest,
+    ) -> Self {
+        Self {
+            channel,
+            stage_b_plan_digest: confirmed_digest.get(),
+            directional_memberships: [0; 2],
+            stage_b_joint_membership: 0,
+            joint_membership: 0,
+            directional_validity: [StageBDirectionalValidity::NoRegion; 2],
+            reduced_margin: false,
+            directional_pooled_intervals: [[0; 2]; 2],
+        }
     }
 }
 
@@ -681,6 +714,32 @@ pub enum BreakawayAuthorityBindingError {
     /// The candidate authority digest does not name this confirmation plan --
     /// for example, a discovery or probe digest offered in its place.
     AcquisitionDigestMismatch,
+}
+
+/// Digest of an accepted breakaway-campaign confirmation.
+///
+/// The inner field is private, and this module exposes no way to construct
+/// one from a raw `u64`: the only path to a value of this type is a
+/// successful call to [`bind_breakaway_stage_c_authority`], which requires an
+/// `Ok` [`BandConfirmationAcceptance`] whose candidate matches the bound
+/// [`BandConfirmationPlan`] and whose digest matches the candidate digest
+/// under review. A sibling module -- including this module's own test
+/// module, which lives in a separate file and is therefore not a descendant
+/// of this one -- cannot write `ConfirmedAcquisitionDigest(raw_digest)`; only
+/// code inside `integral_plan.rs` can. This makes "Stage C authorized by
+/// anything other than an accepted confirmation" a compile-time
+/// impossibility for every breakaway authority built through
+/// [`StageCAuthority::new_breakaway`], not merely an untested code path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct ConfirmedAcquisitionDigest(u64);
+
+impl ConfirmedAcquisitionDigest {
+    /// The validated digest, exactly as bound into
+    /// [`StageCAuthority::stage_b_plan_digest`] by
+    /// [`StageCAuthority::new_breakaway`].
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 /// Evaluate the advanced-PI time constant with outward ceiling.
@@ -1137,15 +1196,17 @@ pub(crate) fn plan_combined_velocity_integral_response(
     )
 }
 
-/// Validate and return the one digest that may authorize Stage C for a
-/// breakaway campaign: the digest of a [`BandConfirmationPlan`] whose
-/// held-out block accepted.
+/// Validate and return the one token that may authorize Stage C for a
+/// breakaway campaign: proof that `confirmation_plan`'s held-out block
+/// accepted, bound to its digest.
 ///
 /// The breakaway campaign has no Stage-B sweep plan, so a breakaway-schema
-/// [`StageCAuthority::stage_b_plan_digest`] instead carries this
-/// acquisition-plan digest. This function is the single gate that produces
-/// it, and it is fail-closed in both directions the safety invariant
-/// forbids:
+/// [`StageCAuthority::stage_b_plan_digest`] instead carries the accepted
+/// [`BandConfirmationPlan`]'s digest, obtained only through this function and
+/// only via [`StageCAuthority::new_breakaway`]. The returned
+/// [`ConfirmedAcquisitionDigest`] cannot be constructed any other way: this
+/// is the single gate, and it is fail-closed in both directions the safety
+/// invariant forbids:
 ///
 /// - `candidate_acquisition_digest` must be exactly `confirmation_plan.
 ///   plan_digest`. A discovery or probe digest offered in its place --
@@ -1167,7 +1228,7 @@ pub(crate) fn bind_breakaway_stage_c_authority(
     candidate_acquisition_digest: u64,
     confirmation_plan: BandConfirmationPlan,
     confirmation_outcome: Result<BandConfirmationAcceptance, TargetBandConfirmationInconclusive>,
-) -> Result<u64, BreakawayAuthorityBindingError> {
+) -> Result<ConfirmedAcquisitionDigest, BreakawayAuthorityBindingError> {
     let acceptance = confirmation_outcome
         .map_err(|_| BreakawayAuthorityBindingError::ConfirmationNotAccepted)?;
     if acceptance.candidate_p != confirmation_plan.candidate_p {
@@ -1176,7 +1237,7 @@ pub(crate) fn bind_breakaway_stage_c_authority(
     if candidate_acquisition_digest != confirmation_plan.plan_digest {
         return Err(BreakawayAuthorityBindingError::AcquisitionDigestMismatch);
     }
-    Ok(confirmation_plan.plan_digest)
+    Ok(ConfirmedAcquisitionDigest(confirmation_plan.plan_digest))
 }
 
 #[derive(Debug, Clone, Copy)]
