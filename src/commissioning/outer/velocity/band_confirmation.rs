@@ -9,6 +9,11 @@
 //!   from discovery data, that predicts which rung is most likely to survive a
 //!   fresh family-eight confirmation and how much margin it has. It never
 //!   authorizes Stage C by itself.
+//! - [`nominate_confirmation_candidate_from_bounds`]: the same screen, run from
+//!   the compact [`DiscoveryRungNominationBounds`] discovery retains per rung
+//!   after collection ([`rung_nomination_bounds`]) instead of the raw
+//!   observation atoms. Shares its margin math and selection with the
+//!   raw-atom screen so the two cannot silently diverge.
 //! - [`evaluate_band_confirmation`]: the held-out block. Four fresh
 //!   observations per direction, eight strokes, predeclared before motion.
 //!   Only this function's `Ok` result may authorize Stage C.
@@ -257,6 +262,68 @@ pub struct DiscoveryRungNominationInput {
         [Option<DiscoveryObservationAtom>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
 }
 
+/// One in-band rung's nomination interval and eligibility, computed once at
+/// discovery collection time and retained in place of its raw observation
+/// atoms.
+///
+/// Nomination consumes only the candidate `p`, the enveloped nomination
+/// interval `(lower_percent, upper_percent)`, and whether the rung is
+/// nominatable at all -- nothing else about the raw atoms is needed once
+/// [`rung_nomination_bounds`] has folded them. `lower_percent`/`upper_percent`
+/// are computed with the NOMINATION parameters (the family-eight multiplier,
+/// [`NOMINATION_SCREEN_C_SIGMA`], outward rounding), the same parameters
+/// [`nominate_confirmation_candidate`]'s own [`rung_confirmable_margin_percent`]
+/// uses -- see [`rung_nomination_bounds`] for the equivalence this depends on.
+/// When `nominatable` is `false`, `lower_percent`/`upper_percent` carry no
+/// meaning and must not be read.
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+pub struct DiscoveryRungNominationBounds {
+    /// Proportional gain used at this rung.
+    pub p: PidPGain,
+    /// Enveloped nomination-interval lower bound `L_i`, in percent.
+    pub lower_percent: f32,
+    /// Enveloped nomination-interval upper bound `U_i`, in percent.
+    pub upper_percent: f32,
+    /// Whether this rung is nominatable at all: both directions reported
+    /// [`DirectionalConsensusClass::EligibleConsensus`] and every included
+    /// observation was present with a representable (nonzero, correctly
+    /// signed) mean.
+    pub nominatable: bool,
+}
+
+/// Fold one rung's raw discovery evidence into its compact nomination bounds,
+/// using the NOMINATION parameters: the family-eight multiplier,
+/// [`NOMINATION_SCREEN_C_SIGMA`], and outward rounding -- the same three
+/// parameters [`rung_confirmable_margin_percent`] uses internally. Intended to
+/// run once per rung at discovery collection time, so the raw atoms can be
+/// dropped afterward: see `breakaway_campaign.rs`'s `CollectedInBandRungs`.
+///
+/// When the rung is not nominatable (either direction lacks
+/// `EligibleConsensus`, an included observation is missing, or an included
+/// observation's mean is zero or wrong-signed), `nominatable` is `false` and
+/// `lower_percent`/`upper_percent` are both `0.0` placeholders that must not
+/// be read.
+pub fn rung_nomination_bounds(
+    rung: &DiscoveryRungNominationInput,
+) -> DiscoveryRungNominationBounds {
+    let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE)
+        .expect("confirmation family size 8 is within the audited multiplier table");
+    match rung_response_bounds_percent(rung, multiplier, NOMINATION_SCREEN_C_SIGMA, true) {
+        Some((lower_percent, upper_percent)) => DiscoveryRungNominationBounds {
+            p: rung.p,
+            lower_percent,
+            upper_percent,
+            nominatable: true,
+        },
+        None => DiscoveryRungNominationBounds {
+            p: rung.p,
+            lower_percent: 0.0,
+            upper_percent: 0.0,
+            nominatable: false,
+        },
+    }
+}
+
 /// The largest discovery rung nominated to spend the eight held-out strokes on.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub struct NominatedConfirmationCandidate {
@@ -347,9 +414,55 @@ fn rung_confirmable_margin_percent(
 ) -> Option<f32> {
     let (lower, upper) =
         rung_response_bounds_percent(rung, multiplier, NOMINATION_SCREEN_C_SIGMA, true)?;
-    let lower_margin = lower - f32::from(CONFIRMATION_BAND_LOWER_PERCENT);
-    let upper_margin = f32::from(CONFIRMATION_BAND_UPPER_PERCENT) - upper;
-    Some(lower_margin.min(upper_margin))
+    Some(margin_percent_from_bounds(lower, upper))
+}
+
+/// `M_i = min(L_i - 70, 80 - U_i)` for one rung's enveloped nomination
+/// interval, in percent.
+///
+/// Shared by [`rung_confirmable_margin_percent`] (raw-atom path) and
+/// [`nominate_confirmation_candidate_from_bounds`] (the reduced
+/// [`DiscoveryRungNominationBounds`] path) so the margin formula cannot drift
+/// between the two: both compute `(lower, upper)` from the same NOMINATION
+/// parameters -- see [`rung_nomination_bounds`] -- then fold them through this
+/// one function.
+fn margin_percent_from_bounds(lower_percent: f32, upper_percent: f32) -> f32 {
+    let lower_margin = lower_percent - f32::from(CONFIRMATION_BAND_LOWER_PERCENT);
+    let upper_margin = f32::from(CONFIRMATION_BAND_UPPER_PERCENT) - upper_percent;
+    lower_margin.min(upper_margin)
+}
+
+/// Select the max-margin candidate from `(p, margin_percent)` pairs, breaking
+/// exact ties toward the higher gain and excluding negative margins.
+///
+/// Shared by [`nominate_confirmation_candidate`] (raw-atom evidence) and
+/// [`nominate_confirmation_candidate_from_bounds`] (the reduced
+/// [`DiscoveryRungNominationBounds`] representation) so the two nomination
+/// paths cannot silently diverge: both feed this one selection loop, differing
+/// only in how their `(p, margin_percent)` pairs are produced.
+fn select_nominated_candidate<I>(
+    candidates: I,
+) -> Result<NominatedConfirmationCandidate, TargetBandUnconfirmableFromDiscovery>
+where
+    I: Iterator<Item = (PidPGain, f32)>,
+{
+    let mut best: Option<NominatedConfirmationCandidate> = None;
+    for (p, margin_percent) in candidates {
+        if margin_percent < 0.0 {
+            continue;
+        }
+        let replace = match best {
+            None => true,
+            Some(current) => {
+                margin_percent > current.margin_percent
+                    || (margin_percent == current.margin_percent && p.raw() > current.p.raw())
+            }
+        };
+        if replace {
+            best = Some(NominatedConfirmationCandidate { p, margin_percent });
+        }
+    }
+    best.ok_or(TargetBandUnconfirmableFromDiscovery)
 }
 
 /// Screen every discovery rung and nominate the confirmable candidate with the
@@ -364,30 +477,38 @@ pub fn nominate_confirmation_candidate(
 ) -> Result<NominatedConfirmationCandidate, TargetBandUnconfirmableFromDiscovery> {
     let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE)
         .expect("confirmation family size 8 is within the audited multiplier table");
+    select_nominated_candidate(rungs.iter().filter_map(|rung| {
+        rung_confirmable_margin_percent(rung, multiplier)
+            .map(|margin_percent| (rung.p, margin_percent))
+    }))
+}
 
-    let mut best: Option<NominatedConfirmationCandidate> = None;
-    for rung in rungs {
-        let Some(margin_percent) = rung_confirmable_margin_percent(rung, multiplier) else {
-            continue;
-        };
-        if margin_percent < 0.0 {
-            continue;
-        }
-        let replace = match best {
-            None => true,
-            Some(current) => {
-                margin_percent > current.margin_percent
-                    || (margin_percent == current.margin_percent && rung.p.raw() > current.p.raw())
-            }
-        };
-        if replace {
-            best = Some(NominatedConfirmationCandidate {
-                p: rung.p,
-                margin_percent,
-            });
-        }
-    }
-    best.ok_or(TargetBandUnconfirmableFromDiscovery)
+/// Screen every collected [`DiscoveryRungNominationBounds`] and nominate the
+/// confirmable candidate with the largest pointwise margin `M_i`, breaking
+/// exact ties toward the higher gain.
+///
+/// Runs the SAME selection as [`nominate_confirmation_candidate`] --
+/// [`select_nominated_candidate`] -- but from the compact bounds discovery
+/// retains after collection instead of recomputing from raw observation
+/// atoms. A non-nominatable rung (`nominatable == false`) is excluded, exactly
+/// as a rung that fails [`rung_response_bounds_percent`] is excluded from the
+/// raw-atom path. When no rung qualifies, this returns
+/// [`TargetBandUnconfirmableFromDiscovery`] and no confirmation strokes may be
+/// spent.
+pub fn nominate_confirmation_candidate_from_bounds(
+    bounds: &[DiscoveryRungNominationBounds],
+) -> Result<NominatedConfirmationCandidate, TargetBandUnconfirmableFromDiscovery> {
+    select_nominated_candidate(
+        bounds
+            .iter()
+            .filter(|entry| entry.nominatable)
+            .map(|entry| {
+                (
+                    entry.p,
+                    margin_percent_from_bounds(entry.lower_percent, entry.upper_percent),
+                )
+            }),
+    )
 }
 
 /// Frozen fresh evidence for one direction of the held-out confirmation block.

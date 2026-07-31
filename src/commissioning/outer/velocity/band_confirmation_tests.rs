@@ -14,11 +14,12 @@ use super::{
     BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlanError,
     CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED, CONFIRMATION_CAPTURE_PROFILE_EXISTING,
     CONFIRMATION_FAMILY_SIZE, CONFIRMATION_OBSERVATIONS_PER_DIRECTION,
-    ConfirmationDirectionalInput, DiscoveryObservationAtom, DiscoveryRungNominationInput,
-    NOMINATION_SCREEN_C_SIGMA, TargetBandConfirmationInconclusive,
+    ConfirmationDirectionalInput, DiscoveryObservationAtom, DiscoveryRungNominationBounds,
+    DiscoveryRungNominationInput, NOMINATION_SCREEN_C_SIGMA, TargetBandConfirmationInconclusive,
     TargetBandUnconfirmableFromDiscovery, commanded_side_mean_rate_q, evaluate_band_confirmation,
-    nominate_confirmation_candidate, observation_statistic, plan_band_confirmation,
-    rung_confirmable_margin_percent,
+    nominate_confirmation_candidate, nominate_confirmation_candidate_from_bounds,
+    observation_statistic, plan_band_confirmation, rung_confirmable_margin_percent,
+    rung_nomination_bounds,
 };
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
 use foci_tmc4671::pid::PidPGain;
@@ -694,4 +695,155 @@ fn confirmation_plan_rejects_zero_candidate_gain() {
         plan_band_confirmation(1, PidPGain::ZERO),
         Err(BandConfirmationPlanError::InvalidRequest)
     );
+}
+
+// --- 6e-1: reduced bounds representation ------------------------------------
+//
+// The compact `DiscoveryRungNominationBounds` record replaces the raw-atom
+// `DiscoveryRungNominationInput` after discovery collection. Every test below
+// proves the reduction is lossless for nomination: the same rungs, screened
+// through `nominate_confirmation_candidate_from_bounds` from
+// `rung_nomination_bounds`'s output, must select the same candidate and
+// report the same margin as the raw-atom `nominate_confirmation_candidate`.
+
+fn bounds_for(
+    rungs: &[DiscoveryRungNominationInput],
+) -> heapless::Vec<DiscoveryRungNominationBounds, 8> {
+    rungs.iter().map(rung_nomination_bounds).collect()
+}
+
+#[test]
+fn reduced_bounds_nominate_the_same_candidate_and_margin_as_raw_atoms() {
+    let rungs = [
+        uniform_rung(512, RUNG17_MEAN, RUNG17_VARIANCE, TARGET),
+        uniform_rung(724, RUNG18_MEAN, RUNG18_VARIANCE, TARGET),
+    ];
+
+    let raw_atom_result = nominate_confirmation_candidate(&rungs);
+    let bounds = bounds_for(&rungs);
+    let reduced_result = nominate_confirmation_candidate_from_bounds(&bounds);
+
+    assert_eq!(
+        raw_atom_result, reduced_result,
+        "the reduced-bounds path must select the same candidate and margin as the raw-atom path"
+    );
+    let nominated = raw_atom_result.expect("rung-18-class noise nominates");
+    assert_eq!(nominated.p, gain(724));
+}
+
+#[test]
+fn reduced_bounds_agree_with_raw_atoms_on_the_unequal_noise_preference() {
+    let noisy_mean = 750_000;
+    let noisy_variance = variance_for_relative_se(noisy_mean, 0.012);
+    let noisy_rung = uniform_rung(700, noisy_mean, noisy_variance, TARGET);
+
+    let quiet_mean = 730_000;
+    let quiet_variance = variance_for_relative_se(quiet_mean, 0.004);
+    let quiet_rung = uniform_rung(690, quiet_mean, quiet_variance, TARGET);
+
+    let rungs = [noisy_rung, quiet_rung];
+    let raw_atom_result = nominate_confirmation_candidate(&rungs);
+    let bounds = bounds_for(&rungs);
+    let reduced_result = nominate_confirmation_candidate_from_bounds(&bounds);
+
+    assert_eq!(raw_atom_result, reduced_result);
+    assert_eq!(raw_atom_result.unwrap().p, gain(690));
+}
+
+#[test]
+fn reduced_bounds_break_exact_margin_ties_toward_higher_p_like_raw_atoms() {
+    let low_p_rung = uniform_rung(300, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
+    let high_p_rung = uniform_rung(500, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
+    let rungs = [low_p_rung, high_p_rung];
+
+    let raw_atom_result = nominate_confirmation_candidate(&rungs);
+    let bounds = bounds_for(&rungs);
+    let reduced_result = nominate_confirmation_candidate_from_bounds(&bounds);
+
+    assert_eq!(raw_atom_result, reduced_result);
+    assert_eq!(raw_atom_result.unwrap().p, gain(500));
+
+    let reordered = [high_p_rung, low_p_rung];
+    let raw_atom_reordered = nominate_confirmation_candidate(&reordered);
+    let bounds_reordered = bounds_for(&reordered);
+    let reduced_reordered = nominate_confirmation_candidate_from_bounds(&bounds_reordered);
+    assert_eq!(raw_atom_reordered, reduced_reordered);
+    assert_eq!(raw_atom_reordered.unwrap().p, gain(500));
+}
+
+#[test]
+fn reduced_bounds_agree_with_raw_atoms_at_the_borderline_rejected_rung() {
+    // Rung-17-class noise: nominatable in principle (both directions
+    // eligible, representable means) but excluded once `NOMINATION_SCREEN_C_SIGMA`
+    // inflates its half-width past zero margin -- the exact borderline case the
+    // brief calls out as the one to check for lossy divergence.
+    let rung = uniform_rung(512, RUNG17_MEAN, RUNG17_VARIANCE, TARGET);
+    let bounds = rung_nomination_bounds(&rung);
+    assert!(
+        bounds.nominatable,
+        "rung-17-class noise has valid consensus/atoms, just negative margin"
+    );
+
+    let raw_atom_result = nominate_confirmation_candidate(&[rung]);
+    let reduced_result = nominate_confirmation_candidate_from_bounds(&[bounds]);
+    assert_eq!(raw_atom_result, reduced_result);
+    assert_eq!(raw_atom_result, Err(TargetBandUnconfirmableFromDiscovery));
+}
+
+#[test]
+fn empty_bounds_list_yields_zero_stroke_outcome() {
+    assert_eq!(
+        nominate_confirmation_candidate_from_bounds(&[]),
+        Err(TargetBandUnconfirmableFromDiscovery)
+    );
+}
+
+#[test]
+fn non_eligible_consensus_rung_is_not_nominatable_in_reduced_bounds() {
+    let mut ambiguous_forward = uniform_rung(400, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
+    ambiguous_forward.forward_consensus.classification =
+        DirectionalConsensusClass::AmbiguousConsensus;
+
+    let bounds = rung_nomination_bounds(&ambiguous_forward);
+    assert!(
+        !bounds.nominatable,
+        "a rung whose forward consensus is not EligibleConsensus must not be nominatable"
+    );
+    assert_eq!(
+        nominate_confirmation_candidate_from_bounds(&[bounds]),
+        Err(TargetBandUnconfirmableFromDiscovery)
+    );
+}
+
+#[test]
+fn zero_or_wrong_sign_mean_rung_is_not_nominatable_in_reduced_bounds() {
+    let mut zero_mean_rung = uniform_rung(400, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
+    zero_mean_rung.forward_observations[0] =
+        Some(atom(VelocityDirection::Forward, 0, RUNG18_VARIANCE, TARGET));
+
+    let bounds = rung_nomination_bounds(&zero_mean_rung);
+    assert!(
+        !bounds.nominatable,
+        "a zero mean is not a representable response, so the rung is not nominatable"
+    );
+    assert_eq!(
+        nominate_confirmation_candidate_from_bounds(&[bounds]),
+        Err(TargetBandUnconfirmableFromDiscovery)
+    );
+}
+
+#[test]
+fn non_nominatable_rung_is_excluded_even_alongside_a_nominatable_one() {
+    let mut ambiguous_forward = uniform_rung(400, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
+    ambiguous_forward.forward_consensus.classification =
+        DirectionalConsensusClass::AmbiguousConsensus;
+    let nominatable_rung = uniform_rung(724, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
+
+    let bounds = [
+        rung_nomination_bounds(&ambiguous_forward),
+        rung_nomination_bounds(&nominatable_rung),
+    ];
+    let nominated = nominate_confirmation_candidate_from_bounds(&bounds)
+        .expect("the non-nominatable rung must not block the nominatable one");
+    assert_eq!(nominated.p, gain(724));
 }

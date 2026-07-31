@@ -84,9 +84,10 @@ use super::band_confirmation::{
     BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlan,
     CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT, CONFIRMATION_FAMILY_SIZE,
     CONFIRMATION_SLOT_ORDER, ConfirmationDirectionalInput, DiscoveryObservationAtom,
-    DiscoveryRungNominationInput, TargetBandConfirmationInconclusive,
-    TargetBandUnconfirmableFromDiscovery, evaluate_band_confirmation,
-    nominate_confirmation_candidate, plan_band_confirmation, rung_response_bounds_percent,
+    DiscoveryRungNominationBounds, DiscoveryRungNominationInput,
+    TargetBandConfirmationInconclusive, TargetBandUnconfirmableFromDiscovery,
+    evaluate_band_confirmation, nominate_confirmation_candidate_from_bounds,
+    plan_band_confirmation, rung_nomination_bounds, rung_response_bounds_percent,
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan,
@@ -115,8 +116,8 @@ use super::sweep_analysis::{
     bounded_rest_displacement, direction_sign, poll_scored_rest_confirmation, poll_stationarity,
 };
 use super::sweep_consensus::{
-    CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
-    FULL_OBSERVATION_MASK, depth_three_consensus,
+    CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, FULL_OBSERVATION_MASK,
+    depth_three_consensus,
 };
 use super::sweep_evidence::{VelocityObservationClass, classify_velocity_observation};
 use super::sweep_plan::{
@@ -966,42 +967,39 @@ async fn sample_one_tick<B: CommissioningBackend>(
 /// so it is not subject to `size_regression_gates` until that wiring lands.
 const MAX_IN_BAND_DISCOVERY_RUNGS: usize = MAX_SWEEP_RUNGS;
 
-const EMPTY_DIRECTIONAL_CONSENSUS: DirectionalConsensus = DirectionalConsensus {
-    classification: DirectionalConsensusClass::IncompleteRung,
-    components: [[0; 2]; 2],
-    component_count: 0,
-    collected_mask: 0,
-    eligible_mask: 0,
-    included_mask: 0,
-};
-
-const EMPTY_DISCOVERY_RUNG: DiscoveryRungNominationInput = DiscoveryRungNominationInput {
+const EMPTY_DISCOVERY_RUNG_BOUNDS: DiscoveryRungNominationBounds = DiscoveryRungNominationBounds {
     p: PidPGain::ZERO,
-    forward_consensus: EMPTY_DIRECTIONAL_CONSENSUS,
-    forward_observations: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    reverse_consensus: EMPTY_DIRECTIONAL_CONSENSUS,
-    reverse_observations: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    lower_percent: 0.0,
+    upper_percent: 0.0,
+    nominatable: false,
 };
 
 /// Every discovery rung whose own response was contained in 70-80%, collected in
-/// ascending rung order for 6d/6e's later
-/// `nominate_confirmation_candidate`(super::band_confirmation::nominate_confirmation_candidate) call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+/// ascending rung order for [`nominate_confirmation_candidate_from_bounds`].
+///
+/// Stores each rung's compact [`DiscoveryRungNominationBounds`] -- the
+/// candidate `p`, its enveloped nomination interval, and whether it is
+/// nominatable at all -- rather than the raw observation atoms nomination no
+/// longer needs once [`rung_nomination_bounds`] has folded them at collection
+/// time. At [`MAX_IN_BAND_DISCOVERY_RUNGS`] worst case this is roughly
+/// [`MAX_SWEEP_RUNGS`] times `size_of::<DiscoveryRungNominationBounds>()`, a
+/// few hundred bytes rather than the raw-atom representation's ~14 KB.
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub(crate) struct CollectedInBandRungs {
-    rungs: [DiscoveryRungNominationInput; MAX_IN_BAND_DISCOVERY_RUNGS],
+    rungs: [DiscoveryRungNominationBounds; MAX_IN_BAND_DISCOVERY_RUNGS],
     count: u8,
 }
 
 impl CollectedInBandRungs {
     const fn new() -> Self {
         Self {
-            rungs: [EMPTY_DISCOVERY_RUNG; MAX_IN_BAND_DISCOVERY_RUNGS],
+            rungs: [EMPTY_DISCOVERY_RUNG_BOUNDS; MAX_IN_BAND_DISCOVERY_RUNGS],
             count: 0,
         }
     }
 
-    /// Every collected in-band rung, in ascending rung order.
-    pub(crate) fn as_slice(&self) -> &[DiscoveryRungNominationInput] {
+    /// Every collected in-band rung's nomination bounds, in ascending rung order.
+    pub(crate) fn as_slice(&self) -> &[DiscoveryRungNominationBounds] {
         &self.rungs[..usize::from(self.count)]
     }
 
@@ -1010,12 +1008,12 @@ impl CollectedInBandRungs {
         self.count
     }
 
-    fn push(&mut self, rung: DiscoveryRungNominationInput) -> Result<(), CommissionError> {
+    fn push(&mut self, bounds: DiscoveryRungNominationBounds) -> Result<(), CommissionError> {
         let slot = self
             .rungs
             .get_mut(usize::from(self.count))
             .ok_or(CommissionError::InvalidSchedule)?;
-        *slot = rung;
+        *slot = bounds;
         self.count += 1;
         Ok(())
     }
@@ -1256,22 +1254,22 @@ pub(crate) enum AdditiveDiscoveryStep {
 /// centralized safe-state restoration on any terminal happens at the surrounding
 /// engine boundary, not per-phase.
 ///
-/// `TargetBandSelected` is far larger than every other variant: it embeds
-/// [`CollectedInBandRungs`], sized at [`MAX_SWEEP_RUNGS`] because, in the worst
-/// case, every rung on the ladder could independently satisfy its own
-/// containment and no candidate evidence may be silently dropped. This driver is
-/// not yet wired into [`super::super::OuterPhase`]/`CommissioningEngine` (see the
-/// module-level docs), so today's size has no retained-state cost; a later
-/// wiring slice may revisit the representation once it is. `large_enum_variant`
-/// is accepted here the same way it already is at the `commission_dispatch::mod`
-/// and `commissioning::schedule` terminal types, rather than boxed -- this crate
-/// has no heap.
+/// `TargetBandSelected` carries [`CollectedInBandRungs`], sized at
+/// [`MAX_SWEEP_RUNGS`] because, in the worst case, every rung on the ladder
+/// could independently satisfy its own containment and no candidate evidence
+/// may be silently dropped. Since 6e-1, each collected rung is its compact
+/// [`DiscoveryRungNominationBounds`] rather than its raw observation atoms, so
+/// this variant is now a few hundred bytes rather than ~14 KB.
+/// `large_enum_variant` is accepted here the same way it already is at the
+/// `commission_dispatch::mod` and `commissioning::schedule` terminal types,
+/// rather than boxed -- this crate has no heap.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AdditiveDiscoveryOutcome {
     /// At least one rung's own response was contained in 70-80%. Carries every
     /// in-band rung collected before the ladder stopped, in ascending order,
-    /// ready for [`nominate_confirmation_candidate`](super::band_confirmation::nominate_confirmation_candidate).
+    /// ready for
+    /// [`nominate_confirmation_candidate_from_bounds`](super::band_confirmation::nominate_confirmation_candidate_from_bounds).
     /// Reached either by completing the ladder (ceiling, both-directions-above-80,
     /// or budget exhaustion) with at least one in-band rung already found, or by
     /// current authority binding after an in-band rung was already found -- current
@@ -1934,10 +1932,18 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         reverse_observations: session.reverse.atoms,
                     };
                     let verdict = classify_rung_band(&rung_input, session.own_multiplier);
-                    if verdict == RungBandVerdict::InBand
-                        && session.in_band.push(rung_input).is_err()
-                    {
-                        return discovery_fault(CommissionError::InvalidSchedule);
+                    if verdict == RungBandVerdict::InBand {
+                        // Compute the NOMINATION interval and eligibility now, while
+                        // the raw atoms are still fresh, and retain only the compact
+                        // result: nomination never needs the atoms again after this
+                        // point. This is a SEPARATE computation from `classify_rung_band`
+                        // above -- discovery's own stop-rule containment check, unchanged
+                        // (`DISCOVERY_CONTAINMENT_C_SIGMA`, no rounding) -- not a
+                        // replacement for it.
+                        let bounds = rung_nomination_bounds(&rung_input);
+                        if session.in_band.push(bounds).is_err() {
+                            return discovery_fault(CommissionError::InvalidSchedule);
+                        }
                     }
                     if verdict == RungBandVerdict::ConfidentlyAboveBand {
                         return AdditiveDiscoveryStep::Done(if session.in_band.count() > 0 {
@@ -2056,7 +2062,7 @@ pub(crate) enum BandConfirmationEntry {
 /// Confirmation may only begin from the two discovery outcomes that leave a
 /// meaningful confirmation question open:
 /// [`AdditiveDiscoveryOutcome::TargetBandSelected`] (screen the collected
-/// rungs through [`nominate_confirmation_candidate`]) and
+/// rungs through [`nominate_confirmation_candidate_from_bounds`]) and
 /// [`AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand`] (consumed directly
 /// as [`BandConfirmationOutcome::TargetBandNotReachedAtAuthority`], spec
 /// section 9 -- 6c has already fully classified this condition, so it is not
@@ -2094,7 +2100,7 @@ pub(crate) fn begin_band_confirmation(
             });
         }
     };
-    let candidate = match nominate_confirmation_candidate(rungs.as_slice()) {
+    let candidate = match nominate_confirmation_candidate_from_bounds(rungs.as_slice()) {
         Ok(candidate) => candidate,
         Err(TargetBandUnconfirmableFromDiscovery) => {
             return BandConfirmationEntry::Done(

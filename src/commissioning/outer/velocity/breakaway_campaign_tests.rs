@@ -1,3 +1,4 @@
+use super::super::sweep_consensus::DirectionalConsensusClass;
 use super::*;
 use crate::autotune::TmcMechanicalRpm;
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
@@ -834,7 +835,9 @@ fn confirmable_discovery_rungs(p_raw: u16) -> CollectedInBandRungs {
         reverse_observations: [Some(reverse_atom); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
     };
     let mut collected = CollectedInBandRungs::new();
-    collected.push(rung).expect("one rung fits");
+    collected
+        .push(rung_nomination_bounds(&rung))
+        .expect("one rung fits");
     collected
 }
 
@@ -1303,4 +1306,36 @@ fn an_unconfirmed_settle_reports_confirmation_evidence_excluded() {
             }
         }
     }
+}
+
+// ================================================================================
+// 6e-1: discovery RAM reduction
+// ================================================================================
+
+/// `CollectedInBandRungs` must have shrunk from the raw-atom representation's
+/// 32 * 448 B = 14,352 B to a few hundred bytes: 32 rungs of the compact
+/// `DiscoveryRungNominationBounds` record (`p: PidPGain`, two `f32` bounds,
+/// and a `bool`), not the raw per-direction observation atoms and consensus.
+#[test]
+fn collected_in_band_rungs_shrinks_to_the_compact_bounds_representation() {
+    use core::mem::size_of;
+
+    let compact_record_size = size_of::<DiscoveryRungNominationBounds>();
+    let raw_atom_rung_size = size_of::<DiscoveryRungNominationInput>();
+    let collected_size = size_of::<CollectedInBandRungs>();
+
+    // Pinned exact sizes (not just bounds) so a future change that grows either
+    // representation is caught immediately rather than drifting under a loose
+    // inequality. `DiscoveryRungNominationBounds` is `p: PidPGain` (u16) + two
+    // `f32` bounds + a `bool`, rounded up to 4-byte alignment: 12 B, not the
+    // ~12-13 B estimate's upper edge. `CollectedInBandRungs` is 32 rungs of
+    // that record plus a `u8` count, rounded up to 4-byte alignment: 388 B,
+    // down from the raw-atom representation's 32 * 448 B = 14,352 B.
+    assert_eq!(compact_record_size, 12);
+    assert_eq!(raw_atom_rung_size, 448);
+    assert_eq!(collected_size, 388);
+    assert!(
+        collected_size < MAX_SWEEP_RUNGS * raw_atom_rung_size,
+        "the reduction must actually shrink retained discovery evidence"
+    );
 }
