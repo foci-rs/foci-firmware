@@ -1347,8 +1347,10 @@ fn collected_in_band_rungs_shrinks_to_the_compact_bounds_representation() {
 use super::{
     CampaignAdvance, confirmation_terminal, route_confirmed_accept, route_discovery_outcome,
 };
+use crate::commissioning::outer::state::OuterPhase;
 use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
 use crate::commissioning::outer::velocity::sweep_plan::current_gain_span;
+use crate::commissioning::types::StepResult;
 
 /// A well-formed campaign request at the shared small target.
 fn campaign_request() -> BreakawayCampaignRequest {
@@ -1639,4 +1641,115 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedul
     };
     assert_eq!(error, CommissionError::InvalidSchedule);
     assert!(safety.is_none());
+}
+
+// --- Accept hands off through the engine adapter into VelocityIntegral ---------
+
+#[test]
+fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
+    let candidate: u16 = 512;
+    let (_p_start, _p_top, usable) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
+
+    // Independently compute the exact Stage-C plan the token route must produce
+    // for this accepted candidate, using the same frozen inputs the hand-off
+    // will use, so the assertion checks the hand-off carried that exact plan.
+    let (expected_acceptance, expected_plan) = accepted_confirmation(candidate);
+    let BreakawayCampaignOutcome::StageCPlanReady(expected_stage_c) = route_confirmed_accept(
+        expected_acceptance,
+        expected_plan,
+        &stage_c_inputs(usable),
+        &test_safety(),
+        &test_backend(),
+    ) else {
+        panic!("the accepted, transition-capable candidate must produce a Stage-C plan");
+    };
+    let expected_execution_plan = expected_stage_c.execution_plan();
+
+    // Build a campaign sitting on a fresh confirmation block for the same
+    // candidate, wrapped in the engine's OuterPhase, and drive it THROUGH the
+    // engine adapter (not `route_confirmed_accept` directly) until the accept
+    // hands off.
+    let BandConfirmationEntry::Ready(session) = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(candidate)),
+        42,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+    ) else {
+        panic!("the crafted discovery rungs must nominate a confirmable candidate");
+    };
+    let mut phase = OuterPhase::BreakawayCampaign {
+        campaign: BreakawayCampaign {
+            inputs: stage_c_inputs(usable),
+            phase: BreakawayCampaignPhase::Confirmation {
+                state: BandConfirmationState::PlannedConfirmation,
+                session,
+            },
+        },
+        workspace: BreakawayProbeWorkspace::new(),
+        safety: test_safety(),
+    };
+
+    let mut backend = test_backend();
+    backend.current_limit_value = current_limit(2_448);
+    let mut encoder_count: i32 = 0;
+    let mut stroke_numerator = 0_i32;
+    let mut stroke_sign = 1_i32;
+    let mut handed_off = false;
+
+    for _ in 0..2_000_000 {
+        if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase {
+            if let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase() {
+                if matches!(state, BandConfirmationState::CommandTarget) {
+                    stroke_numerator = 5; // 75%: inside the confirmable band both ways.
+                    stroke_sign = direction_sign(session.current_direction());
+                }
+            }
+        }
+        let is_capture_phase = matches!(
+            &phase,
+            OuterPhase::BreakawayCampaign { campaign, .. }
+                if matches!(
+                    campaign.phase(),
+                    BreakawayCampaignPhase::Confirmation {
+                        state: BandConfirmationState::Capture { .. },
+                        ..
+                    }
+                )
+        );
+        let result =
+            pollster::block_on(step_breakaway_campaign_with_trace(&mut phase, &mut backend));
+        match result {
+            StepResult::ReadyNow => {
+                if matches!(phase, OuterPhase::VelocityIntegral { .. }) {
+                    handed_off = true;
+                    break;
+                }
+            }
+            StepResult::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase {
+                    encoder_count += stroke_sign * stroke_numerator;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            StepResult::OuterFailed(error) => {
+                panic!("the accept path must not fail the outer phase: {error:?}");
+            }
+            other => panic!("unexpected engine step result on the accept path: {other:?}"),
+        }
+    }
+
+    assert!(
+        handed_off,
+        "an accepted confirmation must hand off to the VelocityIntegral phase"
+    );
+    let OuterPhase::VelocityIntegral { data, .. } = &phase else {
+        panic!("the phase must have become VelocityIntegral after the accept");
+    };
+    // The hand-off mirrors begin_stage_c_continuation_with_plan end to end: the
+    // Stage-C data carries the campaign's run_sequence and the exact execution
+    // plan the token route produced, not merely a freshly constructed one.
+    assert_eq!(data.integrity.run_sequence(), 7);
+    assert_eq!(data.plan, expected_execution_plan);
 }
