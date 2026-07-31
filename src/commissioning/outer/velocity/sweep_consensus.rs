@@ -6,7 +6,8 @@ use crate::autotune::EquivalentTorqueTargetInterval;
 /// Number of same-direction observations consumed by the consensus rule.
 pub const CONSENSUS_OBSERVATIONS_PER_DIRECTION: usize = 4;
 
-const FULL_OBSERVATION_MASK: u8 = 0b1111;
+/// Four-bit mask with every observation slot set.
+pub const FULL_OBSERVATION_MASK: u8 = 0b1111;
 const MAX_CONSENSUS_COMPONENTS: usize = 2;
 const TRIPLES: [u8; 4] = [0b0111, 0b1011, 0b1101, 0b1110];
 
