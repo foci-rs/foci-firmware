@@ -5,8 +5,9 @@ use heapless::Vec;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
 use super::band_confirmation::{
-    BandConfirmationAcceptance, BandConfirmationPlan, CONFIRMATION_FAMILY_SIZE,
-    TargetBandConfirmationInconclusive,
+    BandConfirmationAcceptance, BandConfirmationPlan,
+    CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED, CONFIRMATION_CAPTURE_PROFILE_EXISTING,
+    CONFIRMATION_FAMILY_SIZE, TargetBandConfirmationInconclusive,
 };
 use super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION;
 use super::current_guard::VelocityLimitEvidenceCapability;
@@ -693,6 +694,16 @@ pub enum VelocityIntegralPlanError {
     Arithmetic,
     /// The reproduced Stage-B component contains no transition-capable Stage-C rung.
     NoTransitionCapableOperatingPoint(StageCFailedAdmission),
+    /// A breakaway confirmation plan's recomputed digest, or its fixed family
+    /// size, capture profile, or acceptance rule, did not match what
+    /// [`plan_breakaway_velocity_integral_response`] requires before it may
+    /// authorize Stage C.
+    InvalidConfirmationPlan,
+    /// The breakaway campaign's confirmed proportional gain -- the exact
+    /// candidate a held-out confirmation accepted, with no reselection --
+    /// failed [`transition_capable_stage_c_gain`]. Carries the digest of the
+    /// rejected [`BandConfirmationPlan`].
+    ConfirmedGainNotTransitionCapable(u64),
 }
 
 /// Rejected attempt to bind Stage-C authority to a breakaway confirmation.
@@ -1138,7 +1149,7 @@ pub(crate) fn plan_velocity_integral_response(
             append_exact_cap: false,
             probe_constrained_test_point: selection.probe_constrained_test_point,
         },
-        stage_b_plan,
+        stage_b_plan.into(),
         motion_budget,
         pwm_hz,
         encoder_counts_per_rev,
@@ -1189,7 +1200,7 @@ pub(crate) fn plan_combined_velocity_integral_response(
             append_exact_cap: true,
             probe_constrained_test_point: false,
         },
-        stage_b_plan,
+        stage_b_plan.into(),
         motion_budget,
         pwm_hz,
         encoder_counts_per_rev,
@@ -1240,6 +1251,125 @@ pub(crate) fn bind_breakaway_stage_c_authority(
     Ok(ConfirmedAcquisitionDigest(confirmation_plan.plan_digest))
 }
 
+/// Explicit physical acquisition inputs the shared Stage-C tail needs.
+///
+/// [`plan_velocity_integral_response_from_source`] used to take a full
+/// [`VelocitySweepExecutionPlan`] and read a handful of physical fields off
+/// it, which made a reproduced Stage-B sweep plan look load-bearing to the
+/// tail even though only these fields were ever consulted. The legacy
+/// reproduced-Stage-B caller ([`plan_velocity_integral_response`]) and the
+/// nonretained combined caller ([`plan_combined_velocity_integral_response`])
+/// both still build this from their own `stage_b_plan` via [`From`], so their
+/// output is unchanged. The breakaway campaign
+/// ([`plan_breakaway_velocity_integral_response`]) has no Stage-B sweep plan
+/// at all and builds one directly from its own campaign parameters instead of
+/// fabricating a `VelocitySweepExecutionPlan`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct AcquisitionContext {
+    /// Frozen encoder-domain velocity amplitude.
+    pub(crate) planned_velocity_mrev_s: u32,
+    /// Frozen signed-target magnitude in mechanical RPM register units.
+    pub(crate) target_velocity_rpm: i32,
+    /// Configured hard torque-target limit.
+    pub(crate) hard_torque_limit: u16,
+    /// Inclusive usable torque-target boundary.
+    pub(crate) usable_torque_limit: u16,
+    /// Available authority for proving absence of transient clamp contact.
+    pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
+}
+
+impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
+    /// Extract exactly the physical fields the shared Stage-C tail reads.
+    fn from(plan: VelocitySweepExecutionPlan) -> Self {
+        Self {
+            planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
+            target_velocity_rpm: plan.target_velocity_rpm.raw(),
+            hard_torque_limit: plan.hard_torque_limit,
+            usable_torque_limit: plan.usable_torque_limit,
+            limit_evidence_capability: plan.limit_evidence_capability,
+        }
+    }
+}
+
+/// Construct one exact breakaway-campaign Stage-C plan from a confirmed
+/// candidate proportional gain, with no reselection.
+///
+/// The normative decision (spec section 7):
+/// confirmation selects the exact Stage-C proportional gain but does not
+/// waive Stage-C safety admission. `fixed_p = confirmation_plan.candidate_p`
+/// unconditionally -- there is no joint-membership test-point selection, no
+/// lower-middle or highest-in-band reselection, and no fallback to another
+/// discovery candidate. Every existing plan-time safety check still gates
+/// Stage C, and any failure refuses without motion.
+///
+/// `authority` must be a [`StageCAuthority::new_breakaway`] value bound to
+/// `confirmation_plan` through [`bind_breakaway_stage_c_authority`]; this
+/// function additionally recomputes `confirmation_plan.digest()` and
+/// re-validates the fixed confirmation contract (`family_size ==
+/// [`CONFIRMATION_FAMILY_SIZE`]`, the capture profile, and the acceptance
+/// rule) before consuming it, so a tampered or malformed confirmation plan is
+/// rejected even if a caller manages to pair it with a validly bound
+/// authority. `context` carries the breakaway campaign's own physical
+/// acquisition parameters -- there is no reproduced Stage-B sweep plan to
+/// read them from.
+///
+/// Order of checks, all before any plan is constructed: confirmation-plan
+/// digest and contract validation; authority-to-confirmation-plan binding;
+/// [`transition_capable_stage_c_gain`] for the exact confirmed gain; then the
+/// shared tail's own recovery-geometry and duration admission. Emits schema
+/// [`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`] with
+/// `append_exact_cap: false`, using the existing non-combined integral ladder
+/// unchanged.
+#[allow(dead_code)]
+pub(crate) fn plan_breakaway_velocity_integral_response(
+    authority: StageCAuthority,
+    confirmation_plan: BandConfirmationPlan,
+    context: AcquisitionContext,
+    motion_budget: OuterMotionBudget,
+    pwm_hz: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    if confirmation_plan.digest() != confirmation_plan.plan_digest
+        || confirmation_plan.family_size != CONFIRMATION_FAMILY_SIZE
+        || confirmation_plan.capture_profile != CONFIRMATION_CAPTURE_PROFILE_EXISTING
+        || confirmation_plan.acceptance_rule != CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED
+    {
+        return Err(VelocityIntegralPlanError::InvalidConfirmationPlan);
+    }
+    if authority.stage_b_plan_digest != confirmation_plan.plan_digest {
+        return Err(VelocityIntegralPlanError::MismatchedAuthority);
+    }
+    let fixed_p = confirmation_plan.candidate_p.raw();
+    if !transition_capable_stage_c_gain(
+        fixed_p,
+        context.target_velocity_rpm,
+        encoder_counts_per_rev,
+        pwm_hz,
+        MOVING_STROKE_US,
+        context.usable_torque_limit,
+    )? {
+        return Err(
+            VelocityIntegralPlanError::ConfirmedGainNotTransitionCapable(
+                confirmation_plan.plan_digest,
+            ),
+        );
+    }
+    plan_velocity_integral_response_from_source(
+        IntegralPlanSource {
+            authority,
+            combined_selected_response: None,
+            final_p: fixed_p,
+            schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+            append_exact_cap: false,
+            probe_constrained_test_point: false,
+        },
+        context,
+        motion_budget,
+        pwm_hz,
+        encoder_counts_per_rev,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct IntegralPlanSource {
     authority: StageCAuthority,
@@ -1252,7 +1382,7 @@ struct IntegralPlanSource {
 
 fn plan_velocity_integral_response_from_source(
     source: IntegralPlanSource,
-    stage_b_plan: VelocitySweepExecutionPlan,
+    context: AcquisitionContext,
     motion_budget: OuterMotionBudget,
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
@@ -1313,7 +1443,7 @@ fn plan_velocity_integral_response_from_source(
     let recovery = plan_rung_origin_recovery(
         motion_budget,
         encoder_counts_per_rev,
-        stage_b_plan.planned_velocity_mrev_s,
+        context.planned_velocity_mrev_s,
     )
     .map_err(map_recovery_plan_error)?;
     let primitive_us = MOVING_STROKE_US
@@ -1371,10 +1501,10 @@ fn plan_velocity_integral_response_from_source(
     positive_i[..ladder.rungs.len()].copy_from_slice(ladder.rungs.as_slice());
     let recovery_quantization_exposed = recovery_quantization_exposed(
         source.final_p,
-        stage_b_plan.target_velocity_rpm.raw(),
+        context.target_velocity_rpm,
         encoder_counts_per_rev,
         pwm_hz,
-        stage_b_plan.usable_torque_limit,
+        context.usable_torque_limit,
     )?;
 
     Ok(VelocityIntegralPlan {
@@ -1384,8 +1514,8 @@ fn plan_velocity_integral_response_from_source(
         authority: source.authority,
         combined_selected_response: source.combined_selected_response,
         final_p: source.final_p,
-        planned_velocity_mrev_s: stage_b_plan.planned_velocity_mrev_s,
-        target_velocity_rpm: stage_b_plan.target_velocity_rpm.raw(),
+        planned_velocity_mrev_s: context.planned_velocity_mrev_s,
+        target_velocity_rpm: context.target_velocity_rpm,
         pwm_hz,
         encoder_counts_per_rev,
         positive_i,
@@ -1402,9 +1532,9 @@ fn plan_velocity_integral_response_from_source(
         recovery_nominal_slot_us,
         recovery_maximum_slot_us: recovery.maximum_slot_us,
         recovery_slot_count: total_rung_count,
-        hard_torque_limit: stage_b_plan.hard_torque_limit,
-        usable_torque_limit: stage_b_plan.usable_torque_limit,
-        limit_evidence_capability: stage_b_plan.limit_evidence_capability,
+        hard_torque_limit: context.hard_torque_limit,
+        usable_torque_limit: context.usable_torque_limit,
+        limit_evidence_capability: context.limit_evidence_capability,
         recovery_quantization_exposed,
         probe_constrained_test_point: source.probe_constrained_test_point,
         motion_request,
