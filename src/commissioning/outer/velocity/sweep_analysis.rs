@@ -1,5 +1,7 @@
 //! Bounded post-capture analysis for the velocity sweep.
 
+use foci_tmc4671::pid::PidPGain;
+
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RestSelectionDecision, RestSelectionDisposition, RestStructuralCode,
     StationarityResult, StationarityWork, StationarityWorkPoll, StationarySuffix,
@@ -7,7 +9,8 @@ use crate::autotune::velocity_measurement::{
     VelocityObservationSource, estimate_confidence,
 };
 use crate::autotune::{
-    CommissionError, equivalent_disturbance_from_rate, equivalent_disturbance_variance_from_rate,
+    CommissionError, TmcMechanicalRpm, equivalent_disturbance_from_rate,
+    equivalent_disturbance_variance_from_rate,
 };
 use crate::commissioning::outer::state::{VelocitySweepData, VelocitySweepEvidenceState};
 
@@ -68,6 +71,125 @@ fn slot_velocity_direction(slot: u8) -> VelocityDirection {
     }
 }
 
+/// Signed mechanical direction: `1` for [`VelocityDirection::Forward`], `-1` for
+/// [`VelocityDirection::Reverse`].
+///
+/// Provably consistent with [`slot_velocity_direction`]/[`slot_direction`]: for every
+/// slot, `direction_sign(slot_velocity_direction(slot)) == slot_direction(slot)`.
+pub(super) const fn direction_sign(direction: VelocityDirection) -> i32 {
+    match direction {
+        VelocityDirection::Forward => 1,
+        VelocityDirection::Reverse => -1,
+    }
+}
+
+/// Frozen inputs [`assemble_velocity_observation_input`] needs from either the
+/// sweep's per-rung plan or the breakaway probe's per-stroke session.
+pub(super) struct VelocityObservationInputRequest {
+    /// Commanded mechanical direction.
+    pub(super) direction: VelocityDirection,
+    /// Velocity proportional gain used for the observation.
+    pub(super) p: PidPGain,
+    /// Target-independent stationary-suffix result.
+    pub(super) stationarity: StationarityResult,
+    /// Drift ratio from the completion envelope, overwritten by the suffix's own
+    /// ratio when `stationarity` is [`StationarityResult::Usable`].
+    pub(super) drift_ratio_ppm: u32,
+    /// Largest sampled absolute velocity-PID output during the moving phase.
+    pub(super) moving_pid_output_peak: u16,
+    /// Unsigned commanded velocity magnitude.
+    pub(super) target_velocity_rpm: TmcMechanicalRpm,
+    /// Inclusive current-headroom terminus.
+    pub(super) usable_torque_limit: u16,
+    /// Hard controller-output clip boundary.
+    pub(super) hard_torque_limit: u16,
+    /// Whether this observation lacks the normal reversal lead-in.
+    pub(super) initial_lead_in: bool,
+    /// Confidence family size: the sweep's `rung_count * observations_per_direction`,
+    /// or the probe's fixed `PROBE_CONFIDENCE_FAMILY_SIZE`.
+    pub(super) confidence_family_size: u16,
+    /// Validated encoder counts per mechanical revolution.
+    pub(super) counts_per_rev: u32,
+}
+
+/// Assemble one observation's classifier input from already-collected evidence.
+///
+/// Shared by the sweep (`finish_moving_observation_analysis`, below) and the
+/// breakaway probe (`breakaway_campaign::build_probe_observation_input`) so the
+/// predicted-torque formula and the settled-rate/deficit/disturbance derivation are
+/// never duplicated: a future change to either reaches both callers.
+pub(super) fn assemble_velocity_observation_input(
+    request: VelocityObservationInputRequest,
+) -> Result<VelocityObservationInput, CommissionError> {
+    let predicted = u32::from(request.p.raw())
+        .checked_mul(request.target_velocity_rpm.raw().unsigned_abs())
+        .and_then(|value| value.checked_add(255))
+        .map(|value| value / 256)
+        .ok_or(CommissionError::InvalidSchedule)?
+        .max(u32::from(request.moving_pid_output_peak))
+        .min(u32::from(u16::MAX)) as u16;
+
+    let mut input = VelocityObservationInput {
+        direction: request.direction,
+        p: request.p,
+        stationarity: request.stationarity,
+        settled_rate_low_q: 0,
+        settled_rate_high_q: 0,
+        settled_rate_mean_q: 0,
+        deficit_low_q: 0,
+        deficit_high_q: 0,
+        disturbance: None,
+        disturbance_variance_q2: 0,
+        predicted_torque_target_abs: predicted,
+        usable_torque_limit: request.usable_torque_limit,
+        hard_torque_limit: request.hard_torque_limit,
+        initial_lead_in: request.initial_lead_in,
+        drift_ratio_ppm: request.drift_ratio_ppm,
+    };
+    if let StationarityResult::Usable(suffix) = request.stationarity {
+        input.drift_ratio_ppm = suffix.drift_ratio_ppm;
+        let confidence = estimate_confidence(suffix.selection, request.confidence_family_size)
+            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        let mean_rate_q = suffix
+            .selection
+            .exact_totals
+            .rate_q()
+            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        input.settled_rate_mean_q = mean_rate_q;
+        let half_width = i64::try_from(confidence.half_width_rate_q)
+            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
+        input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
+        let signed_target = request
+            .target_velocity_rpm
+            .with_direction(direction_sign(request.direction))
+            .map_err(|_| CommissionError::InvalidSchedule)?;
+        (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
+            signed_target.raw(),
+            request.counts_per_rev,
+            input.settled_rate_low_q,
+            input.settled_rate_high_q,
+        )?;
+        input.disturbance = Some(
+            equivalent_disturbance_from_rate(
+                request.p.raw(),
+                signed_target,
+                suffix.selection.exact_totals,
+                confidence.half_width_rate_q,
+                request.counts_per_rev,
+            )
+            .map_err(|_| CommissionError::VelocityValidationFailed)?,
+        );
+        input.disturbance_variance_q2 = equivalent_disturbance_variance_from_rate(
+            request.p.raw(),
+            confidence.variance_of_mean_q2,
+            request.counts_per_rev,
+        )
+        .map_err(|_| CommissionError::VelocityValidationFailed)?;
+    }
+    Ok(input)
+}
+
 pub(super) fn poll_moving_observation_analysis(
     data: &mut VelocitySweepData,
     counts_per_rev: u32,
@@ -103,77 +225,24 @@ fn finish_moving_observation_analysis(
         .gain_at(data.rung_index)
         .ok_or(CommissionError::InvalidSchedule)?;
     let direction = slot_velocity_direction(data.slot);
-    let predicted = u32::from(p.raw())
-        .checked_mul(plan.target_velocity_rpm.raw().unsigned_abs())
-        .and_then(|value| value.checked_add(255))
-        .map(|value| value / 256)
-        .ok_or(CommissionError::InvalidSchedule)?
-        .max(u32::from(data.current_observer.moving_pid_output_peak()))
-        .min(u32::from(u16::MAX)) as u16;
+    let confidence_family_size = u16::from(plan.rung_count)
+        .checked_mul(plan.observations_per_direction)
+        .ok_or(CommissionError::InvalidSchedule)?;
 
-    let mut input = VelocityObservationInput {
+    let input = assemble_velocity_observation_input(VelocityObservationInputRequest {
         direction,
         p,
         stationarity,
-        settled_rate_low_q: 0,
-        settled_rate_high_q: 0,
-        settled_rate_mean_q: 0,
-        deficit_low_q: 0,
-        deficit_high_q: 0,
-        disturbance: None,
-        disturbance_variance_q2: 0,
-        predicted_torque_target_abs: predicted,
+        drift_ratio_ppm,
+        moving_pid_output_peak: data.current_observer.moving_pid_output_peak(),
+        target_velocity_rpm: plan.target_velocity_rpm,
         usable_torque_limit: plan.usable_torque_limit,
         hard_torque_limit: plan.hard_torque_limit,
         initial_lead_in: data.rung_index == 0 && data.slot == 0,
-        drift_ratio_ppm,
-    };
-    let mut settled_rate_mean_q = 0;
-    if let StationarityResult::Usable(suffix) = stationarity {
-        input.drift_ratio_ppm = suffix.drift_ratio_ppm;
-        let family_size = u16::from(plan.rung_count)
-            .checked_mul(plan.observations_per_direction)
-            .ok_or(CommissionError::InvalidSchedule)?;
-        let confidence = estimate_confidence(suffix.selection, family_size)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
-        let mean_rate_q = suffix
-            .selection
-            .exact_totals
-            .rate_q()
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
-        settled_rate_mean_q = mean_rate_q;
-        input.settled_rate_mean_q = mean_rate_q;
-        let half_width = i64::try_from(confidence.half_width_rate_q)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
-        input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
-        input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
-        let signed_target = plan
-            .target_velocity_rpm
-            .with_direction(slot_direction(data.slot))
-            .map_err(|_| CommissionError::InvalidSchedule)?;
-        (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
-            signed_target.raw(),
-            counts_per_rev,
-            input.settled_rate_low_q,
-            input.settled_rate_high_q,
-        )?;
-        input.disturbance = Some(
-            equivalent_disturbance_from_rate(
-                p.raw(),
-                signed_target,
-                suffix.selection.exact_totals,
-                confidence.half_width_rate_q,
-                counts_per_rev,
-            )
-            .map_err(|_| CommissionError::VelocityValidationFailed)?,
-        );
-        input.disturbance_variance_q2 = equivalent_disturbance_variance_from_rate(
-            p.raw(),
-            confidence.variance_of_mean_q2,
-            counts_per_rev,
-        )
-        .map_err(|_| CommissionError::VelocityValidationFailed)?;
-    }
+        confidence_family_size,
+        counts_per_rev,
+    })?;
+    let settled_rate_mean_q = input.settled_rate_mean_q;
     let summary = classify_velocity_observation(input);
     let (
         selected_delta_counts,

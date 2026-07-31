@@ -4,11 +4,11 @@
 //!
 //! This module drives motion. It reuses the lower-level primitives the trace-gated
 //! velocity sweep (`sweep.rs`) is built from -- [`current_guard`](super::current_guard),
-//! [`recovery`](super::recovery), [`sweep_analysis`](super::sweep_analysis)'s
-//! `poll_stationarity`/`poll_scored_rest_confirmation`, and
-//! [`sweep_evidence::classify_velocity_observation`](super::sweep_evidence::classify_velocity_observation)
-//! via [`classify_breakaway_observation`](super::breakaway_search::classify_breakaway_observation)
-//! -- so the probe's fault surface is provably identical to the sweep's. It does not
+//! [`recovery`](super::recovery), and [`sweep_analysis`](super::sweep_analysis)'s
+//! `poll_stationarity`/`poll_scored_rest_confirmation`/`assemble_velocity_observation_input`
+//! -- and the sweep's own classifier via
+//! [`classify_breakaway_observation`](super::breakaway_search::classify_breakaway_observation),
+//! so the probe's fault surface is provably identical to the sweep's. It does not
 //! copy or re-derive the sweep's rung/slot-folding state machine: a probe stroke is a
 //! single direction, single observation, with no operating-region or handoff
 //! bookkeeping.
@@ -31,17 +31,11 @@
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM,
-    PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
-use crate::autotune::velocity_measurement::{
-    DyadicBlocker, StationarityResult, StationarityWork, VelocityDirection, estimate_confidence,
-};
-use crate::autotune::{
-    CommissionError, TmcMechanicalRpm, equivalent_disturbance_from_rate,
-    equivalent_disturbance_variance_from_rate,
-};
+use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork, VelocityDirection};
+use crate::autotune::{CommissionError, TmcMechanicalRpm};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::OuterSafetyLimits;
@@ -70,11 +64,12 @@ use super::recovery::{
     RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
     step_rung_origin_recovery,
 };
+use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
-    ScoredRestPoll, bounded_rest_displacement, deficit_interval_q, poll_scored_rest_confirmation,
-    poll_stationarity,
+    ScoredRestPoll, VelocityObservationInputRequest, assemble_velocity_observation_input,
+    bounded_rest_displacement, direction_sign, poll_scored_rest_confirmation, poll_stationarity,
 };
-use super::sweep_evidence::{VelocityObservationClass, VelocityObservationInput};
+use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
     SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, ZERO_SETTLE_US,
@@ -178,13 +173,6 @@ impl BreakawayProbeSession {
             .get(usize::from(self.pending_index))
             .copied()
             .ok_or(BreakawaySearchError::InvalidRequest)
-    }
-}
-
-const fn direction_sign(direction: VelocityDirection) -> i32 {
-    match direction {
-        VelocityDirection::Forward => 1,
-        VelocityDirection::Reverse => -1,
     }
 }
 
@@ -338,18 +326,6 @@ fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
             BreakawayProbeStep::Done(BreakawayProbeOutcome::DirectionalBreakawayDisagreement)
         }
     }
-}
-
-async fn clear_velocity_integrator<B: CommissioningBackend>(
-    backend: &mut B,
-) -> Result<(), CommissionError> {
-    crate::commissioning::helpers::write_sub_register_checked(
-        backend,
-        PID_ERROR_PID_VELOCITY_ERROR_SUM,
-        0,
-    )
-    .await
-    .map_err(|_| CommissionError::Spi)
 }
 
 /// Advance the probe by one cooperative step.
@@ -545,15 +521,19 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(p) => p,
                 Err(error) => return search_error_outcome(error),
             };
-            let params = ProbeObservationParams {
+            let input = match assemble_velocity_observation_input(VelocityObservationInputRequest {
+                direction: session.direction,
                 p,
                 stationarity,
                 drift_ratio_ppm,
-                counts_per_rev: safety.counts_per_rev(),
+                moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
+                target_velocity_rpm: session.target_velocity_rpm,
                 usable_torque_limit: workspace.current_observer.clamp_limit(),
                 hard_torque_limit: u16::from(backend.current_limit()),
-            };
-            let input = match build_probe_observation_input(session, workspace, params) {
+                initial_lead_in: false,
+                confidence_family_size: PROBE_CONFIDENCE_FAMILY_SIZE,
+                counts_per_rev: safety.counts_per_rev(),
+            }) {
                 Ok(input) => input,
                 Err(error) => return fault(error),
             };
@@ -808,6 +788,22 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
 /// its own deadline arithmetic. Every failure here -- register I/O, the observation
 /// gap fault, or the quarter-turn fault -- is resolved to the exact
 /// [`BreakawayProbeStep`] the caller must return.
+///
+/// This mirrors the per-tick fault prologue `step_velocity_sweep_with_trace` inlines
+/// twice, at `sweep.rs:867` (`Capture`) and `sweep.rs:1150` (`SettleCapture`) --
+/// same gap window, same quarter-turn test, same current-input check, same fault
+/// constructors, same order. The sweep has no shared helper for this today (it is
+/// duplicated there, not merely here), and `integral_sweep.rs` carries its own third
+/// copy. Deliberately deferred rather than force-extracted in this fix round: a
+/// shared primitive would need to preserve the sweep's interleaved trace-observation
+/// recording (`record_velocity_trace_observation`, diagnostic reads, stroke-index
+/// bookkeeping) byte-for-byte across two call sites plus `integral_sweep.rs`, which
+/// is real surgery on the sweep hot path and deserves its own dedicated,
+/// behavior-preservation-tested slice rather than a rushed one here. Numeric drift
+/// between the three copies is not possible -- they close over the same shared
+/// constants (`MAX_SAFETY_OBSERVATION_GAP_US`, the safety/current-guard fault
+/// constructors) and fields (`OuterSafetyLimits`, `VelocityCurrentObserver`) -- so a
+/// documented follow-up is a safe deferral, not a live risk.
 async fn sample_one_tick<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,
@@ -875,100 +871,6 @@ async fn sample_one_tick<B: CommissioningBackend>(
     workspace.previous_encoder_raw = encoder_raw;
     workspace.previous_read_us = read_us;
     Ok(read_us)
-}
-
-/// Frozen values [`build_probe_observation_input`] needs beyond the workspace and
-/// session, bundled to respect the parameter-count guideline.
-struct ProbeObservationParams {
-    p: PidPGain,
-    stationarity: StationarityResult,
-    drift_ratio_ppm: u32,
-    counts_per_rev: u32,
-    usable_torque_limit: u16,
-    hard_torque_limit: u16,
-}
-
-/// Assemble the classifier input for one moving-phase observation.
-///
-/// Mirrors `sweep_analysis::finish_moving_observation_analysis`'s field derivation
-/// exactly (same predicted-output formula, same deficit/disturbance calls), adapted
-/// to the probe's plan shape: a fixed [`PROBE_CONFIDENCE_FAMILY_SIZE`] in place of
-/// the sweep's per-run `rung_count * observations_per_direction`, and no
-/// initial-lead-in exception (the probe has no reversal lead-in concept).
-fn build_probe_observation_input(
-    session: &BreakawayProbeSession,
-    workspace: &BreakawayProbeWorkspace,
-    params: ProbeObservationParams,
-) -> Result<VelocityObservationInput, CommissionError> {
-    let predicted = u32::from(params.p.raw())
-        .checked_mul(session.target_velocity_rpm.raw().unsigned_abs())
-        .and_then(|value| value.checked_add(255))
-        .map(|value| value / 256)
-        .ok_or(CommissionError::InvalidSchedule)?
-        .max(u32::from(
-            workspace.current_observer.moving_pid_output_peak(),
-        ))
-        .min(u32::from(u16::MAX)) as u16;
-
-    let mut input = VelocityObservationInput {
-        direction: session.direction,
-        p: params.p,
-        stationarity: params.stationarity,
-        settled_rate_low_q: 0,
-        settled_rate_high_q: 0,
-        settled_rate_mean_q: 0,
-        deficit_low_q: 0,
-        deficit_high_q: 0,
-        disturbance: None,
-        disturbance_variance_q2: 0,
-        predicted_torque_target_abs: predicted,
-        usable_torque_limit: params.usable_torque_limit,
-        hard_torque_limit: params.hard_torque_limit,
-        initial_lead_in: false,
-        drift_ratio_ppm: params.drift_ratio_ppm,
-    };
-    if let StationarityResult::Usable(suffix) = params.stationarity {
-        input.drift_ratio_ppm = suffix.drift_ratio_ppm;
-        let confidence = estimate_confidence(suffix.selection, PROBE_CONFIDENCE_FAMILY_SIZE)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
-        let mean_rate_q = suffix
-            .selection
-            .exact_totals
-            .rate_q()
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
-        input.settled_rate_mean_q = mean_rate_q;
-        let half_width = i64::try_from(confidence.half_width_rate_q)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
-        input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
-        input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
-        let signed_target = session
-            .target_velocity_rpm
-            .with_direction(direction_sign(session.direction))
-            .map_err(|_| CommissionError::InvalidSchedule)?;
-        (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
-            signed_target.raw(),
-            params.counts_per_rev,
-            input.settled_rate_low_q,
-            input.settled_rate_high_q,
-        )?;
-        input.disturbance = Some(
-            equivalent_disturbance_from_rate(
-                params.p.raw(),
-                signed_target,
-                suffix.selection.exact_totals,
-                confidence.half_width_rate_q,
-                params.counts_per_rev,
-            )
-            .map_err(|_| CommissionError::VelocityValidationFailed)?,
-        );
-        input.disturbance_variance_q2 = equivalent_disturbance_variance_from_rate(
-            params.p.raw(),
-            confidence.variance_of_mean_q2,
-            params.counts_per_rev,
-        )
-        .map_err(|_| CommissionError::VelocityValidationFailed)?;
-    }
-    Ok(input)
 }
 
 #[cfg(test)]

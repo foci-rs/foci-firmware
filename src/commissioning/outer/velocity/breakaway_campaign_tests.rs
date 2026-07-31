@@ -54,12 +54,15 @@ fn test_plan() -> BreakawayProbePlan {
 /// index about to be tested, whether that stroke's scripted encoder deltas produce
 /// a sign-correct commanded-side settled rate (`true`) or hold still (`false`). The
 /// zero-target settle window always holds still, so every scripted stroke confirms
-/// rest.
-fn run_probe(
+/// rest. `target_velocity_rpm_raw` is small (100) in every test except the
+/// `AuthorityFailure` one, which needs a target large enough that its predicted
+/// torque crosses the usable-current boundary at the top of the grid.
+fn run_probe_with_target(
     plan: BreakawayProbePlan,
+    target_velocity_rpm_raw: i32,
     mut is_moving: impl FnMut(VelocityDirection, u8) -> bool,
 ) -> (BreakawayProbeOutcome, MockBackend) {
-    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(target_velocity_rpm_raw);
     let mut session =
         BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid probe session");
     let mut workspace = BreakawayProbeWorkspace::new();
@@ -97,6 +100,15 @@ fn run_probe(
         }
     }
     panic!("probe run exceeded its bounded step budget");
+}
+
+/// [`run_probe_with_target`] at the shared small target every test but
+/// `AuthorityFailure` uses.
+fn run_probe(
+    plan: BreakawayProbePlan,
+    is_moving: impl FnMut(VelocityDirection, u8) -> bool,
+) -> (BreakawayProbeOutcome, MockBackend) {
+    run_probe_with_target(plan, 100, is_moving)
 }
 
 // --- RED: no motion is reachable before the plan is admitted ------------------
@@ -218,6 +230,23 @@ fn directional_breakaways_one_step_apart_take_the_lower_endpoint() {
     assert_eq!(resolved.breakaway_index, 4);
     assert_eq!(resolved.forward.moving_index, 4);
     assert_eq!(resolved.reverse.moving_index, 5);
+}
+
+// --- AuthorityFailure: predicted torque crosses the usable-current boundary ----
+
+#[test]
+fn predicted_current_headroom_reports_authority_failure_and_does_not_advance() {
+    let plan = test_plan();
+    // At the top grid rung (index 19, gain 1024) and this elevated target, the
+    // predicted torque (`p * target / 256` = `1024 * 560 / 256` = 2240) sits inside
+    // `[usable_torque_limit, hard_torque_limit)` = `[2203, 2448)`: above the 9/10
+    // usable-current boundary but below the hard clip. Every lower rung's predicted
+    // torque stays comfortably under 2203, so only index 19 crosses. Scripting only
+    // index 19 as genuinely moving means the classifier only reaches the
+    // `CurrentHeadroom` check (which requires `moving == true`) on that one stroke.
+    let (outcome, _) = run_probe_with_target(plan, 560, |_direction, index| index >= 19);
+
+    assert!(matches!(outcome, BreakawayProbeOutcome::AuthorityFailure));
 }
 
 // --- ProbeEvidenceExcluded: the zero-target settle never confirms rest ---------
