@@ -4,6 +4,11 @@ use heapless::Vec;
 
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
+use super::band_confirmation::{
+    BandConfirmationAcceptance, BandConfirmationPlan, CONFIRMATION_FAMILY_SIZE,
+    TargetBandConfirmationInconclusive,
+};
+use super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION;
 use super::current_guard::VelocityLimitEvidenceCapability;
 use super::recovery::{
     RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
@@ -11,8 +16,8 @@ use super::recovery::{
 };
 use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
 use super::sweep_plan::{
-    MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, VelocitySweepExecutionPlan,
-    VelocitySweepRequest, ZERO_SETTLE_US,
+    MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US,
+    SWEEP_DIRECTION_COUNT, VelocitySweepExecutionPlan, VelocitySweepRequest, ZERO_SETTLE_US,
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
@@ -47,6 +52,9 @@ pub enum StageCPlanShape {
     AcceptanceMatrixAscending = 4,
     /// Run the retained fixed-I acceptance matrix from high to low amplitude.
     AcceptanceMatrixDescending = 5,
+    /// Run the breakaway probe, additive discovery, held-out confirmation, and
+    /// the existing Stage-C integral continuation as one bounded command.
+    BreakawaySeededPThenI = 6,
 }
 
 /// Conservative command-level plan used only for disclosure and host timeout.
@@ -76,7 +84,8 @@ impl CommissioningWorkflowPlan {
             StageCPlanShape::StageCResume => stage_b_ms == 0 && stage_c_ms != 0,
             StageCPlanShape::CombinedPThenI
             | StageCPlanShape::AcceptanceMatrixAscending
-            | StageCPlanShape::AcceptanceMatrixDescending => false,
+            | StageCPlanShape::AcceptanceMatrixDescending
+            | StageCPlanShape::BreakawaySeededPThenI => false,
         };
         if !valid {
             return Err(VelocityIntegralPlanError::InvalidRequest);
@@ -142,6 +151,35 @@ impl CommissioningWorkflowPlan {
         })
     }
 
+    /// Construct one checked breakaway-campaign workflow envelope.
+    ///
+    /// Reserved before the probe's first stroke. `nominal_workflow_ms` and
+    /// `maximum_workflow_ms` must already be the worst-case sums produced by
+    /// [`breakaway_workflow_envelope_ms`]; every later probe, discovery,
+    /// confirmation, and Stage-C continuation plan must report an exact
+    /// duration that fits inside `maximum_workflow_ms`. A phase plan that
+    /// would exceed it is rejected before that phase's first stroke -- see
+    /// [`super::breakaway_plan::AdditiveLadderPlanError::WorkflowEnvelopeExceeded`]
+    /// for the discovery-phase example of that check.
+    pub fn new_breakaway(
+        run_sequence: u32,
+        nominal_workflow_ms: u32,
+        maximum_workflow_ms: u32,
+    ) -> Result<Self, VelocityIntegralPlanError> {
+        if nominal_workflow_ms == 0
+            || maximum_workflow_ms == 0
+            || nominal_workflow_ms > maximum_workflow_ms
+        {
+            return Err(VelocityIntegralPlanError::InvalidRequest);
+        }
+        Ok(Self {
+            run_sequence,
+            shape: StageCPlanShape::BreakawaySeededPThenI,
+            nominal_workflow_ms,
+            maximum_workflow_ms,
+        })
+    }
+
     /// Hash the command-level envelope independently of either stage plan.
     pub fn digest(self) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -164,7 +202,18 @@ impl CommissioningWorkflowPlan {
 pub struct StageCAuthority {
     /// Physical firmware channel.
     pub channel: u8,
-    /// Exact Stage-B stage-plan digest.
+    /// Exact digest of the acquisition plan that authorized this Stage-C plan.
+    ///
+    /// For the historical Stage-B sweep workflow (schemas up to and including
+    /// [`super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION`]) this is the
+    /// Stage-B sweep plan's digest, and [`plan_velocity_integral_response`]
+    /// binds it directly. For the breakaway campaign
+    /// ([`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`]) there is
+    /// no Stage-B sweep plan: this field instead names the digest of the
+    /// accepted [`BandConfirmationPlan`], and only
+    /// [`bind_breakaway_stage_c_authority`] may produce it. The field keeps
+    /// its historical name, position, and type so every existing
+    /// [`VelocityIntegralPlan::digest`] stays byte for byte identical.
     pub stage_b_plan_digest: u64,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
@@ -613,6 +662,27 @@ pub enum VelocityIntegralPlanError {
     NoTransitionCapableOperatingPoint(StageCFailedAdmission),
 }
 
+/// Rejected attempt to bind Stage-C authority to a breakaway confirmation.
+///
+/// Returned only by [`bind_breakaway_stage_c_authority`], the single gate
+/// that may produce the digest a breakaway-schema [`StageCAuthority::
+/// stage_b_plan_digest`] carries. Every rejection is fail-closed: no digest,
+/// discovery or otherwise, ever authorizes Stage C unless it is exactly the
+/// digest of a [`BandConfirmationPlan`] whose held-out block accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum BreakawayAuthorityBindingError {
+    /// The held-out confirmation block did not accept; no digest may authorize
+    /// Stage C for this campaign, even though the confirmation plan itself is
+    /// otherwise well-formed.
+    ConfirmationNotAccepted,
+    /// The accepted candidate gain does not match the confirmation plan's
+    /// declared candidate: the acceptance does not belong to this plan.
+    AcceptanceCandidateMismatch,
+    /// The candidate authority digest does not name this confirmation plan --
+    /// for example, a discovery or probe digest offered in its place.
+    AcquisitionDigestMismatch,
+}
+
 /// Evaluate the advanced-PI time constant with outward ceiling.
 pub const fn velocity_i_tau_us(i_raw: u16, pwm_hz: u32) -> Option<u64> {
     if i_raw == 0 || pwm_hz == 0 {
@@ -833,6 +903,95 @@ pub fn integral_workflow_maximum_ms(
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
+/// Fixed per-observation primitive cost shared by every probe, discovery, and
+/// confirmation stroke: moving capture, zero-target settle, and the
+/// cooperative analysis allowance. `512_000 + 500_000 + 236_000 = 1_248_000`.
+const BREAKAWAY_PRIMITIVE_US: u32 = MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
+
+/// Worst-case joint probe observation count reserved before probe motion:
+/// [`PROBE_MAX_OBSERVATIONS_PER_DIRECTION`] per direction across
+/// [`SWEEP_DIRECTION_COUNT`] directions -- 16 primitives, 19.968 s.
+pub fn breakaway_probe_slots_us() -> Result<u64, VelocityIntegralPlanError> {
+    u64::from(PROBE_MAX_OBSERVATIONS_PER_DIRECTION)
+        .checked_mul(u64::from(SWEEP_DIRECTION_COUNT))
+        .and_then(|slots| slots.checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)
+}
+
+/// Exact discovery-phase primitive duration for one resolved rung count.
+///
+/// Every realizable additive ladder holds between
+/// [`super::sweep_plan::MIN_STRUCTURAL_RUNGS`] and [`MAX_SWEEP_RUNGS`] rungs;
+/// the worst case, [`MAX_SWEEP_RUNGS`] (`32 * 8 = 256` slots), is the one
+/// reserved by [`breakaway_workflow_envelope_us`]. Every smaller resolved
+/// rung count reports a strictly smaller duration here, so its plan always
+/// fits inside the pre-motion envelope.
+pub fn breakaway_discovery_slots_us(rung_count: u8) -> Result<u64, VelocityIntegralPlanError> {
+    u64::from(rung_count)
+        .checked_mul(u64::from(STAGE_C_OBSERVATIONS_PER_RUNG))
+        .and_then(|slots| slots.checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)
+}
+
+/// Fixed family-8 confirmation-phase primitive duration: 8 strokes, ~9.984 s.
+pub fn breakaway_confirmation_slots_us() -> Result<u64, VelocityIntegralPlanError> {
+    u64::from(CONFIRMATION_FAMILY_SIZE)
+        .checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)
+}
+
+/// Reserve the complete pre-motion breakaway-campaign workflow envelope, in
+/// microseconds.
+///
+/// Sums the worst-case joint probe, the worst-case [`MAX_SWEEP_RUNGS`]-rung
+/// discovery ladder, the fixed family-8 confirmation block, the caller's
+/// worst-case recovery reservation (`recovery_slot_count *
+/// recovery_maximum_slot_us`), and the caller's maximum possible Stage-C
+/// continuation duration. Every term is added in microseconds; callers round
+/// to milliseconds exactly once, in [`breakaway_workflow_envelope_ms`], never
+/// before. Every later phase's exact plan duration must fit inside the
+/// returned reservation; a phase plan whose exact duration would exceed it is
+/// a zero-motion planning failure -- see, for example,
+/// [`super::breakaway_plan::AdditiveLadderPlanError::WorkflowEnvelopeExceeded`].
+pub fn breakaway_workflow_envelope_us(
+    recovery_slot_count: u32,
+    recovery_maximum_slot_us: u32,
+    stage_c_maximum_us: u64,
+) -> Result<u64, VelocityIntegralPlanError> {
+    let probe_us = breakaway_probe_slots_us()?;
+    let discovery_us = breakaway_discovery_slots_us(MAX_SWEEP_RUNGS as u8)?;
+    let confirmation_us = breakaway_confirmation_slots_us()?;
+    let recovery_us = u64::from(recovery_slot_count)
+        .checked_mul(u64::from(recovery_maximum_slot_us))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    probe_us
+        .checked_add(recovery_us)
+        .and_then(|value| value.checked_add(discovery_us))
+        .and_then(|value| value.checked_add(confirmation_us))
+        .and_then(|value| value.checked_add(stage_c_maximum_us))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)
+}
+
+/// Round the breakaway-campaign workflow envelope outward to milliseconds.
+///
+/// Every microsecond term in [`breakaway_workflow_envelope_us`] is summed
+/// first; this is the single point where the sum is rounded, via
+/// `div_ceil(1_000)`, matching every other workflow-duration reservation in
+/// this module. The result feeds [`CommissioningWorkflowPlan::new_breakaway`]
+/// directly.
+pub fn breakaway_workflow_envelope_ms(
+    recovery_slot_count: u32,
+    recovery_maximum_slot_us: u32,
+    stage_c_maximum_us: u64,
+) -> Result<u32, VelocityIntegralPlanError> {
+    let total_us = breakaway_workflow_envelope_us(
+        recovery_slot_count,
+        recovery_maximum_slot_us,
+        stage_c_maximum_us,
+    )?;
+    u32::try_from(total_us.div_ceil(1_000)).map_err(|_| VelocityIntegralPlanError::Arithmetic)
+}
+
 /// Construct one exact Stage-C stage plan from reproduced Stage-B authority.
 #[allow(dead_code)]
 pub(crate) fn plan_velocity_integral_response(
@@ -976,6 +1135,48 @@ pub(crate) fn plan_combined_velocity_integral_response(
         pwm_hz,
         encoder_counts_per_rev,
     )
+}
+
+/// Validate and return the one digest that may authorize Stage C for a
+/// breakaway campaign: the digest of a [`BandConfirmationPlan`] whose
+/// held-out block accepted.
+///
+/// The breakaway campaign has no Stage-B sweep plan, so a breakaway-schema
+/// [`StageCAuthority::stage_b_plan_digest`] instead carries this
+/// acquisition-plan digest. This function is the single gate that produces
+/// it, and it is fail-closed in both directions the safety invariant
+/// forbids:
+///
+/// - `candidate_acquisition_digest` must be exactly `confirmation_plan.
+///   plan_digest`. A discovery or probe digest offered in its place --
+///   whether by a call-site copy-paste error or a corrupted evidence record
+///   -- is rejected with [`BreakawayAuthorityBindingError::
+///   AcquisitionDigestMismatch`].
+/// - `confirmation_outcome` must be `Ok`. A confirmation plan whose held-out
+///   block did not accept is rejected with [`BreakawayAuthorityBindingError::
+///   ConfirmationNotAccepted`] even when its `plan_digest` is otherwise
+///   well-formed and matches `candidate_acquisition_digest` exactly: a
+///   syntactically valid digest is never enough on its own.
+///
+/// Callers must supply the actual `Result` returned by
+/// [`super::band_confirmation::evaluate_band_confirmation`] as
+/// `confirmation_outcome`; there is no way to synthesize acceptance from a
+/// bare digest.
+#[allow(dead_code)]
+pub(crate) fn bind_breakaway_stage_c_authority(
+    candidate_acquisition_digest: u64,
+    confirmation_plan: BandConfirmationPlan,
+    confirmation_outcome: Result<BandConfirmationAcceptance, TargetBandConfirmationInconclusive>,
+) -> Result<u64, BreakawayAuthorityBindingError> {
+    let acceptance = confirmation_outcome
+        .map_err(|_| BreakawayAuthorityBindingError::ConfirmationNotAccepted)?;
+    if acceptance.candidate_p != confirmation_plan.candidate_p {
+        return Err(BreakawayAuthorityBindingError::AcceptanceCandidateMismatch);
+    }
+    if candidate_acquisition_digest != confirmation_plan.plan_digest {
+        return Err(BreakawayAuthorityBindingError::AcquisitionDigestMismatch);
+    }
+    Ok(confirmation_plan.plan_digest)
 }
 
 #[derive(Debug, Clone, Copy)]

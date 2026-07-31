@@ -20,6 +20,24 @@ pub const FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION: u16 = 10;
 pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 13;
 /// First combined Stage-C schema, retained for historical digest parity.
 pub const FIRST_COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 8;
+/// Live Stage-B schema for the breakaway-seeded campaign.
+///
+/// The breakaway probe, additive discovery, and held-out confirmation plans
+/// replace the combined proportional sweep entirely; there is no Stage-B
+/// sweep plan under this schema. See
+/// `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md`. Historical
+/// schemas 8 through [`COMBINED_STAGE_B_SCHEMA_REVISION`] keep their exact
+/// digest and behavior; this schema is additive.
+pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 15;
+/// Live Stage-C schema for the breakaway-seeded campaign.
+///
+/// A Stage-C plan built under this schema binds the accepted
+/// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
+/// Stage-B sweep digest -- see
+/// [`super::integral_plan::bind_breakaway_stage_c_authority`]. Historical
+/// schemas up to and including [`COMBINED_STAGE_C_SCHEMA_REVISION`] keep
+/// their exact digest and behavior; this schema is additive.
+pub const BREAKAWAY_STAGE_C_SCHEMA_REVISION: u16 = 14;
 
 const P_RESPONSE_LOW_PERCENT: i128 = 70;
 const P_RESPONSE_HIGH_PERCENT: i128 = 80;

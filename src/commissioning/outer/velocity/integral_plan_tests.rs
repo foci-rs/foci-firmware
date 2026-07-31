@@ -1,17 +1,36 @@
+use super::band_confirmation::{
+    BandConfirmationAcceptance, BandConfirmationFailureCause, ConfirmationDirectionalInput,
+    DiscoveryObservationAtom, TargetBandConfirmationInconclusive, evaluate_band_confirmation,
+    plan_band_confirmation,
+};
+use super::breakaway_plan::{
+    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan, GridFloorOrigin,
+    plan_additive_discovery_ladder, plan_breakaway_probe, resolve_grid_floor,
+};
 use super::integral_plan::{
-    CommissioningWorkflowPlan, IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION,
-    STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG,
-    StageCAuthority, StageCPlanShape, VelocityIntegralPlanError, build_integral_ladder,
-    confidence_family_size, integral_workflow_maximum_ms, plan_velocity_integral_response,
-    recovery_quantization_exposed, response_horizon, velocity_i_tau_us,
+    BreakawayAuthorityBindingError, CommissioningWorkflowPlan, IntegralSlotOrder,
+    STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I,
+    STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape, VelocityIntegralPlanError,
+    bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
+    breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
+    breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
+    integral_workflow_maximum_ms, plan_velocity_integral_response, recovery_quantization_exposed,
+    response_horizon, velocity_i_tau_us,
 };
+use super::sweep_consensus::{
+    CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+};
+use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
-    MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
-    VelocitySweepRequest, ZERO_SETTLE_US, plan_velocity_sweep,
+    MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
+    RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VelocitySweepRequest, ZERO_SETTLE_US,
+    plan_velocity_sweep,
 };
+use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 use crate::commissioning::types::ResponseHorizonClass;
+use foci_tmc4671::pid::PidPGain;
 
 fn stage_b_request() -> VelocitySweepRequest {
     VelocitySweepRequest {
@@ -60,6 +79,94 @@ fn motion_budget() -> OuterMotionBudget {
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
     }
+}
+
+// --- Breakaway campaign fixtures --------------------------------------------
+//
+// The half-octave search grid from 1 to 1024 is worked out exactly in spec
+// section 1: 1, 2, 3, 4, 6, 8, 12, 16, 23, 32, 46, 64, 91, 128, 181, 256, 362,
+// 512, 724, 1024. Gain 256 (index 15) has a genuine predecessor, 181 (index
+// 14), so it exercises `GridFloorOrigin::Predecessor` rather than the clamped
+// edge case.
+
+fn breakaway_gain(raw: u16) -> PidPGain {
+    PidPGain::new(raw).expect("raw gain within PidPGain range")
+}
+
+/// Build the probe plan and resolve its floor/breakaway pair around gain 256.
+fn breakaway_probe_and_floor() -> (BreakawayProbePlan, PidPGain, PidPGain) {
+    let p_start = breakaway_gain(1);
+    let p_top = breakaway_gain(1_024);
+    let probe_plan = plan_breakaway_probe(p_start, p_top).unwrap();
+    let breakaway_index = probe_plan.search_gains[..usize::from(probe_plan.search_count)]
+        .iter()
+        .position(|gain| gain.raw() == 256)
+        .expect("half-octave grid includes 256") as u8;
+    let (floor, origin) =
+        resolve_grid_floor(p_start, p_top, probe_plan.search_count, breakaway_index).unwrap();
+    assert_eq!(origin, GridFloorOrigin::Predecessor);
+    let breakaway = probe_plan.search_gains[usize::from(breakaway_index)];
+    (probe_plan, floor, breakaway)
+}
+
+fn breakaway_discovery_request(
+    floor: PidPGain,
+    breakaway: PidPGain,
+    probe_plan_digest: u64,
+    workflow_envelope_ms: u32,
+) -> AdditiveDiscoveryRequest {
+    AdditiveDiscoveryRequest {
+        floor,
+        breakaway,
+        authority_ceiling: breakaway_gain(1_024),
+        observations_per_direction: 4,
+        max_duration_ms: 3_000,
+        workflow_envelope_ms,
+        probe_plan_digest,
+    }
+}
+
+fn full_directional_consensus() -> DirectionalConsensus {
+    DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    }
+}
+
+/// Rung-18-class evidence from spec section 2 (relative SE 1.022% at 75%
+/// response), reproduced exactly via integer `mean_rate_q` /
+/// `variance_of_mean_q2` so the production formulas compute the same
+/// containment as the worked example, not a hand-rounded approximation.
+fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, ConfirmationDirectionalInput)
+{
+    let mean_rate_q: i64 = 750_000;
+    let variance_of_mean_q2: u128 = 58_752_225;
+    let target_rate_q: i64 = 1_000_000;
+    let forward = ConfirmationDirectionalInput {
+        consensus: full_directional_consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: full_directional_consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    (forward, reverse)
 }
 
 #[test]
@@ -592,4 +699,297 @@ fn paired_order_gives_each_direction_both_outbound_and_inbound_roles() {
     // Both excursion ends are used, so absolute position varies within a role.
     assert_eq!(order.direction_index(0), 0, "slot 0 leaves toward forward");
     assert_eq!(order.direction_index(2), 1, "slot 2 leaves toward reverse");
+}
+
+// --- StageCPlanShape::BreakawaySeededPThenI ---------------------------------
+
+#[test]
+fn breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes() {
+    assert_eq!(StageCPlanShape::StageB as u8, 0);
+    assert_eq!(StageCPlanShape::StageBThenStageC as u8, 1);
+    assert_eq!(StageCPlanShape::StageCResume as u8, 2);
+    assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
+    assert_eq!(StageCPlanShape::AcceptanceMatrixAscending as u8, 4);
+    assert_eq!(StageCPlanShape::AcceptanceMatrixDescending as u8, 5);
+    assert_eq!(StageCPlanShape::BreakawaySeededPThenI as u8, 6);
+
+    // The breakaway shape has its own dedicated constructor, matching the
+    // existing precedent set by `CombinedPThenI` and the acceptance-matrix
+    // shapes: it is not constructible through the generic two-duration `new`.
+    assert_eq!(
+        CommissioningWorkflowPlan::new(1, StageCPlanShape::BreakawaySeededPThenI, 1, 1),
+        Err(VelocityIntegralPlanError::InvalidRequest)
+    );
+}
+
+#[test]
+fn new_breakaway_reserves_the_command_level_envelope_before_probe_motion() {
+    let envelope = CommissioningWorkflowPlan::new_breakaway(1, 400_000, 450_000).unwrap();
+    assert_eq!(envelope.shape, StageCPlanShape::BreakawaySeededPThenI);
+    assert_eq!(envelope.run_sequence, 1);
+    assert_eq!(envelope.nominal_workflow_ms, 400_000);
+    assert_eq!(envelope.maximum_workflow_ms, 450_000);
+
+    assert_eq!(
+        CommissioningWorkflowPlan::new_breakaway(1, 0, 450_000),
+        Err(VelocityIntegralPlanError::InvalidRequest)
+    );
+    assert_eq!(
+        CommissioningWorkflowPlan::new_breakaway(1, 450_000, 0),
+        Err(VelocityIntegralPlanError::InvalidRequest)
+    );
+    assert_eq!(
+        CommissioningWorkflowPlan::new_breakaway(1, 450_001, 450_000),
+        Err(VelocityIntegralPlanError::InvalidRequest)
+    );
+}
+
+// --- Duration accounting ----------------------------------------------------
+
+#[test]
+fn worst_case_probe_is_sixteen_primitives_at_19_968_seconds() {
+    let primitive_us = MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
+    assert_eq!(primitive_us, 1_248_000);
+    assert_eq!(breakaway_probe_slots_us(), Ok(19_968_000));
+}
+
+#[test]
+fn discovery_slot_duration_is_monotonic_across_every_resolved_rung_count() {
+    let mut previous = 0_u64;
+    for rung_count in (MIN_STRUCTURAL_RUNGS as u8)..=(MAX_SWEEP_RUNGS as u8) {
+        let duration = breakaway_discovery_slots_us(rung_count).unwrap();
+        assert!(
+            duration > previous,
+            "rung_count {rung_count} did not strictly increase: {duration} <= {previous}"
+        );
+        previous = duration;
+    }
+    // The worst case is exactly 32 rungs x 8 slots, matching spec section 8's
+    // "32 rungs x 8 slots" line.
+    assert_eq!(
+        breakaway_discovery_slots_us(MAX_SWEEP_RUNGS as u8),
+        Ok(319_488_000)
+    );
+}
+
+#[test]
+fn confirmation_is_eight_strokes_at_the_declared_family_size() {
+    assert_eq!(breakaway_confirmation_slots_us(), Ok(9_984_000));
+}
+
+#[test]
+fn envelope_sums_microseconds_across_every_phase_and_rounds_outward_once() {
+    let recovery_slot_count = 56_u32;
+    let recovery_maximum_slot_us = 3_000_000_u32;
+    let stage_c_maximum_us =
+        u64::from(integral_workflow_maximum_ms(25_000, 3_000).unwrap()) * 1_000;
+
+    let total_us = breakaway_workflow_envelope_us(
+        recovery_slot_count,
+        recovery_maximum_slot_us,
+        stage_c_maximum_us,
+    )
+    .unwrap();
+    let expected_us = breakaway_probe_slots_us().unwrap()
+        + u64::from(recovery_slot_count) * u64::from(recovery_maximum_slot_us)
+        + breakaway_discovery_slots_us(MAX_SWEEP_RUNGS as u8).unwrap()
+        + breakaway_confirmation_slots_us().unwrap()
+        + stage_c_maximum_us;
+    assert_eq!(total_us, expected_us);
+
+    let total_ms = breakaway_workflow_envelope_ms(
+        recovery_slot_count,
+        recovery_maximum_slot_us,
+        stage_c_maximum_us,
+    )
+    .unwrap();
+    assert_eq!(total_ms, u32::try_from(total_us.div_ceil(1_000)).unwrap());
+    // Rounding happens exactly once: rounding each term separately first
+    // would never produce a smaller total than rounding the exact sum.
+    assert!(total_ms < u32::MAX, "envelope must fit u32 milliseconds");
+
+    let workflow = CommissioningWorkflowPlan::new_breakaway(1, total_ms, total_ms).unwrap();
+    assert_eq!(workflow.maximum_workflow_ms, total_ms);
+}
+
+#[test]
+fn envelope_arithmetic_is_checked_against_overflow() {
+    // `stage_c_maximum_us` alone large enough to overflow the running `u64`
+    // sum must be rejected, not wrapped.
+    assert_eq!(
+        breakaway_workflow_envelope_us(0, 0, u64::MAX),
+        Err(VelocityIntegralPlanError::Arithmetic)
+    );
+    // The recovery term (`recovery_slot_count * recovery_maximum_slot_us`)
+    // pushed to its extreme, combined with a near-maximal Stage-C term, must
+    // also be rejected.
+    assert_eq!(
+        breakaway_workflow_envelope_us(u32::MAX, u32::MAX, u64::MAX),
+        Err(VelocityIntegralPlanError::Arithmetic)
+    );
+
+    // A microsecond total that fits `u64` but whose outward millisecond
+    // rounding would exceed `u32::MAX` must be rejected by the `_ms`
+    // wrapper, never silently truncated.
+    let huge_but_u64_representable = 5_000_000_000_000_u64;
+    assert!(breakaway_workflow_envelope_us(0, 0, huge_but_u64_representable).is_ok());
+    assert_eq!(
+        breakaway_workflow_envelope_ms(0, 0, huge_but_u64_representable),
+        Err(VelocityIntegralPlanError::Arithmetic)
+    );
+}
+
+#[test]
+fn discovery_phase_plan_must_fit_inside_the_reserved_envelope() {
+    let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
+
+    let fits = plan_additive_discovery_ladder(breakaway_discovery_request(
+        floor,
+        breakaway,
+        probe_plan.plan_digest,
+        320_000,
+    ));
+    assert!(
+        fits.is_ok(),
+        "worst-case discovery must fit its own reserved envelope: {fits:?}"
+    );
+
+    let too_small = plan_additive_discovery_ladder(breakaway_discovery_request(
+        floor,
+        breakaway,
+        probe_plan.plan_digest,
+        1_000,
+    ));
+    assert_eq!(
+        too_small,
+        Err(AdditiveLadderPlanError::WorkflowEnvelopeExceeded)
+    );
+}
+
+// --- Digest chain ------------------------------------------------------------
+
+#[test]
+fn breakaway_digest_chain_binds_each_successive_plan() {
+    let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
+
+    let discovery_plan = plan_additive_discovery_ladder(breakaway_discovery_request(
+        floor,
+        breakaway,
+        probe_plan.plan_digest,
+        320_000,
+    ))
+    .unwrap();
+    assert_eq!(discovery_plan.probe_plan_digest, probe_plan.plan_digest);
+
+    let candidate_p = breakaway_gain(724);
+    let confirmation_plan =
+        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+    assert_eq!(
+        confirmation_plan.discovery_plan_digest,
+        discovery_plan.plan_digest
+    );
+
+    let (forward, reverse) = accepted_confirmation_evidence();
+    let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+        .expect("rung-18-class evidence confirms within the 70-80% band");
+    assert_eq!(acceptance.candidate_p, candidate_p);
+
+    let bound = bind_breakaway_stage_c_authority(
+        confirmation_plan.plan_digest,
+        confirmation_plan,
+        Ok(acceptance),
+    )
+    .unwrap();
+
+    assert_eq!(bound, confirmation_plan.plan_digest);
+    assert_ne!(bound, discovery_plan.plan_digest);
+    assert_ne!(bound, probe_plan.plan_digest);
+    assert_ne!(discovery_plan.plan_digest, probe_plan.plan_digest);
+}
+
+#[test]
+fn stage_c_authority_rejects_a_discovery_or_probe_digest() {
+    let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
+    let discovery_plan = plan_additive_discovery_ladder(breakaway_discovery_request(
+        floor,
+        breakaway,
+        probe_plan.plan_digest,
+        320_000,
+    ))
+    .unwrap();
+    let candidate_p = breakaway_gain(724);
+    let confirmation_plan =
+        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+    let (forward, reverse) = accepted_confirmation_evidence();
+    let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse).unwrap();
+
+    // The discovery digest is offered where the confirmation digest belongs.
+    assert_eq!(
+        bind_breakaway_stage_c_authority(
+            discovery_plan.plan_digest,
+            confirmation_plan,
+            Ok(acceptance),
+        ),
+        Err(BreakawayAuthorityBindingError::AcquisitionDigestMismatch)
+    );
+    // The probe digest is rejected the same way.
+    assert_eq!(
+        bind_breakaway_stage_c_authority(probe_plan.plan_digest, confirmation_plan, Ok(acceptance)),
+        Err(BreakawayAuthorityBindingError::AcquisitionDigestMismatch)
+    );
+}
+
+#[test]
+fn stage_c_authority_rejects_a_failed_confirmation_even_with_a_matching_digest() {
+    let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
+    let discovery_plan = plan_additive_discovery_ladder(breakaway_discovery_request(
+        floor,
+        breakaway,
+        probe_plan.plan_digest,
+        320_000,
+    ))
+    .unwrap();
+    let candidate_p = breakaway_gain(724);
+    let confirmation_plan =
+        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+
+    // The confirmation plan's own digest is well formed and matches exactly,
+    // but the held-out block did not accept: Stage C must still be refused.
+    let failure =
+        TargetBandConfirmationInconclusive(BandConfirmationFailureCause::ResponseLocation);
+    assert_eq!(
+        bind_breakaway_stage_c_authority(
+            confirmation_plan.plan_digest,
+            confirmation_plan,
+            Err(failure)
+        ),
+        Err(BreakawayAuthorityBindingError::ConfirmationNotAccepted)
+    );
+}
+
+#[test]
+fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
+    let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
+    let discovery_plan = plan_additive_discovery_ladder(breakaway_discovery_request(
+        floor,
+        breakaway,
+        probe_plan.plan_digest,
+        320_000,
+    ))
+    .unwrap();
+    let candidate_p = breakaway_gain(724);
+    let confirmation_plan =
+        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+
+    let mismatched_acceptance = BandConfirmationAcceptance {
+        candidate_p: breakaway_gain(512),
+    };
+    assert_eq!(
+        bind_breakaway_stage_c_authority(
+            confirmation_plan.plan_digest,
+            confirmation_plan,
+            Ok(mismatched_acceptance),
+        ),
+        Err(BreakawayAuthorityBindingError::AcceptanceCandidateMismatch)
+    );
 }

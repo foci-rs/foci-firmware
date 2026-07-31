@@ -1,4 +1,5 @@
 use super::combined_plan::{
+    BREAKAWAY_STAGE_B_SCHEMA_REVISION, BREAKAWAY_STAGE_C_SCHEMA_REVISION,
     COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedPlanError,
     CombinedRateInterval, CombinedTargetStatus, FIRST_COMBINED_STAGE_C_SCHEMA_REVISION,
     build_combined_integral_ladder, combined_workflow_geometry, integral_deficit_reaches_target,
@@ -154,6 +155,18 @@ fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 13);
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
     assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
+    // The breakaway campaign is additive: it must not renumber or otherwise
+    // disturb any historical Stage-B or Stage-C schema revision.
+    assert_eq!(BREAKAWAY_STAGE_B_SCHEMA_REVISION, 15);
+    assert_eq!(BREAKAWAY_STAGE_C_SCHEMA_REVISION, 14);
+    assert_ne!(
+        BREAKAWAY_STAGE_B_SCHEMA_REVISION,
+        COMBINED_STAGE_B_SCHEMA_REVISION
+    );
+    assert_ne!(
+        BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+        COMBINED_STAGE_C_SCHEMA_REVISION
+    );
 
     let historical = build_integral_ladder(
         25_000,
