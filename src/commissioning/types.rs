@@ -1016,6 +1016,323 @@ pub struct VelocityIntegralTerminal {
     pub safety_fault: Option<OuterSafetyFault>,
 }
 
+// ============================================================================
+// Breakaway-seeded campaign reporting
+//
+// These records carry the wire evidence for the breakaway probe, additive
+// discovery, and held-out confirmation phases. Every plan-time record's
+// `plan_digest` is the exact digest of the frozen phase plan it describes;
+// every phase after the first also carries `prior_plan_digest`, the digest of
+// the phase plan it was derived from, so the causal chain probe -> discovery
+// -> confirmation is auditable end to end. `family_size` is the predeclared
+// confidence family for the owning phase. See
+// `crate::commissioning::outer::velocity::breakaway_reporting` for the pure
+// assembly functions that build these records from the campaign's own
+// produced evidence types.
+// ============================================================================
+
+/// Immutable breakaway-probe plan evidence emitted before the first probe stroke.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayProbePlanned {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the frozen probe plan.
+    pub plan_digest: u64,
+    /// Joint two-direction confidence family reserved for the probe.
+    pub family_size: u16,
+    /// Maximum probe observations permitted in a single direction.
+    pub max_observations: u8,
+    /// Number of valid entries in the post-dedupe search grid.
+    pub search_count: u8,
+    /// First structural search-grid gain.
+    pub p_start_raw: u16,
+    /// Last structural search-grid gain.
+    pub p_top_raw: u16,
+}
+
+/// Resolved inert/moving bracket for one signed probe direction.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayDirectionalBreakaway {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning probe plan.
+    pub plan_digest: u64,
+    /// Direction wire code (see `sweep_evidence::direction_report_code`).
+    pub direction: u8,
+    /// Nonzero when a confirmed inert bracket endpoint exists.
+    pub inert_present: u8,
+    /// Confirmed inert bracket endpoint gain, or zero when `inert_present == 0`.
+    pub inert_p_raw: u16,
+    /// Confirmed moving bracket endpoint gain: this direction's resolved breakaway.
+    pub moving_p_raw: u16,
+    /// Total probe observations spent resolving this direction.
+    pub observations: u8,
+}
+
+/// Detailed terminal evidence for a probe campaign that did not resolve a
+/// breakaway (every [`crate::commissioning::outer::velocity::breakaway_campaign::BreakawayProbeOutcome`]
+/// variant other than `BreakawayFound`).
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayProbeTerminal {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact digest of the frozen probe plan.
+    pub plan_digest: u64,
+    /// Joint two-direction confidence family reserved for the probe.
+    pub family_size: u16,
+    /// Unified `BreakawayTerminalCause` wire code.
+    pub terminal_cause: u8,
+    /// Nonzero when the terminal carries retained safety-fault evidence.
+    pub has_safety_fault: u8,
+}
+
+/// Immutable additive-discovery plan evidence emitted before the first
+/// discovery stroke.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AdditiveDiscoveryPlanned {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the frozen discovery plan.
+    pub plan_digest: u64,
+    /// Exact digest of the probe plan whose search located this ladder's breakaway.
+    pub prior_plan_digest: u64,
+    /// Discovery confidence family: `rung_count * observations_per_direction`.
+    pub family_size: u16,
+    /// Number of valid entries in the resolved additive ladder.
+    pub rung_count: u8,
+    /// Discovery per-rung, per-direction observation count.
+    pub observations_per_direction: u16,
+    /// Chosen diagnostic floor gain.
+    pub floor_p_raw: u16,
+    /// Origin of the diagnostic floor: `0` predecessor grid rung, `1` clamped at breakaway.
+    pub floor_origin: u8,
+    /// Resolved campaign breakaway gain.
+    pub breakaway_p_raw: u16,
+    /// Most restrictive applicable authority ceiling; the ladder's exact final anchor.
+    pub ceiling_p_raw: u16,
+    /// Fixed additive step from breakaway to the first rung strictly above it.
+    pub first_additive_step_raw: u32,
+    /// Reserved maximum campaign workflow duration.
+    ///
+    /// The campaign's own retained request only carries the reserved maximum
+    /// (`BreakawayCampaignInputs::workflow_envelope_ms`); it never keeps a
+    /// nominal figure downstream of the command-level
+    /// `CommissioningWorkflowPlan` disclosure, so this record does not carry
+    /// one either -- matching `VelocityIntegralPlanned::maximum_workflow_ms`,
+    /// the existing combined-workflow wire field that also carries maximum
+    /// only.
+    pub maximum_workflow_ms: u32,
+}
+
+/// One rung of the complete resolved additive ladder.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayLadderRung {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning discovery plan.
+    pub plan_digest: u64,
+    /// Zero-based rung index within the resolved ladder.
+    pub rung_index: u8,
+    /// Proportional gain at this rung.
+    pub p_raw: u16,
+}
+
+/// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayDiscoveryRungMargin {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning discovery plan.
+    pub plan_digest: u64,
+    /// Zero-based index within the collected in-band rung set (collection order).
+    pub collected_index: u8,
+    /// Proportional gain at this rung.
+    pub p_raw: u16,
+    /// Enveloped nomination-interval lower bound `L_i`, in percent * 1000.
+    pub lower_percent_milli: i32,
+    /// Enveloped nomination-interval upper bound `U_i`, in percent * 1000.
+    pub upper_percent_milli: i32,
+    /// `M_i = min(L_i - 70, 80 - U_i)`, in percent * 1000.
+    pub margin_percent_milli: i32,
+    /// `(U_i - L_i) / 2`, in percent * 1000.
+    pub half_width_percent_milli: i32,
+    /// Achieved rate step from the previous collected in-band rung's own
+    /// midpoint response, in percent * 1000; zero for the first collected rung.
+    pub adjacent_rate_step_permille: i32,
+}
+
+/// Diagnostic evidence for whether the additive ladder's rung zero (the
+/// diagnostic floor) itself showed motion. Reported purely as evidence: rung
+/// zero moving does not fail the discovery run (spec section 6).
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayRungZeroDiagnostic {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning discovery plan.
+    pub plan_digest: u64,
+    /// Nonzero when the forward-direction rung-zero observation showed motion.
+    pub forward_moved: u8,
+    /// Nonzero when the reverse-direction rung-zero observation showed motion.
+    pub reverse_moved: u8,
+}
+
+/// Detailed terminal evidence for an additive discovery campaign.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct AdditiveDiscoveryTerminal {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact digest of the frozen discovery plan.
+    pub plan_digest: u64,
+    /// Exact digest of the probe plan whose search located this ladder's breakaway.
+    pub prior_plan_digest: u64,
+    /// Discovery confidence family: `rung_count * observations_per_direction`.
+    pub family_size: u16,
+    /// Unified `BreakawayTerminalCause` wire code.
+    pub terminal_cause: u8,
+    /// Number of in-band rungs collected before the ladder stopped.
+    pub collected_count: u8,
+    /// Nonzero when the terminal carries retained safety-fault evidence.
+    pub has_safety_fault: u8,
+}
+
+/// Immutable held-out confirmation plan evidence emitted before the first
+/// confirmation stroke.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BandConfirmationPlanned {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the frozen confirmation plan.
+    pub plan_digest: u64,
+    /// Exact digest of the discovery plan whose nomination screen selected the candidate.
+    pub prior_plan_digest: u64,
+    /// Predeclared confirmation family size.
+    pub family_size: u16,
+    /// Fresh observations collected per direction.
+    pub observations_per_direction: u16,
+    /// Nominated proportional gain under held-out test.
+    pub candidate_p_raw: u16,
+    /// Inclusive lower edge of the confirmable response band, in percent.
+    pub band_lower_percent: u8,
+    /// Inclusive upper edge of the confirmable response band, in percent.
+    pub band_upper_percent: u8,
+    /// Stable wire code for the confirmation capture profile.
+    pub capture_profile: u8,
+    /// Stable wire code for the acceptance rule.
+    pub acceptance_rule: u8,
+    /// Nomination screen's pointwise margin `M_i` for the nominated candidate,
+    /// in percent * 1000.
+    pub nominated_margin_percent_milli: i32,
+}
+
+/// One fresh held-out confirmation stroke's response interval.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BandConfirmationObservation {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning confirmation plan.
+    pub plan_digest: u64,
+    /// Fixed schedule slot index (`0..=7`).
+    pub slot_index: u8,
+    /// Direction wire code (see `sweep_evidence::direction_report_code`).
+    pub direction: u8,
+    /// Fresh response-interval lower bound, in percent * 1000.
+    pub response_lower_percent_milli: i32,
+    /// Fresh response-interval upper bound, in percent * 1000.
+    pub response_upper_percent_milli: i32,
+    /// Measured relative standard error for this stroke, in permille.
+    pub relative_standard_error_permille: u16,
+}
+
+/// Detailed terminal evidence for a held-out confirmation block.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BandConfirmationTerminal {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact digest of the frozen confirmation plan.
+    pub plan_digest: u64,
+    /// Exact digest of the discovery plan whose nomination screen selected the candidate.
+    pub prior_plan_digest: u64,
+    /// Predeclared confirmation family size.
+    pub family_size: u16,
+    /// Unified `BreakawayTerminalCause` wire code.
+    pub terminal_cause: u8,
+    /// Forward-direction collected mask (`collected_mask == eligible_mask ==
+    /// included_mask == 0b1111` required for acceptance).
+    pub forward_collected_mask: u8,
+    /// Forward-direction eligible mask.
+    pub forward_eligible_mask: u8,
+    /// Forward-direction included mask.
+    pub forward_included_mask: u8,
+    /// Reverse-direction collected mask.
+    pub reverse_collected_mask: u8,
+    /// Reverse-direction eligible mask.
+    pub reverse_eligible_mask: u8,
+    /// Reverse-direction included mask.
+    pub reverse_included_mask: u8,
+    /// Nonzero when the held-out block was accepted.
+    pub accepted: u8,
+    /// Confirmed proportional gain, or zero when not accepted.
+    pub confirmed_p_raw: u16,
+    /// Largest measured relative standard error across all eight strokes, in permille.
+    pub max_relative_se_permille: u16,
+    /// Relative standard error above which containment is unachievable, in permille.
+    pub required_relative_se_permille: u16,
+    /// Nonzero when the terminal carries retained safety-fault evidence.
+    pub has_safety_fault: u8,
+}
+
+/// Canonical closure record for one complete breakaway campaign.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayCampaignTerminal {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Phase that owned the campaign's terminal outcome.
+    pub phase: u8,
+    /// Unified `BreakawayTerminalCause` wire code.
+    pub terminal_cause: u8,
+    /// Nonzero when the confirmed candidate was accepted and admitted to Stage C.
+    pub accepted: u8,
+    /// Exact digest of the Stage-C plan bound through the confirmed candidate,
+    /// or zero when `accepted == 0`.
+    pub stage_c_plan_digest: u64,
+}
+
 /// Generic terminal tying an inconclusive outer phase to its detailed report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterInconclusive {

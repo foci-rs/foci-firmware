@@ -1600,6 +1600,504 @@ mod resistance_reply_size_tests {
     }
 }
 
+#[cfg(test)]
+mod breakaway_reply_wire_tests {
+    //! REPLAY-COMPAT wire fixtures for the breakaway-campaign reply family.
+    //! Each `*_has_stable_wire_order` test uses small ascending
+    //! field values (every field type here VLQ-encodes values `1..=16` as a
+    //! single raw byte, mirroring `resistance_run_current_evidence_has_stable_wire_order`
+    //! above) so the expected byte array is exactly the field values in
+    //! struct-declaration order -- a byte-for-byte pin on this schema's wire
+    //! shape. None of these are new schema-13-and-older records: every field
+    //! list here is additive to the reply table, so no existing reply's wire
+    //! order changes.
+    use super::{
+        FociBreakawayCampaignTerminal, FociBreakawayConfirmationObservation,
+        FociBreakawayConfirmationPlan, FociBreakawayConfirmationTerminalIdentity,
+        FociBreakawayConfirmationTerminalMasks, FociBreakawayDirectionalBreakaway,
+        FociBreakawayDiscoveryPlanGeometry, FociBreakawayDiscoveryPlanIdentity,
+        FociBreakawayDiscoveryRungMargin, FociBreakawayDiscoveryTerminal, FociBreakawayLadderRung,
+        FociBreakawayProbePlan, FociBreakawayProbeTerminal, FociBreakawayRungZeroDiagnostic,
+    };
+    use ankyra::ScratchOutput;
+    use ankyra::encoding::Writable;
+
+    /// Klipper's wire-frame payload budget (see `resistance_reply_size_tests`
+    /// above for the derivation).
+    const KLIPPER_MESSAGE_PAYLOAD_MAX: usize = 59;
+    const REPLY_ID_WORST_CASE_BYTES: usize = 3;
+
+    fn encoded_len<T: Writable>(reply: &T) -> usize {
+        let mut scratch = ScratchOutput::<64>::new();
+        reply.write(&mut scratch);
+        scratch.result().len()
+    }
+
+    fn assert_fits_with_id<T: Writable>(reply: &T, reply_kind: &str) {
+        let payload_len = encoded_len(reply);
+        let total_len = payload_len + REPLY_ID_WORST_CASE_BYTES;
+        assert!(
+            total_len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
+            "{reply_kind} encodes to {payload_len} payload bytes + {REPLY_ID_WORST_CASE_BYTES} \
+             worst-case id bytes = {total_len}, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
+        );
+    }
+
+    fn assert_wire_bytes<T: Writable>(reply: &T, expected: &[u8]) {
+        let mut scratch = ScratchOutput::<64>::new();
+        reply.write(&mut scratch);
+        assert_eq!(scratch.result(), expected);
+    }
+
+    #[test]
+    fn breakaway_probe_plan_has_stable_wire_order() {
+        let reply = FociBreakawayProbePlan {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            family_size: 6,
+            max_observations: 7,
+            search_count: 8,
+            p_start_raw: 9,
+            p_top_raw: 10,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_fits_with_id(
+            &FociBreakawayProbePlan {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                family_size: u16::MAX,
+                max_observations: u8::MAX,
+                search_count: u8::MAX,
+                p_start_raw: u16::MAX,
+                p_top_raw: u16::MAX,
+            },
+            "foci_breakaway_probe_plan",
+        );
+    }
+
+    #[test]
+    fn breakaway_directional_breakaway_has_stable_wire_order() {
+        let reply = FociBreakawayDirectionalBreakaway {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            direction: 6,
+            inert_present: 7,
+            inert_p_raw: 8,
+            moving_p_raw: 9,
+            observations: 10,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_fits_with_id(
+            &FociBreakawayDirectionalBreakaway {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                direction: u8::MAX,
+                inert_present: u8::MAX,
+                inert_p_raw: u16::MAX,
+                moving_p_raw: u16::MAX,
+                observations: u8::MAX,
+            },
+            "foci_breakaway_directional_breakaway",
+        );
+    }
+
+    #[test]
+    fn breakaway_probe_terminal_has_stable_wire_order() {
+        let reply = FociBreakawayProbeTerminal {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            family_size: 6,
+            terminal_cause: 7,
+            has_safety_fault: 8,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_fits_with_id(
+            &FociBreakawayProbeTerminal {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                family_size: u16::MAX,
+                terminal_cause: u8::MAX,
+                has_safety_fault: u8::MAX,
+            },
+            "foci_breakaway_probe_terminal",
+        );
+    }
+
+    #[test]
+    fn breakaway_discovery_plan_identity_has_stable_wire_order() {
+        let reply = FociBreakawayDiscoveryPlanIdentity {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            prior_plan_digest_low: 6,
+            prior_plan_digest_high: 7,
+            family_size: 8,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_fits_with_id(
+            &FociBreakawayDiscoveryPlanIdentity {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                prior_plan_digest_low: u32::MAX,
+                prior_plan_digest_high: u32::MAX,
+                family_size: u16::MAX,
+            },
+            "foci_breakaway_discovery_plan_identity",
+        );
+    }
+
+    #[test]
+    fn breakaway_discovery_plan_geometry_has_stable_wire_order() {
+        let reply = FociBreakawayDiscoveryPlanGeometry {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            rung_count: 4,
+            observations_per_direction: 5,
+            floor_p_raw: 6,
+            floor_origin: 7,
+            breakaway_p_raw: 8,
+            ceiling_p_raw: 9,
+            first_additive_step_raw: 10,
+            maximum_workflow_ms: 11,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_fits_with_id(
+            &FociBreakawayDiscoveryPlanGeometry {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                rung_count: u8::MAX,
+                observations_per_direction: u16::MAX,
+                floor_p_raw: u16::MAX,
+                floor_origin: u8::MAX,
+                breakaway_p_raw: u16::MAX,
+                ceiling_p_raw: u16::MAX,
+                first_additive_step_raw: u32::MAX,
+                maximum_workflow_ms: u32::MAX,
+            },
+            "foci_breakaway_discovery_plan_geometry",
+        );
+    }
+
+    #[test]
+    fn breakaway_ladder_rung_has_stable_wire_order() {
+        let reply = FociBreakawayLadderRung {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            rung_index: 6,
+            p_raw: 7,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7]);
+        assert_fits_with_id(
+            &FociBreakawayLadderRung {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                rung_index: u8::MAX,
+                p_raw: u16::MAX,
+            },
+            "foci_breakaway_ladder_rung",
+        );
+    }
+
+    #[test]
+    fn breakaway_discovery_rung_margin_has_stable_wire_order() {
+        let reply = FociBreakawayDiscoveryRungMargin {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            collected_index: 6,
+            p_raw: 7,
+            lower_percent_milli: 8,
+            upper_percent_milli: 9,
+            margin_percent_milli: 10,
+            half_width_percent_milli: 11,
+            adjacent_rate_step_permille: 12,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_fits_with_id(
+            &FociBreakawayDiscoveryRungMargin {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                collected_index: u8::MAX,
+                p_raw: u16::MAX,
+                lower_percent_milli: i32::MIN,
+                upper_percent_milli: i32::MIN,
+                margin_percent_milli: i32::MIN,
+                half_width_percent_milli: i32::MIN,
+                adjacent_rate_step_permille: i32::MIN,
+            },
+            "foci_breakaway_discovery_rung_margin",
+        );
+    }
+
+    #[test]
+    fn breakaway_rung_zero_diagnostic_has_stable_wire_order() {
+        let reply = FociBreakawayRungZeroDiagnostic {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            forward_moved: 6,
+            reverse_moved: 7,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7]);
+        assert_fits_with_id(
+            &FociBreakawayRungZeroDiagnostic {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                forward_moved: u8::MAX,
+                reverse_moved: u8::MAX,
+            },
+            "foci_breakaway_rung_zero_diagnostic",
+        );
+    }
+
+    #[test]
+    fn breakaway_discovery_terminal_has_stable_wire_order() {
+        let reply = FociBreakawayDiscoveryTerminal {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            prior_plan_digest_low: 6,
+            prior_plan_digest_high: 7,
+            family_size: 8,
+            terminal_cause: 9,
+            collected_count: 10,
+            has_safety_fault: 11,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_fits_with_id(
+            &FociBreakawayDiscoveryTerminal {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                prior_plan_digest_low: u32::MAX,
+                prior_plan_digest_high: u32::MAX,
+                family_size: u16::MAX,
+                terminal_cause: u8::MAX,
+                collected_count: u8::MAX,
+                has_safety_fault: u8::MAX,
+            },
+            "foci_breakaway_discovery_terminal",
+        );
+    }
+
+    #[test]
+    fn breakaway_confirmation_plan_has_stable_wire_order() {
+        let reply = FociBreakawayConfirmationPlan {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            prior_plan_digest_low: 6,
+            prior_plan_digest_high: 7,
+            family_size: 8,
+            observations_per_direction: 9,
+            candidate_p_raw: 10,
+            band_lower_percent: 11,
+            band_upper_percent: 12,
+            capture_profile: 13,
+            acceptance_rule: 14,
+            nominated_margin_percent_milli: 15,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_fits_with_id(
+            &FociBreakawayConfirmationPlan {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                prior_plan_digest_low: u32::MAX,
+                prior_plan_digest_high: u32::MAX,
+                family_size: u16::MAX,
+                observations_per_direction: u16::MAX,
+                candidate_p_raw: u16::MAX,
+                band_lower_percent: u8::MAX,
+                band_upper_percent: u8::MAX,
+                capture_profile: u8::MAX,
+                acceptance_rule: u8::MAX,
+                nominated_margin_percent_milli: i32::MIN,
+            },
+            "foci_breakaway_confirmation_plan",
+        );
+    }
+
+    #[test]
+    fn breakaway_confirmation_observation_has_stable_wire_order() {
+        let reply = FociBreakawayConfirmationObservation {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            slot_index: 6,
+            direction: 7,
+            response_lower_percent_milli: 8,
+            response_upper_percent_milli: 9,
+            relative_standard_error_permille: 10,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_fits_with_id(
+            &FociBreakawayConfirmationObservation {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                slot_index: u8::MAX,
+                direction: u8::MAX,
+                response_lower_percent_milli: i32::MIN,
+                response_upper_percent_milli: i32::MIN,
+                relative_standard_error_permille: u16::MAX,
+            },
+            "foci_breakaway_confirmation_observation",
+        );
+    }
+
+    #[test]
+    fn breakaway_confirmation_terminal_identity_has_stable_wire_order() {
+        let reply = FociBreakawayConfirmationTerminalIdentity {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            plan_digest_low: 4,
+            plan_digest_high: 5,
+            prior_plan_digest_low: 6,
+            prior_plan_digest_high: 7,
+            family_size: 8,
+            terminal_cause: 9,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_fits_with_id(
+            &FociBreakawayConfirmationTerminalIdentity {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                plan_digest_low: u32::MAX,
+                plan_digest_high: u32::MAX,
+                prior_plan_digest_low: u32::MAX,
+                prior_plan_digest_high: u32::MAX,
+                family_size: u16::MAX,
+                terminal_cause: u8::MAX,
+            },
+            "foci_breakaway_confirmation_terminal_identity",
+        );
+    }
+
+    #[test]
+    fn breakaway_confirmation_terminal_masks_has_stable_wire_order() {
+        let reply = FociBreakawayConfirmationTerminalMasks {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            forward_collected_mask: 4,
+            forward_eligible_mask: 5,
+            forward_included_mask: 6,
+            reverse_collected_mask: 7,
+            reverse_eligible_mask: 8,
+            reverse_included_mask: 9,
+            accepted: 10,
+            confirmed_p_raw: 11,
+            max_relative_se_permille: 12,
+            required_relative_se_permille: 13,
+            has_safety_fault: 14,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+        assert_fits_with_id(
+            &FociBreakawayConfirmationTerminalMasks {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                forward_collected_mask: u8::MAX,
+                forward_eligible_mask: u8::MAX,
+                forward_included_mask: u8::MAX,
+                reverse_collected_mask: u8::MAX,
+                reverse_eligible_mask: u8::MAX,
+                reverse_included_mask: u8::MAX,
+                accepted: u8::MAX,
+                confirmed_p_raw: u16::MAX,
+                max_relative_se_permille: u16::MAX,
+                required_relative_se_permille: u16::MAX,
+                has_safety_fault: u8::MAX,
+            },
+            "foci_breakaway_confirmation_terminal_masks",
+        );
+    }
+
+    #[test]
+    fn breakaway_campaign_terminal_has_stable_wire_order() {
+        let reply = FociBreakawayCampaignTerminal {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            phase: 4,
+            terminal_cause: 5,
+            accepted: 6,
+            stage_c_plan_digest_low: 7,
+            stage_c_plan_digest_high: 8,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_fits_with_id(
+            &FociBreakawayCampaignTerminal {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                phase: u8::MAX,
+                terminal_cause: u8::MAX,
+                accepted: u8::MAX,
+                stage_c_plan_digest_low: u32::MAX,
+                stage_c_plan_digest_high: u32::MAX,
+            },
+            "foci_breakaway_campaign_terminal",
+        );
+    }
+}
+
 /// `foci_stepper_event` reply - bounded stepper runtime diagnostic.
 ///
 /// Wire name: `foci_stepper_event`.
@@ -3176,6 +3674,362 @@ pub struct FociOuterInconclusive {
     pub digest_low: u32,
     /// Exact high digest word.
     pub digest_high: u32,
+}
+
+// ============================================================================
+// Breakaway-seeded campaign reporting
+// ============================================================================
+
+/// Immutable breakaway-probe plan evidence emitted before the first probe stroke.
+#[klipper_reply]
+pub struct FociBreakawayProbePlan {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low probe-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high probe-plan digest word.
+    pub plan_digest_high: u32,
+    /// Joint two-direction confidence family reserved for the probe.
+    pub family_size: u16,
+    /// Maximum probe observations permitted in a single direction.
+    pub max_observations: u8,
+    /// Number of valid entries in the post-dedupe search grid.
+    pub search_count: u8,
+    /// First structural search-grid gain.
+    pub p_start_raw: u16,
+    /// Last structural search-grid gain.
+    pub p_top_raw: u16,
+}
+
+/// Resolved inert/moving bracket for one signed probe direction.
+#[klipper_reply]
+pub struct FociBreakawayDirectionalBreakaway {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low probe-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high probe-plan digest word.
+    pub plan_digest_high: u32,
+    /// Direction wire code.
+    pub direction: u8,
+    /// Nonzero when a confirmed inert bracket endpoint exists.
+    pub inert_present: u8,
+    /// Confirmed inert bracket endpoint gain, or zero when absent.
+    pub inert_p_raw: u16,
+    /// Confirmed moving bracket endpoint gain.
+    pub moving_p_raw: u16,
+    /// Total probe observations spent resolving this direction.
+    pub observations: u8,
+}
+
+/// Detailed terminal evidence for a probe campaign that did not resolve a breakaway.
+#[klipper_reply]
+pub struct FociBreakawayProbeTerminal {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low probe-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high probe-plan digest word.
+    pub plan_digest_high: u32,
+    /// Joint two-direction confidence family reserved for the probe.
+    pub family_size: u16,
+    /// Unified breakaway-campaign terminal-cause wire code.
+    pub terminal_cause: u8,
+    /// Nonzero when the terminal carries retained safety-fault evidence.
+    pub has_safety_fault: u8,
+}
+
+/// Additive discovery plan identity: digests and confidence family.
+#[klipper_reply]
+pub struct FociBreakawayDiscoveryPlanIdentity {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low discovery-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high discovery-plan digest word.
+    pub plan_digest_high: u32,
+    /// Exact low probe-plan digest word.
+    pub prior_plan_digest_low: u32,
+    /// Exact high probe-plan digest word.
+    pub prior_plan_digest_high: u32,
+    /// Discovery confidence family: `rung_count * observations_per_direction`.
+    pub family_size: u16,
+}
+
+/// Additive discovery plan geometry: floor, breakaway, ceiling, and step.
+#[klipper_reply]
+pub struct FociBreakawayDiscoveryPlanGeometry {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Number of valid entries in the resolved additive ladder.
+    pub rung_count: u8,
+    /// Discovery per-rung, per-direction observation count.
+    pub observations_per_direction: u16,
+    /// Chosen diagnostic floor gain.
+    pub floor_p_raw: u16,
+    /// Origin of the diagnostic floor.
+    pub floor_origin: u8,
+    /// Resolved campaign breakaway gain.
+    pub breakaway_p_raw: u16,
+    /// Most restrictive applicable authority ceiling.
+    pub ceiling_p_raw: u16,
+    /// Fixed additive step from breakaway to the first rung strictly above it.
+    pub first_additive_step_raw: u32,
+    /// Reserved maximum campaign workflow duration.
+    pub maximum_workflow_ms: u32,
+}
+
+/// One rung of the complete resolved additive ladder.
+#[klipper_reply]
+pub struct FociBreakawayLadderRung {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low discovery-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high discovery-plan digest word.
+    pub plan_digest_high: u32,
+    /// Zero-based rung index within the resolved ladder.
+    pub rung_index: u8,
+    /// Proportional gain at this rung.
+    pub p_raw: u16,
+}
+
+/// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
+#[klipper_reply]
+pub struct FociBreakawayDiscoveryRungMargin {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low discovery-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high discovery-plan digest word.
+    pub plan_digest_high: u32,
+    /// Zero-based index within the collected in-band rung set.
+    pub collected_index: u8,
+    /// Proportional gain at this rung.
+    pub p_raw: u16,
+    /// Enveloped nomination-interval lower bound `L_i`, in percent * 1000.
+    pub lower_percent_milli: i32,
+    /// Enveloped nomination-interval upper bound `U_i`, in percent * 1000.
+    pub upper_percent_milli: i32,
+    /// `M_i = min(L_i - 70, 80 - U_i)`, in percent * 1000.
+    pub margin_percent_milli: i32,
+    /// `(U_i - L_i) / 2`, in percent * 1000.
+    pub half_width_percent_milli: i32,
+    /// Achieved rate step from the previous collected in-band rung, in percent * 1000.
+    pub adjacent_rate_step_permille: i32,
+}
+
+/// Diagnostic evidence for whether the additive ladder's rung zero itself showed motion.
+#[klipper_reply]
+pub struct FociBreakawayRungZeroDiagnostic {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low discovery-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high discovery-plan digest word.
+    pub plan_digest_high: u32,
+    /// Nonzero when the forward-direction rung-zero observation showed motion.
+    pub forward_moved: u8,
+    /// Nonzero when the reverse-direction rung-zero observation showed motion.
+    pub reverse_moved: u8,
+}
+
+/// Detailed terminal evidence for an additive discovery campaign.
+#[klipper_reply]
+pub struct FociBreakawayDiscoveryTerminal {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low discovery-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high discovery-plan digest word.
+    pub plan_digest_high: u32,
+    /// Exact low probe-plan digest word.
+    pub prior_plan_digest_low: u32,
+    /// Exact high probe-plan digest word.
+    pub prior_plan_digest_high: u32,
+    /// Discovery confidence family.
+    pub family_size: u16,
+    /// Unified breakaway-campaign terminal-cause wire code.
+    pub terminal_cause: u8,
+    /// Number of in-band rungs collected before the ladder stopped.
+    pub collected_count: u8,
+    /// Nonzero when the terminal carries retained safety-fault evidence.
+    pub has_safety_fault: u8,
+}
+
+/// Immutable held-out confirmation plan evidence emitted before the first
+/// confirmation stroke.
+#[klipper_reply]
+pub struct FociBreakawayConfirmationPlan {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low confirmation-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high confirmation-plan digest word.
+    pub plan_digest_high: u32,
+    /// Exact low discovery-plan digest word.
+    pub prior_plan_digest_low: u32,
+    /// Exact high discovery-plan digest word.
+    pub prior_plan_digest_high: u32,
+    /// Predeclared confirmation family size.
+    pub family_size: u16,
+    /// Fresh observations collected per direction.
+    pub observations_per_direction: u16,
+    /// Nominated proportional gain under held-out test.
+    pub candidate_p_raw: u16,
+    /// Inclusive lower edge of the confirmable response band, in percent.
+    pub band_lower_percent: u8,
+    /// Inclusive upper edge of the confirmable response band, in percent.
+    pub band_upper_percent: u8,
+    /// Stable wire code for the confirmation capture profile.
+    pub capture_profile: u8,
+    /// Stable wire code for the acceptance rule.
+    pub acceptance_rule: u8,
+    /// Nomination screen's pointwise margin `M_i`, in percent * 1000.
+    pub nominated_margin_percent_milli: i32,
+}
+
+/// One fresh held-out confirmation stroke's response interval.
+#[klipper_reply]
+pub struct FociBreakawayConfirmationObservation {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low confirmation-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high confirmation-plan digest word.
+    pub plan_digest_high: u32,
+    /// Fixed schedule slot index (`0..=7`).
+    pub slot_index: u8,
+    /// Direction wire code.
+    pub direction: u8,
+    /// Fresh response-interval lower bound, in percent * 1000.
+    pub response_lower_percent_milli: i32,
+    /// Fresh response-interval upper bound, in percent * 1000.
+    pub response_upper_percent_milli: i32,
+    /// Measured relative standard error for this stroke, in permille.
+    pub relative_standard_error_permille: u16,
+}
+
+/// Confirmation terminal identity: digests and confidence family.
+#[klipper_reply]
+pub struct FociBreakawayConfirmationTerminalIdentity {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Exact low confirmation-plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high confirmation-plan digest word.
+    pub plan_digest_high: u32,
+    /// Exact low discovery-plan digest word.
+    pub prior_plan_digest_low: u32,
+    /// Exact high discovery-plan digest word.
+    pub prior_plan_digest_high: u32,
+    /// Predeclared confirmation family size.
+    pub family_size: u16,
+    /// Unified breakaway-campaign terminal-cause wire code.
+    pub terminal_cause: u8,
+}
+
+/// Confirmation terminal masks: collected/eligible/included per direction,
+/// acceptance verdict, and measured/required standard error.
+#[klipper_reply]
+pub struct FociBreakawayConfirmationTerminalMasks {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Forward-direction collected mask.
+    pub forward_collected_mask: u8,
+    /// Forward-direction eligible mask.
+    pub forward_eligible_mask: u8,
+    /// Forward-direction included mask.
+    pub forward_included_mask: u8,
+    /// Reverse-direction collected mask.
+    pub reverse_collected_mask: u8,
+    /// Reverse-direction eligible mask.
+    pub reverse_eligible_mask: u8,
+    /// Reverse-direction included mask.
+    pub reverse_included_mask: u8,
+    /// Nonzero when the held-out block was accepted.
+    pub accepted: u8,
+    /// Confirmed proportional gain, or zero when not accepted.
+    pub confirmed_p_raw: u16,
+    /// Largest measured relative standard error across all eight strokes, in permille.
+    pub max_relative_se_permille: u16,
+    /// Relative standard error above which containment is unachievable, in permille.
+    pub required_relative_se_permille: u16,
+    /// Nonzero when the terminal carries retained safety-fault evidence.
+    pub has_safety_fault: u8,
+}
+
+/// Canonical closure record for one complete breakaway campaign.
+#[klipper_reply]
+pub struct FociBreakawayCampaignTerminal {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Terminal evidence sequence.
+    pub evidence_sequence: u16,
+    /// Phase that owned the campaign's terminal outcome.
+    pub phase: u8,
+    /// Unified breakaway-campaign terminal-cause wire code.
+    pub terminal_cause: u8,
+    /// Nonzero when the confirmed candidate was accepted and admitted to Stage C.
+    pub accepted: u8,
+    /// Exact low Stage-C plan digest word.
+    pub stage_c_plan_digest_low: u32,
+    /// Exact high Stage-C plan digest word.
+    pub stage_c_plan_digest_high: u32,
 }
 
 /// Command-level commissioning workflow disclosed before any motion.

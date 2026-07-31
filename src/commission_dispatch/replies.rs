@@ -608,6 +608,104 @@ pub trait CommissionReplySink {
     /// Emit the generic outer inconclusive terminal.
     fn foci_outer_inconclusive(&mut self, _report: crate::ankyra::replies::FociOuterInconclusive) {}
 
+    /// Emit the immutable breakaway-probe plan.
+    fn foci_breakaway_probe_plan(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayProbePlan,
+    ) {
+    }
+
+    /// Emit one direction's resolved inert/moving breakaway bracket.
+    fn foci_breakaway_directional_breakaway(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayDirectionalBreakaway,
+    ) {
+    }
+
+    /// Emit a probe-campaign terminal that did not resolve a breakaway.
+    fn foci_breakaway_probe_terminal(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayProbeTerminal,
+    ) {
+    }
+
+    /// Emit the additive discovery plan's identity fragment.
+    fn foci_breakaway_discovery_plan_identity(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayDiscoveryPlanIdentity,
+    ) {
+    }
+
+    /// Emit the additive discovery plan's geometry fragment.
+    fn foci_breakaway_discovery_plan_geometry(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayDiscoveryPlanGeometry,
+    ) {
+    }
+
+    /// Emit one rung of the complete resolved additive ladder.
+    fn foci_breakaway_ladder_rung(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayLadderRung,
+    ) {
+    }
+
+    /// Emit one in-band discovery rung's nomination bounds and margin.
+    fn foci_breakaway_discovery_rung_margin(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayDiscoveryRungMargin,
+    ) {
+    }
+
+    /// Emit whether the additive ladder's rung zero itself showed motion.
+    fn foci_breakaway_rung_zero_diagnostic(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayRungZeroDiagnostic,
+    ) {
+    }
+
+    /// Emit a discovery-campaign terminal.
+    fn foci_breakaway_discovery_terminal(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayDiscoveryTerminal,
+    ) {
+    }
+
+    /// Emit the immutable held-out confirmation plan.
+    fn foci_breakaway_confirmation_plan(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayConfirmationPlan,
+    ) {
+    }
+
+    /// Emit one fresh held-out confirmation stroke's response interval.
+    fn foci_breakaway_confirmation_observation(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayConfirmationObservation,
+    ) {
+    }
+
+    /// Emit the confirmation terminal's identity fragment.
+    fn foci_breakaway_confirmation_terminal_identity(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayConfirmationTerminalIdentity,
+    ) {
+    }
+
+    /// Emit the confirmation terminal's mask/acceptance fragment.
+    fn foci_breakaway_confirmation_terminal_masks(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayConfirmationTerminalMasks,
+    ) {
+    }
+
+    /// Emit the canonical closure record for one complete breakaway campaign.
+    fn foci_breakaway_campaign_terminal(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayCampaignTerminal,
+    ) {
+    }
+
     /// Emit the ADC calibration result.
     fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult);
 
@@ -634,6 +732,302 @@ pub fn emit_commissioning_workflow_plan<S: CommissionReplySink>(
         digest_high: (digest >> 32) as u32,
         nominal_workflow_ms: plan.nominal_workflow_ms,
         maximum_workflow_ms: plan.maximum_workflow_ms,
+    });
+}
+
+/// Emit the immutable breakaway-probe plan before the first probe stroke.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_probe_plan<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayProbePlanned,
+) {
+    sink.foci_breakaway_probe_plan(crate::ankyra::replies::FociBreakawayProbePlan {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        plan_digest_low: report.plan_digest as u32,
+        plan_digest_high: (report.plan_digest >> 32) as u32,
+        family_size: report.family_size,
+        max_observations: report.max_observations,
+        search_count: report.search_count,
+        p_start_raw: report.p_start_raw,
+        p_top_raw: report.p_top_raw,
+    });
+}
+
+/// Emit one direction's resolved inert/moving breakaway bracket.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_directional_breakaway<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayDirectionalBreakaway,
+) {
+    sink.foci_breakaway_directional_breakaway(
+        crate::ankyra::replies::FociBreakawayDirectionalBreakaway {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            direction: report.direction,
+            inert_present: report.inert_present,
+            inert_p_raw: report.inert_p_raw,
+            moving_p_raw: report.moving_p_raw,
+            observations: report.observations,
+        },
+    );
+}
+
+/// Emit a probe-campaign terminal that did not resolve a breakaway.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_probe_terminal<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayProbeTerminal,
+) {
+    sink.foci_breakaway_probe_terminal(crate::ankyra::replies::FociBreakawayProbeTerminal {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        plan_digest_low: report.plan_digest as u32,
+        plan_digest_high: (report.plan_digest >> 32) as u32,
+        family_size: report.family_size,
+        terminal_cause: report.terminal_cause,
+        has_safety_fault: report.has_safety_fault,
+    });
+}
+
+/// Emit the additive discovery plan before the first discovery stroke, split
+/// into its identity and geometry fragments.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_additive_discovery_plan<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::AdditiveDiscoveryPlanned,
+) {
+    sink.foci_breakaway_discovery_plan_identity(
+        crate::ankyra::replies::FociBreakawayDiscoveryPlanIdentity {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            prior_plan_digest_low: report.prior_plan_digest as u32,
+            prior_plan_digest_high: (report.prior_plan_digest >> 32) as u32,
+            family_size: report.family_size,
+        },
+    );
+    sink.foci_breakaway_discovery_plan_geometry(
+        crate::ankyra::replies::FociBreakawayDiscoveryPlanGeometry {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            rung_count: report.rung_count,
+            observations_per_direction: report.observations_per_direction,
+            floor_p_raw: report.floor_p_raw,
+            floor_origin: report.floor_origin,
+            breakaway_p_raw: report.breakaway_p_raw,
+            ceiling_p_raw: report.ceiling_p_raw,
+            first_additive_step_raw: report.first_additive_step_raw,
+            maximum_workflow_ms: report.maximum_workflow_ms,
+        },
+    );
+}
+
+/// Emit one rung of the complete resolved additive ladder.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_ladder_rung<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayLadderRung,
+) {
+    sink.foci_breakaway_ladder_rung(crate::ankyra::replies::FociBreakawayLadderRung {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        plan_digest_low: report.plan_digest as u32,
+        plan_digest_high: (report.plan_digest >> 32) as u32,
+        rung_index: report.rung_index,
+        p_raw: report.p_raw,
+    });
+}
+
+/// Emit one in-band discovery rung's nomination bounds and margin.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_discovery_rung_margin<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayDiscoveryRungMargin,
+) {
+    sink.foci_breakaway_discovery_rung_margin(
+        crate::ankyra::replies::FociBreakawayDiscoveryRungMargin {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            collected_index: report.collected_index,
+            p_raw: report.p_raw,
+            lower_percent_milli: report.lower_percent_milli,
+            upper_percent_milli: report.upper_percent_milli,
+            margin_percent_milli: report.margin_percent_milli,
+            half_width_percent_milli: report.half_width_percent_milli,
+            adjacent_rate_step_permille: report.adjacent_rate_step_permille,
+        },
+    );
+}
+
+/// Emit whether the additive ladder's rung zero itself showed motion.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_rung_zero_diagnostic<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayRungZeroDiagnostic,
+) {
+    sink.foci_breakaway_rung_zero_diagnostic(
+        crate::ankyra::replies::FociBreakawayRungZeroDiagnostic {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            forward_moved: report.forward_moved,
+            reverse_moved: report.reverse_moved,
+        },
+    );
+}
+
+/// Emit a discovery-campaign terminal.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_additive_discovery_terminal<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::AdditiveDiscoveryTerminal,
+) {
+    sink.foci_breakaway_discovery_terminal(
+        crate::ankyra::replies::FociBreakawayDiscoveryTerminal {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            prior_plan_digest_low: report.prior_plan_digest as u32,
+            prior_plan_digest_high: (report.prior_plan_digest >> 32) as u32,
+            family_size: report.family_size,
+            terminal_cause: report.terminal_cause,
+            collected_count: report.collected_count,
+            has_safety_fault: report.has_safety_fault,
+        },
+    );
+}
+
+/// Emit the immutable held-out confirmation plan before the first
+/// confirmation stroke.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_band_confirmation_plan<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BandConfirmationPlanned,
+) {
+    sink.foci_breakaway_confirmation_plan(crate::ankyra::replies::FociBreakawayConfirmationPlan {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        plan_digest_low: report.plan_digest as u32,
+        plan_digest_high: (report.plan_digest >> 32) as u32,
+        prior_plan_digest_low: report.prior_plan_digest as u32,
+        prior_plan_digest_high: (report.prior_plan_digest >> 32) as u32,
+        family_size: report.family_size,
+        observations_per_direction: report.observations_per_direction,
+        candidate_p_raw: report.candidate_p_raw,
+        band_lower_percent: report.band_lower_percent,
+        band_upper_percent: report.band_upper_percent,
+        capture_profile: report.capture_profile,
+        acceptance_rule: report.acceptance_rule,
+        nominated_margin_percent_milli: report.nominated_margin_percent_milli,
+    });
+}
+
+/// Emit one fresh held-out confirmation stroke's response interval.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_band_confirmation_observation<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BandConfirmationObservation,
+) {
+    sink.foci_breakaway_confirmation_observation(
+        crate::ankyra::replies::FociBreakawayConfirmationObservation {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            slot_index: report.slot_index,
+            direction: report.direction,
+            response_lower_percent_milli: report.response_lower_percent_milli,
+            response_upper_percent_milli: report.response_upper_percent_milli,
+            relative_standard_error_permille: report.relative_standard_error_permille,
+        },
+    );
+}
+
+/// Emit a confirmation-block terminal, split into its identity and mask fragments.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_band_confirmation_terminal<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BandConfirmationTerminal,
+) {
+    sink.foci_breakaway_confirmation_terminal_identity(
+        crate::ankyra::replies::FociBreakawayConfirmationTerminalIdentity {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            prior_plan_digest_low: report.prior_plan_digest as u32,
+            prior_plan_digest_high: (report.prior_plan_digest >> 32) as u32,
+            family_size: report.family_size,
+            terminal_cause: report.terminal_cause,
+        },
+    );
+    sink.foci_breakaway_confirmation_terminal_masks(
+        crate::ankyra::replies::FociBreakawayConfirmationTerminalMasks {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            forward_collected_mask: report.forward_collected_mask,
+            forward_eligible_mask: report.forward_eligible_mask,
+            forward_included_mask: report.forward_included_mask,
+            reverse_collected_mask: report.reverse_collected_mask,
+            reverse_eligible_mask: report.reverse_eligible_mask,
+            reverse_included_mask: report.reverse_included_mask,
+            accepted: report.accepted,
+            confirmed_p_raw: report.confirmed_p_raw,
+            max_relative_se_permille: report.max_relative_se_permille,
+            required_relative_se_permille: report.required_relative_se_permille,
+            has_safety_fault: report.has_safety_fault,
+        },
+    );
+}
+
+/// Emit the canonical closure record for one complete breakaway campaign.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayCampaignTerminal,
+) {
+    sink.foci_breakaway_campaign_terminal(crate::ankyra::replies::FociBreakawayCampaignTerminal {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        phase: report.phase,
+        terminal_cause: report.terminal_cause,
+        accepted: report.accepted,
+        stage_c_plan_digest_low: report.stage_c_plan_digest as u32,
+        stage_c_plan_digest_high: (report.stage_c_plan_digest >> 32) as u32,
     });
 }
 

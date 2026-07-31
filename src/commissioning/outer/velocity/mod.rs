@@ -13,6 +13,8 @@ pub mod band_confirmation;
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod breakaway_campaign;
 pub mod breakaway_plan;
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
 pub mod combined_plan;
 #[cfg(test)]

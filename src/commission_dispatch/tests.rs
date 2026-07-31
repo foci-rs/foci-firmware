@@ -277,6 +277,49 @@ enum ReplyEvent {
         entry_status: u8,
         drift_count: u16,
     },
+    BreakawayProbePlan {
+        plan_digest_low: u32,
+        plan_digest_high: u32,
+        family_size: u16,
+    },
+    BreakawayDirectionalBreakaway {
+        direction: u8,
+        inert_present: u8,
+        inert_p_raw: u16,
+        moving_p_raw: u16,
+    },
+    BreakawayDiscoveryPlanIdentity {
+        plan_digest_low: u32,
+        plan_digest_high: u32,
+        prior_plan_digest_low: u32,
+        prior_plan_digest_high: u32,
+    },
+    BreakawayDiscoveryPlanGeometry {
+        floor_p_raw: u16,
+        breakaway_p_raw: u16,
+        ceiling_p_raw: u16,
+        maximum_workflow_ms: u32,
+    },
+    BreakawayConfirmationTerminalIdentity {
+        plan_digest_low: u32,
+        plan_digest_high: u32,
+        prior_plan_digest_low: u32,
+        prior_plan_digest_high: u32,
+        terminal_cause: u8,
+    },
+    BreakawayConfirmationTerminalMasks {
+        forward_collected_mask: u8,
+        reverse_included_mask: u8,
+        accepted: u8,
+        confirmed_p_raw: u16,
+    },
+    BreakawayCampaignTerminal {
+        phase: u8,
+        terminal_cause: u8,
+        accepted: u8,
+        stage_c_plan_digest_low: u32,
+        stage_c_plan_digest_high: u32,
+    },
 }
 
 #[derive(Default)]
@@ -408,6 +451,289 @@ impl CommissionReplySink for ReplyRecorder {
     }
 
     fn foci_selftest_done(&mut self, _oid: u8, _status: u8) {}
+
+    fn foci_breakaway_probe_plan(
+        &mut self,
+        report: crate::ankyra::replies::FociBreakawayProbePlan,
+    ) {
+        self.events.push(ReplyEvent::BreakawayProbePlan {
+            plan_digest_low: report.plan_digest_low,
+            plan_digest_high: report.plan_digest_high,
+            family_size: report.family_size,
+        });
+    }
+
+    fn foci_breakaway_directional_breakaway(
+        &mut self,
+        report: crate::ankyra::replies::FociBreakawayDirectionalBreakaway,
+    ) {
+        self.events.push(ReplyEvent::BreakawayDirectionalBreakaway {
+            direction: report.direction,
+            inert_present: report.inert_present,
+            inert_p_raw: report.inert_p_raw,
+            moving_p_raw: report.moving_p_raw,
+        });
+    }
+
+    fn foci_breakaway_discovery_plan_identity(
+        &mut self,
+        report: crate::ankyra::replies::FociBreakawayDiscoveryPlanIdentity,
+    ) {
+        self.events
+            .push(ReplyEvent::BreakawayDiscoveryPlanIdentity {
+                plan_digest_low: report.plan_digest_low,
+                plan_digest_high: report.plan_digest_high,
+                prior_plan_digest_low: report.prior_plan_digest_low,
+                prior_plan_digest_high: report.prior_plan_digest_high,
+            });
+    }
+
+    fn foci_breakaway_discovery_plan_geometry(
+        &mut self,
+        report: crate::ankyra::replies::FociBreakawayDiscoveryPlanGeometry,
+    ) {
+        self.events
+            .push(ReplyEvent::BreakawayDiscoveryPlanGeometry {
+                floor_p_raw: report.floor_p_raw,
+                breakaway_p_raw: report.breakaway_p_raw,
+                ceiling_p_raw: report.ceiling_p_raw,
+                maximum_workflow_ms: report.maximum_workflow_ms,
+            });
+    }
+
+    fn foci_breakaway_confirmation_terminal_identity(
+        &mut self,
+        report: crate::ankyra::replies::FociBreakawayConfirmationTerminalIdentity,
+    ) {
+        self.events
+            .push(ReplyEvent::BreakawayConfirmationTerminalIdentity {
+                plan_digest_low: report.plan_digest_low,
+                plan_digest_high: report.plan_digest_high,
+                prior_plan_digest_low: report.prior_plan_digest_low,
+                prior_plan_digest_high: report.prior_plan_digest_high,
+                terminal_cause: report.terminal_cause,
+            });
+    }
+
+    fn foci_breakaway_confirmation_terminal_masks(
+        &mut self,
+        report: crate::ankyra::replies::FociBreakawayConfirmationTerminalMasks,
+    ) {
+        self.events
+            .push(ReplyEvent::BreakawayConfirmationTerminalMasks {
+                forward_collected_mask: report.forward_collected_mask,
+                reverse_included_mask: report.reverse_included_mask,
+                accepted: report.accepted,
+                confirmed_p_raw: report.confirmed_p_raw,
+            });
+    }
+
+    fn foci_breakaway_campaign_terminal(
+        &mut self,
+        report: crate::ankyra::replies::FociBreakawayCampaignTerminal,
+    ) {
+        self.events.push(ReplyEvent::BreakawayCampaignTerminal {
+            phase: report.phase,
+            terminal_cause: report.terminal_cause,
+            accepted: report.accepted,
+            stage_c_plan_digest_low: report.stage_c_plan_digest_low,
+            stage_c_plan_digest_high: report.stage_c_plan_digest_high,
+        });
+    }
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn emit_breakaway_probe_plan_splits_the_digest_into_low_and_high_words() {
+    use crate::commission_dispatch::replies::emit_breakaway_probe_plan;
+    use crate::commissioning::types::BreakawayProbePlanned;
+
+    let mut sink = ReplyRecorder::default();
+    emit_breakaway_probe_plan(
+        &mut sink,
+        3,
+        BreakawayProbePlanned {
+            run_sequence: 1,
+            evidence_sequence: 2,
+            plan_digest: 0x1122_3344_5566_7788,
+            family_size: 16,
+            max_observations: 8,
+            search_count: 20,
+            p_start_raw: 1,
+            p_top_raw: 1024,
+        },
+    );
+
+    assert_eq!(
+        sink.events,
+        std::vec![ReplyEvent::BreakawayProbePlan {
+            plan_digest_low: 0x5566_7788,
+            plan_digest_high: 0x1122_3344,
+            family_size: 16,
+        }]
+    );
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn emit_breakaway_directional_breakaway_forwards_bracket_endpoints() {
+    use crate::commission_dispatch::replies::emit_breakaway_directional_breakaway;
+    use crate::commissioning::types::BreakawayDirectionalBreakaway;
+
+    let mut sink = ReplyRecorder::default();
+    emit_breakaway_directional_breakaway(
+        &mut sink,
+        3,
+        BreakawayDirectionalBreakaway {
+            run_sequence: 1,
+            evidence_sequence: 2,
+            plan_digest: 9,
+            direction: 0,
+            inert_present: 1,
+            inert_p_raw: 91,
+            moving_p_raw: 128,
+            observations: 5,
+        },
+    );
+
+    assert_eq!(
+        sink.events,
+        std::vec![ReplyEvent::BreakawayDirectionalBreakaway {
+            direction: 0,
+            inert_present: 1,
+            inert_p_raw: 91,
+            moving_p_raw: 128,
+        }]
+    );
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn emit_additive_discovery_plan_emits_identity_then_geometry_fragments() {
+    use crate::commission_dispatch::replies::emit_additive_discovery_plan;
+    use crate::commissioning::types::AdditiveDiscoveryPlanned;
+
+    let mut sink = ReplyRecorder::default();
+    emit_additive_discovery_plan(
+        &mut sink,
+        3,
+        AdditiveDiscoveryPlanned {
+            run_sequence: 1,
+            evidence_sequence: 2,
+            plan_digest: 0x0000_0002_0000_0001,
+            prior_plan_digest: 0x0000_0004_0000_0003,
+            family_size: 16,
+            rung_count: 9,
+            observations_per_direction: 4,
+            floor_p_raw: 64,
+            floor_origin: 0,
+            breakaway_p_raw: 91,
+            ceiling_p_raw: 1024,
+            first_additive_step_raw: 130,
+            maximum_workflow_ms: 300_000,
+        },
+    );
+
+    assert_eq!(
+        sink.events,
+        std::vec![
+            ReplyEvent::BreakawayDiscoveryPlanIdentity {
+                plan_digest_low: 1,
+                plan_digest_high: 2,
+                prior_plan_digest_low: 3,
+                prior_plan_digest_high: 4,
+            },
+            ReplyEvent::BreakawayDiscoveryPlanGeometry {
+                floor_p_raw: 64,
+                breakaway_p_raw: 91,
+                ceiling_p_raw: 1024,
+                maximum_workflow_ms: 300_000,
+            },
+        ]
+    );
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn emit_band_confirmation_terminal_emits_identity_then_masks_fragments() {
+    use crate::commission_dispatch::replies::emit_band_confirmation_terminal;
+    use crate::commissioning::types::BandConfirmationTerminal;
+
+    let mut sink = ReplyRecorder::default();
+    emit_band_confirmation_terminal(
+        &mut sink,
+        3,
+        BandConfirmationTerminal {
+            run_sequence: 1,
+            evidence_sequence: 2,
+            plan_digest: 0x0000_0002_0000_0001,
+            prior_plan_digest: 0x0000_0004_0000_0003,
+            family_size: 8,
+            terminal_cause: 21,
+            forward_collected_mask: 0b1111,
+            forward_eligible_mask: 0b1111,
+            forward_included_mask: 0b1111,
+            reverse_collected_mask: 0b1111,
+            reverse_eligible_mask: 0b1111,
+            reverse_included_mask: 0b1111,
+            accepted: 1,
+            confirmed_p_raw: 724,
+            max_relative_se_permille: 20,
+            required_relative_se_permille: 21,
+            has_safety_fault: 0,
+        },
+    );
+
+    assert_eq!(
+        sink.events,
+        std::vec![
+            ReplyEvent::BreakawayConfirmationTerminalIdentity {
+                plan_digest_low: 1,
+                plan_digest_high: 2,
+                prior_plan_digest_low: 3,
+                prior_plan_digest_high: 4,
+                terminal_cause: 21,
+            },
+            ReplyEvent::BreakawayConfirmationTerminalMasks {
+                forward_collected_mask: 0b1111,
+                reverse_included_mask: 0b1111,
+                accepted: 1,
+                confirmed_p_raw: 724,
+            },
+        ]
+    );
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn emit_breakaway_campaign_terminal_splits_the_stage_c_digest() {
+    use crate::commission_dispatch::replies::emit_breakaway_campaign_terminal;
+    use crate::commissioning::types::BreakawayCampaignTerminal;
+
+    let mut sink = ReplyRecorder::default();
+    emit_breakaway_campaign_terminal(
+        &mut sink,
+        3,
+        BreakawayCampaignTerminal {
+            run_sequence: 1,
+            evidence_sequence: 2,
+            phase: 2,
+            terminal_cause: 21,
+            accepted: 1,
+            stage_c_plan_digest: 0x0000_0006_0000_0005,
+        },
+    );
+
+    assert_eq!(
+        sink.events,
+        std::vec![ReplyEvent::BreakawayCampaignTerminal {
+            phase: 2,
+            terminal_cause: 21,
+            accepted: 1,
+            stage_c_plan_digest_low: 5,
+            stage_c_plan_digest_high: 6,
+        }]
+    );
 }
 
 #[test]
