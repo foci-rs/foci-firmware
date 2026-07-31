@@ -1,0 +1,450 @@
+use super::super::sweep_evidence::VelocityObservationClass;
+use super::super::sweep_evidence::VelocityObservationInput;
+use super::super::sweep_plan::MIN_STRUCTURAL_RUNGS;
+use super::{
+    BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
+    DirectionalBreakaway, MAX_SEARCHABLE_RUNGS, classify_breakaway_observation,
+    resolve_campaign_breakaway,
+};
+use crate::autotune::velocity_measurement::{
+    PlateauSelection, RateBlock, StationarityExclusion, StationarityResult, StationarySuffix,
+    VelocityDirection,
+};
+use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
+use foci_tmc4671::pid::PidPGain;
+
+/// Maximum probed grid indices retained per simulated directional search. The
+/// audited worst case is [`super::super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION`]
+/// (7); the trace capacity leaves headroom so a runaway stub overflows loudly
+/// instead of silently truncating.
+const TRACE_CAPACITY: usize = 16;
+
+fn stationary() -> StationarityResult {
+    StationarityResult::Usable(StationarySuffix {
+        selection: PlateauSelection {
+            level: 1,
+            block_count: 16,
+            variance_of_mean_q2: 4,
+            exact_totals: RateBlock {
+                delta_counts: 1,
+                elapsed_us: 1_000,
+                observation_count: 64,
+            },
+        },
+        suffix_len: 64,
+        slope_q: 0,
+        slope_half_width_q: 1,
+        lag_one_q: 0,
+        lag_one_half_width_q: 1,
+        residual_magnitude_q2: 1,
+        span_x2_us: 0,
+        drift_ratio_ppm: u32::MAX,
+        tested_suffixes: 1,
+    })
+}
+
+fn interval(low: i32, high: i32) -> EquivalentTorqueTargetInterval {
+    EquivalentTorqueTargetInterval::new(
+        EquivalentTorqueTargetQ16::from_raw(low),
+        EquivalentTorqueTargetQ16::from_raw(high),
+    )
+    .unwrap()
+}
+
+/// A well-formed forward moving observation; individual fields are overridden per
+/// table case.
+fn base_input(direction: VelocityDirection) -> VelocityObservationInput {
+    let (settled_rate_low_q, settled_rate_high_q, deficit_low_q, deficit_high_q, point, ci) =
+        match direction {
+            VelocityDirection::Forward => (10, 20, 2, 4, 100, interval(90, 110)),
+            VelocityDirection::Reverse => (-20, -10, -4, -2, -100, interval(-110, -90)),
+        };
+    VelocityObservationInput {
+        direction,
+        p: PidPGain::new(350).unwrap(),
+        stationarity: stationary(),
+        settled_rate_low_q,
+        settled_rate_high_q,
+        settled_rate_mean_q: (settled_rate_low_q + settled_rate_high_q) / 2,
+        deficit_low_q,
+        deficit_high_q,
+        disturbance: Some((EquivalentTorqueTargetQ16::from_raw(point), ci)),
+        disturbance_variance_q2: 4,
+        predicted_torque_target_abs: 500,
+        usable_torque_limit: 900,
+        hard_torque_limit: 1_000,
+        initial_lead_in: false,
+        drift_ratio_ppm: u32::MAX,
+    }
+}
+
+// --- RED table: sign-correct interval classification ----------------------------
+
+#[test]
+fn observation_classification_table() {
+    struct Case {
+        name: &'static str,
+        input: VelocityObservationInput,
+        expected: Result<BreakawayMotionClass, BreakawaySearchError>,
+    }
+
+    let interval_contains_zero = {
+        let mut input = base_input(VelocityDirection::Forward);
+        input.settled_rate_low_q = -5;
+        input.settled_rate_high_q = 5;
+        input
+    };
+    let correct_sign_forward = base_input(VelocityDirection::Forward);
+    let correct_sign_reverse = base_input(VelocityDirection::Reverse);
+    let wrong_sign = {
+        let mut input = base_input(VelocityDirection::Forward);
+        input.settled_rate_low_q = -20;
+        input.settled_rate_high_q = -5;
+        input
+    };
+    let hard_clip = {
+        let mut input = base_input(VelocityDirection::Forward);
+        input.predicted_torque_target_abs = input.hard_torque_limit;
+        input
+    };
+    let stationarity_exclusion = {
+        let mut input = base_input(VelocityDirection::Forward);
+        input.stationarity = StationarityResult::Excluded(StationarityExclusion::ResolvedSlope);
+        input
+    };
+    let invalid_evidence = {
+        let mut input = base_input(VelocityDirection::Forward);
+        input.settled_rate_low_q = 20;
+        input.settled_rate_high_q = 10;
+        input
+    };
+    let current_headroom = {
+        let mut input = base_input(VelocityDirection::Forward);
+        input.predicted_torque_target_abs = input.usable_torque_limit;
+        input
+    };
+
+    let cases = [
+        Case {
+            name: "interval contains zero -> Inert",
+            input: interval_contains_zero,
+            expected: Ok(BreakawayMotionClass::Inert),
+        },
+        Case {
+            name: "correct-sign excludes zero (forward) -> Moving",
+            input: correct_sign_forward,
+            expected: Ok(BreakawayMotionClass::Moving),
+        },
+        Case {
+            name: "correct-sign excludes zero (reverse) -> Moving",
+            input: correct_sign_reverse,
+            expected: Ok(BreakawayMotionClass::Moving),
+        },
+        Case {
+            name: "wrong-sign excludes zero -> SafetyFault",
+            input: wrong_sign,
+            expected: Err(BreakawaySearchError::SafetyFault(
+                VelocityObservationClass::WrongDirectionFault,
+            )),
+        },
+        Case {
+            name: "hard clip -> SafetyFault",
+            input: hard_clip,
+            expected: Err(BreakawaySearchError::SafetyFault(
+                VelocityObservationClass::HardClipFault,
+            )),
+        },
+        Case {
+            name: "stationarity exclusion -> ProbeEvidenceExcluded",
+            input: stationarity_exclusion,
+            expected: Err(BreakawaySearchError::ProbeEvidenceExcluded),
+        },
+        Case {
+            name: "invalid evidence -> ProbeEvidenceExcluded",
+            input: invalid_evidence,
+            expected: Err(BreakawaySearchError::ProbeEvidenceExcluded),
+        },
+        Case {
+            name: "current headroom -> AuthorityFailure",
+            input: current_headroom,
+            expected: Err(BreakawaySearchError::AuthorityFailure),
+        },
+    ];
+
+    for case in cases {
+        assert_eq!(
+            classify_breakaway_observation(case.input),
+            case.expected,
+            "case failed: {}",
+            case.name
+        );
+    }
+}
+
+// --- Binary-search state machine -------------------------------------------------
+
+/// Drive a directional search against a monotone simulated axis and return the
+/// full sequence of probed grid indices alongside the resolved outcome.
+///
+/// `true_breakaway` is the smallest index that reads `Moving`; `None` means every
+/// index in `0..rung_count` reads `Inert` (the axis never moves within the grid).
+fn simulate_directional_search(
+    rung_count: u8,
+    true_breakaway: Option<u8>,
+) -> (
+    heapless::Vec<u8, TRACE_CAPACITY>,
+    Result<DirectionalBreakaway, BreakawaySearchError>,
+) {
+    let (mut cursor, first_index) =
+        BreakawaySearchCursor::start(rung_count).expect("valid rung count");
+    let mut trace: heapless::Vec<u8, TRACE_CAPACITY> = heapless::Vec::new();
+    let mut next_index = first_index;
+    loop {
+        trace
+            .push(next_index)
+            .expect("simulated search stayed within the trace capacity");
+        let class = match true_breakaway {
+            Some(threshold) if next_index >= threshold => BreakawayMotionClass::Moving,
+            _ => BreakawayMotionClass::Inert,
+        };
+        match cursor.advance(Ok(class)) {
+            Ok(BreakawaySearchStep::Probe(index)) => next_index = index,
+            Ok(BreakawaySearchStep::Resolved(breakaway)) => return (trace, Ok(breakaway)),
+            Err(error) => return (trace, Err(error)),
+        }
+    }
+}
+
+#[test]
+fn bisection_confirms_each_bracket_endpoint_exactly_once_after_convergence() {
+    let (trace, result) = simulate_directional_search(20, Some(14));
+    let breakaway = result.expect("monotone axis resolves");
+
+    assert_eq!(breakaway.moving_index, 14);
+    assert_eq!(breakaway.inert_index, Some(13));
+    assert_eq!(usize::from(breakaway.observations), trace.len());
+
+    // Every probed index before the mandatory bracket repeat is distinct: nothing
+    // is retested until the search has already converged on a bracket.
+    let confirm_len = 2; // both 13 and 14 are representable here.
+    let bisection_prefix = &trace[..trace.len() - confirm_len];
+    for (position, index) in bisection_prefix.iter().enumerate() {
+        assert!(
+            !bisection_prefix[..position].contains(index),
+            "index {index} retested during bisection: {trace:?}"
+        );
+    }
+    // The mandatory repeat confirms inert (13) then moving (14).
+    assert_eq!(&trace[trace.len() - confirm_len..], [13, 14]);
+}
+
+#[test]
+fn all_inert_search_reports_no_motion_at_authority() {
+    let (trace, result) = simulate_directional_search(20, None);
+    assert_eq!(result, Err(BreakawaySearchError::NoMotionAtAuthority));
+    assert!(trace.len() <= 7, "trace: {trace:?}");
+}
+
+#[test]
+fn all_moving_search_is_left_censored_at_the_grid_floor() {
+    let (trace, result) = simulate_directional_search(20, Some(0));
+    let breakaway = result.expect("monotone axis resolves");
+
+    assert_eq!(breakaway.moving_index, 0);
+    assert_eq!(breakaway.inert_index, None);
+    // Only one representable endpoint: the mandatory repeat confirms index 0 once.
+    assert_eq!(trace.last(), Some(&0));
+    assert_eq!(usize::from(breakaway.observations), trace.len());
+}
+
+#[test]
+fn arithmetic_boundary_at_grid_floor_reports_the_missing_bracket_side() {
+    for rung_count in [MIN_STRUCTURAL_RUNGS as u8, MAX_SEARCHABLE_RUNGS] {
+        let (_, result) = simulate_directional_search(rung_count, Some(0));
+        let breakaway = result.expect("monotone axis resolves");
+        assert_eq!(breakaway.inert_index, None, "rung_count={rung_count}");
+        assert_eq!(breakaway.moving_index, 0, "rung_count={rung_count}");
+    }
+}
+
+#[test]
+fn exhaustive_search_resolves_every_monotone_axis_within_the_seven_observation_budget() {
+    for rung_count in MIN_STRUCTURAL_RUNGS..=usize::from(MAX_SEARCHABLE_RUNGS) {
+        let rung_count = rung_count as u8;
+        for true_breakaway in 0..=rung_count {
+            let breakaway_option = if true_breakaway == rung_count {
+                None
+            } else {
+                Some(true_breakaway)
+            };
+            let (trace, result) = simulate_directional_search(rung_count, breakaway_option);
+            assert!(
+                trace.len() <= 7,
+                "rung_count={rung_count} breakaway={true_breakaway:?} trace={trace:?}"
+            );
+            match breakaway_option {
+                None => {
+                    assert_eq!(
+                        result,
+                        Err(BreakawaySearchError::NoMotionAtAuthority),
+                        "rung_count={rung_count}"
+                    );
+                }
+                Some(expected_moving) => {
+                    let breakaway = result.unwrap_or_else(|error| {
+                        panic!(
+                            "rung_count={rung_count} breakaway={expected_moving} failed: {error:?}"
+                        )
+                    });
+                    assert_eq!(
+                        breakaway.moving_index, expected_moving,
+                        "rung_count={rung_count}"
+                    );
+                    assert_eq!(
+                        breakaway.inert_index,
+                        expected_moving.checked_sub(1),
+                        "rung_count={rung_count}"
+                    );
+                    assert_eq!(usize::from(breakaway.observations), trace.len());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn contradictory_inert_repeat_yields_unstable_breakaway() {
+    let (mut cursor, mut next_index) = BreakawaySearchCursor::start(20).unwrap();
+    // Bisect down to the 13/14 bracket exactly as in the deterministic trace above.
+    let scripted_bisection = [(10, false), (15, true), (13, false), (14, true)];
+    for (expected_index, moving) in scripted_bisection {
+        assert_eq!(next_index, expected_index);
+        let class = if moving {
+            BreakawayMotionClass::Moving
+        } else {
+            BreakawayMotionClass::Inert
+        };
+        match cursor.advance(Ok(class)).unwrap() {
+            BreakawaySearchStep::Probe(index) => next_index = index,
+            BreakawaySearchStep::Resolved(_) => panic!("resolved before the mandatory repeat"),
+        }
+    }
+    // The bisection converged and the cursor now expects the inert repeat at 13.
+    assert_eq!(next_index, 13);
+    let outcome = cursor.advance(Ok(BreakawayMotionClass::Moving));
+    assert_eq!(outcome, Err(BreakawaySearchError::UnstableBreakaway));
+}
+
+#[test]
+fn contradictory_moving_repeat_yields_unstable_breakaway() {
+    let (mut cursor, mut next_index) = BreakawaySearchCursor::start(20).unwrap();
+    let scripted_bisection = [(10, false), (15, true), (13, false), (14, true)];
+    for (expected_index, moving) in scripted_bisection {
+        assert_eq!(next_index, expected_index);
+        let class = if moving {
+            BreakawayMotionClass::Moving
+        } else {
+            BreakawayMotionClass::Inert
+        };
+        match cursor.advance(Ok(class)).unwrap() {
+            BreakawaySearchStep::Probe(index) => next_index = index,
+            BreakawaySearchStep::Resolved(_) => panic!("resolved before the mandatory repeat"),
+        }
+    }
+    assert_eq!(next_index, 13);
+    match cursor.advance(Ok(BreakawayMotionClass::Inert)).unwrap() {
+        BreakawaySearchStep::Probe(index) => next_index = index,
+        BreakawaySearchStep::Resolved(_) => panic!("resolved before the moving repeat"),
+    }
+    assert_eq!(next_index, 14);
+    let outcome = cursor.advance(Ok(BreakawayMotionClass::Inert));
+    assert_eq!(outcome, Err(BreakawaySearchError::UnstableBreakaway));
+}
+
+#[test]
+fn a_safety_fault_short_circuits_the_search_immediately() {
+    let (mut cursor, _first_index) = BreakawaySearchCursor::start(20).unwrap();
+    let outcome = cursor.advance(Err(BreakawaySearchError::SafetyFault(
+        VelocityObservationClass::WrongDirectionFault,
+    )));
+    assert_eq!(
+        outcome,
+        Err(BreakawaySearchError::SafetyFault(
+            VelocityObservationClass::WrongDirectionFault
+        ))
+    );
+}
+
+#[test]
+fn zero_rung_count_is_rejected_before_any_probe() {
+    assert_eq!(
+        BreakawaySearchCursor::start(0).map(|(_, index)| index),
+        Err(BreakawaySearchError::InvalidRequest)
+    );
+}
+
+#[test]
+fn a_grid_one_rung_larger_than_the_budget_can_guarantee_is_rejected_before_any_probe() {
+    // MAX_SEARCHABLE_RUNGS itself must still be accepted...
+    assert!(BreakawaySearchCursor::start(MAX_SEARCHABLE_RUNGS).is_ok());
+    // ...but one rung more, still representable up to the shared MAX_SWEEP_RUNGS
+    // grid-size cap, cannot be guaranteed to resolve within seven observations and
+    // must be refused before any motion rather than discovered mid-search.
+    assert_eq!(
+        BreakawaySearchCursor::start(MAX_SEARCHABLE_RUNGS + 1).map(|(_, index)| index),
+        Err(BreakawaySearchError::SearchGridTooLarge)
+    );
+}
+
+// --- Campaign breakaway resolution ------------------------------------------------
+
+fn directional_breakaway(inert_index: Option<u8>, moving_index: u8) -> DirectionalBreakaway {
+    DirectionalBreakaway {
+        inert_index,
+        moving_index,
+        observations: 7,
+    }
+}
+
+#[test]
+fn one_grid_step_directional_agreement_resolves_to_the_lower_endpoint() {
+    let forward = directional_breakaway(Some(9), 10);
+    let reverse = directional_breakaway(Some(10), 11);
+
+    let resolved = resolve_campaign_breakaway(forward, reverse).unwrap();
+
+    assert_eq!(resolved.breakaway_index, 10);
+    assert_eq!(resolved.forward, forward);
+    assert_eq!(resolved.reverse, reverse);
+}
+
+#[test]
+fn exact_directional_agreement_resolves_to_the_shared_endpoint() {
+    let forward = directional_breakaway(Some(9), 10);
+    let reverse = directional_breakaway(Some(9), 10);
+
+    let resolved = resolve_campaign_breakaway(forward, reverse).unwrap();
+
+    assert_eq!(resolved.breakaway_index, 10);
+}
+
+#[test]
+fn two_grid_step_disagreement_is_rejected() {
+    let forward = directional_breakaway(Some(9), 10);
+    let reverse = directional_breakaway(Some(11), 12);
+
+    assert_eq!(
+        resolve_campaign_breakaway(forward, reverse),
+        Err(BreakawaySearchError::DirectionalBreakawayDisagreement)
+    );
+}
+
+#[test]
+fn campaign_resolution_takes_the_lower_endpoint_regardless_of_direction() {
+    let forward = directional_breakaway(Some(10), 11);
+    let reverse = directional_breakaway(Some(9), 10);
+
+    let resolved = resolve_campaign_breakaway(forward, reverse).unwrap();
+
+    assert_eq!(resolved.breakaway_index, 10);
+}
