@@ -2750,3 +2750,90 @@ fn outer_failed_restore_rejects_monotonic_creep() {
         }
     });
 }
+
+/// Build a breakaway-campaign engine the way the host command does: derive and
+/// admit the campaign from a sweep request, then enter the campaign phase.
+#[cfg(feature = "trace-velocity-sweep")]
+fn breakaway_campaign_engine() -> CommissioningEngine {
+    use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
+
+    let params = sample_outer_params();
+    let request = VelocitySweepRequest {
+        requested_velocity_mrev_s: params.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: params.requested_velocity_source,
+        max_stroke_travel_mrev: params.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: params.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: params.positive_position_headroom_mrev,
+        max_duration_ms: params.max_duration_ms,
+    };
+    let (campaign, _workflow) =
+        crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command(
+            request, 4_000, 2_816, 0, 25_000, 0, 7,
+        )
+        .expect("a valid host request must admit a breakaway campaign");
+    CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+        0,
+        tmc_state(),
+        sample_outer_params(),
+        sample_entry_snapshot(),
+        campaign,
+    )
+}
+
+/// A breakaway campaign that fails on a safety envelope violation must be safely
+/// disarmed at the dispatch boundary and must never continue into Stage C.
+///
+/// The campaign energizes through the documented commissioning exception, so the
+/// dispatch owns the disarm. On the engine's `OuterFailed` terminal the safety
+/// fault de-energizes the motor and produces the outer-failure reply namespace,
+/// never a Stage-C / velocity-integral continuation.
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn breakaway_campaign_safety_failure_disarms_without_reaching_stage_c() {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+        tmc_state().commission_in_flight.store(true, Relaxed);
+        let mut backend = MockBackend::new();
+        seed_motor_sentinel(&mut backend).await;
+        // The campaign has energized the motor; the dispatch must disarm it.
+        backend.enable_pin = true;
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let mut engine = Some(breakaway_campaign_engine());
+
+        let err = crate::autotune::CommissionError::SafetyEnvelopeViolation;
+        let outcome = drive_commission_result(
+            StepResult::OuterFailed(err),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4_095,
+        )
+        .await;
+
+        // Safe disarm: the motor is de-energized on the safety-fault terminal.
+        assert!(!backend.enable_pin);
+        // The engine is consumed into a terminal (no lingering campaign state).
+        assert!(engine.is_none());
+        assert!(!tmc_state().commission_in_flight.load(Relaxed));
+
+        // No Stage-C continuation: the reply is the outer-failure namespace, and
+        // no velocity-integral / Stage-C terminal is produced.
+        match outcome {
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::TuneResult { status, .. },
+                actions,
+            } => {
+                assert_eq!(status, err.status_code());
+                assert_eq!(actions.stepper, StepperPostAction::Stop);
+            }
+            _ => panic!("a campaign safety failure must be a stop terminal"),
+        }
+
+        clear_motor_sentinel();
+    });
+}

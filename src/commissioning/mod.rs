@@ -585,6 +585,48 @@ impl CommissioningEngine {
         engine
     }
 
+    /// Create a breakaway-campaign engine from an admitted, pre-planned campaign.
+    ///
+    /// The campaign is built and its command-level workflow envelope reserved by
+    /// [`crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command`]
+    /// before this call, so construction here is pure state assembly: it enters
+    /// the base outer engine, then replaces its `VelocitySweep` entry phase with
+    /// [`OuterPhase::BreakawayCampaign`], reusing the outer safety envelope the
+    /// base constructor derived. No motion is commanded; the probe's first stroke
+    /// is only reachable through the engine step loop.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn new_outer_for_tmc_with_breakaway_campaign(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+        campaign: crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign,
+    ) -> Self {
+        let run_sequence = campaign.run_sequence();
+        let mut engine = Self::new_outer_for_tmc_with_trace_seq(
+            oid,
+            tmc_state,
+            params,
+            entry_snapshot,
+            run_sequence,
+        );
+        let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
+            unreachable!("outer constructor must produce an outer engine")
+        };
+        let old_phase =
+            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
+        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
+            unreachable!("trace outer constructor must enter Stage B")
+        };
+        *phase = OuterPhase::BreakawayCampaign {
+            campaign,
+            workspace:
+                crate::commissioning::outer::velocity::breakaway_campaign::BreakawayProbeWorkspace::new(),
+            safety,
+        };
+        engine
+    }
+
     /// Derive the exact Stage-C continuation plan without changing the live phase.
     #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn plan_stage_c_continuation(
@@ -895,6 +937,13 @@ impl CommissioningEngine {
             {
                 Some(data.plan.hard_torque_limit)
             }
+            // The breakaway campaign energizes the motor with an active torque
+            // limit (the frozen `hard_torque_limit` it later hands to Stage C),
+            // so safe-state restoration of an armed campaign phase must report
+            // it rather than falling through to `None`.
+            OuterPhase::BreakawayCampaign { campaign, .. } if campaign.hard_torque_limit() != 0 => {
+                Some(campaign.hard_torque_limit())
+            }
             _ => None,
         }
     }
@@ -908,6 +957,11 @@ impl CommissioningEngine {
         match phase {
             OuterPhase::VelocitySweep { data, .. } => data.plan.hard_torque_limit = 0,
             OuterPhase::VelocityIntegral { data, .. } => data.plan.hard_torque_limit = 0,
+            // The campaign's operational limit lives in its frozen inputs, which
+            // the Stage-C hand-off still reads, so it must not be cleared. The
+            // engine is consumed or replaced immediately after a checked
+            // restoration, so no idempotent re-query occurs on this phase.
+            OuterPhase::BreakawayCampaign { .. } => {}
             _ => {}
         }
     }
@@ -2460,6 +2514,54 @@ mod tests {
         };
         assert_eq!(data.plan.plan_digest, expected_digest);
         assert_eq!(data.integrity.next_evidence_sequence(), 1);
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_command_enters_the_campaign_and_reports_its_torque_limit() {
+        use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
+        use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
+        use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
+
+        let params = sample_outer_params();
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: params.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: params.requested_velocity_source,
+            max_stroke_travel_mrev: params.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: params.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: params.positive_position_headroom_mrev,
+            max_duration_ms: params.max_duration_ms,
+        };
+        let (campaign, workflow) =
+            plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
+                .expect("a valid host request must admit a breakaway campaign");
+
+        // The command discloses the breakaway shape and a well-ordered envelope.
+        assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
+        assert_eq!(workflow.run_sequence, 42);
+        assert!(workflow.nominal_workflow_ms > 0);
+        assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
+        assert_eq!(campaign.hard_torque_limit(), 2_816);
+
+        let engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+            0,
+            tmc_state(),
+            params,
+            sample_entry_snapshot(),
+            campaign,
+        );
+        assert!(matches!(
+            engine.engine_mode,
+            EngineMode::Outer {
+                phase: OuterPhase::BreakawayCampaign { .. },
+                ..
+            }
+        ));
+        // Carried-over 6e-2a review fix: safe-state restoration must see the
+        // campaign's active torque limit instead of the former `None`.
+        assert_eq!(engine.velocity_operational_torque_limit(), Some(2_816));
     }
 
     #[test]

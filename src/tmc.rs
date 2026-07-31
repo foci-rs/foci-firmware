@@ -463,6 +463,13 @@ pub enum AutotuneAction {
     /// origin and from the direction of the stroke before it, which the two
     /// alternating orders lock together.
     CombinedPaired = 6,
+    /// Run the breakaway probe, additive discovery, held-out confirmation, and
+    /// the existing Stage-C integral continuation as one bounded command.
+    ///
+    /// The full campaign is exposed only under `trace-velocity-sweep`; on a
+    /// non-trace build the request enters the same generic outer tune as every
+    /// other action, since the campaign phase does not exist there.
+    BreakawaySeeded = 7,
 }
 
 impl AutotuneAction {
@@ -476,6 +483,7 @@ impl AutotuneAction {
             4 => Some(Self::MatrixDescendingMirrored),
             5 => Some(Self::CombinedMirrored),
             6 => Some(Self::CombinedPaired),
+            7 => Some(Self::BreakawaySeeded),
             _ => None,
         }
     }
@@ -497,6 +505,10 @@ impl AutotuneAction {
             | Self::MatrixAscendingMirrored
             | Self::MatrixDescendingMirrored => IntegralSlotOrder::ReverseFirst,
             Self::CombinedPaired => IntegralSlotOrder::PairedOutAndBack,
+            // The breakaway campaign runs its own probe/discovery/confirmation
+            // schedule and does not consult the classic forward/reverse slot
+            // order; report the default so the field stays well defined.
+            Self::BreakawaySeeded => IntegralSlotOrder::ForwardFirst,
         }
     }
 }

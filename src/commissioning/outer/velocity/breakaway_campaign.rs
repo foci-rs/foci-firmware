@@ -101,6 +101,7 @@ use super::breakaway_search::{
     DirectionalBreakaway, ResolvedCampaignBreakaway, classify_breakaway_observation,
     resolve_campaign_breakaway,
 };
+use super::combined_plan::combined_workflow_geometry;
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
     VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, begin_velocity_current_primitive,
@@ -109,7 +110,8 @@ use super::current_guard::{
 };
 use super::integral_plan::{
     AcquisitionContext, CommissioningWorkflowPlan, StageCAuthority, VelocityIntegralPlan,
-    bind_breakaway_stage_c_authority, plan_breakaway_velocity_integral_response,
+    bind_breakaway_stage_c_authority, breakaway_workflow_envelope_ms,
+    plan_breakaway_velocity_integral_response,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestSchedule, RecoveryStage,
@@ -130,7 +132,8 @@ use super::sweep_evidence::{VelocityObservationClass, classify_velocity_observat
 use super::sweep_plan::current_gain_span;
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
-    SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, ZERO_SETTLE_US,
+    SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest,
+    ZERO_SETTLE_US, plan_combined_velocity_sweep,
 };
 
 /// Outer velocity ramp mode. Matches the wire encoding
@@ -2957,10 +2960,96 @@ impl BreakawayCampaign {
         self.inputs.run_sequence
     }
 
+    /// Number of recovery slots the campaign reserves before probe motion.
+    ///
+    /// Fixed at the live-rig value from the spec (section 8): 24
+    /// worst-case recovery slots, each reserved at the plan's per-slot maximum,
+    /// bound the recovery term of [`breakaway_workflow_envelope_ms`].
+    pub(crate) const RECOVERY_SLOT_COUNT: u32 = 24;
+
+    /// Hard torque-target limit the campaign energizes the motor with.
+    ///
+    /// This is the operational torque limit that safe-state restoration must
+    /// restore when a campaign phase is torn down while still armed. It is the
+    /// same frozen limit the Stage-C hand-off carries into the confirmed plan
+    /// (`hard_torque_limit` in [`BreakawayCampaignInputs`]).
+    pub(crate) const fn hard_torque_limit(&self) -> u16 {
+        self.inputs.hard_torque_limit
+    }
+
     /// The active campaign phase, for engine-adapter routing and test scripting.
     pub(crate) const fn phase(&self) -> &BreakawayCampaignPhase {
         &self.phase
     }
+}
+
+/// Derive the command-level campaign plan and its worst-case workflow envelope
+/// from the same host sweep request the combined workflow admits.
+///
+/// This is pure command admission: it commands no motion and touches no backend.
+/// It reuses [`plan_combined_velocity_sweep`] to derive the shared target
+/// velocity, planned amplitude, and per-slot recovery reservations, and
+/// [`combined_workflow_geometry`] for the worst-case Stage-C continuation, then
+/// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
+/// (24 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
+/// returned [`CommissioningWorkflowPlan`] carries the exact envelope the
+/// campaign reserves, so disclosing it before construction matches the envelope
+/// [`BreakawayCampaign::new`] validates. Any planning failure is a zero-motion
+/// refusal reported as [`CommissionError::InvalidSchedule`].
+pub(crate) fn plan_breakaway_campaign_command(
+    request: VelocitySweepRequest,
+    encoder_counts_per_rev: u32,
+    hard_torque_limit: u16,
+    limit_evidence_capability: u32,
+    pwm_hz: u32,
+    channel: u8,
+    run_sequence: u32,
+) -> Result<(BreakawayCampaign, CommissioningWorkflowPlan), CommissionError> {
+    let plan = plan_combined_velocity_sweep(
+        request,
+        encoder_counts_per_rev,
+        hard_torque_limit,
+        limit_evidence_capability,
+    )
+    .map_err(|_| CommissionError::InvalidSchedule)?;
+    let geometry =
+        combined_workflow_geometry(plan, pwm_hz).map_err(|_| CommissionError::InvalidSchedule)?;
+    let stage_c_nominal_us = u64::from(geometry.i_nominal_ms)
+        .checked_mul(1_000)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let stage_c_maximum_us = u64::from(geometry.i_maximum_ms)
+        .checked_mul(1_000)
+        .ok_or(CommissionError::InvalidSchedule)?;
+    let nominal_workflow_ms = breakaway_workflow_envelope_ms(
+        BreakawayCampaign::RECOVERY_SLOT_COUNT,
+        plan.recovery_nominal_slot_us,
+        stage_c_nominal_us,
+    )
+    .map_err(|_| CommissionError::InvalidSchedule)?;
+    let maximum_workflow_ms = breakaway_workflow_envelope_ms(
+        BreakawayCampaign::RECOVERY_SLOT_COUNT,
+        plan.recovery_maximum_slot_us,
+        stage_c_maximum_us,
+    )
+    .map_err(|_| CommissionError::InvalidSchedule)?;
+    let workflow = CommissioningWorkflowPlan::new_breakaway(
+        run_sequence,
+        nominal_workflow_ms,
+        maximum_workflow_ms,
+    )
+    .map_err(|_| CommissionError::InvalidSchedule)?;
+    let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
+        target_velocity_rpm: plan.target_velocity_rpm,
+        planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
+        hard_torque_limit,
+        limit_evidence_capability: plan.limit_evidence_capability,
+        max_duration_ms: request.max_duration_ms,
+        nominal_workflow_ms,
+        maximum_workflow_ms,
+        channel,
+        run_sequence,
+    })?;
+    Ok((campaign, workflow))
 }
 
 /// Terminal result of a complete breakaway campaign.

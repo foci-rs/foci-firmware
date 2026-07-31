@@ -169,7 +169,20 @@ fn action_codes_and_invalid_values_are_exact() {
         AutotuneAction::from_u8(6),
         Some(AutotuneAction::CombinedPaired)
     );
-    assert_eq!(AutotuneAction::from_u8(7), None);
+    assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
+    assert_eq!(
+        AutotuneAction::from_u8(7),
+        Some(AutotuneAction::BreakawaySeeded)
+    );
+    assert_eq!(AutotuneAction::from_u8(8), None);
+    // The breakaway campaign runs its own schedule; it is neither a matrix
+    // acquisition nor a classic forward/reverse slot order.
+    assert_eq!(
+        AutotuneAction::BreakawaySeeded.slot_order(),
+        IntegralSlotOrder::ForwardFirst
+    );
+    assert_eq!(AutotuneAction::BreakawaySeeded.matrix_order(), None);
+    assert_eq!(AutotuneAction::BreakawaySeeded.matrix_slot_order(), None);
 
     // Slot order is defined for every acquisition, including combined runs.
     for (action, slot_order) in [

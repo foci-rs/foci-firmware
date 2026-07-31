@@ -35,10 +35,14 @@ pub enum TmcPreRequestDisposition {
     RunDiagnostic(TmcRequest),
 }
 
+// The breakaway campaign carries the whole admitted campaign by value; boxing is
+// unavailable in this heapless crate, matching the campaign's own terminal enums.
 #[cfg(feature = "trace-velocity-sweep")]
+#[allow(clippy::large_enum_variant)]
 enum TuneRoute {
     Combined(crate::commission_dispatch::stage_b::StageBPreflight),
     Acceptance(crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight),
+    Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
 }
 
 /// A board could not install the validated mapper into its idle P3 scheduler.
@@ -908,6 +912,37 @@ where
                     });
                     TuneRoute::Acceptance(preflight)
                 }
+                crate::tmc::AutotuneAction::BreakawaySeeded => {
+                    let (campaign, workflow) = match crate::commissioning::outer::velocity::
+                        breakaway_campaign::plan_breakaway_campaign_command(
+                            request,
+                            encoder_counts_per_rev,
+                            current_limit.raw(),
+                            board.velocity_limit_evidence_capability(),
+                            board.pwm_freq_hz(),
+                            board.channel(),
+                            run_sequence,
+                        ) {
+                            Ok(planned) => planned,
+                            Err(error) => {
+                                board.tmc_state().commission_in_flight.store(
+                                    false,
+                                    core::sync::atomic::Ordering::Relaxed,
+                                );
+                                emit_commission_phase_failure::<Board, Spi>(
+                                    board,
+                                    oid,
+                                    error.status_code(),
+                                );
+                                return TmcControlRequestOutcome::skip_tick_tail();
+                            }
+                        };
+                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                        oid,
+                        plan: workflow,
+                    });
+                    TuneRoute::Breakaway(campaign)
+                }
             };
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before tune");
@@ -1019,6 +1054,17 @@ where
                                 outer_params,
                                 entry_snapshot,
                                 preflight,
+                            ),
+                        );
+                    }
+                    TuneRoute::Breakaway(campaign) => {
+                        runtime.set_commission_engine(
+                            CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+                                oid,
+                                tmc_state,
+                                outer_params,
+                                entry_snapshot,
+                                campaign,
                             ),
                         );
                     }
@@ -2548,6 +2594,50 @@ mod tests {
                 [encode_velocity_sweep_event(event)]
             );
             assert!(slot.candidate().is_none());
+            assert!(runtime.is_commission_active());
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_workflow_is_declared_before_engine_execution() {
+        run_request_test(async {
+            use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
+            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+            let mut board = RecordingBoard::skip_tick_tail();
+            let tmc_state = tmc_channel0();
+            tmc_state
+                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+                .expect("valid motion scale");
+            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_motor_enabled_for_test(true);
+            runtime.set_calibrated_for_test(true);
+            let mut slot = StageBCandidateSlot::new();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            handle_tmc_control_request_with_stage_b(
+                tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut slot,
+                &mut tmc,
+                &mut board,
+            )
+            .await;
+
+            // The campaign discloses only its command-level envelope before
+            // construction; the probe's Planned evidence is recorded on its first
+            // engine step, not at admission, so exactly one reply is emitted.
+            assert_eq!(board.replies.len(), 1);
+            let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+            else {
+                panic!("breakaway workflow envelope must be the only admission reply")
+            };
+            assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
+            assert!(workflow.nominal_workflow_ms > 0);
+            assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
             assert!(runtime.is_commission_active());
         });
     }
