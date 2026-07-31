@@ -35,11 +35,28 @@
 //! stroke additionally folds observations into per-rung, per-direction consensus
 //! (`depth_three_consensus`) that the probe has no use for.
 //!
-//! Nothing outside this module's own tests calls into either driver yet -- wiring
-//! either into [`super::super::OuterPhase`] is a later slice's job (see the
-//! module-level docs above) -- so, matching [`super::current_guard`]'s own
-//! `#![cfg_attr(not(test), allow(dead_code))]`, dead-code warnings are suppressed
-//! outside test builds.
+//! This module also drives the held-out confirmation phase --
+//! [`step_band_confirmation`], entered via [`begin_band_confirmation`] -- once a
+//! finished additive discovery campaign has nominated a candidate and its
+//! confirmation plan has been frozen. It reuses the probe/discovery primitives
+//! directly: the same [`sample_one_tick`] per-tick safety guard, the same
+//! `assemble_velocity_observation_input`, the same origin-recovery calls, the
+//! same safety short-circuit, and discovery's own [`DirectionAccumulator`] for
+//! folding four fresh strokes into a
+//! [`super::sweep_consensus::DirectionalConsensus`]. It runs a FIXED
+//! eight-stroke block (`CONFIRMATION_SLOT_ORDER`: four forward, four reverse) at
+//! the frozen candidate gain -- no bisection cursor, no ladder walk, and no
+//! early stop on current headroom, because the confirmation contract requires
+//! all eight fresh observations regardless. Its only accept result,
+//! [`BandConfirmationOutcome::Accepted`], is the sole thing a later slice may
+//! use to authorize Stage C; every other outcome is a confirmation-owned
+//! terminal.
+//!
+//! Nothing outside this module's own tests calls into any of the three drivers
+//! yet -- wiring them into [`super::super::OuterPhase`] is a later slice's job
+//! (see the module-level docs above) -- so, matching
+//! [`super::current_guard`]'s own `#![cfg_attr(not(test), allow(dead_code))]`,
+//! dead-code warnings are suppressed outside test builds.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
@@ -64,8 +81,12 @@ use crate::commissioning::types::{
 };
 
 use super::band_confirmation::{
-    CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT, DiscoveryObservationAtom,
-    DiscoveryRungNominationInput, rung_response_bounds_percent,
+    BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlan,
+    CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT, CONFIRMATION_FAMILY_SIZE,
+    CONFIRMATION_SLOT_ORDER, ConfirmationDirectionalInput, DiscoveryObservationAtom,
+    DiscoveryRungNominationInput, TargetBandConfirmationInconclusive,
+    TargetBandUnconfirmableFromDiscovery, evaluate_band_confirmation,
+    nominate_confirmation_candidate, plan_band_confirmation, rung_response_bounds_percent,
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan,
@@ -106,8 +127,8 @@ use super::sweep_plan::{
 /// Outer velocity ramp mode. Matches the wire encoding
 /// [`super::sweep::step_velocity_sweep_with_trace`] writes to `MODE_RAMP_MODE_MOTION`;
 /// duplicated here because that constant is private to the `sweep` module. Shared by
-/// both the probe and the additive discovery driver: both command a single-direction
-/// velocity ramp with I held at zero.
+/// the probe, the additive discovery driver, and the held-out confirmation driver:
+/// all three command a single-direction velocity ramp with I held at zero.
 const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 
 /// Borrowed single-stroke scratch space: capture ring, stationarity analysis, and
@@ -1946,6 +1967,834 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     AdditiveDiscoveryStep::ReadyNow
                 }
             }
+        }
+    }
+}
+
+// ============================================================================
+// Held-out confirmation driver
+// ============================================================================
+
+/// One classified confirmation stroke's evidence, held between
+/// [`BandConfirmationState::AnalyzeMoving`] and [`BandConfirmationState::Advance`],
+/// mirroring [`PendingDiscoveryRecord`]'s role for discovery.
+#[derive(Debug, Clone, Copy, defmt::Format)]
+struct PendingConfirmationRecord {
+    classification: VelocityObservationClass,
+    interval: Option<EquivalentTorqueTargetInterval>,
+    atom: DiscoveryObservationAtom,
+}
+
+/// Terminal result of the held-out confirmation campaign.
+///
+/// [`Self::Accepted`] is the ONLY variant that may authorize Stage C (a later
+/// slice's job to route); every other variant is a confirmation-owned
+/// terminal and must not. Matching every other outer velocity phase, this
+/// driver never asserts `set_enable_pin` itself, and centralized safe-state
+/// restoration on any terminal happens at the surrounding engine boundary,
+/// not per-phase.
+#[derive(Debug, defmt::Format)]
+pub(crate) enum BandConfirmationOutcome {
+    /// All eight held-out strokes were collected with complete
+    /// `collected == eligible == included == 0b1111` masks in both directions
+    /// and every fresh interval contained in 70-80%. Carries the confirmed
+    /// gain and the frozen plan for a later slice's Stage-C construction.
+    Accepted {
+        /// The held-out acceptance itself.
+        acceptance: BandConfirmationAcceptance,
+        /// The frozen confirmation plan the acceptance was judged against.
+        plan: BandConfirmationPlan,
+    },
+    /// No discovery rung's own margin reached zero (spec section 7); zero
+    /// confirmation strokes were spent.
+    TargetBandUnconfirmableFromDiscovery,
+    /// Current authority bound before discovery ever collected an in-band
+    /// rung (spec section 9). Consumed directly from
+    /// [`AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand`] rather than
+    /// re-derived here -- 6c has already fully classified this condition.
+    /// Zero confirmation strokes were spent.
+    TargetBandNotReachedAtAuthority,
+    /// The held-out family-eight block failed strict acceptance; `cause`
+    /// reports why.
+    TargetBandConfirmationInconclusive(BandConfirmationFailureCause),
+    /// Target-independent stationarity evidence, or another controller-domain
+    /// evidence field, was unusable for classification -- or the completed
+    /// origin-recovery return could not confirm rest.
+    ConfirmationEvidenceExcluded,
+    /// An existing safety, current, travel, encoder, or register-I/O fault,
+    /// returned unchanged.
+    SafetyFault {
+        error: CommissionError,
+        safety: Option<OuterSafetyFault>,
+    },
+}
+
+/// Outcome of routing a finished discovery campaign into confirmation.
+///
+/// `Ready` is far larger than `Done`: it embeds [`BandConfirmationSession`],
+/// which carries two [`DirectionAccumulator`]s worth of per-slot evidence.
+/// `large_enum_variant` is accepted here the same way it already is at
+/// [`AdditiveDiscoveryStep`] and the other terminal types in this crate,
+/// rather than boxed -- this crate has no heap.
+#[derive(Debug, defmt::Format)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum BandConfirmationEntry {
+    /// The confirmation plan is frozen; step the returned session from
+    /// [`BandConfirmationState::PlannedConfirmation`] via
+    /// [`step_band_confirmation`] to run the eight-stroke block.
+    Ready(BandConfirmationSession),
+    /// A confirmation-owned terminal was reached before any confirmation
+    /// stroke; zero strokes were spent.
+    Done(BandConfirmationOutcome),
+}
+
+/// Nominate a candidate from a finished discovery campaign and freeze the
+/// held-out confirmation plan. Touches no backend and spends zero
+/// confirmation strokes; motion is only reachable afterward, through
+/// [`step_band_confirmation`].
+///
+/// Confirmation may only begin from the two discovery outcomes that leave a
+/// meaningful confirmation question open:
+/// [`AdditiveDiscoveryOutcome::TargetBandSelected`] (screen the collected
+/// rungs through [`nominate_confirmation_candidate`]) and
+/// [`AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand`] (consumed directly
+/// as [`BandConfirmationOutcome::TargetBandNotReachedAtAuthority`], spec
+/// section 9 -- 6c has already fully classified this condition, so it is not
+/// re-derived here). Every other discovery outcome is itself already a
+/// discovery-owned terminal that ends the whole outer campaign before
+/// confirmation is ever reached; handing one to this function is a caller
+/// (routing) defect, not a confirmation result, and is reported as
+/// `InvalidSchedule` rather than panicking.
+pub(crate) fn begin_band_confirmation(
+    discovery_outcome: AdditiveDiscoveryOutcome,
+    discovery_plan_digest: u64,
+    target_velocity_rpm: TmcMechanicalRpm,
+    planned_velocity_mrev_s: u32,
+) -> BandConfirmationEntry {
+    let rungs = match discovery_outcome {
+        AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => {
+            return BandConfirmationEntry::Done(
+                BandConfirmationOutcome::TargetBandNotReachedAtAuthority,
+            );
+        }
+        AdditiveDiscoveryOutcome::TargetBandSelected(rungs) => rungs,
+        AdditiveDiscoveryOutcome::TargetBandSkipped
+        | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
+        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
+        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded => {
+            return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
+                error: CommissionError::InvalidSchedule,
+                safety: None,
+            });
+        }
+        AdditiveDiscoveryOutcome::SafetyFault { error, safety } => {
+            return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
+                error,
+                safety,
+            });
+        }
+    };
+    let candidate = match nominate_confirmation_candidate(rungs.as_slice()) {
+        Ok(candidate) => candidate,
+        Err(TargetBandUnconfirmableFromDiscovery) => {
+            return BandConfirmationEntry::Done(
+                BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
+            );
+        }
+    };
+    let plan = match plan_band_confirmation(discovery_plan_digest, candidate.p) {
+        Ok(plan) => plan,
+        Err(_) => {
+            return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
+                error: CommissionError::InvalidSchedule,
+                safety: None,
+            });
+        }
+    };
+    BandConfirmationEntry::Ready(BandConfirmationSession::new(
+        plan,
+        target_velocity_rpm,
+        planned_velocity_mrev_s,
+    ))
+}
+
+/// Frozen confirmation plan and the mutable eight-stroke walk progress.
+///
+/// Bundles the immutable [`BandConfirmationPlan`] together with the
+/// fixed-schedule stroke index and the two per-direction accumulators,
+/// mirroring [`AdditiveDiscoverySession`]'s role for discovery. Constructed
+/// only via [`begin_band_confirmation`], after nomination and plan-freeze have
+/// already happened, so [`step_band_confirmation`] is the only path to
+/// motion.
+#[derive(Debug, defmt::Format)]
+pub(crate) struct BandConfirmationSession {
+    plan: BandConfirmationPlan,
+    target_velocity_rpm: TmcMechanicalRpm,
+    planned_velocity_mrev_s: u32,
+    stroke_index: u8,
+    forward: DirectionAccumulator,
+    reverse: DirectionAccumulator,
+    pending_lower_rate_q: Option<u64>,
+    pending_record: Option<PendingConfirmationRecord>,
+}
+
+impl BandConfirmationSession {
+    fn new(
+        plan: BandConfirmationPlan,
+        target_velocity_rpm: TmcMechanicalRpm,
+        planned_velocity_mrev_s: u32,
+    ) -> Self {
+        Self {
+            plan,
+            target_velocity_rpm,
+            planned_velocity_mrev_s,
+            stroke_index: 0,
+            forward: DirectionAccumulator::new(),
+            reverse: DirectionAccumulator::new(),
+            pending_lower_rate_q: None,
+            pending_record: None,
+        }
+    }
+
+    /// Commanded direction for the stroke about to run (or just completed),
+    /// read from the fixed [`CONFIRMATION_SLOT_ORDER`] schedule.
+    fn current_direction(&self) -> VelocityDirection {
+        CONFIRMATION_SLOT_ORDER[usize::from(self.stroke_index)]
+    }
+
+    /// This stroke's position within its own direction's four-slot schedule.
+    ///
+    /// `CONFIRMATION_SLOT_ORDER` is four forward strokes followed by four
+    /// reverse strokes, so `stroke_index % 4` is always the correct
+    /// within-direction slot -- matching both
+    /// `CONFIRMATION_OBSERVATIONS_PER_DIRECTION` and
+    /// `CONSENSUS_OBSERVATIONS_PER_DIRECTION`, both 4.
+    fn slot_within_direction(&self) -> u8 {
+        self.stroke_index % 4
+    }
+}
+
+/// Single-tick cooperative stroke cycle for one confirmation observation.
+///
+/// Mirrors [`AdditiveDiscoveryState`]/[`BreakawayProbeState`]'s stroke states
+/// exactly (write gain, command target, capture, command zero, analyze
+/// moving, settle-capture, analyze settle, recover, advance): a confirmation
+/// stroke is the same guarded primitive, at a frozen gain and a fixed
+/// eight-slot schedule instead of a bisection cursor or a ladder walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum BandConfirmationState {
+    /// The frozen plan is admitted; no stroke has been issued yet.
+    PlannedConfirmation,
+    /// Write the frozen candidate gain and the outer-velocity ramp mode.
+    WriteGain,
+    /// Arm the current clamp and command the signed velocity target.
+    CommandTarget,
+    /// Sample the commanded stroke until its fixed moving duration elapses.
+    Capture {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Command zero and record the moving-phase current evidence boundary.
+    CommandZero,
+    /// Classify the moving-phase stationarity result.
+    AnalyzeMoving {
+        settle_deadline_us: u64,
+        analysis_deadline_us: u64,
+    },
+    /// Read the settle baseline before sampling the zero-target rest window.
+    BeginSettleCapture { settle_deadline_us: u64 },
+    /// Sample the zero-target rest window.
+    SettleCapture {
+        next_sample_us: u64,
+        deadline_us: u64,
+    },
+    /// Confirm rest and record the zero-phase current evidence boundary.
+    AnalyzeSettle { analysis_deadline_us: u64 },
+    /// Return to the parked origin through the shared recovery primitive.
+    Recover(RungOriginRecoveryRuntime),
+    /// Fold the classified observation into the active accumulator and decide
+    /// what is next: another stroke, or the held-out judgement.
+    Advance,
+}
+
+/// One cooperative result from [`step_band_confirmation`].
+#[derive(Debug, defmt::Format)]
+pub(crate) enum BandConfirmationStep {
+    /// Call again immediately; no external wait is needed.
+    ReadyNow,
+    /// Call again no earlier than this `elapsed_us` deadline.
+    At(u64),
+    /// The confirmation campaign concluded.
+    Done(BandConfirmationOutcome),
+}
+
+fn confirmation_fault(error: CommissionError) -> BandConfirmationStep {
+    BandConfirmationStep::Done(BandConfirmationOutcome::SafetyFault {
+        error,
+        safety: None,
+    })
+}
+
+fn confirmation_safety_fault(
+    safety: OuterSafetyFault,
+    error: CommissionError,
+) -> BandConfirmationStep {
+    BandConfirmationStep::Done(BandConfirmationOutcome::SafetyFault {
+        error,
+        safety: Some(safety),
+    })
+}
+
+fn confirmation_current_guard_fault(error: VelocityCurrentGuardError) -> BandConfirmationStep {
+    confirmation_fault(match error {
+        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidSchedule,
+        VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
+        VelocityCurrentGuardError::ActionableStatus(_) => CommissionError::SafetyEnvelopeViolation,
+    })
+}
+
+/// Adapt [`sample_one_tick`]'s probe-flavored fault into a confirmation step.
+///
+/// Mirrors [`discovery_step_from_probe_fault`]: `sample_one_tick` only ever
+/// fails through its own `fault`/`safety_fault` constructors, both of which
+/// resolve to `BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault { .. })`;
+/// no other probe outcome variant is reachable from it.
+fn confirmation_step_from_probe_fault(step: BreakawayProbeStep) -> BandConfirmationStep {
+    match step {
+        BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault { error, safety }) => {
+            BandConfirmationStep::Done(BandConfirmationOutcome::SafetyFault { error, safety })
+        }
+        _ => unreachable!(
+            "sample_one_tick only ever returns a SafetyFault-shaped Done, see its own docs"
+        ),
+    }
+}
+
+/// Map [`evaluate_band_confirmation`]'s result onto this driver's own outcome
+/// type, attaching `plan` to an acceptance.
+///
+/// Extracted as its own pure function (taking the already-built directional
+/// inputs and the already-evaluated result, rather than a session) so a test
+/// can exercise this exact mapping directly against crafted
+/// [`ConfirmationDirectionalInput`] fixtures -- mirroring
+/// `band_confirmation_tests.rs`'s own fixture style -- without needing to
+/// reproduce every [`BandConfirmationFailureCause`] via a physically
+/// simulated encoder script: `evaluate_band_confirmation`'s own statistical
+/// math is exhaustively covered there and is not re-derived here.
+fn confirmation_evaluation_outcome(
+    result: Result<BandConfirmationAcceptance, TargetBandConfirmationInconclusive>,
+    plan: BandConfirmationPlan,
+) -> BandConfirmationOutcome {
+    match result {
+        Ok(acceptance) => BandConfirmationOutcome::Accepted { acceptance, plan },
+        Err(TargetBandConfirmationInconclusive(cause)) => {
+            BandConfirmationOutcome::TargetBandConfirmationInconclusive(cause)
+        }
+    }
+}
+
+/// Fold this session's two completed direction accumulators into the held-out
+/// confirmation judgement.
+fn evaluate_confirmation_session(session: &BandConfirmationSession) -> BandConfirmationOutcome {
+    let forward = ConfirmationDirectionalInput {
+        consensus: session.forward.consensus(),
+        classes: session.forward.classes,
+        observations: session.forward.atoms,
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: session.reverse.consensus(),
+        classes: session.reverse.classes,
+        observations: session.reverse.atoms,
+    };
+    confirmation_evaluation_outcome(
+        evaluate_band_confirmation(session.plan.candidate_p, forward, reverse),
+        session.plan,
+    )
+}
+
+/// Advance the confirmation campaign by one cooperative step.
+///
+/// `workspace` is caller-owned scratch space; `session` is caller-owned
+/// campaign state (see [`BandConfirmationSession`]). Neither is allocated
+/// here. The caller is responsible for running
+/// [`crate::commissioning::outer::check_outer_safety`] against `safety`
+/// between ticks, exactly as `step_outer_with_trace` does for every other
+/// outer phase; this function never performs that check itself, matching
+/// [`step_breakaway_probe`] and [`step_additive_discovery`].
+pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
+    state: &mut BandConfirmationState,
+    workspace: &mut BreakawayProbeWorkspace,
+    session: &mut BandConfirmationSession,
+    safety: &mut OuterSafetyLimits,
+    backend: &mut B,
+) -> BandConfirmationStep {
+    match state {
+        BandConfirmationState::PlannedConfirmation => {
+            *state = BandConfirmationState::WriteGain;
+            BandConfirmationStep::ReadyNow
+        }
+        BandConfirmationState::WriteGain => {
+            let p = session.plan.candidate_p;
+            if backend
+                .write_register(
+                    PID_VELOCITY_P_VELOCITY_I,
+                    PidGainPair::new(p, PidIGain::ZERO).register_value(),
+                )
+                .await
+                .is_err()
+                || backend
+                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
+                    .await
+                    .is_err()
+                || clear_velocity_integrator(backend).await.is_err()
+            {
+                return confirmation_fault(CommissionError::Spi);
+            }
+            *state = BandConfirmationState::CommandTarget;
+            BandConfirmationStep::ReadyNow
+        }
+        BandConfirmationState::CommandTarget => {
+            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
+                Ok(value) => value,
+                Err(_) => return confirmation_fault(CommissionError::Spi),
+            };
+            let baseline_us = backend.elapsed_us();
+            let target = match session
+                .target_velocity_rpm
+                .with_direction(direction_sign(session.current_direction()))
+            {
+                Ok(target) => target.raw(),
+                Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
+            };
+            let hard_limit = u16::from(backend.current_limit());
+            let mut clamp_session =
+                match VelocityCurrentClampSession::try_new(u32::from(hard_limit)) {
+                    Ok(session) => session,
+                    Err(error) => return confirmation_current_guard_fault(error),
+                };
+            if let Err(error) = clamp_session.install_probe_limit(backend).await {
+                return confirmation_current_guard_fault(error);
+            }
+            let clamp_limit = clamp_session.probe_limit();
+            if let Err(error) = begin_velocity_current_primitive(
+                &mut workspace.current_observer,
+                backend,
+                clamp_limit,
+                VelocityLimitEvidenceCapability::BestEffortPolling,
+            )
+            .await
+            {
+                return confirmation_current_guard_fault(error);
+            }
+            if backend
+                .write_register(PID_VELOCITY_TARGET, target as u32)
+                .await
+                .is_err()
+                || safety.begin_primitive(backend.elapsed_us()).is_err()
+            {
+                return confirmation_fault(CommissionError::Spi);
+            }
+            let started_us = backend.elapsed_us();
+            let Some(next_sample_us) =
+                started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
+            else {
+                return confirmation_fault(CommissionError::InvalidSchedule);
+            };
+            let Some(deadline_us) = started_us.checked_add(u64::from(MOVING_STROKE_US)) else {
+                return confirmation_fault(CommissionError::InvalidSchedule);
+            };
+            workspace.observations.clear();
+            workspace.previous_encoder_raw = encoder_raw;
+            workspace.previous_read_us = baseline_us;
+            workspace.settle_displacement_counts = 0;
+            workspace.settle_min_displacement_counts = 0;
+            workspace.settle_max_displacement_counts = 0;
+            *state = BandConfirmationState::Capture {
+                next_sample_us,
+                deadline_us,
+            };
+            BandConfirmationStep::At(next_sample_us)
+        }
+        BandConfirmationState::Capture {
+            next_sample_us,
+            deadline_us,
+        } => {
+            let entry_us = backend.elapsed_us();
+            if entry_us < *next_sample_us {
+                return BandConfirmationStep::At(*next_sample_us);
+            }
+            let read_us = match sample_one_tick(workspace, safety, backend).await {
+                Ok(read_us) => read_us,
+                Err(step) => return confirmation_step_from_probe_fault(step),
+            };
+            match read_velocity_pid_output_abs(backend).await {
+                Ok(value) => workspace.current_observer.observe_moving_output(value),
+                Err(error) => return confirmation_current_guard_fault(error),
+            }
+            if read_us >= *deadline_us {
+                *state = BandConfirmationState::CommandZero;
+                BandConfirmationStep::ReadyNow
+            } else {
+                match next_grid_deadline(
+                    *next_sample_us,
+                    u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US),
+                    read_us,
+                ) {
+                    Ok(next) => {
+                        *next_sample_us = next.min(*deadline_us);
+                        BandConfirmationStep::At(*next_sample_us)
+                    }
+                    Err(error) => confirmation_fault(error),
+                }
+            }
+        }
+        BandConfirmationState::CommandZero => {
+            let boundary =
+                finish_velocity_current_moving_phase(&mut workspace.current_observer, backend)
+                    .await;
+            if backend
+                .write_register(PID_VELOCITY_TARGET, 0)
+                .await
+                .is_err()
+            {
+                return confirmation_fault(CommissionError::Spi);
+            }
+            if let Err(error) = boundary {
+                return confirmation_current_guard_fault(error);
+            }
+            if clear_velocity_integrator(backend).await.is_err() {
+                return confirmation_fault(CommissionError::Spi);
+            }
+            let now_us = backend.elapsed_us();
+            let Some(settle_deadline_us) = now_us.checked_add(u64::from(ZERO_SETTLE_US)) else {
+                return confirmation_fault(CommissionError::InvalidSchedule);
+            };
+            let Some(analysis_deadline_us) =
+                now_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
+            else {
+                return confirmation_fault(CommissionError::InvalidSchedule);
+            };
+            workspace.analysis.reset_with_structured_diagnostics();
+            *state = BandConfirmationState::AnalyzeMoving {
+                settle_deadline_us,
+                analysis_deadline_us,
+            };
+            BandConfirmationStep::ReadyNow
+        }
+        BandConfirmationState::AnalyzeMoving {
+            settle_deadline_us,
+            analysis_deadline_us,
+        } => {
+            if backend.elapsed_us() >= *analysis_deadline_us {
+                return confirmation_fault(CommissionError::AnalysisOverrun);
+            }
+            let poll = poll_stationarity(
+                &mut workspace.analysis,
+                &workspace.observations,
+                &mut workspace.blocker,
+            );
+            let (stationarity, drift_ratio_ppm) = match poll {
+                Ok(Some((result, _rejection, drift_ratio_ppm))) => (result, drift_ratio_ppm),
+                Ok(None) => return BandConfirmationStep::ReadyNow,
+                Err(error) => return confirmation_fault(error),
+            };
+            let p = session.plan.candidate_p;
+            let input = match assemble_velocity_observation_input(VelocityObservationInputRequest {
+                direction: session.current_direction(),
+                p,
+                stationarity,
+                drift_ratio_ppm,
+                moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
+                target_velocity_rpm: session.target_velocity_rpm,
+                usable_torque_limit: workspace.current_observer.clamp_limit(),
+                hard_torque_limit: u16::from(backend.current_limit()),
+                initial_lead_in: false,
+                confidence_family_size: CONFIRMATION_FAMILY_SIZE,
+                counts_per_rev: safety.counts_per_rev(),
+            }) {
+                Ok(input) => input,
+                Err(error) => return confirmation_fault(error),
+            };
+            // Mirrors the probe's and discovery's own AnalyzeMoving short-circuit
+            // (this file, above): wrong-direction and hard-clip mean the
+            // direction-to-motion assumption origin-recovery relies on is
+            // untrustworthy, or current is already clipped, so recovery must not
+            // run another energized stroke on top of this observation. Invalid
+            // controller-domain evidence is likewise an immediate terminal here.
+            // `CurrentHeadroom` is deliberately NOT a short-circuit and does NOT
+            // stop the campaign early (unlike discovery): the confirmation
+            // contract requires the fixed eight-stroke block to run to
+            // completion regardless, and `evaluate_band_confirmation` itself
+            // reports incomplete-mask exclusions traced to current headroom as
+            // `BandConfirmationFailureCause::CurrentAuthority`.
+            let classification = classify_velocity_observation(input).classification;
+            match classification {
+                VelocityObservationClass::WrongDirectionFault => {
+                    return confirmation_fault(CommissionError::VelocityValidationFailed);
+                }
+                VelocityObservationClass::HardClipFault => {
+                    return confirmation_fault(CommissionError::SafetyEnvelopeViolation);
+                }
+                VelocityObservationClass::InvalidEvidenceFault => {
+                    return BandConfirmationStep::Done(
+                        BandConfirmationOutcome::ConfirmationEvidenceExcluded,
+                    );
+                }
+                VelocityObservationClass::Eligible
+                | VelocityObservationClass::Inert
+                | VelocityObservationClass::DeficitUnresolved
+                | VelocityObservationClass::CurrentHeadroom
+                | VelocityObservationClass::StationarityExcluded(_) => {}
+            }
+            session.pending_lower_rate_q = commanded_side_lower_rate_q(
+                input.direction,
+                input.settled_rate_low_q,
+                input.settled_rate_high_q,
+            );
+            let variance_of_mean_q2 = match stationarity {
+                StationarityResult::Usable(suffix) => suffix.selection.variance_of_mean_q2,
+                StationarityResult::Excluded(_) => 0,
+            };
+            let target_rate_q =
+                match discovery_target_rate_q(session.target_velocity_rpm, safety.counts_per_rev())
+                {
+                    Ok(value) => value,
+                    Err(error) => return confirmation_fault(error),
+                };
+            session.pending_record = Some(PendingConfirmationRecord {
+                classification,
+                interval: input.disturbance.map(|(_, interval)| interval),
+                atom: DiscoveryObservationAtom {
+                    mean_rate_q: input.settled_rate_mean_q,
+                    variance_of_mean_q2,
+                    target_rate_q,
+                    direction: session.current_direction(),
+                },
+            });
+            workspace.analysis.reset();
+            workspace.observations.clear();
+            *state = BandConfirmationState::BeginSettleCapture {
+                settle_deadline_us: *settle_deadline_us,
+            };
+            BandConfirmationStep::ReadyNow
+        }
+        BandConfirmationState::BeginSettleCapture { settle_deadline_us } => {
+            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
+                Ok(value) => value,
+                Err(_) => return confirmation_fault(CommissionError::Spi),
+            };
+            let baseline_us = backend.elapsed_us();
+            if baseline_us
+                .checked_add(u64::from(MIN_SETTLE_CAPTURE_US))
+                .is_none_or(|minimum_end_us| minimum_end_us > *settle_deadline_us)
+            {
+                return confirmation_fault(CommissionError::AnalysisOverrun);
+            }
+            let Some(next_sample_us) =
+                baseline_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
+            else {
+                return confirmation_fault(CommissionError::InvalidSchedule);
+            };
+            workspace.previous_encoder_raw = encoder_raw;
+            workspace.previous_read_us = baseline_us;
+            workspace.settle_displacement_counts = 0;
+            workspace.settle_min_displacement_counts = 0;
+            workspace.settle_max_displacement_counts = 0;
+            *state = BandConfirmationState::SettleCapture {
+                next_sample_us,
+                deadline_us: *settle_deadline_us,
+            };
+            BandConfirmationStep::At(next_sample_us)
+        }
+        BandConfirmationState::SettleCapture {
+            next_sample_us,
+            deadline_us,
+        } => {
+            let entry_us = backend.elapsed_us();
+            if entry_us < *next_sample_us {
+                return BandConfirmationStep::At(*next_sample_us);
+            }
+            let read_us = match sample_one_tick(workspace, safety, backend).await {
+                Ok(read_us) => read_us,
+                Err(step) => return confirmation_step_from_probe_fault(step),
+            };
+            match read_velocity_pid_output_abs(backend).await {
+                Ok(value) => workspace.current_observer.observe_zero_output(value),
+                Err(error) => return confirmation_current_guard_fault(error),
+            }
+            if read_us >= *deadline_us {
+                let Some(analysis_deadline_us) =
+                    read_us.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US))
+                else {
+                    return confirmation_fault(CommissionError::InvalidSchedule);
+                };
+                workspace
+                    .analysis
+                    .reset_for_scored_rest(bounded_rest_displacement(
+                        workspace.settle_min_displacement_counts,
+                        workspace.settle_max_displacement_counts,
+                    ));
+                *state = BandConfirmationState::AnalyzeSettle {
+                    analysis_deadline_us,
+                };
+                BandConfirmationStep::ReadyNow
+            } else {
+                match next_grid_deadline(
+                    *next_sample_us,
+                    u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US),
+                    read_us,
+                ) {
+                    Ok(next) => {
+                        *next_sample_us = next.min(*deadline_us);
+                        BandConfirmationStep::At(*next_sample_us)
+                    }
+                    Err(error) => confirmation_fault(error),
+                }
+            }
+        }
+        BandConfirmationState::AnalyzeSettle {
+            analysis_deadline_us,
+        } => {
+            if backend.elapsed_us() >= *analysis_deadline_us {
+                return confirmation_fault(CommissionError::AnalysisOverrun);
+            }
+            let confirmation = match poll_scored_rest_confirmation(
+                &mut workspace.analysis,
+                &workspace.observations,
+                &mut workspace.blocker,
+            ) {
+                Ok(ScoredRestPoll::Pending | ScoredRestPoll::Diagnostic(_)) => {
+                    return BandConfirmationStep::ReadyNow;
+                }
+                Ok(ScoredRestPoll::Complete(confirmation)) => confirmation,
+                Err(error) => return confirmation_fault(error),
+            };
+            if let Err(error) =
+                finish_velocity_current_zero_phase(&mut workspace.current_observer, backend).await
+            {
+                return confirmation_current_guard_fault(error);
+            }
+            if workspace
+                .current_observer
+                .evidence(VelocityCurrentZeroPhase::Braking)
+                .is_err()
+            {
+                return confirmation_fault(CommissionError::InvalidSchedule);
+            }
+            workspace.analysis.reset();
+            workspace.observations.clear();
+            safety.end_primitive();
+            if !confirmation.confirmed_rest {
+                return BandConfirmationStep::Done(
+                    BandConfirmationOutcome::ConfirmationEvidenceExcluded,
+                );
+            }
+            let recovery_plan = match plan_rung_origin_recovery(
+                safety.budget,
+                safety.counts_per_rev(),
+                session.planned_velocity_mrev_s,
+            ) {
+                Ok(plan) => plan,
+                Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
+            };
+            let p = session.plan.candidate_p;
+            let hard_limit = u16::from(backend.current_limit());
+            let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
+                Ok(limit) => limit,
+                Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
+            };
+            workspace.current_observer.reset(
+                clamp_limit,
+                VelocityLimitEvidenceCapability::BestEffortPolling,
+            );
+            let (lower_rate_q, authority_source) = match session.pending_lower_rate_q {
+                Some(rate) => (Some(rate), RecoveryBindingSource::SettledRate),
+                None => (None, RecoveryBindingSource::MissingRate),
+            };
+            let runtime = match RungOriginRecoveryRuntime::new(
+                RungOriginRecoveryConfig {
+                    stage: RecoveryStage::Proportional,
+                    rung_index: session.stroke_index,
+                    p,
+                    target_velocity_rpm: session.target_velocity_rpm,
+                    planned_velocity_mrev_s: session.planned_velocity_mrev_s,
+                    start_offset_counts: safety.unwrapped_position,
+                    lower_rate_q,
+                    authority_source,
+                    current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
+                    rest_schedule: RecoveryRestSchedule::ImmediateScored,
+                },
+                recovery_plan,
+            ) {
+                Ok(runtime) => runtime,
+                Err(error) => return confirmation_fault(error),
+            };
+            *state = BandConfirmationState::Recover(runtime);
+            BandConfirmationStep::ReadyNow
+        }
+        BandConfirmationState::Recover(runtime) => {
+            let mut resources = RungOriginRecoveryResources {
+                safety,
+                observations: &mut workspace.observations,
+                blocker: &mut workspace.blocker,
+                analysis: &mut workspace.analysis,
+                settle_displacement_counts: &mut workspace.settle_displacement_counts,
+                settle_min_displacement_counts: &mut workspace.settle_min_displacement_counts,
+                settle_max_displacement_counts: &mut workspace.settle_max_displacement_counts,
+                current_observer: &mut workspace.current_observer,
+            };
+            match step_rung_origin_recovery(runtime, &mut resources, backend).await {
+                RungOriginRecoveryStep::ReadyNow => BandConfirmationStep::ReadyNow,
+                RungOriginRecoveryStep::At(deadline_us) => BandConfirmationStep::At(deadline_us),
+                RungOriginRecoveryStep::RestSelection { .. }
+                | RungOriginRecoveryStep::RestAnalysis(_) => BandConfirmationStep::ReadyNow,
+                RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
+                    *state = BandConfirmationState::Advance;
+                    BandConfirmationStep::ReadyNow
+                }
+                RungOriginRecoveryStep::RestUnconfirmed => BandConfirmationStep::Done(
+                    BandConfirmationOutcome::ConfirmationEvidenceExcluded,
+                ),
+                RungOriginRecoveryStep::Fault {
+                    error,
+                    safety: Some(fault_report),
+                } => confirmation_safety_fault(fault_report, error),
+                RungOriginRecoveryStep::Fault {
+                    error,
+                    safety: None,
+                } => confirmation_fault(error),
+            }
+        }
+        BandConfirmationState::Advance => {
+            let record = session
+                .pending_record
+                .take()
+                .expect("classified before recovery started");
+            match session.current_direction() {
+                VelocityDirection::Forward => session.forward.record(
+                    session.slot_within_direction(),
+                    record.classification,
+                    record.interval,
+                    record.atom,
+                ),
+                VelocityDirection::Reverse => session.reverse.record(
+                    session.slot_within_direction(),
+                    record.classification,
+                    record.interval,
+                    record.atom,
+                ),
+            }
+
+            let Some(next_stroke) = session.stroke_index.checked_add(1) else {
+                return confirmation_fault(CommissionError::InvalidSchedule);
+            };
+            if usize::from(next_stroke) < CONFIRMATION_SLOT_ORDER.len() {
+                session.stroke_index = next_stroke;
+                *state = BandConfirmationState::WriteGain;
+                return BandConfirmationStep::ReadyNow;
+            }
+
+            BandConfirmationStep::Done(evaluate_confirmation_session(session))
         }
     }
 }

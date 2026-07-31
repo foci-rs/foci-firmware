@@ -787,3 +787,520 @@ fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
         }
     }
 }
+
+// ================================================================================
+// Held-out confirmation driver
+// ================================================================================
+
+fn confirmation_plan(p_raw: u16) -> BandConfirmationPlan {
+    plan_band_confirmation(42, gain(p_raw)).expect("valid confirmation plan")
+}
+
+/// A single collected in-band discovery rung whose own mean/variance
+/// reproduce rung 18's spec-section-2 measurement (relative SE 1.022% at
+/// 75% response), the same fixture `band_confirmation_tests.rs`'s own
+/// `rung_eighteen_class_noise_is_nominatable_at_family_eight` proves
+/// nominatable at family eight. `p_raw` only labels which gain nomination
+/// selects; it does not affect the mean/variance numbers.
+fn confirmable_discovery_rungs(p_raw: u16) -> CollectedInBandRungs {
+    const MEAN: i64 = 750_000;
+    const VARIANCE: u128 = 58_752_225;
+    const TARGET: i64 = 1_000_000;
+    let full_consensus = DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let forward_atom = DiscoveryObservationAtom {
+        mean_rate_q: MEAN,
+        variance_of_mean_q2: VARIANCE,
+        target_rate_q: TARGET,
+        direction: VelocityDirection::Forward,
+    };
+    let reverse_atom = DiscoveryObservationAtom {
+        mean_rate_q: -MEAN,
+        variance_of_mean_q2: VARIANCE,
+        target_rate_q: TARGET,
+        direction: VelocityDirection::Reverse,
+    };
+    let rung = DiscoveryRungNominationInput {
+        p: gain(p_raw),
+        forward_consensus: full_consensus,
+        forward_observations: [Some(forward_atom); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        reverse_consensus: full_consensus,
+        reverse_observations: [Some(reverse_atom); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let mut collected = CollectedInBandRungs::new();
+    collected.push(rung).expect("one rung fits");
+    collected
+}
+
+/// Drive a complete confirmation campaign against a scripted `MockBackend`,
+/// starting from [`begin_band_confirmation`] (so nomination and plan-freeze
+/// are exercised too, not just the stroke loop).
+///
+/// `response_numerator(direction, stroke_index)` returns the per-tick encoder
+/// delta for the stroke about to run, matching `run_discovery`'s own
+/// convention: at `target_velocity_rpm_raw = 100` and `counts_per_rev =
+/// 4_000` (`test_backend`'s default), the commanded-side rate is exactly
+/// `100 * 4_000 / 60_000 = 20 / 3` counts per 1 ms tick, so a numerator of `5`
+/// is exactly 75% of target (inside the confirmable 70-80% band) and `4` is
+/// 60% (below it). Returns the terminal outcome, the backend, the number of
+/// `WriteGain` entries observed (exactly one per confirmation stroke,
+/// unaffected by however many register writes origin-recovery performs
+/// internally), and the sequence of commanded directions in stroke order.
+fn run_confirmation(
+    discovery_outcome: AdditiveDiscoveryOutcome,
+    current_limit_raw: u32,
+    mut response_numerator: impl FnMut(VelocityDirection, u8) -> i32,
+) -> (
+    BandConfirmationOutcome,
+    MockBackend,
+    u32,
+    std::vec::Vec<VelocityDirection>,
+) {
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let entry = begin_band_confirmation(discovery_outcome, 42, target_velocity_rpm, 4_394);
+    let mut session = match entry {
+        BandConfirmationEntry::Ready(session) => session,
+        BandConfirmationEntry::Done(outcome) => {
+            panic!("expected confirmation motion to begin, got early terminal {outcome:?}")
+        }
+    };
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BandConfirmationState::PlannedConfirmation;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    backend.current_limit_value = current_limit(current_limit_raw);
+
+    let mut encoder_count: i32 = 0;
+    let mut stroke_numerator = 0_i32;
+    let mut stroke_sign = 1_i32;
+    let mut write_gain_count = 0_u32;
+    let mut direction_sequence: std::vec::Vec<VelocityDirection> = std::vec::Vec::new();
+
+    for _ in 0..1_000_000 {
+        if matches!(state, BandConfirmationState::WriteGain) {
+            write_gain_count += 1;
+            direction_sequence.push(session.current_direction());
+        }
+        if matches!(state, BandConfirmationState::CommandTarget) {
+            stroke_numerator =
+                response_numerator(session.current_direction(), session.stroke_index);
+            stroke_sign = direction_sign(session.current_direction());
+        }
+        let is_capture_phase = matches!(state, BandConfirmationState::Capture { .. });
+        let result = pollster::block_on(step_band_confirmation(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            BandConfirmationStep::ReadyNow => {}
+            BandConfirmationStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase {
+                    encoder_count += stroke_sign * stroke_numerator;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BandConfirmationStep::Done(outcome) => {
+                return (outcome, backend, write_gain_count, direction_sequence);
+            }
+        }
+    }
+    panic!("confirmation run exceeded its bounded step budget");
+}
+
+// --- RED: no confirmation motion is reachable before the plan is frozen -------
+
+#[test]
+fn no_confirmation_motion_happens_before_the_planned_confirmation_state_advances() {
+    let plan = confirmation_plan(724);
+    let mut session =
+        BandConfirmationSession::new(plan, TmcMechanicalRpm::from_register(100), 4_394);
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BandConfirmationState::PlannedConfirmation;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+
+    let result = pollster::block_on(step_band_confirmation(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+
+    assert!(matches!(result, BandConfirmationStep::ReadyNow));
+    assert_eq!(state, BandConfirmationState::WriteGain);
+    assert!(
+        backend.spi_log.is_empty(),
+        "PlannedConfirmation must not touch the backend"
+    );
+}
+
+// --- RED: TargetBandUnconfirmableFromDiscovery spends zero strokes -----------
+
+#[test]
+fn target_band_unconfirmable_from_discovery_spends_zero_confirmation_strokes() {
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+
+    // An empty in-band rung collection: `nominate_confirmation_candidate`
+    // returns `Err(TargetBandUnconfirmableFromDiscovery)` on an empty slice
+    // (see `band_confirmation_tests.rs::empty_discovery_ladder_yields_zero_stroke_outcome`).
+    let entry = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(CollectedInBandRungs::new()),
+        42,
+        target_velocity_rpm,
+        4_394,
+    );
+
+    // `begin_band_confirmation` never takes a backend parameter at all, so
+    // zero confirmation strokes is a structural guarantee, not merely an
+    // observed one -- there is no way for this call to have touched a
+    // backend.
+    assert!(matches!(
+        entry,
+        BandConfirmationEntry::Done(BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery)
+    ));
+}
+
+// --- TargetBandNotReachedAtAuthority: consumed from discovery's own terminal --
+
+#[test]
+fn target_band_not_reached_at_authority_consumes_current_headroom_before_band() {
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+
+    let entry = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand,
+        42,
+        target_velocity_rpm,
+        4_394,
+    );
+
+    assert!(matches!(
+        entry,
+        BandConfirmationEntry::Done(BandConfirmationOutcome::TargetBandNotReachedAtAuthority)
+    ));
+}
+
+// --- Accept: all eight held-out strokes contained -----------------------------
+
+#[test]
+fn an_all_eight_contained_run_accepts_with_the_candidate_p_and_the_frozen_plan() {
+    let (outcome, _backend, write_gain_count, direction_sequence) = run_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        2_448,
+        |_direction, _stroke_index| 5, // 75%: comfortably inside 70-80% both ways.
+    );
+
+    let BandConfirmationOutcome::Accepted { acceptance, plan } = outcome else {
+        panic!("expected Accepted, got {outcome:?}");
+    };
+    assert_eq!(acceptance.candidate_p, gain(724));
+    assert_eq!(plan.candidate_p, gain(724));
+    assert_eq!(plan.discovery_plan_digest, 42);
+
+    assert_eq!(
+        write_gain_count, 8,
+        "exactly eight strokes must be driven on the accept path"
+    );
+    assert_eq!(
+        direction_sequence,
+        std::vec![
+            VelocityDirection::Forward,
+            VelocityDirection::Forward,
+            VelocityDirection::Forward,
+            VelocityDirection::Forward,
+            VelocityDirection::Reverse,
+            VelocityDirection::Reverse,
+            VelocityDirection::Reverse,
+            VelocityDirection::Reverse,
+        ],
+        "CONFIRMATION_SLOT_ORDER is four forward strokes then four reverse strokes"
+    );
+}
+
+// --- Inconclusive: response location -----------------------------------------
+
+#[test]
+fn an_out_of_band_response_reports_inconclusive_response_location() {
+    let (outcome, _backend, write_gain_count, _directions) = run_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        2_448,
+        |_direction, _stroke_index| 4, // 60%: clearly below the 70-80% band.
+    );
+
+    assert_eq!(
+        outcome_cause(&outcome),
+        Some(BandConfirmationFailureCause::ResponseLocation)
+    );
+    assert_eq!(
+        write_gain_count, 8,
+        "no second-candidate retry may follow an inconclusive result -- the fixed \
+         eight-stroke budget is spent exactly once"
+    );
+}
+
+// --- Inconclusive: current authority ------------------------------------------
+
+#[test]
+fn current_headroom_across_the_block_reports_inconclusive_current_authority() {
+    // Matches `run_discovery`'s own `current_headroom_before_any_in_band_rung...`
+    // fixture exactly: current_limit_raw = 250 and p = 574 predict a torque of
+    // 225, landing inside the usable-current boundary regardless of the
+    // encoder script. Unlike discovery, `p` and `target_velocity_rpm` are both
+    // frozen across the whole eight-stroke block, so this fires identically
+    // on every stroke rather than only once current authority is reached.
+    let (outcome, _backend, write_gain_count, _directions) = run_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(574)),
+        250,
+        |_direction, _stroke_index| 1, // any nonzero motion -- headroom fires from predicted torque.
+    );
+
+    assert_eq!(
+        outcome_cause(&outcome),
+        Some(BandConfirmationFailureCause::CurrentAuthority)
+    );
+    assert_eq!(write_gain_count, 8);
+}
+
+// --- Inconclusive: loss of consensus ------------------------------------------
+
+#[test]
+fn one_inert_stroke_without_headroom_reports_inconclusive_loss_of_consensus() {
+    let (outcome, _backend, write_gain_count, _directions) = run_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        2_448,
+        |_direction, stroke_index| {
+            if stroke_index == 1 {
+                0 // holds still: Inert, not Eligible -- breaks the complete mask.
+            } else {
+                5 // 75%: every other stroke is a clean in-band Eligible observation.
+            }
+        },
+    );
+
+    assert_eq!(
+        outcome_cause(&outcome),
+        Some(BandConfirmationFailureCause::LossOfConsensus)
+    );
+    assert_eq!(write_gain_count, 8);
+}
+
+// --- Inconclusive: excessive uncertainty --------------------------------------
+
+#[test]
+fn excessive_uncertainty_reports_inconclusive_excessive_uncertainty() {
+    // Manufacturing genuine sample-to-sample variance through the full
+    // stationarity/blocking pipeline is exactly the statistical territory
+    // `evaluate_band_confirmation`'s own math already exhaustively covers in
+    // `band_confirmation_tests.rs` (see its
+    // `confirmation_reports_excessive_uncertainty_when_containment_is_structurally_impossible`).
+    // This test instead proves THIS driver's own wiring
+    // (`confirmation_evaluation_outcome`) correctly relays that cause, using
+    // the exact same relative-SE-5%-at-75% fixture directly, mirroring that
+    // test file's own `confirmation_input`-style construction rather than
+    // driving a `MockBackend` through the full moving-capture pipeline.
+    let plan = confirmation_plan(724);
+    const HUGE_VARIANCE: u128 = 1_406_250_000; // (750_000 * 0.05)^2
+    let full_consensus = DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let forward = ConfirmationDirectionalInput {
+        consensus: full_consensus,
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: 750_000,
+            variance_of_mean_q2: HUGE_VARIANCE,
+            target_rate_q: 1_000_000,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: full_consensus,
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -750_000,
+            variance_of_mean_q2: HUGE_VARIANCE,
+            target_rate_q: 1_000_000,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+
+    let outcome = confirmation_evaluation_outcome(
+        evaluate_band_confirmation(plan.candidate_p, forward, reverse),
+        plan,
+    );
+
+    assert_eq!(
+        outcome_cause(&outcome),
+        Some(BandConfirmationFailureCause::ExcessiveUncertainty)
+    );
+}
+
+/// Extract the failure cause from an inconclusive outcome, or `None`.
+fn outcome_cause(outcome: &BandConfirmationOutcome) -> Option<BandConfirmationFailureCause> {
+    match outcome {
+        BandConfirmationOutcome::TargetBandConfirmationInconclusive(cause) => Some(*cause),
+        _ => None,
+    }
+}
+
+// --- WrongDirectionFault short-circuits before origin-recovery -----------------
+
+#[test]
+fn wrong_direction_short_circuits_confirmation_without_recovering() {
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let entry = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        42,
+        target_velocity_rpm,
+        4_394,
+    );
+    let mut session = match entry {
+        BandConfirmationEntry::Ready(session) => session,
+        BandConfirmationEntry::Done(outcome) => {
+            panic!("expected confirmation motion to begin, got early terminal {outcome:?}")
+        }
+    };
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BandConfirmationState::PlannedConfirmation;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count: i32 = 0;
+
+    loop {
+        let result = pollster::block_on(step_band_confirmation(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            BandConfirmationStep::ReadyNow => {}
+            BandConfirmationStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                // The first stroke commands Forward. Move consistently in the
+                // opposite direction so the settled-rate CI excludes zero on
+                // the wrong side -- WrongDirectionFault, never a moving/inert
+                // verdict.
+                encoder_count -= 1;
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BandConfirmationStep::Done(outcome) => {
+                let BandConfirmationOutcome::SafetyFault { error, safety } = outcome else {
+                    panic!("expected a safety fault, got {outcome:?}");
+                };
+                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert!(safety.is_none());
+                break;
+            }
+        }
+    }
+
+    // Exactly one stroke's worth of velocity-target writes: the signed
+    // command from CommandTarget and the zero from CommandZero. A third
+    // write -- necessarily nonzero -- would be the origin-recovery motion
+    // this fault must never reach.
+    let target_writes: std::vec::Vec<u32> = backend
+        .spi_log
+        .iter()
+        .filter_map(|op| match op {
+            SpiOp::Write(addr, value) if *addr == PID_VELOCITY_TARGET.addr() => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        target_writes.len(),
+        2,
+        "no recovery stroke may follow a safety fault: {target_writes:?}"
+    );
+    assert_ne!(
+        target_writes[0], 0,
+        "the first write is the commanded stroke"
+    );
+    assert_eq!(target_writes[1], 0, "the second write is CommandZero");
+
+    // Exactly one gain write: recovery's own `WriteGains` state would add a
+    // second.
+    let gain_writes = backend
+        .spi_log
+        .iter()
+        .filter(
+            |op| matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_P_VELOCITY_I.addr()),
+        )
+        .count();
+    assert_eq!(
+        gain_writes, 1,
+        "no recovery gain write may follow a safety fault"
+    );
+}
+
+// --- ConfirmationEvidenceExcluded: the zero-target settle never confirms rest -
+
+#[test]
+fn an_unconfirmed_settle_reports_confirmation_evidence_excluded() {
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let entry = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        42,
+        target_velocity_rpm,
+        4_394,
+    );
+    let mut session = match entry {
+        BandConfirmationEntry::Ready(session) => session,
+        BandConfirmationEntry::Done(outcome) => {
+            panic!("expected confirmation motion to begin, got early terminal {outcome:?}")
+        }
+    };
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BandConfirmationState::PlannedConfirmation;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count: i32 = 0;
+
+    loop {
+        let is_settle_phase = matches!(state, BandConfirmationState::SettleCapture { .. });
+        let result = pollster::block_on(step_band_confirmation(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            BandConfirmationStep::ReadyNow => {}
+            BandConfirmationStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                // Hold still during the moving capture (Inert is fine -- this
+                // test is about the settle window, not the moving
+                // classification), then drift continuously once the
+                // zero-target settle starts so rest is never confirmed.
+                if is_settle_phase {
+                    encoder_count += 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BandConfirmationStep::Done(outcome) => {
+                assert!(matches!(
+                    outcome,
+                    BandConfirmationOutcome::ConfirmationEvidenceExcluded
+                ));
+                break;
+            }
+        }
+    }
+}
