@@ -665,13 +665,6 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit one in-band discovery rung's nomination bounds and margin.
-    fn foci_breakaway_discovery_rung_margin(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayDiscoveryRungMargin,
-    ) {
-    }
-
     /// Emit whether the additive ladder's rung zero itself showed motion.
     fn foci_breakaway_rung_zero_diagnostic(
         &mut self,
@@ -890,31 +883,6 @@ pub fn emit_breakaway_raw_observation<S: CommissionReplySink>(
     );
 }
 
-/// Emit one in-band discovery rung's nomination bounds and margin.
-#[cfg(feature = "trace-velocity-sweep")]
-pub fn emit_breakaway_discovery_rung_margin<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: crate::commissioning::types::BreakawayDiscoveryRungMargin,
-) {
-    sink.foci_breakaway_discovery_rung_margin(
-        crate::ankyra::replies::FociBreakawayDiscoveryRungMargin {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            plan_digest_low: report.plan_digest as u32,
-            plan_digest_high: (report.plan_digest >> 32) as u32,
-            collected_index: report.collected_index,
-            p_raw: report.p_raw,
-            lower_percent_milli: report.lower_percent_milli,
-            upper_percent_milli: report.upper_percent_milli,
-            margin_percent_milli: report.margin_percent_milli,
-            half_width_percent_milli: report.half_width_percent_milli,
-            adjacent_rate_step_permille: report.adjacent_rate_step_permille,
-        },
-    );
-}
-
 /// Emit whether the additive ladder's rung zero itself showed motion.
 #[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_rung_zero_diagnostic<S: CommissionReplySink>(
@@ -1103,9 +1071,10 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::RawObservation(report) => {
             emit_breakaway_raw_observation(sink, oid, report);
         }
-        BreakawayCampaignEvent::DiscoveryRungMargin(report) => {
-            emit_breakaway_discovery_rung_margin(sink, oid, report);
-        }
+        // Per-rung nomination margins are detailed evidence the host does not
+        // consume; they ride the canonical trace only, where foci-trace
+        // reconstructs them. No ordinary reply is emitted for them.
+        BreakawayCampaignEvent::DiscoveryRungMargin(_) => {}
         BreakawayCampaignEvent::DiscoveryTerminal {
             terminal,
             rung_zero,

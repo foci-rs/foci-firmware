@@ -1616,9 +1616,9 @@ mod breakaway_reply_wire_tests {
         FociBreakawayConfirmationPlan, FociBreakawayConfirmationTerminalIdentity,
         FociBreakawayConfirmationTerminalMasks, FociBreakawayDirectionalBreakaway,
         FociBreakawayDiscoveryPlanGeometry, FociBreakawayDiscoveryPlanIdentity,
-        FociBreakawayDiscoveryRungMargin, FociBreakawayDiscoveryTerminal, FociBreakawayProbePlan,
-        FociBreakawayProbeTerminal, FociBreakawayRawObservationIdentity,
-        FociBreakawayRawObservationMeasurement, FociBreakawayRungZeroDiagnostic,
+        FociBreakawayDiscoveryTerminal, FociBreakawayProbePlan, FociBreakawayProbeTerminal,
+        FociBreakawayRawObservationIdentity, FociBreakawayRawObservationMeasurement,
+        FociBreakawayRungZeroDiagnostic,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1867,42 +1867,6 @@ mod breakaway_reply_wire_tests {
                 target_rate_q_high: u32::MAX,
             },
             "foci_breakaway_raw_observation_measurement",
-        );
-    }
-
-    #[test]
-    fn breakaway_discovery_rung_margin_has_stable_wire_order() {
-        let reply = FociBreakawayDiscoveryRungMargin {
-            oid: 1,
-            run_sequence: 2,
-            evidence_sequence: 3,
-            plan_digest_low: 4,
-            plan_digest_high: 5,
-            collected_index: 6,
-            p_raw: 7,
-            lower_percent_milli: 8,
-            upper_percent_milli: 9,
-            margin_percent_milli: 10,
-            half_width_percent_milli: 11,
-            adjacent_rate_step_permille: 12,
-        };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-        assert_fits_with_id(
-            &FociBreakawayDiscoveryRungMargin {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                collected_index: u8::MAX,
-                p_raw: u16::MAX,
-                lower_percent_milli: i32::MIN,
-                upper_percent_milli: i32::MIN,
-                margin_percent_milli: i32::MIN,
-                half_width_percent_milli: i32::MIN,
-                adjacent_rate_step_permille: i32::MIN,
-            },
-            "foci_breakaway_discovery_rung_margin",
         );
     }
 
@@ -3905,34 +3869,10 @@ pub struct FociBreakawayRawObservationMeasurement {
     pub target_rate_q_high: u32,
 }
 
-/// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
-#[klipper_reply]
-pub struct FociBreakawayDiscoveryRungMargin {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence.
-    pub evidence_sequence: u16,
-    /// Exact low discovery-plan digest word.
-    pub plan_digest_low: u32,
-    /// Exact high discovery-plan digest word.
-    pub plan_digest_high: u32,
-    /// Zero-based index within the collected in-band rung set.
-    pub collected_index: u8,
-    /// Proportional gain at this rung.
-    pub p_raw: u16,
-    /// Enveloped nomination-interval lower bound `L_i`, in percent * 1000.
-    pub lower_percent_milli: i32,
-    /// Enveloped nomination-interval upper bound `U_i`, in percent * 1000.
-    pub upper_percent_milli: i32,
-    /// `M_i = min(L_i - 70, 80 - U_i)`, in percent * 1000.
-    pub margin_percent_milli: i32,
-    /// `(U_i - L_i) / 2`, in percent * 1000.
-    pub half_width_percent_milli: i32,
-    /// Achieved rate step from the previous collected in-band rung, in percent * 1000.
-    pub adjacent_rate_step_permille: i32,
-}
+// FociBreakawayDiscoveryRungMargin was removed: the per-rung nomination
+// margin is detailed evidence that foci-trace reconstructs from the streamed
+// raw-observation trace records (marker 160), so it no longer rides the ordinary
+// Klipper reply channel. The canonical trace record (tag 7) is retained.
 
 /// Diagnostic evidence for whether the additive ladder's rung zero itself showed motion.
 #[klipper_reply]
