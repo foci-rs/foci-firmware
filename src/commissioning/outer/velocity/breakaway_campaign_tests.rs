@@ -2178,10 +2178,21 @@ fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
         terminal.forward_eligible_mask, 0b0001,
         "only the one recorded slot is eligible"
     );
+    // The collected mask must report the one slot actually recorded, not a
+    // false full rung. Pre-fix `consensus()` hardcoded FULL_OBSERVATION_MASK,
+    // so this reported 0b1111 even though three of the four strokes never ran.
+    assert_eq!(
+        terminal.forward_collected_mask, 0b0001,
+        "only slot 0 was ever recorded on the forward direction"
+    );
     // The reverse direction genuinely never ran a stroke.
     assert_eq!(
         reverse.observations,
         [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION]
+    );
+    assert_eq!(
+        terminal.reverse_collected_mask, 0,
+        "the reverse direction recorded no strokes at all"
     );
     assert_eq!(terminal.reverse_eligible_mask, 0);
     assert_eq!(terminal.reverse_included_mask, 0);

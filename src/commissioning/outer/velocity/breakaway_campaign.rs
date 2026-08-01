@@ -135,8 +135,7 @@ use super::sweep_analysis::{
     bounded_rest_displacement, direction_sign, poll_scored_rest_confirmation, poll_stationarity,
 };
 use super::sweep_consensus::{
-    CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, FULL_OBSERVATION_MASK,
-    depth_three_consensus,
+    CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, depth_three_consensus,
 };
 use super::sweep_evidence::{VelocityObservationClass, classify_velocity_observation};
 use super::sweep_plan::current_gain_span;
@@ -1073,26 +1072,32 @@ impl DirectionAccumulator {
         self.atoms[index] = Some(atom);
     }
 
-    /// Fold this direction's four collected observations into their depth-three
-    /// consensus. Always called after every slot has been recorded, so the
-    /// collected mask is always complete.
-    ///
-    /// `collected_mask` on the returned [`DirectionalConsensus`] is
-    /// unconditionally reported full (`FULL_OBSERVATION_MASK`) regardless of
-    /// how many slots were actually recorded -- correct under this method's
-    /// own "always called after every slot" contract, but this accumulator is
-    /// also read on partial/mid-block failure terminals (a
+    /// The mask of slots this accumulator has actually recorded, derived from
+    /// which `atoms` entries are `Some`. On a complete rung this is
+    /// `FULL_OBSERVATION_MASK`; on a partial/mid-block failure terminal (a
     /// `ConfirmationEvidenceExcluded` or `SafetyFault` reached after some but
-    /// not all four strokes ran), where that contract does not hold. On such
-    /// a terminal, do not trust `collected_mask` to signal how much evidence
-    /// was actually gathered; `eligible_mask`/`included_mask` (both derived
-    /// from `self.classes`, which defaults every unrecorded slot to
-    /// [`VelocityObservationClass::InvalidEvidenceFault`] and so correctly
-    /// stays empty there) or a direct count of `Some` entries in
-    /// `self.atoms`/the reported observation array are the reliable partiality
-    /// signals.
+    /// not all four strokes ran) it reports exactly the slots gathered.
+    fn collected_mask(&self) -> u8 {
+        self.atoms
+            .iter()
+            .enumerate()
+            .filter(|(_, atom)| atom.is_some())
+            .fold(0u8, |mask, (index, _)| mask | (1u8 << index))
+    }
+
+    /// Fold this direction's collected observations into their depth-three
+    /// consensus.
+    ///
+    /// The reported `collected_mask` reflects the slots actually recorded, not
+    /// an assumed-full rung. On a complete rung every slot is present, so
+    /// `collected_mask == FULL_OBSERVATION_MASK` and the fold is unchanged. On
+    /// a partial terminal the honest partial mask flows to
+    /// [`depth_three_consensus`], which gates completeness on it (a
+    /// non-full `collected_mask` yields an `IncompleteRung` consensus), so the
+    /// wire record carries a truthful mask instead of falsely claiming a full
+    /// rung's worth of evidence was gathered.
     fn consensus(&self) -> DirectionalConsensus {
-        depth_three_consensus(FULL_OBSERVATION_MASK, self.classes, self.intervals)
+        depth_three_consensus(self.collected_mask(), self.classes, self.intervals)
     }
 }
 
