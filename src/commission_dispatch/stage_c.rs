@@ -152,6 +152,10 @@ pub(crate) fn combined_acceptance_point(
 /// Reconstruct and identity-check retained Stage-C authority before any SPI work.
 ///
 /// `Ok(None)` means no Stage-C authority exists and admission must proceed to Stage B.
+// Eight parameters here are the reproduced-authority inputs; grouping them into a config
+// struct is a separate refactor. Silence the lint so `--features trace-velocity-sweep`
+// clippy is clean.
+#[allow(clippy::too_many_arguments)]
 pub fn preflight_stage_c_request(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
