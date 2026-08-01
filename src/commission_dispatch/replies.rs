@@ -651,20 +651,6 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit one collected observation's raw-evidence identity fragment.
-    fn foci_breakaway_raw_observation_identity(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayRawObservationIdentity,
-    ) {
-    }
-
-    /// Emit one collected observation's raw-evidence measurement fragment.
-    fn foci_breakaway_raw_observation_measurement(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayRawObservationMeasurement,
-    ) {
-    }
-
     /// Emit whether the additive ladder's rung zero itself showed motion.
     fn foci_breakaway_rung_zero_diagnostic(
         &mut self,
@@ -683,13 +669,6 @@ pub trait CommissionReplySink {
     fn foci_breakaway_confirmation_plan(
         &mut self,
         _report: crate::ankyra::replies::FociBreakawayConfirmationPlan,
-    ) {
-    }
-
-    /// Emit one fresh held-out confirmation stroke's response interval.
-    fn foci_breakaway_confirmation_observation(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayConfirmationObservation,
     ) {
     }
 
@@ -844,45 +823,6 @@ pub fn emit_additive_discovery_plan<S: CommissionReplySink>(
     );
 }
 
-/// Emit one collected observation's raw settled-rate evidence, split into its
-/// identity and measurement fragments (correlated by `evidence_sequence`) so no
-/// single reply carries all eight wide-integer words.
-#[cfg(feature = "trace-velocity-sweep")]
-pub fn emit_breakaway_raw_observation<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: crate::commissioning::types::BreakawayRawObservation,
-) {
-    sink.foci_breakaway_raw_observation_identity(
-        crate::ankyra::replies::FociBreakawayRawObservationIdentity {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            plan_digest_low: report.plan_digest as u32,
-            plan_digest_high: (report.plan_digest >> 32) as u32,
-            phase: report.phase,
-            rung_index: report.rung_index,
-            slot_index: report.slot_index,
-            direction: report.direction,
-        },
-    );
-    sink.foci_breakaway_raw_observation_measurement(
-        crate::ankyra::replies::FociBreakawayRawObservationMeasurement {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            mean_rate_q_low: report.mean_rate_q as u64 as u32,
-            mean_rate_q_high: ((report.mean_rate_q as u64) >> 32) as u32,
-            variance_word0: report.variance_of_mean_q2 as u32,
-            variance_word1: (report.variance_of_mean_q2 >> 32) as u32,
-            variance_word2: (report.variance_of_mean_q2 >> 64) as u32,
-            variance_word3: (report.variance_of_mean_q2 >> 96) as u32,
-            target_rate_q_low: report.target_rate_q as u64 as u32,
-            target_rate_q_high: ((report.target_rate_q as u64) >> 32) as u32,
-        },
-    );
-}
-
 /// Emit whether the additive ladder's rung zero itself showed motion.
 #[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_rung_zero_diagnostic<S: CommissionReplySink>(
@@ -952,29 +892,6 @@ pub fn emit_band_confirmation_plan<S: CommissionReplySink>(
         acceptance_rule: report.acceptance_rule,
         nominated_margin_percent_milli: report.nominated_margin_percent_milli,
     });
-}
-
-/// Emit one fresh held-out confirmation stroke's response interval.
-#[cfg(feature = "trace-velocity-sweep")]
-pub fn emit_band_confirmation_observation<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: crate::commissioning::types::BandConfirmationObservation,
-) {
-    sink.foci_breakaway_confirmation_observation(
-        crate::ankyra::replies::FociBreakawayConfirmationObservation {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            plan_digest_low: report.plan_digest as u32,
-            plan_digest_high: (report.plan_digest >> 32) as u32,
-            slot_index: report.slot_index,
-            direction: report.direction,
-            response_lower_percent_milli: report.response_lower_percent_milli,
-            response_upper_percent_milli: report.response_upper_percent_milli,
-            relative_standard_error_permille: report.relative_standard_error_permille,
-        },
-    );
 }
 
 /// Emit a confirmation-block terminal, split into its identity and mask fragments.
@@ -1047,7 +964,6 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
     oid: u8,
     event: crate::commissioning::types::BreakawayCampaignEvent,
 ) {
-    use crate::commissioning::outer::velocity::breakaway_reporting::confirmation_observation_report;
     use crate::commissioning::types::BreakawayCampaignEvent;
 
     match event {
@@ -1068,12 +984,11 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
             emit_additive_discovery_plan(sink, oid, planned);
             emit_breakaway_ceiling_source(sink, oid, ceiling_source);
         }
-        BreakawayCampaignEvent::RawObservation(report) => {
-            emit_breakaway_raw_observation(sink, oid, report);
-        }
-        // Per-rung nomination margins are detailed evidence the host does not
-        // consume; they ride the canonical trace only, where foci-trace
-        // reconstructs them. No ordinary reply is emitted for them.
+        // Per-observation raw evidence and per-rung nomination margins are
+        // detailed evidence the host does not consume: they ride the
+        // canonical trace only, where foci-trace reconstructs the consensus and
+        // nomination from them. No ordinary reply is emitted for either.
+        BreakawayCampaignEvent::RawObservation(_) => {}
         BreakawayCampaignEvent::DiscoveryRungMargin(_) => {}
         BreakawayCampaignEvent::DiscoveryTerminal {
             terminal,
@@ -1087,48 +1002,15 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::ConfirmationPlanned(report) => {
             emit_band_confirmation_plan(sink, oid, report);
         }
+        // The per-stroke confirmation observations are detailed trace-only
+        // evidence; the ordinary reply carries the terminal (with its
+        // mask structure) but not the individual strokes. `forward`/`reverse`
+        // are consumed only by the trace encoder.
         BreakawayCampaignEvent::ConfirmationTerminal {
             terminal,
-            forward,
-            reverse,
+            forward: _,
+            reverse: _,
         } => {
-            let run_sequence = terminal.run_sequence;
-            let evidence_sequence = terminal.evidence_sequence;
-            let plan_digest = terminal.plan_digest;
-            for (slot_index, atom) in forward
-                .observations
-                .into_iter()
-                .enumerate()
-                .flat_map(|(slot_index, atom)| atom.map(|atom| (slot_index, atom)))
-            {
-                if let Some(report) = confirmation_observation_report(
-                    plan_digest,
-                    slot_index as u8,
-                    crate::autotune::velocity_measurement::VelocityDirection::Forward,
-                    atom,
-                    run_sequence,
-                    evidence_sequence,
-                ) {
-                    emit_band_confirmation_observation(sink, oid, report);
-                }
-            }
-            for (slot_index, atom) in reverse
-                .observations
-                .into_iter()
-                .enumerate()
-                .flat_map(|(slot_index, atom)| atom.map(|atom| (slot_index, atom)))
-            {
-                if let Some(report) = confirmation_observation_report(
-                    plan_digest,
-                    slot_index as u8 + 4,
-                    crate::autotune::velocity_measurement::VelocityDirection::Reverse,
-                    atom,
-                    run_sequence,
-                    evidence_sequence,
-                ) {
-                    emit_band_confirmation_observation(sink, oid, report);
-                }
-            }
             emit_band_confirmation_terminal(sink, oid, terminal);
         }
         BreakawayCampaignEvent::CampaignTerminal(report) => {

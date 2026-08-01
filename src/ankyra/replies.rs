@@ -1612,13 +1612,11 @@ mod breakaway_reply_wire_tests {
     //! list here is additive to the reply table, so no existing reply's wire
     //! order changes.
     use super::{
-        FociBreakawayCampaignTerminal, FociBreakawayConfirmationObservation,
-        FociBreakawayConfirmationPlan, FociBreakawayConfirmationTerminalIdentity,
-        FociBreakawayConfirmationTerminalMasks, FociBreakawayDirectionalBreakaway,
-        FociBreakawayDiscoveryPlanGeometry, FociBreakawayDiscoveryPlanIdentity,
-        FociBreakawayDiscoveryTerminal, FociBreakawayProbePlan, FociBreakawayProbeTerminal,
-        FociBreakawayRawObservationIdentity, FociBreakawayRawObservationMeasurement,
-        FociBreakawayRungZeroDiagnostic,
+        FociBreakawayCampaignTerminal, FociBreakawayConfirmationPlan,
+        FociBreakawayConfirmationTerminalIdentity, FociBreakawayConfirmationTerminalMasks,
+        FociBreakawayDirectionalBreakaway, FociBreakawayDiscoveryPlanGeometry,
+        FociBreakawayDiscoveryPlanIdentity, FociBreakawayDiscoveryTerminal, FociBreakawayProbePlan,
+        FociBreakawayProbeTerminal, FociBreakawayRungZeroDiagnostic,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1807,70 +1805,6 @@ mod breakaway_reply_wire_tests {
     }
 
     #[test]
-    fn breakaway_raw_observation_identity_has_stable_wire_order() {
-        let reply = FociBreakawayRawObservationIdentity {
-            oid: 1,
-            run_sequence: 2,
-            evidence_sequence: 3,
-            plan_digest_low: 4,
-            plan_digest_high: 5,
-            phase: 6,
-            rung_index: 7,
-            slot_index: 8,
-            direction: 9,
-        };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        assert_fits_with_id(
-            &FociBreakawayRawObservationIdentity {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                phase: u8::MAX,
-                rung_index: u8::MAX,
-                slot_index: u8::MAX,
-                direction: u8::MAX,
-            },
-            "foci_breakaway_raw_observation_identity",
-        );
-    }
-
-    #[test]
-    fn breakaway_raw_observation_measurement_has_stable_wire_order() {
-        let reply = FociBreakawayRawObservationMeasurement {
-            oid: 1,
-            run_sequence: 2,
-            evidence_sequence: 3,
-            mean_rate_q_low: 4,
-            mean_rate_q_high: 5,
-            variance_word0: 6,
-            variance_word1: 7,
-            variance_word2: 8,
-            variance_word3: 9,
-            target_rate_q_low: 10,
-            target_rate_q_high: 11,
-        };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-        assert_fits_with_id(
-            &FociBreakawayRawObservationMeasurement {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                mean_rate_q_low: u32::MAX,
-                mean_rate_q_high: u32::MAX,
-                variance_word0: u32::MAX,
-                variance_word1: u32::MAX,
-                variance_word2: u32::MAX,
-                variance_word3: u32::MAX,
-                target_rate_q_low: u32::MAX,
-                target_rate_q_high: u32::MAX,
-            },
-            "foci_breakaway_raw_observation_measurement",
-        );
-    }
-
-    #[test]
     fn breakaway_rung_zero_diagnostic_has_stable_wire_order() {
         let reply = FociBreakawayRungZeroDiagnostic {
             oid: 1,
@@ -1969,38 +1903,6 @@ mod breakaway_reply_wire_tests {
                 nominated_margin_percent_milli: i32::MIN,
             },
             "foci_breakaway_confirmation_plan",
-        );
-    }
-
-    #[test]
-    fn breakaway_confirmation_observation_has_stable_wire_order() {
-        let reply = FociBreakawayConfirmationObservation {
-            oid: 1,
-            run_sequence: 2,
-            evidence_sequence: 3,
-            plan_digest_low: 4,
-            plan_digest_high: 5,
-            slot_index: 6,
-            direction: 7,
-            response_lower_percent_milli: 8,
-            response_upper_percent_milli: 9,
-            relative_standard_error_permille: 10,
-        };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-        assert_fits_with_id(
-            &FociBreakawayConfirmationObservation {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                slot_index: u8::MAX,
-                direction: u8::MAX,
-                response_lower_percent_milli: i32::MIN,
-                response_upper_percent_milli: i32::MIN,
-                relative_standard_error_permille: u16::MAX,
-            },
-            "foci_breakaway_confirmation_observation",
         );
     }
 
@@ -3806,68 +3708,10 @@ pub struct FociBreakawayDiscoveryPlanGeometry {
     pub maximum_workflow_ms: u32,
 }
 
-/// One collected observation's raw-evidence identity fragment: which plan,
-/// phase, rung, slot, and direction the streamed atom belongs to.
-///
-/// Split from [`FociBreakawayRawObservationMeasurement`] (correlated by the
-/// shared `run_sequence`/`evidence_sequence`) because the eight 32-bit
-/// measurement words plus the digest and coordinates together exceed a single
-/// Klipper frame's payload budget -- the same identity/measurement split the
-/// discovery plan and confirmation terminal replies already use.
-#[klipper_reply]
-pub struct FociBreakawayRawObservationIdentity {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence.
-    pub evidence_sequence: u16,
-    /// Exact low owning-plan digest word.
-    pub plan_digest_low: u32,
-    /// Exact high owning-plan digest word.
-    pub plan_digest_high: u32,
-    /// Owning phase: discovery (1) or confirmation (2).
-    pub phase: u8,
-    /// Ladder rung index (discovery); zero for confirmation.
-    pub rung_index: u8,
-    /// Within-direction slot (discovery) or fixed `0..=7` schedule slot
-    /// (confirmation).
-    pub slot_index: u8,
-    /// Direction wire code.
-    pub direction: u8,
-}
-
-/// One collected observation's raw-evidence measurement fragment: the
-/// family-free `mean_rate_q`/`variance_of_mean_q2`/`target_rate_q` inputs, split
-/// into 32-bit words the same way the plan digests are, so an offline decoder
-/// can recompute `r`, `SE`, the nomination interval, and the [70, 80]
-/// containment itself. Correlated to its identity fragment by the shared
-/// `run_sequence`/`evidence_sequence`.
-#[klipper_reply]
-pub struct FociBreakawayRawObservationMeasurement {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence.
-    pub evidence_sequence: u16,
-    /// Low word of the signed settled-rate mean, in fixed-point rate units.
-    pub mean_rate_q_low: u32,
-    /// High word of the signed settled-rate mean.
-    pub mean_rate_q_high: u32,
-    /// Family-free variance-of-mean word 0 (least significant).
-    pub variance_word0: u32,
-    /// Family-free variance-of-mean word 1.
-    pub variance_word1: u32,
-    /// Family-free variance-of-mean word 2.
-    pub variance_word2: u32,
-    /// Family-free variance-of-mean word 3 (most significant).
-    pub variance_word3: u32,
-    /// Low word of the positive commanded-magnitude target rate.
-    pub target_rate_q_low: u32,
-    /// High word of the positive commanded-magnitude target rate.
-    pub target_rate_q_high: u32,
-}
+// FociBreakawayRawObservationIdentity/Measurement were removed: the
+// per-observation raw evidence is detailed evidence the host does not consume; it
+// rides the canonical trace only (FTRC tag 5), where foci-trace reconstructs the
+// consensus and nomination. It no longer rides the ordinary Klipper reply channel.
 
 // FociBreakawayDiscoveryRungMargin was removed: the per-rung nomination
 // margin is detailed evidence that foci-trace reconstructs from the streamed
@@ -3956,30 +3800,10 @@ pub struct FociBreakawayConfirmationPlan {
     pub nominated_margin_percent_milli: i32,
 }
 
-/// One fresh held-out confirmation stroke's response interval.
-#[klipper_reply]
-pub struct FociBreakawayConfirmationObservation {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence.
-    pub evidence_sequence: u16,
-    /// Exact low confirmation-plan digest word.
-    pub plan_digest_low: u32,
-    /// Exact high confirmation-plan digest word.
-    pub plan_digest_high: u32,
-    /// Fixed schedule slot index (`0..=7`).
-    pub slot_index: u8,
-    /// Direction wire code.
-    pub direction: u8,
-    /// Fresh response-interval lower bound, in percent * 1000.
-    pub response_lower_percent_milli: i32,
-    /// Fresh response-interval upper bound, in percent * 1000.
-    pub response_upper_percent_milli: i32,
-    /// Measured relative standard error for this stroke, in permille.
-    pub relative_standard_error_permille: u16,
-}
+// FociBreakawayConfirmationObservation was removed: the per-stroke
+// confirmation response intervals are detailed trace-only evidence. The ordinary
+// reply carries the confirmation terminal (with its mask structure), not the
+// individual strokes; foci-trace reconstructs from the trace records.
 
 /// Confirmation terminal identity: digests and confidence family.
 #[klipper_reply]
