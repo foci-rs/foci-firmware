@@ -95,7 +95,8 @@ use super::band_confirmation::{
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError,
     BreakawayProbeContext, BreakawayProbePlan, GridFloorOrigin, PROBE_CONFIDENCE_FAMILY_SIZE,
-    plan_additive_discovery_ladder, plan_breakaway_probe, resolve_grid_floor,
+    PROBE_MAX_OBSERVATIONS_PER_DIRECTION, plan_additive_discovery_ladder, plan_breakaway_probe,
+    resolve_grid_floor,
 };
 use super::breakaway_reporting::{
     BreakawayPhase, campaign_terminal_report, confirmation_evaluated_terminal_report,
@@ -140,8 +141,9 @@ use super::sweep_evidence::{VelocityObservationClass, classify_velocity_observat
 use super::sweep_plan::current_gain_span;
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
-    SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest,
-    ZERO_SETTLE_US, plan_combined_velocity_sweep,
+    OBSERVATIONS_PER_DIRECTION_PER_RUNG, SETTLE_ANALYSIS_BUDGET_US,
+    VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
+    plan_combined_velocity_sweep,
 };
 
 /// Outer velocity ramp mode. Matches the wire encoding
@@ -3087,10 +3089,19 @@ impl BreakawayCampaign {
 
     /// Number of recovery slots the campaign reserves before probe motion.
     ///
-    /// Fixed at the live-rig value from the spec (section 8): 24
-    /// worst-case recovery slots, each reserved at the plan's per-slot maximum,
-    /// bound the recovery term of [`breakaway_workflow_envelope_ms`].
-    pub(crate) const RECOVERY_SLOT_COUNT: u32 = 24;
+    /// The implemented state machines recover after every observation, not once
+    /// per rung, so the reservation must cover every observation across probe,
+    /// discovery, and confirmation: two probe directions at up to
+    /// [`PROBE_MAX_OBSERVATIONS_PER_DIRECTION`] observations each, every discovery
+    /// rung driven in both directions at
+    /// [`OBSERVATIONS_PER_DIRECTION_PER_RUNG`], and the confirmation family. Each
+    /// slot is reserved at the plan's per-slot maximum, bounding the recovery term
+    /// of [`breakaway_workflow_envelope_ms`]. This evaluates to 280
+    /// (`2 * 8 + 32 * 2 * 4 + 8`); a unit test asserts both the concrete value and
+    /// that it tracks the derivation constants.
+    pub(crate) const RECOVERY_SLOT_COUNT: u32 = 2 * PROBE_MAX_OBSERVATIONS_PER_DIRECTION as u32
+        + MAX_SWEEP_RUNGS as u32 * 2 * OBSERVATIONS_PER_DIRECTION_PER_RUNG as u32
+        + CONFIRMATION_FAMILY_SIZE as u32;
 
     /// Hard torque-target limit the campaign energizes the motor with.
     ///
@@ -3116,7 +3127,7 @@ impl BreakawayCampaign {
 /// velocity, planned amplitude, and per-slot recovery reservations, and
 /// [`combined_workflow_geometry`] for the worst-case Stage-C continuation, then
 /// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
-/// (24 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
+/// (280 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
 /// returned [`CommissioningWorkflowPlan`] carries the exact envelope the
 /// campaign reserves, so disclosing it before construction matches the envelope
 /// [`BreakawayCampaign::new`] validates. Any planning failure is a zero-motion
