@@ -122,8 +122,9 @@ pub const EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL: u16 = 154;
 /// Breakaway-seeded campaign: immutable additive discovery plan, its
 /// ceiling's binding source, and its resolved ladder.
 pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN: u16 = 155;
-/// Breakaway-seeded campaign: discovery terminal, its collected in-band
-/// rung margins, and the rung-zero motion diagnostic.
+/// Breakaway-seeded campaign: discovery terminal and the rung-zero motion
+/// diagnostic (its collected in-band rung margins now stream separately under
+/// `EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN`).
 pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL: u16 = 156;
 /// Breakaway-seeded campaign: immutable held-out confirmation plan.
 pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN: u16 = 157;
@@ -136,6 +137,12 @@ pub const EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL: u16 = 159;
 /// evidence, streamed on the tick its stroke completes (discovery and
 /// confirmation share this id; the record's `phase` field distinguishes them).
 pub const EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION: u16 = 160;
+/// Breakaway-seeded campaign: one collected in-band rung's nomination margin,
+/// streamed on its own tick as the discovery walk folds the rung, so the
+/// discovery-terminal tick no longer fans the whole batch (up to 32 records)
+/// into the bounded trace motion queue. A non-nominatable in-band rung produces
+/// no record, so a gap in `collected_index` is normal.
+pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN: u16 = 161;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;

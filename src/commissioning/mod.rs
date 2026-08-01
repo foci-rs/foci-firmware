@@ -50,12 +50,13 @@ use crate::trace::events::{
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL,
     EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL,
-    EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL,
-    EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED, EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
-    EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
-    EVENT_COMMISSION_OUTER_SAFETY_TIMING, EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
-    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_SELECTED_RECOVERY_REST,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN,
+    EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL, EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED,
+    EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN, EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
+    EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+    EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -1696,9 +1697,7 @@ impl CommissioningEngine {
         backend: &mut B,
         event: crate::commissioning::types::BreakawayCampaignEvent,
     ) {
-        use crate::commissioning::outer::velocity::breakaway_reporting::{
-            confirmation_observation_report, discovery_rung_margin_report,
-        };
+        use crate::commissioning::outer::velocity::breakaway_reporting::confirmation_observation_report;
         use crate::commissioning::outer::velocity::breakaway_trace_reporting::{
             encode_campaign_terminal, encode_ceiling_source, encode_confirmation_observation,
             encode_confirmation_planned, encode_confirmation_terminal,
@@ -1716,6 +1715,7 @@ impl CommissioningEngine {
             BreakawayCampaignEvent::ProbeTerminal(report) => report.evidence_sequence,
             BreakawayCampaignEvent::DiscoveryPlanned { planned, .. } => planned.evidence_sequence,
             BreakawayCampaignEvent::RawObservation(report) => report.evidence_sequence,
+            BreakawayCampaignEvent::DiscoveryRungMargin(report) => report.evidence_sequence,
             BreakawayCampaignEvent::DiscoveryTerminal { terminal, .. } => {
                 terminal.evidence_sequence
             }
@@ -1735,6 +1735,9 @@ impl CommissioningEngine {
                 EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN
             }
             BreakawayCampaignEvent::RawObservation(_) => EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
+            BreakawayCampaignEvent::DiscoveryRungMargin(_) => {
+                EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN
+            }
             BreakawayCampaignEvent::DiscoveryTerminal { .. } => {
                 EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL
             }
@@ -1771,27 +1774,13 @@ impl CommissioningEngine {
             BreakawayCampaignEvent::RawObservation(report) => {
                 backend.record_velocity_sweep_trace_record(encode_raw_observation(report));
             }
+            BreakawayCampaignEvent::DiscoveryRungMargin(report) => {
+                backend.record_velocity_sweep_trace_record(encode_discovery_rung_margin(report));
+            }
             BreakawayCampaignEvent::DiscoveryTerminal {
                 terminal,
-                rungs,
                 rung_zero,
             } => {
-                let run_sequence = terminal.run_sequence;
-                let evidence_sequence = terminal.evidence_sequence;
-                let plan_digest = terminal.plan_digest;
-                for collected_index in 0..rungs.count() {
-                    if let Some(report) = discovery_rung_margin_report(
-                        rungs.as_slice(),
-                        collected_index,
-                        plan_digest,
-                        run_sequence,
-                        evidence_sequence,
-                    ) {
-                        backend.record_velocity_sweep_trace_record(encode_discovery_rung_margin(
-                            report,
-                        ));
-                    }
-                }
                 if let Some(diagnostic) = rung_zero {
                     backend.record_velocity_sweep_trace_record(encode_rung_zero_diagnostic(
                         diagnostic,

@@ -1079,9 +1079,7 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
     oid: u8,
     event: crate::commissioning::types::BreakawayCampaignEvent,
 ) {
-    use crate::commissioning::outer::velocity::breakaway_reporting::{
-        confirmation_observation_report, discovery_rung_margin_report,
-    };
+    use crate::commissioning::outer::velocity::breakaway_reporting::confirmation_observation_report;
     use crate::commissioning::types::BreakawayCampaignEvent;
 
     match event {
@@ -1105,25 +1103,13 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::RawObservation(report) => {
             emit_breakaway_raw_observation(sink, oid, report);
         }
+        BreakawayCampaignEvent::DiscoveryRungMargin(report) => {
+            emit_breakaway_discovery_rung_margin(sink, oid, report);
+        }
         BreakawayCampaignEvent::DiscoveryTerminal {
             terminal,
-            rungs,
             rung_zero,
         } => {
-            let run_sequence = terminal.run_sequence;
-            let evidence_sequence = terminal.evidence_sequence;
-            let plan_digest = terminal.plan_digest;
-            for collected_index in 0..rungs.count() {
-                if let Some(report) = discovery_rung_margin_report(
-                    rungs.as_slice(),
-                    collected_index,
-                    plan_digest,
-                    run_sequence,
-                    evidence_sequence,
-                ) {
-                    emit_breakaway_discovery_rung_margin(sink, oid, report);
-                }
-            }
             if let Some(diagnostic) = rung_zero {
                 emit_breakaway_rung_zero_diagnostic(sink, oid, diagnostic);
             }

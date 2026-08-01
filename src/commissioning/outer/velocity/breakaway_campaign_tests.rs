@@ -515,6 +515,7 @@ fn run_discovery(
         match result {
             AdditiveDiscoveryStep::ReadyNow => {}
             AdditiveDiscoveryStep::Observation(_) => {}
+            AdditiveDiscoveryStep::Margin { .. } => {}
             AdditiveDiscoveryStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 if is_capture_phase {
@@ -661,6 +662,7 @@ fn discovery_streams_each_raw_observation_on_its_collection_tick() {
         ));
         match result {
             AdditiveDiscoveryStep::ReadyNow => previous_was_observation = false,
+            AdditiveDiscoveryStep::Margin { .. } => previous_was_observation = false,
             AdditiveDiscoveryStep::At(deadline) => {
                 previous_was_observation = false;
                 backend.elapsed_us_value = deadline;
@@ -765,10 +767,10 @@ fn an_inert_rung_zero_retains_its_inert_classification() {
     );
 }
 
-// --- Live emission: a discovery terminal bundles every in-band rung's margin --
+// --- Live emission: the discovery terminal event carries only rung-zero + terminal --
 
 #[test]
-fn a_discovery_terminal_bundles_every_in_band_rung_margin_and_the_rung_zero_diagnostic() {
+fn a_discovery_terminal_carries_only_the_rung_zero_diagnostic_and_the_terminal() {
     let (outcome, session, _) =
         run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
             if rung_index == 0 {
@@ -783,20 +785,19 @@ fn a_discovery_terminal_bundles_every_in_band_rung_margin_and_the_rung_zero_diag
     let CampaignAdvance::Emit { now, next } = advance else {
         panic!("expected an Emit advance");
     };
+    // Per-rung margins stream separately (see the StreamMargins tests); the
+    // terminal event itself no longer carries the collected set.
     let BreakawayCampaignEvent::DiscoveryTerminal {
         terminal,
-        rungs,
         rung_zero,
     } = now
     else {
         panic!("expected the discovery terminal, got {now:?}");
     };
     assert_eq!(
-        rungs.count(),
-        1,
+        terminal.collected_count, 1,
         "rung zero's 75% response is the sole in-band rung"
     );
-    assert_eq!(rungs.as_slice()[0].p.raw(), 181);
     assert!(
         rung_zero.is_some(),
         "rung zero was walked and its classification retained"
@@ -807,6 +808,68 @@ fn a_discovery_terminal_bundles_every_in_band_rung_margin_and_the_rung_zero_diag
     assert!(matches!(
         next,
         EmitContinuation::EnterPhase(BreakawayCampaignPhase::Confirmation { .. })
+    ));
+}
+
+/// The walk enters `StreamMargins` on a target-band selection and emits one
+/// `Margin { collected_index }` per retained in-band rung, cursor covering every
+/// entry (including any non-nominatable one, which the campaign layer turns into
+/// no record), before the `TargetBandSelected` outcome. One margin per tick, so
+/// no single tick can burst the trace queue.
+#[test]
+fn stream_margins_emits_one_margin_per_collected_rung_then_selects_the_band() {
+    let (outcome, mut session, mut backend) =
+        run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+            if rung_index == 0 {
+                5 // 75%: in band, retained.
+            } else {
+                8 // 120%: confidently above, stops the walk.
+            }
+        });
+    // run_discovery already drained the stream to Done; re-drive one fresh
+    // StreamMargins pass over the same collected set to observe the emitted
+    // indices directly.
+    let collected = session.in_band.count();
+    assert_eq!(collected, 1, "one in-band rung was collected");
+    let mut state = AdditiveDiscoveryState::StreamMargins { cursor: 0 };
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut safety = test_safety();
+    let mut expected_index = 0_u8;
+    let mut reached_done = false;
+    for _ in 0..(usize::from(collected) + 2) {
+        match pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        )) {
+            AdditiveDiscoveryStep::Margin { collected_index } => {
+                assert_eq!(
+                    collected_index, expected_index,
+                    "the cursor covers every collected index in order, one per tick"
+                );
+                expected_index += 1;
+            }
+            AdditiveDiscoveryStep::Done(done) => {
+                assert!(
+                    matches!(done, AdditiveDiscoveryOutcome::TargetBandSelected(_)),
+                    "StreamMargins concludes with the band selection"
+                );
+                reached_done = true;
+                break;
+            }
+            other => panic!("StreamMargins only streams margins then Done, got {other:?}"),
+        }
+    }
+    assert!(reached_done, "the stream terminated in Done");
+    assert_eq!(
+        expected_index, collected,
+        "exactly one margin streamed per collected in-band rung"
+    );
+    assert!(matches!(
+        outcome,
+        AdditiveDiscoveryOutcome::TargetBandSelected(_)
     ));
 }
 
@@ -900,6 +963,7 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
         match result {
             AdditiveDiscoveryStep::ReadyNow => {}
             AdditiveDiscoveryStep::Observation(_) => {}
+            AdditiveDiscoveryStep::Margin { .. } => {}
             AdditiveDiscoveryStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 // The first stroke commands Forward. Move consistently in the
@@ -983,6 +1047,7 @@ fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
         match result {
             AdditiveDiscoveryStep::ReadyNow => {}
             AdditiveDiscoveryStep::Observation(_) => {}
+            AdditiveDiscoveryStep::Margin { .. } => {}
             AdditiveDiscoveryStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 // Hold still during the moving capture (Inert is fine -- this test

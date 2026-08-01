@@ -1282,6 +1282,12 @@ pub(crate) enum AdditiveDiscoveryState {
     /// what is next: another slot, another direction, another rung, or a
     /// terminal.
     Advance,
+    /// The walk selected the target band; stream one collected in-band rung's
+    /// margin per tick from the retained `session.in_band` before concluding.
+    /// `cursor` is the next collected index to stream; the walk is complete, so
+    /// the collected set no longer changes. Only reached with a non-empty
+    /// in-band set.
+    StreamMargins { cursor: u8 },
 }
 
 /// One cooperative result from [`step_additive_discovery`].
@@ -1300,6 +1306,12 @@ pub(crate) enum AdditiveDiscoveryStep {
     /// before the atom is folded into the rung's nomination bounds. Call again
     /// immediately; the fold happens on the following tick.
     Observation(CollectedObservation),
+    /// One collected in-band rung's margin is ready to stream, identified by its
+    /// index within the retained collected set. The campaign layer owns wire
+    /// identity: it attaches the run/evidence sequences and the plan digest and
+    /// builds the record (a non-nominatable index yields no record). Call again
+    /// immediately; the next index streams on the following tick.
+    Margin { collected_index: u8 },
     /// The discovery campaign concluded.
     Done(AdditiveDiscoveryOutcome),
 }
@@ -1514,6 +1526,28 @@ fn classify_rung_band(rung: &DiscoveryRungNominationInput, own_multiplier: f32) 
             RungBandVerdict::ConfidentlyAboveBand
         }
         Some(_) | None => RungBandVerdict::Ambiguous,
+    }
+}
+
+/// Conclude the discovery walk once a stop rule fires.
+///
+/// A non-empty in-band set means the target band was selected: enter
+/// [`AdditiveDiscoveryState::StreamMargins`] to stream each collected rung's
+/// margin on its own tick before the `TargetBandSelected` outcome (which
+/// `StreamMargins` itself produces once the collected set is exhausted). An
+/// empty in-band set terminates immediately with `empty_outcome`
+/// (`TargetBandSkipped` or `CurrentHeadroomBeforeBand`). The walk is over at
+/// this point, so the retained collected set no longer changes.
+fn finish_discovery_walk(
+    state: &mut AdditiveDiscoveryState,
+    in_band_count: u8,
+    empty_outcome: AdditiveDiscoveryOutcome,
+) -> AdditiveDiscoveryStep {
+    if in_band_count > 0 {
+        *state = AdditiveDiscoveryState::StreamMargins { cursor: 0 };
+        AdditiveDiscoveryStep::ReadyNow
+    } else {
+        AdditiveDiscoveryStep::Done(empty_outcome)
     }
 }
 
@@ -2012,11 +2046,11 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             }
 
             if session.pending_headroom_stop {
-                return AdditiveDiscoveryStep::Done(if session.in_band.count() > 0 {
-                    AdditiveDiscoveryOutcome::TargetBandSelected(session.in_band)
-                } else {
-                    AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
-                });
+                return finish_discovery_walk(
+                    state,
+                    session.in_band.count(),
+                    AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand,
+                );
             }
 
             let Some(next_slot) = session.slot.checked_add(1) else {
@@ -2074,11 +2108,11 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         }
                     }
                     if verdict == RungBandVerdict::ConfidentlyAboveBand {
-                        return AdditiveDiscoveryStep::Done(if session.in_band.count() > 0 {
-                            AdditiveDiscoveryOutcome::TargetBandSelected(session.in_band)
-                        } else {
-                            AdditiveDiscoveryOutcome::TargetBandSkipped
-                        });
+                        return finish_discovery_walk(
+                            state,
+                            session.in_band.count(),
+                            AdditiveDiscoveryOutcome::TargetBandSkipped,
+                        );
                     }
 
                     session.forward = DirectionAccumulator::new();
@@ -2088,11 +2122,11 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         return discovery_fault(CommissionError::InvalidSchedule);
                     };
                     if usize::from(next_rung) >= usize::from(session.plan.rung_count) {
-                        return AdditiveDiscoveryStep::Done(if session.in_band.count() > 0 {
-                            AdditiveDiscoveryOutcome::TargetBandSelected(session.in_band)
-                        } else {
-                            AdditiveDiscoveryOutcome::TargetBandSkipped
-                        });
+                        return finish_discovery_walk(
+                            state,
+                            session.in_band.count(),
+                            AdditiveDiscoveryOutcome::TargetBandSkipped,
+                        );
                     }
                     session.rung_index = next_rung;
                     session.direction = VelocityDirection::Forward;
@@ -2100,6 +2134,19 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     *state = AdditiveDiscoveryState::WriteGain;
                     AdditiveDiscoveryStep::ReadyNow
                 }
+            }
+        }
+        AdditiveDiscoveryState::StreamMargins { cursor } => {
+            let index = *cursor;
+            if usize::from(index) < usize::from(session.in_band.count()) {
+                *cursor = index.saturating_add(1);
+                AdditiveDiscoveryStep::Margin {
+                    collected_index: index,
+                }
+            } else {
+                AdditiveDiscoveryStep::Done(AdditiveDiscoveryOutcome::TargetBandSelected(
+                    session.in_band,
+                ))
             }
         }
     }
@@ -3431,6 +3478,42 @@ fn raw_observation_step(
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::RawObservation(report))
 }
 
+/// Build the streamed margin event for one collected in-band rung, mirroring
+/// [`raw_observation_step`]: the discovery driver names the collected index, and
+/// this attaches the wire identity (plan digest, run sequence, a fresh evidence
+/// sequence) and builds the record.
+///
+/// A non-nominatable in-band rung legitimately produces no record; that index
+/// consumes no evidence sequence and simply advances the stream on the next
+/// tick.
+fn margin_step(
+    plan_digest: u64,
+    in_band: &[DiscoveryRungNominationBounds],
+    collected_index: u8,
+    run_sequence: u32,
+    evidence_sequence: &mut u16,
+) -> BreakawayCampaignStep {
+    let nominatable = in_band
+        .get(usize::from(collected_index))
+        .is_some_and(|bounds| bounds.nominatable);
+    if !nominatable {
+        return BreakawayCampaignStep::ReadyNow;
+    }
+    let sequence = next_sequence(evidence_sequence);
+    match super::breakaway_reporting::discovery_rung_margin_report(
+        in_band,
+        collected_index,
+        plan_digest,
+        run_sequence,
+        sequence,
+    ) {
+        Some(report) => {
+            BreakawayCampaignStep::Event(BreakawayCampaignEvent::DiscoveryRungMargin(report))
+        }
+        None => BreakawayCampaignStep::ReadyNow,
+    }
+}
+
 /// Build the campaign's own closure record.
 fn campaign_terminal_event(
     phase: BreakawayPhase,
@@ -3808,10 +3891,6 @@ fn discovery_done_advance(
     let sequence = next_sequence(evidence_sequence);
     let terminal =
         discovery_terminal_report(&session.plan, &outcome, inputs.run_sequence, sequence);
-    let rungs = match &outcome {
-        AdditiveDiscoveryOutcome::TargetBandSelected(rungs) => *rungs,
-        _ => CollectedInBandRungs::new(),
-    };
     let rung_zero = session.rung_zero_classification.map(|(forward, reverse)| {
         rung_zero_diagnostic_report(
             &session.plan,
@@ -3821,9 +3900,11 @@ fn discovery_done_advance(
             sequence,
         )
     });
+    // Per-rung margins already streamed one per tick from `StreamMargins` before
+    // this terminal, so the terminal event carries only the rung-zero diagnostic
+    // and the terminal record (two frames, no burst).
     let now = BreakawayCampaignEvent::DiscoveryTerminal {
         terminal,
-        rungs,
         rung_zero,
     };
     let plan_digest = session.plan.plan_digest;
@@ -4199,6 +4280,15 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                             session.plan.plan_digest,
                             super::breakaway_reporting::BreakawayPhase::Discovery,
                             collected,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
+                    AdditiveDiscoveryStep::Margin { collected_index } => {
+                        CampaignAdvance::Step(margin_step(
+                            session.plan.plan_digest,
+                            session.in_band.as_slice(),
+                            collected_index,
                             inputs.run_sequence,
                             evidence_sequence,
                         ))

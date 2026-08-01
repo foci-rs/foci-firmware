@@ -1432,15 +1432,17 @@ pub enum BreakawayCampaignEvent {
     /// `phase` field), one per tick at collection -- never bundled into a
     /// terminal-time burst.
     RawObservation(BreakawayRawObservation),
-    /// A discovery-campaign terminal: every in-band rung's margin, the
-    /// rung-zero motion diagnostic (when available), and the terminal itself.
+    /// One collected in-band rung's nomination margin, streamed on its own tick
+    /// as the discovery walk folds the rung (never bundled into the discovery-
+    /// terminal tick, which would burst the trace queue). A non-nominatable
+    /// in-band rung produces no such event.
+    DiscoveryRungMargin(BreakawayDiscoveryRungMargin),
+    /// A discovery-campaign terminal: the rung-zero motion diagnostic (when
+    /// available) and the terminal record. Per-rung margins stream separately
+    /// as [`Self::DiscoveryRungMargin`] before this event.
     DiscoveryTerminal {
         /// The discovery terminal record.
         terminal: AdditiveDiscoveryTerminal,
-        /// Every in-band rung collected before the terminal, fanned out to one
-        /// margin record per rung at dispatch. Empty for a terminal that
-        /// selected no in-band rung.
-        rungs: crate::commissioning::outer::velocity::breakaway_campaign::CollectedInBandRungs,
         /// The rung-zero motion diagnostic, when discovery progressed far
         /// enough to classify rung zero's own strokes.
         rung_zero: Option<BreakawayRungZeroDiagnostic>,
