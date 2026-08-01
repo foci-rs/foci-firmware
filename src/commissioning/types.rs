@@ -1333,6 +1333,95 @@ pub struct BreakawayCampaignTerminal {
     pub stage_c_plan_digest: u64,
 }
 
+/// Which `p_top` candidate bound the additive-discovery authority ceiling:
+/// the current-limit-derived candidate, or the `PidPGain::MAX`
+/// representability clamp. See `sweep_plan::CEILING_BINDING_*`.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayCeilingSource {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Evidence sequence shared with the discovery plan this ceiling anchors.
+    pub evidence_sequence: u16,
+    /// Digest of the additive discovery plan this ceiling bound.
+    pub plan_digest: u64,
+    /// `sweep_plan::CEILING_BINDING_CURRENT_LIMIT` or
+    /// `sweep_plan::CEILING_BINDING_REPRESENTABILITY_CLAMP`.
+    pub binding_source: u8,
+}
+
+/// One breakaway-campaign evidence record ready for wire emission.
+///
+/// Mirrors [`VelocitySweepEvent`]: the campaign driver
+/// (`breakaway_campaign::step_breakaway_campaign_with_trace`) returns one of
+/// these per streamed tick, and `commission_dispatch::replies` fans it out to
+/// the Task-7 `emit_breakaway_*` wire bridges. The discovery and confirmation
+/// terminal variants carry their full batch evidence (every in-band rung,
+/// every held-out stroke) because that evidence is only ever available in
+/// full at the terminal transition -- `breakaway_campaign`'s own
+/// `CollectedInBandRungs`/`ConfirmationDirectionalInput` retain it across the
+/// whole phase for exactly this reason. The dispatch bridge loops over it to
+/// emit one wire record per item, the same way `emit_acceptance_matrix_plan`
+/// already fans one Rust value out to several wire fragments.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, defmt::Format)]
+#[allow(clippy::large_enum_variant)]
+pub enum BreakawayCampaignEvent {
+    /// Immutable probe plan, emitted before the probe's first stroke.
+    ProbePlanned(BreakawayProbePlanned),
+    /// Both directions' resolved inert/moving breakaway brackets, emitted once
+    /// the probe locates a campaign breakaway.
+    DirectionalBreakaway {
+        /// Forward-direction resolved bracket.
+        forward: BreakawayDirectionalBreakaway,
+        /// Reverse-direction resolved bracket.
+        reverse: BreakawayDirectionalBreakaway,
+    },
+    /// A probe-campaign terminal that did not resolve a breakaway.
+    ProbeTerminal(BreakawayProbeTerminal),
+    /// The immutable additive discovery plan, its resolved ladder, and the
+    /// ceiling's binding source, emitted before discovery's first stroke.
+    DiscoveryPlanned {
+        /// The frozen plan identity and geometry.
+        planned: AdditiveDiscoveryPlanned,
+        /// Which candidate bound the plan's authority ceiling.
+        ceiling_source: BreakawayCeilingSource,
+        /// The resolved ladder, fanned out to one record per rung at dispatch.
+        plan: crate::commissioning::outer::velocity::breakaway_plan::AdditiveDiscoveryPlan,
+    },
+    /// A discovery-campaign terminal: every in-band rung's margin, the
+    /// rung-zero motion diagnostic (when available), and the terminal itself.
+    DiscoveryTerminal {
+        /// The discovery terminal record.
+        terminal: AdditiveDiscoveryTerminal,
+        /// Every in-band rung collected before the terminal, fanned out to one
+        /// margin record per rung at dispatch. Empty for a terminal that
+        /// selected no in-band rung.
+        rungs: crate::commissioning::outer::velocity::breakaway_campaign::CollectedInBandRungs,
+        /// The rung-zero motion diagnostic, when discovery progressed far
+        /// enough to classify rung zero's own strokes.
+        rung_zero: Option<BreakawayRungZeroDiagnostic>,
+    },
+    /// The immutable held-out confirmation plan, emitted before its first stroke.
+    ConfirmationPlanned(BandConfirmationPlanned),
+    /// A confirmation-block terminal: every fresh stroke's response interval
+    /// and the terminal itself. `forward`/`reverse` carry no observations for
+    /// a terminal reached before any confirmation stroke ran.
+    ConfirmationTerminal {
+        /// The confirmation terminal record.
+        terminal: BandConfirmationTerminal,
+        /// Forward-direction fresh evidence, fanned out to one observation
+        /// record per collected stroke at dispatch.
+        forward:
+            crate::commissioning::outer::velocity::band_confirmation::ConfirmationDirectionalInput,
+        /// Reverse-direction fresh evidence, fanned out the same way.
+        reverse:
+            crate::commissioning::outer::velocity::band_confirmation::ConfirmationDirectionalInput,
+    },
+    /// The canonical closure record for one complete breakaway campaign.
+    CampaignTerminal(BreakawayCampaignTerminal),
+}
+
 /// Generic terminal tying an inconclusive outer phase to its detailed report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterInconclusive {
@@ -1370,6 +1459,9 @@ pub enum StepResult {
     AcceptanceMatrixEvent(AcceptanceMatrixEvent),
     /// One fixed-I velocity confidence matrix reached its terminal.
     AcceptanceMatrixTerminal(AcceptanceMatrixTerminal),
+    /// Streamed breakaway-campaign evidence became available.
+    #[cfg(feature = "trace-velocity-sweep")]
+    BreakawayCampaignEvent(BreakawayCampaignEvent),
     /// Inner commissioning failed.
     InnerFailed(CommissionError),
     /// Outer commissioning completed successfully.

@@ -387,6 +387,12 @@ pub enum ReplyPayload {
         oid: u8,
         terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
     },
+    /// One streamed breakaway-campaign plan, terminal, or evidence bundle.
+    #[cfg(feature = "trace-velocity-sweep")]
+    BreakawayCampaignEvent {
+        oid: u8,
+        event: crate::commissioning::types::BreakawayCampaignEvent,
+    },
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
@@ -646,6 +652,18 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
         }
         StepResult::AcceptanceMatrixEvent(_) => CommissionOutcome::Continue,
+        #[cfg(feature = "trace-velocity-sweep")]
+        StepResult::BreakawayCampaignEvent(event) => {
+            let engine_ref = engine
+                .as_ref()
+                .expect("engine slot is None on BreakawayCampaignEvent");
+            CommissionOutcome::Evidence {
+                reply: ReplyPayload::BreakawayCampaignEvent {
+                    oid: engine_ref.oid(),
+                    event,
+                },
+            }
+        }
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::AcceptanceMatrixTerminal(terminal) => {
             use core::sync::atomic::Ordering::Relaxed;

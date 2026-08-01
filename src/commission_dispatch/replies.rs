@@ -643,6 +643,14 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit which `p_top` candidate bound the additive-discovery authority
+    /// ceiling.
+    fn foci_breakaway_ceiling_source(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayCeilingSource,
+    ) {
+    }
+
     /// Emit one rung of the complete resolved additive ladder.
     fn foci_breakaway_ladder_rung(
         &mut self,
@@ -1028,6 +1036,145 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
         accepted: report.accepted,
         stage_c_plan_digest_low: report.stage_c_plan_digest as u32,
         stage_c_plan_digest_high: (report.stage_c_plan_digest >> 32) as u32,
+    });
+}
+
+/// Fan one campaign evidence event out to the Task-7 `emit_breakaway_*`
+/// bridges, looping over any batch evidence a terminal variant carries (every
+/// in-band rung's margin, every resolved ladder rung, every fresh held-out
+/// stroke) the same way [`emit_acceptance_matrix_plan`] already loops one
+/// Rust value out to several wire fragments.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    event: crate::commissioning::types::BreakawayCampaignEvent,
+) {
+    use crate::commissioning::outer::velocity::breakaway_reporting::{
+        confirmation_observation_report, discovery_rung_margin_report, ladder_rung_report,
+    };
+    use crate::commissioning::types::BreakawayCampaignEvent;
+
+    match event {
+        BreakawayCampaignEvent::ProbePlanned(report) => {
+            emit_breakaway_probe_plan(sink, oid, report)
+        }
+        BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } => {
+            emit_breakaway_directional_breakaway(sink, oid, forward);
+            emit_breakaway_directional_breakaway(sink, oid, reverse);
+        }
+        BreakawayCampaignEvent::ProbeTerminal(report) => {
+            emit_breakaway_probe_terminal(sink, oid, report);
+        }
+        BreakawayCampaignEvent::DiscoveryPlanned {
+            planned,
+            ceiling_source,
+            plan,
+        } => {
+            let run_sequence = planned.run_sequence;
+            let evidence_sequence = planned.evidence_sequence;
+            emit_additive_discovery_plan(sink, oid, planned);
+            emit_breakaway_ceiling_source(sink, oid, ceiling_source);
+            for rung_index in 0..plan.rung_count {
+                if let Some(report) =
+                    ladder_rung_report(&plan, rung_index, run_sequence, evidence_sequence)
+                {
+                    emit_breakaway_ladder_rung(sink, oid, report);
+                }
+            }
+        }
+        BreakawayCampaignEvent::DiscoveryTerminal {
+            terminal,
+            rungs,
+            rung_zero,
+        } => {
+            let run_sequence = terminal.run_sequence;
+            let evidence_sequence = terminal.evidence_sequence;
+            let plan_digest = terminal.plan_digest;
+            for collected_index in 0..rungs.count() {
+                if let Some(report) = discovery_rung_margin_report(
+                    rungs.as_slice(),
+                    collected_index,
+                    plan_digest,
+                    run_sequence,
+                    evidence_sequence,
+                ) {
+                    emit_breakaway_discovery_rung_margin(sink, oid, report);
+                }
+            }
+            if let Some(diagnostic) = rung_zero {
+                emit_breakaway_rung_zero_diagnostic(sink, oid, diagnostic);
+            }
+            emit_additive_discovery_terminal(sink, oid, terminal);
+        }
+        BreakawayCampaignEvent::ConfirmationPlanned(report) => {
+            emit_band_confirmation_plan(sink, oid, report);
+        }
+        BreakawayCampaignEvent::ConfirmationTerminal {
+            terminal,
+            forward,
+            reverse,
+        } => {
+            let run_sequence = terminal.run_sequence;
+            let evidence_sequence = terminal.evidence_sequence;
+            let plan_digest = terminal.plan_digest;
+            for (slot_index, atom) in forward
+                .observations
+                .into_iter()
+                .enumerate()
+                .flat_map(|(slot_index, atom)| atom.map(|atom| (slot_index, atom)))
+            {
+                if let Some(report) = confirmation_observation_report(
+                    plan_digest,
+                    slot_index as u8,
+                    crate::autotune::velocity_measurement::VelocityDirection::Forward,
+                    atom,
+                    run_sequence,
+                    evidence_sequence,
+                ) {
+                    emit_band_confirmation_observation(sink, oid, report);
+                }
+            }
+            for (slot_index, atom) in reverse
+                .observations
+                .into_iter()
+                .enumerate()
+                .flat_map(|(slot_index, atom)| atom.map(|atom| (slot_index, atom)))
+            {
+                if let Some(report) = confirmation_observation_report(
+                    plan_digest,
+                    slot_index as u8 + 4,
+                    crate::autotune::velocity_measurement::VelocityDirection::Reverse,
+                    atom,
+                    run_sequence,
+                    evidence_sequence,
+                ) {
+                    emit_band_confirmation_observation(sink, oid, report);
+                }
+            }
+            emit_band_confirmation_terminal(sink, oid, terminal);
+        }
+        BreakawayCampaignEvent::CampaignTerminal(report) => {
+            emit_breakaway_campaign_terminal(sink, oid, report);
+        }
+    }
+}
+
+/// Emit which `p_top` candidate bound the additive-discovery authority
+/// ceiling.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_breakaway_ceiling_source<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    report: crate::commissioning::types::BreakawayCeilingSource,
+) {
+    sink.foci_breakaway_ceiling_source(crate::ankyra::replies::FociBreakawayCeilingSource {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        plan_digest_low: report.plan_digest as u32,
+        plan_digest_high: (report.plan_digest >> 32) as u32,
+        binding_source: report.binding_source,
     });
 }
 
@@ -2486,6 +2633,10 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
         #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::AcceptanceMatrixTerminal { oid, terminal } => {
             emit_acceptance_matrix_terminal(sink, oid, terminal);
+        }
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::BreakawayCampaignEvent { oid, event } => {
+            emit_breakaway_campaign_event(sink, oid, event);
         }
     }
 }

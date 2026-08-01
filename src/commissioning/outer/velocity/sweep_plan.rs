@@ -101,6 +101,13 @@ const HALF_OCTAVE_DEN_SHIFT: u32 = 7;
 pub const EFFECTIVE_CEILING_MACHINE: u8 = 0;
 /// The effective ceiling is limited by wrap-safe encoder observability.
 pub const EFFECTIVE_CEILING_ENCODER: u8 = 1;
+
+/// `p_top` is bound by the current-limit-derived candidate
+/// (`VELOCITY_P_DIVISOR * usable_torque_limit / target`).
+pub(crate) const CEILING_BINDING_CURRENT_LIMIT: u8 = 0;
+/// `p_top` is bound by the [`PidPGain::MAX`] representability clamp instead of
+/// the current-limit-derived candidate.
+pub(crate) const CEILING_BINDING_REPRESENTABILITY_CLAMP: u8 = 1;
 /// The requested amplitude exceeded the normal envelope-compatible amplitude.
 pub const CLAMP_ENVELOPE: u16 = 1 << 0;
 /// The requested amplitude exceeded the declared moving-travel budget.
@@ -570,11 +577,13 @@ fn plan_velocity_sweep_with_limit(
     )
     .map_err(map_recovery_plan_error)?;
     let (p_start, p_top, usable_torque_limit) = if use_operational_limit {
-        let (p_start, p_top) =
+        let (p_start, p_top, _ceiling_binding_source) =
             current_gain_span_with_limit(target_velocity_rpm, torque_flux_limit)?;
         (p_start, p_top, torque_flux_limit)
     } else {
-        current_gain_span(target_velocity_rpm, torque_flux_limit)?
+        let (p_start, p_top, usable_torque_limit, _ceiling_binding_source) =
+            current_gain_span(target_velocity_rpm, torque_flux_limit)?;
+        (p_start, p_top, usable_torque_limit)
     };
     let ladder = build_gain_ladder(p_start.raw(), p_top.raw())?;
     let rung_count = u8::try_from(ladder.len()).map_err(|_| VelocityPlanError::Arithmetic)?;
@@ -742,11 +751,12 @@ fn representability_ceilings(
 /// usable_torque_limit / target`, capped by encoder observability); see
 /// [`current_gain_span_with_limit`]. The breakaway orchestrator retains the
 /// returned `(p_start, p_top)` to plan the probe grid and to anchor the additive
-/// discovery ceiling.
+/// discovery ceiling, and the returned ceiling-binding-source discriminant
+/// (`CEILING_BINDING_*`) to report which candidate bound `p_top`.
 pub(crate) fn current_gain_span(
     target_velocity_rpm: TmcMechanicalRpm,
     hard_torque_limit: u16,
-) -> Result<(PidPGain, PidPGain, u16), VelocityPlanError> {
+) -> Result<(PidPGain, PidPGain, u16, u8), VelocityPlanError> {
     let target = target_velocity_rpm.raw().unsigned_abs();
     if target == 0 {
         return Err(VelocityPlanError::InvalidRequest);
@@ -758,24 +768,36 @@ pub(crate) fn current_gain_span(
             .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?
             .raw(),
     );
-    let (p_start, p_top) = current_gain_span_with_limit(target_velocity_rpm, usable as u16)?;
-    Ok((p_start, p_top, usable as u16))
+    let (p_start, p_top, ceiling_binding_source) =
+        current_gain_span_with_limit(target_velocity_rpm, usable as u16)?;
+    Ok((p_start, p_top, usable as u16, ceiling_binding_source))
 }
 
+/// Resolve `(p_start, p_top)` and report which of the two `p_top` candidates
+/// bound the result: the current-limit-derived candidate, or the
+/// [`PidPGain::MAX`] representability clamp. Does not change the computed
+/// `p_top` -- the clamp is applied exactly as before; only the winning
+/// candidate is now surfaced alongside it.
 fn current_gain_span_with_limit(
     target_velocity_rpm: TmcMechanicalRpm,
     usable_torque_limit: u16,
-) -> Result<(PidPGain, PidPGain), VelocityPlanError> {
+) -> Result<(PidPGain, PidPGain, u8), VelocityPlanError> {
     let target = target_velocity_rpm.raw().unsigned_abs();
     if target == 0 || usable_torque_limit == 0 {
         return Err(VelocityPlanError::InvalidRequest);
     }
     let p_start_raw = VELOCITY_P_DIVISOR.div_ceil(target);
-    let p_top_raw = VELOCITY_P_DIVISOR
+    let current_limit_p_top_raw = VELOCITY_P_DIVISOR
         .checked_mul(u32::from(usable_torque_limit))
         .ok_or(VelocityPlanError::Arithmetic)?
         / target;
-    let p_top_raw = p_top_raw.min(u32::from(PidPGain::MAX.raw()));
+    let representability_clamp_raw = u32::from(PidPGain::MAX.raw());
+    let ceiling_binding_source = if current_limit_p_top_raw > representability_clamp_raw {
+        CEILING_BINDING_REPRESENTABILITY_CLAMP
+    } else {
+        CEILING_BINDING_CURRENT_LIMIT
+    };
+    let p_top_raw = current_limit_p_top_raw.min(representability_clamp_raw);
     if p_start_raw > p_top_raw || p_start_raw > u32::from(PidPGain::MAX.raw()) {
         return Err(VelocityPlanError::InsufficientStructuralSpan);
     }
@@ -783,7 +805,7 @@ fn current_gain_span_with_limit(
         .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
     let p_top = PidPGain::new(p_top_raw as u16)
         .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
-    Ok((p_start, p_top))
+    Ok((p_start, p_top, ceiling_binding_source))
 }
 
 /// Build the anchored post-dedupe half-octave gain ladder between two raw gains.

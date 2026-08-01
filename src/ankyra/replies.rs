@@ -4032,6 +4032,24 @@ pub struct FociBreakawayCampaignTerminal {
     pub stage_c_plan_digest_high: u32,
 }
 
+/// Which `p_top` candidate bound the additive-discovery authority ceiling.
+#[klipper_reply]
+pub struct FociBreakawayCeilingSource {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Evidence sequence shared with the discovery plan this ceiling anchors.
+    pub evidence_sequence: u16,
+    /// Exact low discovery plan digest word.
+    pub plan_digest_low: u32,
+    /// Exact high discovery plan digest word.
+    pub plan_digest_high: u32,
+    /// `sweep_plan::CEILING_BINDING_CURRENT_LIMIT` or
+    /// `sweep_plan::CEILING_BINDING_REPRESENTABILITY_CLAMP`.
+    pub binding_source: u8,
+}
+
 /// Command-level commissioning workflow disclosed before any motion.
 #[klipper_reply]
 pub struct FociCommissioningWorkflowPlan {

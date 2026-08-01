@@ -3,10 +3,11 @@ use super::super::combined_plan::{
     COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION,
 };
 use super::{
-    CLAMP_ENVELOPE, CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM,
-    EFFECTIVE_CEILING_ENCODER, EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S,
-    ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM, MAX_SAFETY_OBSERVATION_GAP_US,
-    MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
+    CEILING_BINDING_CURRENT_LIMIT, CEILING_BINDING_REPRESENTABILITY_CLAMP, CLAMP_ENVELOPE,
+    CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM, EFFECTIVE_CEILING_ENCODER,
+    EFFECTIVE_CEILING_MACHINE, ENVELOPE_ABSOLUTE_MARGIN_MREV_S, ENVELOPE_PROPORTIONAL_DEN,
+    ENVELOPE_PROPORTIONAL_NUM, MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS,
+    MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     SWEEP_SLOT_COUNT, StrokeGeometry, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
     build_gain_ladder, cap_safe_target_rpm, current_gain_span, envelope_cap, gain_at,
@@ -295,7 +296,7 @@ fn travel_binding_has_a_named_clamp_cause() {
 
 #[test]
 fn current_span_uses_quantum_start_and_inclusive_nine_tenths_top() {
-    let (p_start, p_top, usable) =
+    let (p_start, p_top, usable, _ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(100), 1_000).unwrap();
     assert_eq!(CURRENT_HEADROOM_NUM, 9);
     assert_eq!(CURRENT_HEADROOM_DEN, 10);
@@ -304,6 +305,28 @@ fn current_span_uses_quantum_start_and_inclusive_nine_tenths_top() {
     assert_eq!(p_top.raw(), 2_304);
     assert_eq!(u32::from(p_top.raw()) * 100 / 256, u32::from(usable));
     assert!(usable < 1_000);
+}
+
+#[test]
+fn ceiling_binding_source_reports_current_limit_when_it_binds() {
+    let (_p_start, _p_top, _usable, ceiling_binding_source) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 1_000).unwrap();
+    assert_eq!(ceiling_binding_source, CEILING_BINDING_CURRENT_LIMIT);
+}
+
+#[test]
+fn ceiling_binding_source_reports_representability_clamp_when_it_binds() {
+    // A tiny target and a near-maximal torque limit push the current-limit
+    // candidate (256 * usable / target) far past PidPGain::MAX, so the
+    // representability clamp -- not the current limit -- binds p_top.
+    let (p_start, p_top, _usable, ceiling_binding_source) =
+        current_gain_span(TmcMechanicalRpm::from_register(1), 32_767).unwrap();
+    assert_eq!(
+        ceiling_binding_source,
+        CEILING_BINDING_REPRESENTABILITY_CLAMP
+    );
+    assert_eq!(p_top, PidPGain::MAX);
+    assert!(p_start.raw() <= p_top.raw());
 }
 
 #[test]

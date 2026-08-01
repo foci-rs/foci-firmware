@@ -78,23 +78,30 @@ use crate::commissioning::outer::{OuterSafetyLimits, fail_outer, fail_outer_with
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::StepResult;
 use crate::commissioning::types::{
-    OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
-    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
+    BreakawayCampaignEvent, BreakawayCeilingSource, OUTER_SAFETY_FAULT_CURRENT,
+    OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
 };
 
 use super::band_confirmation::{
     BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlan,
     CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT, CONFIRMATION_FAMILY_SIZE,
     CONFIRMATION_SLOT_ORDER, ConfirmationDirectionalInput, DiscoveryObservationAtom,
-    DiscoveryRungNominationBounds, DiscoveryRungNominationInput,
+    DiscoveryRungNominationBounds, DiscoveryRungNominationInput, NominatedConfirmationCandidate,
     TargetBandConfirmationInconclusive, TargetBandUnconfirmableFromDiscovery,
     evaluate_band_confirmation, nominate_confirmation_candidate_from_bounds,
     plan_band_confirmation, rung_nomination_bounds, rung_response_bounds_percent,
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan,
-    PROBE_CONFIDENCE_FAMILY_SIZE, plan_additive_discovery_ladder, plan_breakaway_probe,
-    resolve_grid_floor,
+    GridFloorOrigin, PROBE_CONFIDENCE_FAMILY_SIZE, plan_additive_discovery_ladder,
+    plan_breakaway_probe, resolve_grid_floor,
+};
+use super::breakaway_reporting::{
+    BreakawayPhase, campaign_terminal_report, confirmation_evaluated_terminal_report,
+    confirmation_plan_report, confirmation_zero_stroke_cause,
+    confirmation_zero_stroke_terminal_report, directional_breakaway_report, discovery_plan_report,
+    discovery_terminal_cause, discovery_terminal_report, probe_plan_report, probe_terminal_cause,
+    probe_terminal_report, rung_zero_diagnostic_report,
 };
 use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
@@ -996,7 +1003,7 @@ const EMPTY_DISCOVERY_RUNG_BOUNDS: DiscoveryRungNominationBounds = DiscoveryRung
 /// [`MAX_SWEEP_RUNGS`] times `size_of::<DiscoveryRungNominationBounds>()`, a
 /// few hundred bytes rather than the raw-atom representation's ~14 KB.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
-pub(crate) struct CollectedInBandRungs {
+pub struct CollectedInBandRungs {
     rungs: [DiscoveryRungNominationBounds; MAX_IN_BAND_DISCOVERY_RUNGS],
     count: u8,
 }
@@ -1101,6 +1108,17 @@ pub(crate) struct AdditiveDiscoverySession {
     pending_lower_rate_q: Option<u64>,
     pending_headroom_stop: bool,
     pending_record: Option<PendingDiscoveryRecord>,
+    /// The frozen planning request, retained (it is tiny and `Copy`) so the
+    /// planned-report can be assembled at report time via
+    /// [`discovery_plan_report`], mirroring how [`BreakawayProbeSession`]
+    /// retains its own plan for reporting.
+    request: AdditiveDiscoveryRequest,
+    /// Whether the resolved floor was clamped to the search grid's origin.
+    floor_origin_clamped: bool,
+    /// Rung zero's own per-direction motion classification, retained
+    /// specifically for [`rung_zero_diagnostic_report`] once discovery walks
+    /// past rung zero (spec section 6: reported purely as evidence).
+    rung_zero_classification: Option<(BreakawayMotionClass, BreakawayMotionClass)>,
 }
 
 impl AdditiveDiscoverySession {
@@ -1126,6 +1144,7 @@ impl AdditiveDiscoverySession {
     #[allow(clippy::result_large_err)]
     pub(crate) fn new(
         request: AdditiveDiscoveryRequest,
+        floor_origin_clamped: bool,
         target_velocity_rpm: TmcMechanicalRpm,
         planned_velocity_mrev_s: u32,
     ) -> Result<Self, AdditiveDiscoveryOutcome> {
@@ -1147,6 +1166,9 @@ impl AdditiveDiscoverySession {
             pending_lower_rate_q: None,
             pending_headroom_stop: false,
             pending_record: None,
+            request,
+            floor_origin_clamped,
+            rung_zero_classification: None,
         })
     }
 
@@ -1408,6 +1430,30 @@ enum RungBandVerdict {
     /// containment, or not judgeable (loss of consensus other than current
     /// headroom). Not a stop condition by itself; the ladder continues.
     Ambiguous,
+}
+
+/// Reduce one direction's four per-slot classifications to a single
+/// moving/inert diagnostic verdict, mirroring
+/// [`super::breakaway_search::classify_breakaway_observation`]'s
+/// classification-to-motion mapping (`Eligible`/`DeficitUnresolved` => moving,
+/// `Inert` => inert) but folded across a whole rung's four-slot consensus
+/// schedule instead of a single probe observation: moving if any slot shows
+/// motion, inert otherwise. Used only for the rung-zero diagnostic (spec
+/// section 6), which is evidence, not a stop-rule input.
+fn direction_motion_class(
+    classes: [VelocityObservationClass; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+) -> BreakawayMotionClass {
+    let moved = classes.iter().any(|class| {
+        matches!(
+            class,
+            VelocityObservationClass::Eligible | VelocityObservationClass::DeficitUnresolved
+        )
+    });
+    if moved {
+        BreakawayMotionClass::Moving
+    } else {
+        BreakawayMotionClass::Inert
+    }
 }
 
 fn classify_rung_band(rung: &DiscoveryRungNominationInput, own_multiplier: f32) -> RungBandVerdict {
@@ -1943,6 +1989,18 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         reverse_observations: session.reverse.atoms,
                     };
                     let verdict = classify_rung_band(&rung_input, session.own_multiplier);
+                    // Retain rung zero's own per-direction motion classification before
+                    // its accumulators reset below, regardless of `verdict`: rung zero
+                    // (the diagnostic floor, expected inert) is never pushed into
+                    // `in_band` unless it happens to classify `InBand`, so without this
+                    // capture its evidence would be silently discarded. Every other
+                    // rung's handling is unchanged.
+                    if session.rung_index == 0 {
+                        session.rung_zero_classification = Some((
+                            direction_motion_class(session.forward.classes),
+                            direction_motion_class(session.reverse.classes),
+                        ));
+                    }
                     if verdict == RungBandVerdict::InBand {
                         // Compute the NOMINATION interval and eligibility now, while
                         // the raw atoms are still fresh, and retain only the compact
@@ -2130,6 +2188,7 @@ pub(crate) fn begin_band_confirmation(
     };
     BandConfirmationEntry::Ready(BandConfirmationSession::new(
         plan,
+        candidate.margin_percent,
         target_velocity_rpm,
         planned_velocity_mrev_s,
     ))
@@ -2153,11 +2212,17 @@ pub(crate) struct BandConfirmationSession {
     reverse: DirectionAccumulator,
     pending_lower_rate_q: Option<u64>,
     pending_record: Option<PendingConfirmationRecord>,
+    /// The nominated candidate's `M_i = min(L_i - 70, 80 - U_i)`, retained
+    /// (rather than the whole [`NominatedConfirmationCandidate`], which
+    /// `begin_band_confirmation` otherwise fully consumes) so
+    /// [`confirmation_plan_report`] can be assembled at report time.
+    nominated_margin_percent: f32,
 }
 
 impl BandConfirmationSession {
     fn new(
         plan: BandConfirmationPlan,
+        nominated_margin_percent: f32,
         target_velocity_rpm: TmcMechanicalRpm,
         planned_velocity_mrev_s: u32,
     ) -> Self {
@@ -2170,6 +2235,7 @@ impl BandConfirmationSession {
             reverse: DirectionAccumulator::new(),
             pending_lower_rate_q: None,
             pending_record: None,
+            nominated_margin_percent,
         }
     }
 
@@ -2843,6 +2909,11 @@ pub(crate) struct BreakawayCampaignInputs {
     workflow_envelope_ms: u32,
     channel: u8,
     run_sequence: u32,
+    /// `sweep_plan::CEILING_BINDING_CURRENT_LIMIT` or
+    /// `sweep_plan::CEILING_BINDING_REPRESENTABILITY_CLAMP`: which `p_top`
+    /// candidate bound the plan-time authority ceiling this campaign's probe
+    /// and discovery ladders are both anchored against.
+    ceiling_binding_source: u8,
 }
 
 /// Frozen command request the campaign is planned from.
@@ -2897,10 +2968,23 @@ pub(crate) enum BreakawayCampaignPhase {
 }
 
 /// Frozen campaign inputs plus the active phase.
+///
+/// `pending_event`/`pending_done` defer a not-yet-returned evidence record or
+/// terminal by exactly one [`step_breakaway_campaign`] tick: a phase's
+/// terminal transition (or the campaign's own accept) can need to report more
+/// than one wire record before the next state is actually reachable (for
+/// example a discovery terminal's rung-margin/rung-zero bundle, followed by a
+/// zero-stroke confirmation terminal it routes straight into, followed by the
+/// campaign's own closure record). Each field holds at most the ONE item not
+/// yet returned; [`step_breakaway_campaign`] drains `pending_event` before
+/// `pending_done`, and both before touching the active phase driver again.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct BreakawayCampaign {
     inputs: BreakawayCampaignInputs,
     phase: BreakawayCampaignPhase,
+    evidence_sequence: u16,
+    pending_event: Option<crate::commissioning::types::BreakawayCampaignTerminal>,
+    pending_done: Option<BreakawayCampaignOutcome>,
 }
 
 impl BreakawayCampaign {
@@ -2914,7 +2998,7 @@ impl BreakawayCampaign {
     /// [`CommissioningWorkflowPlan::new_breakaway`]; a malformed envelope
     /// refuses the whole campaign without motion.
     pub(crate) fn new(request: BreakawayCampaignRequest) -> Result<Self, CommissionError> {
-        let (p_start, p_top, usable_torque_limit) =
+        let (p_start, p_top, usable_torque_limit, ceiling_binding_source) =
             current_gain_span(request.target_velocity_rpm, request.hard_torque_limit)
                 .map_err(|_| CommissionError::InvalidSchedule)?;
         // Reserve the command-level envelope before any probe motion; every
@@ -2947,11 +3031,15 @@ impl BreakawayCampaign {
                 workflow_envelope_ms: request.maximum_workflow_ms,
                 channel: request.channel,
                 run_sequence: request.run_sequence,
+                ceiling_binding_source,
             },
             phase: BreakawayCampaignPhase::Probe {
                 state: BreakawayProbeState::PlannedProbe,
                 session,
             },
+            evidence_sequence: 0,
+            pending_event: None,
+            pending_done: None,
         })
     }
 
@@ -3083,20 +3171,59 @@ pub(crate) enum BreakawayCampaignStep {
     ReadyNow,
     /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
+    /// One evidence record is ready for wire emission; call again immediately.
+    Event(BreakawayCampaignEvent),
     /// The campaign concluded.
     Done(BreakawayCampaignOutcome),
 }
 
-/// Internal transition control: either a live per-tick step, or a new phase to
-/// enter (freezing the next phase's plan before its first stroke).
+/// Internal transition control: either a live per-tick step passed straight
+/// through, or one evidence record to emit now plus what happens next.
 ///
-/// Both variants are large -- one carries a `Done` outcome, the other a phase
-/// with its session -- so there is no small variant to shrink toward; boxing is
-/// unavailable in this heapless crate, matching the sibling terminal enums here.
+/// Every phase transition (probe success, and every probe/discovery/
+/// confirmation terminal) reports at least its own phase-owned record before
+/// the campaign either enters the next phase or closes, so `Emit` -- not a
+/// bare `EnterPhase` -- is the only transition variant; see
+/// [`EmitContinuation`]. Both variants are large -- one carries a `Done`-sized
+/// outcome, the other an event plus a phase or a second deferred event -- so
+/// there is no small variant to shrink toward; boxing is unavailable in this
+/// heapless crate, matching the sibling terminal enums here.
 #[allow(clippy::large_enum_variant)]
 enum CampaignAdvance {
+    /// Pass a non-terminal, non-eventful driver result straight through.
     Step(BreakawayCampaignStep),
+    /// Emit `now` immediately; `next` says what happens starting the
+    /// following tick.
+    Emit {
+        now: BreakawayCampaignEvent,
+        next: EmitContinuation,
+    },
+}
+
+/// What [`step_breakaway_campaign`] does after an [`CampaignAdvance::Emit`]'s
+/// `now` event has been returned.
+///
+/// `Terminal` carries the campaign closure record as the bare
+/// [`crate::commissioning::types::BreakawayCampaignTerminal`] struct, not the
+/// full [`BreakawayCampaignEvent`] enum: this value is staged in
+/// [`BreakawayCampaign::pending_event`], which -- unlike `now`, always
+/// returned immediately and never retained -- is embedded in [`OuterPhase`]
+/// for a whole extra tick. Sizing that field to `BreakawayCampaignEvent`'s
+/// largest variant (the batch discovery/confirmation terminals, which only
+/// ever appear as an immediate `now`) would blow `OuterPhase`'s stack budget
+/// for a record that is always the small campaign-terminal shape in practice.
+#[allow(clippy::large_enum_variant)]
+enum EmitContinuation {
+    /// Enter this phase; its own `Planned*` interception reports the new
+    /// phase's plan-freeze event(s) on the following tick, before its first
+    /// stroke.
     EnterPhase(BreakawayCampaignPhase),
+    /// Emit the campaign's own closure record on the following tick, then
+    /// return `done` the tick after that.
+    Terminal {
+        campaign_terminal: crate::commissioning::types::BreakawayCampaignTerminal,
+        done: BreakawayCampaignOutcome,
+    },
 }
 
 /// Map a non-`BreakawayFound` probe outcome to its campaign terminal.
@@ -3140,6 +3267,63 @@ fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignO
     }
 }
 
+/// Hand out the next monotonic evidence sequence number and advance the
+/// counter, mirroring `VelocityTraceIntegrity::next_evidence_sequence` for
+/// the breakaway campaign, which has no integrity tracker of its own.
+fn next_sequence(evidence_sequence: &mut u16) -> u16 {
+    let sequence = *evidence_sequence;
+    *evidence_sequence = evidence_sequence.wrapping_add(1);
+    sequence
+}
+
+/// Build the campaign's own closure record.
+fn campaign_terminal_event(
+    phase: BreakawayPhase,
+    terminal_cause: super::breakaway_reporting::BreakawayTerminalCause,
+    accepted: bool,
+    stage_c_plan_digest: u64,
+    inputs: &BreakawayCampaignInputs,
+    evidence_sequence: &mut u16,
+) -> crate::commissioning::types::BreakawayCampaignTerminal {
+    let sequence = next_sequence(evidence_sequence);
+    campaign_terminal_report(
+        phase,
+        terminal_cause,
+        accepted,
+        stage_c_plan_digest,
+        inputs.run_sequence,
+        sequence,
+    )
+}
+
+/// A discovery plan-time construction failure never freezes a discovery plan
+/// (`plan_additive_discovery_ladder` refused before `AdditiveDiscoveryPlan`
+/// existed), so there is no discovery-owned terminal record to report -- only
+/// the campaign's own closure record, with `BreakawayPhase::Discovery` and
+/// [`super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault`],
+/// matching [`discovery_terminal_cause`]'s own mapping for
+/// [`AdditiveDiscoveryOutcome::SafetyFault`].
+fn discovery_construction_fault(
+    inputs: &BreakawayCampaignInputs,
+    evidence_sequence: &mut u16,
+) -> EmitContinuation {
+    let campaign_terminal = campaign_terminal_event(
+        BreakawayPhase::Discovery,
+        super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault,
+        false,
+        0,
+        inputs,
+        evidence_sequence,
+    );
+    EmitContinuation::Terminal {
+        campaign_terminal,
+        done: BreakawayCampaignOutcome::Terminal {
+            error: CommissionError::InvalidSchedule,
+            safety: None,
+        },
+    }
+}
+
 /// Route a finished discovery outcome into confirmation, or into its terminal.
 ///
 /// Every discovery outcome -- whether a discovery-run `Done` or a discovery
@@ -3148,11 +3332,19 @@ fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignO
 /// (including the impossible-outcome-to-`InvalidSchedule` safety fault) has
 /// exactly one implementation. `discovery_plan_digest` is only consulted on the
 /// `Ready` path; terminal outcomes ignore it.
+///
+/// The zero-stroke confirmation outcomes reachable here
+/// ([`BandConfirmationOutcome::TargetBandNotReachedAtAuthority`],
+/// [`BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery`], and the
+/// impossible-outcome safety fault) never freeze a confirmation plan, so --
+/// mirroring [`discovery_construction_fault`] -- only the campaign's own
+/// closure record is reported, not a zero-stroke confirmation terminal.
 fn route_discovery_outcome(
     outcome: AdditiveDiscoveryOutcome,
     discovery_plan_digest: u64,
     inputs: &BreakawayCampaignInputs,
-) -> CampaignAdvance {
+    evidence_sequence: &mut u16,
+) -> EmitContinuation {
     match begin_band_confirmation(
         outcome,
         discovery_plan_digest,
@@ -3160,13 +3352,25 @@ fn route_discovery_outcome(
         inputs.planned_velocity_mrev_s,
     ) {
         BandConfirmationEntry::Ready(session) => {
-            CampaignAdvance::EnterPhase(BreakawayCampaignPhase::Confirmation {
+            EmitContinuation::EnterPhase(BreakawayCampaignPhase::Confirmation {
                 state: BandConfirmationState::PlannedConfirmation,
                 session,
             })
         }
         BandConfirmationEntry::Done(outcome) => {
-            CampaignAdvance::Step(BreakawayCampaignStep::Done(confirmation_terminal(outcome)))
+            let cause = confirmation_zero_stroke_cause(&outcome).0;
+            let campaign_terminal = campaign_terminal_event(
+                BreakawayPhase::Confirmation,
+                cause,
+                false,
+                0,
+                inputs,
+                evidence_sequence,
+            );
+            EmitContinuation::Terminal {
+                campaign_terminal,
+                done: confirmation_terminal(outcome),
+            }
         }
     }
 }
@@ -3239,34 +3443,23 @@ fn enter_discovery(
     resolved: &ResolvedCampaignBreakaway,
     probe_plan: &BreakawayProbePlan,
     inputs: &BreakawayCampaignInputs,
-) -> CampaignAdvance {
-    let (floor, _origin) = match resolve_grid_floor(
+    evidence_sequence: &mut u16,
+) -> EmitContinuation {
+    let (floor, floor_origin) = match resolve_grid_floor(
         inputs.p_start,
         inputs.p_top,
         probe_plan.search_count,
         resolved.breakaway_index,
     ) {
         Ok(resolved_floor) => resolved_floor,
-        Err(_) => {
-            return CampaignAdvance::Step(BreakawayCampaignStep::Done(
-                BreakawayCampaignOutcome::Terminal {
-                    error: CommissionError::InvalidSchedule,
-                    safety: None,
-                },
-            ));
-        }
+        Err(_) => return discovery_construction_fault(inputs, evidence_sequence),
     };
     let Some(breakaway) = probe_plan
         .search_gains
         .get(usize::from(resolved.breakaway_index))
         .copied()
     else {
-        return CampaignAdvance::Step(BreakawayCampaignStep::Done(
-            BreakawayCampaignOutcome::Terminal {
-                error: CommissionError::InvalidSchedule,
-                safety: None,
-            },
-        ));
+        return discovery_construction_fault(inputs, evidence_sequence);
     };
     let request = AdditiveDiscoveryRequest {
         floor,
@@ -3277,18 +3470,372 @@ fn enter_discovery(
         workflow_envelope_ms: inputs.workflow_envelope_ms,
         probe_plan_digest: probe_plan.plan_digest,
     };
+    let floor_origin_clamped = matches!(floor_origin, GridFloorOrigin::ClampedAtBreakaway);
     match AdditiveDiscoverySession::new(
         request,
+        floor_origin_clamped,
         inputs.target_velocity_rpm,
         inputs.planned_velocity_mrev_s,
     ) {
-        Ok(session) => CampaignAdvance::EnterPhase(BreakawayCampaignPhase::Discovery {
+        Ok(session) => EmitContinuation::EnterPhase(BreakawayCampaignPhase::Discovery {
             state: AdditiveDiscoveryState::PlannedDiscovery,
             session,
         }),
         // A discovery plan-time refusal is routed through the same gate as a
         // discovery-run terminal; the digest is unused for terminal outcomes.
-        Err(outcome) => route_discovery_outcome(outcome, 0, inputs),
+        Err(outcome) => route_discovery_outcome(outcome, 0, inputs, evidence_sequence),
+    }
+}
+
+/// Build the campaign's probe-success advance: report both directions'
+/// resolved breakaway brackets now, then enter discovery (or report its
+/// construction failure) starting the following tick.
+fn probe_success_advance(
+    resolved: ResolvedCampaignBreakaway,
+    probe_plan: &BreakawayProbePlan,
+    inputs: &BreakawayCampaignInputs,
+    evidence_sequence: &mut u16,
+) -> CampaignAdvance {
+    let sequence = next_sequence(evidence_sequence);
+    let forward = directional_breakaway_report(
+        probe_plan,
+        VelocityDirection::Forward,
+        &resolved.forward,
+        inputs.run_sequence,
+        sequence,
+    );
+    let reverse = directional_breakaway_report(
+        probe_plan,
+        VelocityDirection::Reverse,
+        &resolved.reverse,
+        inputs.run_sequence,
+        sequence,
+    );
+    let now = BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse };
+    let next = enter_discovery(&resolved, probe_plan, inputs, evidence_sequence);
+    CampaignAdvance::Emit { now, next }
+}
+
+/// Build the campaign's probe-failure advance: report the probe's own
+/// terminal now, then the campaign's closure record starting the following
+/// tick.
+fn probe_failure_advance(
+    outcome: BreakawayProbeOutcome,
+    probe_plan: &BreakawayProbePlan,
+    inputs: &BreakawayCampaignInputs,
+    evidence_sequence: &mut u16,
+) -> CampaignAdvance {
+    let sequence = next_sequence(evidence_sequence);
+    let terminal = probe_terminal_report(probe_plan, &outcome, inputs.run_sequence, sequence);
+    let cause = probe_terminal_cause(&outcome).0;
+    let now = BreakawayCampaignEvent::ProbeTerminal(terminal);
+    let campaign_terminal = campaign_terminal_event(
+        BreakawayPhase::Probe,
+        cause,
+        false,
+        0,
+        inputs,
+        evidence_sequence,
+    );
+    CampaignAdvance::Emit {
+        now,
+        next: EmitContinuation::Terminal {
+            campaign_terminal,
+            done: probe_terminal(outcome),
+        },
+    }
+}
+
+/// Build the campaign's discovery-terminal advance: report every collected
+/// in-band rung's margin, the rung-zero diagnostic (when available), and the
+/// discovery terminal itself now, then route into confirmation -- or, for a
+/// zero-stroke confirmation outcome, the campaign's closure record -- starting
+/// the following tick.
+fn discovery_done_advance(
+    outcome: AdditiveDiscoveryOutcome,
+    session: &AdditiveDiscoverySession,
+    inputs: &BreakawayCampaignInputs,
+    evidence_sequence: &mut u16,
+) -> CampaignAdvance {
+    let sequence = next_sequence(evidence_sequence);
+    let terminal =
+        discovery_terminal_report(&session.plan, &outcome, inputs.run_sequence, sequence);
+    let rungs = match &outcome {
+        AdditiveDiscoveryOutcome::TargetBandSelected(rungs) => *rungs,
+        _ => CollectedInBandRungs::new(),
+    };
+    let rung_zero = session.rung_zero_classification.map(|(forward, reverse)| {
+        rung_zero_diagnostic_report(
+            &session.plan,
+            forward,
+            reverse,
+            inputs.run_sequence,
+            sequence,
+        )
+    });
+    let now = BreakawayCampaignEvent::DiscoveryTerminal {
+        terminal,
+        rungs,
+        rung_zero,
+    };
+    let plan_digest = session.plan.plan_digest;
+    // Every discovery outcome other than a nominating success or the
+    // spec-section-9 current-headroom reclassification is a discovery-OWNED
+    // terminal: keep its own specific discovery cause on the campaign's
+    // closure record too, rather than the generic `SafetyFault`
+    // `begin_band_confirmation`'s impossible-outcome gate collapses every one
+    // of them to.
+    let next = match outcome {
+        AdditiveDiscoveryOutcome::TargetBandSelected(_)
+        | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => {
+            route_discovery_outcome(outcome, plan_digest, inputs, evidence_sequence)
+        }
+        AdditiveDiscoveryOutcome::TargetBandSkipped
+        | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
+        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
+        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded => {
+            let cause = discovery_terminal_cause(&outcome).0;
+            let campaign_terminal = campaign_terminal_event(
+                BreakawayPhase::Discovery,
+                cause,
+                false,
+                0,
+                inputs,
+                evidence_sequence,
+            );
+            EmitContinuation::Terminal {
+                campaign_terminal,
+                done: BreakawayCampaignOutcome::Terminal {
+                    error: CommissionError::InvalidSchedule,
+                    safety: None,
+                },
+            }
+        }
+        AdditiveDiscoveryOutcome::SafetyFault { error, safety } => {
+            let campaign_terminal = campaign_terminal_event(
+                BreakawayPhase::Discovery,
+                super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault,
+                false,
+                0,
+                inputs,
+                evidence_sequence,
+            );
+            EmitContinuation::Terminal {
+                campaign_terminal,
+                done: BreakawayCampaignOutcome::Terminal { error, safety },
+            }
+        }
+    };
+    CampaignAdvance::Emit { now, next }
+}
+
+/// One direction's fresh confirmation evidence, assembled from a live
+/// session's accumulator -- the same construction
+/// [`evaluate_confirmation_session`] uses to judge acceptance.
+fn confirmation_directional_input(
+    session: &BandConfirmationSession,
+    direction: VelocityDirection,
+) -> ConfirmationDirectionalInput {
+    let accumulator = match direction {
+        VelocityDirection::Forward => &session.forward,
+        VelocityDirection::Reverse => &session.reverse,
+    };
+    ConfirmationDirectionalInput {
+        consensus: accumulator.consensus(),
+        classes: accumulator.classes,
+        observations: accumulator.atoms,
+    }
+}
+
+/// No observations collected: reported for a confirmation terminal whose
+/// masks are all zero (see [`confirmation_zero_stroke_terminal_report`]), so
+/// the event's own fan-out reports zero strokes too, never a partial session.
+const EMPTY_CONFIRMATION_DIRECTIONAL_INPUT: ConfirmationDirectionalInput =
+    ConfirmationDirectionalInput {
+        consensus: DirectionalConsensus {
+            classification: super::sweep_consensus::DirectionalConsensusClass::IncompleteRung,
+            components: [[0; 2]; 2],
+            component_count: 0,
+            collected_mask: 0,
+            eligible_mask: 0,
+            included_mask: 0,
+        },
+        classes: [VelocityObservationClass::InvalidEvidenceFault;
+            CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+
+/// Build the campaign's confirmation-terminal advance: report every fresh
+/// held-out stroke's response interval and the confirmation terminal itself
+/// now, then the campaign's closure record starting the following tick,
+/// routing an acceptance through the Stage-C token chain.
+fn confirmation_done_advance<B: CommissioningBackend>(
+    outcome: BandConfirmationOutcome,
+    session: &BandConfirmationSession,
+    inputs: &BreakawayCampaignInputs,
+    safety: &OuterSafetyLimits,
+    backend: &B,
+    evidence_sequence: &mut u16,
+) -> CampaignAdvance {
+    let sequence = next_sequence(evidence_sequence);
+    let cause = confirmation_zero_stroke_cause(&outcome).0;
+    let (terminal, forward, reverse) = match &outcome {
+        BandConfirmationOutcome::Accepted { acceptance, .. } => {
+            let forward = confirmation_directional_input(session, VelocityDirection::Forward);
+            let reverse = confirmation_directional_input(session, VelocityDirection::Reverse);
+            let terminal = confirmation_evaluated_terminal_report(
+                &session.plan,
+                &forward,
+                &reverse,
+                Some(acceptance.candidate_p.raw()),
+                None,
+                inputs.run_sequence,
+                sequence,
+            );
+            (terminal, forward, reverse)
+        }
+        BandConfirmationOutcome::TargetBandConfirmationInconclusive(failure_cause) => {
+            let forward = confirmation_directional_input(session, VelocityDirection::Forward);
+            let reverse = confirmation_directional_input(session, VelocityDirection::Reverse);
+            let terminal = confirmation_evaluated_terminal_report(
+                &session.plan,
+                &forward,
+                &reverse,
+                None,
+                Some(*failure_cause),
+                inputs.run_sequence,
+                sequence,
+            );
+            (terminal, forward, reverse)
+        }
+        BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
+        | BandConfirmationOutcome::TargetBandNotReachedAtAuthority
+        | BandConfirmationOutcome::ConfirmationEvidenceExcluded
+        | BandConfirmationOutcome::SafetyFault { .. } => {
+            let terminal = confirmation_zero_stroke_terminal_report(
+                session.plan.plan_digest,
+                session.plan.discovery_plan_digest,
+                session.plan.family_size,
+                &outcome,
+                inputs.run_sequence,
+                sequence,
+            );
+            (
+                terminal,
+                EMPTY_CONFIRMATION_DIRECTIONAL_INPUT,
+                EMPTY_CONFIRMATION_DIRECTIONAL_INPUT,
+            )
+        }
+    };
+    let now = BreakawayCampaignEvent::ConfirmationTerminal {
+        terminal,
+        forward,
+        reverse,
+    };
+    let done = match outcome {
+        BandConfirmationOutcome::Accepted { acceptance, plan } => {
+            route_confirmed_accept(acceptance, plan, inputs, safety, backend)
+        }
+        other => confirmation_terminal(other),
+    };
+    let (accepted, stage_c_plan_digest) = match &done {
+        BreakawayCampaignOutcome::StageCPlanReady(plan) => (true, plan.digest()),
+        BreakawayCampaignOutcome::Terminal { .. } => (false, 0),
+    };
+    let campaign_terminal = campaign_terminal_event(
+        BreakawayPhase::Confirmation,
+        cause,
+        accepted,
+        stage_c_plan_digest,
+        inputs,
+        evidence_sequence,
+    );
+    CampaignAdvance::Emit {
+        now,
+        next: EmitContinuation::Terminal {
+            campaign_terminal,
+            done,
+        },
+    }
+}
+
+/// If the active phase is at its `Planned*` state (frozen but no stroke
+/// issued yet), report that phase's plan-freeze event(s) and advance past the
+/// interception point, mirroring
+/// [`super::sweep::step_velocity_sweep_with_trace`]'s `Setup` arm: mutate the
+/// state and return the event in the same tick, so the next tick continues
+/// straight into the phase's first stroke. Returns `None` once the active
+/// phase has left its `Planned*` state, so the caller falls through to the
+/// normal per-tick driver dispatch.
+fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<BreakawayCampaignStep> {
+    let BreakawayCampaign {
+        inputs,
+        phase,
+        evidence_sequence,
+        ..
+    } = campaign;
+    match phase {
+        BreakawayCampaignPhase::Probe { state, session } => {
+            if !matches!(*state, BreakawayProbeState::PlannedProbe) {
+                return None;
+            }
+            let sequence = next_sequence(evidence_sequence);
+            let report = probe_plan_report(
+                &session.plan,
+                inputs.p_start,
+                inputs.p_top,
+                inputs.run_sequence,
+                sequence,
+            );
+            *state = BreakawayProbeState::WriteGain;
+            Some(BreakawayCampaignStep::Event(
+                BreakawayCampaignEvent::ProbePlanned(report),
+            ))
+        }
+        BreakawayCampaignPhase::Discovery { state, session } => {
+            if !matches!(*state, AdditiveDiscoveryState::PlannedDiscovery) {
+                return None;
+            }
+            let sequence = next_sequence(evidence_sequence);
+            let planned = discovery_plan_report(
+                &session.request,
+                session.floor_origin_clamped,
+                &session.plan,
+                inputs.run_sequence,
+                sequence,
+            );
+            let ceiling_source = BreakawayCeilingSource {
+                run_sequence: inputs.run_sequence,
+                evidence_sequence: sequence,
+                plan_digest: session.plan.plan_digest,
+                binding_source: inputs.ceiling_binding_source,
+            };
+            let plan = session.plan;
+            *state = AdditiveDiscoveryState::WriteGain;
+            Some(BreakawayCampaignStep::Event(
+                BreakawayCampaignEvent::DiscoveryPlanned {
+                    planned,
+                    ceiling_source,
+                    plan,
+                },
+            ))
+        }
+        BreakawayCampaignPhase::Confirmation { state, session } => {
+            if !matches!(*state, BandConfirmationState::PlannedConfirmation) {
+                return None;
+            }
+            let sequence = next_sequence(evidence_sequence);
+            let nomination = NominatedConfirmationCandidate {
+                p: session.plan.candidate_p,
+                margin_percent: session.nominated_margin_percent,
+            };
+            let planned =
+                confirmation_plan_report(&session.plan, &nomination, inputs.run_sequence, sequence);
+            *state = BandConfirmationState::WriteGain;
+            Some(BreakawayCampaignStep::Event(
+                BreakawayCampaignEvent::ConfirmationPlanned(planned),
+            ))
+        }
     }
 }
 
@@ -3307,68 +3854,106 @@ fn enter_discovery(
 /// `PlannedConfirmation` state, and entering a phase returns `ReadyNow` without
 /// issuing that phase's first stroke, so the phase plan is always frozen before
 /// its first stroke.
+///
+/// Evidence emission is layered on top of this same sequencing rather than
+/// woven into the three drivers' own per-tick state machines: every wire
+/// record this campaign reports is available in full at a phase-entry or
+/// phase-terminal boundary (the frozen plan just before its first stroke, or
+/// the fully-collected evidence just after the driver's last stroke), so
+/// [`emit_phase_planned_event`] intercepts the former and the
+/// `*_advance` helpers (called from the `Done` arms below) build the latter,
+/// deferring anything beyond one record per tick through
+/// `campaign.pending_event`/`campaign.pending_done` (drained at the top of
+/// this function, before the active phase driver runs again).
 pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
     campaign: &mut BreakawayCampaign,
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
 ) -> BreakawayCampaignStep {
-    let BreakawayCampaign { inputs, phase } = campaign;
-    let advance = match phase {
-        BreakawayCampaignPhase::Probe { state, session } => {
-            match step_breakaway_probe(state, workspace, session, safety, backend).await {
-                BreakawayProbeStep::ReadyNow => {
-                    CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
-                }
-                BreakawayProbeStep::At(deadline_us) => {
-                    CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
-                }
-                BreakawayProbeStep::Done(BreakawayProbeOutcome::BreakawayFound(resolved)) => {
-                    enter_discovery(&resolved, &session.plan, inputs)
-                }
-                BreakawayProbeStep::Done(outcome) => {
-                    CampaignAdvance::Step(BreakawayCampaignStep::Done(probe_terminal(outcome)))
+    if let Some(campaign_terminal) = campaign.pending_event.take() {
+        return BreakawayCampaignStep::Event(BreakawayCampaignEvent::CampaignTerminal(
+            campaign_terminal,
+        ));
+    }
+    if let Some(outcome) = campaign.pending_done.take() {
+        return BreakawayCampaignStep::Done(outcome);
+    }
+    if let Some(step) = emit_phase_planned_event(campaign) {
+        return step;
+    }
+
+    let advance = {
+        let BreakawayCampaign {
+            inputs,
+            phase,
+            evidence_sequence,
+            ..
+        } = &mut *campaign;
+        match phase {
+            BreakawayCampaignPhase::Probe { state, session } => {
+                match step_breakaway_probe(state, workspace, session, safety, backend).await {
+                    BreakawayProbeStep::ReadyNow => {
+                        CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
+                    }
+                    BreakawayProbeStep::At(deadline_us) => {
+                        CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                    }
+                    BreakawayProbeStep::Done(BreakawayProbeOutcome::BreakawayFound(resolved)) => {
+                        probe_success_advance(resolved, &session.plan, inputs, evidence_sequence)
+                    }
+                    BreakawayProbeStep::Done(outcome) => {
+                        probe_failure_advance(outcome, &session.plan, inputs, evidence_sequence)
+                    }
                 }
             }
-        }
-        BreakawayCampaignPhase::Discovery { state, session } => {
-            match step_additive_discovery(state, workspace, session, safety, backend).await {
-                AdditiveDiscoveryStep::ReadyNow => {
-                    CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
-                }
-                AdditiveDiscoveryStep::At(deadline_us) => {
-                    CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
-                }
-                AdditiveDiscoveryStep::Done(outcome) => {
-                    route_discovery_outcome(outcome, session.plan.plan_digest, inputs)
+            BreakawayCampaignPhase::Discovery { state, session } => {
+                match step_additive_discovery(state, workspace, session, safety, backend).await {
+                    AdditiveDiscoveryStep::ReadyNow => {
+                        CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
+                    }
+                    AdditiveDiscoveryStep::At(deadline_us) => {
+                        CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                    }
+                    AdditiveDiscoveryStep::Done(outcome) => {
+                        discovery_done_advance(outcome, session, inputs, evidence_sequence)
+                    }
                 }
             }
-        }
-        BreakawayCampaignPhase::Confirmation { state, session } => {
-            match step_band_confirmation(state, workspace, session, safety, backend).await {
-                BandConfirmationStep::ReadyNow => {
-                    CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
+            BreakawayCampaignPhase::Confirmation { state, session } => {
+                match step_band_confirmation(state, workspace, session, safety, backend).await {
+                    BandConfirmationStep::ReadyNow => {
+                        CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
+                    }
+                    BandConfirmationStep::At(deadline_us) => {
+                        CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                    }
+                    BandConfirmationStep::Done(outcome) => confirmation_done_advance(
+                        outcome,
+                        session,
+                        inputs,
+                        safety,
+                        backend,
+                        evidence_sequence,
+                    ),
                 }
-                BandConfirmationStep::At(deadline_us) => {
-                    CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
-                }
-                BandConfirmationStep::Done(BandConfirmationOutcome::Accepted {
-                    acceptance,
-                    plan,
-                }) => CampaignAdvance::Step(BreakawayCampaignStep::Done(route_confirmed_accept(
-                    acceptance, plan, inputs, safety, backend,
-                ))),
-                BandConfirmationStep::Done(outcome) => CampaignAdvance::Step(
-                    BreakawayCampaignStep::Done(confirmation_terminal(outcome)),
-                ),
             }
         }
     };
     match advance {
         CampaignAdvance::Step(step) => step,
-        CampaignAdvance::EnterPhase(next) => {
-            *phase = next;
-            BreakawayCampaignStep::ReadyNow
+        CampaignAdvance::Emit { now, next } => {
+            match next {
+                EmitContinuation::EnterPhase(next_phase) => campaign.phase = next_phase,
+                EmitContinuation::Terminal {
+                    campaign_terminal,
+                    done,
+                } => {
+                    campaign.pending_event = Some(campaign_terminal);
+                    campaign.pending_done = Some(done);
+                }
+            }
+            BreakawayCampaignStep::Event(now)
         }
     }
 }
@@ -3406,6 +3991,7 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
     match step {
         BreakawayCampaignStep::ReadyNow => StepResult::ReadyNow,
         BreakawayCampaignStep::At(deadline_us) => StepResult::At(deadline_us),
+        BreakawayCampaignStep::Event(event) => StepResult::BreakawayCampaignEvent(event),
         BreakawayCampaignStep::Done(BreakawayCampaignOutcome::StageCPlanReady(plan)) => {
             let old =
                 core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));

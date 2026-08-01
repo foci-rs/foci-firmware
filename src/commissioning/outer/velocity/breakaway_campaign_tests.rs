@@ -465,9 +465,13 @@ fn run_discovery(
     request: AdditiveDiscoveryRequest,
     current_limit_raw: u32,
     mut response_numerator: impl FnMut(VelocityDirection, u8) -> i32,
-) -> (AdditiveDiscoveryOutcome, MockBackend) {
+) -> (
+    AdditiveDiscoveryOutcome,
+    AdditiveDiscoverySession,
+    MockBackend,
+) {
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
         .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
@@ -501,7 +505,7 @@ fn run_discovery(
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
-            AdditiveDiscoveryStep::Done(outcome) => return (outcome, backend),
+            AdditiveDiscoveryStep::Done(outcome) => return (outcome, session, backend),
         }
     }
     panic!("discovery run exceeded its bounded step budget");
@@ -513,7 +517,7 @@ fn run_discovery(
 fn no_discovery_motion_happens_before_the_planned_discovery_state_advances() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
         .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
@@ -549,7 +553,7 @@ fn insufficient_additive_span_is_a_plan_time_terminal_with_no_motion() {
     };
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
 
-    let outcome = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+    let outcome = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
         .expect_err("a ceiling one step above breakaway cannot hold five structural rungs");
 
     assert!(matches!(
@@ -571,7 +575,7 @@ fn additive_ladder_resolution_budget_exceeded_is_a_plan_time_terminal_with_no_mo
     };
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
 
-    let outcome = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+    let outcome = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
         .expect_err("every candidate's first additive gap exceeds the resolution guard");
 
     assert!(matches!(
@@ -584,13 +588,14 @@ fn additive_ladder_resolution_budget_exceeded_is_a_plan_time_terminal_with_no_mo
 
 #[test]
 fn an_in_band_rung_produces_target_band_selected() {
-    let (outcome, _) = run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
-        if rung_index == 0 {
-            5 // 75%: contained in 70-80%, retained.
-        } else {
-            8 // 120%: confidently above 80%, stopping exploration here.
-        }
-    });
+    let (outcome, _session, _) =
+        run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+            if rung_index == 0 {
+                5 // 75%: contained in 70-80%, retained.
+            } else {
+                8 // 120%: confidently above 80%, stopping exploration here.
+            }
+        });
 
     let AdditiveDiscoveryOutcome::TargetBandSelected(collected) = outcome else {
         panic!("expected TargetBandSelected, got {outcome:?}");
@@ -599,17 +604,120 @@ fn an_in_band_rung_produces_target_band_selected() {
     assert_eq!(collected.as_slice()[0].p.raw(), 181);
 }
 
+// --- Rung-zero diagnostic: retained regardless of its own InBand verdict ------
+
+#[test]
+fn a_moving_rung_zero_retains_its_moving_classification() {
+    let (outcome, session, _) =
+        run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+            if rung_index == 0 {
+                5 // 75%: moving, and InBand -- both facts must be retained independently.
+            } else {
+                8 // 120%: confidently above 80%, stopping exploration here.
+            }
+        });
+    assert!(matches!(
+        outcome,
+        AdditiveDiscoveryOutcome::TargetBandSelected(_)
+    ));
+    let (forward, reverse) = session
+        .rung_zero_classification
+        .expect("rung zero was walked before the campaign stopped");
+    assert_eq!(
+        forward,
+        crate::commissioning::outer::velocity::breakaway_search::BreakawayMotionClass::Moving
+    );
+    assert_eq!(
+        reverse,
+        crate::commissioning::outer::velocity::breakaway_search::BreakawayMotionClass::Moving
+    );
+}
+
+#[test]
+fn an_inert_rung_zero_retains_its_inert_classification() {
+    let (outcome, session, _) =
+        run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+            if rung_index == 0 {
+                0 // No motion at all: inert, and NOT InBand -- discarded from `in_band`,
+            // but the diagnostic classification must still survive the reset.
+            } else {
+                8 // 120%: confidently above 80%, stopping exploration here.
+            }
+        });
+    assert!(matches!(
+        outcome,
+        AdditiveDiscoveryOutcome::TargetBandSkipped
+    ));
+    let (forward, reverse) = session
+        .rung_zero_classification
+        .expect("rung zero was walked before the campaign stopped");
+    assert_eq!(
+        forward,
+        crate::commissioning::outer::velocity::breakaway_search::BreakawayMotionClass::Inert
+    );
+    assert_eq!(
+        reverse,
+        crate::commissioning::outer::velocity::breakaway_search::BreakawayMotionClass::Inert
+    );
+}
+
+// --- Live emission: a discovery terminal bundles every in-band rung's margin --
+
+#[test]
+fn a_discovery_terminal_bundles_every_in_band_rung_margin_and_the_rung_zero_diagnostic() {
+    let (outcome, session, _) =
+        run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+            if rung_index == 0 {
+                5 // 75%: contained in 70-80%, retained.
+            } else {
+                8 // 120%: confidently above 80%, stopping exploration here.
+            }
+        });
+    let inputs = stage_c_inputs(2_448);
+    let mut evidence_sequence = 3_u16;
+    let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
+    let CampaignAdvance::Emit { now, next } = advance else {
+        panic!("expected an Emit advance");
+    };
+    let BreakawayCampaignEvent::DiscoveryTerminal {
+        terminal,
+        rungs,
+        rung_zero,
+    } = now
+    else {
+        panic!("expected the discovery terminal, got {now:?}");
+    };
+    assert_eq!(
+        rungs.count(),
+        1,
+        "rung zero's 75% response is the sole in-band rung"
+    );
+    assert_eq!(rungs.as_slice()[0].p.raw(), 181);
+    assert!(
+        rung_zero.is_some(),
+        "rung zero was walked and its classification retained"
+    );
+    assert_eq!(terminal.evidence_sequence, 3);
+    // TargetBandSelected routes cleanly into confirmation: no campaign-level
+    // closure record is due yet.
+    assert!(matches!(
+        next,
+        EmitContinuation::EnterPhase(BreakawayCampaignPhase::Confirmation { .. })
+    ));
+}
+
 // --- TargetBandSkipped: response crosses 70->80 with no in-band rung ----------
 
 #[test]
 fn a_response_crossing_the_band_between_rungs_produces_target_band_skipped() {
-    let (outcome, _) = run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
-        if rung_index == 0 {
-            2 // 30%: clearly below the band.
-        } else {
-            8 // 120%: confidently above the band -- no in-band rung was ever found.
-        }
-    });
+    let (outcome, _session, _) =
+        run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+            if rung_index == 0 {
+                2 // 30%: clearly below the band.
+            } else {
+                8 // 120%: confidently above the band -- no in-band rung was ever found.
+            }
+        });
 
     assert!(matches!(
         outcome,
@@ -624,13 +732,14 @@ fn current_headroom_before_any_in_band_rung_reports_current_headroom_before_band
     // current_limit_raw = 250 makes only the ceiling rung (574) predict a torque
     // inside [225, 250) -- every earlier rung's predicted torque stays well below
     // that usable-current boundary regardless of the encoder script.
-    let (outcome, _) = run_discovery(discovery_request(), 250, |_direction, rung_index| {
-        if rung_index < 4 {
-            2 // 30%: clearly below the band, never contained.
-        } else {
-            1 // any nonzero motion -- current headroom fires from predicted torque.
-        }
-    });
+    let (outcome, _session, _) =
+        run_discovery(discovery_request(), 250, |_direction, rung_index| {
+            if rung_index < 4 {
+                2 // 30%: clearly below the band, never contained.
+            } else {
+                1 // any nonzero motion -- current headroom fires from predicted torque.
+            }
+        });
 
     assert!(matches!(
         outcome,
@@ -642,13 +751,14 @@ fn current_headroom_before_any_in_band_rung_reports_current_headroom_before_band
 
 #[test]
 fn current_headroom_after_an_in_band_rung_retains_the_candidate() {
-    let (outcome, _) = run_discovery(discovery_request(), 250, |_direction, rung_index| {
-        match rung_index {
-            2 => 5, // 75%: contained in 70-80%, retained.
-            4 => 1, // any nonzero motion -- current headroom fires at the ceiling rung.
-            _ => 2, // 30%: clearly below the band.
-        }
-    });
+    let (outcome, _session, _) =
+        run_discovery(discovery_request(), 250, |_direction, rung_index| {
+            match rung_index {
+                2 => 5, // 75%: contained in 70-80%, retained.
+                4 => 1, // any nonzero motion -- current headroom fires at the ceiling rung.
+                _ => 2, // 30%: clearly below the band.
+            }
+        });
 
     let AdditiveDiscoveryOutcome::TargetBandSelected(collected) = outcome else {
         panic!(
@@ -666,7 +776,7 @@ fn current_headroom_after_an_in_band_rung_retains_the_candidate() {
 fn wrong_direction_short_circuits_discovery_without_recovering() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
         .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
@@ -748,7 +858,7 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
 fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session = AdditiveDiscoverySession::new(request, target_velocity_rpm, 4_394)
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
         .expect("valid discovery session");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
@@ -926,7 +1036,7 @@ fn run_confirmation(
 fn no_confirmation_motion_happens_before_the_planned_confirmation_state_advances() {
     let plan = confirmation_plan(724);
     let mut session =
-        BandConfirmationSession::new(plan, TmcMechanicalRpm::from_register(100), 4_394);
+        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BandConfirmationState::PlannedConfirmation;
     let mut safety = test_safety();
@@ -1345,7 +1455,8 @@ fn collected_in_band_rungs_shrinks_to_the_compact_bounds_representation() {
 // ================================================================================
 
 use super::{
-    CampaignAdvance, confirmation_terminal, route_confirmed_accept, route_discovery_outcome,
+    CampaignAdvance, EmitContinuation, confirmation_terminal, discovery_done_advance,
+    route_confirmed_accept, route_discovery_outcome,
 };
 use crate::commissioning::outer::state::OuterPhase;
 use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
@@ -1383,6 +1494,8 @@ fn stage_c_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
         workflow_envelope_ms: 450_000,
         channel: 0,
         run_sequence: 7,
+        ceiling_binding_source:
+            crate::commissioning::outer::velocity::sweep_plan::CEILING_BINDING_CURRENT_LIMIT,
     }
 }
 
@@ -1427,7 +1540,7 @@ fn run_campaign_probe(
             &mut backend,
         ));
         match step {
-            BreakawayCampaignStep::ReadyNow => {
+            BreakawayCampaignStep::ReadyNow | BreakawayCampaignStep::Event(_) => {
                 if stop_at_discovery
                     && matches!(campaign.phase(), BreakawayCampaignPhase::Discovery { .. })
                 {
@@ -1442,6 +1555,75 @@ fn run_campaign_probe(
                 backend.set_abn_decoder_count(encoder_count);
             }
             BreakawayCampaignStep::Done(outcome) => return (campaign, Some(outcome)),
+        }
+    }
+    panic!("campaign run exceeded its bounded step budget");
+}
+
+/// Drive a campaign exactly like [`run_campaign_probe`], additionally
+/// collecting every emitted [`BreakawayCampaignEvent`] in transition order.
+fn run_campaign_probe_collecting_events(
+    request: BreakawayCampaignRequest,
+    stop_at_discovery: bool,
+    mut is_moving: impl FnMut(VelocityDirection, u8) -> bool,
+) -> (
+    BreakawayCampaign,
+    Option<BreakawayCampaignOutcome>,
+    heapless::Vec<BreakawayCampaignEvent, 64>,
+) {
+    let mut campaign = BreakawayCampaign::new(request).expect("valid campaign request");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut events: heapless::Vec<BreakawayCampaignEvent, 64> = heapless::Vec::new();
+
+    let mut encoder_count: i32 = 0;
+    let mut stroke_moving = false;
+    let mut stroke_sign = 1_i32;
+
+    for _ in 0..1_000_000 {
+        if let BreakawayCampaignPhase::Probe {
+            state: BreakawayProbeState::CommandTarget,
+            session,
+        } = campaign.phase()
+        {
+            stroke_moving = is_moving(session.direction, session.pending_index);
+            stroke_sign = direction_sign(session.direction);
+        }
+        let is_capture_phase = matches!(
+            campaign.phase(),
+            BreakawayCampaignPhase::Probe {
+                state: BreakawayProbeState::Capture { .. },
+                ..
+            }
+        );
+        let step = pollster::block_on(step_breakaway_campaign(
+            &mut campaign,
+            &mut workspace,
+            &mut safety,
+            &mut backend,
+        ));
+        match step {
+            BreakawayCampaignStep::ReadyNow => {
+                if stop_at_discovery
+                    && matches!(campaign.phase(), BreakawayCampaignPhase::Discovery { .. })
+                {
+                    return (campaign, None, events);
+                }
+            }
+            BreakawayCampaignStep::Event(event) => {
+                events
+                    .push(event)
+                    .expect("test campaign emits fewer than 64 events");
+            }
+            BreakawayCampaignStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase && stroke_moving {
+                    encoder_count += stroke_sign;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BreakawayCampaignStep::Done(outcome) => return (campaign, Some(outcome), events),
         }
     }
     panic!("campaign run exceeded its bounded step budget");
@@ -1470,7 +1652,10 @@ fn a_new_campaign_starts_planned_and_its_first_step_issues_no_motion() {
         &mut backend,
     ));
 
-    assert!(matches!(step, BreakawayCampaignStep::ReadyNow));
+    let BreakawayCampaignStep::Event(BreakawayCampaignEvent::ProbePlanned(report)) = step else {
+        panic!("expected the probe-planned event, got {step:?}");
+    };
+    assert_eq!(report.p_start_raw, campaign_request_p_start_raw());
     assert!(matches!(
         campaign.phase(),
         BreakawayCampaignPhase::Probe {
@@ -1482,6 +1667,15 @@ fn a_new_campaign_starts_planned_and_its_first_step_issues_no_motion() {
         backend.spi_log.is_empty(),
         "PlannedProbe must not touch the backend before its first stroke"
     );
+}
+
+/// `p_start` the shared `campaign_request()` resolves to, independently
+/// derived via the same `current_gain_span` the campaign itself calls.
+fn campaign_request_p_start_raw() -> u16 {
+    let (p_start, _p_top, _usable, _ceiling_binding_source) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 2_448)
+            .expect("the shared campaign_request's target/limit resolve a gain span");
+    p_start.raw()
 }
 
 // --- Probe -> Discovery: a resolved breakaway freezes the discovery plan -------
@@ -1506,12 +1700,99 @@ fn a_resolved_probe_breakaway_advances_the_campaign_into_the_discovery_phase() {
     assert_eq!(*state, AdditiveDiscoveryState::PlannedDiscovery);
     // The discovery ceiling is the retained plan-time p_top, not a probe-observed
     // clamp: the ladder's exact final anchor is the campaign's p_top.
-    let (_p_start, p_top, _usable) =
+    let (_p_start, p_top, _usable, _ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
     assert_eq!(
         session.plan.gains[usize::from(session.plan.rung_count) - 1],
         p_top
     );
+}
+
+// --- Live emission: probe -> discovery reports plan, brackets, plan, in order -
+
+#[test]
+fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_order() {
+    let (_campaign, terminal, events) =
+        run_campaign_probe_collecting_events(campaign_request(), true, |_direction, index| {
+            index >= 18
+        });
+
+    assert!(
+        terminal.is_none(),
+        "the campaign must reach discovery, not a terminal: {terminal:?}"
+    );
+    assert_eq!(
+        events.len(),
+        3,
+        "expected probe-planned, directional-breakaway, discovery-planned: {events:?}"
+    );
+    let BreakawayCampaignEvent::ProbePlanned(probe_planned) = &events[0] else {
+        panic!("expected the probe plan first, got {:?}", events[0]);
+    };
+    // The probe plan is frozen and reported BEFORE its first stroke: no SPI
+    // traffic precedes it (`no_register_traffic_happens_before_the_planned_probe_state_advances`
+    // covers the same invariant at the probe-driver level).
+    assert_eq!(probe_planned.evidence_sequence, 0);
+
+    let BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } = &events[1] else {
+        panic!(
+            "expected the resolved breakaway brackets second, got {:?}",
+            events[1]
+        );
+    };
+    assert_eq!(forward.plan_digest, probe_planned.plan_digest);
+    assert_eq!(reverse.plan_digest, probe_planned.plan_digest);
+    assert_eq!(forward.direction, 0);
+    assert_eq!(reverse.direction, 1);
+
+    let BreakawayCampaignEvent::DiscoveryPlanned {
+        planned,
+        ceiling_source,
+        plan,
+    } = &events[2]
+    else {
+        panic!("expected the discovery plan third, got {:?}", events[2]);
+    };
+    assert_eq!(planned.prior_plan_digest, probe_planned.plan_digest);
+    assert_eq!(ceiling_source.plan_digest, planned.plan_digest);
+    assert_eq!(
+        ceiling_source.binding_source,
+        crate::commissioning::outer::velocity::sweep_plan::CEILING_BINDING_CURRENT_LIMIT
+    );
+    assert_eq!(plan.plan_digest, planned.plan_digest);
+}
+
+// --- Live emission: a probe failure reports its terminal, then the campaign's -
+
+#[test]
+fn a_probe_failure_emits_its_terminal_then_the_campaign_closure_record() {
+    let (_campaign, terminal, events) =
+        run_campaign_probe_collecting_events(campaign_request(), false, |_direction, _index| false);
+
+    assert!(terminal.is_some(), "a never-moving probe must terminate");
+    // ProbePlanned, then ProbeTerminal, then the campaign's own closure record;
+    // the campaign's Done outcome itself is returned the tick after that.
+    assert_eq!(events.len(), 3, "unexpected event sequence: {events:?}");
+    assert!(matches!(events[0], BreakawayCampaignEvent::ProbePlanned(_)));
+    let BreakawayCampaignEvent::ProbeTerminal(probe_terminal) = &events[1] else {
+        panic!("expected the probe terminal second, got {:?}", events[1]);
+    };
+    assert_ne!(
+        probe_terminal.terminal_cause, 0,
+        "a NoMotionAtAuthority terminal must carry a nonzero cause"
+    );
+    let BreakawayCampaignEvent::CampaignTerminal(campaign_terminal) = &events[2] else {
+        panic!(
+            "expected the campaign closure record third, got {:?}",
+            events[2]
+        );
+    };
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        probe_terminal.terminal_cause
+    );
+    assert_eq!(campaign_terminal.phase, BreakawayPhase::Probe as u8);
+    assert_eq!(campaign_terminal.accepted, 0);
 }
 
 // --- Probe failure -> campaign terminal, never Stage C ------------------------
@@ -1548,7 +1829,7 @@ fn accepted_confirmation(candidate_raw: u16) -> (BandConfirmationAcceptance, Ban
 
 #[test]
 fn an_accepted_confirmation_routes_through_the_token_chain_to_a_stage_c_plan() {
-    let (_p_start, _p_top, usable) =
+    let (_p_start, _p_top, usable, _ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
     let (acceptance, plan) = accepted_confirmation(512);
     let inputs = stage_c_inputs(usable);
@@ -1631,11 +1912,17 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedul
     // `TargetBandSkipped` is a discovery-owned terminal that must never reach
     // confirmation routing; if it does, it maps to the InvalidSchedule safety
     // fault rather than silently proceeding.
-    let advance = route_discovery_outcome(AdditiveDiscoveryOutcome::TargetBandSkipped, 42, &inputs);
-    let CampaignAdvance::Step(BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
-        error,
-        safety,
-    })) = advance
+    let mut evidence_sequence = 0_u16;
+    let advance = route_discovery_outcome(
+        AdditiveDiscoveryOutcome::TargetBandSkipped,
+        42,
+        &inputs,
+        &mut evidence_sequence,
+    );
+    let EmitContinuation::Terminal {
+        done: BreakawayCampaignOutcome::Terminal { error, safety },
+        ..
+    } = advance
     else {
         panic!("an impossible discovery outcome must be a Terminal step");
     };
@@ -1648,7 +1935,7 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedul
 #[test]
 fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     let candidate: u16 = 512;
-    let (_p_start, _p_top, usable) =
+    let (_p_start, _p_top, usable, _ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
 
     // Independently compute the exact Stage-C plan the token route must produce
@@ -1685,6 +1972,9 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
                 state: BandConfirmationState::PlannedConfirmation,
                 session,
             },
+            evidence_sequence: 0,
+            pending_event: None,
+            pending_done: None,
         },
         workspace: BreakawayProbeWorkspace::new(),
         safety: test_safety(),
@@ -1720,7 +2010,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
         let result =
             pollster::block_on(step_breakaway_campaign_with_trace(&mut phase, &mut backend));
         match result {
-            StepResult::ReadyNow => {
+            StepResult::ReadyNow | StepResult::BreakawayCampaignEvent(_) => {
                 if matches!(phase, OuterPhase::VelocityIntegral { .. }) {
                     handed_off = true;
                     break;
@@ -1752,4 +2042,111 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     // plan the token route produced, not merely a freshly constructed one.
     assert_eq!(data.integrity.run_sequence(), 7);
     assert_eq!(data.plan, expected_execution_plan);
+}
+
+// --- Live emission: acceptance reports the confirmation terminal, then the ----
+// --- campaign's Stage-C digest record, before the Stage-C hand-off ------------
+
+#[test]
+fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_record() {
+    let candidate: u16 = 512;
+    let (_p_start, _p_top, usable, _ceiling_binding_source) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
+    let BandConfirmationEntry::Ready(session) = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(candidate)),
+        42,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+    ) else {
+        panic!("the crafted discovery rungs must nominate a confirmable candidate");
+    };
+    let mut phase = OuterPhase::BreakawayCampaign {
+        campaign: BreakawayCampaign {
+            inputs: stage_c_inputs(usable),
+            phase: BreakawayCampaignPhase::Confirmation {
+                state: BandConfirmationState::PlannedConfirmation,
+                session,
+            },
+            evidence_sequence: 0,
+            pending_event: None,
+            pending_done: None,
+        },
+        workspace: BreakawayProbeWorkspace::new(),
+        safety: test_safety(),
+    };
+
+    let mut backend = test_backend();
+    backend.current_limit_value = current_limit(2_448);
+    let mut encoder_count: i32 = 0;
+    let mut stroke_numerator = 0_i32;
+    let mut stroke_sign = 1_i32;
+    let mut events: heapless::Vec<BreakawayCampaignEvent, 16> = heapless::Vec::new();
+    let mut handed_off = false;
+
+    for _ in 0..2_000_000 {
+        if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase {
+            if let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase() {
+                if matches!(state, BandConfirmationState::CommandTarget) {
+                    stroke_numerator = 5; // 75%: inside the confirmable band both ways.
+                    stroke_sign = direction_sign(session.current_direction());
+                }
+            }
+        }
+        let is_capture_phase = matches!(
+            &phase,
+            OuterPhase::BreakawayCampaign { campaign, .. }
+                if matches!(
+                    campaign.phase(),
+                    BreakawayCampaignPhase::Confirmation {
+                        state: BandConfirmationState::Capture { .. },
+                        ..
+                    }
+                )
+        );
+        let result =
+            pollster::block_on(step_breakaway_campaign_with_trace(&mut phase, &mut backend));
+        match result {
+            StepResult::ReadyNow => {
+                if matches!(phase, OuterPhase::VelocityIntegral { .. }) {
+                    handed_off = true;
+                    break;
+                }
+            }
+            StepResult::BreakawayCampaignEvent(event) => {
+                events
+                    .push(event)
+                    .expect("test campaign emits fewer than 16 events");
+            }
+            StepResult::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase {
+                    encoder_count += stroke_sign * stroke_numerator;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            StepResult::OuterFailed(error) => {
+                panic!("the accept path must not fail the outer phase: {error:?}");
+            }
+            other => panic!("unexpected engine step result on the accept path: {other:?}"),
+        }
+    }
+
+    assert!(handed_off, "an accepted confirmation must hand off");
+    let [.., second_to_last, last] = events.as_slice() else {
+        panic!("expected at least a confirmation terminal and a campaign terminal");
+    };
+    let BreakawayCampaignEvent::ConfirmationTerminal { terminal, .. } = second_to_last else {
+        panic!("expected the confirmation terminal second-to-last, got {second_to_last:?}");
+    };
+    assert_eq!(terminal.accepted, 1);
+    assert_eq!(terminal.confirmed_p_raw, candidate);
+    let BreakawayCampaignEvent::CampaignTerminal(campaign_terminal) = last else {
+        panic!("expected the campaign's Stage-C digest record last, got {last:?}");
+    };
+    assert_eq!(campaign_terminal.accepted, 1);
+    assert_ne!(
+        campaign_terminal.stage_c_plan_digest, 0,
+        "an accepted campaign's closure record must carry the Stage-C plan digest"
+    );
+    assert_eq!(campaign_terminal.phase, BreakawayPhase::Confirmation as u8);
 }

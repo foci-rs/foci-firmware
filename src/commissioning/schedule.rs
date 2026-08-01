@@ -179,6 +179,8 @@ pub fn adapt_step_result(
             result: CommissionTerminal::VelocityIntegral(result),
         }),
         StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
+        #[cfg(feature = "trace-velocity-sweep")]
+        StepResult::BreakawayCampaignEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
         StepResult::AcceptanceMatrixTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::AcceptanceMatrix(result),
         }),

@@ -1647,6 +1647,12 @@ impl CommissioningEngine {
             #[cfg(not(feature = "trace-velocity-sweep"))]
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::AcceptanceMatrixTerminal(_) => {}
+            // On-device trace-ring-buffer encoding for breakaway campaign
+            // evidence (mirroring `sweep_reporting`'s per-event encoders) is
+            // deferred; this tick's evidence still reaches the host over the
+            // wire via `commission_dispatch::replies::emit_breakaway_campaign_event`.
+            #[cfg(feature = "trace-velocity-sweep")]
+            StepResult::BreakawayCampaignEvent(_) => {}
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);
@@ -1935,9 +1941,18 @@ mod tests {
             // VelocitySweep variant, so it is now the largest outer payload. This
             // is deliberate, bounded retained state, re-baselined once here; it
             // stays well under the audited F407 ceiling asserted below.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_184);
+            //
+            // Adds 304 B: the campaign's frozen discovery/confirmation
+            // planning inputs retained for live wire reporting (the discovery
+            // session's `AdditiveDiscoveryRequest` and floor-origin flag, the
+            // confirmation session's nominated margin, rung zero's per-direction
+            // motion classification), the deferred one-tick-ahead evidence slot
+            // (`BreakawayCampaignTerminal`, not the full event enum -- see
+            // `EmitContinuation`'s own doc comment for why that distinction
+            // matters), and the deferred campaign `Done` outcome.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_488);
         }
-        assert!(size_of::<CommissioningEngine>() <= 5_184);
+        assert!(size_of::<CommissioningEngine>() <= 5_488);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
