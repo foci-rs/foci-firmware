@@ -608,6 +608,30 @@ pub struct FociDumpValue {
     pub value: u32,
 }
 
+/// `foci_last_panic` reply - one recovered previous-boot fault record.
+///
+/// Emitted once during the connect-time register dump when the board recovered
+/// a panic or HardFault from no-init RAM after a reset. Lets a probe-free host
+/// see why the firmware crashed. `kind` follows
+/// `foci_firmware::diagnostic::last_panic_kind`; `line` locates a Rust panic,
+/// `pc` a HardFault, and `message` carries the truncated panic text.
+///
+/// Wire name: `foci_last_panic`.
+#[klipper_reply]
+pub struct FociLastPanic {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Fault origin: 1 = Rust panic, 2 = HardFault.
+    pub kind: u8,
+    /// Source line of a captured Rust panic, or 0.
+    pub line: u32,
+    /// Faulting program counter of a captured HardFault, or 0.
+    pub pc: u32,
+    /// FNV-1a hash of the panic source file path (0 for a HardFault); match
+    /// against hashed candidate paths to name the file.
+    pub file_hash: u32,
+}
+
 /// `foci_diagnostic` reply - best-effort detail before fatal shutdown.
 ///
 /// Wire name: `foci_diagnostic`.

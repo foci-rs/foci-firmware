@@ -1,6 +1,73 @@
 //! Structured diagnostic codes emitted before fatal shutdowns when transport is usable.
 
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering::Relaxed};
+use core::ptr::{addr_of, addr_of_mut};
+use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+
+/// Origin of a persisted last-boot fault record.
+pub mod last_panic_kind {
+    /// A Rust `panic!` (index, arithmetic, `expect`, explicit) captured by the
+    /// board panic handler. `line` and `file_hash` locate it.
+    pub const RUST_PANIC: u8 = 1;
+    /// A CPU HardFault (bus fault, usage fault, or a stack overflow that
+    /// escalated) captured by the board exception handler. `pc` locates it.
+    pub const HARD_FAULT: u8 = 2;
+}
+
+/// One board-persisted fault record from the previous boot, copied out of
+/// no-init RAM at startup so the connect-time register dump can surface it to
+/// the host without a debug probe. For a [`last_panic_kind::RUST_PANIC`] the
+/// `line` plus `file_hash` (FNV-1a of the source path) pin the panic site; for
+/// a [`last_panic_kind::HARD_FAULT`] the `pc` locates the faulting instruction.
+#[derive(Clone, Copy, Debug, defmt::Format)]
+pub struct LastPanic {
+    /// One of [`last_panic_kind`].
+    pub kind: u8,
+    /// Source line of a captured Rust panic, or 0 when unavailable.
+    pub line: u32,
+    /// Faulting program counter of a captured HardFault, or 0 when unavailable.
+    pub pc: u32,
+    /// FNV-1a hash of the panic's source file path, or 0. Match against hashes
+    /// of candidate source paths to name the file without shipping the string.
+    pub file_hash: u32,
+}
+
+/// True while [`LAST_PANIC_RECORD`] holds an unread record. Publishes/consumes
+/// the record with acquire/release ordering.
+static LAST_PANIC_PRESENT: AtomicBool = AtomicBool::new(false);
+
+/// Backing store for the recovered record. Written once at startup and read
+/// once by the connect-time dump; the atomic flag serialises the two, so no
+/// lock is needed. `LastPanic` is `Copy`, so reads and writes are whole-value.
+static mut LAST_PANIC_RECORD: LastPanic = LastPanic {
+    kind: 0,
+    line: 0,
+    pc: 0,
+    file_hash: 0,
+};
+
+/// Store the last-boot fault record recovered from no-init RAM. Called once
+/// during board startup before the command transport is up.
+pub fn set_last_panic(record: LastPanic) {
+    // SAFETY: startup is single-threaded and runs before any reader; the
+    // release store below publishes the write to a later acquiring reader.
+    unsafe {
+        *addr_of_mut!(LAST_PANIC_RECORD) = record;
+    }
+    LAST_PANIC_PRESENT.store(true, Ordering::Release);
+}
+
+/// Take (clear) the stored last-boot fault record, if any. The connect-time
+/// register dump calls this so a recovered panic is reported exactly once.
+pub fn take_last_panic() -> Option<LastPanic> {
+    if LAST_PANIC_PRESENT.swap(false, Ordering::AcqRel) {
+        // SAFETY: the acquire above pairs with the release in `set_last_panic`,
+        // and the flag guarantees no concurrent writer for this read.
+        Some(unsafe { *addr_of!(LAST_PANIC_RECORD) })
+    } else {
+        None
+    }
+}
 
 /// Fatal fault class carried by `foci_diagnostic`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

@@ -124,6 +124,20 @@ pub fn foci_calibrate(ctx: &mut dyn FociRuntimeHost, oid: u8) {
 /// reply naturally.
 #[klipper_command]
 pub fn foci_dump_registers(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    // Surface any panic/HardFault recovered from no-init RAM on the previous
+    // boot, once, riding the dump the host already issues on connect. This is
+    // the probe-free path to see why the firmware last crashed (the panic
+    // message otherwise reaches only defmt-RTT).
+    if let Some(record) = crate::diagnostic::take_last_panic() {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociLastPanic,
+            oid: u8 = oid,
+            kind: u8 = record.kind,
+            line: u32 = record.line,
+            pc: u32 = record.pc,
+            file_hash: u32 = record.file_hash
+        );
+    }
     let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
