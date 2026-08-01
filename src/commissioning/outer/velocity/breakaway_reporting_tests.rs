@@ -627,6 +627,62 @@ fn confirmation_evaluated_terminal_report_inconclusive_carries_failure_cause() {
     assert_eq!(report.confirmed_p_raw, 0);
 }
 
+/// FIX D(b): `ConfirmationEvidenceExcluded` after earlier strokes already
+/// folded evidence must report that partial evidence, not the empty fixture
+/// [`confirmation_zero_stroke_terminal_report`] reserves for the outcomes
+/// reachable before any stroke ever ran.
+#[test]
+fn confirmation_partial_evidence_terminal_report_carries_the_collected_masks() {
+    let plan = plan_band_confirmation(0x44, gain(724)).expect("valid confirmation plan");
+    // Only the forward direction ran a stroke before exclusion; reverse never
+    // started, so its masks are honestly still zero.
+    let forward = confirmation_input(
+        VelocityDirection::Forward,
+        RUNG18_MEAN,
+        RUNG18_VARIANCE,
+        TARGET,
+    );
+    let reverse = ConfirmationDirectionalInput {
+        consensus: DirectionalConsensus {
+            classification: crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass::IncompleteRung,
+            components: [[0; 2]; 2],
+            component_count: 0,
+            collected_mask: 0,
+            eligible_mask: 0,
+            included_mask: 0,
+        },
+        classes: [VelocityObservationClass::InvalidEvidenceFault; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+
+    let report = confirmation_partial_evidence_terminal_report(
+        &plan,
+        &forward,
+        &reverse,
+        BreakawayTerminalCause::ConfirmationEvidenceExcluded,
+        10,
+        6,
+    );
+
+    assert_eq!(
+        report.terminal_cause,
+        BreakawayTerminalCause::ConfirmationEvidenceExcluded as u8
+    );
+    assert_eq!(report.accepted, 0);
+    assert_eq!(report.confirmed_p_raw, 0);
+    // The forward direction's real evidence survives, unlike the all-zero
+    // zero-stroke path.
+    assert_eq!(report.forward_collected_mask, 0b1111);
+    assert_eq!(report.forward_eligible_mask, 0b1111);
+    assert_eq!(report.forward_included_mask, 0b1111);
+    assert!(report.max_relative_se_permille > 0);
+    // The reverse direction genuinely never ran, so its masks are still zero
+    // -- distinct from the forward direction's real partial evidence.
+    assert_eq!(report.reverse_collected_mask, 0);
+    assert_eq!(report.reverse_eligible_mask, 0);
+    assert_eq!(report.reverse_included_mask, 0);
+}
+
 #[test]
 fn confirmation_zero_stroke_terminal_report_zeroes_every_mask() {
     let report = confirmation_zero_stroke_terminal_report(

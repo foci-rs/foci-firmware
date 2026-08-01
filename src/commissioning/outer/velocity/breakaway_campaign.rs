@@ -100,10 +100,11 @@ use super::breakaway_plan::{
 };
 use super::breakaway_reporting::{
     BreakawayPhase, campaign_terminal_report, confirmation_evaluated_terminal_report,
-    confirmation_plan_report, confirmation_zero_stroke_cause,
-    confirmation_zero_stroke_terminal_report, directional_breakaway_report, discovery_plan_report,
-    discovery_terminal_cause, discovery_terminal_report, probe_plan_report, probe_terminal_cause,
-    probe_terminal_report, rung_zero_diagnostic_report,
+    confirmation_partial_evidence_terminal_report, confirmation_plan_report,
+    confirmation_zero_stroke_cause, confirmation_zero_stroke_terminal_report,
+    directional_breakaway_report, discovery_plan_report, discovery_terminal_cause,
+    discovery_terminal_report, probe_plan_report, probe_terminal_cause, probe_terminal_report,
+    rung_zero_diagnostic_report,
 };
 use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
@@ -3346,6 +3347,73 @@ fn campaign_terminal_event(
     )
 }
 
+/// Report a breakaway-campaign closure record for a fault raised by the
+/// caller's own global outer-safety check -- an invalid motion budget, a
+/// tripped safety envelope, or a safety-check I/O error -- rather than by any
+/// of the three drivers' own internal state machines, while a breakaway
+/// campaign phase is active.
+///
+/// Mirrors [`super::sweep::sweep_fault_terminal`] and
+/// [`super::integral_sweep::integral_fault_terminal`]: a mid-campaign safety
+/// fault must still produce a campaign-closure record before the phase fails,
+/// because offline replay (foci-trace `velocity_measurement.py`) requires
+/// exactly one closure record per campaign. Unlike those two report-only
+/// phases, the campaign streams multiple wire records per run and cannot
+/// return its closure record directly from here without dropping whatever
+/// record the caller's next tick would otherwise have produced, so this
+/// reuses the campaign's own `pending_event`/`pending_done` deferral -- the
+/// same mechanism [`discovery_construction_fault`] and the other internal
+/// terminal builders use -- rather than a new bespoke `StepResult` path: the
+/// closure event drains on the next tick, and the `OuterFailed`/
+/// `FailedWithSafety` transition follows on the tick after that.
+///
+/// The reported `terminal_cause` reuses the owning phase's own SafetyFault
+/// cause code (`ProbeSafetyFault`/`DiscoverySafetyFault`/
+/// `ConfirmationSafetyFault`), the same code that phase's own internal safety
+/// short-circuit would have reported, so a host decoder sees one safety-fault
+/// taxonomy regardless of whether the fault originated inside the driver or
+/// at the surrounding dispatch boundary.
+///
+/// Falls back to a bare `OuterFailed` if `phase` is not a breakaway campaign,
+/// matching every other fault-terminal reporter's defensive fallback.
+pub(crate) fn breakaway_campaign_fault_terminal(
+    phase: &mut OuterPhase,
+    error: CommissionError,
+    safety_fault: Option<OuterSafetyFault>,
+) -> StepResult {
+    let OuterPhase::BreakawayCampaign { campaign, .. } = phase else {
+        return StepResult::OuterFailed(error);
+    };
+    let (owning_phase, terminal_cause) = match campaign.phase() {
+        BreakawayCampaignPhase::Probe { .. } => (
+            BreakawayPhase::Probe,
+            super::breakaway_reporting::BreakawayTerminalCause::ProbeSafetyFault,
+        ),
+        BreakawayCampaignPhase::Discovery { .. } => (
+            BreakawayPhase::Discovery,
+            super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault,
+        ),
+        BreakawayCampaignPhase::Confirmation { .. } => (
+            BreakawayPhase::Confirmation,
+            super::breakaway_reporting::BreakawayTerminalCause::ConfirmationSafetyFault,
+        ),
+    };
+    let campaign_terminal = campaign_terminal_event(
+        owning_phase,
+        terminal_cause,
+        false,
+        0,
+        &campaign.inputs,
+        &mut campaign.evidence_sequence,
+    );
+    campaign.pending_event = Some(campaign_terminal);
+    campaign.pending_done = Some(BreakawayCampaignOutcome::Terminal {
+        error,
+        safety: safety_fault,
+    });
+    StepResult::ReadyNow
+}
+
 /// A discovery plan-time construction failure never freezes a discovery plan
 /// (`plan_additive_discovery_ladder` refused before `AdditiveDiscoveryPlan`
 /// existed), so there is no discovery-owned terminal record to report -- only
@@ -3765,9 +3833,26 @@ fn confirmation_done_advance<B: CommissioningBackend>(
             );
             (terminal, forward, reverse)
         }
+        BandConfirmationOutcome::ConfirmationEvidenceExcluded => {
+            // Unlike the zero-stroke outcomes below, exclusion can strike after
+            // earlier strokes already folded evidence into the session's
+            // accumulators; report that partial evidence rather than the empty
+            // fixture, so the terminal never falsely claims no confirmation
+            // work happened.
+            let forward = confirmation_directional_input(session, VelocityDirection::Forward);
+            let reverse = confirmation_directional_input(session, VelocityDirection::Reverse);
+            let terminal = confirmation_partial_evidence_terminal_report(
+                &session.plan,
+                &forward,
+                &reverse,
+                cause,
+                inputs.run_sequence,
+                sequence,
+            );
+            (terminal, forward, reverse)
+        }
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
         | BandConfirmationOutcome::TargetBandNotReachedAtAuthority
-        | BandConfirmationOutcome::ConfirmationEvidenceExcluded
         | BandConfirmationOutcome::SafetyFault { .. } => {
             let terminal = confirmation_zero_stroke_terminal_report(
                 session.plan.plan_digest,

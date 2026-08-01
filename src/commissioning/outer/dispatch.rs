@@ -50,16 +50,19 @@ fn clamp_outer_safety_deadline(
 
 #[cfg(feature = "trace-velocity-sweep")]
 fn velocity_fault_terminal(
-    phase: &OuterPhase,
+    phase: &mut OuterPhase,
     error: CommissionError,
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
-    match phase {
+    match &*phase {
         OuterPhase::VelocitySweep { .. } => {
             velocity::sweep_fault_terminal(phase, error, safety_fault)
         }
         OuterPhase::VelocityIntegral { .. } => {
             velocity::integral_fault_terminal(phase, error, safety_fault)
+        }
+        OuterPhase::BreakawayCampaign { .. } => {
+            velocity::breakaway_campaign_fault_terminal(phase, error, safety_fault)
         }
         _ => StepResult::OuterFailed(error),
     }
@@ -253,7 +256,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             #[cfg(feature = "trace-velocity-sweep")]
             if matches!(
                 phase,
-                OuterPhase::VelocitySweep { .. } | OuterPhase::VelocityIntegral { .. }
+                OuterPhase::VelocitySweep { .. }
+                    | OuterPhase::VelocityIntegral { .. }
+                    | OuterPhase::BreakawayCampaign { .. }
             ) {
                 return velocity_fault_terminal(phase, err, Some(fault));
             }
@@ -290,7 +295,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 #[cfg(feature = "trace-velocity-sweep")]
                 if matches!(
                     phase,
-                    OuterPhase::VelocitySweep { .. } | OuterPhase::VelocityIntegral { .. }
+                    OuterPhase::VelocitySweep { .. }
+                        | OuterPhase::VelocityIntegral { .. }
+                        | OuterPhase::BreakawayCampaign { .. }
                 ) {
                     return velocity_fault_terminal(phase, err, Some(fault));
                 }
@@ -302,7 +309,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 #[cfg(feature = "trace-velocity-sweep")]
                 if matches!(
                     phase,
-                    OuterPhase::VelocitySweep { .. } | OuterPhase::VelocityIntegral { .. }
+                    OuterPhase::VelocitySweep { .. }
+                        | OuterPhase::VelocityIntegral { .. }
+                        | OuterPhase::BreakawayCampaign { .. }
                 ) {
                     return velocity_fault_terminal(phase, error, None);
                 }

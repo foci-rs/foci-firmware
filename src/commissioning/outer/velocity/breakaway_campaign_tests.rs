@@ -1,3 +1,4 @@
+use super::super::breakaway_reporting::BreakawayTerminalCause;
 use super::super::sweep_consensus::DirectionalConsensusClass;
 use super::*;
 use crate::autotune::TmcMechanicalRpm;
@@ -1925,6 +1926,88 @@ fn no_non_accept_confirmation_terminal_carries_a_stage_c_plan() {
     }
 }
 
+// --- FIX D(b): mid-block exclusion reports the partial evidence collected -----
+
+#[test]
+fn confirmation_evidence_excluded_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
+    let plan = confirmation_plan(724);
+    let mut session =
+        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
+    // Simulate one earlier forward stroke that succeeded before a later stroke
+    // was excluded, folding a real eligible observation into slot 0 exactly as
+    // `BandConfirmationState::Advance` does.
+    let atom = DiscoveryObservationAtom {
+        mean_rate_q: 750_000,
+        variance_of_mean_q2: 58_752_225,
+        target_rate_q: 1_000_000,
+        direction: VelocityDirection::Forward,
+    };
+    session
+        .forward
+        .record(0, VelocityObservationClass::Eligible, None, atom);
+
+    let inputs = stage_c_inputs(2_448);
+    let safety = test_safety();
+    let backend = test_backend();
+    let mut evidence_sequence = 0_u16;
+    let advance = confirmation_done_advance(
+        BandConfirmationOutcome::ConfirmationEvidenceExcluded,
+        &session,
+        &inputs,
+        &safety,
+        &backend,
+        &mut evidence_sequence,
+    );
+    let CampaignAdvance::Emit { now, next } = advance else {
+        panic!("expected an Emit advance");
+    };
+    let BreakawayCampaignEvent::ConfirmationTerminal {
+        terminal,
+        forward,
+        reverse,
+    } = now
+    else {
+        panic!("expected the confirmation terminal, got {now:?}");
+    };
+
+    assert_eq!(
+        terminal.terminal_cause,
+        BreakawayTerminalCause::ConfirmationEvidenceExcluded as u8
+    );
+    assert_eq!(terminal.accepted, 0);
+    // The forward direction's one recorded stroke survives in the reported
+    // evidence -- unlike the pre-fix behavior, which routed every exclusion
+    // through the all-zero zero-stroke fixture and falsely claimed no
+    // confirmation work happened.
+    assert_eq!(forward.observations[0], Some(atom));
+    assert_eq!(
+        terminal.forward_eligible_mask, 0b0001,
+        "only the one recorded slot is eligible"
+    );
+    // The reverse direction genuinely never ran a stroke: its eligible/included
+    // masks are honestly zero, distinct from the forward direction's real
+    // partial evidence. (`collected_mask` is unconditionally full per
+    // `DirectionAccumulator::consensus`'s own always-called-after-every-slot
+    // contract -- unaffected by this fix, which is about not discarding the
+    // atoms/classes/eligible-mask evidence that *was* actually collected.)
+    assert_eq!(
+        reverse.observations,
+        [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION]
+    );
+    assert_eq!(terminal.reverse_eligible_mask, 0);
+    assert_eq!(terminal.reverse_included_mask, 0);
+
+    let EmitContinuation::Terminal {
+        done: BreakawayCampaignOutcome::Terminal { error, safety },
+        ..
+    } = next
+    else {
+        panic!("a non-accept confirmation outcome must be a Terminal step");
+    };
+    assert_eq!(error, CommissionError::VelocityValidationFailed);
+    assert!(safety.is_none());
+}
+
 // --- 6d routing: an impossible discovery outcome maps to InvalidSchedule -------
 
 #[test]
@@ -2193,4 +2276,172 @@ fn recovery_slot_count_covers_every_recovered_observation() {
 
     assert_eq!(BreakawayCampaign::RECOVERY_SLOT_COUNT, 280);
     assert_eq!(BreakawayCampaign::RECOVERY_SLOT_COUNT, derived);
+}
+
+// ================================================================================
+// FIX D(a): a global outer-safety fault mid-campaign still closes the campaign
+// ================================================================================
+
+fn zero_safety_fault(reason: u8) -> OuterSafetyFault {
+    OuterSafetyFault {
+        reason,
+        max_travel_mrev: 0,
+        max_velocity_mrev_s: 0,
+        max_duration_ms: 0,
+        direction_mask: 0,
+        delta_counts: 0,
+        dt_us: 0,
+        velocity_counts_per_ms: 0,
+        velocity_cap_counts_per_ms: 0,
+        position_counts: 0,
+        position_window_counts: 0,
+        elapsed_us: 0,
+        duration_cap_us: 0,
+    }
+}
+
+/// `dispatch::step_outer_with_trace`'s own global outer-safety check -- an
+/// invalid budget, a tripped envelope, or a check I/O error -- runs OUTSIDE
+/// any of the three drivers' internal state machines. Before this fix, that
+/// check routed a `BreakawayCampaign` phase straight to `OuterFailed` with no
+/// campaign-closure record ever emitted, even though offline replay (foci-trace
+/// `velocity_measurement.py`) requires a closure record for every campaign.
+///
+/// `breakaway_campaign_fault_terminal` is the function `dispatch.rs` now calls
+/// for that case; this drives it directly (mirroring `sweep_fault_terminal`'s
+/// own untested-in-isolation shape, since `dispatch.rs` has no fixture for a
+/// tripped outer-safety envelope) and confirms the deferred closure record
+/// actually drains on the next tick, carrying the owning phase and safety
+/// cause, before the following tick resolves to the real `Terminal` outcome.
+#[test]
+fn breakaway_campaign_fault_terminal_defers_a_campaign_closure_before_outer_failed() {
+    let campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
+    assert!(matches!(
+        campaign.phase(),
+        BreakawayCampaignPhase::Probe { .. }
+    ));
+    let mut phase = OuterPhase::BreakawayCampaign {
+        campaign,
+        workspace: BreakawayProbeWorkspace::new(),
+        safety: test_safety(),
+    };
+    let fault = zero_safety_fault(crate::commissioning::types::OUTER_SAFETY_FAULT_QUARTER_TURN);
+
+    let step = breakaway_campaign_fault_terminal(
+        &mut phase,
+        CommissionError::SafetyEnvelopeViolation,
+        Some(fault),
+    );
+    assert!(
+        matches!(step, StepResult::ReadyNow),
+        "the closure record is deferred, not returned on this tick: {step:?}"
+    );
+
+    let OuterPhase::BreakawayCampaign {
+        mut campaign,
+        mut workspace,
+        mut safety,
+    } = phase
+    else {
+        panic!("phase must still be a breakaway campaign");
+    };
+
+    // Next tick: the deferred campaign-closure record drains first, before any
+    // driver runs. This is the record offline replay requires.
+    let closure_step = pollster::block_on(step_breakaway_campaign(
+        &mut campaign,
+        &mut workspace,
+        &mut safety,
+        &mut test_backend(),
+    ));
+    let BreakawayCampaignStep::Event(BreakawayCampaignEvent::CampaignTerminal(closure)) =
+        closure_step
+    else {
+        panic!("expected the deferred campaign-closure record, got {closure_step:?}");
+    };
+    assert_eq!(
+        closure.phase,
+        BreakawayPhase::Probe as u8,
+        "the closure record must name the phase that was active at the fault"
+    );
+    assert_eq!(
+        closure.terminal_cause,
+        BreakawayTerminalCause::ProbeSafetyFault as u8
+    );
+    assert_eq!(closure.accepted, 0);
+
+    // The tick after that resolves the deferred `Done`, carrying the original
+    // error and safety fault through to the real `OuterFailed`/
+    // `FailedWithSafety` transition at the dispatch boundary.
+    let done_step = pollster::block_on(step_breakaway_campaign(
+        &mut campaign,
+        &mut workspace,
+        &mut safety,
+        &mut test_backend(),
+    ));
+    let BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
+        error,
+        safety: safety_fault,
+    }) = done_step
+    else {
+        panic!("expected the deferred Terminal outcome, got {done_step:?}");
+    };
+    assert_eq!(error, CommissionError::SafetyEnvelopeViolation);
+    assert_eq!(safety_fault, Some(fault));
+}
+
+/// Same fault path, but while a discovery phase owns the campaign: the closure
+/// record's phase and terminal cause must track whichever phase was actually
+/// active, not always report `Probe`.
+#[test]
+fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
+    let session = AdditiveDiscoverySession::new(
+        discovery_request(),
+        false,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+    )
+    .expect("valid discovery session");
+    let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
+    // Directly overwrite the campaign's active phase (private-field access from
+    // the `tests` submodule): the fix under test reads `campaign.phase()` to
+    // decide the owning phase, and the probe/discovery/confirmation drivers'
+    // own physical stroke simulation is not what this test is about.
+    campaign.phase = BreakawayCampaignPhase::Discovery {
+        state: AdditiveDiscoveryState::PlannedDiscovery,
+        session,
+    };
+    let mut phase = OuterPhase::BreakawayCampaign {
+        campaign,
+        workspace: BreakawayProbeWorkspace::new(),
+        safety: test_safety(),
+    };
+
+    let step = breakaway_campaign_fault_terminal(&mut phase, CommissionError::Spi, None);
+    assert!(matches!(step, StepResult::ReadyNow));
+
+    let OuterPhase::BreakawayCampaign {
+        mut campaign,
+        mut workspace,
+        mut safety,
+    } = phase
+    else {
+        panic!("phase must still be a breakaway campaign");
+    };
+    let closure_step = pollster::block_on(step_breakaway_campaign(
+        &mut campaign,
+        &mut workspace,
+        &mut safety,
+        &mut test_backend(),
+    ));
+    let BreakawayCampaignStep::Event(BreakawayCampaignEvent::CampaignTerminal(closure)) =
+        closure_step
+    else {
+        panic!("expected the deferred campaign-closure record, got {closure_step:?}");
+    };
+    assert_eq!(closure.phase, BreakawayPhase::Discovery as u8);
+    assert_eq!(
+        closure.terminal_cause,
+        BreakawayTerminalCause::DiscoverySafetyFault as u8
+    );
 }

@@ -617,6 +617,85 @@ pub(crate) fn confirmation_evaluated_terminal_report(
         (None, Some(cause)) => (confirmation_failure_cause(cause), 0_u8, 0_u16),
         (None, None) => (BreakawayTerminalCause::None, 0_u8, 0_u16),
     };
+    confirmation_terminal_from_collected_evidence(
+        plan,
+        forward,
+        reverse,
+        ConfirmationTerminalOutcome {
+            terminal_cause,
+            accepted,
+            confirmed_p_raw,
+            run_sequence,
+            evidence_sequence,
+        },
+    )
+}
+
+/// Report a confirmation terminal reached mid-block: earlier strokes already
+/// folded evidence into `forward`/`reverse` before the outcome under
+/// `terminal_cause` cut the block short (for example
+/// [`BandConfirmationOutcome::ConfirmationEvidenceExcluded`] after one or more
+/// prior strokes succeeded).
+///
+/// Unlike [`confirmation_zero_stroke_terminal_report`], this reports the
+/// masks and observations actually collected rather than all-zero fields, so
+/// the terminal does not falsely claim no confirmation work happened. Shares
+/// the same mask/uncertainty assembly as
+/// [`confirmation_evaluated_terminal_report`] because both report whatever
+/// evidence `forward`/`reverse` actually hold; only the not-yet-evaluated
+/// `terminal_cause` and the always-unaccepted outcome differ.
+pub(crate) fn confirmation_partial_evidence_terminal_report(
+    plan: &BandConfirmationPlan,
+    forward: &ConfirmationDirectionalInput,
+    reverse: &ConfirmationDirectionalInput,
+    terminal_cause: BreakawayTerminalCause,
+    run_sequence: u32,
+    evidence_sequence: u16,
+) -> BandConfirmationTerminal {
+    confirmation_terminal_from_collected_evidence(
+        plan,
+        forward,
+        reverse,
+        ConfirmationTerminalOutcome {
+            terminal_cause,
+            accepted: 0,
+            confirmed_p_raw: 0,
+            run_sequence,
+            evidence_sequence,
+        },
+    )
+}
+
+/// Resolved outcome fields for a confirmation terminal that reports evidence
+/// actually collected in `forward`/`reverse`, bundled so
+/// [`confirmation_terminal_from_collected_evidence`] stays within the
+/// project's five-parameter guideline.
+struct ConfirmationTerminalOutcome {
+    terminal_cause: BreakawayTerminalCause,
+    accepted: u8,
+    confirmed_p_raw: u16,
+    run_sequence: u32,
+    evidence_sequence: u16,
+}
+
+/// Shared mask/uncertainty assembly for a confirmation terminal that reports
+/// whatever evidence `forward`/`reverse` actually collected, whether the
+/// block ran to completion ([`confirmation_evaluated_terminal_report`]) or
+/// was cut short after some strokes ran
+/// ([`confirmation_partial_evidence_terminal_report`]).
+fn confirmation_terminal_from_collected_evidence(
+    plan: &BandConfirmationPlan,
+    forward: &ConfirmationDirectionalInput,
+    reverse: &ConfirmationDirectionalInput,
+    outcome: ConfirmationTerminalOutcome,
+) -> BandConfirmationTerminal {
+    let ConfirmationTerminalOutcome {
+        terminal_cause,
+        accepted,
+        confirmed_p_raw,
+        run_sequence,
+        evidence_sequence,
+    } = outcome;
     let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE).unwrap_or(0.0);
     let max_relative_se = forward
         .observations
