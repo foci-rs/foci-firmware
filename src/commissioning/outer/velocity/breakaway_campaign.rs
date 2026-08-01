@@ -3513,6 +3513,25 @@ pub(crate) fn breakaway_campaign_fault_terminal(
     StepResult::ReadyNow
 }
 
+/// True when a breakaway campaign is holding a deferred terminal record or
+/// outcome that still needs to drain through [`step_breakaway_campaign`].
+///
+/// The outer dispatcher consults this before re-running its own outer-safety
+/// check. A *persistent* fault (an invalid motion budget, an elapsed-duration
+/// violation) re-fires that check every tick; without this guard the dispatcher
+/// would call [`breakaway_campaign_fault_terminal`] again on each of those
+/// ticks, overwriting `pending_event`/`pending_done` before the campaign driver
+/// ever runs to drain them -- so the closure record would never reach the wire
+/// and the phase would never fail out. Draining first lets the deferred closure
+/// emit and the `OuterFailed`/`FailedWithSafety` transition follow.
+pub(crate) fn breakaway_campaign_pending_terminal(phase: &OuterPhase) -> bool {
+    matches!(
+        phase,
+        OuterPhase::BreakawayCampaign { campaign, .. }
+            if campaign.pending_event.is_some() || campaign.pending_done.is_some()
+    )
+}
+
 /// A discovery plan-time construction failure never freezes a discovery plan
 /// (`plan_additive_discovery_ladder` refused before `AdditiveDiscoveryPlan`
 /// existed), so there is no discovery-owned terminal record to report -- only

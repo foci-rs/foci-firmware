@@ -2583,6 +2583,114 @@ fn breakaway_campaign_fault_terminal_defers_a_campaign_closure_before_outer_fail
     assert_eq!(safety_fault, Some(fault));
 }
 
+/// A motion budget the safety layer rejects on every tick
+/// (`budget_request_is_valid` fails for `max_duration_ms == 0`), so the fault it
+/// raises is *persistent* rather than a one-shot envelope trip.
+fn invalid_budget() -> OuterMotionBudget {
+    OuterMotionBudget {
+        max_duration_ms: 0,
+        ..test_budget()
+    }
+}
+
+fn safety_with_invalid_budget() -> OuterSafetyLimits {
+    let mut safety = OuterSafetyLimits::new(current_limit(2_448).raw(), invalid_budget());
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .expect("valid encoder resolution");
+    safety.set_encoder_baseline(0).expect("baseline configured");
+    safety
+        .arm_safety_observation(0)
+        .expect("safety observation armed");
+    safety
+}
+
+/// Drive one real dispatcher tick through [`step_outer`], the same entry the
+/// firmware runtime calls, with a fresh transient buffer each tick (mirroring
+/// the sweep dispatcher tests).
+fn dispatch_campaign_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> StepResult {
+    let mut buffer = crate::autotune::TransientBuffer::new();
+    pollster::block_on(crate::commissioning::outer::step_outer(
+        phase,
+        &mut buffer,
+        crate::autotune::CommissionProfile::Balanced,
+        crate::autotune::OperatingMode::Nominal,
+        0,
+        0,
+        false,
+        0,
+        0,
+        backend,
+    ))
+}
+
+/// Dispatcher-level companion to
+/// [`breakaway_campaign_fault_terminal_defers_a_campaign_closure_before_outer_failed`],
+/// which drives the fault builder directly. This drives the REAL dispatcher
+/// entry ([`step_outer`]) against a *persistent* outer-safety fault (an invalid
+/// motion budget, rejected on every tick) and proves the deferred campaign
+/// closure actually drains through to `FailedWithSafety`.
+///
+/// Before the drain-before-safety guard, the dispatcher re-ran its safety check
+/// every tick and rebuilt the pending terminal before the campaign driver could
+/// drain it, so the closure never reached the wire and the phase never failed
+/// out -- an unbounded `ReadyNow` loop. The driver-direct companion could not
+/// catch that: it never re-enters the dispatcher's safety check.
+#[test]
+fn dispatcher_drains_campaign_closure_under_a_persistent_budget_fault() {
+    let campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
+    let mut phase = OuterPhase::BreakawayCampaign {
+        campaign,
+        workspace: BreakawayProbeWorkspace::new(),
+        safety: safety_with_invalid_budget(),
+    };
+    let mut backend = test_backend();
+
+    // Tick 1: the persistent invalid-budget fault defers the campaign closure.
+    let first = dispatch_campaign_tick(&mut phase, &mut backend);
+    assert!(
+        matches!(first, StepResult::ReadyNow),
+        "tick 1 defers the closure, not returns it: {first:?}"
+    );
+
+    // Tick 2: the guard skips the still-failing safety check and lets the driver
+    // drain the deferred closure record instead of overwriting it.
+    let second = dispatch_campaign_tick(&mut phase, &mut backend);
+    let StepResult::BreakawayCampaignEvent(BreakawayCampaignEvent::CampaignTerminal(closure)) =
+        second
+    else {
+        panic!("tick 2 must drain the deferred campaign closure, got {second:?}");
+    };
+    assert_eq!(closure.phase, BreakawayPhase::Probe as u8);
+    assert_eq!(
+        closure.terminal_cause,
+        BreakawayTerminalCause::ProbeSafetyFault as u8
+    );
+    assert_eq!(closure.accepted, 0);
+
+    // Tick 3: the deferred Done resolves to the real safety terminal, so the
+    // phase actually leaves the campaign instead of looping forever.
+    let third = dispatch_campaign_tick(&mut phase, &mut backend);
+    assert!(
+        matches!(
+            third,
+            StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+        ),
+        "tick 3 must fail out with the safety violation, got {third:?}"
+    );
+    assert!(
+        matches!(
+            phase,
+            OuterPhase::FailedWithSafety {
+                error: CommissionError::SafetyEnvelopeViolation,
+                safety_fault,
+            } if safety_fault.reason
+                == crate::commissioning::types::OUTER_SAFETY_FAULT_INVALID_BUDGET
+        ),
+        "the campaign phase must terminate, not loop forever re-arming the fault"
+    );
+}
+
 /// Same fault path, but while a discovery phase owns the campaign: the closure
 /// record's phase and terminal cause must track whichever phase was actually
 /// active, not always report `Probe`.

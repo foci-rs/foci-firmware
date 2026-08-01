@@ -74,7 +74,8 @@ pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG: u32 =
 
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use breakaway_campaign::{
-    breakaway_campaign_fault_terminal, step_breakaway_campaign_with_trace,
+    breakaway_campaign_fault_terminal, breakaway_campaign_pending_terminal,
+    step_breakaway_campaign_with_trace,
 };
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use integral_sweep::{

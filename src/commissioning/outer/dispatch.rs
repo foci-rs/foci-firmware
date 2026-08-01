@@ -237,12 +237,33 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
+    // A breakaway campaign that has already deferred a terminal record must
+    // drain it before any further outer-safety evaluation. A persistent fault
+    // (invalid motion budget, elapsed-duration violation) would otherwise
+    // re-enter the fault-terminal builder every tick and overwrite the pending
+    // closure, so it would never reach the wire and the phase would never fail
+    // out. Skipping the safety block on a drain tick lets the campaign driver
+    // emit the closure and then the OuterFailed/FailedWithSafety transition.
     #[cfg(feature = "trace-velocity-sweep")]
-    let timing_context = match velocity_timing_context(phase) {
-        Ok(context) => context,
-        Err(error) => return velocity_fault_terminal(phase, error, None),
+    let draining_campaign_terminal = velocity::breakaway_campaign_pending_terminal(phase);
+    #[cfg(not(feature = "trace-velocity-sweep"))]
+    let draining_campaign_terminal = false;
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    let timing_context = if draining_campaign_terminal {
+        None
+    } else {
+        match velocity_timing_context(phase) {
+            Ok(context) => context,
+            Err(error) => return velocity_fault_terminal(phase, error, None),
+        }
     };
-    if let Some(safety) = outer_safety_mut(phase) {
+    let active_safety = if draining_campaign_terminal {
+        None
+    } else {
+        outer_safety_mut(phase)
+    };
+    if let Some(safety) = active_safety {
         if !safety.budget_request_is_valid() {
             defmt::warn!(
                 "outer safety: invalid motion budget travel={} velocity={} duration={} dir={}",
