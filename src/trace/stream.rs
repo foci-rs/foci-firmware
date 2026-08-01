@@ -7,8 +7,11 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Version-8 firmware trace protocol.
-pub const PROTOCOL_VERSION: u8 = 9;
+/// Firmware trace protocol version. Bumped to 10 for the independent-replay
+/// raw-observation record expansion (51 -> 99 bytes), a breaking wire change: an
+/// old decoder must reject a version-10 stream at the version gate rather than
+/// misdecode the wider record.
+pub const PROTOCOL_VERSION: u8 = 10;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -638,7 +641,7 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);
