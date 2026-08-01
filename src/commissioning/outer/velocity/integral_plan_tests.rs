@@ -1,11 +1,11 @@
 use super::band_confirmation::{
-    BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlan,
-    ConfirmationDirectionalInput, DiscoveryObservationAtom, TargetBandConfirmationInconclusive,
-    evaluate_band_confirmation, plan_band_confirmation,
+    BandConfirmationFailureCause, BandConfirmationPlan, ConfirmationDirectionalInput,
+    DiscoveryObservationAtom, TargetBandConfirmationInconclusive, evaluate_band_confirmation,
+    plan_band_confirmation,
 };
 use super::breakaway_plan::{
-    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan, GridFloorOrigin,
-    plan_additive_discovery_ladder, plan_breakaway_probe, resolve_grid_floor,
+    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, BreakawayProbePlan,
+    GridFloorOrigin, plan_additive_discovery_ladder, plan_breakaway_probe, resolve_grid_floor,
 };
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use super::integral_plan::{
@@ -95,11 +95,24 @@ fn breakaway_gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
 }
 
+/// Canonical acquisition context for the probe fixture; exact values are
+/// arbitrary but fixed.
+fn breakaway_probe_context() -> BreakawayProbeContext {
+    BreakawayProbeContext {
+        workflow_digest: 0xA1B2_C3D4_E5F6_0718,
+        target_velocity_rpm: 600,
+        hard_torque_limit: 2_816,
+        usable_torque_limit: 2_048,
+        pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
+    }
+}
+
 /// Build the probe plan and resolve its floor/breakaway pair around gain 256.
 fn breakaway_probe_and_floor() -> (BreakawayProbePlan, PidPGain, PidPGain) {
     let p_start = breakaway_gain(1);
     let p_top = breakaway_gain(1_024);
-    let probe_plan = plan_breakaway_probe(p_start, p_top).unwrap();
+    let probe_plan = plan_breakaway_probe(p_start, p_top, breakaway_probe_context()).unwrap();
     let breakaway_index = probe_plan.search_gains[..usize::from(probe_plan.search_count)]
         .iter()
         .position(|gain| gain.raw() == 256)
@@ -894,7 +907,7 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
         .expect("rung-18-class evidence confirms within the 70-80% band");
-    assert_eq!(acceptance.candidate_p, candidate_p);
+    assert_eq!(acceptance.candidate_p(), candidate_p);
 
     let bound = bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
@@ -1010,9 +1023,15 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
     let confirmation_plan =
         plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
 
-    let mismatched_acceptance = BandConfirmationAcceptance {
-        candidate_p: breakaway_gain(512),
-    };
+    // A `BandConfirmationAcceptance` cannot be forged from this sibling module
+    // (its field is private to `band_confirmation`), so the mismatched
+    // acceptance is a genuine held-out pass -- for a *different* candidate gain,
+    // 512 -- produced through `evaluate_band_confirmation`. Binding it against a
+    // plan whose candidate is 724 is the mismatch under test.
+    let (forward, reverse) = accepted_confirmation_evidence();
+    let mismatched_acceptance = evaluate_band_confirmation(breakaway_gain(512), forward, reverse)
+        .expect("rung-18-class evidence confirms within the 70-80% band");
+    assert_eq!(mismatched_acceptance.candidate_p(), breakaway_gain(512));
     assert_eq!(
         bind_breakaway_stage_c_authority(
             confirmation_plan.plan_digest,

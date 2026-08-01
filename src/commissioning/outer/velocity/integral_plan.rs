@@ -5,9 +5,8 @@ use heapless::Vec;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
 use super::band_confirmation::{
-    BandConfirmationAcceptance, BandConfirmationPlan,
-    CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED, CONFIRMATION_CAPTURE_PROFILE_EXISTING,
-    CONFIRMATION_FAMILY_SIZE, TargetBandConfirmationInconclusive,
+    BandConfirmationAcceptance, BandConfirmationPlan, CONFIRMATION_FAMILY_SIZE,
+    TargetBandConfirmationInconclusive, validate_fixed_contract,
 };
 use super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION;
 use super::current_guard::VelocityLimitEvidenceCapability;
@@ -1242,7 +1241,7 @@ pub(crate) fn bind_breakaway_stage_c_authority(
 ) -> Result<ConfirmedAcquisitionDigest, BreakawayAuthorityBindingError> {
     let acceptance = confirmation_outcome
         .map_err(|_| BreakawayAuthorityBindingError::ConfirmationNotAccepted)?;
-    if acceptance.candidate_p != confirmation_plan.candidate_p {
+    if acceptance.candidate_p() != confirmation_plan.candidate_p {
         return Err(BreakawayAuthorityBindingError::AcceptanceCandidateMismatch);
     }
     if candidate_acquisition_digest != confirmation_plan.plan_digest {
@@ -1304,12 +1303,16 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 ///
 /// `authority` must be a [`StageCAuthority::new_breakaway`] value bound to
 /// `confirmation_plan` through [`bind_breakaway_stage_c_authority`]; this
-/// function additionally recomputes `confirmation_plan.digest()` and
-/// re-validates the fixed confirmation contract (`family_size ==
-/// [`CONFIRMATION_FAMILY_SIZE`]`, the capture profile, and the acceptance
-/// rule) before consuming it, so a tampered or malformed confirmation plan is
-/// rejected even if a caller manages to pair it with a validly bound
-/// authority. `context` carries the breakaway campaign's own physical
+/// function additionally re-validates the fixed confirmation contract through
+/// the single canonical
+/// [`super::band_confirmation::validate_fixed_contract`] -- every frozen field
+/// (family size, observations per direction, capture profile, all three
+/// timing fields, both band edges, the acceptance rule, the fixed slot order,
+/// and digest self-consistency) -- before consuming it, so a tampered or
+/// malformed confirmation plan is rejected even if a caller manages to pair it
+/// with a validly bound authority. This is the same function the confirmation
+/// phase runs before its first stroke, so the contract cannot drift between
+/// the two sites. `context` carries the breakaway campaign's own physical
 /// acquisition parameters -- there is no reproduced Stage-B sweep plan to
 /// read them from.
 ///
@@ -1329,13 +1332,8 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
-    if confirmation_plan.digest() != confirmation_plan.plan_digest
-        || confirmation_plan.family_size != CONFIRMATION_FAMILY_SIZE
-        || confirmation_plan.capture_profile != CONFIRMATION_CAPTURE_PROFILE_EXISTING
-        || confirmation_plan.acceptance_rule != CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED
-    {
-        return Err(VelocityIntegralPlanError::InvalidConfirmationPlan);
-    }
+    validate_fixed_contract(&confirmation_plan)
+        .map_err(|_| VelocityIntegralPlanError::InvalidConfirmationPlan)?;
     if authority.stage_b_plan_digest != confirmation_plan.plan_digest {
         return Err(VelocityIntegralPlanError::MismatchedAuthority);
     }

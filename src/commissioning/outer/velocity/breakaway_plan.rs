@@ -54,6 +54,33 @@ pub const PROBE_CONFIDENCE_FAMILY_SIZE: u16 = 16;
 /// outcome) plus two mandatory bracket-confirmation repeats.
 pub const PROBE_MAX_OBSERVATIONS_PER_DIRECTION: u8 = 8;
 
+/// Command-level workflow envelope and physical acquisition context a breakaway
+/// probe is planned under.
+///
+/// Threaded from the orchestrator into [`plan_breakaway_probe`] and hashed into
+/// [`BreakawayProbePlan::digest`], so the whole downstream digest chain --
+/// probe -> discovery (binds the probe digest) -> confirmation (binds the
+/// discovery digest) -> Stage C (binds the confirmation digest) -- is pinned to
+/// the exact command-level envelope and the physical parameters it was planned
+/// against, not merely to the search geometry. These are the same
+/// `AcquisitionContext`-shaped values the Stage-C tail consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayProbeContext {
+    /// Digest of the command-level [`super::integral_plan::CommissioningWorkflowPlan`]
+    /// envelope this campaign reserved before probe motion.
+    pub workflow_digest: u64,
+    /// Frozen signed-target magnitude in mechanical RPM register units.
+    pub target_velocity_rpm: i32,
+    /// Configured hard torque-target limit.
+    pub hard_torque_limit: u16,
+    /// Inclusive usable torque-target boundary.
+    pub usable_torque_limit: u16,
+    /// PWM carrier frequency the campaign was planned under, in Hz.
+    pub pwm_hz: u32,
+    /// Encoder counts per mechanical revolution the campaign was planned under.
+    pub encoder_counts_per_rev: u32,
+}
+
 /// Immutable, pre-motion plan for the breakaway probe's binary search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbePlan {
@@ -65,15 +92,23 @@ pub struct BreakawayProbePlan {
     pub confidence_family_size: u16,
     /// Maximum probe observations permitted in a single direction.
     pub maximum_observations: u8,
-    /// Digest of every frozen field and each valid `search_gains` entry.
+    /// Command-level workflow envelope and physical acquisition context this
+    /// probe was planned under, bound into `plan_digest`.
+    pub context: BreakawayProbeContext,
+    /// Digest of every frozen field, each valid `search_gains` entry, and the
+    /// bound [`BreakawayProbeContext`].
     pub plan_digest: u64,
 }
 
 impl BreakawayProbePlan {
-    /// Hash every frozen field and each valid search-grid entry exactly once.
+    /// Hash every frozen field, each valid search-grid entry, and the bound
+    /// acquisition context exactly once.
     ///
     /// Padding and unused `search_gains` slots beyond `search_count` are never
-    /// hashed.
+    /// hashed. The [`BreakawayProbeContext`] (command-level workflow digest and
+    /// physical acquisition parameters) is hashed so the probe -- and thus the
+    /// whole downstream chain -- is bound to the command-level envelope it was
+    /// planned under, not just to the search geometry.
     pub fn digest(self) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
         macro_rules! hash_value {
@@ -93,6 +128,12 @@ impl BreakawayProbePlan {
         }
         hash_value!(self.confidence_family_size);
         hash_value!(self.maximum_observations);
+        hash_value!(self.context.workflow_digest);
+        hash_value!(self.context.target_velocity_rpm);
+        hash_value!(self.context.hard_torque_limit);
+        hash_value!(self.context.usable_torque_limit);
+        hash_value!(self.context.pwm_hz);
+        hash_value!(self.context.encoder_counts_per_rev);
         hash
     }
 }
@@ -103,10 +144,14 @@ impl BreakawayProbePlan {
 /// `p_start` is the smallest gain producing one nonzero controller-output quantum;
 /// `p_top` is the most restrictive applicable authority ceiling. The search grid is
 /// the same half-octave ladder the ordinary Stage-B sweep would walk end to end; the
-/// probe instead binary searches it.
+/// probe instead binary searches it. `context` binds the command-level workflow
+/// envelope and physical acquisition parameters into the resulting digest, so the
+/// whole downstream chain is enforced from the command-level envelope, not just the
+/// probe's own search geometry.
 pub fn plan_breakaway_probe(
     p_start: PidPGain,
     p_top: PidPGain,
+    context: BreakawayProbeContext,
 ) -> Result<BreakawayProbePlan, VelocityPlanError> {
     let ladder = build_gain_ladder(p_start.raw(), p_top.raw())?;
     let search_count = u8::try_from(ladder.len()).map_err(|_| VelocityPlanError::Arithmetic)?;
@@ -118,6 +163,7 @@ pub fn plan_breakaway_probe(
         search_count,
         confidence_family_size: PROBE_CONFIDENCE_FAMILY_SIZE,
         maximum_observations: PROBE_MAX_OBSERVATIONS_PER_DIRECTION,
+        context,
         plan_digest: 0,
     };
     plan.plan_digest = plan.digest();

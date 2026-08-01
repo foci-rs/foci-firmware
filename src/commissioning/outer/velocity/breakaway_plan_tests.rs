@@ -1,6 +1,6 @@
 use super::super::sweep_plan::{MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS, VelocityPlanError};
 use super::{
-    AdditiveDiscoveryRequest, AdditiveLadderPlanError, GridFloorOrigin,
+    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, GridFloorOrigin,
     MAX_ADDITIVE_GAIN_RATIO_DEN, MAX_ADDITIVE_GAIN_RATIO_NUM, PROBE_CONFIDENCE_FAMILY_SIZE,
     PROBE_MAX_OBSERVATIONS_PER_DIRECTION, plan_additive_discovery_ladder, plan_breakaway_probe,
     realize_candidate_additive_ladder, resolve_grid_floor, satisfies_additive_ratio_guard,
@@ -9,6 +9,20 @@ use foci_tmc4671::pid::PidPGain;
 
 fn gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
+}
+
+/// Canonical acquisition context for probe-plan tests. Its exact values are
+/// arbitrary but fixed, so digest self-consistency and cross-context digest
+/// difference are both reproducible.
+fn probe_context() -> BreakawayProbeContext {
+    BreakawayProbeContext {
+        workflow_digest: 0xA1B2_C3D4_E5F6_0718,
+        target_velocity_rpm: 600,
+        hard_torque_limit: 2_816,
+        usable_torque_limit: 2_048,
+        pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
+    }
 }
 
 fn generous_request(
@@ -32,7 +46,7 @@ fn generous_request(
 
 #[test]
 fn probe_plan_matches_the_realized_half_octave_grid() {
-    let plan = plan_breakaway_probe(gain(1), gain(1_024)).unwrap();
+    let plan = plan_breakaway_probe(gain(1), gain(1_024), probe_context()).unwrap();
 
     let realized: heapless::Vec<u16, MAX_SWEEP_RUNGS> = plan
         .search_gains
@@ -57,6 +71,46 @@ fn probe_plan_matches_the_realized_half_octave_grid() {
 }
 
 #[test]
+fn probe_digest_changes_when_workflow_digest_or_acquisition_context_differs() {
+    let base = plan_breakaway_probe(gain(1), gain(1_024), probe_context()).unwrap();
+
+    // The workflow digest binds the command-level envelope into the probe.
+    let mut altered = probe_context();
+    altered.workflow_digest ^= 0x1;
+    let plan = plan_breakaway_probe(gain(1), gain(1_024), altered).unwrap();
+    assert_ne!(
+        base.plan_digest, plan.plan_digest,
+        "workflow digest must be bound into the probe digest"
+    );
+
+    // Every physical acquisition-context field must move the digest too.
+    let mut altered = probe_context();
+    altered.target_velocity_rpm += 1;
+    let plan = plan_breakaway_probe(gain(1), gain(1_024), altered).unwrap();
+    assert_ne!(base.plan_digest, plan.plan_digest, "target velocity");
+
+    let mut altered = probe_context();
+    altered.hard_torque_limit += 1;
+    let plan = plan_breakaway_probe(gain(1), gain(1_024), altered).unwrap();
+    assert_ne!(base.plan_digest, plan.plan_digest, "hard torque limit");
+
+    let mut altered = probe_context();
+    altered.usable_torque_limit += 1;
+    let plan = plan_breakaway_probe(gain(1), gain(1_024), altered).unwrap();
+    assert_ne!(base.plan_digest, plan.plan_digest, "usable torque limit");
+
+    let mut altered = probe_context();
+    altered.pwm_hz += 1;
+    let plan = plan_breakaway_probe(gain(1), gain(1_024), altered).unwrap();
+    assert_ne!(base.plan_digest, plan.plan_digest, "pwm frequency");
+
+    let mut altered = probe_context();
+    altered.encoder_counts_per_rev += 1;
+    let plan = plan_breakaway_probe(gain(1), gain(1_024), altered).unwrap();
+    assert_ne!(base.plan_digest, plan.plan_digest, "encoder counts per rev");
+}
+
+#[test]
 fn probe_budgets_exactly_eight_observations_per_direction() {
     assert_eq!(PROBE_MAX_OBSERVATIONS_PER_DIRECTION, 8);
     assert_eq!(PROBE_CONFIDENCE_FAMILY_SIZE, 16);
@@ -66,7 +120,7 @@ fn probe_budgets_exactly_eight_observations_per_direction() {
 #[test]
 fn probe_plan_rejects_a_span_too_thin_for_five_structural_rungs() {
     assert_eq!(
-        plan_breakaway_probe(gain(1), gain(4)),
+        plan_breakaway_probe(gain(1), gain(4), probe_context()),
         Err(VelocityPlanError::InsufficientStructuralSpan)
     );
 }

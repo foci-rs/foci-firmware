@@ -551,10 +551,30 @@ pub enum BandConfirmationFailureCause {
 pub struct TargetBandConfirmationInconclusive(pub BandConfirmationFailureCause);
 
 /// Held-out confirmation success: the only value that may authorize Stage C.
+///
+/// This is an unforgeable capability. Its single field is **private** and this
+/// module exposes no public constructor, no `Default`, and no `From`: the only
+/// code that may build a `BandConfirmationAcceptance` is
+/// [`evaluate_band_confirmation`] in this module, on the path where all eight
+/// fresh intervals passed. A module outside `band_confirmation` therefore
+/// cannot write `BandConfirmationAcceptance { candidate_p }` or otherwise mint
+/// one, so an `Ok(acceptance)` handed to
+/// [`super::integral_plan::bind_breakaway_stage_c_authority`] can only have
+/// come from a genuine all-eight-contained held-out pass -- it can never be
+/// synthesized to bypass the confirmation gate. Read the confirmed gain with
+/// [`Self::candidate_p`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationAcceptance {
-    /// Confirmed proportional gain.
-    pub candidate_p: PidPGain,
+    /// Confirmed proportional gain. Private so no sibling module can construct
+    /// an acceptance; see the type's own documentation.
+    candidate_p: PidPGain,
+}
+
+impl BandConfirmationAcceptance {
+    /// The confirmed proportional gain this held-out block accepted.
+    pub(crate) fn candidate_p(&self) -> PidPGain {
+        self.candidate_p
+    }
 }
 
 fn directional_input_is_complete(input: &ConfirmationDirectionalInput) -> bool {
@@ -744,6 +764,108 @@ pub fn plan_band_confirmation(
     };
     plan.plan_digest = plan.digest();
     Ok(plan)
+}
+
+/// The fixed contract field that failed [`validate_fixed_contract`].
+///
+/// Every variant names a value that is frozen for the only admitted
+/// confirmation profile; a plan carrying anything else never drove motion and
+/// never authorizes Stage C.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum BandConfirmationContractError {
+    /// `family_size` was not [`CONFIRMATION_FAMILY_SIZE`].
+    FamilySize,
+    /// `observations_per_direction` was not
+    /// [`CONFIRMATION_OBSERVATIONS_PER_DIRECTION`].
+    ObservationsPerDirection,
+    /// `capture_profile` was not [`CONFIRMATION_CAPTURE_PROFILE_EXISTING`].
+    CaptureProfile,
+    /// A timing field (`moving_stroke_us`, `zero_settle_us`, or
+    /// `settle_analysis_budget_us`) did not equal the existing capture
+    /// profile's value.
+    Timing,
+    /// `band_lower_percent` was not [`CONFIRMATION_BAND_LOWER_PERCENT`] or
+    /// `band_upper_percent` was not [`CONFIRMATION_BAND_UPPER_PERCENT`].
+    BandEdge,
+    /// `acceptance_rule` was not
+    /// [`CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED`].
+    AcceptanceRule,
+    /// The module's fixed [`CONFIRMATION_SLOT_ORDER`] was not the canonical
+    /// four-forward-then-four-reverse schedule the digest binds.
+    SlotOrder,
+    /// The recomputed [`BandConfirmationPlan::digest`] did not match the stored
+    /// `plan_digest`. Because `digest()` folds every frozen field, the
+    /// candidate gain, the bound discovery digest, and the fixed slot order,
+    /// any tamper the field checks above do not name (a mutated `candidate_p`,
+    /// `discovery_plan_digest`, or slot-order contribution) is caught here.
+    DigestMismatch,
+}
+
+/// The canonical eight-slot confirmation schedule the fixed contract binds:
+/// four forward strokes followed by four reverse strokes. Compared against the
+/// module's [`CONFIRMATION_SLOT_ORDER`] so an edit to that constant cannot
+/// silently redefine the contract the digest is taken over.
+const CANONICAL_CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
+    VelocityDirection::Forward,
+    VelocityDirection::Forward,
+    VelocityDirection::Forward,
+    VelocityDirection::Forward,
+    VelocityDirection::Reverse,
+    VelocityDirection::Reverse,
+    VelocityDirection::Reverse,
+    VelocityDirection::Reverse,
+];
+
+/// Validate every fixed field of a held-out confirmation plan.
+///
+/// This is the single canonical contract check, called at both sites that
+/// consume a [`BandConfirmationPlan`]: before the confirmation phase drives any
+/// motion (in `breakaway_campaign.rs`, at plan freeze) and at Stage-C
+/// construction in
+/// [`super::integral_plan::plan_breakaway_velocity_integral_response`]. Because
+/// there is exactly one implementation, the timing, band, family, slot-order,
+/// observations-per-direction, and acceptance-rule contract cannot drift
+/// between the two checks.
+///
+/// Every field frozen for the only admitted confirmation profile is verified:
+/// `family_size`, `observations_per_direction`, `capture_profile`, all three
+/// timing fields, both band edges, the acceptance rule, the fixed slot order,
+/// and -- last -- digest self-consistency, which binds `candidate_p`, the
+/// discovery digest, and the slot-order contribution the earlier scalar checks
+/// do not name individually.
+pub(crate) fn validate_fixed_contract(
+    plan: &BandConfirmationPlan,
+) -> Result<(), BandConfirmationContractError> {
+    if plan.family_size != CONFIRMATION_FAMILY_SIZE {
+        return Err(BandConfirmationContractError::FamilySize);
+    }
+    if plan.observations_per_direction != CONFIRMATION_OBSERVATIONS_PER_DIRECTION {
+        return Err(BandConfirmationContractError::ObservationsPerDirection);
+    }
+    if plan.capture_profile != CONFIRMATION_CAPTURE_PROFILE_EXISTING {
+        return Err(BandConfirmationContractError::CaptureProfile);
+    }
+    if plan.moving_stroke_us != MOVING_STROKE_US
+        || plan.zero_settle_us != ZERO_SETTLE_US
+        || plan.settle_analysis_budget_us != SETTLE_ANALYSIS_BUDGET_US
+    {
+        return Err(BandConfirmationContractError::Timing);
+    }
+    if plan.band_lower_percent != CONFIRMATION_BAND_LOWER_PERCENT
+        || plan.band_upper_percent != CONFIRMATION_BAND_UPPER_PERCENT
+    {
+        return Err(BandConfirmationContractError::BandEdge);
+    }
+    if plan.acceptance_rule != CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED {
+        return Err(BandConfirmationContractError::AcceptanceRule);
+    }
+    if CONFIRMATION_SLOT_ORDER != CANONICAL_CONFIRMATION_SLOT_ORDER {
+        return Err(BandConfirmationContractError::SlotOrder);
+    }
+    if plan.digest() != plan.plan_digest {
+        return Err(BandConfirmationContractError::DigestMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

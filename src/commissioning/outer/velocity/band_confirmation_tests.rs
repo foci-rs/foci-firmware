@@ -9,17 +9,19 @@
 use super::super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
 };
-use super::super::sweep_evidence::VelocityObservationClass;
+use super::super::sweep_evidence::{VelocityObservationClass, direction_report_code};
+use super::super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 use super::{
-    BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlanError,
+    BandConfirmationAcceptance, BandConfirmationContractError, BandConfirmationFailureCause,
+    BandConfirmationPlan, BandConfirmationPlanError,
     CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED, CONFIRMATION_CAPTURE_PROFILE_EXISTING,
-    CONFIRMATION_FAMILY_SIZE, CONFIRMATION_OBSERVATIONS_PER_DIRECTION,
+    CONFIRMATION_FAMILY_SIZE, CONFIRMATION_OBSERVATIONS_PER_DIRECTION, CONFIRMATION_SLOT_ORDER,
     ConfirmationDirectionalInput, DiscoveryObservationAtom, DiscoveryRungNominationBounds,
     DiscoveryRungNominationInput, NOMINATION_SCREEN_C_SIGMA, TargetBandConfirmationInconclusive,
     TargetBandUnconfirmableFromDiscovery, commanded_side_mean_rate_q, evaluate_band_confirmation,
     nominate_confirmation_candidate, nominate_confirmation_candidate_from_bounds,
     observation_statistic, plan_band_confirmation, rung_confirmable_margin_percent,
-    rung_nomination_bounds,
+    rung_nomination_bounds, validate_fixed_contract,
 };
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
 use foci_tmc4671::pid::PidPGain;
@@ -694,6 +696,147 @@ fn confirmation_plan_rejects_zero_candidate_gain() {
     assert_eq!(
         plan_band_confirmation(1, PidPGain::ZERO),
         Err(BandConfirmationPlanError::InvalidRequest)
+    );
+}
+
+// --- validate_fixed_contract: every fixed field is checked -------------------
+
+// `BandConfirmationAcceptance`'s single field is private to `band_confirmation`.
+// A sibling module -- any of the other `*_tests.rs` files declared in `mod.rs`,
+// which are NOT descendants of `band_confirmation` -- cannot write
+// `BandConfirmationAcceptance { candidate_p }` or `Ok(BandConfirmationAcceptance
+// { .. })`, so it cannot forge an acceptance to hand to
+// `bind_breakaway_stage_c_authority`. The only route to a value of this type is
+// a genuine all-eight-contained pass through `evaluate_band_confirmation` in
+// this module, exactly the `ConfirmedAcquisitionDigest` precedent in
+// `integral_plan.rs`. This file *is* a descendant of `band_confirmation` (it is
+// wired as `#[path = "band_confirmation_tests.rs"] mod tests;` inside
+// `band_confirmation.rs`), so it may construct the struct directly above -- that
+// intra-module access is the point of the privacy boundary, not a hole in it.
+
+/// Recompute a confirmation plan's digest as if it had been taken over a
+/// different eight-slot schedule, replicating [`BandConfirmationPlan::digest`]'s
+/// exact FNV-1a fold. Used to prove the fixed slot order is bound into
+/// `plan_digest`.
+fn digest_with_slot_order(plan: &BandConfirmationPlan, slot_order: &[VelocityDirection; 8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    macro_rules! hash_value {
+        ($value:expr) => {
+            for byte in $value.to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+    }
+    hash_value!(plan.discovery_plan_digest);
+    hash_value!(plan.candidate_p.raw());
+    hash_value!(plan.capture_profile);
+    hash_value!(plan.family_size);
+    hash_value!(plan.observations_per_direction);
+    hash_value!(plan.moving_stroke_us);
+    hash_value!(plan.zero_settle_us);
+    hash_value!(plan.settle_analysis_budget_us);
+    hash_value!(plan.band_lower_percent);
+    hash_value!(plan.band_upper_percent);
+    hash_value!(plan.acceptance_rule);
+    for direction in slot_order {
+        hash_value!(direction_report_code(*direction));
+    }
+    hash
+}
+
+#[test]
+fn validate_fixed_contract_accepts_a_well_formed_plan() {
+    let plan = plan_band_confirmation(111, gain(724)).unwrap();
+    assert_eq!(validate_fixed_contract(&plan), Ok(()));
+    // Sanity: the manual digest replica agrees with the production fold, so the
+    // slot-order tamper test below is exercising a real digest, not a typo.
+    assert_eq!(
+        digest_with_slot_order(&plan, &CONFIRMATION_SLOT_ORDER),
+        plan.plan_digest
+    );
+}
+
+#[test]
+fn validate_fixed_contract_rejects_a_tampered_timing_field() {
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.moving_stroke_us = MOVING_STROKE_US.wrapping_add(1);
+    // Re-seal the digest so digest self-consistency passes; this isolates the
+    // timing-field check as the sole reason for rejection.
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::Timing)
+    );
+
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.zero_settle_us = ZERO_SETTLE_US.wrapping_add(1);
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::Timing)
+    );
+
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.settle_analysis_budget_us = SETTLE_ANALYSIS_BUDGET_US.wrapping_add(1);
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::Timing)
+    );
+}
+
+#[test]
+fn validate_fixed_contract_rejects_a_tampered_band_edge() {
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.band_lower_percent = 69;
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::BandEdge)
+    );
+
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.band_upper_percent = 81;
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::BandEdge)
+    );
+}
+
+#[test]
+fn validate_fixed_contract_rejects_a_tampered_observations_per_direction() {
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.observations_per_direction = CONFIRMATION_OBSERVATIONS_PER_DIRECTION - 1;
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::ObservationsPerDirection)
+    );
+}
+
+#[test]
+fn validate_fixed_contract_rejects_a_slot_order_tampered_digest() {
+    let plan = plan_band_confirmation(111, gain(724)).unwrap();
+    // A plan whose digest was taken over a reversed slot order is rejected: the
+    // fixed four-forward-then-four-reverse schedule is bound into `plan_digest`,
+    // so any slot-order deviation surfaces as a digest mismatch.
+    let reversed = [
+        VelocityDirection::Reverse,
+        VelocityDirection::Reverse,
+        VelocityDirection::Reverse,
+        VelocityDirection::Reverse,
+        VelocityDirection::Forward,
+        VelocityDirection::Forward,
+        VelocityDirection::Forward,
+        VelocityDirection::Forward,
+    ];
+    let mut tampered = plan;
+    tampered.plan_digest = digest_with_slot_order(&plan, &reversed);
+    assert_ne!(tampered.plan_digest, plan.plan_digest);
+    assert_eq!(
+        validate_fixed_contract(&tampered),
+        Err(BandConfirmationContractError::DigestMismatch)
     );
 }
 

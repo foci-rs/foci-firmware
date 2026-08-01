@@ -3,7 +3,9 @@ use super::*;
 use crate::autotune::TmcMechanicalRpm;
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::OuterMotionBudget;
-use crate::commissioning::outer::velocity::breakaway_plan::plan_breakaway_probe;
+use crate::commissioning::outer::velocity::breakaway_plan::{
+    BreakawayProbeContext, plan_breakaway_probe,
+};
 use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
 use foci_tmc4671::pid::PidPGain;
 
@@ -46,7 +48,20 @@ fn test_backend() -> MockBackend {
 /// A search grid realized from `gain(1), gain(1_024)`: 20 post-dedupe rungs. Shared
 /// by every test below so none of them re-derive the half-octave generator's output.
 fn test_plan() -> BreakawayProbePlan {
-    plan_breakaway_probe(gain(1), gain(1_024)).expect("valid probe plan")
+    plan_breakaway_probe(gain(1), gain(1_024), test_probe_context()).expect("valid probe plan")
+}
+
+/// Canonical acquisition context for the shared probe fixture; exact values are
+/// arbitrary but fixed.
+fn test_probe_context() -> BreakawayProbeContext {
+    BreakawayProbeContext {
+        workflow_digest: 0xA1B2_C3D4_E5F6_0718,
+        target_velocity_rpm: 600,
+        hard_torque_limit: 2_816,
+        usable_torque_limit: 2_048,
+        pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
+    }
 }
 
 /// Drive a complete probe campaign against a scripted `MockBackend`.
@@ -1116,7 +1131,7 @@ fn an_all_eight_contained_run_accepts_with_the_candidate_p_and_the_frozen_plan()
     let BandConfirmationOutcome::Accepted { acceptance, plan } = outcome else {
         panic!("expected Accepted, got {outcome:?}");
     };
-    assert_eq!(acceptance.candidate_p, gain(724));
+    assert_eq!(acceptance.candidate_p(), gain(724));
     assert_eq!(plan.candidate_p, gain(724));
     assert_eq!(plan.discovery_plan_digest, 42);
 
@@ -1475,6 +1490,8 @@ fn campaign_request() -> BreakawayCampaignRequest {
         maximum_workflow_ms: 450_000,
         channel: 0,
         run_sequence: 7,
+        pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
     }
 }
 

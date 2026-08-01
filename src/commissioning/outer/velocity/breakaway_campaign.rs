@@ -90,11 +90,12 @@ use super::band_confirmation::{
     TargetBandConfirmationInconclusive, TargetBandUnconfirmableFromDiscovery,
     evaluate_band_confirmation, nominate_confirmation_candidate_from_bounds,
     plan_band_confirmation, rung_nomination_bounds, rung_response_bounds_percent,
+    validate_fixed_contract,
 };
 use super::breakaway_plan::{
-    AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbePlan,
-    GridFloorOrigin, PROBE_CONFIDENCE_FAMILY_SIZE, plan_additive_discovery_ladder,
-    plan_breakaway_probe, resolve_grid_floor,
+    AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError,
+    BreakawayProbeContext, BreakawayProbePlan, GridFloorOrigin, PROBE_CONFIDENCE_FAMILY_SIZE,
+    plan_additive_discovery_ladder, plan_breakaway_probe, resolve_grid_floor,
 };
 use super::breakaway_reporting::{
     BreakawayPhase, campaign_terminal_report, confirmation_evaluated_terminal_report,
@@ -2186,6 +2187,16 @@ pub(crate) fn begin_band_confirmation(
             });
         }
     };
+    // Single canonical contract check, run before the fixed eight-stroke block
+    // drives any motion. The same `validate_fixed_contract` gates Stage-C
+    // construction, so a plan that reaches confirmation and a plan that reaches
+    // Stage C are held to one identical, non-drifting contract.
+    if validate_fixed_contract(&plan).is_err() {
+        return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
+            error: CommissionError::InvalidSchedule,
+            safety: None,
+        });
+    }
     BandConfirmationEntry::Ready(BandConfirmationSession::new(
         plan,
         candidate.margin_percent,
@@ -2942,6 +2953,12 @@ pub(crate) struct BreakawayCampaignRequest {
     pub(crate) channel: u8,
     /// Trace/run sequence carried into the Stage-C continuation.
     pub(crate) run_sequence: u32,
+    /// PWM carrier frequency the campaign is planned under, in Hz. Bound into
+    /// the probe plan's digest as part of its acquisition context.
+    pub(crate) pwm_hz: u32,
+    /// Encoder counts per mechanical revolution the campaign is planned under.
+    /// Bound into the probe plan's digest as part of its acquisition context.
+    pub(crate) encoder_counts_per_rev: u32,
 }
 
 /// The active campaign phase: exactly one committed driver's state plus its
@@ -3002,15 +3019,25 @@ impl BreakawayCampaign {
             current_gain_span(request.target_velocity_rpm, request.hard_torque_limit)
                 .map_err(|_| CommissionError::InvalidSchedule)?;
         // Reserve the command-level envelope before any probe motion; every
-        // phase plan must later fit inside `maximum_workflow_ms`.
-        CommissioningWorkflowPlan::new_breakaway(
+        // phase plan must later fit inside `maximum_workflow_ms`. Its digest is
+        // bound into the probe plan below, so the whole downstream digest chain
+        // is pinned to this command-level envelope.
+        let workflow = CommissioningWorkflowPlan::new_breakaway(
             request.run_sequence,
             request.nominal_workflow_ms,
             request.maximum_workflow_ms,
         )
         .map_err(|_| CommissionError::InvalidSchedule)?;
-        let probe_plan =
-            plan_breakaway_probe(p_start, p_top).map_err(|_| CommissionError::InvalidSchedule)?;
+        let probe_context = BreakawayProbeContext {
+            workflow_digest: workflow.digest(),
+            target_velocity_rpm: request.target_velocity_rpm.raw(),
+            hard_torque_limit: request.hard_torque_limit,
+            usable_torque_limit,
+            pwm_hz: request.pwm_hz,
+            encoder_counts_per_rev: request.encoder_counts_per_rev,
+        };
+        let probe_plan = plan_breakaway_probe(p_start, p_top, probe_context)
+            .map_err(|_| CommissionError::InvalidSchedule)?;
         let session = BreakawayProbeSession::new(
             probe_plan,
             request.target_velocity_rpm,
@@ -3136,6 +3163,8 @@ pub(crate) fn plan_breakaway_campaign_command(
         maximum_workflow_ms,
         channel,
         run_sequence,
+        pwm_hz,
+        encoder_counts_per_rev,
     })?;
     Ok((campaign, workflow))
 }
@@ -3687,7 +3716,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
                 &session.plan,
                 &forward,
                 &reverse,
-                Some(acceptance.candidate_p.raw()),
+                Some(acceptance.candidate_p().raw()),
                 None,
                 inputs.run_sequence,
                 sequence,

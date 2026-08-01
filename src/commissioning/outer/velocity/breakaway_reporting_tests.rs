@@ -14,7 +14,8 @@ use super::super::band_confirmation::{
 };
 use super::super::breakaway_campaign::{AdditiveDiscoveryOutcome, BandConfirmationOutcome};
 use super::super::breakaway_plan::{
-    AdditiveDiscoveryRequest, plan_additive_discovery_ladder, plan_breakaway_probe,
+    AdditiveDiscoveryRequest, BreakawayProbeContext, plan_additive_discovery_ladder,
+    plan_breakaway_probe,
 };
 use super::super::breakaway_search::{BreakawayMotionClass, DirectionalBreakaway};
 use super::super::sweep_consensus::{CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus};
@@ -25,6 +26,19 @@ use crate::commissioning::types::OuterSafetyFault;
 
 fn gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
+}
+
+/// Canonical acquisition context for probe-plan fixtures; exact values are
+/// arbitrary but fixed.
+fn probe_context() -> BreakawayProbeContext {
+    BreakawayProbeContext {
+        workflow_digest: 0xA1B2_C3D4_E5F6_0718,
+        target_velocity_rpm: 600,
+        hard_torque_limit: 2_816,
+        usable_torque_limit: 2_048,
+        pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
+    }
 }
 
 fn zero_safety_fault() -> OuterSafetyFault {
@@ -113,7 +127,7 @@ fn confirmation_input(
 fn probe_plan_report_carries_plan_digest_and_endpoints() {
     let p_start = gain(1);
     let p_top = gain(1024);
-    let plan = plan_breakaway_probe(p_start, p_top).expect("valid probe plan");
+    let plan = plan_breakaway_probe(p_start, p_top, probe_context()).expect("valid probe plan");
 
     let report = probe_plan_report(&plan, p_start, p_top, 7, 3);
 
@@ -131,7 +145,8 @@ fn probe_plan_report_carries_plan_digest_and_endpoints() {
 
 #[test]
 fn directional_breakaway_report_resolves_gains_from_grid_indices() {
-    let plan = plan_breakaway_probe(gain(1), gain(1024)).expect("valid probe plan");
+    let plan =
+        plan_breakaway_probe(gain(1), gain(1024), probe_context()).expect("valid probe plan");
     let breakaway = DirectionalBreakaway {
         inert_index: Some(2),
         moving_index: 3,
@@ -153,7 +168,8 @@ fn directional_breakaway_report_resolves_gains_from_grid_indices() {
 
 #[test]
 fn directional_breakaway_report_clears_inert_when_clamped_at_breakaway() {
-    let plan = plan_breakaway_probe(gain(1), gain(1024)).expect("valid probe plan");
+    let plan =
+        plan_breakaway_probe(gain(1), gain(1024), probe_context()).expect("valid probe plan");
     let breakaway = DirectionalBreakaway {
         inert_index: None,
         moving_index: 0,
@@ -220,7 +236,8 @@ fn probe_terminal_cause_maps_every_non_found_variant() {
 fn probe_terminal_report_carries_plan_identity_and_cause() {
     use super::super::breakaway_campaign::BreakawayProbeOutcome;
 
-    let plan = plan_breakaway_probe(gain(1), gain(1024)).expect("valid probe plan");
+    let plan =
+        plan_breakaway_probe(gain(1), gain(1024), probe_context()).expect("valid probe plan");
     let report = probe_terminal_report(&plan, &BreakawayProbeOutcome::AuthorityFailure, 9, 4);
 
     assert_eq!(report.plan_digest, plan.plan_digest);
