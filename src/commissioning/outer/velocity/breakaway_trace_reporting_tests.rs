@@ -38,6 +38,14 @@ impl Expected {
         self.u32(value as u32).u32((value >> 32) as u32)
     }
 
+    fn i64(self, value: i64) -> Self {
+        self.u64(value as u64)
+    }
+
+    fn u128(self, value: u128) -> Self {
+        self.u64(value as u64).u64((value >> 64) as u64)
+    }
+
     fn bytes(&self) -> &[u8] {
         self.0.as_slice()
     }
@@ -124,6 +132,7 @@ fn encode_discovery_planned_has_stable_frame_layout() {
         evidence_sequence: 0x5060,
         plan_digest: 0x1122_3344_5566_7788,
         prior_plan_digest: 0x99aa_bbcc_ddee_ff00,
+        schema_revision: 0x0708,
         family_size: 0x0910,
         rung_count: 8,
         observations_per_direction: 4,
@@ -141,6 +150,7 @@ fn encode_discovery_planned_has_stable_frame_layout() {
         .u16(report.evidence_sequence)
         .u64(report.plan_digest)
         .u64(report.prior_plan_digest)
+        .u16(report.schema_revision)
         .u16(report.family_size)
         .u8(report.rung_count)
         .u16(report.observations_per_direction)
@@ -172,22 +182,32 @@ fn encode_ceiling_source_has_stable_frame_layout() {
 }
 
 #[test]
-fn encode_ladder_rung_has_stable_frame_layout() {
-    let report = BreakawayLadderRung {
+fn encode_raw_observation_has_stable_frame_layout() {
+    let report = BreakawayRawObservation {
         run_sequence: 0x1020_3040,
         evidence_sequence: 0x5060,
         plan_digest: 0x1122_3344_5566_7788,
+        phase: 1,
         rung_index: 3,
-        p_raw: 0x0910,
+        slot_index: 2,
+        direction: 1,
+        mean_rate_q: -0x0102_0304_0506_0708,
+        variance_of_mean_q2: 0x1112_1314_1516_1718_191a_1b1c_1d1e_1f20,
+        target_rate_q: 0x2122_2324_2526_2728,
     };
-    let record = encode_ladder_rung(report);
+    let record = encode_raw_observation(report);
     let expected = Expected::new()
         .u8(5)
         .u32(report.run_sequence)
         .u16(report.evidence_sequence)
         .u64(report.plan_digest)
+        .u8(report.phase)
         .u8(report.rung_index)
-        .u16(report.p_raw);
+        .u8(report.slot_index)
+        .u8(report.direction)
+        .i64(report.mean_rate_q)
+        .u128(report.variance_of_mean_q2)
+        .i64(report.target_rate_q);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -436,6 +456,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             evidence_sequence: 0,
             plan_digest: 0,
             prior_plan_digest: 0,
+            schema_revision: 0,
             family_size: 0,
             rung_count: 0,
             observations_per_direction: 0,
@@ -454,12 +475,17 @@ fn every_encoder_uses_a_distinct_local_tag() {
             binding_source: 0,
         })
         .as_bytes()[0],
-        encode_ladder_rung(BreakawayLadderRung {
+        encode_raw_observation(BreakawayRawObservation {
             run_sequence: 0,
             evidence_sequence: 0,
             plan_digest: 0,
+            phase: 0,
             rung_index: 0,
-            p_raw: 0,
+            slot_index: 0,
+            direction: 0,
+            mean_rate_q: 0,
+            variance_of_mean_q2: 0,
+            target_rate_q: 0,
         })
         .as_bytes()[0],
         encode_discovery_terminal(AdditiveDiscoveryTerminal {

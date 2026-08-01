@@ -29,9 +29,11 @@ use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multip
 use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
-    BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin, BreakawayLadderRung,
-    BreakawayProbePlanned, BreakawayProbeTerminal, BreakawayRungZeroDiagnostic,
+    BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin, BreakawayProbePlanned,
+    BreakawayProbeTerminal, BreakawayRawObservation, BreakawayRungZeroDiagnostic,
 };
+
+use super::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION;
 
 use super::band_confirmation::{
     BandConfirmationFailureCause, BandConfirmationPlan, CONFIRMATION_BAND_LOWER_PERCENT,
@@ -362,6 +364,7 @@ pub(crate) fn discovery_plan_report(
         evidence_sequence,
         plan_digest: plan.plan_digest,
         prior_plan_digest: plan.probe_plan_digest,
+        schema_revision: BREAKAWAY_STAGE_B_SCHEMA_REVISION,
         family_size: plan.confidence_family_size,
         rung_count: plan.rung_count,
         observations_per_direction: plan.observations_per_direction,
@@ -374,27 +377,38 @@ pub(crate) fn discovery_plan_report(
     }
 }
 
-/// Report one rung of the complete resolved additive ladder.
+/// Assemble one collected observation's raw settled-rate evidence record.
 ///
-/// Returns `None` for an out-of-range or unused index, so a caller can drive
-/// this across `0..plan.rung_count` without a separate bounds check.
-pub(crate) fn ladder_rung_report(
-    plan: &AdditiveDiscoveryPlan,
+/// This is the independent-audit primitive streamed on the collection tick (see
+/// [`BreakawayRawObservation`]). It carries the family-free `mean_rate_q`,
+/// `variance_of_mean_q2`, and `target_rate_q` exactly as stored, plus the
+/// direction and grouping coordinates, so an offline decoder can recompute the
+/// nomination `r/SE/L/U/M_i` for a discovery rung and each confirmation
+/// interval's [70, 80] containment itself -- rather than trusting the firmware's
+/// reduced bounds. The multiplier, `c_sigma`, and rounding are fixed constants
+/// the decoder already knows; the atom fields here are the only per-observation
+/// inputs it needs.
+pub(crate) fn raw_observation_report(
+    plan_digest: u64,
+    phase: BreakawayPhase,
     rung_index: u8,
+    slot_index: u8,
+    atom: DiscoveryObservationAtom,
     run_sequence: u32,
     evidence_sequence: u16,
-) -> Option<BreakawayLadderRung> {
-    if rung_index >= plan.rung_count {
-        return None;
-    }
-    let gain = plan.gains.get(usize::from(rung_index))?;
-    Some(BreakawayLadderRung {
+) -> BreakawayRawObservation {
+    BreakawayRawObservation {
         run_sequence,
         evidence_sequence,
-        plan_digest: plan.plan_digest,
+        plan_digest,
+        phase: phase as u8,
         rung_index,
-        p_raw: gain.raw(),
-    })
+        slot_index,
+        direction: direction_report_code(atom.direction),
+        mean_rate_q: atom.mean_rate_q,
+        variance_of_mean_q2: atom.variance_of_mean_q2,
+        target_rate_q: atom.target_rate_q,
+    }
 }
 
 /// Report one in-band discovery rung's nomination bounds and pointwise margin

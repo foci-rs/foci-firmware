@@ -514,6 +514,7 @@ fn run_discovery(
         ));
         match result {
             AdditiveDiscoveryStep::ReadyNow => {}
+            AdditiveDiscoveryStep::Observation(_) => {}
             AdditiveDiscoveryStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 if is_capture_phase {
@@ -618,6 +619,93 @@ fn an_in_band_rung_produces_target_band_selected() {
     };
     assert_eq!(collected.count(), 1);
     assert_eq!(collected.as_slice()[0].p.raw(), 181);
+}
+
+// --- Raw evidence streams one observation per tick, at collection time --------
+
+#[test]
+fn discovery_streams_each_raw_observation_on_its_collection_tick() {
+    // Drive a full discovery walk and capture every `Observation` the driver
+    // surfaces. Each is emitted on the tick its stroke completes -- before the
+    // `Advance` fold reduces the atom to nomination bounds -- so an offline
+    // auditor sees the raw inputs the firmware itself only retains as bounds.
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    backend.current_limit_value = current_limit(2_448);
+
+    let mut encoder_count: i32 = 0;
+    let mut stroke_numerator = 0_i32;
+    let mut stroke_sign = 1_i32;
+    let mut observations: std::vec::Vec<CollectedObservation> = std::vec::Vec::new();
+    let mut previous_was_observation = false;
+
+    for _ in 0..1_000_000 {
+        if matches!(state, AdditiveDiscoveryState::CommandTarget) {
+            // Rung 0 in band (75%), everything above confidently over the band.
+            stroke_numerator = if session.rung_index == 0 { 5 } else { 8 };
+            stroke_sign = direction_sign(session.direction);
+        }
+        let is_capture_phase = matches!(state, AdditiveDiscoveryState::Capture { .. });
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::ReadyNow => previous_was_observation = false,
+            AdditiveDiscoveryStep::At(deadline) => {
+                previous_was_observation = false;
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase {
+                    encoder_count += stroke_sign * stroke_numerator;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            AdditiveDiscoveryStep::Observation(collected) => {
+                // One observation per tick: the driver never bursts two raw
+                // records back to back -- a motion/settle tick always separates
+                // them, so no single tick can overrun the board trace queue.
+                assert!(
+                    !previous_was_observation,
+                    "raw observations must stream one per tick, not in a burst"
+                );
+                previous_was_observation = true;
+                observations.push(collected);
+            }
+            AdditiveDiscoveryStep::Done(_) => break,
+        }
+    }
+
+    // Every stroke is a forward and a reverse pass over the observations-per-
+    // direction schedule, so the collected count is a positive multiple of it.
+    assert!(!observations.is_empty(), "discovery must collect strokes");
+    assert_eq!(
+        observations.len() % (2 * usize::from(request.observations_per_direction)),
+        0,
+        "each rung streams both directions' full slot schedule"
+    );
+
+    // Rung zero's forward strokes carry the scripted 75% response verbatim: the
+    // raw mean is the real measurement, not a firmware-reduced bound. At target
+    // 20/3 counts/tick and numerator 5 the commanded-side rate is strictly
+    // positive for the forward pass.
+    let rung_zero_forward = observations
+        .iter()
+        .find(|observation| {
+            observation.rung_index == 0 && observation.atom.direction == VelocityDirection::Forward
+        })
+        .expect("rung zero forward stroke is collected");
+    assert!(rung_zero_forward.atom.mean_rate_q > 0);
+    assert!(rung_zero_forward.atom.target_rate_q > 0);
+    assert!(rung_zero_forward.slot_index < request.observations_per_direction as u8);
 }
 
 // --- Rung-zero diagnostic: retained regardless of its own InBand verdict ------
@@ -811,6 +899,7 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
         ));
         match result {
             AdditiveDiscoveryStep::ReadyNow => {}
+            AdditiveDiscoveryStep::Observation(_) => {}
             AdditiveDiscoveryStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 // The first stroke commands Forward. Move consistently in the
@@ -893,6 +982,7 @@ fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
         ));
         match result {
             AdditiveDiscoveryStep::ReadyNow => {}
+            AdditiveDiscoveryStep::Observation(_) => {}
             AdditiveDiscoveryStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 // Hold still during the moving capture (Inert is fine -- this test
@@ -1031,6 +1121,7 @@ fn run_confirmation(
         ));
         match result {
             BandConfirmationStep::ReadyNow => {}
+            BandConfirmationStep::Observation(_) => {}
             BandConfirmationStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 if is_capture_phase {
@@ -1320,6 +1411,7 @@ fn wrong_direction_short_circuits_confirmation_without_recovering() {
         ));
         match result {
             BandConfirmationStep::ReadyNow => {}
+            BandConfirmationStep::Observation(_) => {}
             BandConfirmationStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 // The first stroke commands Forward. Move consistently in the
@@ -1412,6 +1504,7 @@ fn an_unconfirmed_settle_reports_confirmation_evidence_excluded() {
         ));
         match result {
             BandConfirmationStep::ReadyNow => {}
+            BandConfirmationStep::Observation(_) => {}
             BandConfirmationStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
                 // Hold still during the moving capture (Inert is fine -- this
@@ -1771,7 +1864,6 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
     let BreakawayCampaignEvent::DiscoveryPlanned {
         planned,
         ceiling_source,
-        plan,
     } = &events[2]
     else {
         panic!("expected the discovery plan third, got {:?}", events[2]);
@@ -1782,7 +1874,15 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
         ceiling_source.binding_source,
         crate::commissioning::outer::velocity::sweep_plan::CEILING_BINDING_CURRENT_LIMIT
     );
-    assert_eq!(plan.plan_digest, planned.plan_digest);
+    // The discovery-plan summary now carries the whole ladder geometry, so the
+    // decoder regenerates the ladder from it and cross-checks its recomputed
+    // digest against `plan_digest`; the per-rung ladder records this test used
+    // to see fanned out are gone.
+    assert_eq!(
+        planned.schema_revision,
+        crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION
+    );
+    assert!(planned.rung_count > 0);
 }
 
 // --- Live emission: a probe failure reports its terminal, then the campaign's -

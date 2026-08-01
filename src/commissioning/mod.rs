@@ -52,10 +52,10 @@ use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL,
     EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL,
     EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED, EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
-    EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
-    EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
-    EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
+    EVENT_COMMISSION_OUTER_SAFETY_TIMING, EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
+    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_SELECTED_RECOVERY_REST,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -1697,14 +1697,14 @@ impl CommissioningEngine {
         event: crate::commissioning::types::BreakawayCampaignEvent,
     ) {
         use crate::commissioning::outer::velocity::breakaway_reporting::{
-            confirmation_observation_report, discovery_rung_margin_report, ladder_rung_report,
+            confirmation_observation_report, discovery_rung_margin_report,
         };
         use crate::commissioning::outer::velocity::breakaway_trace_reporting::{
             encode_campaign_terminal, encode_ceiling_source, encode_confirmation_observation,
             encode_confirmation_planned, encode_confirmation_terminal,
             encode_directional_breakaway, encode_discovery_planned, encode_discovery_rung_margin,
-            encode_discovery_terminal, encode_ladder_rung, encode_probe_planned,
-            encode_probe_terminal, encode_rung_zero_diagnostic,
+            encode_discovery_terminal, encode_probe_planned, encode_probe_terminal,
+            encode_raw_observation, encode_rung_zero_diagnostic,
         };
         use crate::commissioning::types::BreakawayCampaignEvent;
 
@@ -1715,6 +1715,7 @@ impl CommissioningEngine {
             }
             BreakawayCampaignEvent::ProbeTerminal(report) => report.evidence_sequence,
             BreakawayCampaignEvent::DiscoveryPlanned { planned, .. } => planned.evidence_sequence,
+            BreakawayCampaignEvent::RawObservation(report) => report.evidence_sequence,
             BreakawayCampaignEvent::DiscoveryTerminal { terminal, .. } => {
                 terminal.evidence_sequence
             }
@@ -1733,6 +1734,7 @@ impl CommissioningEngine {
             BreakawayCampaignEvent::DiscoveryPlanned { .. } => {
                 EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN
             }
+            BreakawayCampaignEvent::RawObservation(_) => EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
             BreakawayCampaignEvent::DiscoveryTerminal { .. } => {
                 EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL
             }
@@ -1762,19 +1764,12 @@ impl CommissioningEngine {
             BreakawayCampaignEvent::DiscoveryPlanned {
                 planned,
                 ceiling_source,
-                plan,
             } => {
-                let run_sequence = planned.run_sequence;
-                let evidence_sequence = planned.evidence_sequence;
                 backend.record_velocity_sweep_trace_record(encode_discovery_planned(planned));
                 backend.record_velocity_sweep_trace_record(encode_ceiling_source(ceiling_source));
-                for rung_index in 0..plan.rung_count {
-                    if let Some(report) =
-                        ladder_rung_report(&plan, rung_index, run_sequence, evidence_sequence)
-                    {
-                        backend.record_velocity_sweep_trace_record(encode_ladder_rung(report));
-                    }
-                }
+            }
+            BreakawayCampaignEvent::RawObservation(report) => {
+                backend.record_velocity_sweep_trace_record(encode_raw_observation(report));
             }
             BreakawayCampaignEvent::DiscoveryTerminal {
                 terminal,

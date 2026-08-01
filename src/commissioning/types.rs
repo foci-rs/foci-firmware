@@ -1108,6 +1108,12 @@ pub struct AdditiveDiscoveryPlanned {
     pub plan_digest: u64,
     /// Exact digest of the probe plan whose search located this ladder's breakaway.
     pub prior_plan_digest: u64,
+    /// Breakaway-campaign schema/rule revision under which this ladder was
+    /// resolved (`combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION`). Carried in
+    /// the plan summary so an offline decoder can regenerate the exact ladder
+    /// under the same rules the firmware applied and cross-check its recomputed
+    /// digest against `plan_digest`.
+    pub schema_revision: u16,
     /// Discovery confidence family: `rung_count * observations_per_direction`.
     pub family_size: u16,
     /// Number of valid entries in the resolved additive ladder.
@@ -1136,20 +1142,45 @@ pub struct AdditiveDiscoveryPlanned {
     pub maximum_workflow_ms: u32,
 }
 
-/// One rung of the complete resolved additive ladder.
+/// One collected observation's raw settled-rate evidence, streamed on the tick
+/// its stroke completes -- before the atom is folded into a discovery rung's
+/// nomination bounds or judged for confirmation containment.
+///
+/// This is the independent-audit primitive: the firmware still reduces these
+/// atoms to the `_percent_milli` bounds it reports in
+/// [`BreakawayDiscoveryRungMargin`] and [`BandConfirmationObservation`], but
+/// those reduced bounds can only be trusted, not verified. Streaming the raw
+/// `mean_rate_q`/`variance_of_mean_q2`/`target_rate_q`/`direction` inputs lets
+/// an offline decoder recompute `r`, `SE`, the nomination interval, and the
+/// [70, 80] containment itself and flag any disagreement with the firmware's
+/// reported values. The raw atoms are transient (built, enqueued, dropped);
+/// nothing here is retained, so this adds no RAM.
 #[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct BreakawayLadderRung {
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+pub struct BreakawayRawObservation {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
-    /// Exact digest of the owning discovery plan.
+    /// Exact digest of the owning discovery or confirmation plan.
     pub plan_digest: u64,
-    /// Zero-based rung index within the resolved ladder.
+    /// Owning phase: `BreakawayPhase::Discovery as u8` (1) or
+    /// `BreakawayPhase::Confirmation as u8` (2).
+    pub phase: u8,
+    /// Zero-based ladder rung this observation belongs to (discovery only;
+    /// `0` for confirmation, whose strokes share the single nominated gain).
     pub rung_index: u8,
-    /// Proportional gain at this rung.
-    pub p_raw: u16,
+    /// Slot index within the observation's grouping: the within-direction slot
+    /// for discovery, or the fixed `0..=7` schedule slot for confirmation.
+    pub slot_index: u8,
+    /// Direction wire code (see `sweep_evidence::direction_report_code`).
+    pub direction: u8,
+    /// Raw signed settled-rate mean in fixed-point rate units.
+    pub mean_rate_q: i64,
+    /// Family-free variance of the mean, in squared fixed-point rate units.
+    pub variance_of_mean_q2: u128,
+    /// Positive commanded-magnitude target rate shared by both directions.
+    pub target_rate_q: i64,
 }
 
 /// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
@@ -1379,16 +1410,28 @@ pub enum BreakawayCampaignEvent {
     },
     /// A probe-campaign terminal that did not resolve a breakaway.
     ProbeTerminal(BreakawayProbeTerminal),
-    /// The immutable additive discovery plan, its resolved ladder, and the
-    /// ceiling's binding source, emitted before discovery's first stroke.
+    /// The immutable additive discovery plan and the ceiling's binding source,
+    /// emitted before discovery's first stroke. The plan summary
+    /// ([`AdditiveDiscoveryPlanned`]) carries the complete ladder geometry
+    /// (schema revision, floor, breakaway, ceiling, additive step, rung count,
+    /// family, and digest), so a decoder regenerates the exact ladder from it
+    /// and cross-checks its recomputed digest against `plan_digest` -- the
+    /// per-rung ladder records this used to fan out bought nothing the digest
+    /// does not already pin, and their 34-frame burst could overflow the board
+    /// trace queue.
     DiscoveryPlanned {
         /// The frozen plan identity and geometry.
         planned: AdditiveDiscoveryPlanned,
         /// Which candidate bound the plan's authority ceiling.
         ceiling_source: BreakawayCeilingSource,
-        /// The resolved ladder, fanned out to one record per rung at dispatch.
-        plan: crate::commissioning::outer::velocity::breakaway_plan::AdditiveDiscoveryPlan,
     },
+    /// One collected observation's raw settled-rate evidence, streamed on the
+    /// tick its stroke completes for independent offline recomputation of the
+    /// nomination margins and confirmation containment. Emitted for both the
+    /// discovery and confirmation phases (distinguished by the record's
+    /// `phase` field), one per tick at collection -- never bundled into a
+    /// terminal-time burst.
+    RawObservation(BreakawayRawObservation),
     /// A discovery-campaign terminal: every in-band rung's margin, the
     /// rung-zero motion diagnostic (when available), and the terminal itself.
     DiscoveryTerminal {

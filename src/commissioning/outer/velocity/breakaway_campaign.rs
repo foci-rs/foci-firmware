@@ -1291,8 +1291,30 @@ pub(crate) enum AdditiveDiscoveryStep {
     ReadyNow,
     /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
+    /// A stroke just completed; its raw settled-rate evidence is ready to stream
+    /// before the atom is folded into the rung's nomination bounds. Call again
+    /// immediately; the fold happens on the following tick.
+    Observation(CollectedObservation),
     /// The discovery campaign concluded.
     Done(AdditiveDiscoveryOutcome),
+}
+
+/// One collected observation's raw evidence, surfaced from a driver on the tick
+/// its stroke completes so [`step_breakaway_campaign`] can stream a
+/// [`crate::commissioning::types::BreakawayRawObservation`] before the atom is
+/// folded (discovery) or judged (confirmation). Carries only the driver-local
+/// coordinates and the raw atom; the owning plan digest and the run/evidence
+/// sequences are attached by the campaign, exactly as the `*_advance` helpers
+/// attach them to terminal records.
+#[derive(Debug, Clone, Copy, defmt::Format)]
+pub(crate) struct CollectedObservation {
+    /// The raw settled-rate atom (mean, family-free variance, target, direction).
+    pub(crate) atom: DiscoveryObservationAtom,
+    /// Ladder rung index (discovery); zero for confirmation.
+    pub(crate) rung_index: u8,
+    /// Slot within the observation's grouping (within-direction for discovery,
+    /// fixed `0..=7` schedule slot for confirmation).
+    pub(crate) slot_index: u8,
 }
 
 /// Terminal result of a complete additive discovery campaign.
@@ -1935,8 +1957,21 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 RungOriginRecoveryStep::RestSelection { .. }
                 | RungOriginRecoveryStep::RestAnalysis(_) => AdditiveDiscoveryStep::ReadyNow,
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
+                    // The stroke is complete and classified: stream its raw
+                    // settled-rate atom now, on the collection tick, before the
+                    // `Advance` state folds it into this rung's nomination
+                    // bounds and drops the atom. `session.rung_index`/`slot`
+                    // still name this observation's coordinates -- `Advance`
+                    // advances them only after it records.
                     *state = AdditiveDiscoveryState::Advance;
-                    AdditiveDiscoveryStep::ReadyNow
+                    match session.pending_record.as_ref() {
+                        Some(record) => AdditiveDiscoveryStep::Observation(CollectedObservation {
+                            atom: record.atom,
+                            rung_index: session.rung_index,
+                            slot_index: session.slot,
+                        }),
+                        None => AdditiveDiscoveryStep::ReadyNow,
+                    }
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
                     AdditiveDiscoveryStep::Done(AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded)
@@ -2336,6 +2371,10 @@ pub(crate) enum BandConfirmationStep {
     ReadyNow,
     /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
+    /// A stroke just completed; its raw settled-rate evidence is ready to stream
+    /// before the atom is folded and judged. Call again immediately; the fold
+    /// happens on the following tick.
+    Observation(CollectedObservation),
     /// The confirmation campaign concluded.
     Done(BandConfirmationOutcome),
 }
@@ -2861,8 +2900,26 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 RungOriginRecoveryStep::RestSelection { .. }
                 | RungOriginRecoveryStep::RestAnalysis(_) => BandConfirmationStep::ReadyNow,
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
+                    // The held-out stroke is complete and classified: stream its
+                    // raw settled-rate atom now, on the collection tick, before
+                    // the `Advance` state folds it and the block is judged for
+                    // [70, 80] containment. The fixed schedule slot is the
+                    // within-direction slot for forward strokes and `+ 4` for
+                    // reverse, matching `confirmation_observation_report`'s own
+                    // slot numbering.
+                    let slot_index = match session.current_direction() {
+                        VelocityDirection::Forward => session.slot_within_direction(),
+                        VelocityDirection::Reverse => session.slot_within_direction() + 4,
+                    };
                     *state = BandConfirmationState::Advance;
-                    BandConfirmationStep::ReadyNow
+                    match session.pending_record.as_ref() {
+                        Some(record) => BandConfirmationStep::Observation(CollectedObservation {
+                            atom: record.atom,
+                            rung_index: 0,
+                            slot_index,
+                        }),
+                        None => BandConfirmationStep::ReadyNow,
+                    }
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => BandConfirmationStep::Done(
                     BandConfirmationOutcome::ConfirmationEvidenceExcluded,
@@ -3340,6 +3397,33 @@ fn next_sequence(evidence_sequence: &mut u16) -> u16 {
     let sequence = *evidence_sequence;
     *evidence_sequence = evidence_sequence.wrapping_add(1);
     sequence
+}
+
+/// Build the streamed raw-observation event for a just-collected stroke.
+///
+/// Attaches the owning plan digest, run sequence, and a fresh evidence sequence
+/// to the driver-local [`CollectedObservation`], exactly as the `*_advance`
+/// helpers attach them to terminal records. The event is returned immediately
+/// as a bare [`BreakawayCampaignStep::Event`]; it is never staged in
+/// `pending_event`, so streaming it retains no state.
+fn raw_observation_step(
+    plan_digest: u64,
+    phase: super::breakaway_reporting::BreakawayPhase,
+    collected: CollectedObservation,
+    run_sequence: u32,
+    evidence_sequence: &mut u16,
+) -> BreakawayCampaignStep {
+    let sequence = next_sequence(evidence_sequence);
+    let report = super::breakaway_reporting::raw_observation_report(
+        plan_digest,
+        phase,
+        collected.rung_index,
+        collected.slot_index,
+        collected.atom,
+        run_sequence,
+        sequence,
+    );
+    BreakawayCampaignStep::Event(BreakawayCampaignEvent::RawObservation(report))
 }
 
 /// Build the campaign's own closure record.
@@ -3974,13 +4058,11 @@ fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<Breakawa
                 plan_digest: session.plan.plan_digest,
                 binding_source: inputs.ceiling_binding_source,
             };
-            let plan = session.plan;
             *state = AdditiveDiscoveryState::WriteGain;
             Some(BreakawayCampaignStep::Event(
                 BreakawayCampaignEvent::DiscoveryPlanned {
                     planned,
                     ceiling_source,
-                    plan,
                 },
             ))
         }
@@ -4019,16 +4101,25 @@ fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<Breakawa
 /// issuing that phase's first stroke, so the phase plan is always frozen before
 /// its first stroke.
 ///
-/// Evidence emission is layered on top of this same sequencing rather than
-/// woven into the three drivers' own per-tick state machines: every wire
-/// record this campaign reports is available in full at a phase-entry or
-/// phase-terminal boundary (the frozen plan just before its first stroke, or
-/// the fully-collected evidence just after the driver's last stroke), so
-/// [`emit_phase_planned_event`] intercepts the former and the
-/// `*_advance` helpers (called from the `Done` arms below) build the latter,
-/// deferring anything beyond one record per tick through
+/// Most evidence emission is layered on top of this same sequencing rather than
+/// woven into the three drivers' own per-tick state machines: the frozen plan
+/// is available in full at phase entry (just before the first stroke) and the
+/// terminal evidence just after the driver's last stroke, so
+/// [`emit_phase_planned_event`] intercepts the former and the `*_advance`
+/// helpers (called from the `Done` arms below) build the latter, deferring
+/// anything beyond one record per tick through
 /// `campaign.pending_event`/`campaign.pending_done` (drained at the top of
 /// this function, before the active phase driver runs again).
+///
+/// The one exception is the raw per-observation evidence: the discovery and
+/// confirmation drivers surface an [`AdditiveDiscoveryStep::Observation`]/
+/// [`BandConfirmationStep::Observation`] on the tick each stroke completes, and
+/// [`raw_observation_step`] turns it into a streamed
+/// [`BreakawayCampaignEvent::RawObservation`] right then -- before the atom is
+/// folded and reduced to bounds. This is deliberately at collection time, one
+/// observation per tick, never bundled into a terminal-time burst, so an
+/// offline auditor sees the raw inputs even though the firmware retains only
+/// the reduced bounds.
 pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
     campaign: &mut BreakawayCampaign,
     workspace: &mut BreakawayProbeWorkspace,
@@ -4079,6 +4170,15 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     AdditiveDiscoveryStep::At(deadline_us) => {
                         CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
                     }
+                    AdditiveDiscoveryStep::Observation(collected) => {
+                        CampaignAdvance::Step(raw_observation_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Discovery,
+                            collected,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
                     AdditiveDiscoveryStep::Done(outcome) => {
                         discovery_done_advance(outcome, session, inputs, evidence_sequence)
                     }
@@ -4091,6 +4191,15 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     }
                     BandConfirmationStep::At(deadline_us) => {
                         CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                    }
+                    BandConfirmationStep::Observation(collected) => {
+                        CampaignAdvance::Step(raw_observation_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Confirmation,
+                            collected,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
                     }
                     BandConfirmationStep::Done(outcome) => confirmation_done_advance(
                         outcome,

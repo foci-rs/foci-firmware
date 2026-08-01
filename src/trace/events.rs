@@ -132,6 +132,10 @@ pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN: u16 = 157;
 pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL: u16 = 158;
 /// Breakaway-seeded campaign: canonical closure record.
 pub const EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL: u16 = 159;
+/// Breakaway-seeded campaign: one collected observation's raw settled-rate
+/// evidence, streamed on the tick its stroke completes (discovery and
+/// confirmation share this id; the record's `phase` field distinguishes them).
+pub const EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION: u16 = 160;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
@@ -265,6 +269,7 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN, 157);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL, 158);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL, 159);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION, 160);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
     }
 

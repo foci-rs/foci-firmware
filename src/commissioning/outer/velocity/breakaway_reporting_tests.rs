@@ -276,6 +276,10 @@ fn discovery_plan_report_carries_floor_breakaway_ceiling_and_step() {
 
     assert_eq!(report.plan_digest, plan.plan_digest);
     assert_eq!(report.prior_plan_digest, request.probe_plan_digest);
+    assert_eq!(
+        report.schema_revision,
+        super::super::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION
+    );
     assert_eq!(report.family_size, plan.confidence_family_size);
     assert_eq!(report.rung_count, plan.rung_count);
     assert_eq!(report.floor_p_raw, 64);
@@ -304,17 +308,40 @@ fn discovery_plan_report_marks_clamped_floor_origin() {
 }
 
 #[test]
-fn ladder_rung_report_covers_every_valid_index_and_rejects_out_of_range() {
-    let (_, plan) = discovery_fixture();
+fn raw_observation_report_carries_atom_inputs_verbatim() {
+    let source = atom(
+        VelocityDirection::Reverse,
+        -RUNG18_MEAN,
+        RUNG18_VARIANCE,
+        TARGET,
+    );
 
-    for index in 0..plan.rung_count {
-        let report = ladder_rung_report(&plan, index, 5, 0).expect("in-range rung");
-        assert_eq!(report.rung_index, index);
-        assert_eq!(report.p_raw, plan.gains[usize::from(index)].raw());
-        assert_eq!(report.plan_digest, plan.plan_digest);
-    }
+    let report = raw_observation_report(
+        0x1122_3344_5566_7788,
+        BreakawayPhase::Confirmation,
+        0,
+        6,
+        source,
+        7,
+        9,
+    );
 
-    assert!(ladder_rung_report(&plan, plan.rung_count, 5, 0).is_none());
+    // The raw atom's family-free inputs pass through byte-for-byte -- this is
+    // what lets an offline decoder recompute r/SE/L/U/M_i and the [70, 80]
+    // containment itself rather than trusting the firmware's reduced bounds.
+    assert_eq!(report.run_sequence, 7);
+    assert_eq!(report.evidence_sequence, 9);
+    assert_eq!(report.plan_digest, 0x1122_3344_5566_7788);
+    assert_eq!(report.phase, BreakawayPhase::Confirmation as u8);
+    assert_eq!(report.rung_index, 0);
+    assert_eq!(report.slot_index, 6);
+    assert_eq!(
+        report.direction,
+        direction_report_code(VelocityDirection::Reverse)
+    );
+    assert_eq!(report.mean_rate_q, -RUNG18_MEAN);
+    assert_eq!(report.variance_of_mean_q2, RUNG18_VARIANCE);
+    assert_eq!(report.target_rate_q, TARGET);
 }
 
 // --- Discovery margins -----------------------------------------------------

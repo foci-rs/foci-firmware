@@ -622,6 +622,7 @@ fn emit_additive_discovery_plan_emits_identity_then_geometry_fragments() {
             evidence_sequence: 2,
             plan_digest: 0x0000_0002_0000_0001,
             prior_plan_digest: 0x0000_0004_0000_0003,
+            schema_revision: 15,
             family_size: 16,
             rung_count: 9,
             observations_per_direction: 4,

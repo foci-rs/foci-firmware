@@ -651,10 +651,17 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit one rung of the complete resolved additive ladder.
-    fn foci_breakaway_ladder_rung(
+    /// Emit one collected observation's raw-evidence identity fragment.
+    fn foci_breakaway_raw_observation_identity(
         &mut self,
-        _report: crate::ankyra::replies::FociBreakawayLadderRung,
+        _report: crate::ankyra::replies::FociBreakawayRawObservationIdentity,
+    ) {
+    }
+
+    /// Emit one collected observation's raw-evidence measurement fragment.
+    fn foci_breakaway_raw_observation_measurement(
+        &mut self,
+        _report: crate::ankyra::replies::FociBreakawayRawObservationMeasurement,
     ) {
     }
 
@@ -831,6 +838,7 @@ pub fn emit_additive_discovery_plan<S: CommissionReplySink>(
             oid,
             run_sequence: report.run_sequence,
             evidence_sequence: report.evidence_sequence,
+            schema_revision: report.schema_revision,
             rung_count: report.rung_count,
             observations_per_direction: report.observations_per_direction,
             floor_p_raw: report.floor_p_raw,
@@ -843,22 +851,43 @@ pub fn emit_additive_discovery_plan<S: CommissionReplySink>(
     );
 }
 
-/// Emit one rung of the complete resolved additive ladder.
+/// Emit one collected observation's raw settled-rate evidence, split into its
+/// identity and measurement fragments (correlated by `evidence_sequence`) so no
+/// single reply carries all eight wide-integer words.
 #[cfg(feature = "trace-velocity-sweep")]
-pub fn emit_breakaway_ladder_rung<S: CommissionReplySink>(
+pub fn emit_breakaway_raw_observation<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
-    report: crate::commissioning::types::BreakawayLadderRung,
+    report: crate::commissioning::types::BreakawayRawObservation,
 ) {
-    sink.foci_breakaway_ladder_rung(crate::ankyra::replies::FociBreakawayLadderRung {
-        oid,
-        run_sequence: report.run_sequence,
-        evidence_sequence: report.evidence_sequence,
-        plan_digest_low: report.plan_digest as u32,
-        plan_digest_high: (report.plan_digest >> 32) as u32,
-        rung_index: report.rung_index,
-        p_raw: report.p_raw,
-    });
+    sink.foci_breakaway_raw_observation_identity(
+        crate::ankyra::replies::FociBreakawayRawObservationIdentity {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            plan_digest_low: report.plan_digest as u32,
+            plan_digest_high: (report.plan_digest >> 32) as u32,
+            phase: report.phase,
+            rung_index: report.rung_index,
+            slot_index: report.slot_index,
+            direction: report.direction,
+        },
+    );
+    sink.foci_breakaway_raw_observation_measurement(
+        crate::ankyra::replies::FociBreakawayRawObservationMeasurement {
+            oid,
+            run_sequence: report.run_sequence,
+            evidence_sequence: report.evidence_sequence,
+            mean_rate_q_low: report.mean_rate_q as u64 as u32,
+            mean_rate_q_high: ((report.mean_rate_q as u64) >> 32) as u32,
+            variance_word0: report.variance_of_mean_q2 as u32,
+            variance_word1: (report.variance_of_mean_q2 >> 32) as u32,
+            variance_word2: (report.variance_of_mean_q2 >> 64) as u32,
+            variance_word3: (report.variance_of_mean_q2 >> 96) as u32,
+            target_rate_q_low: report.target_rate_q as u64 as u32,
+            target_rate_q_high: ((report.target_rate_q as u64) >> 32) as u32,
+        },
+    );
 }
 
 /// Emit one in-band discovery rung's nomination bounds and margin.
@@ -1051,7 +1080,7 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
     event: crate::commissioning::types::BreakawayCampaignEvent,
 ) {
     use crate::commissioning::outer::velocity::breakaway_reporting::{
-        confirmation_observation_report, discovery_rung_margin_report, ladder_rung_report,
+        confirmation_observation_report, discovery_rung_margin_report,
     };
     use crate::commissioning::types::BreakawayCampaignEvent;
 
@@ -1069,19 +1098,12 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::DiscoveryPlanned {
             planned,
             ceiling_source,
-            plan,
         } => {
-            let run_sequence = planned.run_sequence;
-            let evidence_sequence = planned.evidence_sequence;
             emit_additive_discovery_plan(sink, oid, planned);
             emit_breakaway_ceiling_source(sink, oid, ceiling_source);
-            for rung_index in 0..plan.rung_count {
-                if let Some(report) =
-                    ladder_rung_report(&plan, rung_index, run_sequence, evidence_sequence)
-                {
-                    emit_breakaway_ladder_rung(sink, oid, report);
-                }
-            }
+        }
+        BreakawayCampaignEvent::RawObservation(report) => {
+            emit_breakaway_raw_observation(sink, oid, report);
         }
         BreakawayCampaignEvent::DiscoveryTerminal {
             terminal,

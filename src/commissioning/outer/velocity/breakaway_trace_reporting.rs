@@ -27,7 +27,7 @@ use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
     BreakawayCeilingSource, BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin,
-    BreakawayLadderRung, BreakawayProbePlanned, BreakawayProbeTerminal,
+    BreakawayProbePlanned, BreakawayProbeTerminal, BreakawayRawObservation,
     BreakawayRungZeroDiagnostic,
 };
 
@@ -36,6 +36,15 @@ use crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord;
 fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
     record.push_u32(value as u32);
     record.push_u32((value >> 32) as u32);
+}
+
+fn push_i64(record: &mut VelocitySweepCanonicalRecord, value: i64) {
+    push_u64(record, value as u64);
+}
+
+fn push_u128(record: &mut VelocitySweepCanonicalRecord, value: u128) {
+    push_u64(record, value as u64);
+    push_u64(record, (value >> 64) as u64);
 }
 
 /// Encode the immutable breakaway-probe plan (tag 0).
@@ -95,6 +104,7 @@ pub(crate) fn encode_discovery_planned(
     record.push_u16(report.evidence_sequence);
     push_u64(&mut record, report.plan_digest);
     push_u64(&mut record, report.prior_plan_digest);
+    record.push_u16(report.schema_revision);
     record.push_u16(report.family_size);
     record.push_u8(report.rung_count);
     record.push_u16(report.observations_per_direction);
@@ -120,15 +130,29 @@ pub(crate) fn encode_ceiling_source(
     record
 }
 
-/// Encode one rung of the complete resolved additive ladder (tag 5).
-pub(crate) fn encode_ladder_rung(report: BreakawayLadderRung) -> VelocitySweepCanonicalRecord {
+/// Encode one collected observation's raw settled-rate evidence (tag 5).
+///
+/// Tag 5 previously carried a per-rung resolved-ladder record; that fan-out was
+/// dropped (its 34-frame burst could overflow the board trace queue, and the
+/// discovery-plan summary already pins the whole ladder through `plan_digest`).
+/// The tag is reused here for the raw-observation stream that lets an offline
+/// decoder independently recompute the nomination margins and confirmation
+/// containment.
+pub(crate) fn encode_raw_observation(
+    report: BreakawayRawObservation,
+) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(5);
     record.push_u32(report.run_sequence);
     record.push_u16(report.evidence_sequence);
     push_u64(&mut record, report.plan_digest);
+    record.push_u8(report.phase);
     record.push_u8(report.rung_index);
-    record.push_u16(report.p_raw);
+    record.push_u8(report.slot_index);
+    record.push_u8(report.direction);
+    push_i64(&mut record, report.mean_rate_q);
+    push_u128(&mut record, report.variance_of_mean_q2);
+    push_i64(&mut record, report.target_rate_q);
     record
 }
 

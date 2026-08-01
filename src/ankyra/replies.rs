@@ -1616,8 +1616,9 @@ mod breakaway_reply_wire_tests {
         FociBreakawayConfirmationPlan, FociBreakawayConfirmationTerminalIdentity,
         FociBreakawayConfirmationTerminalMasks, FociBreakawayDirectionalBreakaway,
         FociBreakawayDiscoveryPlanGeometry, FociBreakawayDiscoveryPlanIdentity,
-        FociBreakawayDiscoveryRungMargin, FociBreakawayDiscoveryTerminal, FociBreakawayLadderRung,
-        FociBreakawayProbePlan, FociBreakawayProbeTerminal, FociBreakawayRungZeroDiagnostic,
+        FociBreakawayDiscoveryRungMargin, FociBreakawayDiscoveryTerminal, FociBreakawayProbePlan,
+        FociBreakawayProbeTerminal, FociBreakawayRawObservationIdentity,
+        FociBreakawayRawObservationMeasurement, FociBreakawayRungZeroDiagnostic,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1775,21 +1776,23 @@ mod breakaway_reply_wire_tests {
             oid: 1,
             run_sequence: 2,
             evidence_sequence: 3,
-            rung_count: 4,
-            observations_per_direction: 5,
-            floor_p_raw: 6,
-            floor_origin: 7,
-            breakaway_p_raw: 8,
-            ceiling_p_raw: 9,
-            first_additive_step_raw: 10,
-            maximum_workflow_ms: 11,
+            schema_revision: 4,
+            rung_count: 5,
+            observations_per_direction: 6,
+            floor_p_raw: 7,
+            floor_origin: 8,
+            breakaway_p_raw: 9,
+            ceiling_p_raw: 10,
+            first_additive_step_raw: 11,
+            maximum_workflow_ms: 12,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         assert_fits_with_id(
             &FociBreakawayDiscoveryPlanGeometry {
                 oid: u8::MAX,
                 run_sequence: u32::MAX,
                 evidence_sequence: u16::MAX,
+                schema_revision: u16::MAX,
                 rung_count: u8::MAX,
                 observations_per_direction: u16::MAX,
                 floor_p_raw: u16::MAX,
@@ -1804,28 +1807,66 @@ mod breakaway_reply_wire_tests {
     }
 
     #[test]
-    fn breakaway_ladder_rung_has_stable_wire_order() {
-        let reply = FociBreakawayLadderRung {
+    fn breakaway_raw_observation_identity_has_stable_wire_order() {
+        let reply = FociBreakawayRawObservationIdentity {
             oid: 1,
             run_sequence: 2,
             evidence_sequence: 3,
             plan_digest_low: 4,
             plan_digest_high: 5,
-            rung_index: 6,
-            p_raw: 7,
+            phase: 6,
+            rung_index: 7,
+            slot_index: 8,
+            direction: 9,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_fits_with_id(
-            &FociBreakawayLadderRung {
+            &FociBreakawayRawObservationIdentity {
                 oid: u8::MAX,
                 run_sequence: u32::MAX,
                 evidence_sequence: u16::MAX,
                 plan_digest_low: u32::MAX,
                 plan_digest_high: u32::MAX,
+                phase: u8::MAX,
                 rung_index: u8::MAX,
-                p_raw: u16::MAX,
+                slot_index: u8::MAX,
+                direction: u8::MAX,
             },
-            "foci_breakaway_ladder_rung",
+            "foci_breakaway_raw_observation_identity",
+        );
+    }
+
+    #[test]
+    fn breakaway_raw_observation_measurement_has_stable_wire_order() {
+        let reply = FociBreakawayRawObservationMeasurement {
+            oid: 1,
+            run_sequence: 2,
+            evidence_sequence: 3,
+            mean_rate_q_low: 4,
+            mean_rate_q_high: 5,
+            variance_word0: 6,
+            variance_word1: 7,
+            variance_word2: 8,
+            variance_word3: 9,
+            target_rate_q_low: 10,
+            target_rate_q_high: 11,
+        };
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_fits_with_id(
+            &FociBreakawayRawObservationMeasurement {
+                oid: u8::MAX,
+                run_sequence: u32::MAX,
+                evidence_sequence: u16::MAX,
+                mean_rate_q_low: u32::MAX,
+                mean_rate_q_high: u32::MAX,
+                variance_word0: u32::MAX,
+                variance_word1: u32::MAX,
+                variance_word2: u32::MAX,
+                variance_word3: u32::MAX,
+                target_rate_q_low: u32::MAX,
+                target_rate_q_high: u32::MAX,
+            },
+            "foci_breakaway_raw_observation_measurement",
         );
     }
 
@@ -3781,6 +3822,8 @@ pub struct FociBreakawayDiscoveryPlanGeometry {
     pub run_sequence: u32,
     /// Monotonic evidence sequence.
     pub evidence_sequence: u16,
+    /// Breakaway-campaign schema/rule revision the ladder was resolved under.
+    pub schema_revision: u16,
     /// Number of valid entries in the resolved additive ladder.
     pub rung_count: u8,
     /// Discovery per-rung, per-direction observation count.
@@ -3799,23 +3842,67 @@ pub struct FociBreakawayDiscoveryPlanGeometry {
     pub maximum_workflow_ms: u32,
 }
 
-/// One rung of the complete resolved additive ladder.
+/// One collected observation's raw-evidence identity fragment: which plan,
+/// phase, rung, slot, and direction the streamed atom belongs to.
+///
+/// Split from [`FociBreakawayRawObservationMeasurement`] (correlated by the
+/// shared `run_sequence`/`evidence_sequence`) because the eight 32-bit
+/// measurement words plus the digest and coordinates together exceed a single
+/// Klipper frame's payload budget -- the same identity/measurement split the
+/// discovery plan and confirmation terminal replies already use.
 #[klipper_reply]
-pub struct FociBreakawayLadderRung {
+pub struct FociBreakawayRawObservationIdentity {
     /// Endpoint object id.
     pub oid: u8,
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Monotonic evidence sequence.
     pub evidence_sequence: u16,
-    /// Exact low discovery-plan digest word.
+    /// Exact low owning-plan digest word.
     pub plan_digest_low: u32,
-    /// Exact high discovery-plan digest word.
+    /// Exact high owning-plan digest word.
     pub plan_digest_high: u32,
-    /// Zero-based rung index within the resolved ladder.
+    /// Owning phase: discovery (1) or confirmation (2).
+    pub phase: u8,
+    /// Ladder rung index (discovery); zero for confirmation.
     pub rung_index: u8,
-    /// Proportional gain at this rung.
-    pub p_raw: u16,
+    /// Within-direction slot (discovery) or fixed `0..=7` schedule slot
+    /// (confirmation).
+    pub slot_index: u8,
+    /// Direction wire code.
+    pub direction: u8,
+}
+
+/// One collected observation's raw-evidence measurement fragment: the
+/// family-free `mean_rate_q`/`variance_of_mean_q2`/`target_rate_q` inputs, split
+/// into 32-bit words the same way the plan digests are, so an offline decoder
+/// can recompute `r`, `SE`, the nomination interval, and the [70, 80]
+/// containment itself. Correlated to its identity fragment by the shared
+/// `run_sequence`/`evidence_sequence`.
+#[klipper_reply]
+pub struct FociBreakawayRawObservationMeasurement {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence.
+    pub evidence_sequence: u16,
+    /// Low word of the signed settled-rate mean, in fixed-point rate units.
+    pub mean_rate_q_low: u32,
+    /// High word of the signed settled-rate mean.
+    pub mean_rate_q_high: u32,
+    /// Family-free variance-of-mean word 0 (least significant).
+    pub variance_word0: u32,
+    /// Family-free variance-of-mean word 1.
+    pub variance_word1: u32,
+    /// Family-free variance-of-mean word 2.
+    pub variance_word2: u32,
+    /// Family-free variance-of-mean word 3 (most significant).
+    pub variance_word3: u32,
+    /// Low word of the positive commanded-magnitude target rate.
+    pub target_rate_q_low: u32,
+    /// High word of the positive commanded-magnitude target rate.
+    pub target_rate_q_high: u32,
 }
 
 /// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
