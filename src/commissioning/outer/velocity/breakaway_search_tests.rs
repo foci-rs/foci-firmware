@@ -378,6 +378,68 @@ fn contradictory_moving_repeat_yields_unstable_breakaway() {
     assert_eq!(outcome, Err(BreakawaySearchError::UnstableBreakaway));
 }
 
+// --- FIX E: all-inert bisection must confirm the authority boundary once ---------
+
+/// Drive an all-inert directional search up to (but not through) the mandatory
+/// authority-boundary repeat, and return the cursor positioned to receive that
+/// repeat's classified outcome.
+///
+/// Bisection never retests an index while narrowing the window (each fold
+/// strictly increases `lo`, so the next midpoint is always new), so the first
+/// repeated probe index in the returned sequence is unambiguously the
+/// authority-boundary repeat, not a coincidental bisection re-test.
+fn all_inert_cursor_at_the_repeat(rung_count: u8) -> (BreakawaySearchCursor, u8) {
+    let (mut cursor, mut next_index) = BreakawaySearchCursor::start(rung_count).unwrap();
+    loop {
+        let previous_index = next_index;
+        match cursor.advance(Ok(BreakawayMotionClass::Inert)).unwrap() {
+            BreakawaySearchStep::Probe(index) => next_index = index,
+            BreakawaySearchStep::Resolved(breakaway) => {
+                panic!("an all-inert grid must never resolve a moving bracket: {breakaway:?}")
+            }
+        }
+        if next_index == previous_index {
+            // The repeat targets the same index the last bisection probe just
+            // tested; that repeated index is what the caller's next `advance`
+            // call is meant to confirm or contradict.
+            break;
+        }
+    }
+    (cursor, next_index)
+}
+
+#[test]
+fn all_inert_repeat_re_probes_the_authority_endpoint() {
+    let rung_count = 20;
+    let (_cursor, pending_index) = all_inert_cursor_at_the_repeat(rung_count);
+    assert_eq!(
+        pending_index,
+        rung_count - 1,
+        "the mandatory repeat must target the top rung, the sole representable \
+         boundary endpoint when every rung tested inert"
+    );
+}
+
+#[test]
+fn all_inert_confirming_repeat_yields_no_motion_at_authority() {
+    let rung_count = 20;
+    let (mut cursor, pending_index) = all_inert_cursor_at_the_repeat(rung_count);
+    assert_eq!(pending_index, rung_count - 1);
+    let outcome = cursor.advance(Ok(BreakawayMotionClass::Inert));
+    assert_eq!(outcome, Err(BreakawaySearchError::NoMotionAtAuthority));
+}
+
+#[test]
+fn all_inert_contradictory_repeat_yields_unstable_breakaway() {
+    let rung_count = 20;
+    let (mut cursor, pending_index) = all_inert_cursor_at_the_repeat(rung_count);
+    assert_eq!(pending_index, rung_count - 1);
+    // The repeat now reads moving: the earlier inert read at the top rung was not
+    // reproducible, so the search must not silently accept it.
+    let outcome = cursor.advance(Ok(BreakawayMotionClass::Moving));
+    assert_eq!(outcome, Err(BreakawaySearchError::UnstableBreakaway));
+}
+
 #[test]
 fn a_safety_fault_short_circuits_the_search_immediately() {
     let (mut cursor, _first_index) = BreakawaySearchCursor::start(20).unwrap();

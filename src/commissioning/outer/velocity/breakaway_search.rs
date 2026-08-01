@@ -57,7 +57,8 @@ pub enum BreakawaySearchError {
     /// motion or inert verdict was reached.
     AuthorityFailure,
     /// The bisection search reached the top of the search grid without ever
-    /// confirming commanded-side motion.
+    /// confirming commanded-side motion, and the mandatory repeat of the sole
+    /// representable boundary endpoint (the top rung) confirmed it inert too.
     NoMotionAtAuthority,
     /// The mandatory bracket-repeat observation contradicted the search's own read
     /// at that grid index.
@@ -114,6 +115,9 @@ enum SearchStage {
     ConfirmInert,
     /// Confirming the bisected moving endpoint a second time.
     ConfirmMoving,
+    /// Confirming the top-rung authority boundary a second time, after bisection
+    /// found every grid rung inert and there is no moving endpoint to repeat.
+    ConfirmAllInertBoundary,
 }
 
 /// Pure directional binary-search cursor over the probe's post-dedupe half-octave
@@ -133,6 +137,15 @@ enum SearchStage {
 /// [`BreakawaySearchError::UnstableBreakaway`]. When breakaway is already the
 /// grid's smallest index, there is no representable inert endpoint below it; the
 /// cursor repeats only the moving endpoint and reports `inert_index: None`.
+///
+/// When bisection concludes every grid rung is inert (no moving index was ever
+/// confirmed), there is no moving endpoint to repeat either. The cursor still
+/// applies the mandatory-repeat discipline: it re-probes the sole representable
+/// boundary endpoint, the top rung (`rung_count - 1`), once. A confirming repeat
+/// yields [`BreakawaySearchError::NoMotionAtAuthority`]; a contradictory repeat
+/// (the top rung now reads moving) yields
+/// [`BreakawaySearchError::UnstableBreakaway`] instead of silently accepting the
+/// single unconfirmed observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawaySearchCursor {
     rung_count: u8,
@@ -194,6 +207,7 @@ impl BreakawaySearchCursor {
             SearchStage::Bisecting => self.advance_bisecting(class),
             SearchStage::ConfirmInert => self.advance_confirm_inert(class),
             SearchStage::ConfirmMoving => self.advance_confirm_moving(class),
+            SearchStage::ConfirmAllInertBoundary => self.advance_confirm_all_inert_boundary(class),
         }
     }
 
@@ -218,7 +232,13 @@ impl BreakawaySearchCursor {
         // Bisection window collapsed: `self.lo == self.hi` is the first confirmed
         // moving index, or `rung_count` when no index ever tested moving.
         if self.lo >= self.rung_count {
-            return Err(BreakawaySearchError::NoMotionAtAuthority);
+            // Every grid rung tested inert; there is no moving endpoint to repeat.
+            // Mirror the mandatory-repeat discipline anyway by re-probing the sole
+            // representable boundary, the top rung, before conceding no motion.
+            let authority_index = self.rung_count - 1;
+            self.stage = SearchStage::ConfirmAllInertBoundary;
+            self.pending_index = authority_index;
+            return Ok(BreakawaySearchStep::Probe(authority_index));
         }
         self.boundary_moving = Some(self.lo);
         self.boundary_inert = self.lo.checked_sub(1);
@@ -263,6 +283,16 @@ impl BreakawaySearchCursor {
             moving_index,
             observations: self.observations,
         }))
+    }
+
+    fn advance_confirm_all_inert_boundary(
+        &mut self,
+        class: BreakawayMotionClass,
+    ) -> Result<BreakawaySearchStep, BreakawaySearchError> {
+        match class {
+            BreakawayMotionClass::Inert => Err(BreakawaySearchError::NoMotionAtAuthority),
+            BreakawayMotionClass::Moving => Err(BreakawaySearchError::UnstableBreakaway),
+        }
     }
 }
 
