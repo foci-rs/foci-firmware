@@ -16,6 +16,8 @@ pub mod breakaway_plan;
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;
 #[cfg(test)]
 mod combined_plan_tests;

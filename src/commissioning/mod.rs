@@ -48,7 +48,11 @@ use crate::trace::events::{
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::trace::events::{
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
-    EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
+    EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED, EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
+    EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
     EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
     EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
@@ -1647,12 +1651,10 @@ impl CommissioningEngine {
             #[cfg(not(feature = "trace-velocity-sweep"))]
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::AcceptanceMatrixTerminal(_) => {}
-            // On-device trace-ring-buffer encoding for breakaway campaign
-            // evidence (mirroring `sweep_reporting`'s per-event encoders) is
-            // deferred; this tick's evidence still reaches the host over the
-            // wire via `commission_dispatch::replies::emit_breakaway_campaign_event`.
             #[cfg(feature = "trace-velocity-sweep")]
-            StepResult::BreakawayCampaignEvent(_) => {}
+            StepResult::BreakawayCampaignEvent(event) => {
+                self.emit_breakaway_campaign_trace(backend, *event);
+            }
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);
@@ -1673,6 +1675,200 @@ impl CommissioningEngine {
                 self.emit_trace_terminal(backend, status, TraceEventLevel::Error);
             }
         }
+    }
+
+    /// Emit one breakaway-campaign evidence record onto the FTRC trace
+    /// stream: the dedicated bulk USB interface `foci-trace` captures,
+    /// physically separate from the Klipper command-reply connection
+    /// `commission_dispatch::replies::emit_breakaway_campaign_event` feeds
+    /// with the same evidence. Mirrors the `VelocitySweepEvent`/
+    /// `AcceptanceMatrixEvent` arms above: one canonical-record push per
+    /// wire record, one lightweight `CommissionTraceEvent` marker per tick.
+    /// A batch variant (every in-band rung's margin, every resolved ladder
+    /// rung, every held-out stroke) fans out to one canonical-record push per
+    /// item, exactly as `emit_breakaway_campaign_event` fans out on the
+    /// Klipper reply path -- both paths loop over the same retained
+    /// `breakaway_reporting` per-item report functions, so they can never
+    /// disagree about which items exist.
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn emit_breakaway_campaign_trace<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        event: crate::commissioning::types::BreakawayCampaignEvent,
+    ) {
+        use crate::commissioning::outer::velocity::breakaway_reporting::{
+            confirmation_observation_report, discovery_rung_margin_report, ladder_rung_report,
+        };
+        use crate::commissioning::outer::velocity::breakaway_trace_reporting::{
+            encode_campaign_terminal, encode_ceiling_source, encode_confirmation_observation,
+            encode_confirmation_planned, encode_confirmation_terminal,
+            encode_directional_breakaway, encode_discovery_planned, encode_discovery_rung_margin,
+            encode_discovery_terminal, encode_ladder_rung, encode_probe_planned,
+            encode_probe_terminal, encode_rung_zero_diagnostic,
+        };
+        use crate::commissioning::types::BreakawayCampaignEvent;
+
+        let sequence = match &event {
+            BreakawayCampaignEvent::ProbePlanned(report) => report.evidence_sequence,
+            BreakawayCampaignEvent::DirectionalBreakaway { forward, .. } => {
+                forward.evidence_sequence
+            }
+            BreakawayCampaignEvent::ProbeTerminal(report) => report.evidence_sequence,
+            BreakawayCampaignEvent::DiscoveryPlanned { planned, .. } => planned.evidence_sequence,
+            BreakawayCampaignEvent::DiscoveryTerminal { terminal, .. } => {
+                terminal.evidence_sequence
+            }
+            BreakawayCampaignEvent::ConfirmationPlanned(report) => report.evidence_sequence,
+            BreakawayCampaignEvent::ConfirmationTerminal { terminal, .. } => {
+                terminal.evidence_sequence
+            }
+            BreakawayCampaignEvent::CampaignTerminal(report) => report.evidence_sequence,
+        };
+        let event_id = match &event {
+            BreakawayCampaignEvent::ProbePlanned(_) => EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
+            BreakawayCampaignEvent::DirectionalBreakaway { .. } => {
+                EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED
+            }
+            BreakawayCampaignEvent::ProbeTerminal(_) => EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL,
+            BreakawayCampaignEvent::DiscoveryPlanned { .. } => {
+                EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN
+            }
+            BreakawayCampaignEvent::DiscoveryTerminal { .. } => {
+                EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL
+            }
+            BreakawayCampaignEvent::ConfirmationPlanned(_) => {
+                EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN
+            }
+            BreakawayCampaignEvent::ConfirmationTerminal { .. } => {
+                EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL
+            }
+            BreakawayCampaignEvent::CampaignTerminal(_) => {
+                EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL
+            }
+        };
+
+        #[cfg(feature = "trace")]
+        match event {
+            BreakawayCampaignEvent::ProbePlanned(report) => {
+                backend.record_velocity_sweep_trace_record(encode_probe_planned(report));
+            }
+            BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } => {
+                backend.record_velocity_sweep_trace_record(encode_directional_breakaway(forward));
+                backend.record_velocity_sweep_trace_record(encode_directional_breakaway(reverse));
+            }
+            BreakawayCampaignEvent::ProbeTerminal(report) => {
+                backend.record_velocity_sweep_trace_record(encode_probe_terminal(report));
+            }
+            BreakawayCampaignEvent::DiscoveryPlanned {
+                planned,
+                ceiling_source,
+                plan,
+            } => {
+                let run_sequence = planned.run_sequence;
+                let evidence_sequence = planned.evidence_sequence;
+                backend.record_velocity_sweep_trace_record(encode_discovery_planned(planned));
+                backend.record_velocity_sweep_trace_record(encode_ceiling_source(ceiling_source));
+                for rung_index in 0..plan.rung_count {
+                    if let Some(report) =
+                        ladder_rung_report(&plan, rung_index, run_sequence, evidence_sequence)
+                    {
+                        backend.record_velocity_sweep_trace_record(encode_ladder_rung(report));
+                    }
+                }
+            }
+            BreakawayCampaignEvent::DiscoveryTerminal {
+                terminal,
+                rungs,
+                rung_zero,
+            } => {
+                let run_sequence = terminal.run_sequence;
+                let evidence_sequence = terminal.evidence_sequence;
+                let plan_digest = terminal.plan_digest;
+                for collected_index in 0..rungs.count() {
+                    if let Some(report) = discovery_rung_margin_report(
+                        rungs.as_slice(),
+                        collected_index,
+                        plan_digest,
+                        run_sequence,
+                        evidence_sequence,
+                    ) {
+                        backend.record_velocity_sweep_trace_record(encode_discovery_rung_margin(
+                            report,
+                        ));
+                    }
+                }
+                if let Some(diagnostic) = rung_zero {
+                    backend.record_velocity_sweep_trace_record(encode_rung_zero_diagnostic(
+                        diagnostic,
+                    ));
+                }
+                backend.record_velocity_sweep_trace_record(encode_discovery_terminal(terminal));
+            }
+            BreakawayCampaignEvent::ConfirmationPlanned(report) => {
+                backend.record_velocity_sweep_trace_record(encode_confirmation_planned(report));
+            }
+            BreakawayCampaignEvent::ConfirmationTerminal {
+                terminal,
+                forward,
+                reverse,
+            } => {
+                let run_sequence = terminal.run_sequence;
+                let evidence_sequence = terminal.evidence_sequence;
+                let plan_digest = terminal.plan_digest;
+                for (slot_index, atom) in forward
+                    .observations
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(slot_index, atom)| atom.map(|atom| (slot_index, atom)))
+                {
+                    if let Some(report) = confirmation_observation_report(
+                        plan_digest,
+                        slot_index as u8,
+                        crate::autotune::velocity_measurement::VelocityDirection::Forward,
+                        atom,
+                        run_sequence,
+                        evidence_sequence,
+                    ) {
+                        backend.record_velocity_sweep_trace_record(
+                            encode_confirmation_observation(report),
+                        );
+                    }
+                }
+                for (slot_index, atom) in reverse
+                    .observations
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(slot_index, atom)| atom.map(|atom| (slot_index, atom)))
+                {
+                    if let Some(report) = confirmation_observation_report(
+                        plan_digest,
+                        slot_index as u8 + 4,
+                        crate::autotune::velocity_measurement::VelocityDirection::Reverse,
+                        atom,
+                        run_sequence,
+                        evidence_sequence,
+                    ) {
+                        backend.record_velocity_sweep_trace_record(
+                            encode_confirmation_observation(report),
+                        );
+                    }
+                }
+                backend.record_velocity_sweep_trace_record(encode_confirmation_terminal(terminal));
+            }
+            BreakawayCampaignEvent::CampaignTerminal(report) => {
+                backend.record_velocity_sweep_trace_record(encode_campaign_terminal(report));
+            }
+        }
+        #[cfg(not(feature = "trace"))]
+        let _ = event;
+
+        backend.record_commission_trace_event(CommissionTraceEvent {
+            level: TraceEventLevel::Info,
+            event_id,
+            engine_kind: EngineKind::OuterTune,
+            payload: [i32::from(sequence), 0],
+            payload_count: 1,
+        });
     }
 
     /// Advance the state machine by one tick (max 1ms).
@@ -2577,6 +2773,80 @@ mod tests {
         // Carried-over 6e-2a review fix: safe-state restoration must see the
         // campaign's active torque limit instead of the former `None`.
         assert_eq!(engine.velocity_operational_torque_limit(), Some(2_816));
+    }
+
+    /// A live breakaway campaign must dual-emit -- the Klipper
+    /// wire path (`commission_dispatch::replies::emit_breakaway_campaign_event`,
+    /// covered by `breakaway_campaign_tests.rs`) and the FTRC trace path
+    /// covered here. Drives a real `CommissioningEngine` through its first
+    /// substantive tick (the probe plan freezes before any stroke, matching
+    /// `no_register_traffic_happens_before_the_planned_probe_state_advances`),
+    /// and confirms `emit_trace_after_step` is no longer a no-op for
+    /// `StepResult::BreakawayCampaignEvent`: both the canonical detail record
+    /// and the lightweight marker land on the `MockBackend`.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn a_live_campaign_emits_its_probe_plan_onto_the_ftrc_trace_stream() {
+        use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
+        use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
+
+        pollster::block_on(async {
+            let params = sample_outer_params();
+            let request = VelocitySweepRequest {
+                requested_velocity_mrev_s: params.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: params.requested_velocity_source,
+                max_stroke_travel_mrev: params.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: params.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: params.positive_position_headroom_mrev,
+                max_duration_ms: params.max_duration_ms,
+            };
+            let (campaign, _workflow) =
+                plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
+                    .expect("a valid host request must admit a breakaway campaign");
+            let mut engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+                0,
+                tmc_state(),
+                params,
+                sample_entry_snapshot(),
+                campaign,
+            );
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+            // The probe plan freezes and is reported before its first stroke
+            // (`PlannedProbe -> WriteGain` touches no SPI register), so this
+            // one tick is enough to reach it.
+            let result = engine.step(&mut backend).await;
+            assert!(
+                matches!(
+                    result,
+                    StepResult::BreakawayCampaignEvent(
+                        crate::commissioning::types::BreakawayCampaignEvent::ProbePlanned(_)
+                    )
+                ),
+                "expected the probe-planned event on the first substantive tick, got {result:?}"
+            );
+
+            assert!(
+                backend
+                    .trace_events
+                    .iter()
+                    .any(|event| event.event_id == EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN),
+                "no EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN marker reached the FTRC trace stream: {:?}",
+                backend.trace_events
+            );
+            let detail = backend
+                .velocity_sweep_trace_records
+                .iter()
+                .find(|record| record.as_bytes().first() == Some(&0))
+                .expect("no tag-0 (breakaway probe-planned) canonical record reached the FTRC trace stream");
+            // Canonical record layout: tag(1) + run_sequence(4) + evidence_sequence(2)
+            // + plan_digest(8) + family_size(2) + max_observations(1) + search_count(1)
+            // + p_start_raw(2) + p_top_raw(2) = 23 bytes; see
+            // `breakaway_trace_reporting::encode_probe_planned` and its own golden test.
+            assert_eq!(detail.as_bytes().len(), 23);
+        });
     }
 
     #[test]

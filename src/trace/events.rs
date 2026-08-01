@@ -113,6 +113,25 @@ pub const EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL: u16 = 149;
 pub const EVENT_COMMISSION_SELECTED_RECOVERY_REST: u16 = 150;
 /// Exact scored-rest suffix selection diagnostic.
 pub const EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC: u16 = 151;
+/// Breakaway-seeded campaign: immutable probe plan.
+pub const EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN: u16 = 152;
+/// Breakaway-seeded campaign: resolved directional breakaway bracket.
+pub const EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED: u16 = 153;
+/// Breakaway-seeded campaign: probe-campaign terminal.
+pub const EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL: u16 = 154;
+/// Breakaway-seeded campaign: immutable additive discovery plan, its
+/// ceiling's binding source, and its resolved ladder.
+pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN: u16 = 155;
+/// Breakaway-seeded campaign: discovery terminal, its collected in-band
+/// rung margins, and the rung-zero motion diagnostic.
+pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL: u16 = 156;
+/// Breakaway-seeded campaign: immutable held-out confirmation plan.
+pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN: u16 = 157;
+/// Breakaway-seeded campaign: confirmation terminal and its fresh held-out
+/// stroke observations.
+pub const EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL: u16 = 158;
+/// Breakaway-seeded campaign: canonical closure record.
+pub const EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL: u16 = 159;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
@@ -238,6 +257,14 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, 149);
         assert_eq!(EVENT_COMMISSION_SELECTED_RECOVERY_REST, 150);
         assert_eq!(EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, 151);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN, 152);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED, 153);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, 154);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN, 155);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL, 156);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN, 157);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL, 158);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL, 159);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
     }
 

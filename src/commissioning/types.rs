@@ -1364,7 +1364,7 @@ pub struct BreakawayCeilingSource {
 /// emit one wire record per item, the same way `emit_acceptance_matrix_plan`
 /// already fans one Rust value out to several wire fragments.
 #[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, defmt::Format)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub enum BreakawayCampaignEvent {
     /// Immutable probe plan, emitted before the probe's first stroke.
