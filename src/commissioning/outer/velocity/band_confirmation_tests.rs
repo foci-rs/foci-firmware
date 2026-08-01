@@ -816,6 +816,39 @@ fn validate_fixed_contract_rejects_a_tampered_observations_per_direction() {
 }
 
 #[test]
+fn validate_fixed_contract_rejects_a_tampered_family_size() {
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.family_size = CONFIRMATION_FAMILY_SIZE + 1;
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::FamilySize)
+    );
+}
+
+#[test]
+fn validate_fixed_contract_rejects_a_tampered_capture_profile() {
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.capture_profile = CONFIRMATION_CAPTURE_PROFILE_EXISTING + 1;
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::CaptureProfile)
+    );
+}
+
+#[test]
+fn validate_fixed_contract_rejects_a_tampered_acceptance_rule() {
+    let mut plan = plan_band_confirmation(111, gain(724)).unwrap();
+    plan.acceptance_rule = CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED + 1;
+    plan.plan_digest = plan.digest();
+    assert_eq!(
+        validate_fixed_contract(&plan),
+        Err(BandConfirmationContractError::AcceptanceRule)
+    );
+}
+
+#[test]
 fn validate_fixed_contract_rejects_a_slot_order_tampered_digest() {
     let plan = plan_band_confirmation(111, gain(724)).unwrap();
     // A plan whose digest was taken over a reversed slot order is rejected: the

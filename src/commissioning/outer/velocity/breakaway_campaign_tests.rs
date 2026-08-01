@@ -1511,6 +1511,11 @@ fn stage_c_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
         workflow_envelope_ms: 450_000,
         channel: 0,
         run_sequence: 7,
+        // Match `test_backend`'s live PWM (default_for_test => 25 kHz) and
+        // `test_safety`'s live encoder resolution (4_000), so the Stage-C gate's
+        // plan-time-vs-live physical-context guard admits the confirmed P.
+        pwm_hz: 25_000,
+        encoder_counts_per_rev: 4_000,
         ceiling_binding_source:
             crate::commissioning::outer::velocity::sweep_plan::CEILING_BINDING_CURRENT_LIMIT,
     }

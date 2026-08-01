@@ -1,7 +1,7 @@
 use super::band_confirmation::{
     BandConfirmationFailureCause, BandConfirmationPlan, ConfirmationDirectionalInput,
     DiscoveryObservationAtom, TargetBandConfirmationInconclusive, evaluate_band_confirmation,
-    plan_band_confirmation,
+    plan_band_confirmation, validate_fixed_contract,
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, BreakawayProbePlan,
@@ -10,14 +10,14 @@ use super::breakaway_plan::{
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use super::integral_plan::{
     AcquisitionContext, BreakawayAuthorityBindingError, CommissioningWorkflowPlan,
-    IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS,
-    STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape,
-    VelocityIntegralPlanError, bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
-    breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
-    breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
-    integral_workflow_maximum_ms, plan_breakaway_velocity_integral_response,
-    plan_velocity_integral_response, recovery_quantization_exposed, response_horizon,
-    velocity_i_tau_us,
+    ConfirmedAcquisitionDigest, IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION,
+    STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG,
+    StageCAuthority, StageCPlanShape, VelocityIntegralPlanError, bind_breakaway_stage_c_authority,
+    breakaway_confirmation_slots_us, breakaway_discovery_slots_us, breakaway_probe_slots_us,
+    breakaway_workflow_envelope_ms, breakaway_workflow_envelope_us, build_integral_ladder,
+    confidence_family_size, integral_workflow_maximum_ms,
+    plan_breakaway_velocity_integral_response, plan_velocity_integral_response,
+    recovery_quantization_exposed, response_horizon, velocity_i_tau_us,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -1075,38 +1075,44 @@ fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
 /// `pwm_hz = 25_000`, `encoder_counts_per_rev = 4_000`.
 fn breakaway_acquisition_context() -> AcquisitionContext {
     let stage_b = stage_b_plan();
-    AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()))
+    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    // The breakaway gate refuses if the plan-time physical context diverges from
+    // the live pwm/encoder it is handed; every fixture below passes 25 kHz /
+    // 4_000, so freeze the same values here.
+    context.plan_time_pwm_hz = 25_000;
+    context.plan_time_encoder_counts_per_rev = 4_000;
+    context
 }
 
 fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
     plan_band_confirmation(0x1111_2222_3333_4444, candidate_p).unwrap()
 }
 
-/// Bind a breakaway Stage-C authority to `confirmation_plan` through the real
-/// [`bind_breakaway_stage_c_authority`] gate, exactly as a live campaign
-/// would, rather than fabricating the digest.
-fn breakaway_authority_for(confirmation_plan: BandConfirmationPlan) -> StageCAuthority {
+/// Mint the breakaway confirmation token for `confirmation_plan` through the
+/// real [`bind_breakaway_stage_c_authority`] gate, exactly as a live campaign
+/// would, rather than fabricating the digest. The token is the only input the
+/// Stage-C gate accepts as authority.
+fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
         evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse).unwrap();
-    let bound = bind_breakaway_stage_c_authority(
+    bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
         Ok(acceptance),
     )
-    .unwrap();
-    StageCAuthority::new_breakaway(0, bound)
+    .unwrap()
 }
 
 #[test]
 fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
     let candidate_p = breakaway_gain(512);
     let confirmation_plan = breakaway_confirmation_plan(candidate_p);
-    let authority = breakaway_authority_for(confirmation_plan);
+    let token = breakaway_token_for(confirmation_plan);
     let context = breakaway_acquisition_context();
 
     let plan = plan_breakaway_velocity_integral_response(
-        authority,
+        token,
         confirmation_plan,
         context,
         motion_budget(),
@@ -1141,7 +1147,7 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
 fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_authority() {
     let candidate_p = breakaway_gain(1_024);
     let confirmation_plan = breakaway_confirmation_plan(candidate_p);
-    let authority = breakaway_authority_for(confirmation_plan);
+    let token = breakaway_token_for(confirmation_plan);
     let mut context = breakaway_acquisition_context();
     // A torque authority this small cannot carry any nonzero I prefix at the
     // Q4.12 gain scale, regardless of the confirmed P: this simultaneously
@@ -1152,7 +1158,7 @@ fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_a
 
     assert_eq!(
         plan_breakaway_velocity_integral_response(
-            authority,
+            token,
             confirmation_plan,
             context,
             motion_budget(),
@@ -1171,7 +1177,7 @@ fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_a
 fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_budget() {
     let candidate_p = breakaway_gain(512);
     let confirmation_plan = breakaway_confirmation_plan(candidate_p);
-    let authority = breakaway_authority_for(confirmation_plan);
+    let token = breakaway_token_for(confirmation_plan);
     let mut context = breakaway_acquisition_context();
     // The confirmed P still passes transition capability; only the recovery
     // travel time this implies -- driven by a near-stalled planned velocity
@@ -1181,7 +1187,7 @@ fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_
 
     assert_eq!(
         plan_breakaway_velocity_integral_response(
-            authority,
+            token,
             confirmation_plan,
             context,
             motion_budget(),
@@ -1196,14 +1202,14 @@ fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_
 fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validate() {
     let candidate_p = breakaway_gain(512);
     let confirmation_plan = breakaway_confirmation_plan(candidate_p);
-    let authority = breakaway_authority_for(confirmation_plan);
+    let token = breakaway_token_for(confirmation_plan);
     let context = breakaway_acquisition_context();
 
     let mut tampered_digest = confirmation_plan;
     tampered_digest.plan_digest ^= 1;
     assert_eq!(
         plan_breakaway_velocity_integral_response(
-            authority,
+            token,
             tampered_digest,
             context,
             motion_budget(),
@@ -1218,7 +1224,7 @@ fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validat
     tampered_family.plan_digest = tampered_family.digest();
     assert_eq!(
         plan_breakaway_velocity_integral_response(
-            authority,
+            token,
             tampered_family,
             context,
             motion_budget(),
@@ -1230,16 +1236,16 @@ fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validat
 }
 
 #[test]
-fn breakaway_stage_c_rejects_an_authority_bound_to_a_different_confirmation_plan() {
+fn breakaway_stage_c_rejects_a_token_minted_for_a_different_confirmation_plan() {
     let candidate_p = breakaway_gain(512);
     let confirmation_plan_a = breakaway_confirmation_plan(candidate_p);
-    let authority_a = breakaway_authority_for(confirmation_plan_a);
+    let token_a = breakaway_token_for(confirmation_plan_a);
     let confirmation_plan_b = plan_band_confirmation(0x5555_6666_7777_8888, candidate_p).unwrap();
     let context = breakaway_acquisition_context();
 
     assert_eq!(
         plan_breakaway_velocity_integral_response(
-            authority_a,
+            token_a,
             confirmation_plan_b,
             context,
             motion_budget(),
@@ -1247,5 +1253,86 @@ fn breakaway_stage_c_rejects_an_authority_bound_to_a_different_confirmation_plan
             4_000,
         ),
         Err(VelocityIntegralPlanError::MismatchedAuthority)
+    );
+}
+
+/// The round-2 acceptance criterion: there is NO in-crate path that reaches
+/// breakaway Stage-C plan construction without a genuine
+/// [`ConfirmedAcquisitionDigest`] token. The gate's only authority input is the
+/// token, which can be minted solely by [`bind_breakaway_stage_c_authority`]
+/// from a real `Ok(BandConfirmationAcceptance)` -- itself unforgeable. A caller
+/// can still fabricate a self-consistent `BandConfirmationPlan` for an arbitrary
+/// gain (all fixed fields correct, `plan_digest = plan.digest()`), but cannot
+/// mint a token whose value equals that forged plan's digest without a genuine
+/// all-eight acceptance of THAT plan, so the plan-to-token binding refuses it.
+#[test]
+fn breakaway_stage_c_requires_a_token_matching_the_confirmation_plan() {
+    // A forged plan for an arbitrary candidate, contract-valid and
+    // digest-self-consistent -- exactly what an in-crate attacker could build.
+    let forged_plan = breakaway_confirmation_plan(breakaway_gain(384));
+    assert!(
+        validate_fixed_contract(&forged_plan).is_ok(),
+        "the forged plan is contract-valid; only the token binding stops it"
+    );
+
+    // The only token the attacker can actually mint is for a DIFFERENT,
+    // genuinely accepted plan; its digest cannot equal the forged plan's.
+    let genuine_plan = breakaway_confirmation_plan(breakaway_gain(512));
+    let genuine_token = breakaway_token_for(genuine_plan);
+    assert_ne!(genuine_token.get(), forged_plan.plan_digest);
+
+    // Pairing the only obtainable token with the forged plan is refused: no
+    // Stage-C plan for gain 384 is ever constructed. The token is the gate's
+    // sole authority input -- there is no `StageCAuthority` parameter through
+    // which a forged authority could enter -- so this is the whole attack
+    // surface, and it is closed. (A token genuinely minted for the forged plan
+    // would require driving `evaluate_band_confirmation` to accept THAT plan,
+    // which is the real confirmation gate, not a bypass; the admit-on-genuine
+    // path is covered by `breakaway_stage_c_admits_the_confirmed_p_unchanged`.)
+    assert_eq!(
+        plan_breakaway_velocity_integral_response(
+            genuine_token,
+            forged_plan,
+            breakaway_acquisition_context(),
+            motion_budget(),
+            25_000,
+            4_000,
+        ),
+        Err(VelocityIntegralPlanError::MismatchedAuthority)
+    );
+}
+
+#[test]
+fn breakaway_stage_c_refuses_when_plan_time_physical_context_differs_from_live() {
+    let candidate_p = breakaway_gain(512);
+    let confirmation_plan = breakaway_confirmation_plan(candidate_p);
+    let token = breakaway_token_for(confirmation_plan);
+
+    // Plan-time PWM (25 kHz) but a live PWM of 50 kHz: confirmation evidence was
+    // gathered under a different timebase, so the gate refuses without motion.
+    let context = breakaway_acquisition_context();
+    assert_eq!(
+        plan_breakaway_velocity_integral_response(
+            token,
+            confirmation_plan,
+            context,
+            motion_budget(),
+            50_000,
+            4_000,
+        ),
+        Err(VelocityIntegralPlanError::PhysicalContextMismatch)
+    );
+
+    // Live encoder resolution differs from plan time: same fail-closed refusal.
+    assert_eq!(
+        plan_breakaway_velocity_integral_response(
+            token,
+            confirmation_plan,
+            context,
+            motion_budget(),
+            25_000,
+            8_000,
+        ),
+        Err(VelocityIntegralPlanError::PhysicalContextMismatch)
     );
 }

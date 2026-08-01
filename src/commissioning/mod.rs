@@ -2146,9 +2146,16 @@ mod tests {
             // (`BreakawayCampaignTerminal`, not the full event enum -- see
             // `EmitContinuation`'s own doc comment for why that distinction
             // matters), and the deferred campaign `Done` outcome.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_488);
+            //
+            // The Stage-C gate hardening adds 16 B: the campaign
+            // now freezes the plan-time PWM frequency and encoder resolution in
+            // `BreakawayCampaignInputs` so the Stage-C gate can fail closed when
+            // the live physical context diverges from the one the confirmation
+            // evidence was gathered under. Deliberate, bounded retained state;
+            // still well under the audited F407 ceiling.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_504);
         }
-        assert!(size_of::<CommissioningEngine>() <= 5_488);
+        assert!(size_of::<CommissioningEngine>() <= 5_504);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);

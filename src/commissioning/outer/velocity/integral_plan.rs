@@ -255,9 +255,20 @@ impl StageCAuthority {
     /// [`ConfirmedAcquisitionDigest`] is a successful call to
     /// [`bind_breakaway_stage_c_authority`], so this constructor makes "Stage
     /// C authorized by anything other than an accepted confirmation"
-    /// unrepresentable for every breakaway authority built this way -- there
-    /// is no other public path that fills `stage_b_plan_digest` from an
-    /// unvalidated `u64`.
+    /// unrepresentable for every breakaway authority built this way.
+    ///
+    /// `StageCAuthority` is a `pub struct` with `pub` fields, so a `u64` CAN be
+    /// placed into `stage_b_plan_digest` by struct literal (the reproduced
+    /// Stage-B path in `integral_reproduction.rs` does exactly that, from real
+    /// reproduced evidence -- a separate authority model). The safety property
+    /// therefore does not rest on this constructor being the only writer of the
+    /// field. It rests on the breakaway Stage-C gate,
+    /// [`plan_breakaway_velocity_integral_response`], taking a
+    /// [`ConfirmedAcquisitionDigest`] token -- NOT a caller-supplied
+    /// `StageCAuthority` -- and building the authority itself via this
+    /// constructor. A forged `StageCAuthority` can no longer be handed to the
+    /// breakaway gate, and the token is unforgeable, so the breakaway path
+    /// cannot admit a gain without a genuine accepted confirmation.
     #[allow(dead_code)]
     pub(crate) const fn new_breakaway(
         channel: u8,
@@ -703,6 +714,12 @@ pub enum VelocityIntegralPlanError {
     /// failed [`transition_capable_stage_c_gain`]. Carries the digest of the
     /// rejected [`BandConfirmationPlan`].
     ConfirmedGainNotTransitionCapable(u64),
+    /// The plan-time physical acquisition context frozen into the confirmation
+    /// evidence (PWM carrier frequency or encoder counts per revolution) does
+    /// not match the live values presented at Stage-C construction. Confirmation
+    /// evidence gathered under one physical timebase cannot seed a Stage-C plan
+    /// admitted under another; the gate refuses without motion.
+    PhysicalContextMismatch,
 }
 
 /// Rejected attempt to bind Stage-C authority to a breakaway confirmation.
@@ -1275,10 +1292,38 @@ pub(crate) struct AcquisitionContext {
     pub(crate) usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
+    /// Physical firmware channel the breakaway Stage-C authority is minted for.
+    ///
+    /// Consumed only by [`plan_breakaway_velocity_integral_response`], which
+    /// builds its [`StageCAuthority`] internally from the confirmation token so
+    /// no forged authority can be passed in. The combined/legacy [`From`] path
+    /// leaves this zero: it builds its own reproduced-Stage-B authority and
+    /// never routes through the breakaway gate.
+    pub(crate) channel: u8,
+    /// Plan-time PWM carrier frequency the confirmation evidence was gathered
+    /// under, in Hz.
+    ///
+    /// The breakaway gate refuses if this does not match the live PWM frequency
+    /// handed to it at Stage-C construction, so confirmation evidence measured
+    /// under one physical timebase can never seed a Stage-C plan admitted under
+    /// another. Left zero by the combined/legacy [`From`] path (fail-closed:
+    /// zero never matches a live frequency).
+    pub(crate) plan_time_pwm_hz: u32,
+    /// Plan-time encoder counts per mechanical revolution the confirmation
+    /// evidence was gathered under.
+    ///
+    /// Cross-checked against the live encoder resolution by the breakaway gate,
+    /// exactly like [`Self::plan_time_pwm_hz`]. Left zero by the
+    /// combined/legacy [`From`] path.
+    pub(crate) plan_time_encoder_counts_per_rev: u32,
 }
 
 impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
     /// Extract exactly the physical fields the shared Stage-C tail reads.
+    ///
+    /// The breakaway-only `channel` and `plan_time_*` fields are left zero: the
+    /// reproduced-Stage-B and combined callers build their own authority and
+    /// never invoke the breakaway gate's token/physical-context guards.
     fn from(plan: VelocitySweepExecutionPlan) -> Self {
         Self {
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
@@ -1286,6 +1331,9 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
             hard_torque_limit: plan.hard_torque_limit,
             usable_torque_limit: plan.usable_torque_limit,
             limit_evidence_capability: plan.limit_evidence_capability,
+            channel: 0,
+            plan_time_pwm_hz: 0,
+            plan_time_encoder_counts_per_rev: 0,
         }
     }
 }
@@ -1301,23 +1349,34 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// discovery candidate. Every existing plan-time safety check still gates
 /// Stage C, and any failure refuses without motion.
 ///
-/// `authority` must be a [`StageCAuthority::new_breakaway`] value bound to
-/// `confirmation_plan` through [`bind_breakaway_stage_c_authority`]; this
-/// function additionally re-validates the fixed confirmation contract through
-/// the single canonical
-/// [`super::band_confirmation::validate_fixed_contract`] -- every frozen field
-/// (family size, observations per direction, capture profile, all three
-/// timing fields, both band edges, the acceptance rule, the fixed slot order,
-/// and digest self-consistency) -- before consuming it, so a tampered or
-/// malformed confirmation plan is rejected even if a caller manages to pair it
-/// with a validly bound authority. This is the same function the confirmation
-/// phase runs before its first stroke, so the contract cannot drift between
-/// the two sites. `context` carries the breakaway campaign's own physical
-/// acquisition parameters -- there is no reproduced Stage-B sweep plan to
-/// read them from.
+/// The only authority input is `token`, a [`ConfirmedAcquisitionDigest`]. That
+/// token can be minted solely by [`bind_breakaway_stage_c_authority`] from a
+/// genuine `Ok(`[`BandConfirmationAcceptance`]`)` -- itself unforgeable (its
+/// field is private) -- so this gate cannot be reached for an arbitrary gain
+/// without a real all-eight held-out pass. The gate builds the
+/// [`StageCAuthority`] INTERNALLY via [`StageCAuthority::new_breakaway`]; it
+/// never accepts a pre-built `StageCAuthority`, closing the bypass where a
+/// caller forged one by struct literal (its fields are `pub`) and paired it
+/// with a self-consistent but fabricated `BandConfirmationPlan`.
+///
+/// It additionally: (a) re-validates the fixed confirmation contract through
+/// the single canonical [`super::band_confirmation::validate_fixed_contract`]
+/// -- every frozen field (family size, observations per direction, capture
+/// profile, all three timing fields, both band edges, the acceptance rule, the
+/// fixed slot order, and digest self-consistency) -- the same function the
+/// confirmation phase runs before its first stroke, so the contract cannot
+/// drift between the two sites; (b) ties `confirmation_plan.plan_digest` to
+/// `token.get()`, so a forged plan whose candidate (or any hashed field)
+/// differs is refused; and (c) refuses if the plan-time PWM/encoder frozen in
+/// `context` does not match the live `pwm_hz`/`encoder_counts_per_rev`, so
+/// confirmation evidence gathered under one physical timebase cannot seed a
+/// plan admitted under another. `context` carries the breakaway campaign's own
+/// physical acquisition parameters -- there is no reproduced Stage-B sweep plan
+/// to read them from.
 ///
 /// Order of checks, all before any plan is constructed: confirmation-plan
-/// digest and contract validation; authority-to-confirmation-plan binding;
+/// contract validation; plan-to-token digest binding; plan-time-vs-live
+/// physical-context match; authority built from the token;
 /// [`transition_capable_stage_c_gain`] for the exact confirmed gain; then the
 /// shared tail's own recovery-geometry and duration admission. Emits schema
 /// [`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`] with
@@ -1325,7 +1384,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// unchanged.
 #[allow(dead_code)]
 pub(crate) fn plan_breakaway_velocity_integral_response(
-    authority: StageCAuthority,
+    token: ConfirmedAcquisitionDigest,
     confirmation_plan: BandConfirmationPlan,
     context: AcquisitionContext,
     motion_budget: OuterMotionBudget,
@@ -1334,9 +1393,26 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
     validate_fixed_contract(&confirmation_plan)
         .map_err(|_| VelocityIntegralPlanError::InvalidConfirmationPlan)?;
-    if authority.stage_b_plan_digest != confirmation_plan.plan_digest {
+    // The token is the confirmed plan's digest and can be minted only by
+    // `bind_breakaway_stage_c_authority` from a genuine, unforgeable
+    // `Ok(BandConfirmationAcceptance)`. Tie the supplied plan to it: a plan
+    // whose candidate (or any hashed field) differs has a different digest and
+    // is refused, so no forged `BandConfirmationPlan` can be admitted here.
+    if confirmation_plan.plan_digest != token.get() {
         return Err(VelocityIntegralPlanError::MismatchedAuthority);
     }
+    // Fail-closed physical-context guard: confirmation evidence frozen under one
+    // PWM timebase / encoder resolution must not seed a Stage-C plan admitted
+    // under different live values.
+    if context.plan_time_pwm_hz != pwm_hz
+        || context.plan_time_encoder_counts_per_rev != encoder_counts_per_rev
+    {
+        return Err(VelocityIntegralPlanError::PhysicalContextMismatch);
+    }
+    // Build the authority INTERNALLY from the token. The gate never accepts a
+    // pre-built `StageCAuthority`, so a caller cannot forge one (its fields are
+    // `pub`) and pass it in to bypass confirmation.
+    let authority = StageCAuthority::new_breakaway(context.channel, token);
     let fixed_p = confirmation_plan.candidate_p.raw();
     if !transition_capable_stage_c_gain(
         fixed_p,

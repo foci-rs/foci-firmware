@@ -117,7 +117,7 @@ use super::current_guard::{
     read_velocity_pid_input_abs, read_velocity_pid_output_abs,
 };
 use super::integral_plan::{
-    AcquisitionContext, CommissioningWorkflowPlan, StageCAuthority, VelocityIntegralPlan,
+    AcquisitionContext, CommissioningWorkflowPlan, VelocityIntegralPlan,
     bind_breakaway_stage_c_authority, breakaway_workflow_envelope_ms,
     plan_breakaway_velocity_integral_response,
 };
@@ -2920,6 +2920,14 @@ pub(crate) struct BreakawayCampaignInputs {
     workflow_envelope_ms: u32,
     channel: u8,
     run_sequence: u32,
+    /// Plan-time PWM carrier frequency, in Hz, frozen from the command request.
+    /// Cross-checked against the live PWM frequency at Stage-C construction so
+    /// confirmation evidence cannot be admitted under a different timebase.
+    pwm_hz: u32,
+    /// Plan-time encoder counts per mechanical revolution, frozen from the
+    /// command request. Cross-checked against the live resolution at Stage-C
+    /// construction.
+    encoder_counts_per_rev: u32,
     /// `sweep_plan::CEILING_BINDING_CURRENT_LIMIT` or
     /// `sweep_plan::CEILING_BINDING_REPRESENTABILITY_CLAMP`: which `p_top`
     /// candidate bound the plan-time authority ceiling this campaign's probe
@@ -3058,6 +3066,8 @@ impl BreakawayCampaign {
                 workflow_envelope_ms: request.maximum_workflow_ms,
                 channel: request.channel,
                 run_sequence: request.run_sequence,
+                pwm_hz: request.pwm_hz,
+                encoder_counts_per_rev: request.encoder_counts_per_rev,
                 ceiling_binding_source,
             },
             phase: BreakawayCampaignPhase::Probe {
@@ -3406,14 +3416,14 @@ fn route_discovery_outcome(
 
 /// Route an accepted held-out confirmation through the ONE authorized Stage-C
 /// chain: [`bind_breakaway_stage_c_authority`] -> `ConfirmedAcquisitionDigest`
-/// -> [`StageCAuthority::new_breakaway`] ->
-/// [`plan_breakaway_velocity_integral_response`].
+/// token -> [`plan_breakaway_velocity_integral_response`], which builds the
+/// `StageCAuthority` internally from the token.
 ///
 /// This is the sole breakaway path from a confirmed acceptance to a Stage-C
 /// plan. It is reachable only from [`BandConfirmationOutcome::Accepted`]; it
 /// takes the acceptance and its frozen plan by value, so no failure or
 /// inconclusive confirmation terminal can even be expressed as an argument, and
-/// no other campaign terminal constructs a [`StageCAuthority`]. The 6a
+/// no other campaign terminal mints a confirmation token. The 6a
 /// constructor still applies its own plan-time safety admission and MAY refuse
 /// Stage C WITHOUT motion; that refusal is returned here as a
 /// [`BreakawayCampaignOutcome::Terminal`], never bypassed. This function touches
@@ -3426,8 +3436,8 @@ fn route_confirmed_accept<B: CommissioningBackend>(
     safety: &OuterSafetyLimits,
     backend: &B,
 ) -> BreakawayCampaignOutcome {
-    let digest = match bind_breakaway_stage_c_authority(plan.plan_digest, plan, Ok(acceptance)) {
-        Ok(digest) => digest,
+    let token = match bind_breakaway_stage_c_authority(plan.plan_digest, plan, Ok(acceptance)) {
+        Ok(token) => token,
         Err(_) => {
             return BreakawayCampaignOutcome::Terminal {
                 error: CommissionError::InvalidSchedule,
@@ -3435,16 +3445,23 @@ fn route_confirmed_accept<B: CommissioningBackend>(
             };
         }
     };
-    let authority = StageCAuthority::new_breakaway(inputs.channel, digest);
+    // The gate builds the `StageCAuthority` itself from the token, so no
+    // pre-built authority is handed across. `channel` and the plan-time
+    // PWM/encoder freeze travel in the acquisition context; the gate rejects
+    // if the plan-time physical parameters diverge from the live ones passed
+    // below.
     let context = AcquisitionContext {
         planned_velocity_mrev_s: inputs.planned_velocity_mrev_s,
         target_velocity_rpm: inputs.target_velocity_rpm.raw(),
         hard_torque_limit: inputs.hard_torque_limit,
         usable_torque_limit: inputs.usable_torque_limit,
         limit_evidence_capability: inputs.limit_evidence_capability,
+        channel: inputs.channel,
+        plan_time_pwm_hz: inputs.pwm_hz,
+        plan_time_encoder_counts_per_rev: inputs.encoder_counts_per_rev,
     };
     match plan_breakaway_velocity_integral_response(
-        authority,
+        token,
         plan,
         context,
         safety.budget,
