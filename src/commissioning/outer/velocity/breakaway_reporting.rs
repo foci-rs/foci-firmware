@@ -627,6 +627,7 @@ pub(crate) fn confirmation_evaluated_terminal_report(
             confirmed_p_raw,
             run_sequence,
             evidence_sequence,
+            has_safety_fault: 0,
         },
     )
 }
@@ -635,7 +636,8 @@ pub(crate) fn confirmation_evaluated_terminal_report(
 /// folded evidence into `forward`/`reverse` before the outcome under
 /// `terminal_cause` cut the block short (for example
 /// [`BandConfirmationOutcome::ConfirmationEvidenceExcluded`] after one or more
-/// prior strokes succeeded).
+/// prior strokes succeeded, or a mid-block
+/// [`BandConfirmationOutcome::SafetyFault`]).
 ///
 /// Unlike [`confirmation_zero_stroke_terminal_report`], this reports the
 /// masks and observations actually collected rather than all-zero fields, so
@@ -643,12 +645,17 @@ pub(crate) fn confirmation_evaluated_terminal_report(
 /// the same mask/uncertainty assembly as
 /// [`confirmation_evaluated_terminal_report`] because both report whatever
 /// evidence `forward`/`reverse` actually hold; only the not-yet-evaluated
-/// `terminal_cause` and the always-unaccepted outcome differ.
+/// `terminal_cause`/`has_safety_fault` and the always-unaccepted outcome
+/// differ. `has_safety_fault` is caller-supplied (typically
+/// [`confirmation_zero_stroke_cause`]'s own second tuple element) rather than
+/// derived here, so a mid-block `SafetyFault`'s retained-evidence flag
+/// survives exactly like it does on the zero-stroke path.
 pub(crate) fn confirmation_partial_evidence_terminal_report(
     plan: &BandConfirmationPlan,
     forward: &ConfirmationDirectionalInput,
     reverse: &ConfirmationDirectionalInput,
     terminal_cause: BreakawayTerminalCause,
+    has_safety_fault: u8,
     run_sequence: u32,
     evidence_sequence: u16,
 ) -> BandConfirmationTerminal {
@@ -662,6 +669,7 @@ pub(crate) fn confirmation_partial_evidence_terminal_report(
             confirmed_p_raw: 0,
             run_sequence,
             evidence_sequence,
+            has_safety_fault,
         },
     )
 }
@@ -676,6 +684,7 @@ struct ConfirmationTerminalOutcome {
     confirmed_p_raw: u16,
     run_sequence: u32,
     evidence_sequence: u16,
+    has_safety_fault: u8,
 }
 
 /// Shared mask/uncertainty assembly for a confirmation terminal that reports
@@ -695,6 +704,7 @@ fn confirmation_terminal_from_collected_evidence(
         confirmed_p_raw,
         run_sequence,
         evidence_sequence,
+        has_safety_fault,
     } = outcome;
     let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE).unwrap_or(0.0);
     let max_relative_se = forward
@@ -728,7 +738,7 @@ fn confirmation_terminal_from_collected_evidence(
         confirmed_p_raw,
         max_relative_se_permille: relative_se_to_permille(max_relative_se),
         required_relative_se_permille: relative_se_to_permille(required_relative_se),
-        has_safety_fault: 0,
+        has_safety_fault,
     }
 }
 

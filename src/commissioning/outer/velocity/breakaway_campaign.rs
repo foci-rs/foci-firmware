@@ -1076,6 +1076,21 @@ impl DirectionAccumulator {
     /// Fold this direction's four collected observations into their depth-three
     /// consensus. Always called after every slot has been recorded, so the
     /// collected mask is always complete.
+    ///
+    /// `collected_mask` on the returned [`DirectionalConsensus`] is
+    /// unconditionally reported full (`FULL_OBSERVATION_MASK`) regardless of
+    /// how many slots were actually recorded -- correct under this method's
+    /// own "always called after every slot" contract, but this accumulator is
+    /// also read on partial/mid-block failure terminals (a
+    /// `ConfirmationEvidenceExcluded` or `SafetyFault` reached after some but
+    /// not all four strokes ran), where that contract does not hold. On such
+    /// a terminal, do not trust `collected_mask` to signal how much evidence
+    /// was actually gathered; `eligible_mask`/`included_mask` (both derived
+    /// from `self.classes`, which defaults every unrecorded slot to
+    /// [`VelocityObservationClass::InvalidEvidenceFault`] and so correctly
+    /// stays empty there) or a direct count of `Some` entries in
+    /// `self.atoms`/the reported observation array are the reliable partiality
+    /// signals.
     fn consensus(&self) -> DirectionalConsensus {
         depth_three_consensus(FULL_OBSERVATION_MASK, self.classes, self.intervals)
     }
@@ -3803,7 +3818,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
     evidence_sequence: &mut u16,
 ) -> CampaignAdvance {
     let sequence = next_sequence(evidence_sequence);
-    let cause = confirmation_zero_stroke_cause(&outcome).0;
+    let (cause, has_safety_fault) = confirmation_zero_stroke_cause(&outcome);
     let (terminal, forward, reverse) = match &outcome {
         BandConfirmationOutcome::Accepted { acceptance, .. } => {
             let forward = confirmation_directional_input(session, VelocityDirection::Forward);
@@ -3833,12 +3848,19 @@ fn confirmation_done_advance<B: CommissioningBackend>(
             );
             (terminal, forward, reverse)
         }
-        BandConfirmationOutcome::ConfirmationEvidenceExcluded => {
-            // Unlike the zero-stroke outcomes below, exclusion can strike after
-            // earlier strokes already folded evidence into the session's
-            // accumulators; report that partial evidence rather than the empty
-            // fixture, so the terminal never falsely claims no confirmation
-            // work happened.
+        BandConfirmationOutcome::ConfirmationEvidenceExcluded
+        | BandConfirmationOutcome::SafetyFault { .. } => {
+            // Unlike the genuinely zero-stroke outcomes below, both exclusion
+            // and a safety fault can strike after earlier strokes already
+            // folded evidence into the session's accumulators --
+            // `confirmation_fault`/`confirmation_safety_fault` are reachable
+            // from every stroke state, including `Advance`'s successors --
+            // so report that partial evidence rather than the empty fixture.
+            // Without this, a mid-block safety fault would falsely claim no
+            // confirmation work happened, exactly the evidence loss fixed for
+            // `ConfirmationEvidenceExcluded`. `has_safety_fault` is threaded
+            // through so a `SafetyFault`'s retained-evidence flag survives
+            // here the same way it does on the zero-stroke path.
             let forward = confirmation_directional_input(session, VelocityDirection::Forward);
             let reverse = confirmation_directional_input(session, VelocityDirection::Reverse);
             let terminal = confirmation_partial_evidence_terminal_report(
@@ -3846,14 +3868,14 @@ fn confirmation_done_advance<B: CommissioningBackend>(
                 &forward,
                 &reverse,
                 cause,
+                has_safety_fault,
                 inputs.run_sequence,
                 sequence,
             );
             (terminal, forward, reverse)
         }
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
-        | BandConfirmationOutcome::TargetBandNotReachedAtAuthority
-        | BandConfirmationOutcome::SafetyFault { .. } => {
+        | BandConfirmationOutcome::TargetBandNotReachedAtAuthority => {
             let terminal = confirmation_zero_stroke_terminal_report(
                 session.plan.plan_digest,
                 session.plan.discovery_plan_digest,

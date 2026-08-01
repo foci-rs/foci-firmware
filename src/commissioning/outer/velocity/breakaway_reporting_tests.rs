@@ -660,6 +660,7 @@ fn confirmation_partial_evidence_terminal_report_carries_the_collected_masks() {
         &forward,
         &reverse,
         BreakawayTerminalCause::ConfirmationEvidenceExcluded,
+        0,
         10,
         6,
     );
@@ -670,6 +671,7 @@ fn confirmation_partial_evidence_terminal_report_carries_the_collected_masks() {
     );
     assert_eq!(report.accepted, 0);
     assert_eq!(report.confirmed_p_raw, 0);
+    assert_eq!(report.has_safety_fault, 0);
     // The forward direction's real evidence survives, unlike the all-zero
     // zero-stroke path.
     assert_eq!(report.forward_collected_mask, 0b1111);
@@ -681,6 +683,54 @@ fn confirmation_partial_evidence_terminal_report_carries_the_collected_masks() {
     assert_eq!(report.reverse_collected_mask, 0);
     assert_eq!(report.reverse_eligible_mask, 0);
     assert_eq!(report.reverse_included_mask, 0);
+}
+
+/// A mid-block `SafetyFault`'s retained-evidence flag must survive the
+/// partial-evidence path exactly like it does on the zero-stroke path
+/// ([`confirmation_zero_stroke_terminal_report_zeroes_every_mask`] and
+/// friends): `has_safety_fault` is caller-supplied, not hardcoded, so it is
+/// not silently dropped when the reporter switches from the empty fixture to
+/// real collected evidence.
+#[test]
+fn confirmation_partial_evidence_terminal_report_carries_the_safety_fault_flag() {
+    let plan = plan_band_confirmation(0x44, gain(724)).expect("valid confirmation plan");
+    let forward = confirmation_input(
+        VelocityDirection::Forward,
+        RUNG18_MEAN,
+        RUNG18_VARIANCE,
+        TARGET,
+    );
+    let reverse = ConfirmationDirectionalInput {
+        consensus: DirectionalConsensus {
+            classification: crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass::IncompleteRung,
+            components: [[0; 2]; 2],
+            component_count: 0,
+            collected_mask: 0,
+            eligible_mask: 0,
+            included_mask: 0,
+        },
+        classes: [VelocityObservationClass::InvalidEvidenceFault; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+
+    let report = confirmation_partial_evidence_terminal_report(
+        &plan,
+        &forward,
+        &reverse,
+        BreakawayTerminalCause::ConfirmationSafetyFault,
+        1,
+        10,
+        6,
+    );
+
+    assert_eq!(
+        report.terminal_cause,
+        BreakawayTerminalCause::ConfirmationSafetyFault as u8
+    );
+    assert_eq!(report.has_safety_fault, 1);
+    // The forward direction's real evidence still survives on the safety-fault
+    // path, not just the exclusion path.
+    assert_eq!(report.forward_eligible_mask, 0b1111);
 }
 
 #[test]

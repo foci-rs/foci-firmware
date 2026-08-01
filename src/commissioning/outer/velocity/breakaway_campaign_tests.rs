@@ -2008,6 +2008,99 @@ fn confirmation_evidence_excluded_after_a_recorded_stroke_reports_partial_eviden
     assert!(safety.is_none());
 }
 
+/// Residual 2 (same bug class as FIX D(b)): `confirmation_fault`/
+/// `confirmation_safety_fault` are reachable from every confirmation stroke
+/// state (`WriteGain` through `Recover`), including the states `Advance`'s
+/// successors reach after an earlier stroke already folded real evidence.
+/// A `SafetyFault` on stroke 2+ must report that partial evidence, not the
+/// empty zero-stroke fixture -- exactly the same requirement
+/// `ConfirmationEvidenceExcluded` already meets.
+#[test]
+fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
+    let plan = confirmation_plan(724);
+    let mut session =
+        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
+    // One earlier forward stroke succeeded before a later stroke hit a safety
+    // fault, folding a real eligible observation into slot 0 exactly as
+    // `BandConfirmationState::Advance` does.
+    let atom = DiscoveryObservationAtom {
+        mean_rate_q: 750_000,
+        variance_of_mean_q2: 58_752_225,
+        target_rate_q: 1_000_000,
+        direction: VelocityDirection::Forward,
+    };
+    session
+        .forward
+        .record(0, VelocityObservationClass::Eligible, None, atom);
+
+    let inputs = stage_c_inputs(2_448);
+    let safety = test_safety();
+    let backend = test_backend();
+    let mut evidence_sequence = 0_u16;
+    let fault = zero_safety_fault(crate::commissioning::types::OUTER_SAFETY_FAULT_QUARTER_TURN);
+    let advance = confirmation_done_advance(
+        BandConfirmationOutcome::SafetyFault {
+            error: CommissionError::SafetyEnvelopeViolation,
+            safety: Some(fault),
+        },
+        &session,
+        &inputs,
+        &safety,
+        &backend,
+        &mut evidence_sequence,
+    );
+    let CampaignAdvance::Emit { now, next } = advance else {
+        panic!("expected an Emit advance");
+    };
+    let BreakawayCampaignEvent::ConfirmationTerminal {
+        terminal,
+        forward,
+        reverse,
+    } = now
+    else {
+        panic!("expected the confirmation terminal, got {now:?}");
+    };
+
+    assert_eq!(
+        terminal.terminal_cause,
+        BreakawayTerminalCause::ConfirmationSafetyFault as u8
+    );
+    assert_eq!(terminal.accepted, 0);
+    // The retained-safety-fault flag survives the switch to the
+    // partial-evidence reporter.
+    assert_eq!(terminal.has_safety_fault, 1);
+    // The forward direction's one recorded stroke survives -- unlike the
+    // pre-fix behavior, which routed every mid-block SafetyFault through the
+    // all-zero zero-stroke fixture and falsely claimed no confirmation work
+    // happened.
+    assert_eq!(forward.observations[0], Some(atom));
+    assert_eq!(
+        terminal.forward_eligible_mask, 0b0001,
+        "only the one recorded slot is eligible"
+    );
+    // The reverse direction genuinely never ran a stroke.
+    assert_eq!(
+        reverse.observations,
+        [None; CONSENSUS_OBSERVATIONS_PER_DIRECTION]
+    );
+    assert_eq!(terminal.reverse_eligible_mask, 0);
+    assert_eq!(terminal.reverse_included_mask, 0);
+
+    let EmitContinuation::Terminal {
+        done:
+            BreakawayCampaignOutcome::Terminal {
+                error,
+                safety: safety_fault,
+            },
+        ..
+    } = next
+    else {
+        panic!("a non-accept confirmation outcome must be a Terminal step");
+    };
+    assert_eq!(error, CommissionError::SafetyEnvelopeViolation);
+    assert_eq!(safety_fault, Some(fault));
+}
+
 // --- 6d routing: an impossible discovery outcome maps to InvalidSchedule -------
 
 #[test]
