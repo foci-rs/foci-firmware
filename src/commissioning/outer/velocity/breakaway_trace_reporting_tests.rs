@@ -194,6 +194,17 @@ fn encode_raw_observation_has_stable_frame_layout() {
         mean_rate_q: -0x0102_0304_0506_0708,
         variance_of_mean_q2: 0x1112_1314_1516_1718_191a_1b1c_1d1e_1f20,
         target_rate_q: 0x2122_2324_2526_2728,
+        stationarity_code: 4,
+        settled_rate_low_q: -0x3132_3334_3536_3738,
+        settled_rate_high_q: 0x4142_4344_4546_4748,
+        deficit_low_q: -0x5152_5354_5556_5758,
+        deficit_high_q: 0x6162_6364_6566_6768,
+        predicted_torque_target_abs: 0x7172,
+        usable_torque_limit: 0x8182,
+        hard_torque_limit: 0x9192,
+        disturbance_present: 1,
+        disturbance_low_q16: -0x0102_0304,
+        disturbance_high_q16: 0x0506_0708,
     };
     let record = encode_raw_observation(report);
     let expected = Expected::new()
@@ -207,7 +218,18 @@ fn encode_raw_observation_has_stable_frame_layout() {
         .u8(report.direction)
         .i64(report.mean_rate_q)
         .u128(report.variance_of_mean_q2)
-        .i64(report.target_rate_q);
+        .i64(report.target_rate_q)
+        .u8(report.stationarity_code)
+        .i64(report.settled_rate_low_q)
+        .i64(report.settled_rate_high_q)
+        .i64(report.deficit_low_q)
+        .i64(report.deficit_high_q)
+        .u16(report.predicted_torque_target_abs)
+        .u16(report.usable_torque_limit)
+        .u16(report.hard_torque_limit)
+        .u8(report.disturbance_present)
+        .i32(report.disturbance_low_q16)
+        .i32(report.disturbance_high_q16);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -486,6 +508,17 @@ fn every_encoder_uses_a_distinct_local_tag() {
             mean_rate_q: 0,
             variance_of_mean_q2: 0,
             target_rate_q: 0,
+            stationarity_code: 0,
+            settled_rate_low_q: 0,
+            settled_rate_high_q: 0,
+            deficit_low_q: 0,
+            deficit_high_q: 0,
+            predicted_torque_target_abs: 0,
+            usable_torque_limit: 0,
+            hard_torque_limit: 0,
+            disturbance_present: 0,
+            disturbance_low_q16: 0,
+            disturbance_high_q16: 0,
         })
         .as_bytes()[0],
         encode_discovery_terminal(AdditiveDiscoveryTerminal {

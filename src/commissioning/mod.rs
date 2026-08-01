@@ -2137,9 +2137,16 @@ mod tests {
             // the live physical context diverges from the one the confirmation
             // evidence was gathered under. Deliberate, bounded retained state;
             // still well under the audited F407 ceiling.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_504);
+            // The independent-replay hardening adds 48 B: each
+            // pending discovery/confirmation observation now retains the frozen
+            // classify/consensus inputs (stationarity code, settled-rate and
+            // deficit edges, torque authority, disturbance interval) so an
+            // offline decoder derives the consensus masks itself instead of
+            // trusting firmware's. Deliberate, bounded, still well under the
+            // audited F407 ceiling.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_552);
         }
-        assert!(size_of::<CommissioningEngine>() <= 5_504);
+        assert!(size_of::<CommissioningEngine>() <= 5_552);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);

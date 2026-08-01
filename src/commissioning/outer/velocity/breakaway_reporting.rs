@@ -42,7 +42,7 @@ use super::band_confirmation::{
     observation_interval_percent, observation_statistic,
 };
 use super::breakaway_campaign::{
-    AdditiveDiscoveryOutcome, BandConfirmationOutcome, BreakawayProbeOutcome,
+    AdditiveDiscoveryOutcome, BandConfirmationOutcome, BreakawayProbeOutcome, CollectedObservation,
 };
 use super::breakaway_plan::{AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, BreakawayProbePlan};
 use super::breakaway_search::{BreakawayMotionClass, DirectionalBreakaway};
@@ -391,23 +391,34 @@ pub(crate) fn discovery_plan_report(
 pub(crate) fn raw_observation_report(
     plan_digest: u64,
     phase: BreakawayPhase,
-    rung_index: u8,
-    slot_index: u8,
-    atom: DiscoveryObservationAtom,
+    collected: &CollectedObservation,
     run_sequence: u32,
     evidence_sequence: u16,
 ) -> BreakawayRawObservation {
+    let atom = collected.atom;
+    let inputs = collected.classifier_inputs;
     BreakawayRawObservation {
         run_sequence,
         evidence_sequence,
         plan_digest,
         phase: phase as u8,
-        rung_index,
-        slot_index,
+        rung_index: collected.rung_index,
+        slot_index: collected.slot_index,
         direction: direction_report_code(atom.direction),
         mean_rate_q: atom.mean_rate_q,
         variance_of_mean_q2: atom.variance_of_mean_q2,
         target_rate_q: atom.target_rate_q,
+        stationarity_code: inputs.stationarity_code,
+        settled_rate_low_q: inputs.settled_rate_low_q,
+        settled_rate_high_q: inputs.settled_rate_high_q,
+        deficit_low_q: inputs.deficit_low_q,
+        deficit_high_q: inputs.deficit_high_q,
+        predicted_torque_target_abs: inputs.predicted_torque_target_abs,
+        usable_torque_limit: inputs.usable_torque_limit,
+        hard_torque_limit: inputs.hard_torque_limit,
+        disturbance_present: u8::from(inputs.disturbance_present),
+        disturbance_low_q16: inputs.disturbance_low_q16,
+        disturbance_high_q16: inputs.disturbance_high_q16,
     }
 }
 

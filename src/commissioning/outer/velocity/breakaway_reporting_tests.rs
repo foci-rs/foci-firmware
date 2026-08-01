@@ -12,7 +12,9 @@ use super::super::band_confirmation::{
     ConfirmationDirectionalInput, DiscoveryObservationAtom, DiscoveryRungNominationBounds,
     plan_band_confirmation,
 };
-use super::super::breakaway_campaign::{AdditiveDiscoveryOutcome, BandConfirmationOutcome};
+use super::super::breakaway_campaign::{
+    AdditiveDiscoveryOutcome, BandConfirmationOutcome, ObservationClassifierInputs,
+};
 use super::super::breakaway_plan::{
     AdditiveDiscoveryRequest, BreakawayProbeContext, plan_additive_discovery_ladder,
     plan_breakaway_probe,
@@ -316,12 +318,28 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
         TARGET,
     );
 
+    let collected = CollectedObservation {
+        atom: source,
+        rung_index: 0,
+        slot_index: 6,
+        classifier_inputs: ObservationClassifierInputs {
+            stationarity_code: 3,
+            settled_rate_low_q: -11,
+            settled_rate_high_q: 22,
+            deficit_low_q: -33,
+            deficit_high_q: 44,
+            predicted_torque_target_abs: 55,
+            usable_torque_limit: 66,
+            hard_torque_limit: 77,
+            disturbance_present: true,
+            disturbance_low_q16: -88,
+            disturbance_high_q16: 99,
+        },
+    };
     let report = raw_observation_report(
         0x1122_3344_5566_7788,
         BreakawayPhase::Confirmation,
-        0,
-        6,
-        source,
+        &collected,
         7,
         9,
     );
@@ -342,6 +360,19 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
     assert_eq!(report.mean_rate_q, -RUNG18_MEAN);
     assert_eq!(report.variance_of_mean_q2, RUNG18_VARIANCE);
     assert_eq!(report.target_rate_q, TARGET);
+    // The frozen classify/consensus inputs also pass through verbatim, so the
+    // offline decoder derives the consensus masks itself.
+    assert_eq!(report.stationarity_code, 3);
+    assert_eq!(report.settled_rate_low_q, -11);
+    assert_eq!(report.settled_rate_high_q, 22);
+    assert_eq!(report.deficit_low_q, -33);
+    assert_eq!(report.deficit_high_q, 44);
+    assert_eq!(report.predicted_torque_target_abs, 55);
+    assert_eq!(report.usable_torque_limit, 66);
+    assert_eq!(report.hard_torque_limit, 77);
+    assert_eq!(report.disturbance_present, 1);
+    assert_eq!(report.disturbance_low_q16, -88);
+    assert_eq!(report.disturbance_high_q16, 99);
 }
 
 // --- Discovery margins -----------------------------------------------------

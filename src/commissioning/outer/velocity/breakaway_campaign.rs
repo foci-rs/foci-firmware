@@ -66,8 +66,8 @@ use foci_tmc4671::registers::{
 };
 
 use crate::autotune::velocity_measurement::{
-    DyadicBlocker, StationarityResult, StationarityWork, VELOCITY_RATE_Q_SCALE, VelocityDirection,
-    confidence_multiplier_95_df15,
+    DyadicBlocker, StationarityExclusion, StationarityResult, StationarityWork,
+    VELOCITY_RATE_Q_SCALE, VelocityDirection, confidence_multiplier_95_df15,
 };
 use crate::autotune::{CommissionError, EquivalentTorqueTargetInterval, TmcMechanicalRpm};
 use crate::commissioning::backend::CommissioningBackend;
@@ -137,7 +137,9 @@ use super::sweep_analysis::{
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, depth_three_consensus,
 };
-use super::sweep_evidence::{VelocityObservationClass, classify_velocity_observation};
+use super::sweep_evidence::{
+    VelocityObservationClass, VelocityObservationInput, classify_velocity_observation,
+};
 use super::sweep_plan::current_gain_span;
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
@@ -1110,6 +1112,7 @@ struct PendingDiscoveryRecord {
     classification: VelocityObservationClass,
     interval: Option<EquivalentTorqueTargetInterval>,
     atom: DiscoveryObservationAtom,
+    classifier_inputs: ObservationClassifierInputs,
 }
 
 /// Frozen campaign inputs and the mutable ladder-walk progress.
@@ -1332,6 +1335,83 @@ pub(crate) struct CollectedObservation {
     /// Slot within the observation's grouping (within-direction for discovery,
     /// fixed `0..=7` schedule slot for confirmation).
     pub(crate) slot_index: u8,
+    /// The frozen inputs `classify_velocity_observation` and
+    /// `depth_three_consensus` consume, streamed so an offline decoder derives
+    /// the consensus masks itself instead of trusting firmware's decision.
+    pub(crate) classifier_inputs: ObservationClassifierInputs,
+}
+
+/// The exact inputs the depth-three consensus decision consumes for one stroke,
+/// captured at classification time so they can ride the streamed raw-observation
+/// record. This is deliberately the frozen classify/consensus input set, not
+/// every capture diagnostic: `foci-trace` ports
+/// [`classify_velocity_observation`] and the depth-three consensus over these,
+/// reproducing `collected_mask`/`eligible_mask`/`included_mask` independently
+/// Firmware's own masks are never authoritative replay inputs.
+#[derive(Debug, Clone, Copy, defmt::Format)]
+pub(crate) struct ObservationClassifierInputs {
+    /// Stationarity outcome: `0` usable, otherwise the exclusion reason code
+    /// (see [`stationarity_wire_code`]).
+    pub(crate) stationarity_code: u8,
+    /// Inclusive lower settled-rate confidence edge.
+    pub(crate) settled_rate_low_q: i64,
+    /// Inclusive upper settled-rate confidence edge.
+    pub(crate) settled_rate_high_q: i64,
+    /// Inclusive lower signed-deficit confidence edge.
+    pub(crate) deficit_low_q: i64,
+    /// Inclusive upper signed-deficit confidence edge.
+    pub(crate) deficit_high_q: i64,
+    /// Predicted absolute velocity-controller torque target.
+    pub(crate) predicted_torque_target_abs: u16,
+    /// Inclusive current-headroom terminus.
+    pub(crate) usable_torque_limit: u16,
+    /// Hard controller-output clip boundary.
+    pub(crate) hard_torque_limit: u16,
+    /// Whether a representable controller-domain disturbance interval exists.
+    pub(crate) disturbance_present: bool,
+    /// Lower disturbance-interval bound in equivalent torque-target Q16.16 counts
+    /// (`0` when absent).
+    pub(crate) disturbance_low_q16: i32,
+    /// Upper disturbance-interval bound in the same units (`0` when absent).
+    pub(crate) disturbance_high_q16: i32,
+}
+
+/// Map a [`StationarityResult`] to its compact wire code: `0` usable, `1..=6`
+/// the precise exclusion reason. The reason is carried (not just usable/excluded)
+/// so an offline decoder reproduces the exact `StationarityExcluded` class
+/// variant, matching [`classify_velocity_observation`].
+fn stationarity_wire_code(result: StationarityResult) -> u8 {
+    match result {
+        StationarityResult::Usable(_) => 0,
+        StationarityResult::Excluded(StationarityExclusion::NoBlockingPlateau) => 1,
+        StationarityResult::Excluded(StationarityExclusion::TooFewDecorrelatedBlocks) => 2,
+        StationarityResult::Excluded(StationarityExclusion::ResolvedSlope) => 3,
+        StationarityResult::Excluded(StationarityExclusion::StructuredResidual) => 4,
+        StationarityResult::Excluded(StationarityExclusion::Arithmetic) => 5,
+        StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift) => 6,
+    }
+}
+
+/// Capture the frozen classify/consensus inputs from a built
+/// [`VelocityObservationInput`] at classification time.
+fn observation_classifier_inputs(input: &VelocityObservationInput) -> ObservationClassifierInputs {
+    let (disturbance_present, disturbance_low_q16, disturbance_high_q16) = match input.disturbance {
+        Some((_, interval)) => (true, interval.low().raw(), interval.high().raw()),
+        None => (false, 0, 0),
+    };
+    ObservationClassifierInputs {
+        stationarity_code: stationarity_wire_code(input.stationarity),
+        settled_rate_low_q: input.settled_rate_low_q,
+        settled_rate_high_q: input.settled_rate_high_q,
+        deficit_low_q: input.deficit_low_q,
+        deficit_high_q: input.deficit_high_q,
+        predicted_torque_target_abs: input.predicted_torque_target_abs,
+        usable_torque_limit: input.usable_torque_limit,
+        hard_torque_limit: input.hard_torque_limit,
+        disturbance_present,
+        disturbance_low_q16,
+        disturbance_high_q16,
+    }
 }
 
 /// Terminal result of a complete additive discovery campaign.
@@ -1814,6 +1894,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     target_rate_q,
                     direction: session.direction,
                 },
+                classifier_inputs: observation_classifier_inputs(&input),
             });
             workspace.analysis.reset();
             workspace.observations.clear();
@@ -2008,6 +2089,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                             atom: record.atom,
                             rung_index: session.rung_index,
                             slot_index: session.slot,
+                            classifier_inputs: record.classifier_inputs,
                         }),
                         None => AdditiveDiscoveryStep::ReadyNow,
                     }
@@ -2164,6 +2246,7 @@ struct PendingConfirmationRecord {
     classification: VelocityObservationClass,
     interval: Option<EquivalentTorqueTargetInterval>,
     atom: DiscoveryObservationAtom,
+    classifier_inputs: ObservationClassifierInputs,
 }
 
 /// Terminal result of the held-out confirmation campaign.
@@ -2773,6 +2856,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     target_rate_q,
                     direction: session.current_direction(),
                 },
+                classifier_inputs: observation_classifier_inputs(&input),
             });
             workspace.analysis.reset();
             workspace.observations.clear();
@@ -2969,6 +3053,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                             atom: record.atom,
                             rung_index: 0,
                             slot_index,
+                            classifier_inputs: record.classifier_inputs,
                         }),
                         None => BandConfirmationStep::ReadyNow,
                     }
@@ -3469,9 +3554,7 @@ fn raw_observation_step(
     let report = super::breakaway_reporting::raw_observation_report(
         plan_digest,
         phase,
-        collected.rung_index,
-        collected.slot_index,
-        collected.atom,
+        &collected,
         run_sequence,
         sequence,
     );

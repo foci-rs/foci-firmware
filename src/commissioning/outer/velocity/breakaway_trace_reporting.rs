@@ -153,6 +153,19 @@ pub(crate) fn encode_raw_observation(
     push_i64(&mut record, report.mean_rate_q);
     push_u128(&mut record, report.variance_of_mean_q2);
     push_i64(&mut record, report.target_rate_q);
+    // Frozen classify/consensus inputs, so an offline decoder derives the
+    // consensus masks itself. Order is the decode contract.
+    record.push_u8(report.stationarity_code);
+    push_i64(&mut record, report.settled_rate_low_q);
+    push_i64(&mut record, report.settled_rate_high_q);
+    push_i64(&mut record, report.deficit_low_q);
+    push_i64(&mut record, report.deficit_high_q);
+    record.push_u16(report.predicted_torque_target_abs);
+    record.push_u16(report.usable_torque_limit);
+    record.push_u16(report.hard_torque_limit);
+    record.push_u8(report.disturbance_present);
+    record.push_i32(report.disturbance_low_q16);
+    record.push_i32(report.disturbance_high_q16);
     record
 }
 

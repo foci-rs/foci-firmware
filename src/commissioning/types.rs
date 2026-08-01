@@ -1181,6 +1181,30 @@ pub struct BreakawayRawObservation {
     pub variance_of_mean_q2: u128,
     /// Positive commanded-magnitude target rate shared by both directions.
     pub target_rate_q: i64,
+    /// Frozen stationarity outcome: `0` usable, otherwise the exclusion reason
+    /// code. Lets an offline decoder reproduce the `StationarityExcluded` class.
+    pub stationarity_code: u8,
+    /// Inclusive lower settled-rate confidence edge (classify input).
+    pub settled_rate_low_q: i64,
+    /// Inclusive upper settled-rate confidence edge (classify input).
+    pub settled_rate_high_q: i64,
+    /// Inclusive lower signed-deficit confidence edge (classify input).
+    pub deficit_low_q: i64,
+    /// Inclusive upper signed-deficit confidence edge (classify input).
+    pub deficit_high_q: i64,
+    /// Predicted absolute velocity-controller torque target (classify input).
+    pub predicted_torque_target_abs: u16,
+    /// Inclusive current-headroom terminus (classify input).
+    pub usable_torque_limit: u16,
+    /// Hard controller-output clip boundary (classify input).
+    pub hard_torque_limit: u16,
+    /// Whether a representable controller-domain disturbance interval exists.
+    pub disturbance_present: u8,
+    /// Lower disturbance-interval bound in equivalent torque-target Q16.16 counts
+    /// (`0` when absent).
+    pub disturbance_low_q16: i32,
+    /// Upper disturbance-interval bound in the same units (`0` when absent).
+    pub disturbance_high_q16: i32,
 }
 
 /// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
