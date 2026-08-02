@@ -350,11 +350,47 @@ pub(crate) enum ProbeEvidenceExclusionReason {
     /// Moving-window controller evidence was invalid for classification.
     InvalidMovingEvidence = 1,
     /// Moving-window stationarity evidence excluded the observation.
+    ///
+    /// Historical v12 captures use this aggregate code. Version 13 and later
+    /// emit one of the precise stationarity codes below.
     MovingStationarityExcluded = 2,
     /// The zero-target settle window did not confirm rest.
     SettleRestUnconfirmed = 3,
     /// Origin recovery completed without confirming rest.
     RecoveryRestUnconfirmed = 4,
+    /// Moving-window evidence had no usable blocking plateau.
+    MovingNoBlockingPlateau = 5,
+    /// Moving-window evidence had too few decorrelated blocks.
+    MovingTooFewDecorrelatedBlocks = 6,
+    /// Moving-window evidence retained a resolved slope.
+    MovingResolvedSlope = 7,
+    /// Moving-window evidence failed the structured-residual gate.
+    MovingStructuredResidual = 8,
+    /// Moving-window stationarity arithmetic was not representable.
+    MovingStationarityArithmetic = 9,
+    /// Moving-window drift exceeded the configured bound.
+    MovingExcessiveDrift = 10,
+}
+
+fn probe_stationarity_exclusion_reason(
+    reason: StationarityExclusion,
+) -> ProbeEvidenceExclusionReason {
+    match reason {
+        StationarityExclusion::NoBlockingPlateau => {
+            ProbeEvidenceExclusionReason::MovingNoBlockingPlateau
+        }
+        StationarityExclusion::TooFewDecorrelatedBlocks => {
+            ProbeEvidenceExclusionReason::MovingTooFewDecorrelatedBlocks
+        }
+        StationarityExclusion::ResolvedSlope => ProbeEvidenceExclusionReason::MovingResolvedSlope,
+        StationarityExclusion::StructuredResidual => {
+            ProbeEvidenceExclusionReason::MovingStructuredResidual
+        }
+        StationarityExclusion::Arithmetic => {
+            ProbeEvidenceExclusionReason::MovingStationarityArithmetic
+        }
+        StationarityExclusion::ExcessiveDrift => ProbeEvidenceExclusionReason::MovingExcessiveDrift,
+    }
 }
 
 fn fault(error: CommissionError) -> BreakawayProbeStep {
@@ -406,9 +442,14 @@ fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
                 )
             }
         }),
-        BreakawaySearchError::ProbeEvidenceExcluded => {
+        BreakawaySearchError::ProbeEvidenceExcluded(reason) => {
             BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                ProbeEvidenceExclusionReason::MovingStationarityExcluded,
+                probe_stationarity_exclusion_reason(reason),
+            ))
+        }
+        BreakawaySearchError::InvalidEvidence => {
+            BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
+                ProbeEvidenceExclusionReason::InvalidMovingEvidence,
             ))
         }
         BreakawaySearchError::AuthorityFailure => {
@@ -701,13 +742,11 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             // origin-recovery relies on is untrustworthy, or that current is already
             // clipped, so recovery must not run another energized stroke on top of
             // this observation. Invalid controller-domain evidence is likewise an
-            // immediate terminal there. `classify_breakaway_observation`'s own
-            // `BreakawaySearchError::ProbeEvidenceExcluded` collapses
-            // `StationarityExcluded` and `InvalidEvidenceFault` into one variant, so
-            // the raw classification is inspected here to keep that distinction:
-            // sweep continues normally (settle + recovery) on `StationarityExcluded`,
-            // only short-circuiting on `InvalidEvidenceFault`. `CurrentHeadroom` is
-            // deliberately untouched: the sweep also runs settle + recovery for it.
+            // immediate terminal there. Inspecting the raw classification here keeps
+            // the timing distinction: sweep continues normally (settle + recovery)
+            // on `StationarityExcluded`, only short-circuiting on
+            // `InvalidEvidenceFault`. `CurrentHeadroom` is deliberately untouched:
+            // the sweep also runs settle + recovery for it.
             match classify_velocity_observation(input).classification {
                 VelocityObservationClass::WrongDirectionFault => {
                     return fault(CommissionError::VelocityValidationFailed);

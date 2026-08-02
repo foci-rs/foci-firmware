@@ -156,12 +156,14 @@ fn observation_classification_table() {
         Case {
             name: "stationarity exclusion -> ProbeEvidenceExcluded",
             input: stationarity_exclusion,
-            expected: Err(BreakawaySearchError::ProbeEvidenceExcluded),
+            expected: Err(BreakawaySearchError::ProbeEvidenceExcluded(
+                StationarityExclusion::ResolvedSlope,
+            )),
         },
         Case {
-            name: "invalid evidence -> ProbeEvidenceExcluded",
+            name: "invalid evidence -> InvalidEvidence",
             input: invalid_evidence,
-            expected: Err(BreakawaySearchError::ProbeEvidenceExcluded),
+            expected: Err(BreakawaySearchError::InvalidEvidence),
         },
         Case {
             name: "current headroom -> AuthorityFailure",

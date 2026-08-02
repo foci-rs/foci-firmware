@@ -14,6 +14,7 @@
 use super::sweep_evidence::{
     VelocityObservationClass, VelocityObservationInput, classify_velocity_observation,
 };
+use crate::autotune::velocity_measurement::StationarityExclusion;
 
 /// Sign-correct motion verdict for one probe observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -50,9 +51,10 @@ pub enum BreakawaySearchError {
     /// configured hard controller-output clip. The existing sweep-evidence
     /// classification is returned unchanged.
     SafetyFault(VelocityObservationClass),
-    /// Target-independent stationarity evidence, or another controller-domain
-    /// evidence field, was unusable for classification.
-    ProbeEvidenceExcluded,
+    /// Target-independent stationarity evidence was unusable for classification.
+    ProbeEvidenceExcluded(StationarityExclusion),
+    /// Another controller-domain evidence field was unusable for classification.
+    InvalidEvidence,
     /// The observation reached the inclusive usable-current boundary before a
     /// motion or inert verdict was reached.
     AuthorityFailure,
@@ -86,9 +88,11 @@ pub fn classify_breakaway_observation(
         }
         VelocityObservationClass::Inert => Ok(BreakawayMotionClass::Inert),
         VelocityObservationClass::CurrentHeadroom => Err(BreakawaySearchError::AuthorityFailure),
-        VelocityObservationClass::StationarityExcluded(_)
-        | VelocityObservationClass::InvalidEvidenceFault => {
-            Err(BreakawaySearchError::ProbeEvidenceExcluded)
+        VelocityObservationClass::StationarityExcluded(reason) => {
+            Err(BreakawaySearchError::ProbeEvidenceExcluded(reason))
+        }
+        VelocityObservationClass::InvalidEvidenceFault => {
+            Err(BreakawaySearchError::InvalidEvidence)
         }
         VelocityObservationClass::WrongDirectionFault | VelocityObservationClass::HardClipFault => {
             Err(BreakawaySearchError::SafetyFault(summary.classification))
