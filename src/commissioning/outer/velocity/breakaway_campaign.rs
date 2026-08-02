@@ -4559,19 +4559,21 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
             error,
             safety: Some(fault),
         }) => {
+            let result = fail_outer_with_safety(phase, error, fault);
             crate::diagnostic::complete_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
             );
-            fail_outer_with_safety(phase, error, fault)
+            result
         }
         BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
             error,
             safety: None,
         }) => {
+            let result = fail_outer(phase, error);
             crate::diagnostic::complete_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
             );
-            fail_outer(phase, error)
+            result
         }
     }
 }

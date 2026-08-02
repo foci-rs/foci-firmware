@@ -2927,6 +2927,64 @@ fn dispatcher_drains_campaign_closure_under_a_persistent_budget_fault() {
     );
 }
 
+/// A reset immediately after the completed breadcrumb becomes visible must
+/// observe the matching outer terminal phase already installed. Otherwise the
+/// next boot suppresses a completed-only breadcrumb for a terminal that the
+/// outer engine never actually handled.
+#[test]
+fn terminal_phase_precedes_completed_breadcrumb_for_all_failure_kinds() {
+    let safety_fault =
+        zero_safety_fault(crate::commissioning::types::OUTER_SAFETY_FAULT_QUARTER_TURN);
+    for retained_safety in [None, Some(safety_fault)] {
+        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+        crate::diagnostic::begin_breakaway_campaign();
+        let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign");
+        campaign.pending_done = Some(BreakawayCampaignOutcome::Terminal {
+            error: CommissionError::SafetyEnvelopeViolation,
+            safety: retained_safety,
+        });
+        let mut phase = OuterPhase::BreakawayCampaign {
+            campaign,
+            workspace: BreakawayProbeWorkspace::new(),
+            safety: test_safety(),
+        };
+        let mut backend = test_backend();
+
+        crate::diagnostic::panic_after_breakaway_completion_for_test();
+        let reset = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pollster::block_on(step_breakaway_campaign_with_trace(&mut phase, &mut backend));
+        }));
+
+        assert!(
+            reset.is_err(),
+            "the reset injection must interrupt completion"
+        );
+        match retained_safety {
+            Some(expected_fault) => assert!(
+                matches!(
+                    phase,
+                    OuterPhase::FailedWithSafety {
+                        error: CommissionError::SafetyEnvelopeViolation,
+                        safety_fault,
+                    } if safety_fault == expected_fault
+                ),
+                "the safety terminal phase must precede the completed breadcrumb"
+            ),
+            None => assert!(
+                matches!(
+                    phase,
+                    OuterPhase::Failed(CommissionError::SafetyEnvelopeViolation)
+                ),
+                "the ordinary terminal phase must precede the completed breadcrumb"
+            ),
+        }
+        assert_breakaway_breadcrumb(
+            crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+            false,
+        );
+    }
+}
+
 /// Same fault path, but while a discovery phase owns the campaign: the closure
 /// record's phase and terminal cause must track whichever phase was actually
 /// active, not always report `Probe`.

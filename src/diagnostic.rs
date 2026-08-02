@@ -130,6 +130,9 @@ static LAST_BOOT_BREAKAWAY_BREADCRUMB: AtomicU32 = AtomicU32::new(0);
 #[cfg(test)]
 std::thread_local! {
     static TEST_BREAKAWAY_BREADCRUMB: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    static PANIC_AFTER_BREAKAWAY_COMPLETION: core::cell::Cell<bool> = const {
+        core::cell::Cell::new(false)
+    };
 }
 
 #[cfg(not(test))]
@@ -189,6 +192,12 @@ pub fn checkpoint_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
 /// Mark a handled breakaway-campaign terminal boundary completed.
 pub fn complete_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
     store_persistent_breakaway_breadcrumb(checkpoint, true);
+    #[cfg(test)]
+    PANIC_AFTER_BREAKAWAY_COMPLETION.with(|armed| {
+        if armed.replace(false) {
+            panic!("simulated reset after breakaway completion");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -200,6 +209,11 @@ pub(crate) fn set_breakaway_breadcrumb_raw_for_test(raw: u32) {
 #[cfg(test)]
 pub(crate) fn current_breakaway_breadcrumb_for_test() -> Option<BreakawayBreadcrumb> {
     decode_breakaway_breadcrumb(TEST_BREAKAWAY_BREADCRUMB.with(core::cell::Cell::get))
+}
+
+#[cfg(test)]
+pub(crate) fn panic_after_breakaway_completion_for_test() {
+    PANIC_AFTER_BREAKAWAY_COMPLETION.with(|armed| armed.set(true));
 }
 
 /// Origin of a persisted last-boot fault record.
