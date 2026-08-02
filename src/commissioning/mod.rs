@@ -599,6 +599,12 @@ impl CommissioningEngine {
     /// [`OuterPhase::BreakawayCampaign`], reusing the outer safety envelope the
     /// base constructor derived. No motion is commanded; the probe's first stroke
     /// is only reachable through the engine step loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommissionError::EncoderFault`] when the campaign's frozen encoder
+    /// domain is invalid, or [`CommissionError::InvalidSchedule`] when its planned
+    /// velocity cannot configure the independent safety envelope.
     #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn new_outer_for_tmc_with_breakaway_campaign(
         oid: u8,
@@ -606,7 +612,7 @@ impl CommissioningEngine {
         params: OuterTuneParams,
         entry_snapshot: EntrySnapshot,
         campaign: crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign,
-    ) -> Self {
+    ) -> Result<Self, CommissionError> {
         let run_sequence = campaign.run_sequence();
         let mut engine = Self::new_outer_for_tmc_with_trace_seq(
             oid,
@@ -620,16 +626,20 @@ impl CommissioningEngine {
         };
         let old_phase =
             core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
-        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
+        let OuterPhase::VelocitySweep { mut safety, .. } = old_phase else {
             unreachable!("trace outer constructor must enter Stage B")
         };
+        safety
+            .configure_velocity_sweep_encoder_resolution(campaign.encoder_counts_per_rev())
+            .map_err(|_| CommissionError::EncoderFault)?;
+        safety.configure_velocity_envelope(campaign.planned_velocity_mrev_s())?;
         *phase = OuterPhase::BreakawayCampaign {
             campaign,
             workspace:
                 crate::commissioning::outer::velocity::breakaway_campaign::BreakawayProbeWorkspace::new(),
             safety,
         };
-        engine
+        Ok(engine)
     }
 
     /// Derive the exact Stage-C continuation plan without changing the live phase.
@@ -2726,6 +2736,189 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
+    fn breakaway_safety_engine() -> CommissioningEngine {
+        use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
+        use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
+
+        let params = sample_outer_params();
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: params.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: params.requested_velocity_source,
+            max_stroke_travel_mrev: params.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: params.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: params.positive_position_headroom_mrev,
+            max_duration_ms: params.max_duration_ms,
+        };
+        let (campaign, _workflow) =
+            plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
+                .expect("valid breakaway campaign");
+        CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+            0,
+            tmc_state(),
+            params,
+            sample_entry_snapshot(),
+            campaign,
+        )
+        .expect("valid safety configuration")
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn backend_has_register_write(
+        backend: &crate::commission_dispatch::test_support::MockBackend,
+    ) -> bool {
+        backend
+            .spi_log
+            .iter()
+            .any(|operation| matches!(operation, SpiOp::Write(_, _)))
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_safety_constructor_rejects_an_invalid_velocity_envelope() {
+        use crate::autotune::TmcMechanicalRpm;
+        use crate::commissioning::outer::velocity::breakaway_campaign::{
+            BreakawayCampaign, BreakawayCampaignRequest,
+        };
+        use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
+
+        let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
+            target_velocity_rpm: TmcMechanicalRpm::from_register(100),
+            planned_velocity_mrev_s: 0,
+            hard_torque_limit: 2_816,
+            limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+            max_duration_ms: 3_000,
+            nominal_workflow_ms: 400_000,
+            maximum_workflow_ms: 450_000,
+            channel: 0,
+            run_sequence: 42,
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+        })
+        .expect("campaign planning does not consume the runtime velocity envelope");
+
+        let result = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+            0,
+            tmc_state(),
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            campaign,
+        );
+
+        assert!(matches!(result, Err(CommissionError::InvalidSchedule)));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_safety_is_configured_and_armed_before_the_first_gain_write() {
+        use crate::commissioning::outer::velocity::breakaway_campaign::{
+            BreakawayCampaignPhase, BreakawayProbeState,
+        };
+        use crate::commissioning::types::{BreakawayCampaignEvent, StepResult};
+
+        pollster::block_on(async {
+            let mut engine = breakaway_safety_engine();
+            let EngineMode::Outer {
+                phase: OuterPhase::BreakawayCampaign { campaign, .. },
+                ..
+            } = &engine.engine_mode
+            else {
+                panic!("breakaway constructor must install the campaign")
+            };
+            assert!(matches!(
+                campaign.phase(),
+                BreakawayCampaignPhase::Probe {
+                    state: BreakawayProbeState::PlannedProbe,
+                    ..
+                }
+            ));
+
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+            backend.current_limit_value = current_limit(2_816);
+            backend.mechanical_encoder_position_counts_value = 1_234;
+
+            let first = engine.step(&mut backend).await;
+            assert!(matches!(
+                first,
+                StepResult::BreakawayCampaignEvent(BreakawayCampaignEvent::ProbePlanned(_))
+            ));
+            assert!(!backend_has_register_write(&backend));
+
+            let second = engine.step(&mut backend).await;
+            assert!(matches!(second, StepResult::ReadyNow));
+            assert!(!backend_has_register_write(&backend));
+
+            let EngineMode::Outer {
+                phase:
+                    OuterPhase::BreakawayCampaign {
+                        campaign, safety, ..
+                    },
+                ..
+            } = &engine.engine_mode
+            else {
+                panic!("safety setup must retain the breakaway campaign")
+            };
+            assert!(matches!(
+                campaign.phase(),
+                BreakawayCampaignPhase::Probe {
+                    state: BreakawayProbeState::WriteGain,
+                    ..
+                }
+            ));
+            assert_eq!(safety.torque_cap, 2_816);
+            assert_eq!(safety.counts_per_rev(), 4_000);
+            assert!(safety.next_safety_deadline().is_some());
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    async fn assert_breakaway_safety_context_change_fails_before_write(
+        change_backend: impl FnOnce(&mut crate::commission_dispatch::test_support::MockBackend),
+    ) {
+        use crate::commissioning::types::{BreakawayCampaignEvent, StepResult};
+
+        let mut engine = breakaway_safety_engine();
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        backend.current_limit_value = current_limit(2_816);
+
+        let planned = engine.step(&mut backend).await;
+        assert!(matches!(
+            planned,
+            StepResult::BreakawayCampaignEvent(BreakawayCampaignEvent::ProbePlanned(_))
+        ));
+        change_backend(&mut backend);
+
+        for _ in 0..4 {
+            let step = engine.step(&mut backend).await;
+            assert!(!backend_has_register_write(&backend));
+            if matches!(
+                step,
+                StepResult::OuterFailed(CommissionError::InvalidSchedule)
+            ) {
+                return;
+            }
+        }
+        panic!("changed breakaway context must terminate with InvalidSchedule");
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_safety_rejects_changed_encoder_resolution_before_write() {
+        pollster::block_on(assert_breakaway_safety_context_change_fails_before_write(
+            |backend| backend.mechanical_encoder_quadrature_counts_per_rev_value = 8_000,
+        ));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_safety_rejects_changed_current_limit_before_write() {
+        pollster::block_on(assert_breakaway_safety_context_change_fails_before_write(
+            |backend| backend.current_limit_value = current_limit(2_448),
+        ));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn breakaway_command_enters_the_campaign_and_reports_its_torque_limit() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
@@ -2760,7 +2953,8 @@ mod tests {
             params,
             sample_entry_snapshot(),
             campaign,
-        );
+        )
+        .expect("valid breakaway safety configuration");
         assert!(matches!(
             engine.engine_mode,
             EngineMode::Outer {
@@ -2809,11 +3003,12 @@ mod tests {
                 params,
                 sample_entry_snapshot(),
                 campaign,
-            );
+            )
+            .expect("valid breakaway safety configuration");
             let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
 
             // The probe plan freezes and is reported before its first stroke
-            // (`PlannedProbe -> WriteGain` touches no SPI register), so this
+            // (`PlannedProbe -> SetupSafety` touches no SPI register), so this
             // one tick is enough to reach it.
             let result = engine.step(&mut backend).await;
             assert!(

@@ -260,6 +260,8 @@ impl BreakawayProbeSession {
 pub(crate) enum BreakawayProbeState {
     /// The frozen plan and cursors are admitted; no stroke has been issued yet.
     PlannedProbe,
+    /// Validate the frozen physical context and arm the campaign safety baseline.
+    SetupSafety,
     /// Write the search-grid gain and the outer-velocity ramp mode.
     WriteGain,
     /// Arm the current clamp and command the signed velocity target.
@@ -421,6 +423,28 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
 ) -> BreakawayProbeStep {
     match state {
         BreakawayProbeState::PlannedProbe => {
+            *state = BreakawayProbeState::SetupSafety;
+            BreakawayProbeStep::ReadyNow
+        }
+        BreakawayProbeState::SetupSafety => {
+            let frozen = session.plan.context;
+            if backend.mechanical_encoder_quadrature_counts_per_rev()
+                != frozen.encoder_counts_per_rev
+                || u16::from(backend.current_limit()) != frozen.hard_torque_limit
+            {
+                return fault(CommissionError::InvalidSchedule);
+            }
+            let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
+                Ok(value) => value,
+                Err(_) => return fault(CommissionError::Spi),
+            };
+            if safety.set_encoder_baseline(encoder_raw).is_err() {
+                return fault(CommissionError::EncoderFault);
+            }
+            safety.torque_cap = frozen.hard_torque_limit;
+            if let Err(error) = safety.arm_safety_observation(backend.elapsed_us()) {
+                return fault(error);
+            }
             *state = BreakawayProbeState::WriteGain;
             BreakawayProbeStep::ReadyNow
         }
@@ -460,7 +484,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(target) => target.raw(),
                 Err(_) => return fault(CommissionError::InvalidSchedule),
             };
-            let hard_limit = u16::from(backend.current_limit());
+            let hard_limit = session.plan.context.hard_torque_limit;
             let mut clamp_session =
                 match VelocityCurrentClampSession::try_new(u32::from(hard_limit)) {
                     Ok(session) => session,
@@ -604,7 +628,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
                 target_velocity_rpm: session.target_velocity_rpm,
                 usable_torque_limit: workspace.current_observer.clamp_limit(),
-                hard_torque_limit: u16::from(backend.current_limit()),
+                hard_torque_limit: session.plan.context.hard_torque_limit,
                 initial_lead_in: false,
                 confidence_family_size: PROBE_CONFIDENCE_FAMILY_SIZE,
                 counts_per_rev: safety.counts_per_rev(),
@@ -774,7 +798,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(p) => p,
                 Err(error) => return search_error_outcome(error),
             };
-            let hard_limit = u16::from(backend.current_limit());
+            let hard_limit = session.plan.context.hard_torque_limit;
             let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
                 Ok(limit) => limit,
                 Err(_) => return fault(CommissionError::InvalidSchedule),
@@ -1687,7 +1711,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 Ok(target) => target.raw(),
                 Err(_) => return discovery_fault(CommissionError::InvalidSchedule),
             };
-            let hard_limit = u16::from(backend.current_limit());
+            let hard_limit = safety.torque_cap;
             let mut clamp_session =
                 match VelocityCurrentClampSession::try_new(u32::from(hard_limit)) {
                     Ok(session) => session,
@@ -1831,7 +1855,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
                 target_velocity_rpm: session.target_velocity_rpm,
                 usable_torque_limit: workspace.current_observer.clamp_limit(),
-                hard_torque_limit: u16::from(backend.current_limit()),
+                hard_torque_limit: safety.torque_cap,
                 initial_lead_in: false,
                 confidence_family_size: session.plan.confidence_family_size,
                 counts_per_rev: safety.counts_per_rev(),
@@ -2026,7 +2050,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 Ok(p) => p,
                 Err(error) => return discovery_fault(error),
             };
-            let hard_limit = u16::from(backend.current_limit());
+            let hard_limit = safety.torque_cap;
             let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
                 Ok(limit) => limit,
                 Err(_) => return discovery_fault(CommissionError::InvalidSchedule),
@@ -2652,7 +2676,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 Ok(target) => target.raw(),
                 Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
             };
-            let hard_limit = u16::from(backend.current_limit());
+            let hard_limit = safety.torque_cap;
             let mut clamp_session =
                 match VelocityCurrentClampSession::try_new(u32::from(hard_limit)) {
                     Ok(session) => session,
@@ -2793,7 +2817,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
                 target_velocity_rpm: session.target_velocity_rpm,
                 usable_torque_limit: workspace.current_observer.clamp_limit(),
-                hard_torque_limit: u16::from(backend.current_limit()),
+                hard_torque_limit: safety.torque_cap,
                 initial_lead_in: false,
                 confidence_family_size: CONFIRMATION_FAMILY_SIZE,
                 counts_per_rev: safety.counts_per_rev(),
@@ -2985,7 +3009,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
             };
             let p = session.plan.candidate_p;
-            let hard_limit = u16::from(backend.current_limit());
+            let hard_limit = safety.torque_cap;
             let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
                 Ok(limit) => limit,
                 Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
@@ -3321,6 +3345,16 @@ impl BreakawayCampaign {
     /// (`hard_torque_limit` in [`BreakawayCampaignInputs`]).
     pub(crate) const fn hard_torque_limit(&self) -> u16 {
         self.inputs.hard_torque_limit
+    }
+
+    /// Encoder counts per mechanical revolution frozen before campaign motion.
+    pub(crate) const fn encoder_counts_per_rev(&self) -> u32 {
+        self.inputs.encoder_counts_per_rev
+    }
+
+    /// Planned encoder-domain velocity amplitude frozen before campaign motion.
+    pub(crate) const fn planned_velocity_mrev_s(&self) -> u32 {
+        self.inputs.planned_velocity_mrev_s
     }
 
     /// The active campaign phase, for engine-adapter routing and test scripting.
@@ -4199,10 +4233,10 @@ fn confirmation_done_advance<B: CommissioningBackend>(
 /// issued yet), report that phase's plan-freeze event(s) and advance past the
 /// interception point, mirroring
 /// [`super::sweep::step_velocity_sweep_with_trace`]'s `Setup` arm: mutate the
-/// state and return the event in the same tick, so the next tick continues
-/// straight into the phase's first stroke. Returns `None` once the active
-/// phase has left its `Planned*` state, so the caller falls through to the
-/// normal per-tick driver dispatch.
+/// state and return the event in the same tick. The probe's next tick performs
+/// its motion-free safety setup; discovery and confirmation continue into their
+/// first stroke. Returns `None` once the active phase has left its `Planned*`
+/// state, so the caller falls through to the normal per-tick driver dispatch.
 fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<BreakawayCampaignStep> {
     let BreakawayCampaign {
         inputs,
@@ -4223,7 +4257,7 @@ fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<Breakawa
                 inputs.run_sequence,
                 sequence,
             );
-            *state = BreakawayProbeState::WriteGain;
+            *state = BreakawayProbeState::SetupSafety;
             Some(BreakawayCampaignStep::Event(
                 BreakawayCampaignEvent::ProbePlanned(report),
             ))

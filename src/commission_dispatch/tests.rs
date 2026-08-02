@@ -3107,6 +3107,7 @@ fn breakaway_campaign_engine() -> CommissioningEngine {
         sample_entry_snapshot(),
         campaign,
     )
+    .expect("valid breakaway safety configuration")
 }
 
 /// A breakaway campaign that fails on a safety envelope violation must be safely

@@ -58,7 +58,7 @@ fn test_probe_context() -> BreakawayProbeContext {
     BreakawayProbeContext {
         workflow_digest: 0xA1B2_C3D4_E5F6_0718,
         target_velocity_rpm: 600,
-        hard_torque_limit: 2_816,
+        hard_torque_limit: 2_448,
         usable_torque_limit: 2_048,
         pwm_hz: 25_000,
         encoder_counts_per_rev: 4_000,
@@ -150,10 +150,81 @@ fn no_register_traffic_happens_before_the_planned_probe_state_advances() {
     ));
 
     assert!(matches!(result, BreakawayProbeStep::ReadyNow));
-    assert_eq!(state, BreakawayProbeState::WriteGain);
+    assert_eq!(state, BreakawayProbeState::SetupSafety);
     assert!(
         backend.spi_log.is_empty(),
         "PlannedProbe must not touch the backend"
+    );
+}
+
+#[test]
+fn breakaway_safety_baseline_is_not_reset_when_a_later_probe_stroke_begins() {
+    use crate::commissioning::outer::velocity::breakaway_search::BreakawayMotionClass;
+
+    let plan = test_plan();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session =
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::Advance;
+    let mut safety = test_safety();
+    safety.unwrapped_position = 137;
+    let original_baseline = safety.prev_encoder_count;
+    session.pending_class = Some(Ok(BreakawayMotionClass::Inert));
+    let mut backend = test_backend();
+    backend.mechanical_encoder_position_counts_value = 2_000;
+
+    let result = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+
+    assert!(matches!(result, BreakawayProbeStep::ReadyNow));
+    assert_eq!(state, BreakawayProbeState::WriteGain);
+    assert_eq!(safety.prev_encoder_count, original_baseline);
+    assert_eq!(safety.unwrapped_position, 137);
+    assert!(backend.spi_log.is_empty());
+}
+
+#[test]
+fn breakaway_safety_probe_uses_frozen_authority_after_setup() {
+    let plan = test_plan();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session =
+        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::CommandTarget;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    backend.current_limit_value = current_limit(250);
+
+    let result = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+
+    assert!(matches!(result, BreakawayProbeStep::At(_)));
+    let programmed_clamp = backend
+        .spi_log
+        .iter()
+        .find_map(|operation| match operation {
+            SpiOp::Write(address, value)
+                if *address == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr() =>
+            {
+                Some(*value)
+            }
+            _ => None,
+        });
+    assert_eq!(
+        programmed_clamp,
+        Some(current_limit(2_203).register_value()),
+        "the 90% probe clamp must derive from frozen 2_448, not live 250"
     );
 }
 
@@ -474,12 +545,13 @@ fn discovery_request() -> AdditiveDiscoveryRequest {
 /// default), so the commanded-side rate is exactly `100 * 4_000 / 60_000 = 20 / 3`
 /// counts per 1 ms tick: a numerator of `5` is exactly 75% of target (inside the
 /// confirmable 70-80% band), `2` is 30% (below it), and `8` is 120% (above it).
-/// `current_limit_raw` lets headroom-focused tests narrow the usable-current
-/// boundary without perturbing this ratio -- current headroom depends only on
-/// `p * target_rpm`, never on the encoder script.
+/// `frozen_hard_limit_raw` lets headroom-focused tests narrow the campaign-owned
+/// usable-current boundary without perturbing this ratio -- current headroom
+/// depends only on `p * target_rpm`, never on the encoder script or a later live
+/// current-limit read.
 fn run_discovery(
     request: AdditiveDiscoveryRequest,
-    current_limit_raw: u32,
+    frozen_hard_limit_raw: u32,
     mut response_numerator: impl FnMut(VelocityDirection, u8) -> i32,
 ) -> (
     AdditiveDiscoveryOutcome,
@@ -492,8 +564,8 @@ fn run_discovery(
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = AdditiveDiscoveryState::PlannedDiscovery;
     let mut safety = test_safety();
+    safety.torque_cap = u16::try_from(frozen_hard_limit_raw).expect("test limit fits u16");
     let mut backend = test_backend();
-    backend.current_limit_value = current_limit(current_limit_raw);
 
     let mut encoder_count: i32 = 0;
     let mut stroke_numerator = 0_i32;
@@ -1138,7 +1210,7 @@ fn confirmable_discovery_rungs(p_raw: u16) -> CollectedInBandRungs {
 /// internally), and the sequence of commanded directions in stroke order.
 fn run_confirmation(
     discovery_outcome: AdditiveDiscoveryOutcome,
-    current_limit_raw: u32,
+    frozen_hard_limit_raw: u32,
     mut response_numerator: impl FnMut(VelocityDirection, u8) -> i32,
 ) -> (
     BandConfirmationOutcome,
@@ -1157,8 +1229,8 @@ fn run_confirmation(
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BandConfirmationState::PlannedConfirmation;
     let mut safety = test_safety();
+    safety.torque_cap = u16::try_from(frozen_hard_limit_raw).expect("test limit fits u16");
     let mut backend = test_backend();
-    backend.current_limit_value = current_limit(current_limit_raw);
 
     let mut encoder_count: i32 = 0;
     let mut stroke_numerator = 0_i32;
@@ -1840,7 +1912,7 @@ fn a_new_campaign_starts_planned_and_its_first_step_issues_no_motion() {
     assert!(matches!(
         campaign.phase(),
         BreakawayCampaignPhase::Probe {
-            state: BreakawayProbeState::WriteGain,
+            state: BreakawayProbeState::SetupSafety,
             ..
         }
     ));

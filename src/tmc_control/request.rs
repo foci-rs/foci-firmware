@@ -1058,15 +1058,29 @@ where
                         );
                     }
                     TuneRoute::Breakaway(campaign) => {
-                        runtime.set_commission_engine(
-                            CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+                        let engine =
+                            match CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
                                 oid,
                                 tmc_state,
                                 outer_params,
                                 entry_snapshot,
                                 campaign,
-                            ),
-                        );
+                            ) {
+                                Ok(engine) => engine,
+                                Err(error) => {
+                                    board
+                                        .tmc_state()
+                                        .commission_in_flight
+                                        .store(false, core::sync::atomic::Ordering::Relaxed);
+                                    emit_commission_phase_failure::<Board, Spi>(
+                                        board,
+                                        oid,
+                                        error.status_code(),
+                                    );
+                                    return TmcControlRequestOutcome::skip_tick_tail();
+                                }
+                            };
+                        runtime.set_commission_engine(engine);
                     }
                 }
             }
