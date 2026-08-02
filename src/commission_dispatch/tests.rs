@@ -1,9 +1,11 @@
 #![allow(unused_imports)]
 //! Tests for drive_commission_result. Populated per-variant in Tasks 12-18.
 
+#[cfg(feature = "trace-velocity-sweep")]
+use super::test_support::breakaway_campaign_engine;
 use super::test_support::{
-    MockBackend, SpiOp, accepted_commission_result as sample_commission_result,
-    breakaway_campaign_engine, fresh_state_locals, sample_entry_snapshot, sample_outer_params,
+    MockBackend, SpiOp, accepted_commission_result as sample_commission_result, fresh_state_locals,
+    sample_entry_snapshot, sample_outer_params,
 };
 use super::*;
 use crate::autotune::CommissionProfile;
