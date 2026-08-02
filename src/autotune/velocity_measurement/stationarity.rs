@@ -87,12 +87,18 @@ pub struct StationarySuffix {
 pub struct SuffixDiagnostic {
     /// Number of raw observations in this suffix.
     pub suffix_len: u16,
+    /// Exact blocker selection retained when post-fit metrics were available.
+    ///
+    /// `None` means the suffix failed before a plateau could be selected.
+    pub selection: Option<PlateauSelection>,
     /// Whether the blocker found a usable two-doubling plateau.
     pub usable_plateau: bool,
     /// Whether the fitted slope confidence interval contains zero.
     pub slope_passed: bool,
     /// Whether the lag-one residual confidence interval contains its null.
     pub lag_one_passed: bool,
+    /// Lag-one residual correlation scaled by one million.
+    pub lag_one_q: i32,
     /// Outward-rounded settled-rate confidence interval.
     pub settled_rate_interval_q: [i64; 2],
     /// Positive clearance or negative rejection beyond the slope interval.
@@ -257,8 +263,8 @@ enum StationarityWorkStage {
 #[derive(Debug, Clone, Copy)]
 struct StructuredStationarityAccumulator {
     binding_exclusion: StationarityExclusion,
-    /// Gate statistics of the suffix that bound the exclusion.
-    binding: SuffixDiagnostic,
+    /// Compact inputs needed to reconstruct the binding post-fit diagnostic.
+    binding: RetainedPostFitDiagnostic,
     passing_suffix_mask: u8,
     common_interval_valid: bool,
     common_rate_interval_q: [i64; 2],
@@ -266,6 +272,59 @@ struct StructuredStationarityAccumulator {
     binding_lag_one_margin_q: i32,
     /// Drift ratio evaluated for the binding suffix, or [`u32::MAX`] if none was.
     binding_drift_ratio_ppm: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetainedPostFitDiagnostic {
+    selection: PlateauSelection,
+    suffix_len: u16,
+    slope_q: i64,
+    slope_half_width_q: u64,
+    lag_one_q: i32,
+}
+
+impl RetainedPostFitDiagnostic {
+    fn from_diagnostic(diagnostic: SuffixDiagnostic) -> Result<Self, VelocityMeasurementError> {
+        Ok(Self {
+            selection: diagnostic
+                .selection
+                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?,
+            suffix_len: diagnostic.suffix_len,
+            slope_q: diagnostic.slope_q,
+            slope_half_width_q: diagnostic.slope_half_width_q,
+            lag_one_q: diagnostic.lag_one_q,
+        })
+    }
+
+    fn reconstruct(
+        self,
+        slope_rejection_margin_q: i64,
+        lag_one_rejection_margin_q: i32,
+    ) -> Result<SuffixDiagnostic, VelocityMeasurementError> {
+        let confidence = estimate_confidence(self.selection, 3)?;
+        let mean_rate_q = self.selection.exact_totals.rate_q()?;
+        let half_width = i64::try_from(confidence.half_width_rate_q)
+            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+        let low = mean_rate_q
+            .checked_sub(half_width)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        let high = mean_rate_q
+            .checked_add(half_width)
+            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+        Ok(SuffixDiagnostic {
+            suffix_len: self.suffix_len,
+            selection: Some(self.selection),
+            usable_plateau: true,
+            slope_passed: slope_rejection_margin_q >= 0,
+            lag_one_passed: lag_one_rejection_margin_q >= 0,
+            lag_one_q: self.lag_one_q,
+            settled_rate_interval_q: [low, high],
+            slope_rejection_margin_q,
+            lag_one_rejection_margin_q,
+            slope_q: self.slope_q,
+            slope_half_width_q: self.slope_half_width_q,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -300,17 +359,17 @@ impl StructuredStationarityAccumulator {
         binding_exclusion: StationarityExclusion,
         binding: SuffixDiagnostic,
         binding_drift_ratio_ppm: u32,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, VelocityMeasurementError> {
+        Ok(Self {
             binding_exclusion,
-            binding,
+            binding: RetainedPostFitDiagnostic::from_diagnostic(binding)?,
             passing_suffix_mask: 0,
             common_interval_valid: binding.usable_plateau,
             common_rate_interval_q: binding.settled_rate_interval_q,
             binding_slope_margin_q: binding.slope_rejection_margin_q,
             binding_lag_one_margin_q: binding.lag_one_rejection_margin_q,
             binding_drift_ratio_ppm,
-        }
+        })
     }
 
     fn observe(&mut self, suffix_index: u8, diagnostic: SuffixDiagnostic) {
@@ -938,7 +997,7 @@ impl StationarityWork {
                                 exclusion,
                                 diagnostic,
                                 metrics.drift_ratio_ppm,
-                            ),
+                            )?,
                         );
                         self.advance_structured(observations, blocker, suffix_index, None)
                     }
@@ -1071,9 +1130,13 @@ impl StationarityWork {
             return Ok(StationarityWorkPoll::Pending);
         }
         self.stage = StationarityWorkStage::Done;
+        let rejection = accumulator.binding.reconstruct(
+            accumulator.binding_slope_margin_q,
+            accumulator.binding_lag_one_margin_q,
+        )?;
         Ok(StationarityWorkPoll::Complete {
             result: StationarityResult::Excluded(accumulator.binding_exclusion),
-            rejection: Some(accumulator.binding),
+            rejection: Some(rejection),
             drift_ratio_ppm: accumulator.binding_drift_ratio_ppm,
         })
     }
@@ -1345,9 +1408,11 @@ where
     let Some(selection) = blocker.select_plateau() else {
         return Ok(SuffixDiagnostic {
             suffix_len,
+            selection: None,
             usable_plateau: false,
             slope_passed: false,
             lag_one_passed: false,
+            lag_one_q: 0,
             settled_rate_interval_q: [0, 0],
             slope_q: 0,
             slope_half_width_q: 0,
@@ -1358,6 +1423,13 @@ where
     let block_observations = 1usize
         .checked_shl(u32::from(selection.level))
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
+    let block_observations_u32 = u32::try_from(block_observations)
+        .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+    if u32::from(suffix_len) % block_observations_u32 != 0
+        || selection.block_count != u32::from(suffix_len) / block_observations_u32
+    {
+        return Err(VelocityMeasurementError::ArithmeticOverflow);
+    }
     let settled = SettledRateContext {
         mean_rate_q: selection.exact_totals.rate_q()?,
         half_width_rate_q: estimate_confidence(selection, 3)?.half_width_rate_q,
@@ -1392,15 +1464,42 @@ fn suffix_diagnostic_from_metrics(
         .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
     Ok(SuffixDiagnostic {
         suffix_len,
+        selection: Some(selection),
         usable_plateau: true,
         slope_passed: metrics.slope_passed,
         lag_one_passed: metrics.lag_one_passed,
+        lag_one_q: metrics.lag_one_q,
         settled_rate_interval_q: [low, high],
         slope_rejection_margin_q: metrics.slope_rejection_margin_q,
         lag_one_rejection_margin_q: metrics.lag_one_rejection_margin_q,
         slope_q: metrics.slope_q,
         slope_half_width_q: metrics.slope_half_width_q,
     })
+}
+
+/// Re-evaluate the lag-one residual gate for a declared confidence family.
+///
+/// This uses the same point estimate, selected block population, null, and
+/// family-scaled half-width as the binding stationarity classifier. It permits a
+/// caller with a predeclared family larger than the stationarity diagnostic's
+/// family of three to reproduce the gate without reusing that narrower verdict.
+pub fn lag_one_passes_family(
+    lag_one_q: i32,
+    block_count: u32,
+    family_size: u16,
+) -> Result<bool, VelocityMeasurementError> {
+    if block_count < 3 {
+        return Err(VelocityMeasurementError::ArithmeticOverflow);
+    }
+    let multiplier = confidence_multiplier_95_df15(family_size)?;
+    let block_count = block_count as f32;
+    let lag_one = lag_one_q as f32 / LAG_ONE_Q_SCALE;
+    let lag_null = -1.0 / block_count;
+    let lag_half_width = multiplier / libm::sqrtf(block_count);
+    if !lag_one.is_finite() || !lag_half_width.is_finite() {
+        return Err(VelocityMeasurementError::ArithmeticOverflow);
+    }
+    Ok(lag_half_width - libm::fabsf(lag_one - lag_null) >= 0.0)
 }
 
 /// Select the longest stationary suffix from a fixed random-access source.

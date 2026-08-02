@@ -2,8 +2,9 @@ use super::super::sweep_evidence::VelocityObservationClass;
 use super::super::sweep_evidence::VelocityObservationInput;
 use super::super::sweep_plan::{MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS};
 use super::{
-    BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
-    DirectionalBreakaway, classify_breakaway_observation, resolve_campaign_breakaway,
+    BelowBoundaryDisposition, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
+    DirectionalBreakaway, ProbeProductivityClass, classify_breakaway_observation,
+    resolve_campaign_breakaway,
 };
 use crate::autotune::velocity_measurement::{
     PlateauSelection, RateBlock, StationarityExclusion, StationarityResult, StationarySuffix,
@@ -17,6 +18,9 @@ use foci_tmc4671::pid::PidPGain;
 /// (8); the trace capacity leaves headroom so a runaway stub overflows loudly
 /// instead of silently truncating.
 const TRACE_CAPACITY: usize = 16;
+const INERT: ProbeProductivityClass =
+    ProbeProductivityClass::BelowProductive(BelowBoundaryDisposition::Inert);
+const PRODUCTIVE: ProbeProductivityClass = ProbeProductivityClass::Productive;
 
 fn stationary() -> StationarityResult {
     StationarityResult::Usable(StationarySuffix {
@@ -42,6 +46,56 @@ fn stationary() -> StationarityResult {
     })
 }
 
+#[test]
+fn excessive_drift_productivity_preserves_probe_local_precedence() {
+    let mut transient = base_input(VelocityDirection::Forward);
+    transient.stationarity = StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift);
+    transient.disturbance = None;
+    transient.disturbance_variance_q2 = 0;
+    transient.drift_ratio_ppm = 200_001;
+    transient.post_fit_lag_one_state = 2;
+
+    assert_eq!(
+        classify_breakaway_observation(transient),
+        Ok(ProbeProductivityClass::BelowProductive(
+            BelowBoundaryDisposition::Transient
+        ))
+    );
+
+    let mut inert = transient;
+    inert.settled_rate_low_q = -1;
+    inert.settled_rate_high_q = 1;
+    assert_eq!(
+        classify_breakaway_observation(inert),
+        Ok(ProbeProductivityClass::BelowProductive(
+            BelowBoundaryDisposition::Inert
+        ))
+    );
+
+    let mut structured = transient;
+    structured.post_fit_lag_one_state = 1;
+    assert_eq!(
+        classify_breakaway_observation(structured),
+        Err(BreakawaySearchError::ProbeEvidenceExcluded(
+            StationarityExclusion::StructuredResidual
+        ))
+    );
+
+    let mut unavailable = transient;
+    unavailable.post_fit_lag_one_state = 0;
+    assert_eq!(
+        classify_breakaway_observation(unavailable),
+        Err(BreakawaySearchError::InvalidEvidence)
+    );
+
+    let mut authority = transient;
+    authority.predicted_torque_target_abs = authority.usable_torque_limit;
+    assert_eq!(
+        classify_breakaway_observation(authority),
+        Err(BreakawaySearchError::AuthorityFailure)
+    );
+}
+
 fn interval(low: i32, high: i32) -> EquivalentTorqueTargetInterval {
     EquivalentTorqueTargetInterval::new(
         EquivalentTorqueTargetQ16::from_raw(low),
@@ -65,6 +119,7 @@ fn base_input(direction: VelocityDirection) -> VelocityObservationInput {
         settled_rate_low_q,
         settled_rate_high_q,
         settled_rate_mean_q: (settled_rate_low_q + settled_rate_high_q) / 2,
+        variance_of_mean_q2: 4,
         deficit_low_q,
         deficit_high_q,
         disturbance: Some((EquivalentTorqueTargetQ16::from_raw(point), ci)),
@@ -74,6 +129,7 @@ fn base_input(direction: VelocityDirection) -> VelocityObservationInput {
         hard_torque_limit: 1_000,
         initial_lead_in: false,
         drift_ratio_ppm: u32::MAX,
+        post_fit_lag_one_state: 2,
     }
 }
 
@@ -84,7 +140,7 @@ fn observation_classification_table() {
     struct Case {
         name: &'static str,
         input: VelocityObservationInput,
-        expected: Result<BreakawayMotionClass, BreakawaySearchError>,
+        expected: Result<ProbeProductivityClass, BreakawaySearchError>,
     }
 
     let interval_contains_zero = {
@@ -127,17 +183,17 @@ fn observation_classification_table() {
         Case {
             name: "interval contains zero -> Inert",
             input: interval_contains_zero,
-            expected: Ok(BreakawayMotionClass::Inert),
+            expected: Ok(INERT),
         },
         Case {
             name: "correct-sign excludes zero (forward) -> Moving",
             input: correct_sign_forward,
-            expected: Ok(BreakawayMotionClass::Moving),
+            expected: Ok(PRODUCTIVE),
         },
         Case {
             name: "correct-sign excludes zero (reverse) -> Moving",
             input: correct_sign_reverse,
-            expected: Ok(BreakawayMotionClass::Moving),
+            expected: Ok(PRODUCTIVE),
         },
         Case {
             name: "wrong-sign excludes zero -> SafetyFault",
@@ -205,8 +261,8 @@ fn simulate_directional_search(
             .push(next_index)
             .expect("simulated search stayed within the trace capacity");
         let class = match true_breakaway {
-            Some(threshold) if next_index >= threshold => BreakawayMotionClass::Moving,
-            _ => BreakawayMotionClass::Inert,
+            Some(threshold) if next_index >= threshold => PRODUCTIVE,
+            _ => INERT,
         };
         match cursor.advance(Ok(class)) {
             Ok(BreakawaySearchStep::Probe(index)) => next_index = index,
@@ -338,11 +394,7 @@ fn contradictory_inert_repeat_yields_unstable_breakaway() {
     let scripted_bisection = [(10, false), (15, true), (13, false), (14, true)];
     for (expected_index, moving) in scripted_bisection {
         assert_eq!(next_index, expected_index);
-        let class = if moving {
-            BreakawayMotionClass::Moving
-        } else {
-            BreakawayMotionClass::Inert
-        };
+        let class = if moving { PRODUCTIVE } else { INERT };
         match cursor.advance(Ok(class)).unwrap() {
             BreakawaySearchStep::Probe(index) => next_index = index,
             BreakawaySearchStep::Resolved(_) => panic!("resolved before the mandatory repeat"),
@@ -350,7 +402,7 @@ fn contradictory_inert_repeat_yields_unstable_breakaway() {
     }
     // The bisection converged and the cursor now expects the inert repeat at 13.
     assert_eq!(next_index, 13);
-    let outcome = cursor.advance(Ok(BreakawayMotionClass::Moving));
+    let outcome = cursor.advance(Ok(PRODUCTIVE));
     assert_eq!(outcome, Err(BreakawaySearchError::UnstableBreakaway));
 }
 
@@ -360,24 +412,48 @@ fn contradictory_moving_repeat_yields_unstable_breakaway() {
     let scripted_bisection = [(10, false), (15, true), (13, false), (14, true)];
     for (expected_index, moving) in scripted_bisection {
         assert_eq!(next_index, expected_index);
-        let class = if moving {
-            BreakawayMotionClass::Moving
-        } else {
-            BreakawayMotionClass::Inert
-        };
+        let class = if moving { PRODUCTIVE } else { INERT };
         match cursor.advance(Ok(class)).unwrap() {
             BreakawaySearchStep::Probe(index) => next_index = index,
             BreakawaySearchStep::Resolved(_) => panic!("resolved before the mandatory repeat"),
         }
     }
     assert_eq!(next_index, 13);
-    match cursor.advance(Ok(BreakawayMotionClass::Inert)).unwrap() {
+    match cursor.advance(Ok(INERT)).unwrap() {
         BreakawaySearchStep::Probe(index) => next_index = index,
         BreakawaySearchStep::Resolved(_) => panic!("resolved before the moving repeat"),
     }
     assert_eq!(next_index, 14);
-    let outcome = cursor.advance(Ok(BreakawayMotionClass::Inert));
+    let outcome = cursor.advance(Ok(INERT));
     assert_eq!(outcome, Err(BreakawaySearchError::UnstableBreakaway));
+}
+
+#[test]
+fn lower_endpoint_repeat_accumulates_inert_and_transient_dispositions() {
+    let (mut cursor, mut next_index) = BreakawaySearchCursor::start(20).unwrap();
+    let scripted_bisection = [(10, INERT), (15, PRODUCTIVE), (13, INERT), (14, PRODUCTIVE)];
+    for (expected_index, class) in scripted_bisection {
+        assert_eq!(next_index, expected_index);
+        match cursor.advance(Ok(class)).unwrap() {
+            BreakawaySearchStep::Probe(index) => next_index = index,
+            BreakawaySearchStep::Resolved(_) => panic!("resolved before the mandatory repeat"),
+        }
+    }
+    assert_eq!(next_index, 13);
+    match cursor
+        .advance(Ok(ProbeProductivityClass::BelowProductive(
+            BelowBoundaryDisposition::Transient,
+        )))
+        .unwrap()
+    {
+        BreakawaySearchStep::Probe(index) => next_index = index,
+        BreakawaySearchStep::Resolved(_) => panic!("resolved before the productive repeat"),
+    }
+    assert_eq!(next_index, 14);
+    let BreakawaySearchStep::Resolved(resolved) = cursor.advance(Ok(PRODUCTIVE)).unwrap() else {
+        panic!("the confirmed productive endpoint must resolve the bracket");
+    };
+    assert_eq!(resolved.lower_disposition_mask, 0b11);
 }
 
 // --- FIX E: all-inert bisection must confirm the authority boundary once ---------
@@ -394,7 +470,7 @@ fn all_inert_cursor_at_the_repeat(rung_count: u8) -> (BreakawaySearchCursor, u8)
     let (mut cursor, mut next_index) = BreakawaySearchCursor::start(rung_count).unwrap();
     loop {
         let previous_index = next_index;
-        match cursor.advance(Ok(BreakawayMotionClass::Inert)).unwrap() {
+        match cursor.advance(Ok(INERT)).unwrap() {
             BreakawaySearchStep::Probe(index) => next_index = index,
             BreakawaySearchStep::Resolved(breakaway) => {
                 panic!("an all-inert grid must never resolve a moving bracket: {breakaway:?}")
@@ -427,7 +503,7 @@ fn all_inert_confirming_repeat_yields_no_motion_at_authority() {
     let rung_count = 20;
     let (mut cursor, pending_index) = all_inert_cursor_at_the_repeat(rung_count);
     assert_eq!(pending_index, rung_count - 1);
-    let outcome = cursor.advance(Ok(BreakawayMotionClass::Inert));
+    let outcome = cursor.advance(Ok(INERT));
     assert_eq!(outcome, Err(BreakawaySearchError::NoMotionAtAuthority));
 }
 
@@ -438,7 +514,7 @@ fn all_inert_contradictory_repeat_yields_unstable_breakaway() {
     assert_eq!(pending_index, rung_count - 1);
     // The repeat now reads moving: the earlier inert read at the top rung was not
     // reproducible, so the search must not silently accept it.
-    let outcome = cursor.advance(Ok(BreakawayMotionClass::Moving));
+    let outcome = cursor.advance(Ok(PRODUCTIVE));
     assert_eq!(outcome, Err(BreakawaySearchError::UnstableBreakaway));
 }
 
@@ -480,6 +556,7 @@ fn directional_breakaway(inert_index: Option<u8>, moving_index: u8) -> Direction
         inert_index,
         moving_index,
         observations: 7,
+        lower_disposition_mask: u8::from(inert_index.is_some()),
     }
 }
 

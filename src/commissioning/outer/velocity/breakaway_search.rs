@@ -14,7 +14,9 @@
 use super::sweep_evidence::{
     VelocityObservationClass, VelocityObservationInput, classify_velocity_observation,
 };
-use crate::autotune::velocity_measurement::StationarityExclusion;
+use crate::autotune::velocity_measurement::{
+    MAX_MOVING_DRIFT_PPM, StationarityExclusion, StationarityResult,
+};
 
 /// Sign-correct motion verdict for one probe observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -23,6 +25,33 @@ pub enum BreakawayMotionClass {
     Inert,
     /// The sign-correct settled-rate confidence interval excludes zero.
     Moving,
+}
+
+/// Observable reason one probe response remains below the productive boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum BelowBoundaryDisposition {
+    /// The family-16 settled-rate interval contains zero.
+    Inert,
+    /// The axis responded but excessive drift prevented a stationary result.
+    Transient,
+}
+
+impl BelowBoundaryDisposition {
+    const fn mask(self) -> u8 {
+        match self {
+            Self::Inert => 1,
+            Self::Transient => 2,
+        }
+    }
+}
+
+/// Probe-local productive-boundary verdict for one completed observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum ProbeProductivityClass {
+    /// The observation is below the productive boundary for the stated reason.
+    BelowProductive(BelowBoundaryDisposition),
+    /// A usable stationary response excludes zero on the commanded side.
+    Productive,
 }
 
 /// Resolved inert/moving bracket for one signed probe direction.
@@ -38,6 +67,11 @@ pub struct DirectionalBreakaway {
     /// Total probe observations spent resolving this direction, including the
     /// mandatory bracket-repeat confirmation(s).
     pub observations: u8,
+    /// Dispositions observed at the confirmed lower endpoint.
+    ///
+    /// Bit 0 records inert and bit 1 records transient. Zero means the resolved
+    /// productive endpoint was the grid floor and no lower endpoint existed.
+    pub lower_disposition_mask: u8,
 }
 
 /// Failure to resolve a directional or campaign breakaway before motion continues.
@@ -80,13 +114,67 @@ pub enum BreakawaySearchError {
 /// `wrong_direction` and `moving` predicates.
 pub fn classify_breakaway_observation(
     input: VelocityObservationInput,
-) -> Result<BreakawayMotionClass, BreakawaySearchError> {
+) -> Result<ProbeProductivityClass, BreakawaySearchError> {
+    if matches!(
+        input.stationarity,
+        StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift)
+    ) {
+        let valid_intervals = input.settled_rate_low_q <= input.settled_rate_high_q
+            && input.deficit_low_q <= input.deficit_high_q
+            && input.usable_torque_limit <= input.hard_torque_limit;
+        if !valid_intervals
+            || input.drift_ratio_ppm == u32::MAX
+            || input.drift_ratio_ppm <= MAX_MOVING_DRIFT_PPM
+        {
+            return Err(BreakawaySearchError::InvalidEvidence);
+        }
+        if input.predicted_torque_target_abs >= input.hard_torque_limit {
+            return Err(BreakawaySearchError::SafetyFault(
+                VelocityObservationClass::HardClipFault,
+            ));
+        }
+        let wrong_direction = match input.direction {
+            crate::autotune::velocity_measurement::VelocityDirection::Forward => {
+                input.settled_rate_high_q < 0
+            }
+            crate::autotune::velocity_measurement::VelocityDirection::Reverse => {
+                input.settled_rate_low_q > 0
+            }
+        };
+        if wrong_direction {
+            return Err(BreakawaySearchError::SafetyFault(
+                VelocityObservationClass::WrongDirectionFault,
+            ));
+        }
+        if input.predicted_torque_target_abs >= input.usable_torque_limit {
+            return Err(BreakawaySearchError::AuthorityFailure);
+        }
+        match input.post_fit_lag_one_state {
+            0 => return Err(BreakawaySearchError::InvalidEvidence),
+            1 => {
+                return Err(BreakawaySearchError::ProbeEvidenceExcluded(
+                    StationarityExclusion::StructuredResidual,
+                ));
+            }
+            2 => {}
+            _ => return Err(BreakawaySearchError::InvalidEvidence),
+        }
+        let contains_zero = input.settled_rate_low_q <= 0 && input.settled_rate_high_q >= 0;
+        return Ok(ProbeProductivityClass::BelowProductive(if contains_zero {
+            BelowBoundaryDisposition::Inert
+        } else {
+            BelowBoundaryDisposition::Transient
+        }));
+    }
+
     let summary = classify_velocity_observation(input);
     match summary.classification {
         VelocityObservationClass::Eligible | VelocityObservationClass::DeficitUnresolved => {
-            Ok(BreakawayMotionClass::Moving)
+            Ok(ProbeProductivityClass::Productive)
         }
-        VelocityObservationClass::Inert => Ok(BreakawayMotionClass::Inert),
+        VelocityObservationClass::Inert => Ok(ProbeProductivityClass::BelowProductive(
+            BelowBoundaryDisposition::Inert,
+        )),
         VelocityObservationClass::CurrentHeadroom => Err(BreakawaySearchError::AuthorityFailure),
         VelocityObservationClass::StationarityExcluded(reason) => {
             Err(BreakawaySearchError::ProbeEvidenceExcluded(reason))
@@ -160,6 +248,7 @@ pub struct BreakawaySearchCursor {
     pending_index: u8,
     boundary_inert: Option<u8>,
     boundary_moving: Option<u8>,
+    lower_disposition_mask: u8,
 }
 
 impl BreakawaySearchCursor {
@@ -187,6 +276,7 @@ impl BreakawaySearchCursor {
                 pending_index,
                 boundary_inert: None,
                 boundary_moving: None,
+                lower_disposition_mask: 0,
             },
             pending_index,
         ))
@@ -200,7 +290,7 @@ impl BreakawaySearchCursor {
     /// unchanged.
     pub fn advance(
         &mut self,
-        outcome: Result<BreakawayMotionClass, BreakawaySearchError>,
+        outcome: Result<ProbeProductivityClass, BreakawaySearchError>,
     ) -> Result<BreakawaySearchStep, BreakawaySearchError> {
         let class = outcome?;
         self.observations = self
@@ -217,15 +307,16 @@ impl BreakawaySearchCursor {
 
     fn advance_bisecting(
         &mut self,
-        class: BreakawayMotionClass,
+        class: ProbeProductivityClass,
     ) -> Result<BreakawaySearchStep, BreakawaySearchError> {
         let tested = self.pending_index;
         match class {
-            BreakawayMotionClass::Moving => self.hi = tested,
-            BreakawayMotionClass::Inert => {
+            ProbeProductivityClass::Productive => self.hi = tested,
+            ProbeProductivityClass::BelowProductive(disposition) => {
                 self.lo = tested
                     .checked_add(1)
                     .ok_or(BreakawaySearchError::Arithmetic)?;
+                self.lower_disposition_mask = disposition.mask();
             }
         }
         if self.lo < self.hi {
@@ -259,11 +350,12 @@ impl BreakawaySearchCursor {
 
     fn advance_confirm_inert(
         &mut self,
-        class: BreakawayMotionClass,
+        class: ProbeProductivityClass,
     ) -> Result<BreakawaySearchStep, BreakawaySearchError> {
-        if class != BreakawayMotionClass::Inert {
+        let ProbeProductivityClass::BelowProductive(disposition) = class else {
             return Err(BreakawaySearchError::UnstableBreakaway);
-        }
+        };
+        self.lower_disposition_mask |= disposition.mask();
         let moving_index = self
             .boundary_moving
             .ok_or(BreakawaySearchError::Arithmetic)?;
@@ -274,9 +366,9 @@ impl BreakawaySearchCursor {
 
     fn advance_confirm_moving(
         &mut self,
-        class: BreakawayMotionClass,
+        class: ProbeProductivityClass,
     ) -> Result<BreakawaySearchStep, BreakawaySearchError> {
-        if class != BreakawayMotionClass::Moving {
+        if class != ProbeProductivityClass::Productive {
             return Err(BreakawaySearchError::UnstableBreakaway);
         }
         let moving_index = self
@@ -286,16 +378,19 @@ impl BreakawaySearchCursor {
             inert_index: self.boundary_inert,
             moving_index,
             observations: self.observations,
+            lower_disposition_mask: self.lower_disposition_mask,
         }))
     }
 
     fn advance_confirm_all_inert_boundary(
         &mut self,
-        class: BreakawayMotionClass,
+        class: ProbeProductivityClass,
     ) -> Result<BreakawaySearchStep, BreakawaySearchError> {
         match class {
-            BreakawayMotionClass::Inert => Err(BreakawaySearchError::NoMotionAtAuthority),
-            BreakawayMotionClass::Moving => Err(BreakawaySearchError::UnstableBreakaway),
+            ProbeProductivityClass::BelowProductive(_) => {
+                Err(BreakawaySearchError::NoMotionAtAuthority)
+            }
+            ProbeProductivityClass::Productive => Err(BreakawaySearchError::UnstableBreakaway),
         }
     }
 }

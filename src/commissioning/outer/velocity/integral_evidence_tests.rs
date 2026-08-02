@@ -89,6 +89,7 @@ fn intrinsic_stage_c_classification_never_requires_disturbance() {
         settled_rate_low_q: 10,
         settled_rate_high_q: 20,
         settled_rate_mean_q: 15,
+        variance_of_mean_q2: 0,
         deficit_low_q: -20,
         deficit_high_q: -10,
         disturbance: None,
@@ -98,6 +99,7 @@ fn intrinsic_stage_c_classification_never_requires_disturbance() {
         hard_torque_limit: 2_816,
         initial_lead_in: false,
         drift_ratio_ppm: u32::MAX,
+        post_fit_lag_one_state: 2,
     };
 
     let summary = classify_integral_observation(input);
@@ -117,15 +119,17 @@ fn structured_motion_remains_ineligible_despite_target_response() {
         settled_rate_low_q: 17_248_000,
         settled_rate_high_q: 17_600_000,
         settled_rate_mean_q: 17_424_000,
+        variance_of_mean_q2: 0,
         deficit_low_q: 0,
         deficit_high_q: 352_000,
         disturbance: None,
         disturbance_variance_q2: 0,
-        predicted_torque_target_abs: 100,
-        usable_torque_limit: 2_816,
+        predicted_torque_target_abs: 2_534,
+        usable_torque_limit: 2_534,
         hard_torque_limit: 2_816,
         initial_lead_in: false,
         drift_ratio_ppm: u32::MAX,
+        post_fit_lag_one_state: 0,
     };
 
     assert_eq!(

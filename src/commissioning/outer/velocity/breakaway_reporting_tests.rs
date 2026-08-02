@@ -162,6 +162,7 @@ fn directional_breakaway_report_resolves_gains_from_grid_indices() {
         inert_index: Some(2),
         moving_index: 3,
         observations: 5,
+        lower_disposition_mask: 1,
     };
 
     let report = directional_breakaway_report(&plan, VelocityDirection::Forward, &breakaway, 1, 0);
@@ -185,6 +186,7 @@ fn directional_breakaway_report_clears_inert_when_clamped_at_breakaway() {
         inert_index: None,
         moving_index: 0,
         observations: 2,
+        lower_disposition_mask: 0,
     };
 
     let report = directional_breakaway_report(&plan, VelocityDirection::Reverse, &breakaway, 1, 1);

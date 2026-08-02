@@ -130,6 +130,8 @@ pub struct VelocityObservationInput {
     pub settled_rate_high_q: i64,
     /// Exact time-weighted settled-rate mean.
     pub settled_rate_mean_q: i64,
+    /// Selected variance of the settled-rate mean before any confidence multiplier.
+    pub variance_of_mean_q2: u128,
     /// Inclusive lower signed-deficit confidence edge.
     pub deficit_low_q: i64,
     /// Inclusive upper signed-deficit confidence edge.
@@ -151,6 +153,8 @@ pub struct VelocityObservationInput {
     /// Sourced from the suffix on a usable result and from the completion
     /// envelope otherwise. [`u32::MAX`] means no finite reportable ratio.
     pub drift_ratio_ppm: u32,
+    /// Post-fit lag-one state: 0 unavailable, 1 failed, 2 passed.
+    pub post_fit_lag_one_state: u8,
 }
 
 /// Analysis-only classification for one completed observation.
@@ -1562,6 +1566,7 @@ mod tests {
             settled_rate_low_q,
             settled_rate_high_q,
             settled_rate_mean_q: (settled_rate_low_q + settled_rate_high_q) / 2,
+            variance_of_mean_q2: 4,
             deficit_low_q,
             deficit_high_q,
             disturbance: Some((EquivalentTorqueTargetQ16::from_raw(point), ci)),
@@ -1571,6 +1576,7 @@ mod tests {
             hard_torque_limit: 1_000,
             initial_lead_in: false,
             drift_ratio_ppm: u32::MAX,
+            post_fit_lag_one_state: 2,
         }
     }
 
@@ -1731,6 +1737,7 @@ mod tests {
     fn stationarity_exclusion_survives_observation_classification() {
         let mut excluded = input(VelocityDirection::Forward);
         excluded.stationarity = StationarityResult::Excluded(StationarityExclusion::ResolvedSlope);
+        excluded.predicted_torque_target_abs = excluded.usable_torque_limit;
 
         assert_eq!(
             classify_velocity_observation(excluded).classification,

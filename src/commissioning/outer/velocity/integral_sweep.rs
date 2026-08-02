@@ -1263,6 +1263,7 @@ fn moving_analysis(
         settled_rate_low_q: 0,
         settled_rate_high_q: 0,
         settled_rate_mean_q: 0,
+        variance_of_mean_q2: 0,
         deficit_low_q: 0,
         deficit_high_q: 0,
         disturbance: None,
@@ -1272,6 +1273,7 @@ fn moving_analysis(
         hard_torque_limit: data.plan.hard_torque_limit,
         initial_lead_in: data.rung_index == 0 && data.slot == 0,
         drift_ratio_ppm,
+        post_fit_lag_one_state: 0,
     };
     if let StationarityResult::Usable(suffix) = stationarity {
         input.drift_ratio_ppm = suffix.drift_ratio_ppm;
@@ -1285,6 +1287,8 @@ fn moving_analysis(
         let half_width = i64::try_from(confidence.half_width_rate_q)
             .map_err(|_| CommissionError::VelocityValidationFailed)?;
         input.settled_rate_mean_q = mean_rate_q;
+        input.variance_of_mean_q2 = confidence.variance_of_mean_q2;
+        input.post_fit_lag_one_state = 2;
         input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
         input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
         let signed_target = integral_target_rpm_at(data.plan, data.rung_index)
@@ -1752,7 +1756,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 i_raw: integral_i_at(data.plan, data.rung_index).unwrap_or(0),
                 summary,
                 stationarity,
-                rejection,
+                rejection: rejection.map(Into::into),
             };
             let settle_deadline_us = *settle_deadline_us;
             data.analysis.reset();

@@ -815,10 +815,19 @@ fn a_gate_rejected_tail_retains_the_margins_that_rejected_it() {
         "a ramp must not be certified stationary, got {result:?}"
     );
     let rejection = rejection.expect("a gate rejection must report its margins");
+    let selection = rejection
+        .selection
+        .expect("a post-fit rejection must retain its blocker selection");
     assert_eq!(
         rejection.suffix_len, 64,
         "the family is tried shortest first"
     );
+    assert_eq!(
+        selection.block_count,
+        u32::from(rejection.suffix_len) / (1_u32 << selection.level),
+        "the retained selection must use the binding gate's suffix block count"
+    );
+    assert!(selection.exact_totals.elapsed_us > 0);
     assert!(
         !rejection.slope_passed || !rejection.lag_one_passed,
         "at least one gate must report failure"

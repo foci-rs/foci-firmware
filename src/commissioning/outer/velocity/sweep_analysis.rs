@@ -4,9 +4,9 @@ use foci_tmc4671::pid::PidPGain;
 
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RestSelectionDecision, RestSelectionDisposition, RestStructuralCode,
-    StationarityResult, StationarityWork, StationarityWorkPoll, StationarySuffix,
-    StructuredStationarityEvidence, SuffixDiagnostic, VELOCITY_RATE_Q_SCALE, VelocityDirection,
-    VelocityObservationSource, estimate_confidence,
+    StationarityExclusion, StationarityResult, StationarityWork, StationarityWorkPoll,
+    StationarySuffix, StructuredStationarityEvidence, SuffixDiagnostic, VELOCITY_RATE_Q_SCALE,
+    VelocityDirection, VelocityObservationSource, estimate_confidence, lag_one_passes_family,
 };
 use crate::autotune::{
     CommissionError, TmcMechanicalRpm, equivalent_disturbance_from_rate,
@@ -92,6 +92,8 @@ pub(super) struct VelocityObservationInputRequest {
     pub(super) p: PidPGain,
     /// Target-independent stationary-suffix result.
     pub(super) stationarity: StationarityResult,
+    /// Post-fit evidence retained when excessive drift rejected the suffix.
+    pub(super) rejected_post_fit: Option<SuffixDiagnostic>,
     /// Drift ratio from the completion envelope, overwritten by the suffix's own
     /// ratio when `stationarity` is [`StationarityResult::Usable`].
     pub(super) drift_ratio_ppm: u32,
@@ -136,6 +138,7 @@ pub(super) fn assemble_velocity_observation_input(
         settled_rate_low_q: 0,
         settled_rate_high_q: 0,
         settled_rate_mean_q: 0,
+        variance_of_mean_q2: 0,
         deficit_low_q: 0,
         deficit_high_q: 0,
         disturbance: None,
@@ -145,6 +148,7 @@ pub(super) fn assemble_velocity_observation_input(
         hard_torque_limit: request.hard_torque_limit,
         initial_lead_in: request.initial_lead_in,
         drift_ratio_ppm: request.drift_ratio_ppm,
+        post_fit_lag_one_state: 0,
     };
     if let StationarityResult::Usable(suffix) = request.stationarity {
         input.drift_ratio_ppm = suffix.drift_ratio_ppm;
@@ -156,6 +160,8 @@ pub(super) fn assemble_velocity_observation_input(
             .rate_q()
             .map_err(|_| CommissionError::VelocityValidationFailed)?;
         input.settled_rate_mean_q = mean_rate_q;
+        input.variance_of_mean_q2 = confidence.variance_of_mean_q2;
+        input.post_fit_lag_one_state = 2;
         let half_width = i64::try_from(confidence.half_width_rate_q)
             .map_err(|_| CommissionError::VelocityValidationFailed)?;
         input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
@@ -186,6 +192,60 @@ pub(super) fn assemble_velocity_observation_input(
             request.counts_per_rev,
         )
         .map_err(|_| CommissionError::VelocityValidationFailed)?;
+    } else if matches!(
+        request.stationarity,
+        StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift)
+    ) && let Some(diagnostic) = request.rejected_post_fit
+        && let Some(selection) = diagnostic.selection
+    {
+        let block_observations = 1u32
+            .checked_shl(u32::from(selection.level))
+            .ok_or(CommissionError::VelocityValidationFailed)?;
+        if u32::from(diagnostic.suffix_len) % block_observations != 0
+            || selection.block_count != u32::from(diagnostic.suffix_len) / block_observations
+        {
+            return Err(CommissionError::VelocityValidationFailed);
+        }
+        let confidence = estimate_confidence(selection, request.confidence_family_size)
+            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        let mean_rate_q = selection
+            .exact_totals
+            .rate_q()
+            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        let half_width = i64::try_from(confidence.half_width_rate_q)
+            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        input.settled_rate_low_q = mean_rate_q
+            .checked_sub(half_width)
+            .ok_or(CommissionError::VelocityValidationFailed)?;
+        input.settled_rate_high_q = mean_rate_q
+            .checked_add(half_width)
+            .ok_or(CommissionError::VelocityValidationFailed)?;
+        if input.settled_rate_low_q > input.settled_rate_high_q {
+            return Err(CommissionError::VelocityValidationFailed);
+        }
+        input.settled_rate_mean_q = mean_rate_q;
+        input.variance_of_mean_q2 = confidence.variance_of_mean_q2;
+        input.post_fit_lag_one_state = if lag_one_passes_family(
+            diagnostic.lag_one_q,
+            selection.block_count,
+            request.confidence_family_size,
+        )
+        .map_err(|_| CommissionError::VelocityValidationFailed)?
+        {
+            2
+        } else {
+            1
+        };
+        let signed_target = request
+            .target_velocity_rpm
+            .with_direction(direction_sign(request.direction))
+            .map_err(|_| CommissionError::InvalidSchedule)?;
+        (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
+            signed_target.raw(),
+            request.counts_per_rev,
+            input.settled_rate_low_q,
+            input.settled_rate_high_q,
+        )?;
     }
     Ok(input)
 }
@@ -233,6 +293,7 @@ fn finish_moving_observation_analysis(
         direction,
         p,
         stationarity,
+        rejected_post_fit: None,
         drift_ratio_ppm,
         moving_pid_output_peak: data.current_observer.moving_pid_output_peak(),
         target_velocity_rpm: plan.target_velocity_rpm,
@@ -456,16 +517,103 @@ pub(super) fn bounded_rest_displacement(minimum: i8, maximum: i8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use foci_tmc4671::pid::PidPGain;
+
+    use crate::autotune::TmcMechanicalRpm;
     use crate::autotune::velocity_measurement::{
-        DyadicBlocker, RawVelocityObservation, RestSelectionDisposition, StationarityWork,
-        select_stationary_suffix,
+        DyadicBlocker, PlateauSelection, RateBlock, RawVelocityObservation,
+        RestSelectionDisposition, StationarityExclusion, StationarityResult, StationarityWork,
+        SuffixDiagnostic, VelocityDirection, select_stationary_suffix,
     };
     use crate::commissioning::outer::state::VelocityObservationRing;
 
     use super::{
-        ScoredRestPoll, bounded_rest_displacement, deficit_interval_q,
-        poll_scored_rest_confirmation, poll_settle_confirmation_parts,
+        ScoredRestPoll, VelocityObservationInputRequest, assemble_velocity_observation_input,
+        bounded_rest_displacement, deficit_interval_q, poll_scored_rest_confirmation,
+        poll_settle_confirmation_parts,
     };
+
+    #[test]
+    fn excessive_drift_uses_rejected_selection_at_the_requested_family() {
+        let selection = PlateauSelection {
+            level: 2,
+            block_count: 16,
+            variance_of_mean_q2: 1_024,
+            exact_totals: RateBlock {
+                delta_counts: 32,
+                elapsed_us: 64_000,
+                observation_count: 64,
+            },
+        };
+        let rejection = SuffixDiagnostic {
+            suffix_len: 64,
+            selection: Some(selection),
+            usable_plateau: true,
+            slope_passed: true,
+            lag_one_passed: false,
+            // At 16 selected blocks this misses the family-3 half-width but fits
+            // inside family 16: |-0.0625 - 0.75| = 0.8125, between 0.6734 and
+            // 0.8788. Copying the binding verdict would therefore fail this test.
+            lag_one_q: 750_000,
+            settled_rate_interval_q: [1, 2],
+            slope_rejection_margin_q: 0,
+            lag_one_rejection_margin_q: 1,
+            slope_q: 1,
+            slope_half_width_q: 1,
+        };
+
+        let input = assemble_velocity_observation_input(VelocityObservationInputRequest {
+            direction: VelocityDirection::Forward,
+            p: PidPGain::new(256).unwrap(),
+            stationarity: StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift),
+            rejected_post_fit: Some(rejection),
+            drift_ratio_ppm: 300_000,
+            moving_pid_output_peak: 1,
+            target_velocity_rpm: TmcMechanicalRpm::from_register(100),
+            usable_torque_limit: 2_000,
+            hard_torque_limit: 3_000,
+            initial_lead_in: false,
+            confidence_family_size: 16,
+            counts_per_rev: 4_000,
+        })
+        .unwrap();
+
+        assert_eq!(
+            input.settled_rate_mean_q,
+            selection.exact_totals.rate_q().unwrap()
+        );
+        assert_eq!(input.variance_of_mean_q2, selection.variance_of_mean_q2);
+        assert!(input.settled_rate_low_q < input.settled_rate_mean_q);
+        assert!(input.settled_rate_high_q > input.settled_rate_mean_q);
+        assert_eq!(input.post_fit_lag_one_state, 2);
+        assert!(input.disturbance.is_none());
+
+        let malformed = SuffixDiagnostic {
+            selection: Some(PlateauSelection {
+                block_count: 15,
+                ..selection
+            }),
+            ..rejection
+        };
+        assert!(
+            assemble_velocity_observation_input(VelocityObservationInputRequest {
+                direction: VelocityDirection::Forward,
+                p: PidPGain::new(256).unwrap(),
+                stationarity: StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift,),
+                rejected_post_fit: Some(malformed),
+                drift_ratio_ppm: 300_000,
+                moving_pid_output_peak: 1,
+                target_velocity_rpm: TmcMechanicalRpm::from_register(100),
+                usable_torque_limit: 2_000,
+                hard_torque_limit: 3_000,
+                initial_lead_in: false,
+                confidence_family_size: 16,
+                counts_per_rev: 4_000,
+            })
+            .is_err(),
+            "a retained selection with a different block population is malformed"
+        );
+    }
 
     #[test]
     fn settle_analysis_retains_the_exact_stationarity_result() {

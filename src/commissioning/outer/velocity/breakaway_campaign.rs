@@ -109,8 +109,8 @@ use super::breakaway_reporting::{
 };
 use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
-    DirectionalBreakaway, ResolvedCampaignBreakaway, classify_breakaway_observation,
-    resolve_campaign_breakaway,
+    DirectionalBreakaway, ProbeProductivityClass, ResolvedCampaignBreakaway,
+    classify_breakaway_observation, resolve_campaign_breakaway,
 };
 use super::combined_plan::combined_workflow_geometry;
 use super::current_guard::{
@@ -211,7 +211,7 @@ pub(crate) struct BreakawayProbeSession {
     cursor: BreakawaySearchCursor,
     pending_index: u8,
     forward_result: Option<DirectionalBreakaway>,
-    pending_class: Option<Result<BreakawayMotionClass, BreakawaySearchError>>,
+    pending_class: Option<Result<ProbeProductivityClass, BreakawaySearchError>>,
     pending_lower_rate_q: Option<u64>,
 }
 
@@ -712,8 +712,10 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 &workspace.observations,
                 &mut workspace.blocker,
             );
-            let (stationarity, drift_ratio_ppm) = match poll {
-                Ok(Some((result, _rejection, drift_ratio_ppm))) => (result, drift_ratio_ppm),
+            let (stationarity, rejected_post_fit, drift_ratio_ppm) = match poll {
+                Ok(Some((result, rejection, drift_ratio_ppm))) => {
+                    (result, rejection, drift_ratio_ppm)
+                }
                 Ok(None) => return BreakawayProbeStep::ReadyNow,
                 Err(error) => return fault(error),
             };
@@ -725,6 +727,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 direction: session.direction,
                 p,
                 stationarity,
+                rejected_post_fit,
                 drift_ratio_ppm,
                 moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
                 target_velocity_rpm: session.target_velocity_rpm,
@@ -1986,6 +1989,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 direction: session.direction,
                 p,
                 stationarity,
+                rejected_post_fit: None,
                 drift_ratio_ppm,
                 moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
                 target_velocity_rpm: session.target_velocity_rpm,
@@ -2959,6 +2963,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 direction: session.current_direction(),
                 p,
                 stationarity,
+                rejected_post_fit: None,
                 drift_ratio_ppm,
                 moving_pid_output_peak: workspace.current_observer.moving_pid_output_peak(),
                 target_velocity_rpm: session.target_velocity_rpm,

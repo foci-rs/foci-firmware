@@ -22,9 +22,10 @@ pub use observation::{
 pub use rest::{
     RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, VELOCITY_SUFFIX_LENGTHS,
 };
+pub(crate) use stationarity::MAX_MOVING_DRIFT_PPM;
 pub use stationarity::{
     RestSelectionCompletion, StationarityDiagnostics, StationarityExclusion, StationarityResult,
     StationarityWork, StationarityWorkPoll, StationarySuffix, StructuredStationarityEvidence,
     SuffixDiagnostic, VelocityObservationSource, analyze_stationarity_diagnostics,
-    select_stationary_suffix, select_stationary_suffix_from_source,
+    lag_one_passes_family, select_stationary_suffix, select_stationary_suffix_from_source,
 };

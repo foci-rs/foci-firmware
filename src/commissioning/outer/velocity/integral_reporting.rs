@@ -4,12 +4,11 @@ use crate::ankyra::velocity_sweep_encoding::{
     VelocitySweepCanonicalRecord, encode_rate_values, extend_velocity_sweep_digest,
     upper_bound_i64, upper_bound_u128,
 };
-use crate::autotune::velocity_measurement::{
-    StationarityExclusion, StationarityResult, SuffixDiagnostic,
-};
+use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
 use crate::commissioning::types::{
-    AcceptanceMatrixEvent, VelocityIntegralEvent, VelocityIntegralObservation,
-    VelocityIntegralOutcome, VelocityIntegralRungReport, VelocityIntegralTerminal,
+    AcceptanceMatrixEvent, StationarityRejectionDiagnostic, VelocityIntegralEvent,
+    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
+    VelocityIntegralTerminal,
 };
 
 use super::super::state::PositiveIRestBoundary;
@@ -515,7 +514,7 @@ pub(crate) const REJECTION_DIAGNOSTIC_BYTES: usize = 49;
 /// gates and so have no statistics, distinguishable from gate rejections.
 fn encode_rejection(
     record: &mut VelocitySweepCanonicalRecord,
-    rejection: Option<SuffixDiagnostic>,
+    rejection: Option<StationarityRejectionDiagnostic>,
 ) {
     let Some(rejection) = rejection else {
         record.push_u8(0);
@@ -1343,7 +1342,7 @@ mod tests {
                 initial_lead_in: false,
             },
             stationarity: StationarityResult::Excluded(exclusion),
-            rejection,
+            rejection: rejection.map(Into::into),
         }
     }
 
@@ -1352,9 +1351,20 @@ mod tests {
     fn rejection_diagnostic_fixture() -> SuffixDiagnostic {
         SuffixDiagnostic {
             suffix_len: 256,
+            selection: Some(PlateauSelection {
+                level: 4,
+                block_count: 16,
+                variance_of_mean_q2: 0,
+                exact_totals: RateBlock {
+                    delta_counts: -256,
+                    elapsed_us: 256_000,
+                    observation_count: 256,
+                },
+            }),
             usable_plateau: true,
             slope_passed: false,
             lag_one_passed: true,
+            lag_one_q: 0,
             settled_rate_interval_q: [-8_773_356, -8_351_644],
             slope_rejection_margin_q: -2_389_706,
             lag_one_rejection_margin_q: 55_874,

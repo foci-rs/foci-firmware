@@ -749,6 +749,47 @@ pub struct VelocityIntegralPlanned {
     pub maximum_workflow_ms: u32,
 }
 
+/// Compact gate statistics retained at the Stage-C event boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct StationarityRejectionDiagnostic {
+    /// Number of raw observations in the rejected suffix.
+    pub suffix_len: u16,
+    /// Whether a usable blocking plateau was available.
+    pub usable_plateau: bool,
+    /// Whether the slope confidence interval contained zero.
+    pub slope_passed: bool,
+    /// Whether the lag-one residual confidence interval contained its null.
+    pub lag_one_passed: bool,
+    /// Outward-rounded settled-rate confidence interval.
+    pub settled_rate_interval_q: [i64; 2],
+    /// Positive clearance or negative rejection beyond the slope interval.
+    pub slope_rejection_margin_q: i64,
+    /// Positive clearance or negative rejection beyond the lag-one interval.
+    pub lag_one_rejection_margin_q: i32,
+    /// Fitted rate slope in fixed-point rate units per second.
+    pub slope_q: i64,
+    /// Outward-rounded family-wise slope half-width in the same units.
+    pub slope_half_width_q: u64,
+}
+
+impl From<crate::autotune::velocity_measurement::SuffixDiagnostic>
+    for StationarityRejectionDiagnostic
+{
+    fn from(value: crate::autotune::velocity_measurement::SuffixDiagnostic) -> Self {
+        Self {
+            suffix_len: value.suffix_len,
+            usable_plateau: value.usable_plateau,
+            slope_passed: value.slope_passed,
+            lag_one_passed: value.lag_one_passed,
+            settled_rate_interval_q: value.settled_rate_interval_q,
+            slope_rejection_margin_q: value.slope_rejection_margin_q,
+            lag_one_rejection_margin_q: value.lag_one_rejection_margin_q,
+            slope_q: value.slope_q,
+            slope_half_width_q: value.slope_half_width_q,
+        }
+    }
+}
+
 /// One analyzed Stage-C moving observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralObservation {
@@ -772,7 +813,7 @@ pub struct VelocityIntegralObservation {
     ///
     /// Present only when the analysis reached the slope and lag-one gates.
     /// Blocking-stage exclusions carry `None` because no statistics exist yet.
-    pub rejection: Option<crate::autotune::velocity_measurement::SuffixDiagnostic>,
+    pub rejection: Option<StationarityRejectionDiagnostic>,
 }
 
 /// Relation between one integral time constant and the fixed moving horizon.
