@@ -548,12 +548,14 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             }
             checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetWrite);
             if backend
-                .write_register(PID_VELOCITY_TARGET, target as u32)
+                .write_register_verified(PID_VELOCITY_TARGET, target as u32)
                 .await
                 .is_err()
-                || safety.begin_primitive(backend.elapsed_us()).is_err()
             {
                 return fault(CommissionError::Spi);
+            }
+            if let Err(error) = safety.begin_primitive(backend.elapsed_us()) {
+                return fault(error);
             }
             let started_us = backend.elapsed_us();
             let Some(next_sample_us) =
@@ -1821,12 +1823,14 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 return discovery_current_guard_fault(error);
             }
             if backend
-                .write_register(PID_VELOCITY_TARGET, target as u32)
+                .write_register_verified(PID_VELOCITY_TARGET, target as u32)
                 .await
                 .is_err()
-                || safety.begin_primitive(backend.elapsed_us()).is_err()
             {
                 return discovery_fault(CommissionError::Spi);
+            }
+            if let Err(error) = safety.begin_primitive(backend.elapsed_us()) {
+                return discovery_fault(error);
             }
             let started_us = backend.elapsed_us();
             let Some(next_sample_us) =
@@ -2795,12 +2799,14 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 return confirmation_current_guard_fault(error);
             }
             if backend
-                .write_register(PID_VELOCITY_TARGET, target as u32)
+                .write_register_verified(PID_VELOCITY_TARGET, target as u32)
                 .await
                 .is_err()
-                || safety.begin_primitive(backend.elapsed_us()).is_err()
             {
                 return confirmation_fault(CommissionError::Spi);
+            }
+            if let Err(error) = safety.begin_primitive(backend.elapsed_us()) {
+                return confirmation_fault(error);
             }
             let started_us = backend.elapsed_us();
             let Some(next_sample_us) =

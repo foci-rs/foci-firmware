@@ -171,6 +171,63 @@ fn no_register_traffic_happens_before_the_planned_probe_state_advances() {
 }
 
 #[test]
+fn probe_target_command_recovers_from_one_transient_spi_write_failure() {
+    let mut session =
+        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
+            .expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::SetupSafety;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+
+    assert!(matches!(
+        pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        )),
+        BreakawayProbeStep::ReadyNow
+    ));
+    assert!(matches!(
+        pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        )),
+        BreakawayProbeStep::ReadyNow
+    ));
+    assert_eq!(state, BreakawayProbeState::CommandTarget);
+
+    backend.fail_writes_remaining = Some((PID_VELOCITY_TARGET.addr(), 1));
+    let result = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+
+    assert!(matches!(result, BreakawayProbeStep::At(_)));
+    assert!(matches!(state, BreakawayProbeState::Capture { .. }));
+    let target_writes = backend
+        .spi_log
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation,
+                SpiOp::Write(address, value)
+                    if *address == PID_VELOCITY_TARGET.addr() && *value == 100
+            )
+        })
+        .count();
+    assert_eq!(target_writes, 2);
+}
+
+#[test]
 fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
