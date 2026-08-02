@@ -123,6 +123,7 @@ const fn decode_breakaway_breadcrumb(raw: u32) -> Option<BreakawayBreadcrumb> {
 
 #[cfg(not(test))]
 #[cfg_attr(target_os = "none", unsafe(link_section = ".ccmram.breakaway"))]
+#[used]
 static BREAKAWAY_BREADCRUMB: AtomicU32 = AtomicU32::new(0);
 
 static LAST_BOOT_BREAKAWAY_BREADCRUMB: AtomicU32 = AtomicU32::new(0);
