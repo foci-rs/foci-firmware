@@ -180,8 +180,9 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 
 /// Apply the shared shutdown safe-state policy for one TMC channel.
 ///
-/// Stops any active commissioning engine, restores phase advance before
-/// disarming, then de-energizes the motor through [`disarm_motor`].
+/// Restores phase advance, de-energizes the motor through [`disarm_motor`],
+/// then stops any active commissioning engine. A retained breakaway campaign
+/// is completed only after both safe-state operations succeed.
 ///
 /// Returns `true` when the phase-advance restore either was unnecessary or
 /// succeeded. Returns `false` when restore failed; callers should keep retrying
@@ -192,13 +193,17 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     tmc: &'static crate::state::tmc::TmcChannelState,
     stepper: &'static crate::state::stepper::StepperChannelState,
 ) -> bool {
-    runtime.take_commission_engine();
     let phase_advance_restored = runtime.restore_phase_advance_via_backend(backend).await;
     if !phase_advance_restored {
         defmt::warn!("phase advance: failed to restore ABN offset on shutdown");
     }
     let mut state = runtime.dispatch_state(tmc, stepper);
     disarm_motor(backend, &mut state).await;
+    if phase_advance_restored {
+        runtime.take_commission_engine_after_handled_stop();
+    } else {
+        runtime.take_commission_engine();
+    }
     phase_advance_restored
 }
 

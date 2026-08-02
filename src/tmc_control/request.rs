@@ -336,9 +336,11 @@ where
                 board.emit_motor_disarm_event();
 
                 if !phase_advance_restored {
+                    runtime.take_commission_engine();
                     return TmcControlRequestOutcome::skip_tick_tail();
                 }
 
+                runtime.take_commission_engine_after_handled_stop();
                 defmt::info!("TMC4671 motor disabled");
             }
         }

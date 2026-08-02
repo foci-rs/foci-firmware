@@ -913,6 +913,28 @@ impl CommissioningEngine {
         self.oid
     }
 
+    /// Complete an active breakaway cancellation before removing its engine.
+    ///
+    /// Only the live [`OuterPhase::BreakawayCampaign`] phase owns an active
+    /// campaign breadcrumb. Terminal and Stage-C phases are deliberately left
+    /// unchanged so their completed evidence cannot be overwritten.
+    pub(crate) fn take_after_handled_stop(slot: &mut Option<Self>) -> Option<Self> {
+        #[cfg(feature = "trace-velocity-sweep")]
+        if matches!(
+            slot.as_ref().map(|engine| &engine.engine_mode),
+            Some(EngineMode::Outer {
+                phase: OuterPhase::BreakawayCampaign { .. },
+                ..
+            })
+        ) {
+            crate::diagnostic::complete_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+            );
+        }
+
+        slot.take()
+    }
+
     /// Identify which constructor produced this engine.
     ///
     /// Used by the dispatch to choose the right reply payload at terminal arms,

@@ -426,9 +426,18 @@ impl TmcControlRuntime {
         self.commission_engine = Some(engine);
     }
 
-    /// Remove and return the active commissioning engine, if any.
+    /// Remove and return the active commissioning engine without completing a
+    /// breakaway-campaign breadcrumb.
     pub fn take_commission_engine(&mut self) -> Option<CommissioningEngine> {
         self.commission_engine.take()
+    }
+
+    /// Complete a retained active breakaway cancellation, then remove its engine.
+    ///
+    /// Callers must first restore their path-specific safe state. Non-breakaway
+    /// engines are removed without changing persistent breakaway evidence.
+    pub fn take_commission_engine_after_handled_stop(&mut self) -> Option<CommissioningEngine> {
+        CommissioningEngine::take_after_handled_stop(&mut self.commission_engine)
     }
 
     /// Clear the calibrated flag before launching a (re)calibration run.

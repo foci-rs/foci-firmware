@@ -1153,18 +1153,23 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             #[cfg(feature = "trace-velocity-sweep")]
             let mut error = error;
             #[cfg(feature = "trace-velocity-sweep")]
-            if engine
+            let velocity_workflow_restored = if engine
                 .as_ref()
                 .and_then(CommissioningEngine::velocity_operational_torque_limit)
                 .is_some()
-                && !disarm_velocity_workflow(engine, backend, state).await
             {
+                disarm_velocity_workflow(engine, backend, state).await
+            } else {
+                true
+            };
+            #[cfg(feature = "trace-velocity-sweep")]
+            if !velocity_workflow_restored {
                 error = CE::Spi;
             }
-            let mut consumed = engine.take().expect("engine slot None on OuterFailed");
-            let oid = consumed.oid();
-            let snapshot = consumed.entry_snapshot();
-            let safety_fault = consumed.outer_safety_fault();
+            let engine_ref = engine.as_ref().expect("engine slot None on OuterFailed");
+            let oid = engine_ref.oid();
+            let snapshot = engine_ref.entry_snapshot();
+            let safety_fault = engine_ref.outer_safety_fault();
 
             let is_safety_fault =
                 matches!(error, CE::Spi | CE::Shutdown | CE::SafetyEnvelopeViolation);
@@ -1265,7 +1270,10 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             };
             record_restore_summary(
                 backend,
-                consumed.trace_summary_seqs_mut(),
+                engine
+                    .as_mut()
+                    .expect("engine slot None before OuterFailed restore summary")
+                    .trace_summary_seqs_mut(),
                 restore_status,
                 error.status_code(),
                 restore_drift_counts,
@@ -1274,6 +1282,16 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             );
 
             state.tmc.commission_in_flight.store(false, Relaxed);
+
+            #[cfg(feature = "trace-velocity-sweep")]
+            let consumed = if velocity_workflow_restored {
+                CommissioningEngine::take_after_handled_stop(engine)
+            } else {
+                engine.take()
+            };
+            #[cfg(not(feature = "trace-velocity-sweep"))]
+            let consumed = engine.take();
+            let _ = consumed.expect("engine slot None after OuterFailed safe restoration");
 
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::TuneResult {
