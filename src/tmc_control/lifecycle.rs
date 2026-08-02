@@ -210,6 +210,8 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "trace-velocity-sweep")]
+    use crate::commission_dispatch::test_support::breakaway_campaign_engine;
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
 
     fn dispatch_state<'a>(
@@ -603,6 +605,103 @@ mod tests {
             assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
             assert!(!runtime.is_calibrated());
             assert!(!runtime.is_motor_enabled());
+        });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn shutdown_breakaway_cancellation_completes_after_safe_state() {
+        use core::sync::atomic::Ordering;
+
+        let _guard =
+            pollster::block_on(crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.lock());
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+        runtime.set_commission_engine(breakaway_campaign_engine());
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        {
+            let state = runtime.dispatch_state(
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+            );
+            *state.calibrated = true;
+            *state.motor_enabled = true;
+        }
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
+        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+        crate::diagnostic::begin_breakaway_campaign();
+        crate::diagnostic::panic_after_breakaway_completion_for_test();
+
+        let reset = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pollster::block_on(apply_shutdown_safe_state(
+                &mut runtime,
+                &mut backend,
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+            ));
+        }));
+
+        assert!(reset.is_err(), "completion must reach the reset injection");
+        assert!(!runtime.phase_advance_active_for_test());
+        assert!(!backend.enable_pin, "safe disarm must precede completion");
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        assert!(
+            runtime.is_commission_active(),
+            "engine removal must follow completion"
+        );
+        assert_eq!(
+            crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+            Some(crate::diagnostic::BreakawayBreadcrumb {
+                checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+                interrupted: false,
+            })
+        );
+
+        assert!(pollster::block_on(apply_shutdown_safe_state(
+            &mut runtime,
+            &mut backend,
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+        )));
+        assert!(!runtime.is_commission_active());
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn shutdown_breakaway_cancellation_restore_failure_stays_active() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+            runtime.set_commission_engine(breakaway_campaign_engine());
+            runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+            let mut backend = MockBackend::new();
+            backend.fail_on_write =
+                Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+            backend.enable_pin = true;
+            crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+            crate::diagnostic::begin_breakaway_campaign();
+
+            let complete = apply_shutdown_safe_state(
+                &mut runtime,
+                &mut backend,
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+            )
+            .await;
+
+            assert!(!complete);
+            assert!(!runtime.is_commission_active());
+            assert!(!backend.enable_pin, "failed restoration must still disarm");
+            assert_eq!(
+                crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+                Some(crate::diagnostic::BreakawayBreadcrumb {
+                    checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
+                    interrupted: true,
+                })
+            );
         });
     }
 }

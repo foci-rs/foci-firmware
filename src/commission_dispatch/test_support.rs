@@ -20,6 +20,79 @@ pub fn current_limit(raw: u32) -> PidTorqueFluxLimit {
     PidTorqueFluxLimit::new(raw).expect("test current limit must be valid")
 }
 
+/// Construct the shared outer-entry snapshot used by dispatcher fixtures.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
+    crate::commissioning::EntrySnapshot {
+        velocity_p: crate::pid::p_gain(1152),
+        velocity_i: crate::pid::i_gain(0),
+        position_p: crate::pid::p_gain(640),
+        position_i: crate::pid::i_gain(0),
+        velocity_limit: 500_000,
+        voltage_limit: 16000,
+        velocity_filter_hz: 0,
+        torque_filter_hz: 0,
+        position_filter_hz: 0,
+        flux_filter_hz: 0,
+    }
+}
+
+/// Construct the shared outer-tune parameters used by dispatcher fixtures.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
+    crate::commissioning::OuterTuneParams {
+        slot_order:
+            crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
+        profile: crate::autotune::CommissionProfile::Balanced,
+        mode: crate::autotune::OperatingMode::Nominal,
+        inner_lambda_us: 100,
+        theta_e_us: 50,
+        current_ringing: false,
+        current_bandwidth_hz: 1000,
+        inner_warning_flags: 0,
+        requested_velocity_mrev_s: 6000,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source:
+            crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 1000,
+        settle_travel_reserve_mrev: 100,
+        negative_position_headroom_mrev: 2000,
+        positive_position_headroom_mrev: 2000,
+        max_duration_ms: 3000,
+    }
+}
+
+/// Build a real admitted breakaway engine for cross-module lifecycle tests.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine {
+    use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
+
+    let params = sample_outer_params();
+    let request = VelocitySweepRequest {
+        requested_velocity_mrev_s: params.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: params.requested_velocity_source,
+        max_stroke_travel_mrev: params.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: params.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: params.positive_position_headroom_mrev,
+        max_duration_ms: params.max_duration_ms,
+    };
+    let (campaign, _workflow) =
+        crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command(
+            request, 4_000, 2_816, 0, 25_000, 0, 7,
+        )
+        .expect("a valid host request must admit a breakaway campaign");
+    crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+        0,
+        crate::state::tmc::tmc_channel0(),
+        params,
+        sample_entry_snapshot(),
+        campaign,
+    )
+    .expect("valid breakaway safety configuration")
+}
+
 /// A single SPI operation recorded by `MockBackend`.
 #[derive(Debug, Clone, Copy)]
 pub enum SpiOp {

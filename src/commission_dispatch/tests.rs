@@ -2,7 +2,8 @@
 //! Tests for drive_commission_result. Populated per-variant in Tasks 12-18.
 
 use super::test_support::{
-    MockBackend, SpiOp, accepted_commission_result as sample_commission_result, fresh_state_locals,
+    MockBackend, SpiOp, accepted_commission_result as sample_commission_result,
+    breakaway_campaign_engine, fresh_state_locals, sample_entry_snapshot, sample_outer_params,
 };
 use super::*;
 use crate::autotune::CommissionProfile;
@@ -2046,44 +2047,6 @@ fn commission_done_sentinel_failure_preserves_published_cache() {
     });
 }
 
-fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
-    crate::commissioning::EntrySnapshot {
-        velocity_p: crate::pid::p_gain(1152),
-        velocity_i: crate::pid::i_gain(0),
-        position_p: crate::pid::p_gain(640),
-        position_i: crate::pid::i_gain(0),
-        velocity_limit: 500_000,
-        voltage_limit: 16000,
-        velocity_filter_hz: 0,
-        torque_filter_hz: 0,
-        position_filter_hz: 0,
-        flux_filter_hz: 0,
-    }
-}
-
-fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
-    crate::commissioning::OuterTuneParams {
-        slot_order:
-            crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
-        profile: CommissionProfile::Balanced,
-        mode: crate::autotune::OperatingMode::Nominal,
-        inner_lambda_us: 100,
-        theta_e_us: 50,
-        current_ringing: false,
-        current_bandwidth_hz: 1000,
-        inner_warning_flags: 0,
-        requested_velocity_mrev_s: 6000,
-        machine_velocity_ceiling_mrev_s: 10_000,
-        requested_velocity_source:
-            crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 1000,
-        settle_travel_reserve_mrev: 100,
-        negative_position_headroom_mrev: 2000,
-        positive_position_headroom_mrev: 2000,
-        max_duration_ms: 3000,
-    }
-}
-
 fn sample_velocity_sweep_terminal(
     outcome: crate::commissioning::types::VelocitySweepOutcome,
 ) -> crate::commissioning::types::VelocitySweepTerminal {
@@ -3078,38 +3041,6 @@ fn outer_failed_restore_rejects_monotonic_creep() {
     });
 }
 
-/// Build a breakaway-campaign engine the way the host command does: derive and
-/// admit the campaign from a sweep request, then enter the campaign phase.
-#[cfg(feature = "trace-velocity-sweep")]
-fn breakaway_campaign_engine() -> CommissioningEngine {
-    use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
-
-    let params = sample_outer_params();
-    let request = VelocitySweepRequest {
-        requested_velocity_mrev_s: params.requested_velocity_mrev_s,
-        machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
-        requested_velocity_source: params.requested_velocity_source,
-        max_stroke_travel_mrev: params.max_stroke_travel_mrev,
-        settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
-        negative_position_headroom_mrev: params.negative_position_headroom_mrev,
-        positive_position_headroom_mrev: params.positive_position_headroom_mrev,
-        max_duration_ms: params.max_duration_ms,
-    };
-    let (campaign, _workflow) =
-        crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command(
-            request, 4_000, 2_816, 0, 25_000, 0, 7,
-        )
-        .expect("a valid host request must admit a breakaway campaign");
-    CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
-        0,
-        tmc_state(),
-        sample_outer_params(),
-        sample_entry_snapshot(),
-        campaign,
-    )
-    .expect("valid breakaway safety configuration")
-}
-
 /// A breakaway campaign that fails on a safety envelope violation must be safely
 /// disarmed at the dispatch boundary and must never continue into Stage C.
 ///
@@ -3163,5 +3094,90 @@ fn breakaway_campaign_safety_failure_disarms_without_reaching_stage_c() {
         }
 
         clear_motor_sentinel();
+    });
+}
+
+/// A scheduler-generated outer failure may interrupt a still-active campaign.
+/// Simulate reset immediately after completion becomes visible: safe workflow
+/// restoration must already be done, while engine removal must not happen yet.
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn outer_failed_breakaway_cancellation_completes_after_safe_restore() {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    let _guard = pollster::block_on(test_support::SHARED_STATE_MUTEX.lock());
+    tmc_state().commission_in_flight.store(true, Relaxed);
+    let mut backend = MockBackend::new();
+    backend.enable_pin = true;
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut engine = Some(breakaway_campaign_engine());
+    crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+    crate::diagnostic::begin_breakaway_campaign();
+    crate::diagnostic::panic_after_breakaway_completion_for_test();
+
+    let reset = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pollster::block_on(async {
+            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+            let _ = drive_commission_result(
+                StepResult::OuterFailed(crate::autotune::CommissionError::Shutdown),
+                &mut engine,
+                &mut backend,
+                &mut state,
+                4_095,
+            )
+            .await;
+        });
+    }));
+
+    assert!(reset.is_err(), "completion must reach the reset injection");
+    assert!(!backend.enable_pin, "safe disarm must precede completion");
+    assert!(
+        engine.is_some(),
+        "engine removal must follow the completion store"
+    );
+    assert_eq!(
+        crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+        Some(crate::diagnostic::BreakawayBreadcrumb {
+            checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+            interrupted: false,
+        })
+    );
+    tmc_state().commission_in_flight.store(false, Relaxed);
+}
+
+/// A failed velocity-limit restoration consumes the terminal engine but keeps
+/// its active breadcrumb so the next boot reports the incomplete safe exit.
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
+    pollster::block_on(async {
+        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        backend.fail_on_write = Some(foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr());
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let mut engine = Some(breakaway_campaign_engine());
+        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+        crate::diagnostic::begin_breakaway_campaign();
+
+        let _ = drive_commission_result(
+            StepResult::OuterFailed(crate::autotune::CommissionError::Shutdown),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4_095,
+        )
+        .await;
+
+        assert!(engine.is_none(), "failed terminal must consume the engine");
+        assert!(!backend.enable_pin, "failed restoration must still disarm");
+        assert_eq!(
+            crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+            Some(crate::diagnostic::BreakawayBreadcrumb {
+                checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
+                interrupted: true,
+            })
+        );
     });
 }

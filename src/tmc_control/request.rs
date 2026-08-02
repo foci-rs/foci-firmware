@@ -1454,6 +1454,8 @@ mod tests {
 
     use crate::autotune::CommissionProfile;
     use crate::calibration::CalibrationError;
+    #[cfg(feature = "trace-velocity-sweep")]
+    use crate::commission_dispatch::test_support::breakaway_campaign_engine;
     use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::types::{AdcCalResult, EngineKind};
     use crate::state::stepper::{reset_all_stepper_channels, stepper_channel0};
@@ -3444,6 +3446,54 @@ mod tests {
             assert_eq!(board.motor_arm_events, 0);
             assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
         });
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn explicit_disable_breakaway_cancellation_completes_after_disarm() {
+        let _guard =
+            pollster::block_on(crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.lock());
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_commission_engine(breakaway_campaign_engine());
+        let mut board = RecordingBoard::fall_through();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+        crate::diagnostic::begin_breakaway_campaign();
+        crate::diagnostic::panic_after_breakaway_completion_for_test();
+
+        let reset = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pollster::block_on(handle_tmc_control_request(
+                TmcRequest::new(0, TmcRequestKind::SetEnable(false)),
+                TmcPreRequestDisposition::ContinueRequest,
+                &mut runtime,
+                &mut tmc,
+                &mut board,
+            ));
+        }));
+
+        assert!(reset.is_err(), "completion must reach the reset injection");
+        assert_eq!(board.disarm_calls, 1, "disarm must precede completion");
+        assert!(
+            runtime.is_commission_active(),
+            "engine removal must follow completion"
+        );
+        assert_eq!(
+            crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+            Some(crate::diagnostic::BreakawayBreadcrumb {
+                checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+                interrupted: false,
+            })
+        );
+
+        pollster::block_on(handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::SetEnable(false)),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        ));
+        assert!(!runtime.is_commission_active());
+        assert_eq!(board.disarm_calls, 2);
     }
 
     #[test]

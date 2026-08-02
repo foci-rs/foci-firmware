@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::commission_dispatch::test_support::breakaway_campaign_engine;
 use crate::commission_dispatch::test_support::{
     MockBackend, accepted_commission_result, current_limit,
 };
@@ -1976,6 +1978,54 @@ fn take_commission_engine_is_none_when_idle() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     assert!(runtime.take_commission_engine().is_none());
     assert!(!runtime.is_commission_active());
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn raw_take_preserves_breakaway_cancellation_interrupted_state() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_commission_engine(breakaway_campaign_engine());
+    crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+    crate::diagnostic::begin_breakaway_campaign();
+
+    assert!(runtime.take_commission_engine().is_some());
+
+    assert!(!runtime.is_commission_active());
+    assert_eq!(
+        crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+        Some(crate::diagnostic::BreakawayBreadcrumb {
+            checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
+            interrupted: true,
+        })
+    );
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn non_breakaway_handled_stop_preserves_completed_stage_c_breadcrumb() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_commission_engine(CommissioningEngine::new_calibrate(8));
+    crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+    crate::diagnostic::complete_breakaway_campaign(
+        crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+    );
+
+    assert!(
+        runtime
+            .take_commission_engine_after_handled_stop()
+            .is_some()
+    );
+
+    assert!(!runtime.is_commission_active());
+    assert_eq!(
+        crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+        Some(crate::diagnostic::BreakawayBreadcrumb {
+            checkpoint: crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+            interrupted: false,
+        })
+    );
 }
 
 #[test]
