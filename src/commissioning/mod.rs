@@ -2807,7 +2807,7 @@ mod tests {
 
         let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
-            planned_velocity_mrev_s: 0,
+            planned_velocity_mrev_s: 4_394,
             hard_torque_limit: 2_816,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
             max_duration_ms: 3_000,
