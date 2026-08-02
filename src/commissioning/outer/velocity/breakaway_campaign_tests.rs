@@ -126,6 +126,7 @@ fn run_probe_with_target(
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
             BreakawayProbeStep::Done(outcome) => return (outcome, backend),
         }
     }
@@ -286,6 +287,7 @@ fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
         match result {
             BreakawayProbeStep::ReadyNow => {}
             BreakawayProbeStep::At(deadline) => backend.elapsed_us_value = deadline,
+            BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
             BreakawayProbeStep::Done(outcome) => {
                 panic!("first probe stroke terminated unexpectedly: {outcome:?}")
             }
@@ -330,6 +332,121 @@ fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
     );
 }
 
+#[test]
+fn probe_streams_raw_evidence_before_recovery_and_decision_after_recovery() {
+    let mut session =
+        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
+            .expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::PlannedProbe;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut saw_observation = false;
+    let mut saw_recovery = false;
+
+    for _ in 0..20_000 {
+        saw_recovery |= matches!(state, BreakawayProbeState::Recover(_));
+        let step = pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match step {
+            BreakawayProbeStep::ReadyNow => {}
+            BreakawayProbeStep::At(deadline) => backend.elapsed_us_value = deadline,
+            BreakawayProbeStep::Observation(collected) => {
+                assert!(!saw_recovery, "raw evidence must precede origin recovery");
+                assert_eq!(collected.rung_index, session.pending_index);
+                saw_observation = true;
+            }
+            BreakawayProbeStep::Decision {
+                direction,
+                rung_index,
+                disposition,
+            } => {
+                assert!(saw_observation, "a decision must bind emitted raw evidence");
+                assert!(saw_recovery, "a decision must follow successful recovery");
+                assert_eq!(direction, VelocityDirection::Forward);
+                assert_eq!(rung_index, session.pending_index);
+                assert_eq!(disposition, 0);
+                assert_eq!(state, BreakawayProbeState::Advance);
+                return;
+            }
+            BreakawayProbeStep::Done(outcome) => {
+                panic!("first inert observation terminated unexpectedly: {outcome:?}")
+            }
+        }
+    }
+    panic!("probe did not emit its post-recovery decision");
+}
+
+#[test]
+fn recovery_fault_leaves_raw_probe_evidence_without_a_decision() {
+    let mut session =
+        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
+            .expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::PlannedProbe;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count = 0_i32;
+    let mut saw_observation = false;
+    let mut saw_decision = false;
+    let mut saw_recovery = false;
+
+    for _ in 0..20_000 {
+        let is_capture_phase = matches!(state, BreakawayProbeState::Capture { .. });
+        if matches!(state, BreakawayProbeState::Recover(_)) {
+            saw_recovery = true;
+            backend.shutdown_requested = true;
+        }
+        let step = pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match step {
+            BreakawayProbeStep::ReadyNow => {}
+            BreakawayProbeStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase {
+                    encoder_count += 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            BreakawayProbeStep::Observation(_) => {
+                saw_observation = true;
+            }
+            BreakawayProbeStep::Decision { .. } => saw_decision = true,
+            BreakawayProbeStep::Done(outcome) => {
+                assert!(
+                    saw_observation,
+                    "the raw record must survive the recovery fault"
+                );
+                assert!(
+                    saw_recovery,
+                    "the injected shutdown must bind during recovery"
+                );
+                assert!(
+                    !saw_decision,
+                    "failed recovery must not authorize a decision"
+                );
+                let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
+                    panic!("expected a recovery safety fault, got {outcome:?}");
+                };
+                assert_eq!(error, CommissionError::Shutdown);
+                assert!(safety.is_none());
+                return;
+            }
+        }
+    }
+    panic!("probe did not surface the injected recovery fault");
+}
+
 // --- BreakawayFound: both directions agree ------------------------------------
 
 #[test]
@@ -347,17 +464,17 @@ fn agreeing_directional_breakaways_resolve_the_campaign() {
     assert_eq!(resolved.reverse.moving_index, target_index);
 }
 
-// --- NoMotionAtAuthority: never moving anywhere on the grid -------------------
+// --- NoProductiveResponseAtAuthority: no productive response on the grid ------
 
 #[test]
-fn never_moving_reaches_no_motion_at_authority() {
+fn never_moving_reaches_no_productive_response_at_authority() {
     let plan = test_plan();
 
     let (outcome, _) = run_probe(plan, |_direction, _index| false);
 
     assert!(matches!(
         outcome,
-        BreakawayProbeOutcome::NoMotionAtAuthority
+        BreakawayProbeOutcome::NoProductiveResponseAtAuthority
     ));
 }
 
@@ -457,6 +574,7 @@ fn wrong_direction_short_circuits_without_recovering() {
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
             BreakawayProbeStep::Done(outcome) => {
                 let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
@@ -557,6 +675,7 @@ fn an_unconfirmed_settle_reports_probe_evidence_excluded() {
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
             BreakawayProbeStep::Done(outcome) => {
                 assert!(matches!(
                     outcome,
@@ -602,6 +721,7 @@ fn safety_faults_propagate_unchanged() {
                     backend.set_abn_decoder_count(1_500);
                 }
             }
+            BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
             BreakawayProbeStep::Done(outcome) => {
                 let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
@@ -2328,10 +2448,9 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
         terminal.is_none(),
         "the campaign must reach discovery, not a terminal: {terminal:?}"
     );
-    assert_eq!(
-        events.len(),
-        3,
-        "expected probe-planned, directional-breakaway, discovery-planned: {events:?}"
+    assert!(
+        events.len() >= 5,
+        "expected a probe plan, streamed evidence, brackets and discovery plan: {events:?}"
     );
     let BreakawayCampaignEvent::ProbePlanned(probe_planned) = &events[0] else {
         panic!("expected the probe plan first, got {:?}", events[0]);
@@ -2341,10 +2460,27 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
     // covers the same invariant at the probe-driver level).
     assert_eq!(probe_planned.evidence_sequence, 0);
 
-    let BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } = &events[1] else {
+    let streamed = &events[1..events.len() - 2];
+    assert_eq!(streamed.len() % 2, 0, "raw/decision stream must be paired");
+    for pair in streamed.chunks_exact(2) {
+        let BreakawayCampaignEvent::RawObservation(raw) = &pair[0] else {
+            panic!("expected a raw probe observation, got {:?}", pair[0]);
+        };
+        let BreakawayCampaignEvent::ProbeDecision(decision) = &pair[1] else {
+            panic!("expected a post-recovery probe decision, got {:?}", pair[1]);
+        };
+        assert_eq!(decision.plan_digest, raw.plan_digest);
+        assert_eq!(decision.direction, raw.direction);
+        assert_eq!(decision.rung_index, raw.rung_index);
+        assert_eq!(decision.evidence_sequence, raw.evidence_sequence + 1);
+    }
+
+    let BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } =
+        &events[events.len() - 2]
+    else {
         panic!(
-            "expected the resolved breakaway brackets second, got {:?}",
-            events[1]
+            "expected the resolved breakaway brackets after streamed evidence, got {:?}",
+            events[events.len() - 2]
         );
     };
     assert_eq!(forward.plan_digest, probe_planned.plan_digest);
@@ -2355,9 +2491,12 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
     let BreakawayCampaignEvent::DiscoveryPlanned {
         planned,
         ceiling_source,
-    } = &events[2]
+    } = &events[events.len() - 1]
     else {
-        panic!("expected the discovery plan third, got {:?}", events[2]);
+        panic!(
+            "expected the discovery plan after the brackets, got {:?}",
+            events[events.len() - 1]
+        );
     };
     assert_eq!(planned.prior_plan_digest, probe_planned.plan_digest);
     assert_eq!(ceiling_source.plan_digest, planned.plan_digest);
@@ -2384,21 +2523,31 @@ fn a_probe_failure_emits_its_terminal_then_the_campaign_closure_record() {
         run_campaign_probe_collecting_events(campaign_request(), false, |_direction, _index| false);
 
     assert!(terminal.is_some(), "a never-moving probe must terminate");
-    // ProbePlanned, then ProbeTerminal, then the campaign's own closure record;
-    // the campaign's Done outcome itself is returned the tick after that.
-    assert_eq!(events.len(), 3, "unexpected event sequence: {events:?}");
+    // ProbePlanned, paired raw/decision evidence, ProbeTerminal, then the
+    // campaign's own closure record; the Done outcome follows one tick later.
+    assert!(events.len() >= 5, "unexpected event sequence: {events:?}");
     assert!(matches!(events[0], BreakawayCampaignEvent::ProbePlanned(_)));
-    let BreakawayCampaignEvent::ProbeTerminal(probe_terminal) = &events[1] else {
-        panic!("expected the probe terminal second, got {:?}", events[1]);
+    let streamed = &events[1..events.len() - 2];
+    assert_eq!(streamed.len() % 2, 0, "raw/decision stream must be paired");
+    for pair in streamed.chunks_exact(2) {
+        assert!(matches!(pair[0], BreakawayCampaignEvent::RawObservation(_)));
+        assert!(matches!(pair[1], BreakawayCampaignEvent::ProbeDecision(_)));
+    }
+    let BreakawayCampaignEvent::ProbeTerminal(probe_terminal) = &events[events.len() - 2] else {
+        panic!(
+            "expected the probe terminal after streamed evidence, got {:?}",
+            events[events.len() - 2]
+        );
     };
     assert_ne!(
         probe_terminal.terminal_cause, 0,
-        "a NoMotionAtAuthority terminal must carry a nonzero cause"
+        "a NoProductiveResponseAtAuthority terminal must carry a nonzero cause"
     );
-    let BreakawayCampaignEvent::CampaignTerminal(campaign_terminal) = &events[2] else {
+    let BreakawayCampaignEvent::CampaignTerminal(campaign_terminal) = &events[events.len() - 1]
+    else {
         panic!(
-            "expected the campaign closure record third, got {:?}",
-            events[2]
+            "expected the campaign closure record last, got {:?}",
+            events[events.len() - 1]
         );
     };
     assert_eq!(

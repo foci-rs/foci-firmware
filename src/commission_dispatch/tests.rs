@@ -602,6 +602,7 @@ fn emit_breakaway_directional_breakaway_forwards_bracket_endpoints() {
             inert_p_raw: 91,
             moving_p_raw: 128,
             observations: 5,
+            lower_disposition_mask: 1,
         },
     );
 

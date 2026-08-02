@@ -1126,6 +1126,8 @@ pub struct BreakawayDirectionalBreakaway {
     pub moving_p_raw: u16,
     /// Total probe observations spent resolving this direction.
     pub observations: u8,
+    /// Confirmed lower-endpoint dispositions: bit 0 inert, bit 1 transient.
+    pub lower_disposition_mask: u8,
 }
 
 /// Detailed terminal evidence for a probe campaign that did not resolve a
@@ -1219,10 +1221,9 @@ pub struct BreakawayRawObservation {
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
-    /// Exact digest of the owning discovery or confirmation plan.
+    /// Exact digest of the owning probe, discovery, or confirmation plan.
     pub plan_digest: u64,
-    /// Owning phase: `BreakawayPhase::Discovery as u8` (1) or
-    /// `BreakawayPhase::Confirmation as u8` (2).
+    /// Owning phase: probe (0), discovery (1), or confirmation (2).
     pub phase: u8,
     /// Zero-based ladder rung this observation belongs to (discovery only;
     /// `0` for confirmation, whose strokes share the single nominated gain).
@@ -1262,6 +1263,28 @@ pub struct BreakawayRawObservation {
     pub disturbance_low_q16: i32,
     /// Upper disturbance-interval bound in the same units (`0` when absent).
     pub disturbance_high_q16: i32,
+    /// Drift ratio in parts per million, or `u32::MAX` when unavailable.
+    pub drift_ratio_ppm: u32,
+    /// Post-fit lag-one state: 0 unavailable, 1 failed, 2 passed.
+    pub post_fit_lag_one_state: u8,
+}
+
+/// One recovered probe observation committed to the adaptive cursor.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayProbeDecision {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning probe plan.
+    pub plan_digest: u64,
+    /// Direction wire code.
+    pub direction: u8,
+    /// Zero-based index in the deduplicated probe grid.
+    pub rung_index: u8,
+    /// Decision: 0 inert, 1 transient, 2 productive.
+    pub disposition: u8,
 }
 
 /// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
@@ -1513,6 +1536,8 @@ pub enum BreakawayCampaignEvent {
     /// `phase` field), one per tick at collection -- never bundled into a
     /// terminal-time burst.
     RawObservation(BreakawayRawObservation),
+    /// One recovered probe observation committed to the adaptive cursor.
+    ProbeDecision(BreakawayProbeDecision),
     /// One collected in-band rung's nomination margin, streamed on its own tick
     /// as the discovery walk folds the rung (never bundled into the discovery-
     /// terminal tick, which would burst the trace queue). A non-nominatable

@@ -100,12 +100,12 @@ use super::breakaway_plan::{
     resolve_grid_floor,
 };
 use super::breakaway_reporting::{
-    BreakawayPhase, campaign_terminal_report, confirmation_evaluated_terminal_report,
-    confirmation_partial_evidence_terminal_report, confirmation_plan_report,
-    confirmation_zero_stroke_cause, confirmation_zero_stroke_terminal_report,
-    directional_breakaway_report, discovery_plan_report, discovery_terminal_cause,
-    discovery_terminal_report, probe_plan_report, probe_terminal_cause, probe_terminal_report,
-    rung_zero_diagnostic_report,
+    BreakawayPhase, ProbeDecisionReportInput, campaign_terminal_report,
+    confirmation_evaluated_terminal_report, confirmation_partial_evidence_terminal_report,
+    confirmation_plan_report, confirmation_zero_stroke_cause,
+    confirmation_zero_stroke_terminal_report, directional_breakaway_report, discovery_plan_report,
+    discovery_terminal_cause, discovery_terminal_report, probe_plan_report, probe_terminal_cause,
+    probe_terminal_report, rung_zero_diagnostic_report,
 };
 use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
@@ -213,6 +213,7 @@ pub(crate) struct BreakawayProbeSession {
     forward_result: Option<DirectionalBreakaway>,
     pending_class: Option<Result<ProbeProductivityClass, BreakawaySearchError>>,
     pending_lower_rate_q: Option<u64>,
+    pending_observation: Option<CollectedObservation>,
 }
 
 impl BreakawayProbeSession {
@@ -237,6 +238,7 @@ impl BreakawayProbeSession {
             forward_result: None,
             pending_class: None,
             pending_lower_rate_q: None,
+            pending_observation: None,
         })
     }
 
@@ -290,6 +292,8 @@ pub(crate) enum BreakawayProbeState {
     AnalyzeSettle { analysis_deadline_us: u64 },
     /// Return to the parked origin through the shared recovery primitive.
     Recover(RungOriginRecoveryRuntime),
+    /// Emit the recovered observation's decision before mutating the cursor.
+    EmitDecision,
     /// Fold the classified outcome into the active cursor and decide what is next.
     Advance,
 }
@@ -301,6 +305,17 @@ pub(crate) enum BreakawayProbeStep {
     ReadyNow,
     /// Call again no earlier than this `elapsed_us` deadline.
     At(u64),
+    /// One raw observation is ready for immediate trace emission.
+    Observation(CollectedObservation),
+    /// One recovered observation is ready to commit to replay.
+    Decision {
+        /// Direction of the committed observation.
+        direction: VelocityDirection,
+        /// Zero-based probe-grid index.
+        rung_index: u8,
+        /// Disposition: 0 inert, 1 transient, 2 productive.
+        disposition: u8,
+    },
     /// The probe campaign concluded.
     Done(BreakawayProbeOutcome),
 }
@@ -322,7 +337,7 @@ pub(crate) enum BreakawayProbeOutcome {
     BreakawayFound(ResolvedCampaignBreakaway),
     /// A bisection search reached the top of its grid without ever confirming
     /// commanded-side motion.
-    NoMotionAtAuthority,
+    NoProductiveResponseAtAuthority,
     /// The mandatory bracket-repeat observation contradicted the search's own prior
     /// read at that grid index.
     UnstableBreakaway,
@@ -455,8 +470,8 @@ fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
         BreakawaySearchError::AuthorityFailure => {
             BreakawayProbeStep::Done(BreakawayProbeOutcome::AuthorityFailure)
         }
-        BreakawaySearchError::NoMotionAtAuthority => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::NoMotionAtAuthority)
+        BreakawaySearchError::NoProductiveResponseAtAuthority => {
+            BreakawayProbeStep::Done(BreakawayProbeOutcome::NoProductiveResponseAtAuthority)
         }
         BreakawaySearchError::UnstableBreakaway => {
             BreakawayProbeStep::Done(BreakawayProbeOutcome::UnstableBreakaway)
@@ -740,46 +755,48 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(input) => input,
                 Err(error) => return fault(error),
             };
-            // Mirror sweep.rs's AnalyzeMoving `terminal_error` match (sweep.rs:1076):
-            // wrong-direction and hard-clip mean the direction-to-motion assumption
-            // origin-recovery relies on is untrustworthy, or that current is already
-            // clipped, so recovery must not run another energized stroke on top of
-            // this observation. Invalid controller-domain evidence is likewise an
-            // immediate terminal there. Inspecting the raw classification here keeps
-            // the timing distinction: sweep continues normally (settle + recovery)
-            // on `StationarityExcluded`, only short-circuiting on
-            // `InvalidEvidenceFault`. `CurrentHeadroom` is deliberately untouched:
-            // the sweep also runs settle + recovery for it.
-            match classify_velocity_observation(input).classification {
-                VelocityObservationClass::WrongDirectionFault => {
-                    return fault(CommissionError::VelocityValidationFailed);
-                }
-                VelocityObservationClass::HardClipFault => {
-                    return fault(CommissionError::SafetyEnvelopeViolation);
-                }
-                VelocityObservationClass::InvalidEvidenceFault => {
-                    return BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                        ProbeEvidenceExclusionReason::InvalidMovingEvidence,
-                    ));
-                }
-                VelocityObservationClass::Eligible
-                | VelocityObservationClass::Inert
-                | VelocityObservationClass::DeficitUnresolved
-                | VelocityObservationClass::CurrentHeadroom
-                | VelocityObservationClass::StationarityExcluded(_) => {}
-            }
+            let shared_classification = classify_velocity_observation(input).classification;
             session.pending_lower_rate_q = commanded_side_lower_rate_q(
                 input.direction,
                 input.settled_rate_low_q,
                 input.settled_rate_high_q,
             );
             session.pending_class = Some(classify_breakaway_observation(input));
+            let target_rate_q =
+                match discovery_target_rate_q(session.target_velocity_rpm, safety.counts_per_rev())
+                {
+                    Ok(value) => value,
+                    Err(error) => return fault(error),
+                };
+            let collected = CollectedObservation {
+                atom: DiscoveryObservationAtom {
+                    mean_rate_q: input.settled_rate_mean_q,
+                    variance_of_mean_q2: input.variance_of_mean_q2,
+                    target_rate_q,
+                    direction: session.direction,
+                },
+                rung_index: session.pending_index,
+                slot_index: session.cursor.observations(),
+                classifier_inputs: observation_classifier_inputs(&input),
+            };
+            session.pending_observation = Some(collected);
             workspace.analysis.reset();
             workspace.observations.clear();
-            *state = BreakawayProbeState::BeginSettleCapture {
-                settle_deadline_us: *settle_deadline_us,
+            *state = match shared_classification {
+                VelocityObservationClass::WrongDirectionFault
+                | VelocityObservationClass::HardClipFault
+                | VelocityObservationClass::InvalidEvidenceFault => BreakawayProbeState::Advance,
+                VelocityObservationClass::Eligible
+                | VelocityObservationClass::Inert
+                | VelocityObservationClass::DeficitUnresolved
+                | VelocityObservationClass::CurrentHeadroom
+                | VelocityObservationClass::StationarityExcluded(_) => {
+                    BreakawayProbeState::BeginSettleCapture {
+                        settle_deadline_us: *settle_deadline_us,
+                    }
+                }
             };
-            BreakawayProbeStep::ReadyNow
+            BreakawayProbeStep::Observation(collected)
         }
         BreakawayProbeState::BeginSettleCapture { settle_deadline_us } => {
             checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeSettleBaselineRead);
@@ -966,7 +983,11 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 RungOriginRecoveryStep::RestSelection { .. }
                 | RungOriginRecoveryStep::RestAnalysis(_) => BreakawayProbeStep::ReadyNow,
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
-                    *state = BreakawayProbeState::Advance;
+                    *state = if session.pending_class.as_ref().is_some_and(Result::is_ok) {
+                        BreakawayProbeState::EmitDecision
+                    } else {
+                        BreakawayProbeState::Advance
+                    };
                     BreakawayProbeStep::ReadyNow
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
@@ -984,7 +1005,37 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 } => fault(error),
             }
         }
+        BreakawayProbeState::EmitDecision => {
+            let class = session
+                .pending_class
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .copied()
+                .expect("only a classified observation reaches decision emission");
+            let disposition = match class {
+                ProbeProductivityClass::BelowProductive(
+                    super::breakaway_search::BelowBoundaryDisposition::Inert,
+                ) => 0,
+                ProbeProductivityClass::BelowProductive(
+                    super::breakaway_search::BelowBoundaryDisposition::Transient,
+                ) => 1,
+                ProbeProductivityClass::Productive => 2,
+            };
+            let observation = session
+                .pending_observation
+                .expect("raw observation retained until cursor commit");
+            *state = BreakawayProbeState::Advance;
+            BreakawayProbeStep::Decision {
+                direction: observation.atom.direction,
+                rung_index: observation.rung_index,
+                disposition,
+            }
+        }
         BreakawayProbeState::Advance => {
+            session
+                .pending_observation
+                .take()
+                .expect("raw observation retained until cursor consumption");
             let class_result = session
                 .pending_class
                 .take()
@@ -1259,10 +1310,32 @@ impl DirectionAccumulator {
 /// [`BreakawayProbeSession::pending_class`](BreakawayProbeSession) holds the probe's
 /// classification across origin-recovery.
 #[derive(Debug, Clone, Copy, defmt::Format)]
+struct PendingObservationAtom {
+    mean_rate_q: i64,
+    variance_of_mean_q2: u128,
+    target_rate_q: i64,
+}
+
+impl PendingObservationAtom {
+    fn with_direction(self, direction: VelocityDirection) -> DiscoveryObservationAtom {
+        DiscoveryObservationAtom {
+            mean_rate_q: self.mean_rate_q,
+            variance_of_mean_q2: self.variance_of_mean_q2,
+            target_rate_q: self.target_rate_q,
+            direction,
+        }
+    }
+}
+
+/// One discovery stroke retained until recovery finishes and the cursor consumes it.
+///
+/// Direction is owned by [`AdditiveDiscoverySession`] throughout this interval,
+/// so the compact pending atom does not duplicate it in retained RAM.
+#[derive(Debug, Clone, Copy, defmt::Format)]
 struct PendingDiscoveryRecord {
     classification: VelocityObservationClass,
     interval: Option<EquivalentTorqueTargetInterval>,
-    atom: DiscoveryObservationAtom,
+    atom: PendingObservationAtom,
     classifier_inputs: ObservationClassifierInputs,
 }
 
@@ -1525,6 +1598,10 @@ pub(crate) struct ObservationClassifierInputs {
     pub(crate) disturbance_low_q16: i32,
     /// Upper disturbance-interval bound in the same units (`0` when absent).
     pub(crate) disturbance_high_q16: i32,
+    /// Drift ratio in parts per million, or `u32::MAX` when unavailable.
+    pub(crate) drift_ratio_ppm: u32,
+    /// Post-fit lag-one state: 0 unavailable, 1 failed, 2 passed.
+    pub(crate) post_fit_lag_one_state: u8,
 }
 
 /// Map a [`StationarityResult`] to its compact wire code: `0` usable, `1..=6`
@@ -1562,6 +1639,8 @@ fn observation_classifier_inputs(input: &VelocityObservationInput) -> Observatio
         disturbance_present,
         disturbance_low_q16,
         disturbance_high_q16,
+        drift_ratio_ppm: input.drift_ratio_ppm,
+        post_fit_lag_one_state: input.post_fit_lag_one_state,
     }
 }
 
@@ -2051,11 +2130,10 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             session.pending_record = Some(PendingDiscoveryRecord {
                 classification,
                 interval: input.disturbance.map(|(_, interval)| interval),
-                atom: DiscoveryObservationAtom {
+                atom: PendingObservationAtom {
                     mean_rate_q: input.settled_rate_mean_q,
                     variance_of_mean_q2,
                     target_rate_q,
-                    direction: session.direction,
                 },
                 classifier_inputs: observation_classifier_inputs(&input),
             });
@@ -2249,7 +2327,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     *state = AdditiveDiscoveryState::Advance;
                     match session.pending_record.as_ref() {
                         Some(record) => AdditiveDiscoveryStep::Observation(CollectedObservation {
-                            atom: record.atom,
+                            atom: record.atom.with_direction(session.direction),
                             rung_index: session.rung_index,
                             slot_index: session.slot,
                             classifier_inputs: record.classifier_inputs,
@@ -2275,18 +2353,19 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 .pending_record
                 .take()
                 .expect("classified before recovery started");
+            let atom = record.atom.with_direction(session.direction);
             match session.direction {
                 VelocityDirection::Forward => session.forward.record(
                     session.slot,
                     record.classification,
                     record.interval,
-                    record.atom,
+                    atom,
                 ),
                 VelocityDirection::Reverse => session.reverse.record(
                     session.slot,
                     record.classification,
                     record.interval,
-                    record.atom,
+                    atom,
                 ),
             }
 
@@ -2408,7 +2487,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
 struct PendingConfirmationRecord {
     classification: VelocityObservationClass,
     interval: Option<EquivalentTorqueTargetInterval>,
-    atom: DiscoveryObservationAtom,
+    atom: PendingObservationAtom,
     classifier_inputs: ObservationClassifierInputs,
 }
 
@@ -3025,11 +3104,10 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             session.pending_record = Some(PendingConfirmationRecord {
                 classification,
                 interval: input.disturbance.map(|(_, interval)| interval),
-                atom: DiscoveryObservationAtom {
+                atom: PendingObservationAtom {
                     mean_rate_q: input.settled_rate_mean_q,
                     variance_of_mean_q2,
                     target_rate_q,
-                    direction: session.current_direction(),
                 },
                 classifier_inputs: observation_classifier_inputs(&input),
             });
@@ -3225,7 +3303,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     *state = BandConfirmationState::Advance;
                     match session.pending_record.as_ref() {
                         Some(record) => BandConfirmationStep::Observation(CollectedObservation {
-                            atom: record.atom,
+                            atom: record.atom.with_direction(session.current_direction()),
                             rung_index: 0,
                             slot_index,
                             classifier_inputs: record.classifier_inputs,
@@ -3251,18 +3329,19 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 .pending_record
                 .take()
                 .expect("classified before recovery started");
+            let atom = record.atom.with_direction(session.current_direction());
             match session.current_direction() {
                 VelocityDirection::Forward => session.forward.record(
                     session.slot_within_direction(),
                     record.classification,
                     record.interval,
-                    record.atom,
+                    atom,
                 ),
                 VelocityDirection::Reverse => session.reverse.record(
                     session.slot_within_direction(),
                     record.classification,
                     record.interval,
-                    record.atom,
+                    atom,
                 ),
             }
 
@@ -3680,7 +3759,7 @@ fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
         BreakawayProbeOutcome::SafetyFault { error, safety } => {
             BreakawayCampaignOutcome::Terminal { error, safety }
         }
-        BreakawayProbeOutcome::NoMotionAtAuthority
+        BreakawayProbeOutcome::NoProductiveResponseAtAuthority
         | BreakawayProbeOutcome::UnstableBreakaway
         | BreakawayProbeOutcome::DirectionalBreakawayDisagreement
         | BreakawayProbeOutcome::ProbeEvidenceExcluded(_)
@@ -3744,6 +3823,22 @@ fn raw_observation_step(
         sequence,
     );
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::RawObservation(report))
+}
+
+fn probe_decision_step(
+    plan_digest: u64,
+    input: ProbeDecisionReportInput,
+    run_sequence: u32,
+    evidence_sequence: &mut u16,
+) -> BreakawayCampaignStep {
+    let sequence = next_sequence(evidence_sequence);
+    let report = super::breakaway_reporting::probe_decision_report(
+        plan_digest,
+        input,
+        run_sequence,
+        sequence,
+    );
+    BreakawayCampaignStep::Event(BreakawayCampaignEvent::ProbeDecision(report))
 }
 
 /// Build the streamed margin event for one collected in-band rung, mirroring
@@ -4536,6 +4631,29 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     BreakawayProbeStep::At(deadline_us) => {
                         CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
                     }
+                    BreakawayProbeStep::Observation(collected) => {
+                        CampaignAdvance::Step(raw_observation_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Probe,
+                            collected,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
+                    BreakawayProbeStep::Decision {
+                        direction,
+                        rung_index,
+                        disposition,
+                    } => CampaignAdvance::Step(probe_decision_step(
+                        session.plan.plan_digest,
+                        ProbeDecisionReportInput {
+                            direction,
+                            rung_index,
+                            disposition,
+                        },
+                        inputs.run_sequence,
+                        evidence_sequence,
+                    )),
                     BreakawayProbeStep::Done(BreakawayProbeOutcome::BreakawayFound(resolved)) => {
                         probe_success_advance(resolved, &session.plan, inputs, evidence_sequence)
                     }

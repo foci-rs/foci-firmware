@@ -100,6 +100,7 @@ fn encode_directional_breakaway_has_stable_frame_layout() {
         inert_p_raw: 0x0910,
         moving_p_raw: 0x1112,
         observations: 6,
+        lower_disposition_mask: 0b11,
     };
     let record = encode_directional_breakaway(report);
     let expected = Expected::new()
@@ -111,7 +112,8 @@ fn encode_directional_breakaway_has_stable_frame_layout() {
         .u8(report.inert_present)
         .u16(report.inert_p_raw)
         .u16(report.moving_p_raw)
-        .u8(report.observations);
+        .u8(report.observations)
+        .u8(report.lower_disposition_mask);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -221,6 +223,8 @@ fn encode_raw_observation_has_stable_frame_layout() {
         disturbance_present: 1,
         disturbance_low_q16: -0x0102_0304,
         disturbance_high_q16: 0x0506_0708,
+        drift_ratio_ppm: 0x1112_1314,
+        post_fit_lag_one_state: 2,
     };
     let record = encode_raw_observation(report);
     let expected = Expected::new()
@@ -245,7 +249,31 @@ fn encode_raw_observation_has_stable_frame_layout() {
         .u16(report.hard_torque_limit)
         .u8(report.disturbance_present)
         .i32(report.disturbance_low_q16)
-        .i32(report.disturbance_high_q16);
+        .i32(report.disturbance_high_q16)
+        .u32(report.drift_ratio_ppm)
+        .u8(report.post_fit_lag_one_state);
+    assert_eq!(record.as_bytes(), expected.bytes());
+}
+
+#[test]
+fn encode_probe_decision_has_stable_frame_layout() {
+    let report = BreakawayProbeDecision {
+        run_sequence: 0x1020_3040,
+        evidence_sequence: 0x5060,
+        plan_digest: 0x1122_3344_5566_7788,
+        direction: 1,
+        rung_index: 3,
+        disposition: 1,
+    };
+    let record = encode_probe_decision(report);
+    let expected = Expected::new()
+        .u8(13)
+        .u32(report.run_sequence)
+        .u16(report.evidence_sequence)
+        .u64(report.plan_digest)
+        .u8(report.direction)
+        .u8(report.rung_index)
+        .u8(report.disposition);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -484,6 +512,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             inert_p_raw: 0,
             moving_p_raw: 0,
             observations: 0,
+            lower_disposition_mask: 0,
         })
         .as_bytes()[0],
         encode_probe_terminal(BreakawayProbeTerminal {
@@ -543,6 +572,8 @@ fn every_encoder_uses_a_distinct_local_tag() {
             disturbance_present: 0,
             disturbance_low_q16: 0,
             disturbance_high_q16: 0,
+            drift_ratio_ppm: 0,
+            post_fit_lag_one_state: 2,
         })
         .as_bytes()[0],
         encode_discovery_terminal(AdditiveDiscoveryTerminal {
@@ -630,6 +661,15 @@ fn every_encoder_uses_a_distinct_local_tag() {
             terminal_cause: 0,
             accepted: 0,
             stage_c_plan_digest: 0,
+        })
+        .as_bytes()[0],
+        encode_probe_decision(BreakawayProbeDecision {
+            run_sequence: 0,
+            evidence_sequence: 0,
+            plan_digest: 0,
+            direction: 0,
+            rung_index: 0,
+            disposition: 0,
         })
         .as_bytes()[0],
     ];

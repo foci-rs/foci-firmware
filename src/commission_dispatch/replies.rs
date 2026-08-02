@@ -989,6 +989,7 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         // canonical trace only, where foci-trace reconstructs the consensus and
         // nomination from them. No ordinary reply is emitted for either.
         BreakawayCampaignEvent::RawObservation(_) => {}
+        BreakawayCampaignEvent::ProbeDecision(_) => {}
         BreakawayCampaignEvent::DiscoveryRungMargin(_) => {}
         BreakawayCampaignEvent::DiscoveryTerminal {
             terminal,

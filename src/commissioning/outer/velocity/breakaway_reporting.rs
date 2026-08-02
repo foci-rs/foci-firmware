@@ -29,8 +29,9 @@ use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multip
 use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
-    BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin, BreakawayProbePlanned,
-    BreakawayProbeTerminal, BreakawayRawObservation, BreakawayRungZeroDiagnostic,
+    BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin, BreakawayProbeDecision,
+    BreakawayProbePlanned, BreakawayProbeTerminal, BreakawayRawObservation,
+    BreakawayRungZeroDiagnostic,
 };
 
 use super::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION;
@@ -70,8 +71,8 @@ pub(crate) enum BreakawayPhase {
 pub(crate) enum BreakawayTerminalCause {
     /// No failure: the phase either succeeded or has not yet terminated.
     None = 0,
-    /// [`BreakawayProbeOutcome::NoMotionAtAuthority`].
-    ProbeNoMotionAtAuthority = 1,
+    /// [`BreakawayProbeOutcome::NoProductiveResponseAtAuthority`].
+    ProbeNoProductiveResponseAtAuthority = 1,
     /// [`BreakawayProbeOutcome::UnstableBreakaway`].
     ProbeUnstableBreakaway = 2,
     /// [`BreakawayProbeOutcome::DirectionalBreakawayDisagreement`].
@@ -159,9 +160,10 @@ pub(crate) fn probe_terminal_cause(
 ) -> (BreakawayTerminalCause, u8) {
     match outcome {
         BreakawayProbeOutcome::BreakawayFound(_) => (BreakawayTerminalCause::None, 0),
-        BreakawayProbeOutcome::NoMotionAtAuthority => {
-            (BreakawayTerminalCause::ProbeNoMotionAtAuthority, 0)
-        }
+        BreakawayProbeOutcome::NoProductiveResponseAtAuthority => (
+            BreakawayTerminalCause::ProbeNoProductiveResponseAtAuthority,
+            0,
+        ),
         BreakawayProbeOutcome::UnstableBreakaway => {
             (BreakawayTerminalCause::ProbeUnstableBreakaway, 0)
         }
@@ -321,6 +323,7 @@ pub(crate) fn directional_breakaway_report(
         inert_p_raw,
         moving_p_raw,
         observations: breakaway.observations,
+        lower_disposition_mask: breakaway.lower_disposition_mask,
     }
 }
 
@@ -436,6 +439,32 @@ pub(crate) fn raw_observation_report(
         disturbance_present: u8::from(inputs.disturbance_present),
         disturbance_low_q16: inputs.disturbance_low_q16,
         disturbance_high_q16: inputs.disturbance_high_q16,
+        drift_ratio_ppm: inputs.drift_ratio_ppm,
+        post_fit_lag_one_state: inputs.post_fit_lag_one_state,
+    }
+}
+
+/// Driver-local coordinates and disposition for one committed probe decision.
+pub(crate) struct ProbeDecisionReportInput {
+    pub(crate) direction: VelocityDirection,
+    pub(crate) rung_index: u8,
+    pub(crate) disposition: u8,
+}
+
+/// Report one recovered probe observation immediately before cursor mutation.
+pub(crate) fn probe_decision_report(
+    plan_digest: u64,
+    input: ProbeDecisionReportInput,
+    run_sequence: u32,
+    evidence_sequence: u16,
+) -> BreakawayProbeDecision {
+    BreakawayProbeDecision {
+        run_sequence,
+        evidence_sequence,
+        plan_digest,
+        direction: direction_report_code(input.direction),
+        rung_index: input.rung_index,
+        disposition: input.disposition,
     }
 }
 

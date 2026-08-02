@@ -296,9 +296,12 @@ fn bisection_confirms_each_bracket_endpoint_exactly_once_after_convergence() {
 }
 
 #[test]
-fn all_inert_search_reports_no_motion_at_authority() {
+fn all_inert_search_reports_no_productive_response_at_authority() {
     let (trace, result) = simulate_directional_search(20, None);
-    assert_eq!(result, Err(BreakawaySearchError::NoMotionAtAuthority));
+    assert_eq!(
+        result,
+        Err(BreakawaySearchError::NoProductiveResponseAtAuthority)
+    );
     assert!(trace.len() <= 8, "trace: {trace:?}");
 }
 
@@ -343,7 +346,7 @@ fn exhaustive_search_resolves_every_monotone_axis_within_the_eight_observation_b
                 None => {
                     assert_eq!(
                         result,
-                        Err(BreakawaySearchError::NoMotionAtAuthority),
+                        Err(BreakawaySearchError::NoProductiveResponseAtAuthority),
                         "rung_count={rung_count}"
                     );
                 }
@@ -499,12 +502,15 @@ fn all_inert_repeat_re_probes_the_authority_endpoint() {
 }
 
 #[test]
-fn all_inert_confirming_repeat_yields_no_motion_at_authority() {
+fn all_inert_confirming_repeat_yields_no_productive_response_at_authority() {
     let rung_count = 20;
     let (mut cursor, pending_index) = all_inert_cursor_at_the_repeat(rung_count);
     assert_eq!(pending_index, rung_count - 1);
     let outcome = cursor.advance(Ok(INERT));
-    assert_eq!(outcome, Err(BreakawaySearchError::NoMotionAtAuthority));
+    assert_eq!(
+        outcome,
+        Err(BreakawaySearchError::NoProductiveResponseAtAuthority)
+    );
 }
 
 #[test]

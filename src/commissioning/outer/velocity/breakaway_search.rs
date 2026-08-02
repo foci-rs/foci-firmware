@@ -95,7 +95,7 @@ pub enum BreakawaySearchError {
     /// The bisection search reached the top of the search grid without ever
     /// confirming commanded-side motion, and the mandatory repeat of the sole
     /// representable boundary endpoint (the top rung) confirmed it inert too.
-    NoMotionAtAuthority,
+    NoProductiveResponseAtAuthority,
     /// The mandatory bracket-repeat observation contradicted the search's own read
     /// at that grid index.
     UnstableBreakaway,
@@ -234,7 +234,7 @@ enum SearchStage {
 /// confirmed), there is no moving endpoint to repeat either. The cursor still
 /// applies the mandatory-repeat discipline: it re-probes the sole representable
 /// boundary endpoint, the top rung (`rung_count - 1`), once. A confirming repeat
-/// yields [`BreakawaySearchError::NoMotionAtAuthority`]; a contradictory repeat
+/// yields [`BreakawaySearchError::NoProductiveResponseAtAuthority`]; a contradictory repeat
 /// (the top rung now reads moving) yields
 /// [`BreakawaySearchError::UnstableBreakaway`] instead of silently accepting the
 /// single unconfirmed observation.
@@ -252,6 +252,11 @@ pub struct BreakawaySearchCursor {
 }
 
 impl BreakawaySearchCursor {
+    /// Number of observations already consumed in this directional search.
+    pub const fn observations(&self) -> u8 {
+        self.observations
+    }
+
     /// Construct a fresh cursor and the first grid index the caller must probe.
     ///
     /// `rung_count` may be any value up to [`super::sweep_plan::MAX_SWEEP_RUNGS`]:
@@ -388,7 +393,7 @@ impl BreakawaySearchCursor {
     ) -> Result<BreakawaySearchStep, BreakawaySearchError> {
         match class {
             ProbeProductivityClass::BelowProductive(_) => {
-                Err(BreakawaySearchError::NoMotionAtAuthority)
+                Err(BreakawaySearchError::NoProductiveResponseAtAuthority)
             }
             ProbeProductivityClass::Productive => Err(BreakawaySearchError::UnstableBreakaway),
         }

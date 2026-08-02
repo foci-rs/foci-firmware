@@ -27,7 +27,7 @@ use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
     BreakawayCeilingSource, BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin,
-    BreakawayProbePlanned, BreakawayProbeTerminal, BreakawayRawObservation,
+    BreakawayProbeDecision, BreakawayProbePlanned, BreakawayProbeTerminal, BreakawayRawObservation,
     BreakawayRungZeroDiagnostic,
 };
 
@@ -82,6 +82,7 @@ pub(crate) fn encode_directional_breakaway(
     record.push_u16(report.inert_p_raw);
     record.push_u16(report.moving_p_raw);
     record.push_u8(report.observations);
+    record.push_u8(report.lower_disposition_mask);
     record
 }
 
@@ -174,6 +175,23 @@ pub(crate) fn encode_raw_observation(
     record.push_u8(report.disturbance_present);
     record.push_i32(report.disturbance_low_q16);
     record.push_i32(report.disturbance_high_q16);
+    record.push_u32(report.drift_ratio_ppm);
+    record.push_u8(report.post_fit_lag_one_state);
+    record
+}
+
+/// Encode one post-recovery probe decision (tag 13).
+pub(crate) fn encode_probe_decision(
+    report: BreakawayProbeDecision,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(13);
+    record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
+    push_u64(&mut record, report.plan_digest);
+    record.push_u8(report.direction);
+    record.push_u8(report.rung_index);
+    record.push_u8(report.disposition);
     record
 }
 

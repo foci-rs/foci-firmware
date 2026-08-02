@@ -143,6 +143,9 @@ pub const EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION: u16 = 160;
 /// into the bounded trace motion queue. A non-nominatable in-band rung produces
 /// no record, so a gap in `collected_index` is normal.
 pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN: u16 = 161;
+/// Breakaway-seeded campaign: one recovered probe decision committed to the
+/// adaptive cursor.
+pub const EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION: u16 = 162;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
@@ -277,6 +280,7 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL, 158);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL, 159);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION, 160);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION, 162);
         assert_eq!(EVENT_COMMISSION_DIAGNOSTIC_WARNING, 200);
     }
 

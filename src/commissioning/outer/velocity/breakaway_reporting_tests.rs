@@ -199,13 +199,45 @@ fn directional_breakaway_report_clears_inert_when_clamped_at_breakaway() {
 // --- Probe terminal ------------------------------------------------------
 
 #[test]
+fn breakaway_terminal_cause_wire_values_remain_contiguous_through_accepted() {
+    let causes = [
+        BreakawayTerminalCause::ProbeNoProductiveResponseAtAuthority,
+        BreakawayTerminalCause::ProbeUnstableBreakaway,
+        BreakawayTerminalCause::ProbeDirectionalBreakawayDisagreement,
+        BreakawayTerminalCause::ProbeEvidenceExcluded,
+        BreakawayTerminalCause::ProbeAuthorityFailure,
+        BreakawayTerminalCause::ProbeSafetyFault,
+        BreakawayTerminalCause::DiscoveryTargetBandSkipped,
+        BreakawayTerminalCause::DiscoveryCurrentHeadroomBeforeBand,
+        BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
+        BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded,
+        BreakawayTerminalCause::DiscoveryEvidenceExcluded,
+        BreakawayTerminalCause::DiscoverySafetyFault,
+        BreakawayTerminalCause::ConfirmationTargetBandUnconfirmableFromDiscovery,
+        BreakawayTerminalCause::ConfirmationTargetBandNotReachedAtAuthority,
+        BreakawayTerminalCause::ConfirmationResponseLocation,
+        BreakawayTerminalCause::ConfirmationExcessiveUncertainty,
+        BreakawayTerminalCause::ConfirmationLossOfConsensus,
+        BreakawayTerminalCause::ConfirmationCurrentAuthority,
+        BreakawayTerminalCause::ConfirmationEvidenceExcluded,
+        BreakawayTerminalCause::ConfirmationSafetyFault,
+        BreakawayTerminalCause::Accepted,
+    ];
+
+    assert_eq!(BreakawayTerminalCause::None as u8, 0);
+    for (index, cause) in causes.into_iter().enumerate() {
+        assert_eq!(cause as u8, u8::try_from(index + 1).unwrap());
+    }
+}
+
+#[test]
 fn probe_terminal_cause_maps_every_non_found_variant() {
     use super::super::breakaway_campaign::{BreakawayProbeOutcome, ProbeEvidenceExclusionReason};
 
     let cases = [
         (
-            BreakawayProbeOutcome::NoMotionAtAuthority,
-            BreakawayTerminalCause::ProbeNoMotionAtAuthority,
+            BreakawayProbeOutcome::NoProductiveResponseAtAuthority,
+            BreakawayTerminalCause::ProbeNoProductiveResponseAtAuthority,
         ),
         (
             BreakawayProbeOutcome::UnstableBreakaway,
@@ -380,6 +412,8 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
             disturbance_present: true,
             disturbance_low_q16: -88,
             disturbance_high_q16: 99,
+            drift_ratio_ppm: 123_456,
+            post_fit_lag_one_state: 2,
         },
     };
     let report = raw_observation_report(
