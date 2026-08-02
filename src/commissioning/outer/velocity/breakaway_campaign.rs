@@ -81,6 +81,7 @@ use crate::commissioning::types::{
     BreakawayCampaignEvent, BreakawayCeilingSource, OUTER_SAFETY_FAULT_CURRENT,
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
 };
+use crate::diagnostic::BreakawayCheckpoint;
 
 use super::band_confirmation::{
     BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlan,
@@ -364,6 +365,10 @@ fn current_guard_fault(error: VelocityCurrentGuardError) -> BreakawayProbeStep {
     })
 }
 
+fn checkpoint_breakaway_operation(checkpoint: BreakawayCheckpoint) {
+    crate::diagnostic::checkpoint_breakaway_campaign(checkpoint);
+}
+
 /// Map a resolved [`BreakawaySearchError`] to its owning probe outcome.
 fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
     match error {
@@ -437,6 +442,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             {
                 return fault(CommissionError::InvalidSchedule);
             }
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeSafetyEncoderRead);
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
                 Err(_) => return fault(CommissionError::Spi),
@@ -459,6 +465,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(p) => p,
                 Err(error) => return search_error_outcome(error),
             };
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeGainWrite);
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
@@ -466,12 +473,19 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 )
                 .await
                 .is_err()
-                || backend
-                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
-                    .await
-                    .is_err()
-                || clear_velocity_integrator(backend).await.is_err()
             {
+                return fault(CommissionError::Spi);
+            }
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeRampModeWrite);
+            if backend
+                .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
+                .await
+                .is_err()
+            {
+                return fault(CommissionError::Spi);
+            }
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeGainIntegratorClear);
+            if clear_velocity_integrator(backend).await.is_err() {
                 return fault(CommissionError::Spi);
             }
             *state = BreakawayProbeState::CommandTarget;
@@ -481,6 +495,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             crate::diagnostic::checkpoint_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::TargetCommand,
             );
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetBaselineRead);
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return fault(CommissionError::Spi),
@@ -499,10 +514,12 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     Ok(session) => session,
                     Err(error) => return current_guard_fault(error),
                 };
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeClampInstall);
             if let Err(error) = clamp_session.install_probe_limit(backend).await {
                 return current_guard_fault(error);
             }
             let clamp_limit = clamp_session.probe_limit();
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeCurrentPrimitiveStart);
             if let Err(error) = begin_velocity_current_primitive(
                 &mut workspace.current_observer,
                 backend,
@@ -513,6 +530,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             {
                 return current_guard_fault(error);
             }
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetWrite);
             if backend
                 .write_register(PID_VELOCITY_TARGET, target as u32)
                 .await
@@ -553,10 +571,19 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return BreakawayProbeStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend).await {
+            let read_us = match sample_one_tick(
+                workspace,
+                safety,
+                backend,
+                Some(BreakawayCheckpoint::ProbeMovingEncoderSample),
+                Some(BreakawayCheckpoint::ProbeMovingCurrentInputSample),
+            )
+            .await
+            {
                 Ok(read_us) => read_us,
                 Err(result) => return result,
             };
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeMovingCurrentOutputSample);
             match read_velocity_pid_output_abs(backend).await {
                 Ok(value) => workspace.current_observer.observe_moving_output(value),
                 Err(error) => return current_guard_fault(error),
@@ -579,9 +606,11 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             }
         }
         BreakawayProbeState::CommandZero => {
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeMovingBoundary);
             let boundary =
                 finish_velocity_current_moving_phase(&mut workspace.current_observer, backend)
                     .await;
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeZeroTargetWrite);
             if backend
                 .write_register(PID_VELOCITY_TARGET, 0)
                 .await
@@ -592,6 +621,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             if let Err(error) = boundary {
                 return current_guard_fault(error);
             }
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeZeroIntegratorClear);
             if clear_velocity_integrator(backend).await.is_err() {
                 return fault(CommissionError::Spi);
             }
@@ -690,6 +720,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             BreakawayProbeStep::ReadyNow
         }
         BreakawayProbeState::BeginSettleCapture { settle_deadline_us } => {
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeSettleBaselineRead);
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return fault(CommissionError::Spi),
@@ -725,10 +756,19 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return BreakawayProbeStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend).await {
+            let read_us = match sample_one_tick(
+                workspace,
+                safety,
+                backend,
+                Some(BreakawayCheckpoint::ProbeSettleEncoderSample),
+                Some(BreakawayCheckpoint::ProbeSettleCurrentInputSample),
+            )
+            .await
+            {
                 Ok(read_us) => read_us,
                 Err(result) => return result,
             };
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeSettleCurrentOutputSample);
             match read_velocity_pid_output_abs(backend).await {
                 Ok(value) => workspace.current_observer.observe_zero_output(value),
                 Err(error) => return current_guard_fault(error),
@@ -780,6 +820,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(ScoredRestPoll::Complete(confirmation)) => confirmation,
                 Err(error) => return fault(error),
             };
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeZeroBoundary);
             if let Err(error) =
                 finish_velocity_current_zero_phase(&mut workspace.current_observer, backend).await
             {
@@ -947,7 +988,12 @@ async fn sample_one_tick<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
+    encoder_checkpoint: Option<BreakawayCheckpoint>,
+    current_input_checkpoint: Option<BreakawayCheckpoint>,
 ) -> Result<u64, BreakawayProbeStep> {
+    if let Some(checkpoint) = encoder_checkpoint {
+        checkpoint_breakaway_operation(checkpoint);
+    }
     let encoder_raw = backend
         .read_capture_register(ABN_DECODER_COUNT)
         .await
@@ -984,6 +1030,9 @@ async fn sample_one_tick<B: CommissioningBackend>(
             ));
         }
     };
+    if let Some(checkpoint) = current_input_checkpoint {
+        checkpoint_breakaway_operation(checkpoint);
+    }
     let torque_demand = read_velocity_pid_input_abs(backend)
         .await
         .map_err(current_guard_fault)?;
@@ -1789,7 +1838,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return AdditiveDiscoveryStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
                 Ok(read_us) => read_us,
                 Err(step) => return discovery_step_from_probe_fault(step),
             };
@@ -1984,7 +2033,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return AdditiveDiscoveryStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
                 Ok(read_us) => read_us,
                 Err(step) => return discovery_step_from_probe_fault(step),
             };
@@ -2763,7 +2812,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return BandConfirmationStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
                 Ok(read_us) => read_us,
                 Err(step) => return confirmation_step_from_probe_fault(step),
             };
@@ -2955,7 +3004,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return BandConfirmationStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
                 Ok(read_us) => read_us,
                 Err(step) => return confirmation_step_from_probe_fault(step),
             };

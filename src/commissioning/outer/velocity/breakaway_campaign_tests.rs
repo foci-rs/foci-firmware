@@ -2139,7 +2139,7 @@ fn breakaway_breadcrumb_marks_probe_operation_boundaries() {
     ));
     assert!(matches!(setup, BreakawayProbeStep::ReadyNow));
     assert_breakaway_breadcrumb(
-        crate::diagnostic::BreakawayCheckpoint::SafetyConfigured,
+        crate::diagnostic::BreakawayCheckpoint::ProbeSafetyEncoderRead,
         true,
     );
 
@@ -2152,7 +2152,7 @@ fn breakaway_breadcrumb_marks_probe_operation_boundaries() {
     ));
     assert!(matches!(gain, BreakawayProbeStep::ReadyNow));
     assert_breakaway_breadcrumb(
-        crate::diagnostic::BreakawayCheckpoint::GainProgramming,
+        crate::diagnostic::BreakawayCheckpoint::ProbeGainIntegratorClear,
         true,
     );
 
@@ -2165,7 +2165,10 @@ fn breakaway_breadcrumb_marks_probe_operation_boundaries() {
         &mut backend,
     ));
     assert!(matches!(target_failure, BreakawayProbeStep::Done(_)));
-    assert_breakaway_breadcrumb(crate::diagnostic::BreakawayCheckpoint::TargetCommand, true);
+    assert_breakaway_breadcrumb(
+        crate::diagnostic::BreakawayCheckpoint::ProbeTargetBaselineRead,
+        true,
+    );
 
     state = BreakawayProbeState::CommandTarget;
     backend.fail_on_read = None;
@@ -2178,6 +2181,40 @@ fn breakaway_breadcrumb_marks_probe_operation_boundaries() {
     ));
     assert!(matches!(capture, BreakawayProbeStep::At(_)));
     assert_breakaway_breadcrumb(crate::diagnostic::BreakawayCheckpoint::Capture, true);
+
+    backend.fail_on_read = Some(foci_tmc4671::registers::ABN_DECODER_COUNT.addr());
+    backend.elapsed_us_value = match state {
+        BreakawayProbeState::Capture { next_sample_us, .. } => next_sample_us,
+        _ => panic!("target command must enter capture"),
+    };
+    let moving_failure = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+    assert!(matches!(moving_failure, BreakawayProbeStep::Done(_)));
+    assert_breakaway_breadcrumb(
+        crate::diagnostic::BreakawayCheckpoint::ProbeMovingEncoderSample,
+        true,
+    );
+
+    state = BreakawayProbeState::BeginSettleCapture {
+        settle_deadline_us: backend.elapsed_us_value + 500_000,
+    };
+    let settle_failure = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+    assert!(matches!(settle_failure, BreakawayProbeStep::Done(_)));
+    assert_breakaway_breadcrumb(
+        crate::diagnostic::BreakawayCheckpoint::ProbeSettleBaselineRead,
+        true,
+    );
 }
 
 /// `p_start` the shared `campaign_request()` resolves to, independently

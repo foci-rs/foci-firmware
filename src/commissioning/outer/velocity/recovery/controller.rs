@@ -4,6 +4,7 @@ use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::types::{OUTER_SAFETY_FAULT_CURRENT, OuterSafetyFault};
+use crate::diagnostic::BreakawayCheckpoint;
 use foci_tmc4671::pid::{PidGainPair, PidIGain};
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
@@ -86,6 +87,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if resources.safety.unwrapped_position != runtime.start_offset_counts {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             }
+            checkpoint(BreakawayCheckpoint::RecoveryGainWrite);
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
@@ -100,6 +102,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             RungOriginRecoveryStep::ReadyNow
         }
         RecoveryState::ClearMovingIntegrator => {
+            checkpoint(BreakawayCheckpoint::RecoveryMovingIntegratorClear);
             if clear_velocity_integrator(backend).await.is_err() {
                 return recovery_fault(CommissionError::Spi, None);
             }
@@ -120,12 +123,14 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             if resources.safety.begin_primitive(started_us).is_err() {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             }
+            checkpoint(BreakawayCheckpoint::RecoveryCurrentPrimitiveStart);
             if let Err(error) =
                 restart_velocity_current_primitive(resources.current_observer, backend).await
             {
                 resources.safety.end_primitive();
                 return current_guard_fault(runtime, resources, backend, error);
             }
+            checkpoint(BreakawayCheckpoint::RecoveryTargetWrite);
             if backend
                 .write_register(PID_VELOCITY_TARGET, target as u32)
                 .await
@@ -180,8 +185,10 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     as u32;
                 runtime.lead_in_first_or_net_counts = offset;
                 runtime.lead_in_min_or_span_counts = offset;
+                checkpoint(BreakawayCheckpoint::RecoveryMovingBoundary);
                 let current_result =
                     finish_velocity_current_moving_phase(resources.current_observer, backend).await;
+                checkpoint(BreakawayCheckpoint::RecoveryZeroTargetWrite);
                 let zero_result = backend.write_register(PID_VELOCITY_TARGET, 0).await;
                 if zero_result.is_err() {
                     return recovery_fault(CommissionError::Spi, None);
@@ -215,10 +222,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             contained,
             lead_in,
         } => {
-            if !runtime.settle_integrator_cleared()
-                && clear_velocity_integrator(backend).await.is_err()
-            {
-                return recovery_fault(CommissionError::Spi, None);
+            if !runtime.settle_integrator_cleared() {
+                checkpoint(BreakawayCheckpoint::RecoverySettleIntegratorClear);
+                if clear_velocity_integrator(backend).await.is_err() {
+                    return recovery_fault(CommissionError::Spi, None);
+                }
             }
             let capture_us = if lead_in {
                 RECOVERY_STABILIZATION_US
@@ -383,6 +391,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 Ok(ScoredRestPoll::Complete(result)) => result,
                 Err(error) => return recovery_fault(error, None),
             };
+            checkpoint(BreakawayCheckpoint::RecoveryZeroBoundary);
             if let Err(error) =
                 finish_velocity_current_zero_phase(resources.current_observer, backend).await
             {
@@ -505,6 +514,11 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
     backend: &mut B,
     zero_phase: bool,
 ) -> Option<RungOriginRecoveryStep> {
+    checkpoint(if zero_phase {
+        BreakawayCheckpoint::RecoverySettleSafetySample
+    } else {
+        BreakawayCheckpoint::RecoveryMovingSafetySample
+    });
     match check_outer_safety(resources.safety, backend).await {
         Ok(Some(fault)) => {
             return Some(recovery_fault(
@@ -515,6 +529,11 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
         Err(error) => return Some(recovery_fault(error, None)),
         Ok(None) => {}
     }
+    checkpoint(if zero_phase {
+        BreakawayCheckpoint::RecoverySettleCurrentInputSample
+    } else {
+        BreakawayCheckpoint::RecoveryMovingCurrentInputSample
+    });
     let torque_demand = match read_velocity_pid_input_abs(backend).await {
         Ok(value) => value,
         Err(error) => return Some(current_guard_fault(runtime, resources, backend, error)),
@@ -522,6 +541,11 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
     if torque_demand > resources.current_observer.clamp_limit() {
         return Some(current_limit_fault(runtime, resources, backend));
     }
+    checkpoint(if zero_phase {
+        BreakawayCheckpoint::RecoverySettleCurrentOutputSample
+    } else {
+        BreakawayCheckpoint::RecoveryMovingCurrentOutputSample
+    });
     let torque_target = match read_velocity_pid_output_abs(backend).await {
         Ok(value) => value,
         Err(error) => return Some(current_guard_fault(runtime, resources, backend, error)),
@@ -546,12 +570,16 @@ async fn recovery_current_headroom<B: CommissioningBackend>(
     resources: &mut RungOriginRecoveryResources<'_>,
     backend: &mut B,
 ) -> RungOriginRecoveryStep {
+    checkpoint(BreakawayCheckpoint::RecoveryZeroTargetWrite);
     if backend
         .write_register(PID_VELOCITY_TARGET, 0)
         .await
         .is_err()
-        || clear_velocity_integrator(backend).await.is_err()
     {
+        return recovery_fault(CommissionError::Spi, None);
+    }
+    checkpoint(BreakawayCheckpoint::RecoverySettleIntegratorClear);
+    if clear_velocity_integrator(backend).await.is_err() {
         return recovery_fault(CommissionError::Spi, None);
     }
     if runtime.proves_passive_settle() {
@@ -637,4 +665,8 @@ fn recovery_fault(
     safety: Option<OuterSafetyFault>,
 ) -> RungOriginRecoveryStep {
     RungOriginRecoveryStep::Fault { error, safety }
+}
+
+fn checkpoint(checkpoint: BreakawayCheckpoint) {
+    crate::diagnostic::checkpoint_active_breakaway_campaign(checkpoint);
 }

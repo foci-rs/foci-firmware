@@ -112,6 +112,7 @@ fn encode_probe_terminal_has_stable_frame_layout() {
         family_size: 0x0910,
         terminal_cause: 1,
         has_safety_fault: 0,
+        fault_checkpoint: 17,
     };
     let record = encode_probe_terminal(report);
     let expected = Expected::new()
@@ -121,7 +122,8 @@ fn encode_probe_terminal_has_stable_frame_layout() {
         .u64(report.plan_digest)
         .u16(report.family_size)
         .u8(report.terminal_cause)
-        .u8(report.has_safety_fault);
+        .u8(report.has_safety_fault)
+        .u8(report.fault_checkpoint);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -471,6 +473,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             family_size: 0,
             terminal_cause: 0,
             has_safety_fault: 0,
+            fault_checkpoint: 0,
         })
         .as_bytes()[0],
         encode_discovery_planned(AdditiveDiscoveryPlanned {

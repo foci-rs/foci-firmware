@@ -1133,6 +1133,7 @@ fn recovery_safety_inherits_gap_quarter_turn_duration_current_and_spi_faults() {
     assert_eq!(safety_fault(current.sample(1_000, 8_458)), 9);
 
     let mut spi = RecoveryFixture::new(8_458, Some(14_000_000));
+    crate::diagnostic::begin_breakaway_campaign();
     spi.command_motion();
     spi.backend.fail_on_read = Some(foci_tmc4671::registers::ABN_DECODER_COUNT.addr());
     assert!(matches!(
@@ -1142,6 +1143,26 @@ fn recovery_safety_inherits_gap_quarter_turn_duration_current_and_spi_faults() {
             safety: None,
         }
     ));
+    assert_eq!(
+        crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+        Some(crate::diagnostic::BreakawayBreadcrumb {
+            checkpoint: crate::diagnostic::BreakawayCheckpoint::RecoveryMovingSafetySample,
+            interrupted: true,
+        })
+    );
+}
+
+#[test]
+fn shared_recovery_does_not_create_a_breakaway_breadcrumb() {
+    crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+    let mut fixture = RecoveryFixture::new(8_458, Some(14_000_000));
+
+    fixture.command_motion();
+
+    assert_eq!(
+        crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+        None
+    );
 }
 
 #[test]

@@ -1093,6 +1093,8 @@ pub struct BreakawayProbeTerminal {
     pub terminal_cause: u8,
     /// Nonzero when the terminal carries retained safety-fault evidence.
     pub has_safety_fault: u8,
+    /// Active breakaway operation checkpoint when a safety fault was raised, or zero.
+    pub fault_checkpoint: u8,
 }
 
 /// Immutable additive-discovery plan evidence emitted before the first

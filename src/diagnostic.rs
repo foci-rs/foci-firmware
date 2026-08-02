@@ -29,6 +29,72 @@ pub enum BreakawayCheckpoint {
     CampaignTerminalHandled = 7,
     /// An accepted campaign was handed off to Stage C.
     StageCHandedOff = 8,
+    /// The probe is reading the encoder used to seed its safety baseline.
+    ProbeSafetyEncoderRead = 9,
+    /// The probe is writing the proportional gain for its next observation.
+    ProbeGainWrite = 10,
+    /// The probe is selecting the outer-velocity ramp mode.
+    ProbeRampModeWrite = 11,
+    /// The probe is clearing the velocity integrator after programming gain.
+    ProbeGainIntegratorClear = 12,
+    /// The probe is reading the encoder baseline immediately before a stroke.
+    ProbeTargetBaselineRead = 13,
+    /// The probe is installing its verified temporary current clamp.
+    ProbeClampInstall = 14,
+    /// The probe is clearing and checking status before a signed stroke.
+    ProbeCurrentPrimitiveStart = 15,
+    /// The probe is writing its signed velocity target.
+    ProbeTargetWrite = 16,
+    /// The probe is reading one moving-window encoder sample.
+    ProbeMovingEncoderSample = 17,
+    /// The probe is reading one moving-window velocity-PID input sample.
+    ProbeMovingCurrentInputSample = 18,
+    /// The probe is reading one moving-window velocity-PID output sample.
+    ProbeMovingCurrentOutputSample = 19,
+    /// The probe is reading status at the moving-window boundary.
+    ProbeMovingBoundary = 20,
+    /// The probe is writing zero velocity after its moving window.
+    ProbeZeroTargetWrite = 21,
+    /// The probe is clearing the velocity integrator after commanding zero.
+    ProbeZeroIntegratorClear = 22,
+    /// The probe is reading the encoder baseline for its settle window.
+    ProbeSettleBaselineRead = 23,
+    /// The probe is reading one settle-window encoder sample.
+    ProbeSettleEncoderSample = 24,
+    /// The probe is reading one settle-window velocity-PID input sample.
+    ProbeSettleCurrentInputSample = 25,
+    /// The probe is reading one settle-window velocity-PID output sample.
+    ProbeSettleCurrentOutputSample = 26,
+    /// The probe is reading status after confirmed zero-target rest.
+    ProbeZeroBoundary = 27,
+    /// Origin recovery is writing its proportional gain.
+    RecoveryGainWrite = 28,
+    /// Origin recovery is clearing the integrator before moving.
+    RecoveryMovingIntegratorClear = 29,
+    /// Origin recovery is clearing and checking status before moving.
+    RecoveryCurrentPrimitiveStart = 30,
+    /// Origin recovery is writing its return velocity target.
+    RecoveryTargetWrite = 31,
+    /// Origin recovery is running one moving safety sample.
+    RecoveryMovingSafetySample = 32,
+    /// Origin recovery is reading one moving velocity-PID input sample.
+    RecoveryMovingCurrentInputSample = 33,
+    /// Origin recovery is reading one moving velocity-PID output sample.
+    RecoveryMovingCurrentOutputSample = 34,
+    /// Origin recovery is reading status at its moving boundary.
+    RecoveryMovingBoundary = 35,
+    /// Origin recovery is writing zero velocity.
+    RecoveryZeroTargetWrite = 36,
+    /// Origin recovery is clearing the integrator for settle.
+    RecoverySettleIntegratorClear = 37,
+    /// Origin recovery is running one zero-target safety sample.
+    RecoverySettleSafetySample = 38,
+    /// Origin recovery is reading one settle velocity-PID input sample.
+    RecoverySettleCurrentInputSample = 39,
+    /// Origin recovery is reading one settle velocity-PID output sample.
+    RecoverySettleCurrentOutputSample = 40,
+    /// Origin recovery is reading status after confirmed rest.
+    RecoveryZeroBoundary = 41,
 }
 
 impl BreakawayCheckpoint {
@@ -42,6 +108,39 @@ impl BreakawayCheckpoint {
             6 => Some(Self::EventRouting),
             7 => Some(Self::CampaignTerminalHandled),
             8 => Some(Self::StageCHandedOff),
+            9 => Some(Self::ProbeSafetyEncoderRead),
+            10 => Some(Self::ProbeGainWrite),
+            11 => Some(Self::ProbeRampModeWrite),
+            12 => Some(Self::ProbeGainIntegratorClear),
+            13 => Some(Self::ProbeTargetBaselineRead),
+            14 => Some(Self::ProbeClampInstall),
+            15 => Some(Self::ProbeCurrentPrimitiveStart),
+            16 => Some(Self::ProbeTargetWrite),
+            17 => Some(Self::ProbeMovingEncoderSample),
+            18 => Some(Self::ProbeMovingCurrentInputSample),
+            19 => Some(Self::ProbeMovingCurrentOutputSample),
+            20 => Some(Self::ProbeMovingBoundary),
+            21 => Some(Self::ProbeZeroTargetWrite),
+            22 => Some(Self::ProbeZeroIntegratorClear),
+            23 => Some(Self::ProbeSettleBaselineRead),
+            24 => Some(Self::ProbeSettleEncoderSample),
+            25 => Some(Self::ProbeSettleCurrentInputSample),
+            26 => Some(Self::ProbeSettleCurrentOutputSample),
+            27 => Some(Self::ProbeZeroBoundary),
+            28 => Some(Self::RecoveryGainWrite),
+            29 => Some(Self::RecoveryMovingIntegratorClear),
+            30 => Some(Self::RecoveryCurrentPrimitiveStart),
+            31 => Some(Self::RecoveryTargetWrite),
+            32 => Some(Self::RecoveryMovingSafetySample),
+            33 => Some(Self::RecoveryMovingCurrentInputSample),
+            34 => Some(Self::RecoveryMovingCurrentOutputSample),
+            35 => Some(Self::RecoveryMovingBoundary),
+            36 => Some(Self::RecoveryZeroTargetWrite),
+            37 => Some(Self::RecoverySettleIntegratorClear),
+            38 => Some(Self::RecoverySettleSafetySample),
+            39 => Some(Self::RecoverySettleCurrentInputSample),
+            40 => Some(Self::RecoverySettleCurrentOutputSample),
+            41 => Some(Self::RecoveryZeroBoundary),
             _ => None,
         }
     }
@@ -188,6 +287,26 @@ pub fn begin_breakaway_campaign() {
 /// Record one active breakaway-campaign lifecycle boundary.
 pub fn checkpoint_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
     store_persistent_breakaway_breadcrumb(checkpoint, false);
+}
+
+/// Return the current active campaign checkpoint, excluding completed records.
+pub fn active_breakaway_checkpoint() -> Option<BreakawayCheckpoint> {
+    let breadcrumb = decode_breakaway_breadcrumb(persistent_breakaway_breadcrumb())?;
+    if breadcrumb.interrupted {
+        Some(breadcrumb.checkpoint)
+    } else {
+        None
+    }
+}
+
+/// Record a checkpoint only when a breakaway campaign is already active.
+///
+/// Shared motion primitives use this form so their use by another workflow
+/// cannot manufacture a breakaway breadcrumb.
+pub fn checkpoint_active_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
+    if active_breakaway_checkpoint().is_some() {
+        store_persistent_breakaway_breadcrumb(checkpoint, false);
+    }
 }
 
 /// Mark a handled breakaway-campaign terminal boundary completed.

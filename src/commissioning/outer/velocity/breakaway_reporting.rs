@@ -326,6 +326,11 @@ pub(crate) fn probe_terminal_report(
     evidence_sequence: u16,
 ) -> BreakawayProbeTerminal {
     let (cause, has_safety_fault) = probe_terminal_cause(outcome);
+    let fault_checkpoint = if matches!(outcome, BreakawayProbeOutcome::SafetyFault { .. }) {
+        crate::diagnostic::active_breakaway_checkpoint().map_or(0, |checkpoint| checkpoint as u8)
+    } else {
+        0
+    };
     BreakawayProbeTerminal {
         run_sequence,
         evidence_sequence,
@@ -333,6 +338,7 @@ pub(crate) fn probe_terminal_report(
         family_size: plan.confidence_family_size,
         terminal_cause: cause as u8,
         has_safety_fault,
+        fault_checkpoint,
     }
 }
 

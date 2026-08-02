@@ -249,6 +249,25 @@ fn probe_terminal_report_carries_plan_identity_and_cause() {
         BreakawayTerminalCause::ProbeAuthorityFailure as u8
     );
     assert_eq!(report.has_safety_fault, 0);
+    assert_eq!(report.fault_checkpoint, 0);
+
+    crate::diagnostic::begin_breakaway_campaign();
+    crate::diagnostic::checkpoint_breakaway_campaign(
+        crate::diagnostic::BreakawayCheckpoint::ProbeMovingEncoderSample,
+    );
+    let report = probe_terminal_report(
+        &plan,
+        &BreakawayProbeOutcome::SafetyFault {
+            error: crate::autotune::CommissionError::Spi,
+            safety: None,
+        },
+        9,
+        5,
+    );
+    assert_eq!(
+        report.fault_checkpoint,
+        crate::diagnostic::BreakawayCheckpoint::ProbeMovingEncoderSample as u8
+    );
 }
 
 // --- Discovery plan and ladder -------------------------------------------

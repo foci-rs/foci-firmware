@@ -91,6 +91,7 @@ pub(crate) fn encode_probe_terminal(
     record.push_u16(report.family_size);
     record.push_u8(report.terminal_cause);
     record.push_u8(report.has_safety_fault);
+    record.push_u8(report.fault_checkpoint);
     record
 }
 
