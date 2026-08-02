@@ -171,58 +171,90 @@ fn no_register_traffic_happens_before_the_planned_probe_state_advances() {
 }
 
 #[test]
-fn breakaway_safety_baseline_is_not_reset_when_a_later_probe_stroke_begins() {
-    use crate::commissioning::outer::velocity::breakaway_search::BreakawayMotionClass;
-
+fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
     let mut session =
         BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
     let mut workspace = BreakawayProbeWorkspace::new();
-    let mut state = BreakawayProbeState::Advance;
+    let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
-    safety.unwrapped_position = 137;
-    let original_baseline = safety.prev_encoder_count;
-    session.pending_class = Some(Ok(BreakawayMotionClass::Inert));
     let mut backend = test_backend();
-    backend.mechanical_encoder_position_counts_value = 2_000;
+    backend.mechanical_encoder_position_counts_value = 1_234;
+    backend.set_abn_decoder_count(1_234);
 
-    let result = pollster::block_on(step_breakaway_probe(
+    let planned = pollster::block_on(step_breakaway_probe(
         &mut state,
         &mut workspace,
         &mut session,
         &mut safety,
         &mut backend,
     ));
-
-    assert!(matches!(result, BreakawayProbeStep::ReadyNow));
+    assert!(matches!(planned, BreakawayProbeStep::ReadyNow));
+    assert_eq!(state, BreakawayProbeState::SetupSafety);
+    let setup = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+    assert!(matches!(setup, BreakawayProbeStep::ReadyNow));
     assert_eq!(state, BreakawayProbeState::WriteGain);
-    assert_eq!(safety.prev_encoder_count, original_baseline);
-    assert_eq!(safety.unwrapped_position, 137);
-    assert!(backend.spi_log.is_empty());
-}
+    let safety_baseline = safety.prev_encoder_count;
+    assert_eq!(safety_baseline.map(|count| count.raw_counts()), Some(1_234));
+    assert_eq!(safety.torque_cap, 2_448);
 
-#[test]
-fn breakaway_safety_probe_uses_frozen_authority_after_setup() {
-    let plan = test_plan();
-    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let mut session =
-        BreakawayProbeSession::new(plan, target_velocity_rpm, 4_394).expect("valid session");
-    let mut workspace = BreakawayProbeWorkspace::new();
-    let mut state = BreakawayProbeState::CommandTarget;
-    let mut safety = test_safety();
-    let mut backend = test_backend();
+    // The setup snapshot is now authoritative. A later encoder capture differs
+    // from the safety baseline, and the live current limit is intentionally stale.
+    backend.set_abn_decoder_count(2_000);
     backend.current_limit_value = current_limit(250);
 
-    let result = pollster::block_on(step_breakaway_probe(
-        &mut state,
-        &mut workspace,
-        &mut session,
-        &mut safety,
-        &mut backend,
-    ));
+    let mut saw_gain = false;
+    let mut saw_target = false;
+    let mut saw_capture = false;
+    let mut saw_recovery = false;
+    for _ in 0..20_000 {
+        saw_gain |= matches!(state, BreakawayProbeState::WriteGain);
+        saw_target |= matches!(state, BreakawayProbeState::CommandTarget);
+        saw_capture |= matches!(state, BreakawayProbeState::Capture { .. });
+        saw_recovery |= matches!(state, BreakawayProbeState::Recover(_));
+        let result = pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            BreakawayProbeStep::ReadyNow => {}
+            BreakawayProbeStep::At(deadline) => backend.elapsed_us_value = deadline,
+            BreakawayProbeStep::Done(outcome) => {
+                panic!("first probe stroke terminated unexpectedly: {outcome:?}")
+            }
+        }
+        if saw_recovery && matches!(state, BreakawayProbeState::Advance) {
+            break;
+        }
+    }
 
-    assert!(matches!(result, BreakawayProbeStep::At(_)));
+    assert!(saw_gain, "the real first probe stroke must program gain");
+    assert!(
+        saw_target,
+        "the real first probe stroke must command target"
+    );
+    assert!(
+        saw_capture,
+        "the real first probe stroke must reach capture"
+    );
+    assert!(
+        saw_recovery,
+        "the real first probe stroke must reach recovery"
+    );
+    assert_eq!(state, BreakawayProbeState::Advance);
+    assert_eq!(safety.prev_encoder_count, safety_baseline);
+    assert_eq!(safety.unwrapped_position, 0);
+    assert_eq!(workspace.current_observer.clamp_limit(), 2_448);
     let programmed_clamp = backend
         .spi_log
         .iter()
@@ -237,7 +269,7 @@ fn breakaway_safety_probe_uses_frozen_authority_after_setup() {
     assert_eq!(
         programmed_clamp,
         Some(current_limit(2_203).register_value()),
-        "the 90% probe clamp must derive from frozen 2_448, not live 250"
+        "capture clamp must derive from frozen 2_448, not live 250"
     );
 }
 
@@ -641,6 +673,75 @@ fn no_discovery_motion_happens_before_the_planned_discovery_state_advances() {
         backend.spi_log.is_empty(),
         "PlannedDiscovery must not touch the backend"
     );
+}
+
+#[test]
+fn discovery_retains_inherited_safety_contract_through_recovery() {
+    // Starting at the driver's real initial state is the narrowest boundary that
+    // avoids fabricating a statistically valid probe terminal merely to enter
+    // discovery. The inherited safety state is exactly what SetupSafety froze.
+    let request = discovery_request();
+    let mut session =
+        AdditiveDiscoverySession::new(request, false, TmcMechanicalRpm::from_register(100), 4_394)
+            .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    safety
+        .set_encoder_baseline(1_234)
+        .expect("inherited safety baseline");
+    let safety_baseline = safety.prev_encoder_count;
+    let mut backend = test_backend();
+    backend.mechanical_encoder_position_counts_value = 1_234;
+    backend.set_abn_decoder_count(2_000);
+    backend.current_limit_value = current_limit(250);
+
+    let mut saw_capture = false;
+    let mut saw_recovery = false;
+    let mut observation = None;
+    for _ in 0..20_000 {
+        saw_capture |= matches!(state, AdditiveDiscoveryState::Capture { .. });
+        saw_recovery |= matches!(state, AdditiveDiscoveryState::Recover(_));
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::ReadyNow | AdditiveDiscoveryStep::Margin { .. } => {}
+            AdditiveDiscoveryStep::At(deadline) => backend.elapsed_us_value = deadline,
+            AdditiveDiscoveryStep::Observation(collected) => {
+                observation = Some(collected);
+                break;
+            }
+            AdditiveDiscoveryStep::Done(outcome) => {
+                panic!("first discovery stroke terminated unexpectedly: {outcome:?}")
+            }
+        }
+    }
+    let observation = observation.expect("first discovery stroke must emit raw evidence");
+
+    assert!(saw_capture, "the real discovery stroke must reach capture");
+    assert!(
+        saw_recovery,
+        "the real discovery stroke must reach recovery"
+    );
+    assert_eq!(state, AdditiveDiscoveryState::Advance);
+    assert_eq!(safety.prev_encoder_count, safety_baseline);
+    assert_eq!(safety.unwrapped_position, 0);
+    assert_eq!(workspace.current_observer.clamp_limit(), 2_448);
+    assert_eq!(observation.classifier_inputs.usable_torque_limit, 2_203);
+    assert_eq!(observation.classifier_inputs.hard_torque_limit, 2_448);
+    assert!(backend.spi_log.iter().any(|operation| {
+        matches!(
+            operation,
+            SpiOp::Write(address, value)
+                if *address == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                    && *value == current_limit(2_203).register_value()
+        )
+    }));
 }
 
 // --- Plan-time terminals: no motion at all -------------------------------------
@@ -1313,6 +1414,86 @@ fn no_confirmation_motion_happens_before_the_planned_confirmation_state_advances
         backend.spi_log.is_empty(),
         "PlannedConfirmation must not touch the backend"
     );
+}
+
+#[test]
+fn confirmation_retains_inherited_safety_contract_through_recovery() {
+    // `begin_band_confirmation` is the real nomination boundary. Entering its
+    // returned session at PlannedConfirmation avoids fabricating an entire
+    // statistically admissible discovery walk while preserving the transition.
+    let entry = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(724)),
+        42,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+    );
+    let mut session = match entry {
+        BandConfirmationEntry::Ready(session) => session,
+        BandConfirmationEntry::Done(outcome) => {
+            panic!("confirmable discovery must enter confirmation: {outcome:?}")
+        }
+    };
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BandConfirmationState::PlannedConfirmation;
+    let mut safety = test_safety();
+    safety
+        .set_encoder_baseline(1_234)
+        .expect("inherited safety baseline");
+    let safety_baseline = safety.prev_encoder_count;
+    let mut backend = test_backend();
+    backend.mechanical_encoder_position_counts_value = 1_234;
+    backend.set_abn_decoder_count(2_000);
+    backend.current_limit_value = current_limit(250);
+
+    let mut saw_capture = false;
+    let mut saw_recovery = false;
+    let mut observation = None;
+    for _ in 0..20_000 {
+        saw_capture |= matches!(state, BandConfirmationState::Capture { .. });
+        saw_recovery |= matches!(state, BandConfirmationState::Recover(_));
+        let result = pollster::block_on(step_band_confirmation(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            BandConfirmationStep::ReadyNow => {}
+            BandConfirmationStep::At(deadline) => backend.elapsed_us_value = deadline,
+            BandConfirmationStep::Observation(collected) => {
+                observation = Some(collected);
+                break;
+            }
+            BandConfirmationStep::Done(outcome) => {
+                panic!("first confirmation stroke terminated unexpectedly: {outcome:?}")
+            }
+        }
+    }
+    let observation = observation.expect("first confirmation stroke must emit raw evidence");
+
+    assert!(
+        saw_capture,
+        "the real confirmation stroke must reach capture"
+    );
+    assert!(
+        saw_recovery,
+        "the real confirmation stroke must reach recovery"
+    );
+    assert_eq!(state, BandConfirmationState::Advance);
+    assert_eq!(safety.prev_encoder_count, safety_baseline);
+    assert_eq!(safety.unwrapped_position, 0);
+    assert_eq!(workspace.current_observer.clamp_limit(), 2_448);
+    assert_eq!(observation.classifier_inputs.usable_torque_limit, 2_203);
+    assert_eq!(observation.classifier_inputs.hard_torque_limit, 2_448);
+    assert!(backend.spi_log.iter().any(|operation| {
+        matches!(
+            operation,
+            SpiOp::Write(address, value)
+                if *address == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                    && *value == current_limit(2_203).register_value()
+        )
+    }));
 }
 
 // --- RED: TargetBandUnconfirmableFromDiscovery spends zero strokes -----------

@@ -2798,7 +2798,7 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn breakaway_safety_constructor_rejects_an_invalid_velocity_envelope() {
+    fn breakaway_safety_constructor_rejects_zero_encoder_resolution_as_encoder_fault() {
         use crate::autotune::TmcMechanicalRpm;
         use crate::commissioning::outer::velocity::breakaway_campaign::{
             BreakawayCampaign, BreakawayCampaignRequest,
@@ -2808,6 +2808,41 @@ mod tests {
         let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
             planned_velocity_mrev_s: 0,
+            hard_torque_limit: 2_816,
+            limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+            max_duration_ms: 3_000,
+            nominal_workflow_ms: 400_000,
+            maximum_workflow_ms: 450_000,
+            channel: 0,
+            run_sequence: 42,
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 0,
+        })
+        .expect("campaign planning freezes but does not validate the encoder domain");
+
+        let result = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+            0,
+            tmc_state(),
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            campaign,
+        );
+
+        assert!(matches!(result, Err(CommissionError::EncoderFault)));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_safety_constructor_rejects_velocity_envelope_overflow() {
+        use crate::autotune::TmcMechanicalRpm;
+        use crate::commissioning::outer::velocity::breakaway_campaign::{
+            BreakawayCampaign, BreakawayCampaignRequest,
+        };
+        use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
+
+        let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
+            target_velocity_rpm: TmcMechanicalRpm::from_register(100),
+            planned_velocity_mrev_s: u32::MAX / 3 + 1,
             hard_torque_limit: 2_816,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
             max_duration_ms: 3_000,
