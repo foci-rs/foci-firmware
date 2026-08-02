@@ -564,6 +564,12 @@ fn emit_breakaway_probe_plan_splits_the_digest_into_low_and_high_words() {
             search_count: 20,
             p_start_raw: 1,
             p_top_raw: 1024,
+            workflow_digest: 0,
+            target_velocity_rpm: 0,
+            hard_torque_limit: 0,
+            usable_torque_limit: 0,
+            pwm_hz: 0,
+            encoder_counts_per_rev: 0,
         },
     );
 

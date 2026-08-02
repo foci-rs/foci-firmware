@@ -503,7 +503,9 @@ fn an_unconfirmed_settle_reports_probe_evidence_excluded() {
             BreakawayProbeStep::Done(outcome) => {
                 assert!(matches!(
                     outcome,
-                    BreakawayProbeOutcome::ProbeEvidenceExcluded
+                    BreakawayProbeOutcome::ProbeEvidenceExcluded(
+                        ProbeEvidenceExclusionReason::SettleRestUnconfirmed
+                    )
                 ));
                 break;
             }

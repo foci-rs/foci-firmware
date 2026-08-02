@@ -141,6 +141,15 @@ fn probe_plan_report_carries_plan_digest_and_endpoints() {
     assert_eq!(report.search_count, plan.search_count);
     assert_eq!(report.p_start_raw, 1);
     assert_eq!(report.p_top_raw, 1024);
+    assert_eq!(report.workflow_digest, plan.context.workflow_digest);
+    assert_eq!(report.target_velocity_rpm, plan.context.target_velocity_rpm);
+    assert_eq!(report.hard_torque_limit, plan.context.hard_torque_limit);
+    assert_eq!(report.usable_torque_limit, plan.context.usable_torque_limit);
+    assert_eq!(report.pwm_hz, plan.context.pwm_hz);
+    assert_eq!(
+        report.encoder_counts_per_rev,
+        plan.context.encoder_counts_per_rev
+    );
 }
 
 // --- Directional breakaway ----------------------------------------------
@@ -189,7 +198,7 @@ fn directional_breakaway_report_clears_inert_when_clamped_at_breakaway() {
 
 #[test]
 fn probe_terminal_cause_maps_every_non_found_variant() {
-    use super::super::breakaway_campaign::BreakawayProbeOutcome;
+    use super::super::breakaway_campaign::{BreakawayProbeOutcome, ProbeEvidenceExclusionReason};
 
     let cases = [
         (
@@ -205,7 +214,9 @@ fn probe_terminal_cause_maps_every_non_found_variant() {
             BreakawayTerminalCause::ProbeDirectionalBreakawayDisagreement,
         ),
         (
-            BreakawayProbeOutcome::ProbeEvidenceExcluded,
+            BreakawayProbeOutcome::ProbeEvidenceExcluded(
+                ProbeEvidenceExclusionReason::MovingStationarityExcluded,
+            ),
             BreakawayTerminalCause::ProbeEvidenceExcluded,
         ),
         (
@@ -236,7 +247,7 @@ fn probe_terminal_cause_maps_every_non_found_variant() {
 
 #[test]
 fn probe_terminal_report_carries_plan_identity_and_cause() {
-    use super::super::breakaway_campaign::BreakawayProbeOutcome;
+    use super::super::breakaway_campaign::{BreakawayProbeOutcome, ProbeEvidenceExclusionReason};
 
     let plan =
         plan_breakaway_probe(gain(1), gain(1024), probe_context()).expect("valid probe plan");
@@ -250,6 +261,20 @@ fn probe_terminal_report_carries_plan_identity_and_cause() {
     );
     assert_eq!(report.has_safety_fault, 0);
     assert_eq!(report.fault_checkpoint, 0);
+    assert_eq!(report.exclusion_reason, 0);
+
+    let report = probe_terminal_report(
+        &plan,
+        &BreakawayProbeOutcome::ProbeEvidenceExcluded(
+            ProbeEvidenceExclusionReason::RecoveryRestUnconfirmed,
+        ),
+        9,
+        5,
+    );
+    assert_eq!(
+        report.exclusion_reason,
+        ProbeEvidenceExclusionReason::RecoveryRestUnconfirmed as u8
+    );
 
     crate::diagnostic::begin_breakaway_campaign();
     crate::diagnostic::checkpoint_breakaway_campaign(
@@ -262,7 +287,7 @@ fn probe_terminal_report_carries_plan_identity_and_cause() {
             safety: None,
         },
         9,
-        5,
+        6,
     );
     assert_eq!(
         report.fault_checkpoint,

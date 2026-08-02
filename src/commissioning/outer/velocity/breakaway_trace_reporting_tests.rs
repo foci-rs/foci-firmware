@@ -62,6 +62,12 @@ fn encode_probe_planned_has_stable_frame_layout() {
         search_count: 0x12,
         p_start_raw: 0x1314,
         p_top_raw: 0x1516,
+        workflow_digest: 0x1718_1920_2122_2324,
+        target_velocity_rpm: -0x2526_2728,
+        hard_torque_limit: 0x2930,
+        usable_torque_limit: 0x3132,
+        pwm_hz: 0x3334_3536,
+        encoder_counts_per_rev: 0x3738_3940,
     };
     let record = encode_probe_planned(report);
     let expected = Expected::new()
@@ -73,7 +79,13 @@ fn encode_probe_planned_has_stable_frame_layout() {
         .u8(report.max_observations)
         .u8(report.search_count)
         .u16(report.p_start_raw)
-        .u16(report.p_top_raw);
+        .u16(report.p_top_raw)
+        .u64(report.workflow_digest)
+        .i32(report.target_velocity_rpm)
+        .u16(report.hard_torque_limit)
+        .u16(report.usable_torque_limit)
+        .u32(report.pwm_hz)
+        .u32(report.encoder_counts_per_rev);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -113,6 +125,7 @@ fn encode_probe_terminal_has_stable_frame_layout() {
         terminal_cause: 1,
         has_safety_fault: 0,
         fault_checkpoint: 17,
+        exclusion_reason: 2,
     };
     let record = encode_probe_terminal(report);
     let expected = Expected::new()
@@ -123,7 +136,8 @@ fn encode_probe_terminal_has_stable_frame_layout() {
         .u16(report.family_size)
         .u8(report.terminal_cause)
         .u8(report.has_safety_fault)
-        .u8(report.fault_checkpoint);
+        .u8(report.fault_checkpoint)
+        .u8(report.exclusion_reason);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -453,6 +467,12 @@ fn every_encoder_uses_a_distinct_local_tag() {
             search_count: 0,
             p_start_raw: 0,
             p_top_raw: 0,
+            workflow_digest: 0,
+            target_velocity_rpm: 0,
+            hard_torque_limit: 0,
+            usable_torque_limit: 0,
+            pwm_hz: 0,
+            encoder_counts_per_rev: 0,
         })
         .as_bytes()[0],
         encode_directional_breakaway(BreakawayDirectionalBreakaway {
@@ -474,6 +494,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             terminal_cause: 0,
             has_safety_fault: 0,
             fault_checkpoint: 0,
+            exclusion_reason: 0,
         })
         .as_bytes()[0],
         encode_discovery_planned(AdditiveDiscoveryPlanned {

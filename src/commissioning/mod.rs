@@ -3093,9 +3093,12 @@ mod tests {
                 .expect("no tag-0 (breakaway probe-planned) canonical record reached the FTRC trace stream");
             // Canonical record layout: tag(1) + run_sequence(4) + evidence_sequence(2)
             // + plan_digest(8) + family_size(2) + max_observations(1) + search_count(1)
-            // + p_start_raw(2) + p_top_raw(2) = 23 bytes; see
+            // + p_start_raw(2) + p_top_raw(2) + workflow_digest(8)
+            // + target_velocity_rpm(4) + hard_torque_limit(2)
+            // + usable_torque_limit(2) + pwm_hz(4)
+            // + encoder_counts_per_rev(4) = 47 bytes; see
             // `breakaway_trace_reporting::encode_probe_planned` and its own golden test.
-            assert_eq!(detail.as_bytes().len(), 23);
+            assert_eq!(detail.as_bytes().len(), 47);
         });
     }
 

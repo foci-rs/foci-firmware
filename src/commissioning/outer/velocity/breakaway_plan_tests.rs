@@ -1,9 +1,10 @@
 use super::super::sweep_plan::{MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS, VelocityPlanError};
 use super::{
-    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, GridFloorOrigin,
-    MAX_ADDITIVE_GAIN_RATIO_DEN, MAX_ADDITIVE_GAIN_RATIO_NUM, PROBE_CONFIDENCE_FAMILY_SIZE,
-    PROBE_MAX_OBSERVATIONS_PER_DIRECTION, plan_additive_discovery_ladder, plan_breakaway_probe,
-    realize_candidate_additive_ladder, resolve_grid_floor, satisfies_additive_ratio_guard,
+    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, BreakawayProbePlan,
+    GridFloorOrigin, MAX_ADDITIVE_GAIN_RATIO_DEN, MAX_ADDITIVE_GAIN_RATIO_NUM,
+    PROBE_CONFIDENCE_FAMILY_SIZE, PROBE_MAX_OBSERVATIONS_PER_DIRECTION,
+    plan_additive_discovery_ladder, plan_breakaway_probe, realize_candidate_additive_ladder,
+    resolve_grid_floor, satisfies_additive_ratio_guard,
 };
 use foci_tmc4671::pid::PidPGain;
 
@@ -68,6 +69,25 @@ fn probe_plan_matches_the_realized_half_octave_grid() {
     );
     assert_ne!(plan.plan_digest, 0);
     assert_eq!(plan.plan_digest, plan.digest());
+}
+
+#[test]
+fn probe_plan_digest_matches_the_foci_trace_fixture() {
+    let mut search_gains = [gain(1); MAX_SWEEP_RUNGS];
+    search_gains[..4].copy_from_slice(&[gain(3), gain(5), gain(6), gain(9)]);
+    let plan = BreakawayProbePlan {
+        search_gains,
+        search_count: 4,
+        confidence_family_size: 16,
+        maximum_observations: 8,
+        context: BreakawayProbeContext {
+            target_velocity_rpm: -600,
+            ..probe_context()
+        },
+        plan_digest: 0,
+    };
+
+    assert_eq!(plan.digest(), 0x2581_c2da_8114_9f64);
 }
 
 #[test]

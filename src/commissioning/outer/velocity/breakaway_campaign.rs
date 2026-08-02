@@ -331,7 +331,7 @@ pub(crate) enum BreakawayProbeOutcome {
     /// Target-independent stationarity evidence, or another controller-domain
     /// evidence field, was unusable for classification -- or the completed
     /// origin-recovery return could not confirm rest.
-    ProbeEvidenceExcluded,
+    ProbeEvidenceExcluded(ProbeEvidenceExclusionReason),
     /// The observation reached the inclusive usable-current boundary before a
     /// motion or inert verdict was reached.
     AuthorityFailure,
@@ -341,6 +341,20 @@ pub(crate) enum BreakawayProbeOutcome {
         error: CommissionError,
         safety: Option<OuterSafetyFault>,
     },
+}
+
+/// Exact evidence-quality branch that terminated a breakaway probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub(crate) enum ProbeEvidenceExclusionReason {
+    /// Moving-window controller evidence was invalid for classification.
+    InvalidMovingEvidence = 1,
+    /// Moving-window stationarity evidence excluded the observation.
+    MovingStationarityExcluded = 2,
+    /// The zero-target settle window did not confirm rest.
+    SettleRestUnconfirmed = 3,
+    /// Origin recovery completed without confirming rest.
+    RecoveryRestUnconfirmed = 4,
 }
 
 fn fault(error: CommissionError) -> BreakawayProbeStep {
@@ -393,7 +407,9 @@ fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
             }
         }),
         BreakawaySearchError::ProbeEvidenceExcluded => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded)
+            BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
+                ProbeEvidenceExclusionReason::MovingStationarityExcluded,
+            ))
         }
         BreakawaySearchError::AuthorityFailure => {
             BreakawayProbeStep::Done(BreakawayProbeOutcome::AuthorityFailure)
@@ -698,7 +714,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     return fault(CommissionError::SafetyEnvelopeViolation);
                 }
                 VelocityObservationClass::InvalidEvidenceFault => {
-                    return BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded);
+                    return BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
+                        ProbeEvidenceExclusionReason::InvalidMovingEvidence,
+                    ));
                 }
                 VelocityObservationClass::Eligible
                 | VelocityObservationClass::Inert
@@ -837,7 +855,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             workspace.observations.clear();
             safety.end_primitive();
             if !confirmation.confirmed_rest {
-                return BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded);
+                return BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
+                    ProbeEvidenceExclusionReason::SettleRestUnconfirmed,
+                ));
             }
             let recovery_plan = match plan_rung_origin_recovery(
                 safety.budget,
@@ -906,7 +926,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     BreakawayProbeStep::ReadyNow
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
-                    BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded)
+                    BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
+                        ProbeEvidenceExclusionReason::RecoveryRestUnconfirmed,
+                    ))
                 }
                 RungOriginRecoveryStep::Fault {
                     error,
@@ -3611,7 +3633,7 @@ fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
         BreakawayProbeOutcome::NoMotionAtAuthority
         | BreakawayProbeOutcome::UnstableBreakaway
         | BreakawayProbeOutcome::DirectionalBreakawayDisagreement
-        | BreakawayProbeOutcome::ProbeEvidenceExcluded
+        | BreakawayProbeOutcome::ProbeEvidenceExcluded(_)
         | BreakawayProbeOutcome::AuthorityFailure => BreakawayCampaignOutcome::Terminal {
             error: CommissionError::VelocityValidationFailed,
             safety: None,

@@ -1051,6 +1051,18 @@ pub struct BreakawayProbePlanned {
     pub p_start_raw: u16,
     /// Last structural search-grid gain.
     pub p_top_raw: u16,
+    /// Command-level workflow envelope digest bound into `plan_digest`.
+    pub workflow_digest: u64,
+    /// Frozen signed-target magnitude in mechanical RPM register units.
+    pub target_velocity_rpm: i32,
+    /// Configured hard torque-target limit.
+    pub hard_torque_limit: u16,
+    /// Inclusive usable torque-target boundary.
+    pub usable_torque_limit: u16,
+    /// PWM carrier frequency the probe was planned under, in Hz.
+    pub pwm_hz: u32,
+    /// Encoder counts per mechanical revolution used by the probe.
+    pub encoder_counts_per_rev: u32,
 }
 
 /// Resolved inert/moving bracket for one signed probe direction.
@@ -1095,6 +1107,8 @@ pub struct BreakawayProbeTerminal {
     pub has_safety_fault: u8,
     /// Active breakaway operation checkpoint when a safety fault was raised, or zero.
     pub fault_checkpoint: u8,
+    /// Probe evidence-exclusion branch, or zero when not applicable.
+    pub exclusion_reason: u8,
 }
 
 /// Immutable additive-discovery plan evidence emitted before the first

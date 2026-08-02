@@ -169,7 +169,7 @@ pub(crate) fn probe_terminal_cause(
             BreakawayTerminalCause::ProbeDirectionalBreakawayDisagreement,
             0,
         ),
-        BreakawayProbeOutcome::ProbeEvidenceExcluded => {
+        BreakawayProbeOutcome::ProbeEvidenceExcluded(_) => {
             (BreakawayTerminalCause::ProbeEvidenceExcluded, 0)
         }
         BreakawayProbeOutcome::AuthorityFailure => {
@@ -286,6 +286,12 @@ pub(crate) fn probe_plan_report(
         search_count: plan.search_count,
         p_start_raw: p_start.raw(),
         p_top_raw: p_top.raw(),
+        workflow_digest: plan.context.workflow_digest,
+        target_velocity_rpm: plan.context.target_velocity_rpm,
+        hard_torque_limit: plan.context.hard_torque_limit,
+        usable_torque_limit: plan.context.usable_torque_limit,
+        pwm_hz: plan.context.pwm_hz,
+        encoder_counts_per_rev: plan.context.encoder_counts_per_rev,
     }
 }
 
@@ -331,6 +337,10 @@ pub(crate) fn probe_terminal_report(
     } else {
         0
     };
+    let exclusion_reason = match outcome {
+        BreakawayProbeOutcome::ProbeEvidenceExcluded(reason) => *reason as u8,
+        _ => 0,
+    };
     BreakawayProbeTerminal {
         run_sequence,
         evidence_sequence,
@@ -339,6 +349,7 @@ pub(crate) fn probe_terminal_report(
         terminal_cause: cause as u8,
         has_safety_fault,
         fault_checkpoint,
+        exclusion_reason,
     }
 }
 

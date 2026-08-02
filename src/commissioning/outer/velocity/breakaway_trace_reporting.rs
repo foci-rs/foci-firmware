@@ -59,6 +59,12 @@ pub(crate) fn encode_probe_planned(report: BreakawayProbePlanned) -> VelocitySwe
     record.push_u8(report.search_count);
     record.push_u16(report.p_start_raw);
     record.push_u16(report.p_top_raw);
+    push_u64(&mut record, report.workflow_digest);
+    record.push_u32(report.target_velocity_rpm as u32);
+    record.push_u16(report.hard_torque_limit);
+    record.push_u16(report.usable_torque_limit);
+    record.push_u32(report.pwm_hz);
+    record.push_u32(report.encoder_counts_per_rev);
     record
 }
 
@@ -92,6 +98,7 @@ pub(crate) fn encode_probe_terminal(
     record.push_u8(report.terminal_cause);
     record.push_u8(report.has_safety_fault);
     record.push_u8(report.fault_checkpoint);
+    record.push_u8(report.exclusion_reason);
     record
 }
 
