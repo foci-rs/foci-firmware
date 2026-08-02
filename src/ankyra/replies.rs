@@ -608,21 +608,22 @@ pub struct FociDumpValue {
     pub value: u32,
 }
 
-/// `foci_last_panic` reply - one recovered previous-boot fault record.
+/// `foci_last_boot_diagnostic` reply - recovered previous-boot fault context.
 ///
 /// Emitted once during the connect-time register dump when the board recovered
-/// a panic or HardFault from no-init RAM after a reset. Lets a probe-free host
-/// see why the firmware crashed. `kind` follows
+/// a panic, HardFault, or interrupted breakaway campaign from no-init RAM after
+/// a reset. Lets a probe-free host localize the failure. `fault_kind` follows
 /// `foci_firmware::diagnostic::last_panic_kind`; `line` locates a Rust panic,
-/// `pc` a HardFault, and `message` carries the truncated panic text.
+/// `pc` a HardFault, and the breakaway fields carry the last typed campaign
+/// boundary. A completed breadcrumb accompanies a fault but is quiet alone.
 ///
-/// Wire name: `foci_last_panic`.
+/// Wire name: `foci_last_boot_diagnostic`.
 #[klipper_reply]
-pub struct FociLastPanic {
+pub struct FociLastBootDiagnostic {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Fault origin: 1 = Rust panic, 2 = HardFault.
-    pub kind: u8,
+    /// Fault origin: 0 = none, 1 = Rust panic, 2 = HardFault.
+    pub fault_kind: u8,
     /// Source line of a captured Rust panic, or 0.
     pub line: u32,
     /// Faulting program counter of a captured HardFault, or 0.
@@ -630,6 +631,10 @@ pub struct FociLastPanic {
     /// FNV-1a hash of the panic source file path (0 for a HardFault); match
     /// against hashed candidate paths to name the file.
     pub file_hash: u32,
+    /// Last validated [`crate::diagnostic::BreakawayCheckpoint`] code, or 0.
+    pub breakaway_checkpoint: u8,
+    /// Nonzero when reset interrupted an active breakaway campaign.
+    pub breakaway_interrupted: u8,
 }
 
 /// `foci_diagnostic` reply - best-effort detail before fatal shutdown.

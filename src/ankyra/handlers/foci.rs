@@ -124,18 +124,28 @@ pub fn foci_calibrate(ctx: &mut dyn FociRuntimeHost, oid: u8) {
 /// reply naturally.
 #[klipper_command]
 pub fn foci_dump_registers(ctx: &mut dyn FociRuntimeHost, oid: u8) {
-    // Surface any panic/HardFault recovered from no-init RAM on the previous
-    // boot, once, riding the dump the host already issues on connect. This is
-    // the probe-free path to see why the firmware last crashed (the panic
-    // message otherwise reaches only defmt-RTT).
-    if let Some(record) = crate::diagnostic::take_last_panic() {
+    // Surface any panic/HardFault or interrupted breakaway campaign recovered
+    // from no-init RAM on the previous boot, once, riding the dump the host
+    // already issues on connect. A completed breadcrumb remains useful context
+    // for a fault but is quiet on its own.
+    let fault = crate::diagnostic::take_last_panic();
+    let breadcrumb = crate::diagnostic::take_last_boot_breakaway_breadcrumb();
+    if fault.is_some() || breadcrumb.is_some_and(|record| record.interrupted) {
+        let (fault_kind, line, pc, file_hash) = fault.map_or((0, 0, 0, 0), |record| {
+            (record.kind, record.line, record.pc, record.file_hash)
+        });
+        let (breakaway_checkpoint, breakaway_interrupted) = breadcrumb.map_or((0, 0), |record| {
+            (record.checkpoint as u8, u8::from(record.interrupted))
+        });
         ::ankyra::klipper_reply!(
-            crate::ankyra::replies::FociLastPanic,
+            crate::ankyra::replies::FociLastBootDiagnostic,
             oid: u8 = oid,
-            kind: u8 = record.kind,
-            line: u32 = record.line,
-            pc: u32 = record.pc,
-            file_hash: u32 = record.file_hash
+            fault_kind: u8 = fault_kind,
+            line: u32 = line,
+            pc: u32 = pc,
+            file_hash: u32 = file_hash,
+            breakaway_checkpoint: u8 = breakaway_checkpoint,
+            breakaway_interrupted: u8 = breakaway_interrupted
         );
     }
     let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
@@ -343,12 +353,14 @@ mod tests {
 
     struct MockSender {
         adc_vm_offsets: std::vec::Vec<AdcVmOffsetReply>,
+        last_boot_diagnostics: std::vec::Vec<crate::ankyra::replies::FociLastBootDiagnostic>,
     }
 
     impl MockSender {
         fn new() -> Self {
             Self {
                 adc_vm_offsets: std::vec::Vec::new(),
+                last_boot_diagnostics: std::vec::Vec::new(),
             }
         }
     }
@@ -362,6 +374,124 @@ mod tests {
                 status: payload.status,
             });
         }
+    }
+
+    impl ::ankyra::SendReply<crate::ankyra::replies::FociLastBootDiagnostic> for MockSender {
+        fn send(&mut self, payload: crate::ankyra::replies::FociLastBootDiagnostic) {
+            self.last_boot_diagnostics.push(payload);
+        }
+    }
+
+    fn prepare_dump_test() -> (MockCtx, MockSender) {
+        while crate::diagnostic::take_last_panic().is_some() {}
+        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+        let mut ctx = MockCtx::new(2);
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        (ctx, MockSender::new())
+    }
+
+    fn run_dump_test(
+        fault: Option<crate::diagnostic::LastPanic>,
+        breadcrumb: Option<(crate::diagnostic::BreakawayCheckpoint, bool)>,
+    ) -> std::vec::Vec<crate::ankyra::replies::FociLastBootDiagnostic> {
+        let (mut ctx, mut sender) = prepare_dump_test();
+        if let Some(fault) = fault {
+            crate::diagnostic::set_last_panic(fault);
+        }
+        if let Some((checkpoint, interrupted)) = breadcrumb {
+            if interrupted {
+                crate::diagnostic::checkpoint_breakaway_campaign(checkpoint);
+            } else {
+                crate::diagnostic::complete_breakaway_campaign(checkpoint);
+            }
+        }
+        crate::diagnostic::recover_last_boot_breakaway_breadcrumb();
+        foci_dump_registers(&mut ctx, &mut sender, 10);
+        sender.last_boot_diagnostics
+    }
+
+    #[test]
+    fn foci_dump_registers_combines_fault_and_breadcrumb_by_actionability() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let replies = run_dump_test(
+            Some(crate::diagnostic::LastPanic {
+                kind: crate::diagnostic::last_panic_kind::RUST_PANIC,
+                line: 412,
+                pc: 0,
+                file_hash: 0x1234_5678,
+            }),
+            None,
+        );
+        let [reply] = replies.as_slice() else {
+            panic!("panic must emit one diagnostic");
+        };
+        assert_eq!(
+            (reply.fault_kind, reply.line, reply.file_hash),
+            (
+                crate::diagnostic::last_panic_kind::RUST_PANIC,
+                412,
+                0x1234_5678
+            )
+        );
+        assert_eq!(
+            (reply.breakaway_checkpoint, reply.breakaway_interrupted),
+            (0, 0)
+        );
+
+        let replies = run_dump_test(
+            None,
+            Some((crate::diagnostic::BreakawayCheckpoint::Capture, true)),
+        );
+        let [reply] = replies.as_slice() else {
+            panic!("interrupted campaign must emit one diagnostic");
+        };
+        assert_eq!((reply.fault_kind, reply.breakaway_checkpoint), (0, 5));
+        assert_eq!(reply.breakaway_interrupted, 1);
+
+        let replies = run_dump_test(
+            Some(crate::diagnostic::LastPanic {
+                kind: crate::diagnostic::last_panic_kind::HARD_FAULT,
+                line: 0,
+                pc: 0x0801_2345,
+                file_hash: 0,
+            }),
+            Some((
+                crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+                false,
+            )),
+        );
+        let [reply] = replies.as_slice() else {
+            panic!("fault must carry completed campaign context");
+        };
+        assert_eq!((reply.fault_kind, reply.pc), (2, 0x0801_2345));
+        assert_eq!(
+            (reply.breakaway_checkpoint, reply.breakaway_interrupted),
+            (8, 0)
+        );
+
+        assert!(
+            run_dump_test(
+                None,
+                Some((
+                    crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+                    false,
+                )),
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn foci_dump_registers_consumes_last_boot_diagnostic_once() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let (mut ctx, mut sender) = prepare_dump_test();
+        crate::diagnostic::begin_breakaway_campaign();
+        crate::diagnostic::recover_last_boot_breakaway_breadcrumb();
+
+        foci_dump_registers(&mut ctx, &mut sender, 10);
+        foci_dump_registers(&mut ctx, &mut sender, 10);
+
+        assert_eq!(sender.last_boot_diagnostics.len(), 1);
     }
 
     #[test]

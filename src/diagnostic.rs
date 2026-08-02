@@ -4,6 +4,199 @@ use core::ptr::{addr_of, addr_of_mut};
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
+const BREAKAWAY_BREADCRUMB_MAGIC: u32 = 0x4642_5200;
+const BREAKAWAY_BREADCRUMB_MAGIC_MASK: u32 = 0xffff_ff00;
+const BREAKAWAY_BREADCRUMB_COMPLETED: u32 = 1 << 7;
+const BREAKAWAY_BREADCRUMB_CHECKPOINT_MASK: u32 = 0x7f;
+
+/// A bounded breakaway-campaign lifecycle boundary retained across warm reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum BreakawayCheckpoint {
+    /// The admitted campaign was installed in the commissioning runtime.
+    CampaignInstalled = 1,
+    /// The campaign is configuring its independent outer-safety envelope.
+    SafetyConfigured = 2,
+    /// A campaign phase is about to program its proportional gain.
+    GainProgramming = 3,
+    /// A campaign stroke is about to command its nonzero velocity target.
+    TargetCommand = 4,
+    /// A campaign stroke has entered its bounded capture window.
+    Capture = 5,
+    /// One campaign evidence record is being routed to the host.
+    EventRouting = 6,
+    /// A non-accepting campaign terminal was handled by the outer engine.
+    CampaignTerminalHandled = 7,
+    /// An accepted campaign was handed off to Stage C.
+    StageCHandedOff = 8,
+}
+
+impl BreakawayCheckpoint {
+    const fn from_raw(raw: u8) -> Option<Self> {
+        match raw {
+            1 => Some(Self::CampaignInstalled),
+            2 => Some(Self::SafetyConfigured),
+            3 => Some(Self::GainProgramming),
+            4 => Some(Self::TargetCommand),
+            5 => Some(Self::Capture),
+            6 => Some(Self::EventRouting),
+            7 => Some(Self::CampaignTerminalHandled),
+            8 => Some(Self::StageCHandedOff),
+            _ => None,
+        }
+    }
+}
+
+/// Decoded breakaway-campaign state recovered from persistent CCMRAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayBreadcrumb {
+    /// Last validated campaign lifecycle boundary.
+    pub checkpoint: BreakawayCheckpoint,
+    /// True when reset interrupted an active campaign at this boundary.
+    pub interrupted: bool,
+}
+
+#[cfg(test)]
+struct BreakawayBreadcrumbStore {
+    word: AtomicU32,
+}
+
+#[cfg(test)]
+impl BreakawayBreadcrumbStore {
+    fn new_for_test(raw: u32) -> Self {
+        Self {
+            word: AtomicU32::new(raw),
+        }
+    }
+
+    fn load(&self) -> Option<BreakawayBreadcrumb> {
+        decode_breakaway_breadcrumb(self.word.load(Ordering::Acquire))
+    }
+
+    fn begin(&self, checkpoint: BreakawayCheckpoint) {
+        self.store(checkpoint, false);
+    }
+
+    fn checkpoint(&self, checkpoint: BreakawayCheckpoint) {
+        self.store(checkpoint, false);
+    }
+
+    fn complete(&self, checkpoint: BreakawayCheckpoint) {
+        self.store(checkpoint, true);
+    }
+
+    fn store(&self, checkpoint: BreakawayCheckpoint, completed: bool) {
+        self.word.store(
+            encode_breakaway_breadcrumb(checkpoint, completed),
+            Ordering::Release,
+        );
+    }
+
+    fn raw_for_test(&self) -> u32 {
+        self.word.load(Ordering::Acquire)
+    }
+}
+
+const fn encode_breakaway_breadcrumb(checkpoint: BreakawayCheckpoint, completed: bool) -> u32 {
+    let completion = if completed {
+        BREAKAWAY_BREADCRUMB_COMPLETED
+    } else {
+        0
+    };
+    BREAKAWAY_BREADCRUMB_MAGIC | completion | checkpoint as u32
+}
+
+const fn decode_breakaway_breadcrumb(raw: u32) -> Option<BreakawayBreadcrumb> {
+    if raw & BREAKAWAY_BREADCRUMB_MAGIC_MASK != BREAKAWAY_BREADCRUMB_MAGIC {
+        return None;
+    }
+    let checkpoint =
+        match BreakawayCheckpoint::from_raw((raw & BREAKAWAY_BREADCRUMB_CHECKPOINT_MASK) as u8) {
+            Some(checkpoint) => checkpoint,
+            None => return None,
+        };
+    Some(BreakawayBreadcrumb {
+        checkpoint,
+        interrupted: raw & BREAKAWAY_BREADCRUMB_COMPLETED == 0,
+    })
+}
+
+#[cfg(not(test))]
+#[cfg_attr(target_os = "none", unsafe(link_section = ".ccmram.breakaway"))]
+static BREAKAWAY_BREADCRUMB: AtomicU32 = AtomicU32::new(0);
+
+static LAST_BOOT_BREAKAWAY_BREADCRUMB: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_BREAKAWAY_BREADCRUMB: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(not(test))]
+fn persistent_breakaway_breadcrumb() -> u32 {
+    BREAKAWAY_BREADCRUMB.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+fn persistent_breakaway_breadcrumb() -> u32 {
+    TEST_BREAKAWAY_BREADCRUMB.with(core::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn store_persistent_breakaway_breadcrumb(checkpoint: BreakawayCheckpoint, completed: bool) {
+    BREAKAWAY_BREADCRUMB.store(
+        encode_breakaway_breadcrumb(checkpoint, completed),
+        Ordering::Release,
+    );
+}
+
+#[cfg(test)]
+fn store_persistent_breakaway_breadcrumb(checkpoint: BreakawayCheckpoint, completed: bool) {
+    TEST_BREAKAWAY_BREADCRUMB
+        .with(|word| word.set(encode_breakaway_breadcrumb(checkpoint, completed)));
+}
+
+/// Snapshot the persistent breakaway breadcrumb into current-boot runtime state.
+///
+/// Boards call this once during early startup, before any current-boot campaign
+/// can update the persistent word. The persistent record is deliberately left
+/// intact across a possible host-requested second restart.
+pub fn recover_last_boot_breakaway_breadcrumb() {
+    let raw = persistent_breakaway_breadcrumb();
+    let recovered = if decode_breakaway_breadcrumb(raw).is_some() {
+        raw
+    } else {
+        0
+    };
+    LAST_BOOT_BREAKAWAY_BREADCRUMB.store(recovered, Ordering::Release);
+}
+
+/// Consume the validated last-boot breakaway breadcrumb at most once this boot.
+pub fn take_last_boot_breakaway_breadcrumb() -> Option<BreakawayBreadcrumb> {
+    decode_breakaway_breadcrumb(LAST_BOOT_BREAKAWAY_BREADCRUMB.swap(0, Ordering::AcqRel))
+}
+
+/// Mark a successfully installed breakaway campaign active.
+pub fn begin_breakaway_campaign() {
+    store_persistent_breakaway_breadcrumb(BreakawayCheckpoint::CampaignInstalled, false);
+}
+
+/// Record one active breakaway-campaign lifecycle boundary.
+pub fn checkpoint_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
+    store_persistent_breakaway_breadcrumb(checkpoint, false);
+}
+
+/// Mark a handled breakaway-campaign terminal boundary completed.
+pub fn complete_breakaway_campaign(checkpoint: BreakawayCheckpoint) {
+    store_persistent_breakaway_breadcrumb(checkpoint, true);
+}
+
+#[cfg(test)]
+pub(crate) fn set_breakaway_breadcrumb_raw_for_test(raw: u32) {
+    TEST_BREAKAWAY_BREADCRUMB.with(|word| word.set(raw));
+    LAST_BOOT_BREAKAWAY_BREADCRUMB.store(0, Ordering::Release);
+}
+
 /// Origin of a persisted last-boot fault record.
 pub mod last_panic_kind {
     /// A Rust `panic!` (index, arithmetic, `expect`, explicit) captured by the
@@ -1150,6 +1343,57 @@ pub const fn stepper_event_pairs_perf_snapshot(reason: StepperEventReason) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breakaway_breadcrumb_decoder_rejects_cold_and_corrupt_magic_words() {
+        let cold = BreakawayBreadcrumbStore::new_for_test(0);
+        let corrupt_magic = BreakawayBreadcrumbStore::new_for_test(0x1234_5601);
+
+        assert_eq!(cold.load(), None);
+        assert_eq!(corrupt_magic.load(), None);
+    }
+
+    #[test]
+    fn breakaway_breadcrumb_decoder_rejects_unknown_checkpoint() {
+        let unknown_checkpoint = BreakawayBreadcrumbStore::new_for_test(0x4642_527f);
+
+        assert_eq!(unknown_checkpoint.load(), None);
+    }
+
+    #[test]
+    fn breakaway_breadcrumb_encoder_tracks_active_checkpoint_and_completion() {
+        let store = BreakawayBreadcrumbStore::new_for_test(0);
+
+        store.begin(BreakawayCheckpoint::CampaignInstalled);
+        assert_eq!(store.raw_for_test(), 0x4642_5201);
+        assert_eq!(
+            store.load(),
+            Some(BreakawayBreadcrumb {
+                checkpoint: BreakawayCheckpoint::CampaignInstalled,
+                interrupted: true,
+            })
+        );
+
+        store.checkpoint(BreakawayCheckpoint::SafetyConfigured);
+        assert_eq!(store.raw_for_test(), 0x4642_5202);
+        assert_eq!(
+            store.load(),
+            Some(BreakawayBreadcrumb {
+                checkpoint: BreakawayCheckpoint::SafetyConfigured,
+                interrupted: true,
+            })
+        );
+
+        store.complete(BreakawayCheckpoint::StageCHandedOff);
+        assert_eq!(store.raw_for_test(), 0x4642_5288);
+        assert_eq!(
+            store.load(),
+            Some(BreakawayBreadcrumb {
+                checkpoint: BreakawayCheckpoint::StageCHandedOff,
+                interrupted: false,
+            })
+        );
+    }
 
     #[test]
     fn fault_class_codes_are_stable() {
