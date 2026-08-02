@@ -46,6 +46,19 @@ fn test_backend() -> MockBackend {
     backend
 }
 
+fn assert_breakaway_breadcrumb(
+    checkpoint: crate::diagnostic::BreakawayCheckpoint,
+    interrupted: bool,
+) {
+    assert_eq!(
+        crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+        Some(crate::diagnostic::BreakawayBreadcrumb {
+            checkpoint,
+            interrupted,
+        })
+    );
+}
+
 /// A search grid realized from `gain(1), gain(1_024)`: 20 post-dedupe rungs. Shared
 /// by every test below so none of them re-derive the half-octave generator's output.
 fn test_plan() -> BreakawayProbePlan {
@@ -1886,6 +1899,7 @@ fn run_campaign_probe_collecting_events(
 
 #[test]
 fn a_new_campaign_starts_planned_and_its_first_step_issues_no_motion() {
+    crate::diagnostic::begin_breakaway_campaign();
     let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
     assert!(matches!(
         campaign.phase(),
@@ -1920,6 +1934,69 @@ fn a_new_campaign_starts_planned_and_its_first_step_issues_no_motion() {
         backend.spi_log.is_empty(),
         "PlannedProbe must not touch the backend before its first stroke"
     );
+    assert_breakaway_breadcrumb(crate::diagnostic::BreakawayCheckpoint::EventRouting, true);
+}
+
+#[test]
+fn breakaway_breadcrumb_marks_probe_operation_boundaries() {
+    crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+    crate::diagnostic::begin_breakaway_campaign();
+    let mut session =
+        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
+            .expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::SetupSafety;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+
+    let setup = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+    assert!(matches!(setup, BreakawayProbeStep::ReadyNow));
+    assert_breakaway_breadcrumb(
+        crate::diagnostic::BreakawayCheckpoint::SafetyConfigured,
+        true,
+    );
+
+    let gain = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+    assert!(matches!(gain, BreakawayProbeStep::ReadyNow));
+    assert_breakaway_breadcrumb(
+        crate::diagnostic::BreakawayCheckpoint::GainProgramming,
+        true,
+    );
+
+    backend.fail_on_read = Some(foci_tmc4671::registers::ABN_DECODER_COUNT.addr());
+    let target_failure = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+    assert!(matches!(target_failure, BreakawayProbeStep::Done(_)));
+    assert_breakaway_breadcrumb(crate::diagnostic::BreakawayCheckpoint::TargetCommand, true);
+
+    state = BreakawayProbeState::CommandTarget;
+    backend.fail_on_read = None;
+    let capture = pollster::block_on(step_breakaway_probe(
+        &mut state,
+        &mut workspace,
+        &mut session,
+        &mut safety,
+        &mut backend,
+    ));
+    assert!(matches!(capture, BreakawayProbeStep::At(_)));
+    assert_breakaway_breadcrumb(crate::diagnostic::BreakawayCheckpoint::Capture, true);
 }
 
 /// `p_start` the shared `campaign_request()` resolves to, independently
@@ -2380,6 +2457,8 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedul
 
 #[test]
 fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
+    crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+    crate::diagnostic::begin_breakaway_campaign();
     let candidate: u16 = 512;
     let (_p_start, _p_top, usable, _ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
@@ -2488,6 +2567,10 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     // plan the token route produced, not merely a freshly constructed one.
     assert_eq!(data.integrity.run_sequence(), 7);
     assert_eq!(data.plan, expected_execution_plan);
+    assert_breakaway_breadcrumb(
+        crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+        false,
+    );
 }
 
 // --- Live emission: acceptance reports the confirmation terminal, then the ----
@@ -2786,6 +2869,7 @@ fn dispatch_campaign_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> 
 /// catch that: it never re-enters the dispatcher's safety check.
 #[test]
 fn dispatcher_drains_campaign_closure_under_a_persistent_budget_fault() {
+    crate::diagnostic::begin_breakaway_campaign();
     let campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
     let mut phase = OuterPhase::BreakawayCampaign {
         campaign,
@@ -2836,6 +2920,10 @@ fn dispatcher_drains_campaign_closure_under_a_persistent_budget_fault() {
                 == crate::commissioning::types::OUTER_SAFETY_FAULT_INVALID_BUDGET
         ),
         "the campaign phase must terminate, not loop forever re-arming the fault"
+    );
+    assert_breakaway_breadcrumb(
+        crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+        false,
     );
 }
 

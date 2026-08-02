@@ -427,6 +427,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             BreakawayProbeStep::ReadyNow
         }
         BreakawayProbeState::SetupSafety => {
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::SafetyConfigured,
+            );
             let frozen = session.plan.context;
             if backend.mechanical_encoder_quadrature_counts_per_rev()
                 != frozen.encoder_counts_per_rev
@@ -449,6 +452,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             BreakawayProbeStep::ReadyNow
         }
         BreakawayProbeState::WriteGain => {
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::GainProgramming,
+            );
             let p = match session.pending_gain() {
                 Ok(p) => p,
                 Err(error) => return search_error_outcome(error),
@@ -472,6 +478,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             BreakawayProbeStep::ReadyNow
         }
         BreakawayProbeState::CommandTarget => {
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::TargetCommand,
+            );
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return fault(CommissionError::Spi),
@@ -527,6 +536,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             workspace.settle_displacement_counts = 0;
             workspace.settle_min_displacement_counts = 0;
             workspace.settle_max_displacement_counts = 0;
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::Capture,
+            );
             *state = BreakawayProbeState::Capture {
                 next_sample_us,
                 deadline_us,
@@ -1676,6 +1688,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             AdditiveDiscoveryStep::ReadyNow
         }
         AdditiveDiscoveryState::WriteGain => {
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::GainProgramming,
+            );
             let p = match session.current_gain() {
                 Ok(p) => p,
                 Err(error) => return discovery_fault(error),
@@ -1699,6 +1714,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             AdditiveDiscoveryStep::ReadyNow
         }
         AdditiveDiscoveryState::CommandTarget => {
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::TargetCommand,
+            );
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return discovery_fault(CommissionError::Spi),
@@ -1754,6 +1772,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             workspace.settle_displacement_counts = 0;
             workspace.settle_min_displacement_counts = 0;
             workspace.settle_max_displacement_counts = 0;
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::Capture,
+            );
             *state = AdditiveDiscoveryState::Capture {
                 next_sample_us,
                 deadline_us,
@@ -2644,6 +2665,9 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             BandConfirmationStep::ReadyNow
         }
         BandConfirmationState::WriteGain => {
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::GainProgramming,
+            );
             let p = session.plan.candidate_p;
             if backend
                 .write_register(
@@ -2664,6 +2688,9 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             BandConfirmationStep::ReadyNow
         }
         BandConfirmationState::CommandTarget => {
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::TargetCommand,
+            );
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return confirmation_fault(CommissionError::Spi),
@@ -2719,6 +2746,9 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             workspace.settle_displacement_counts = 0;
             workspace.settle_min_displacement_counts = 0;
             workspace.settle_max_displacement_counts = 0;
+            crate::diagnostic::checkpoint_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::Capture,
+            );
             *state = BandConfirmationState::Capture {
                 next_sample_us,
                 deadline_us,
@@ -4307,6 +4337,15 @@ fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<Breakawa
     }
 }
 
+fn checkpoint_event_routing(step: BreakawayCampaignStep) -> BreakawayCampaignStep {
+    if matches!(&step, BreakawayCampaignStep::Event(_)) {
+        crate::diagnostic::checkpoint_breakaway_campaign(
+            crate::diagnostic::BreakawayCheckpoint::EventRouting,
+        );
+    }
+    step
+}
+
 /// Advance the breakaway campaign by one cooperative step.
 ///
 /// Sequences the three committed drivers -- probe, additive discovery, held-out
@@ -4349,15 +4388,15 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
     backend: &mut B,
 ) -> BreakawayCampaignStep {
     if let Some(campaign_terminal) = campaign.pending_event.take() {
-        return BreakawayCampaignStep::Event(BreakawayCampaignEvent::CampaignTerminal(
-            campaign_terminal,
+        return checkpoint_event_routing(BreakawayCampaignStep::Event(
+            BreakawayCampaignEvent::CampaignTerminal(campaign_terminal),
         ));
     }
     if let Some(outcome) = campaign.pending_done.take() {
         return BreakawayCampaignStep::Done(outcome);
     }
     if let Some(step) = emit_phase_planned_event(campaign) {
-        return step;
+        return checkpoint_event_routing(step);
     }
 
     let advance = {
@@ -4444,7 +4483,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
             }
         }
     };
-    match advance {
+    let step = match advance {
         CampaignAdvance::Step(step) => step,
         CampaignAdvance::Emit { now, next } => {
             match next {
@@ -4459,7 +4498,8 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
             }
             BreakawayCampaignStep::Event(now)
         }
-    }
+    };
+    checkpoint_event_routing(step)
 }
 
 /// Engine adapter: step the embedded breakaway campaign by one cooperative tick,
@@ -4510,16 +4550,29 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
                 data: VelocityIntegralData::new(campaign.run_sequence(), plan.execution_plan()),
                 safety,
             };
+            crate::diagnostic::complete_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+            );
             StepResult::ReadyNow
         }
         BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
             error,
             safety: Some(fault),
-        }) => fail_outer_with_safety(phase, error, fault),
+        }) => {
+            crate::diagnostic::complete_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+            );
+            fail_outer_with_safety(phase, error, fault)
+        }
         BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
             error,
             safety: None,
-        }) => fail_outer(phase, error),
+        }) => {
+            crate::diagnostic::complete_breakaway_campaign(
+                crate::diagnostic::BreakawayCheckpoint::CampaignTerminalHandled,
+            );
+            fail_outer(phase, error)
+        }
     }
 }
 

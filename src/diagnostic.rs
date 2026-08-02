@@ -197,6 +197,11 @@ pub(crate) fn set_breakaway_breadcrumb_raw_for_test(raw: u32) {
     LAST_BOOT_BREAKAWAY_BREADCRUMB.store(0, Ordering::Release);
 }
 
+#[cfg(test)]
+pub(crate) fn current_breakaway_breadcrumb_for_test() -> Option<BreakawayBreadcrumb> {
+    decode_breakaway_breadcrumb(TEST_BREAKAWAY_BREADCRUMB.with(core::cell::Cell::get))
+}
+
 /// Origin of a persisted last-boot fault record.
 pub mod last_panic_kind {
     /// A Rust `panic!` (index, arithmetic, `expect`, explicit) captured by the

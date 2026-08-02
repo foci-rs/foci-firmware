@@ -1081,6 +1081,7 @@ where
                                 }
                             };
                         runtime.set_commission_engine(engine);
+                        crate::diagnostic::begin_breakaway_campaign();
                     }
                 }
             }
@@ -2614,11 +2615,12 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn breakaway_workflow_is_declared_before_engine_execution() {
+    fn breakaway_breadcrumb_begins_when_workflow_is_installed() {
         run_request_test(async {
             use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
             use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
+            crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
             let mut board = RecordingBoard::skip_tick_tail();
             let tmc_state = tmc_channel0();
             tmc_state
@@ -2653,6 +2655,13 @@ mod tests {
             assert!(workflow.nominal_workflow_ms > 0);
             assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
             assert!(runtime.is_commission_active());
+            assert_eq!(
+                crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+                Some(crate::diagnostic::BreakawayBreadcrumb {
+                    checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
+                    interrupted: true,
+                })
+            );
         });
     }
 
