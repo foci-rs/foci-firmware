@@ -772,6 +772,14 @@ fn breakaway_workflow_reserves_upward_probe() {
 }
 
 #[test]
+fn discovery_slots_reserve_one_fresh_rest_window_per_observation() {
+    let discovery_primitive_us =
+        MOVING_STROKE_US + 2 * (ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
+    assert_eq!(discovery_primitive_us, 1_984_000);
+    assert_eq!(breakaway_discovery_slots_us(1), Ok(15_872_000));
+}
+
+#[test]
 fn discovery_slot_duration_is_monotonic_across_every_resolved_rung_count() {
     let mut previous = 0_u64;
     for rung_count in (MIN_STRUCTURAL_RUNGS as u8)..=(MAX_SWEEP_RUNGS as u8) {
@@ -786,7 +794,7 @@ fn discovery_slot_duration_is_monotonic_across_every_resolved_rung_count() {
     // "32 rungs x 8 slots" line.
     assert_eq!(
         breakaway_discovery_slots_us(MAX_SWEEP_RUNGS as u8),
-        Ok(319_488_000)
+        Ok(507_904_000)
     );
 }
 

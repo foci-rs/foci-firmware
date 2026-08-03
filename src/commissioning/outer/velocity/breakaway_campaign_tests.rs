@@ -9,7 +9,7 @@ use crate::commissioning::outer::velocity::breakaway_plan::{
     plan_upward_breakaway_probe,
 };
 use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
-use foci_tmc4671::pid::PidPGain;
+use foci_tmc4671::{pid::PidPGain, registers::STATUS_FLAGS};
 
 fn gain(raw: u16) -> PidPGain {
     PidPGain::new(raw).expect("raw gain within PidPGain range")
@@ -766,10 +766,10 @@ fn safety_faults_propagate_unchanged() {
 /// `breakaway_plan_tests.rs`'s own `generous_request` fixture, narrowed to a
 /// ceiling that resolves to exactly `MIN_STRUCTURAL_RUNGS` = 5 rungs
 /// (`[181, 256, 362, 468, 574]`) once `workflow_envelope_ms` is tightened to
-/// exclude every finer (6+ rung) candidate: at 8 slots/rung and the fixed
-/// per-primitive duration, 5 rungs need 49_920 ms and 6 rungs need 59_904 ms, so
-/// 50_000 ms admits only 5. Keeping the ladder small keeps every test's bounded
-/// step budget small too.
+/// exclude every finer (6+ rung) candidate: at 8 slots/rung and the discovery
+/// primitive's one reserved rest retry, 5 rungs need 79_360 ms and 6 rungs need
+/// 95_232 ms, so 80_000 ms admits only 5. Keeping the ladder small keeps every
+/// test's bounded step budget small too.
 fn discovery_request() -> AdditiveDiscoveryRequest {
     AdditiveDiscoveryRequest {
         floor: gain(181),
@@ -777,7 +777,7 @@ fn discovery_request() -> AdditiveDiscoveryRequest {
         authority_ceiling: gain(574),
         observations_per_direction: 4,
         max_duration_ms: u16::MAX,
-        workflow_envelope_ms: 50_000,
+        workflow_envelope_ms: 80_000,
         probe_plan_digest: 0,
     }
 }
@@ -1410,6 +1410,119 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
 // --- DiscoveryEvidenceExcluded: the zero-target settle never confirms rest ----
 
 #[test]
+fn one_unconfirmed_discovery_settle_retries_before_recovery() {
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count: i32 = 0;
+    let mut settle_attempts = 0_u8;
+
+    for _ in 0..20_000 {
+        if matches!(state, AdditiveDiscoveryState::BeginSettleCapture { .. }) {
+            settle_attempts += 1;
+        }
+        let is_first_settle_capture =
+            settle_attempts == 1 && matches!(state, AdditiveDiscoveryState::SettleCapture { .. });
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::ReadyNow
+            | AdditiveDiscoveryStep::Observation(_)
+            | AdditiveDiscoveryStep::Margin { .. } => {}
+            AdditiveDiscoveryStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                // Reject the first rest window with continuous drift, then hold
+                // still throughout the fresh retry window.
+                if is_first_settle_capture {
+                    encoder_count += 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            AdditiveDiscoveryStep::Done(outcome) => {
+                panic!("one rejected rest window must be retried: {outcome:?}")
+            }
+        }
+        if matches!(state, AdditiveDiscoveryState::Recover(_)) {
+            assert_eq!(settle_attempts, 2);
+            return;
+        }
+    }
+    panic!("discovery did not reach recovery after the fresh rest window");
+}
+
+#[test]
+fn an_actionable_status_on_the_first_settle_is_not_retried() {
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut encoder_count: i32 = 0;
+    let mut settle_attempts = 0_u8;
+
+    for _ in 0..20_000 {
+        if matches!(state, AdditiveDiscoveryState::BeginSettleCapture { .. }) {
+            settle_attempts += 1;
+        }
+        let is_settle_capture = matches!(state, AdditiveDiscoveryState::SettleCapture { .. });
+        if settle_attempts == 1 && matches!(state, AdditiveDiscoveryState::AnalyzeSettle { .. }) {
+            backend
+                .registers
+                .insert(
+                    STATUS_FLAGS.addr(),
+                    crate::autotune::current_loop_actionable_status_mask(),
+                )
+                .expect("status register fixture fits");
+        }
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::ReadyNow
+            | AdditiveDiscoveryStep::Observation(_)
+            | AdditiveDiscoveryStep::Margin { .. } => {}
+            AdditiveDiscoveryStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_settle_capture {
+                    encoder_count += 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            AdditiveDiscoveryStep::Done(outcome) => {
+                let AdditiveDiscoveryOutcome::SafetyFault { error, safety } = outcome else {
+                    panic!("actionable status must remain a safety fault: {outcome:?}");
+                };
+                assert_eq!(error, CommissionError::SafetyEnvelopeViolation);
+                assert!(safety.is_none());
+                assert_eq!(
+                    settle_attempts, 1,
+                    "a safety fault must not enter the retry window"
+                );
+                return;
+            }
+        }
+    }
+    panic!("actionable settle status did not terminate discovery");
+}
+
+#[test]
 fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
     let request = discovery_request();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
@@ -1420,8 +1533,12 @@ fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
     let mut safety = test_safety();
     let mut backend = test_backend();
     let mut encoder_count: i32 = 0;
+    let mut settle_attempts = 0_u8;
 
     loop {
+        if matches!(state, AdditiveDiscoveryState::BeginSettleCapture { .. }) {
+            settle_attempts += 1;
+        }
         let is_settle_phase = matches!(state, AdditiveDiscoveryState::SettleCapture { .. });
         let result = pollster::block_on(step_additive_discovery(
             &mut state,
@@ -1448,8 +1565,11 @@ fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
             AdditiveDiscoveryStep::Done(outcome) => {
                 assert!(matches!(
                     outcome,
-                    AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded
+                    AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
+                        error: CommissionError::VelocityRestNotConfirmed
+                    }
                 ));
+                assert_eq!(settle_attempts, 2, "only one fresh rest retry is allowed");
                 break;
             }
         }
@@ -2893,6 +3013,46 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedul
         panic!("an impossible discovery outcome must be a Terminal step");
     };
     assert_eq!(error, CommissionError::InvalidSchedule);
+    assert!(safety.is_none());
+}
+
+#[test]
+fn discovery_rest_refusal_keeps_its_specific_terminal_status() {
+    let session = AdditiveDiscoverySession::new(
+        discovery_request(),
+        false,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+    )
+    .expect("valid discovery session");
+    let inputs = stage_c_inputs(2_448);
+    let mut evidence_sequence = 0_u16;
+
+    let advance = discovery_done_advance(
+        AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
+            error: CommissionError::VelocityRestNotConfirmed,
+        },
+        &session,
+        &inputs,
+        &mut evidence_sequence,
+    );
+
+    let CampaignAdvance::Emit {
+        next:
+            EmitContinuation::Terminal {
+                campaign_terminal,
+                done: BreakawayCampaignOutcome::Terminal { error, safety },
+            },
+        ..
+    } = advance
+    else {
+        panic!("discovery rest refusal must close the campaign");
+    };
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::DiscoveryEvidenceExcluded as u8
+    );
+    assert_eq!(error, CommissionError::VelocityRestNotConfirmed);
     assert!(safety.is_none());
 }
 

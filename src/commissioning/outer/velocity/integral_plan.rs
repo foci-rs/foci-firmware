@@ -993,6 +993,8 @@ pub fn integral_workflow_maximum_ms(
 /// confirmation stroke: moving capture, zero-target settle, and the
 /// cooperative analysis allowance. `512_000 + 500_000 + 236_000 = 1_248_000`.
 const BREAKAWAY_PRIMITIVE_US: u32 = MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
+const BREAKAWAY_DISCOVERY_PRIMITIVE_US: u32 =
+    BREAKAWAY_PRIMITIVE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
 
 /// Worst-case upward-probe observation count reserved before motion:
 /// [`PROBE_MAX_OBSERVATIONS`] primitives, 159.744 s.
@@ -1002,7 +1004,8 @@ pub fn breakaway_probe_slots_us() -> Result<u64, VelocityIntegralPlanError> {
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Exact discovery-phase primitive duration for one resolved rung count.
+/// Exact discovery-phase duration for one resolved rung count, including one
+/// fresh zero-target rest window after an initial rest rejection.
 ///
 /// Every realizable additive ladder holds between
 /// [`super::sweep_plan::MIN_STRUCTURAL_RUNGS`] and [`MAX_SWEEP_RUNGS`] rungs;
@@ -1013,7 +1016,7 @@ pub fn breakaway_probe_slots_us() -> Result<u64, VelocityIntegralPlanError> {
 pub fn breakaway_discovery_slots_us(rung_count: u8) -> Result<u64, VelocityIntegralPlanError> {
     u64::from(rung_count)
         .checked_mul(u64::from(STAGE_C_OBSERVATIONS_PER_RUNG))
-        .and_then(|slots| slots.checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US)))
+        .and_then(|slots| slots.checked_mul(u64::from(BREAKAWAY_DISCOVERY_PRIMITIVE_US)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 

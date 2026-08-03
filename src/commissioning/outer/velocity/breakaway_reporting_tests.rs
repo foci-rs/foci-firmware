@@ -308,7 +308,7 @@ fn discovery_fixture() -> (
         authority_ceiling: gain(1024),
         observations_per_direction: 4,
         max_duration_ms: 2_000,
-        workflow_envelope_ms: 300_000,
+        workflow_envelope_ms: 508_000,
         probe_plan_digest: 0xabcd_ef01_2345_6789,
     };
     let plan = plan_additive_discovery_ladder(request).expect("valid discovery plan");
@@ -534,7 +534,9 @@ fn discovery_terminal_cause_maps_every_non_selected_variant() {
             BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded,
         ),
         (
-            AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded,
+            AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
+                error: CommissionError::VelocityRestNotConfirmed,
+            },
             BreakawayTerminalCause::DiscoveryEvidenceExcluded,
         ),
     ];

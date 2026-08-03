@@ -415,6 +415,8 @@ pub fn plan_additive_discovery_ladder(
     let primitive_us = MOVING_STROKE_US
         .checked_add(ZERO_SETTLE_US)
         .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
+        .and_then(|value| value.checked_add(ZERO_SETTLE_US))
+        .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(AdditiveLadderPlanError::Arithmetic)?;
     if primitive_us.div_ceil(1_000) > u32::from(request.max_duration_ms) {
         return Err(AdditiveLadderPlanError::PrimitiveDurationExceeded);

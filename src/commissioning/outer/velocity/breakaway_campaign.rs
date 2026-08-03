@@ -1440,14 +1440,21 @@ pub(crate) enum AdditiveDiscoveryState {
         analysis_deadline_us: u64,
     },
     /// Read the settle baseline before sampling the zero-target rest window.
-    BeginSettleCapture { settle_deadline_us: u64 },
+    BeginSettleCapture {
+        settle_deadline_us: u64,
+        retry_available: bool,
+    },
     /// Sample the zero-target rest window.
     SettleCapture {
         next_sample_us: u64,
         deadline_us: u64,
+        retry_available: bool,
     },
     /// Confirm rest and record the zero-phase current evidence boundary.
-    AnalyzeSettle { analysis_deadline_us: u64 },
+    AnalyzeSettle {
+        analysis_deadline_us: u64,
+        retry_available: bool,
+    },
     /// Return to the parked origin through the shared recovery primitive.
     Recover(RungOriginRecoveryRuntime),
     /// Fold the classified observation into the active accumulator and decide
@@ -1647,7 +1654,7 @@ pub(crate) enum AdditiveDiscoveryOutcome {
     /// Target-independent stationarity evidence, or another controller-domain
     /// evidence field, was unusable for classification -- or the completed
     /// origin-recovery return could not confirm rest.
-    DiscoveryEvidenceExcluded,
+    DiscoveryEvidenceExcluded { error: CommissionError },
     /// An existing safety, current, travel, encoder, or register-I/O fault,
     /// returned unchanged.
     SafetyFault {
@@ -2052,7 +2059,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 }
                 VelocityObservationClass::InvalidEvidenceFault => {
                     return AdditiveDiscoveryStep::Done(
-                        AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded,
+                        AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
+                            error: CommissionError::VelocityValidationFailed,
+                        },
                     );
                 }
                 VelocityObservationClass::CurrentHeadroom => {
@@ -2092,10 +2101,14 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             workspace.observations.clear();
             *state = AdditiveDiscoveryState::BeginSettleCapture {
                 settle_deadline_us: *settle_deadline_us,
+                retry_available: true,
             };
             AdditiveDiscoveryStep::ReadyNow
         }
-        AdditiveDiscoveryState::BeginSettleCapture { settle_deadline_us } => {
+        AdditiveDiscoveryState::BeginSettleCapture {
+            settle_deadline_us,
+            retry_available,
+        } => {
             let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
                 Ok(value) => value,
                 Err(_) => return discovery_fault(CommissionError::Spi),
@@ -2120,12 +2133,14 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             *state = AdditiveDiscoveryState::SettleCapture {
                 next_sample_us,
                 deadline_us: *settle_deadline_us,
+                retry_available: *retry_available,
             };
             AdditiveDiscoveryStep::At(next_sample_us)
         }
         AdditiveDiscoveryState::SettleCapture {
             next_sample_us,
             deadline_us,
+            retry_available,
         } => {
             let entry_us = backend.elapsed_us();
             if entry_us < *next_sample_us {
@@ -2154,6 +2169,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     ));
                 *state = AdditiveDiscoveryState::AnalyzeSettle {
                     analysis_deadline_us,
+                    retry_available: *retry_available,
                 };
                 AdditiveDiscoveryStep::ReadyNow
             } else {
@@ -2172,6 +2188,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
         }
         AdditiveDiscoveryState::AnalyzeSettle {
             analysis_deadline_us,
+            retry_available,
         } => {
             if backend.elapsed_us() >= *analysis_deadline_us {
                 return discovery_fault(CommissionError::AnalysisOverrun);
@@ -2199,12 +2216,28 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             {
                 return discovery_fault(CommissionError::InvalidSchedule);
             }
+            if !confirmation.confirmed_rest && *retry_available {
+                workspace.analysis.reset();
+                workspace.observations.clear();
+                let Some(settle_deadline_us) =
+                    backend.elapsed_us().checked_add(u64::from(ZERO_SETTLE_US))
+                else {
+                    return discovery_fault(CommissionError::InvalidSchedule);
+                };
+                *state = AdditiveDiscoveryState::BeginSettleCapture {
+                    settle_deadline_us,
+                    retry_available: false,
+                };
+                return AdditiveDiscoveryStep::ReadyNow;
+            }
             workspace.analysis.reset();
             workspace.observations.clear();
             safety.end_primitive();
             if !confirmation.confirmed_rest {
                 return AdditiveDiscoveryStep::Done(
-                    AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded,
+                    AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
+                        error: CommissionError::VelocityRestNotConfirmed,
+                    },
                 );
             }
             let recovery_plan = match plan_rung_origin_recovery(
@@ -2290,9 +2323,11 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         None => AdditiveDiscoveryStep::ReadyNow,
                     }
                 }
-                RungOriginRecoveryStep::RestUnconfirmed => {
-                    AdditiveDiscoveryStep::Done(AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded)
-                }
+                RungOriginRecoveryStep::RestUnconfirmed => AdditiveDiscoveryStep::Done(
+                    AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
+                        error: CommissionError::VelocityRestNotConfirmed,
+                    },
+                ),
                 RungOriginRecoveryStep::Fault {
                     error,
                     safety: Some(fault_report),
@@ -2542,7 +2577,7 @@ pub(crate) fn begin_band_confirmation(
         AdditiveDiscoveryOutcome::TargetBandSkipped
         | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
-        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded => {
+        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. } => {
             return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
                 error: CommissionError::InvalidSchedule,
                 safety: None,
@@ -4149,7 +4184,7 @@ fn enter_discovery(
                 AdditiveDiscoveryOutcome::TargetBandSelected(_)
                 | AdditiveDiscoveryOutcome::TargetBandSkipped
                 | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
-                | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded => (
+                | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. } => (
                     BreakawayTerminalCause::DiscoverySafetyFault,
                     CommissionError::InvalidSchedule,
                     None,
@@ -4267,8 +4302,7 @@ fn discovery_done_advance(
         }
         AdditiveDiscoveryOutcome::TargetBandSkipped
         | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
-        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
-        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded => {
+        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => {
             let cause = discovery_terminal_cause(&outcome).0;
             let campaign_terminal = campaign_terminal_event(
                 BreakawayPhase::Discovery,
@@ -4282,6 +4316,23 @@ fn discovery_done_advance(
                 campaign_terminal,
                 done: BreakawayCampaignOutcome::Terminal {
                     error: CommissionError::InvalidSchedule,
+                    safety: None,
+                },
+            }
+        }
+        AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { error } => {
+            let campaign_terminal = campaign_terminal_event(
+                BreakawayPhase::Discovery,
+                super::breakaway_reporting::BreakawayTerminalCause::DiscoveryEvidenceExcluded,
+                false,
+                0,
+                inputs,
+                evidence_sequence,
+            );
+            EmitContinuation::Terminal {
+                campaign_terminal,
+                done: BreakawayCampaignOutcome::Terminal {
+                    error,
                     safety: None,
                 },
             }

@@ -191,7 +191,7 @@ pub(crate) fn discovery_terminal_cause(
             BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded,
             0,
         ),
-        AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded => {
+        AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. } => {
             (BreakawayTerminalCause::DiscoveryEvidenceExcluded, 0)
         }
         AdditiveDiscoveryOutcome::SafetyFault { safety, .. } => (
@@ -570,7 +570,7 @@ pub(crate) fn discovery_terminal_report(
         | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
         | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
-        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded
+        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. }
         | AdditiveDiscoveryOutcome::SafetyFault { .. } => 0,
     };
     discovery_terminal_fields(
