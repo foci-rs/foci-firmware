@@ -91,7 +91,7 @@ use super::breakaway_plan::{
     plan_additive_discovery_ladder, plan_upward_breakaway_probe, resolve_grid_floor,
 };
 use super::breakaway_reporting::{
-    BreakawayPhase, ProbeDecisionReportInput, campaign_terminal_report,
+    BreakawayPhase, BreakawayTerminalCause, ProbeDecisionReportInput, campaign_terminal_report,
     confirmation_evaluated_terminal_report, confirmation_partial_evidence_terminal_report,
     confirmation_plan_report, confirmation_zero_stroke_cause,
     confirmation_zero_stroke_terminal_report, discovery_plan_report, discovery_terminal_cause,
@@ -4086,10 +4086,9 @@ fn route_confirmed_accept<B: CommissioningBackend>(
 /// `authority_ceiling = p_top` (the retained plan-time ceiling), per the spec's
 /// plan-time authority rule: the Stage-C transition-authority guard is applied
 /// only at Stage C, by [`plan_breakaway_velocity_integral_response`], never as a
-/// pre-sweep discovery ceiling. On any plan-time failure the discovery outcome
-/// is routed through the same [`route_discovery_outcome`] gate as a discovery-run
-/// terminal, so a construction failure maps to the same
-/// `InvalidSchedule` safety fault.
+/// pre-sweep discovery ceiling. Dedicated plan-time discovery refusals retain
+/// their discovery-owned terminal causes; structural failures retain the generic
+/// discovery safety fault.
 fn enter_discovery(
     resolved: &ResolvedUpwardBreakaway,
     probe_plan: &UpwardBreakawayProbePlan,
@@ -4132,9 +4131,43 @@ fn enter_discovery(
             state: AdditiveDiscoveryState::PlannedDiscovery,
             session,
         }),
-        // A discovery plan-time refusal is routed through the same gate as a
-        // discovery-run terminal; the digest is unused for terminal outcomes.
-        Err(outcome) => route_discovery_outcome(outcome, 0, inputs, evidence_sequence),
+        Err(outcome) => {
+            let (cause, error, safety) = match outcome {
+                AdditiveDiscoveryOutcome::InsufficientAdditiveSpan => (
+                    BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
+                    CommissionError::InvalidSchedule,
+                    None,
+                ),
+                AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => (
+                    BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded,
+                    CommissionError::InvalidSchedule,
+                    None,
+                ),
+                AdditiveDiscoveryOutcome::SafetyFault { error, safety } => {
+                    (BreakawayTerminalCause::DiscoverySafetyFault, error, safety)
+                }
+                AdditiveDiscoveryOutcome::TargetBandSelected(_)
+                | AdditiveDiscoveryOutcome::TargetBandSkipped
+                | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
+                | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded => (
+                    BreakawayTerminalCause::DiscoverySafetyFault,
+                    CommissionError::InvalidSchedule,
+                    None,
+                ),
+            };
+            let campaign_terminal = campaign_terminal_event(
+                BreakawayPhase::Discovery,
+                cause,
+                false,
+                0,
+                inputs,
+                evidence_sequence,
+            );
+            EmitContinuation::Terminal {
+                campaign_terminal,
+                done: BreakawayCampaignOutcome::Terminal { error, safety },
+            }
+        }
     }
 }
 

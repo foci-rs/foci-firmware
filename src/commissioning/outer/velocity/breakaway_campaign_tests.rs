@@ -2096,7 +2096,7 @@ fn collected_in_band_rungs_shrinks_to_the_compact_bounds_representation() {
 
 use super::{
     CampaignAdvance, EmitContinuation, confirmation_terminal, discovery_done_advance,
-    route_confirmed_accept, route_discovery_outcome,
+    enter_discovery, route_confirmed_accept, route_discovery_outcome,
 };
 use crate::commissioning::outer::state::OuterPhase;
 use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
@@ -2894,6 +2894,53 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedul
     };
     assert_eq!(error, CommissionError::InvalidSchedule);
     assert!(safety.is_none());
+}
+
+#[test]
+fn plan_time_resolution_refusal_keeps_its_discovery_terminal_cause() {
+    let mut inputs = stage_c_inputs(2_448);
+    inputs.p_start = gain(1);
+    inputs.p_top = gain(7_456);
+    let probe_plan = plan_upward_breakaway_probe(
+        inputs.p_start,
+        inputs.p_top,
+        BreakawayProbeContext {
+            workflow_digest: 0x213,
+            target_velocity_rpm: inputs.target_velocity_rpm.raw(),
+            hard_torque_limit: inputs.hard_torque_limit,
+            usable_torque_limit: inputs.usable_torque_limit,
+            pwm_hz: inputs.pwm_hz,
+            encoder_counts_per_rev: inputs.encoder_counts_per_rev,
+        },
+    )
+    .expect("valid upward probe plan");
+    // On the realized 1..7456 grid, index 15 is P=256 with predecessor P=181.
+    // Even a 3/2 provisional bound rejects its first additive gain P=496.
+    let resolved = ResolvedUpwardBreakaway {
+        breakaway_index: 15,
+        observations: 32,
+    };
+    let mut evidence_sequence = 0_u16;
+
+    let continuation = enter_discovery(&resolved, &probe_plan, &inputs, &mut evidence_sequence);
+
+    let EmitContinuation::Terminal {
+        campaign_terminal,
+        done:
+            BreakawayCampaignOutcome::Terminal {
+                error,
+                safety: None,
+            },
+    } = continuation
+    else {
+        panic!("the coarse additive ladder must refuse before discovery motion");
+    };
+    assert_eq!(campaign_terminal.phase, BreakawayPhase::Discovery as u8);
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded as u8
+    );
+    assert_eq!(error, CommissionError::InvalidSchedule);
 }
 
 // --- Accept hands off through the engine adapter into VelocityIntegral ---------
