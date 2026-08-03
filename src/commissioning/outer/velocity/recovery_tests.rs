@@ -712,6 +712,56 @@ fn recovery_controller_contained_paths_never_write_a_nonzero_target() {
 }
 
 #[test]
+fn recovery_controller_releases_contained_primitive() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+
+    let mut moving_end_sample = None;
+    for sample in 1..=600 {
+        match fixture.sample(sample * 1_000, 1_001) {
+            RungOriginRecoveryStep::At(_) => {}
+            RungOriginRecoveryStep::ReadyNow => {
+                moving_end_sample = Some(sample);
+                break;
+            }
+            other => panic!("out-of-band motion must reach zero-target settle: {other:?}"),
+        }
+    }
+    let settle_first_sample = moving_end_sample.expect("moving deadline must be bounded") + 1;
+    assert!(matches!(
+        fixture.step(),
+        RungOriginRecoveryStep::At(deadline) if deadline == settle_first_sample * 1_000
+    ));
+
+    let settle_last_sample = settle_first_sample + 499;
+    for sample in settle_first_sample..=settle_last_sample {
+        let result = fixture.sample(sample * 1_000, 1_001);
+        if sample < settle_last_sample {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+
+    let report = loop {
+        match fixture.step() {
+            RungOriginRecoveryStep::ReadyNow => {}
+            RungOriginRecoveryStep::RestSelection { .. } => {}
+            RungOriginRecoveryStep::Contained(report) => break report,
+            other => panic!("out-of-band rest must remain contained: {other:?}"),
+        }
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::ContainedDeadline);
+    assert!(
+        fixture
+            .safety
+            .begin_primitive(fixture.backend.elapsed_us_value)
+            .is_ok()
+    );
+    fixture.safety.end_primitive();
+}
+
+#[test]
 fn recovery_controller_uses_constant_signed_target_and_faults_wrong_way_growth() {
     let mut runtime = runtime(8_458, Some(14_000_000));
     let mut safety = configured_safety(8_458);
