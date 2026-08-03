@@ -211,6 +211,31 @@ pub enum CommissionError {
     AnalysisOverrun,
     /// A completed velocity rest analysis did not confirm rest. Code 53.
     VelocityRestNotConfirmed,
+    /// A torque-flux limit was zero or otherwise unrepresentable. Code 54.
+    InvalidCurrentLimit,
+    /// A bounded evidence buffer reached capacity. Code 55.
+    EvidenceBufferFull,
+    /// A rung index addressed a slot beyond the frozen plan's rung count. Code 56.
+    RungIndexOutOfRange,
+    /// A frozen plan input changed after the plan was admitted: encoder counts
+    /// per revolution or the configured current limit no longer match what the
+    /// campaign froze. Code 57.
+    ///
+    /// Distinct from the other internal faults because it reports external
+    /// mutation of a safety-relevant input mid-campaign, not a firmware
+    /// invariant violation.
+    PlanContractChanged,
+    /// Rung-origin recovery could not be planned. Code 58.
+    RecoveryPlanFailed,
+    /// An encoder domain could not be constructed, or an encoder sample was
+    /// rejected by it. Code 59.
+    EncoderDomainInvalid,
+    /// Retained capture state was absent where an invariant requires it. Code 60.
+    MissingCaptureState,
+    /// A breakaway search grid was structurally invalid. Code 61.
+    SearchGridInvalid,
+    /// A directional target rate could not be represented. Code 62.
+    TargetRateInvalid,
 }
 
 impl CommissionError {
@@ -273,6 +298,15 @@ impl CommissionError {
             Self::DelayTimingRejected => 51,
             Self::AnalysisOverrun => 52,
             Self::VelocityRestNotConfirmed => 53,
+            Self::InvalidCurrentLimit => 54,
+            Self::EvidenceBufferFull => 55,
+            Self::RungIndexOutOfRange => 56,
+            Self::PlanContractChanged => 57,
+            Self::RecoveryPlanFailed => 58,
+            Self::EncoderDomainInvalid => 59,
+            Self::MissingCaptureState => 60,
+            Self::SearchGridInvalid => 61,
+            Self::TargetRateInvalid => 62,
         }
     }
 }
@@ -611,6 +645,15 @@ mod tests {
             CommissionError::DelayTimingRejected,
             CommissionError::AnalysisOverrun,
             CommissionError::VelocityRestNotConfirmed,
+            CommissionError::InvalidCurrentLimit,
+            CommissionError::EvidenceBufferFull,
+            CommissionError::RungIndexOutOfRange,
+            CommissionError::PlanContractChanged,
+            CommissionError::RecoveryPlanFailed,
+            CommissionError::EncoderDomainInvalid,
+            CommissionError::MissingCaptureState,
+            CommissionError::SearchGridInvalid,
+            CommissionError::TargetRateInvalid,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -634,6 +677,15 @@ mod tests {
         assert_eq!(CommissionError::DelayTimingRejected.status_code(), 51);
         assert_eq!(CommissionError::AnalysisOverrun.status_code(), 52);
         assert_eq!(CommissionError::VelocityRestNotConfirmed.status_code(), 53);
+        assert_eq!(CommissionError::InvalidCurrentLimit.status_code(), 54);
+        assert_eq!(CommissionError::EvidenceBufferFull.status_code(), 55);
+        assert_eq!(CommissionError::RungIndexOutOfRange.status_code(), 56);
+        assert_eq!(CommissionError::PlanContractChanged.status_code(), 57);
+        assert_eq!(CommissionError::RecoveryPlanFailed.status_code(), 58);
+        assert_eq!(CommissionError::EncoderDomainInvalid.status_code(), 59);
+        assert_eq!(CommissionError::MissingCaptureState.status_code(), 60);
+        assert_eq!(CommissionError::SearchGridInvalid.status_code(), 61);
+        assert_eq!(CommissionError::TargetRateInvalid.status_code(), 62);
     }
 
     #[test]

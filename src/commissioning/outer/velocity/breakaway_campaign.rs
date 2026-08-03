@@ -372,7 +372,7 @@ fn safety_fault(safety: OuterSafetyFault, error: CommissionError) -> BreakawayPr
 
 fn current_guard_fault(error: VelocityCurrentGuardError) -> BreakawayProbeStep {
     fault(match error {
-        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidSchedule,
+        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidCurrentLimit,
         VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
         VelocityCurrentGuardError::ActionableStatus(_) => CommissionError::SafetyEnvelopeViolation,
     })
@@ -386,7 +386,7 @@ fn checkpoint_breakaway_operation(checkpoint: BreakawayCheckpoint) {
 fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
     match error {
         BreakawaySearchError::InvalidRequest | BreakawaySearchError::Arithmetic => {
-            fault(CommissionError::InvalidSchedule)
+            fault(CommissionError::SearchGridInvalid)
         }
     }
 }
@@ -421,7 +421,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 != frozen.encoder_counts_per_rev
                 || u16::from(backend.current_limit()) != frozen.hard_torque_limit
             {
-                return fault(CommissionError::InvalidSchedule);
+                return fault(CommissionError::PlanContractChanged);
             }
             checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeSafetyEncoderRead);
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -481,7 +481,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 .with_direction(direction_sign(session.pending_role.direction()))
             {
                 Ok(target) => target.raw(),
-                Err(_) => return fault(CommissionError::InvalidSchedule),
+                Err(_) => return fault(CommissionError::TargetRateInvalid),
             };
             let hard_limit = session.plan.context.hard_torque_limit;
             let mut clamp_session =
@@ -675,7 +675,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             );
             let capture = match workspace.excursion.take() {
                 Some(capture) => capture,
-                None => return fault(CommissionError::InvalidSchedule),
+                None => return fault(CommissionError::MissingCaptureState),
             };
             let wire_fields = capture.wire_fields();
             let excursion = capture.finish(
@@ -754,7 +754,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     settle_deadline_us: *settle_deadline_us,
                 },
                 Some(Err(_)) => BreakawayProbeState::Advance,
-                None => return fault(CommissionError::InvalidSchedule),
+                None => return fault(CommissionError::MissingCaptureState),
             };
             BreakawayProbeStep::Observation(collected)
         }
@@ -871,7 +871,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 .evidence(VelocityCurrentZeroPhase::Braking)
                 .is_err()
             {
-                return fault(CommissionError::InvalidSchedule);
+                return fault(CommissionError::InvalidCurrentLimit);
             }
             workspace.analysis.reset();
             workspace.observations.clear();
@@ -885,7 +885,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 session.planned_velocity_mrev_s,
             ) {
                 Ok(plan) => plan,
-                Err(_) => return fault(CommissionError::InvalidSchedule),
+                Err(_) => return fault(CommissionError::RecoveryPlanFailed),
             };
             let p = match session.pending_gain() {
                 Ok(p) => p,
@@ -894,7 +894,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             let hard_limit = session.plan.context.hard_torque_limit;
             let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
                 Ok(limit) => limit,
-                Err(_) => return fault(CommissionError::InvalidSchedule),
+                Err(_) => return fault(CommissionError::InvalidCurrentLimit),
             };
             workspace.current_observer.reset(
                 clamp_limit,
@@ -1072,15 +1072,15 @@ async fn sample_one_tick<B: CommissioningBackend>(
         }
     };
     let domain = EncoderDomain::new(safety.counts_per_rev())
-        .map_err(|_| fault(CommissionError::InvalidSchedule))?;
+        .map_err(|_| fault(CommissionError::EncoderDomainInvalid))?;
     if record_excursion {
         let capture = workspace
             .excursion
             .as_mut()
-            .ok_or_else(|| fault(CommissionError::InvalidSchedule))?;
+            .ok_or_else(|| fault(CommissionError::MissingCaptureState))?;
         capture
             .observe(domain, encoder_raw, read_us)
-            .map_err(|_| fault(CommissionError::InvalidSchedule))?;
+            .map_err(|_| fault(CommissionError::EncoderDomainInvalid))?;
     }
     let delta = match domain.delta(
         domain.count(workspace.previous_encoder_raw),
@@ -1120,7 +1120,7 @@ async fn sample_one_tick<B: CommissioningBackend>(
     workspace
         .observations
         .push(delta.signed_counts(), elapsed_us as u16)
-        .map_err(|_| fault(CommissionError::InvalidSchedule))?;
+        .map_err(|_| fault(CommissionError::EvidenceBufferFull))?;
     workspace.previous_encoder_raw = encoder_raw;
     workspace.previous_read_us = read_us;
     Ok(read_us)
@@ -1185,7 +1185,7 @@ impl CollectedInBandRungs {
         let slot = self
             .rungs
             .get_mut(usize::from(self.count))
-            .ok_or(CommissionError::InvalidSchedule)?;
+            .ok_or(CommissionError::EvidenceBufferFull)?;
         *slot = bounds;
         self.count += 1;
         Ok(())
@@ -1373,13 +1373,13 @@ impl AdditiveDiscoverySession {
 
     fn current_gain(&self) -> Result<PidPGain, CommissionError> {
         if self.rung_index >= self.plan.rung_count {
-            return Err(CommissionError::InvalidSchedule);
+            return Err(CommissionError::RungIndexOutOfRange);
         }
         self.plan
             .gains
             .get(usize::from(self.rung_index))
             .copied()
-            .ok_or(CommissionError::InvalidSchedule)
+            .ok_or(CommissionError::RungIndexOutOfRange)
     }
 }
 
@@ -1694,7 +1694,7 @@ fn discovery_safety_fault(
 
 fn discovery_current_guard_fault(error: VelocityCurrentGuardError) -> AdditiveDiscoveryStep {
     discovery_fault(match error {
-        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidSchedule,
+        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidCurrentLimit,
         VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
         VelocityCurrentGuardError::ActionableStatus(_) => CommissionError::SafetyEnvelopeViolation,
     })
@@ -1729,7 +1729,7 @@ fn discovery_target_rate_q(
         .checked_mul(i64::from(counts_per_rev))
         .and_then(|value| value.checked_mul(VELOCITY_RATE_Q_SCALE))
         .map(|value| value / 60)
-        .ok_or(CommissionError::InvalidSchedule)
+        .ok_or(CommissionError::TargetRateInvalid)
 }
 
 /// Discovery's own containment multiplier is applied with NO confirmation-style
@@ -1890,7 +1890,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 .with_direction(direction_sign(session.direction))
             {
                 Ok(target) => target.raw(),
-                Err(_) => return discovery_fault(CommissionError::InvalidSchedule),
+                Err(_) => return discovery_fault(CommissionError::TargetRateInvalid),
             };
             let hard_limit = safety.torque_cap;
             let mut clamp_session =
@@ -2229,7 +2229,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 .evidence(VelocityCurrentZeroPhase::Braking)
                 .is_err()
             {
-                return discovery_fault(CommissionError::InvalidSchedule);
+                return discovery_fault(CommissionError::InvalidCurrentLimit);
             }
             if !confirmation.confirmed_rest && *retry_available {
                 workspace.analysis.reset();
@@ -2261,7 +2261,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 session.planned_velocity_mrev_s,
             ) {
                 Ok(plan) => plan,
-                Err(_) => return discovery_fault(CommissionError::InvalidSchedule),
+                Err(_) => return discovery_fault(CommissionError::RecoveryPlanFailed),
             };
             let p = match session.current_gain() {
                 Ok(p) => p,
@@ -2270,7 +2270,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             let hard_limit = safety.torque_cap;
             let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
                 Ok(limit) => limit,
-                Err(_) => return discovery_fault(CommissionError::InvalidSchedule),
+                Err(_) => return discovery_fault(CommissionError::InvalidCurrentLimit),
             };
             workspace.current_observer.reset(
                 clamp_limit,
@@ -2383,7 +2383,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             }
 
             let Some(next_slot) = session.slot.checked_add(1) else {
-                return discovery_fault(CommissionError::InvalidSchedule);
+                return discovery_fault(CommissionError::RungIndexOutOfRange);
             };
             if usize::from(next_slot) < CONSENSUS_OBSERVATIONS_PER_DIRECTION {
                 session.slot = next_slot;
@@ -2433,7 +2433,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         // replacement for it.
                         let bounds = rung_nomination_bounds(&rung_input);
                         if session.in_band.push(bounds).is_err() {
-                            return discovery_fault(CommissionError::InvalidSchedule);
+                            return discovery_fault(CommissionError::EvidenceBufferFull);
                         }
                     }
                     if verdict == RungBandVerdict::ConfidentlyAboveBand {
@@ -2448,7 +2448,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     session.reverse = DirectionAccumulator::new();
 
                     let Some(next_rung) = session.rung_index.checked_add(1) else {
-                        return discovery_fault(CommissionError::InvalidSchedule);
+                        return discovery_fault(CommissionError::RungIndexOutOfRange);
                     };
                     if usize::from(next_rung) >= usize::from(session.plan.rung_count) {
                         return finish_discovery_walk(
@@ -2628,7 +2628,7 @@ pub(crate) fn begin_band_confirmation(
     // Stage C are held to one identical, non-drifting contract.
     if validate_fixed_contract(&plan).is_err() {
         return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
-            error: CommissionError::InvalidSchedule,
+            error: CommissionError::PlanContractChanged,
             safety: None,
         });
     }
@@ -2780,7 +2780,7 @@ fn confirmation_safety_fault(
 
 fn confirmation_current_guard_fault(error: VelocityCurrentGuardError) -> BandConfirmationStep {
     confirmation_fault(match error {
-        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidSchedule,
+        VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidCurrentLimit,
         VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
         VelocityCurrentGuardError::ActionableStatus(_) => CommissionError::SafetyEnvelopeViolation,
     })
@@ -2903,7 +2903,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 .with_direction(direction_sign(session.current_direction()))
             {
                 Ok(target) => target.raw(),
-                Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
+                Err(_) => return confirmation_fault(CommissionError::TargetRateInvalid),
             };
             let hard_limit = safety.torque_cap;
             let mut clamp_session =
@@ -3229,7 +3229,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 .evidence(VelocityCurrentZeroPhase::Braking)
                 .is_err()
             {
-                return confirmation_fault(CommissionError::InvalidSchedule);
+                return confirmation_fault(CommissionError::InvalidCurrentLimit);
             }
             workspace.analysis.reset();
             workspace.observations.clear();
@@ -3245,13 +3245,13 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 session.planned_velocity_mrev_s,
             ) {
                 Ok(plan) => plan,
-                Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
+                Err(_) => return confirmation_fault(CommissionError::RecoveryPlanFailed),
             };
             let p = session.plan.candidate_p;
             let hard_limit = safety.torque_cap;
             let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
                 Ok(limit) => limit,
-                Err(_) => return confirmation_fault(CommissionError::InvalidSchedule),
+                Err(_) => return confirmation_fault(CommissionError::InvalidCurrentLimit),
             };
             workspace.current_observer.reset(
                 clamp_limit,
@@ -3359,7 +3359,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             }
 
             let Some(next_stroke) = session.stroke_index.checked_add(1) else {
-                return confirmation_fault(CommissionError::InvalidSchedule);
+                return confirmation_fault(CommissionError::RungIndexOutOfRange);
             };
             if usize::from(next_stroke) < CONFIRMATION_SLOT_ORDER.len() {
                 session.stroke_index = next_stroke;

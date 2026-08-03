@@ -2964,12 +2964,12 @@ mod tests {
             assert!(!backend_has_register_write(&backend));
             if matches!(
                 step,
-                StepResult::OuterFailed(CommissionError::InvalidSchedule)
+                StepResult::OuterFailed(CommissionError::PlanContractChanged)
             ) {
                 return;
             }
         }
-        panic!("changed breakaway context must terminate with InvalidSchedule");
+        panic!("changed breakaway context must terminate with PlanContractChanged");
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
