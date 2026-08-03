@@ -10,8 +10,11 @@ mod acceptance_plan_tests;
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod acceptance_reporting;
 pub mod band_confirmation;
+// Staged pure logic; the protocol-v15 campaign switch consumes it in Task 4.
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod breakaway_campaign;
+#[allow(dead_code)]
+pub(crate) mod breakaway_excursion;
 pub mod breakaway_plan;
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod breakaway_reporting;
