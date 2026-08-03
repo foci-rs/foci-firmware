@@ -116,7 +116,7 @@ pub const EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC: u16 = 151;
 /// Breakaway-seeded campaign: immutable probe plan.
 pub const EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN: u16 = 152;
 /// Breakaway-seeded campaign: resolved directional breakaway bracket.
-pub const EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED: u16 = 153;
+pub const EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT: u16 = 153;
 /// Breakaway-seeded campaign: probe-campaign terminal.
 pub const EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL: u16 = 154;
 /// Breakaway-seeded campaign: immutable additive discovery plan, its
@@ -272,7 +272,7 @@ mod tests {
         assert_eq!(EVENT_COMMISSION_SELECTED_RECOVERY_REST, 150);
         assert_eq!(EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, 151);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN, 152);
-        assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED, 153);
+        assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT, 153);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, 154);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN, 155);
         assert_eq!(EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL, 156);

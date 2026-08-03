@@ -7,9 +7,9 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Firmware trace protocol version. Version 14 adds productive-boundary probe
-/// evidence while host decoders retain historical record shapes.
-pub const PROTOCOL_VERSION: u8 = 14;
+/// Firmware trace protocol version. Version 15 publishes the physical-excursion
+/// upward-probe contract.
+pub const PROTOCOL_VERSION: u8 = 15;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 14);
+        assert_eq!(PROTOCOL_VERSION, 15);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);

@@ -57,7 +57,6 @@ fn encode_probe_planned_has_stable_frame_layout() {
         run_sequence: 0x1020_3040,
         evidence_sequence: 0x5060,
         plan_digest: 0x1122_3344_5566_7788,
-        family_size: 0x0910,
         max_observations: 0x11,
         search_count: 0x12,
         p_start_raw: 0x1314,
@@ -68,6 +67,8 @@ fn encode_probe_planned_has_stable_frame_layout() {
         usable_torque_limit: 0x3132,
         pwm_hz: 0x3334_3536,
         encoder_counts_per_rev: 0x3738_3940,
+        motion_threshold_counts: 0x4142_4344,
+        max_capture_interval_us: 0x4546_4748,
     };
     let record = encode_probe_planned(report);
     let expected = Expected::new()
@@ -75,7 +76,6 @@ fn encode_probe_planned_has_stable_frame_layout() {
         .u32(report.run_sequence)
         .u16(report.evidence_sequence)
         .u64(report.plan_digest)
-        .u16(report.family_size)
         .u8(report.max_observations)
         .u8(report.search_count)
         .u16(report.p_start_raw)
@@ -85,35 +85,35 @@ fn encode_probe_planned_has_stable_frame_layout() {
         .u16(report.hard_torque_limit)
         .u16(report.usable_torque_limit)
         .u32(report.pwm_hz)
-        .u32(report.encoder_counts_per_rev);
+        .u32(report.encoder_counts_per_rev)
+        .u32(report.motion_threshold_counts)
+        .u32(report.max_capture_interval_us);
     assert_eq!(record.as_bytes(), expected.bytes());
+    assert_eq!(record.as_bytes().len(), 53);
 }
 
 #[test]
-fn encode_directional_breakaway_has_stable_frame_layout() {
-    let report = BreakawayDirectionalBreakaway {
+fn encode_probe_resolved_has_stable_frame_layout() {
+    let report = BreakawayProbeResolved {
         run_sequence: 0x1020_3040,
         evidence_sequence: 0x5060,
         plan_digest: 0x1122_3344_5566_7788,
-        direction: 1,
-        inert_present: 1,
-        inert_p_raw: 0x0910,
-        moving_p_raw: 0x1112,
-        observations: 6,
-        lower_disposition_mask: 0b11,
+        rung_index: 3,
+        breakaway_p_raw: 0x0910,
+        motion_threshold_counts: 0x1112_1314,
+        observation_count: 17,
     };
-    let record = encode_directional_breakaway(report);
+    let record = encode_probe_resolved(report);
     let expected = Expected::new()
         .u8(1)
         .u32(report.run_sequence)
         .u16(report.evidence_sequence)
         .u64(report.plan_digest)
-        .u8(report.direction)
-        .u8(report.inert_present)
-        .u16(report.inert_p_raw)
-        .u16(report.moving_p_raw)
-        .u8(report.observations)
-        .u8(report.lower_disposition_mask);
+        .u8(report.rung_index)
+        .u16(report.breakaway_p_raw)
+        .u32(report.motion_threshold_counts)
+        .u8(report.observation_count);
+    assert_eq!(record.as_bytes().len(), 23);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -123,11 +123,9 @@ fn encode_probe_terminal_has_stable_frame_layout() {
         run_sequence: 0x1020_3040,
         evidence_sequence: 0x5060,
         plan_digest: 0x1122_3344_5566_7788,
-        family_size: 0x0910,
         terminal_cause: 1,
         has_safety_fault: 0,
         fault_checkpoint: 17,
-        exclusion_reason: 2,
     };
     let record = encode_probe_terminal(report);
     let expected = Expected::new()
@@ -135,11 +133,10 @@ fn encode_probe_terminal_has_stable_frame_layout() {
         .u32(report.run_sequence)
         .u16(report.evidence_sequence)
         .u64(report.plan_digest)
-        .u16(report.family_size)
         .u8(report.terminal_cause)
         .u8(report.has_safety_fault)
-        .u8(report.fault_checkpoint)
-        .u8(report.exclusion_reason);
+        .u8(report.fault_checkpoint);
+    assert_eq!(record.as_bytes().len(), 18);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -225,6 +222,9 @@ fn encode_raw_observation_has_stable_frame_layout() {
         disturbance_high_q16: 0x0506_0708,
         drift_ratio_ppm: 0x1112_1314,
         post_fit_lag_one_state: 2,
+        stroke_min_displacement_counts: -0x1516_1718,
+        stroke_max_displacement_counts: 0x2122_2324,
+        capture_max_interval_us: 0x2526_2728,
     };
     let record = encode_raw_observation(report);
     let expected = Expected::new()
@@ -251,7 +251,11 @@ fn encode_raw_observation_has_stable_frame_layout() {
         .i32(report.disturbance_low_q16)
         .i32(report.disturbance_high_q16)
         .u32(report.drift_ratio_ppm)
-        .u8(report.post_fit_lag_one_state);
+        .u8(report.post_fit_lag_one_state)
+        .i32(report.stroke_min_displacement_counts)
+        .i32(report.stroke_max_displacement_counts)
+        .u32(report.capture_max_interval_us);
+    assert_eq!(record.as_bytes().len(), 116);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -275,6 +279,7 @@ fn encode_probe_decision_has_stable_frame_layout() {
         .u8(report.rung_index)
         .u8(report.disposition);
     assert_eq!(record.as_bytes(), expected.bytes());
+    assert_eq!(record.as_bytes().len(), 18);
 }
 
 #[test]
@@ -490,7 +495,6 @@ fn every_encoder_uses_a_distinct_local_tag() {
             run_sequence: 0,
             evidence_sequence: 0,
             plan_digest: 0,
-            family_size: 0,
             max_observations: 0,
             search_count: 0,
             p_start_raw: 0,
@@ -501,29 +505,27 @@ fn every_encoder_uses_a_distinct_local_tag() {
             usable_torque_limit: 0,
             pwm_hz: 0,
             encoder_counts_per_rev: 0,
+            motion_threshold_counts: 0,
+            max_capture_interval_us: 0,
         })
         .as_bytes()[0],
-        encode_directional_breakaway(BreakawayDirectionalBreakaway {
+        encode_probe_resolved(BreakawayProbeResolved {
             run_sequence: 0,
             evidence_sequence: 0,
             plan_digest: 0,
-            direction: 0,
-            inert_present: 0,
-            inert_p_raw: 0,
-            moving_p_raw: 0,
-            observations: 0,
-            lower_disposition_mask: 0,
+            rung_index: 0,
+            breakaway_p_raw: 0,
+            motion_threshold_counts: 0,
+            observation_count: 0,
         })
         .as_bytes()[0],
         encode_probe_terminal(BreakawayProbeTerminal {
             run_sequence: 0,
             evidence_sequence: 0,
             plan_digest: 0,
-            family_size: 0,
             terminal_cause: 0,
             has_safety_fault: 0,
             fault_checkpoint: 0,
-            exclusion_reason: 0,
         })
         .as_bytes()[0],
         encode_discovery_planned(AdditiveDiscoveryPlanned {
@@ -574,6 +576,9 @@ fn every_encoder_uses_a_distinct_local_tag() {
             disturbance_high_q16: 0,
             drift_ratio_ppm: 0,
             post_fit_lag_one_state: 2,
+            stroke_min_displacement_counts: 0,
+            stroke_max_displacement_counts: 0,
+            capture_max_interval_us: 0,
         })
         .as_bytes()[0],
         encode_discovery_terminal(AdditiveDiscoveryTerminal {

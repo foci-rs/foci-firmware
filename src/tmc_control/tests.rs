@@ -206,12 +206,13 @@ fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
     // The trace-gated runtime holds the `CommissioningEngine`, so it grows by
     // the breakaway campaign's deliberate retained-state increases (the round-2
     // Stage-C gate hardening that freezes the plan-time PWM/encoder in
-    // `BreakawayCampaignInputs`, and the finding-1 independent-replay classifier
-    // inputs retained per pending observation): the engine's re-baselined
-    // 5_552 B plus the runtime's own fixed overhead. The non-trace runtime is
+    // `BreakawayCampaignInputs`, the finding-1 independent-replay classifier
+    // inputs retained per pending observation, and the protocol-v15 excursion
+    // accumulator): the engine's re-baselined 5_600 B plus the runtime's own
+    // fixed overhead. The non-trace runtime is
     // unaffected: the campaign is trace-feature-gated, so that baseline holds.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_648);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_696);
     #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_888);
 }

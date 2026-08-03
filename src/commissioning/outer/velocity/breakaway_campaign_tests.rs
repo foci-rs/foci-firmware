@@ -5,7 +5,8 @@ use crate::autotune::TmcMechanicalRpm;
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::breakaway_plan::{
-    BreakawayProbeContext, PROBE_MAX_OBSERVATIONS, plan_breakaway_probe,
+    BreakawayProbeContext, PROBE_MAX_OBSERVATIONS, UpwardBreakawayProbePlan,
+    plan_upward_breakaway_probe,
 };
 use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
 use foci_tmc4671::pid::PidPGain;
@@ -61,8 +62,9 @@ fn assert_breakaway_breadcrumb(
 
 /// A search grid realized from `gain(1), gain(1_024)`: 20 post-dedupe rungs. Shared
 /// by every test below so none of them re-derive the half-octave generator's output.
-fn test_plan() -> BreakawayProbePlan {
-    plan_breakaway_probe(gain(1), gain(1_024), test_probe_context()).expect("valid probe plan")
+fn test_plan() -> UpwardBreakawayProbePlan {
+    plan_upward_breakaway_probe(gain(1), gain(1_024), test_probe_context())
+        .expect("valid probe plan")
 }
 
 /// Canonical acquisition context for the shared probe fixture; exact values are
@@ -88,7 +90,7 @@ fn test_probe_context() -> BreakawayProbeContext {
 /// `AuthorityFailure` one, which needs a target large enough that its predicted
 /// torque crosses the usable-current boundary at the top of the grid.
 fn run_probe_with_target(
-    plan: BreakawayProbePlan,
+    plan: UpwardBreakawayProbePlan,
     target_velocity_rpm_raw: i32,
     mut is_moving: impl FnMut(VelocityDirection, u8) -> bool,
 ) -> (BreakawayProbeOutcome, MockBackend) {
@@ -106,8 +108,8 @@ fn run_probe_with_target(
 
     for _ in 0..200_000 {
         if matches!(state, BreakawayProbeState::CommandTarget) {
-            stroke_moving = is_moving(session.direction, session.pending_index);
-            stroke_sign = direction_sign(session.direction);
+            stroke_moving = is_moving(session.pending_role.direction(), session.pending_index);
+            stroke_sign = direction_sign(session.pending_role.direction());
         }
         let is_capture_phase = matches!(state, BreakawayProbeState::Capture { .. });
         let result = pollster::block_on(step_breakaway_probe(
@@ -136,7 +138,7 @@ fn run_probe_with_target(
 /// [`run_probe_with_target`] at the shared small target every test but
 /// `AuthorityFailure` uses.
 fn run_probe(
-    plan: BreakawayProbePlan,
+    plan: UpwardBreakawayProbePlan,
     is_moving: impl FnMut(VelocityDirection, u8) -> bool,
 ) -> (BreakawayProbeOutcome, MockBackend) {
     run_probe_with_target(plan, 100, is_moving)
@@ -447,10 +449,10 @@ fn recovery_fault_leaves_raw_probe_evidence_without_a_decision() {
     panic!("probe did not surface the injected recovery fault");
 }
 
-// --- BreakawayFound: both directions agree ------------------------------------
+// --- BreakawayFound: one rung repeats in both directions ----------------------
 
 #[test]
-fn agreeing_directional_breakaways_resolve_the_campaign() {
+fn repeatable_motion_resolves_the_campaign() {
     let plan = test_plan();
     let target_index = 10;
 
@@ -460,28 +462,27 @@ fn agreeing_directional_breakaways_resolve_the_campaign() {
         panic!("expected BreakawayFound, got {outcome:?}");
     };
     assert_eq!(resolved.breakaway_index, target_index);
-    assert_eq!(resolved.forward.moving_index, target_index);
-    assert_eq!(resolved.reverse.moving_index, target_index);
+    assert!(resolved.observations >= 4);
 }
 
-// --- NoProductiveResponseAtAuthority: no productive response on the grid ------
+// --- NoRepeatableMotionAtAuthority: no physical motion on the grid ------------
 
 #[test]
-fn never_moving_reaches_no_productive_response_at_authority() {
+fn never_moving_reaches_no_repeatable_motion_at_authority() {
     let plan = test_plan();
 
     let (outcome, _) = run_probe(plan, |_direction, _index| false);
 
     assert!(matches!(
         outcome,
-        BreakawayProbeOutcome::NoProductiveResponseAtAuthority
+        BreakawayProbeOutcome::NoRepeatableMotionAtAuthority
     ));
 }
 
-// --- UnstableBreakaway: bracket repeat contradicts the first read -------------
+// --- A failed repeat advances upward ------------------------------------------
 
 #[test]
-fn a_contradictory_bracket_repeat_reports_unstable_breakaway() {
+fn a_failed_repeat_advances_to_the_next_rung() {
     let plan = test_plan();
     let target_index = 10;
     // The first `moving_index` read at `target_index` is Moving; flip the verdict
@@ -499,44 +500,10 @@ fn a_contradictory_bracket_repeat_reports_unstable_breakaway() {
         }
     });
 
-    assert!(matches!(outcome, BreakawayProbeOutcome::UnstableBreakaway));
-}
-
-// --- DirectionalBreakawayDisagreement: endpoints differ by more than one step -
-
-#[test]
-fn directional_breakaways_more_than_one_step_apart_disagree() {
-    let plan = test_plan();
-    // Forward's cursor resolves around index 4; reverse (driven independently,
-    // after forward completes) resolves around index 12. The endpoints differ by
-    // more than one grid step, so the campaign must not pick a side.
-    let (outcome, _) = run_probe(plan, |direction, index| match direction {
-        VelocityDirection::Forward => index >= 4,
-        VelocityDirection::Reverse => index >= 12,
-    });
-
-    assert!(matches!(
-        outcome,
-        BreakawayProbeOutcome::DirectionalBreakawayDisagreement
-    ));
-}
-
-#[test]
-fn directional_breakaways_one_step_apart_take_the_lower_endpoint() {
-    let plan = test_plan();
-    // Forward resolves at index 4; reverse resolves at index 5 -- exactly one
-    // grid step apart, which resolves to the lower endpoint rather than erroring.
-    let (outcome, _) = run_probe(plan, |direction, index| match direction {
-        VelocityDirection::Forward => index >= 4,
-        VelocityDirection::Reverse => index >= 5,
-    });
-
     let BreakawayProbeOutcome::BreakawayFound(resolved) = outcome else {
-        panic!("expected BreakawayFound, got {outcome:?}");
+        panic!("expected the next rung to resolve, got {outcome:?}");
     };
-    assert_eq!(resolved.breakaway_index, 4);
-    assert_eq!(resolved.forward.moving_index, 4);
-    assert_eq!(resolved.reverse.moving_index, 5);
+    assert_eq!(resolved.breakaway_index, target_index + 1);
 }
 
 // --- WrongDirectionFault short-circuits before origin-recovery -----------------
@@ -622,6 +589,61 @@ fn wrong_direction_short_circuits_without_recovering() {
     );
 }
 
+#[test]
+fn capture_interval_refusal_streams_evidence_then_terminates_without_decision() {
+    crate::diagnostic::begin_breakaway_campaign();
+    let mut session =
+        BreakawayProbeSession::new(test_plan(), TmcMechanicalRpm::from_register(100), 4_394)
+            .expect("valid session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = BreakawayProbeState::PlannedProbe;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let mut delayed_first_capture = false;
+    let mut saw_observation = false;
+
+    for _ in 0..10_000 {
+        let capture = matches!(state, BreakawayProbeState::Capture { .. });
+        match pollster::block_on(step_breakaway_probe(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        )) {
+            BreakawayProbeStep::ReadyNow => {}
+            BreakawayProbeStep::At(deadline) => {
+                backend.elapsed_us_value = if capture && !delayed_first_capture {
+                    delayed_first_capture = true;
+                    deadline + 1_001
+                } else {
+                    deadline
+                };
+            }
+            BreakawayProbeStep::Observation(collected) => {
+                assert_eq!(collected.capture_max_interval_us, 2_001);
+                saw_observation = true;
+            }
+            BreakawayProbeStep::Decision { .. } => {
+                panic!("an invalid excursion must not emit a cursor decision");
+            }
+            BreakawayProbeStep::Done(outcome) => {
+                assert!(saw_observation);
+                assert!(matches!(
+                    outcome,
+                    BreakawayProbeOutcome::ExcursionEvidenceInvalid
+                ));
+                assert_breakaway_breadcrumb(
+                    crate::diagnostic::BreakawayCheckpoint::ProbeExcursionIntervalInvalid,
+                    true,
+                );
+                return;
+            }
+        }
+    }
+    panic!("interval refusal did not terminate within the bounded step budget");
+}
+
 // --- AuthorityFailure: predicted torque crosses the usable-current boundary ----
 
 #[test]
@@ -639,10 +661,10 @@ fn predicted_current_headroom_reports_authority_failure_and_does_not_advance() {
     assert!(matches!(outcome, BreakawayProbeOutcome::AuthorityFailure));
 }
 
-// --- ProbeEvidenceExcluded: the zero-target settle never confirms rest ---------
+// --- An unconfirmed zero-target settle remains terminal ------------------------
 
 #[test]
-fn an_unconfirmed_settle_reports_probe_evidence_excluded() {
+fn an_unconfirmed_settle_reports_validation_failure() {
     let plan = test_plan();
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
     let mut session =
@@ -677,12 +699,11 @@ fn an_unconfirmed_settle_reports_probe_evidence_excluded() {
             }
             BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
             BreakawayProbeStep::Done(outcome) => {
-                assert!(matches!(
-                    outcome,
-                    BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                        ProbeEvidenceExclusionReason::SettleRestUnconfirmed
-                    )
-                ));
+                let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
+                    panic!("expected validation failure, got {outcome:?}");
+                };
+                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert!(safety.is_none());
                 break;
             }
         }
@@ -2149,8 +2170,8 @@ fn run_campaign_probe(
             session,
         } = campaign.phase()
         {
-            stroke_moving = is_moving(session.direction, session.pending_index);
-            stroke_sign = direction_sign(session.direction);
+            stroke_moving = is_moving(session.pending_role.direction(), session.pending_index);
+            stroke_sign = direction_sign(session.pending_role.direction());
         }
         let is_capture_phase = matches!(
             campaign.phase(),
@@ -2195,13 +2216,13 @@ fn run_campaign_probe_collecting_events(
 ) -> (
     BreakawayCampaign,
     Option<BreakawayCampaignOutcome>,
-    heapless::Vec<BreakawayCampaignEvent, 64>,
+    heapless::Vec<BreakawayCampaignEvent, 160>,
 ) {
     let mut campaign = BreakawayCampaign::new(request).expect("valid campaign request");
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut safety = test_safety();
     let mut backend = test_backend();
-    let mut events: heapless::Vec<BreakawayCampaignEvent, 64> = heapless::Vec::new();
+    let mut events: heapless::Vec<BreakawayCampaignEvent, 160> = heapless::Vec::new();
 
     let mut encoder_count: i32 = 0;
     let mut stroke_moving = false;
@@ -2213,8 +2234,8 @@ fn run_campaign_probe_collecting_events(
             session,
         } = campaign.phase()
         {
-            stroke_moving = is_moving(session.direction, session.pending_index);
-            stroke_sign = direction_sign(session.direction);
+            stroke_moving = is_moving(session.pending_role.direction(), session.pending_index);
+            stroke_sign = direction_sign(session.pending_role.direction());
         }
         let is_capture_phase = matches!(
             campaign.phase(),
@@ -2240,7 +2261,7 @@ fn run_campaign_probe_collecting_events(
             BreakawayCampaignStep::Event(event) => {
                 events
                     .push(event)
-                    .expect("test campaign emits fewer than 64 events");
+                    .expect("test campaign emits fewer than 160 events");
             }
             BreakawayCampaignStep::At(deadline) => {
                 backend.elapsed_us_value = deadline;
@@ -2475,18 +2496,14 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
         assert_eq!(decision.evidence_sequence, raw.evidence_sequence + 1);
     }
 
-    let BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } =
-        &events[events.len() - 2]
-    else {
+    let BreakawayCampaignEvent::ProbeResolved(resolved) = &events[events.len() - 2] else {
         panic!(
-            "expected the resolved breakaway brackets after streamed evidence, got {:?}",
+            "expected the resolved breakaway rung after streamed evidence, got {:?}",
             events[events.len() - 2]
         );
     };
-    assert_eq!(forward.plan_digest, probe_planned.plan_digest);
-    assert_eq!(reverse.plan_digest, probe_planned.plan_digest);
-    assert_eq!(forward.direction, 0);
-    assert_eq!(reverse.direction, 1);
+    assert_eq!(resolved.plan_digest, probe_planned.plan_digest);
+    assert!(resolved.observation_count >= 4);
 
     let BreakawayCampaignEvent::DiscoveryPlanned {
         planned,
@@ -2494,7 +2511,7 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
     } = &events[events.len() - 1]
     else {
         panic!(
-            "expected the discovery plan after the brackets, got {:?}",
+            "expected the discovery plan after the resolved rung, got {:?}",
             events[events.len() - 1]
         );
     };
@@ -2541,7 +2558,7 @@ fn a_probe_failure_emits_its_terminal_then_the_campaign_closure_record() {
     };
     assert_ne!(
         probe_terminal.terminal_cause, 0,
-        "a NoProductiveResponseAtAuthority terminal must carry a nonzero cause"
+        "a NoRepeatableMotionAtAuthority terminal must carry a nonzero cause"
     );
     let BreakawayCampaignEvent::CampaignTerminal(campaign_terminal) = &events[events.len() - 1]
     else {

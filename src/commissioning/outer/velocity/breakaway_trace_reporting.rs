@@ -21,13 +21,11 @@
 //! separate, independently-numbered family). The frame layouts here are the
 //! contract `foci-trace`'s host-side decoder reconstructs breakaway evidence
 //! from: every layout is pinned by a golden byte-sequence test below.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
-    BreakawayCeilingSource, BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin,
-    BreakawayProbeDecision, BreakawayProbePlanned, BreakawayProbeTerminal, BreakawayRawObservation,
+    BreakawayCeilingSource, BreakawayDiscoveryRungMargin, BreakawayProbeDecision,
+    BreakawayProbePlanned, BreakawayProbeResolved, BreakawayProbeTerminal, BreakawayRawObservation,
     BreakawayRungZeroDiagnostic,
 };
 
@@ -54,7 +52,6 @@ pub(crate) fn encode_probe_planned(report: BreakawayProbePlanned) -> VelocitySwe
     record.push_u32(report.run_sequence);
     record.push_u16(report.evidence_sequence);
     push_u64(&mut record, report.plan_digest);
-    record.push_u16(report.family_size);
     record.push_u8(report.max_observations);
     record.push_u8(report.search_count);
     record.push_u16(report.p_start_raw);
@@ -65,24 +62,24 @@ pub(crate) fn encode_probe_planned(report: BreakawayProbePlanned) -> VelocitySwe
     record.push_u16(report.usable_torque_limit);
     record.push_u32(report.pwm_hz);
     record.push_u32(report.encoder_counts_per_rev);
+    record.push_u32(report.motion_threshold_counts);
+    record.push_u32(report.max_capture_interval_us);
     record
 }
 
-/// Encode one direction's resolved inert/moving breakaway bracket (tag 1).
-pub(crate) fn encode_directional_breakaway(
-    report: BreakawayDirectionalBreakaway,
+/// Encode the resolved repeatable-motion rung (tag 1).
+pub(crate) fn encode_probe_resolved(
+    report: BreakawayProbeResolved,
 ) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(1);
     record.push_u32(report.run_sequence);
     record.push_u16(report.evidence_sequence);
     push_u64(&mut record, report.plan_digest);
-    record.push_u8(report.direction);
-    record.push_u8(report.inert_present);
-    record.push_u16(report.inert_p_raw);
-    record.push_u16(report.moving_p_raw);
-    record.push_u8(report.observations);
-    record.push_u8(report.lower_disposition_mask);
+    record.push_u8(report.rung_index);
+    record.push_u16(report.breakaway_p_raw);
+    record.push_u32(report.motion_threshold_counts);
+    record.push_u8(report.observation_count);
     record
 }
 
@@ -95,11 +92,9 @@ pub(crate) fn encode_probe_terminal(
     record.push_u32(report.run_sequence);
     record.push_u16(report.evidence_sequence);
     push_u64(&mut record, report.plan_digest);
-    record.push_u16(report.family_size);
     record.push_u8(report.terminal_cause);
     record.push_u8(report.has_safety_fault);
     record.push_u8(report.fault_checkpoint);
-    record.push_u8(report.exclusion_reason);
     record
 }
 
@@ -177,6 +172,9 @@ pub(crate) fn encode_raw_observation(
     record.push_i32(report.disturbance_high_q16);
     record.push_u32(report.drift_ratio_ppm);
     record.push_u8(report.post_fit_lag_one_state);
+    record.push_i32(report.stroke_min_displacement_counts);
+    record.push_i32(report.stroke_max_displacement_counts);
+    record.push_u32(report.capture_max_interval_us);
     record
 }
 

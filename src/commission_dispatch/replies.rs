@@ -615,10 +615,10 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit one direction's resolved inert/moving breakaway bracket.
-    fn foci_breakaway_directional_breakaway(
+    /// Emit the resolved repeatable-motion rung.
+    fn foci_breakaway_probe_result(
         &mut self,
-        _report: crate::ankyra::replies::FociBreakawayDirectionalBreakaway,
+        _report: crate::ankyra::replies::FociBreakawayProbeResult,
     ) {
     }
 
@@ -735,35 +735,33 @@ pub fn emit_breakaway_probe_plan<S: CommissionReplySink>(
         evidence_sequence: report.evidence_sequence,
         plan_digest_low: report.plan_digest as u32,
         plan_digest_high: (report.plan_digest >> 32) as u32,
-        family_size: report.family_size,
         max_observations: report.max_observations,
         search_count: report.search_count,
         p_start_raw: report.p_start_raw,
         p_top_raw: report.p_top_raw,
+        motion_threshold_counts: report.motion_threshold_counts,
+        max_capture_interval_us: report.max_capture_interval_us,
     });
 }
 
-/// Emit one direction's resolved inert/moving breakaway bracket.
+/// Emit the resolved repeatable-motion rung.
 #[cfg(feature = "trace-velocity-sweep")]
-pub fn emit_breakaway_directional_breakaway<S: CommissionReplySink>(
+pub fn emit_breakaway_probe_result<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
-    report: crate::commissioning::types::BreakawayDirectionalBreakaway,
+    report: crate::commissioning::types::BreakawayProbeResolved,
 ) {
-    sink.foci_breakaway_directional_breakaway(
-        crate::ankyra::replies::FociBreakawayDirectionalBreakaway {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            plan_digest_low: report.plan_digest as u32,
-            plan_digest_high: (report.plan_digest >> 32) as u32,
-            direction: report.direction,
-            inert_present: report.inert_present,
-            inert_p_raw: report.inert_p_raw,
-            moving_p_raw: report.moving_p_raw,
-            observations: report.observations,
-        },
-    );
+    sink.foci_breakaway_probe_result(crate::ankyra::replies::FociBreakawayProbeResult {
+        oid,
+        run_sequence: report.run_sequence,
+        evidence_sequence: report.evidence_sequence,
+        plan_digest_low: report.plan_digest as u32,
+        plan_digest_high: (report.plan_digest >> 32) as u32,
+        rung_index: report.rung_index,
+        breakaway_p_raw: report.breakaway_p_raw,
+        motion_threshold_counts: report.motion_threshold_counts,
+        observation_count: report.observation_count,
+    });
 }
 
 /// Emit a probe-campaign terminal that did not resolve a breakaway.
@@ -779,7 +777,6 @@ pub fn emit_breakaway_probe_terminal<S: CommissionReplySink>(
         evidence_sequence: report.evidence_sequence,
         plan_digest_low: report.plan_digest as u32,
         plan_digest_high: (report.plan_digest >> 32) as u32,
-        family_size: report.family_size,
         terminal_cause: report.terminal_cause,
         has_safety_fault: report.has_safety_fault,
     });
@@ -970,9 +967,8 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::ProbePlanned(report) => {
             emit_breakaway_probe_plan(sink, oid, report)
         }
-        BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } => {
-            emit_breakaway_directional_breakaway(sink, oid, forward);
-            emit_breakaway_directional_breakaway(sink, oid, reverse);
+        BreakawayCampaignEvent::ProbeResolved(report) => {
+            emit_breakaway_probe_result(sink, oid, report);
         }
         BreakawayCampaignEvent::ProbeTerminal(report) => {
             emit_breakaway_probe_terminal(sink, oid, report);

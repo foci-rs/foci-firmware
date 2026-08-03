@@ -4,9 +4,9 @@ use super::band_confirmation::{
     plan_band_confirmation, validate_fixed_contract,
 };
 use super::breakaway_plan::{
-    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, BreakawayProbePlan,
-    GridFloorOrigin, PROBE_MAX_OBSERVATIONS, plan_additive_discovery_ladder, plan_breakaway_probe,
-    resolve_grid_floor,
+    AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, GridFloorOrigin,
+    PROBE_MAX_OBSERVATIONS, UpwardBreakawayProbePlan, plan_additive_discovery_ladder,
+    plan_upward_breakaway_probe, resolve_grid_floor,
 };
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use super::integral_plan::{
@@ -110,10 +110,11 @@ fn breakaway_probe_context() -> BreakawayProbeContext {
 }
 
 /// Build the probe plan and resolve its floor/breakaway pair around gain 256.
-fn breakaway_probe_and_floor() -> (BreakawayProbePlan, PidPGain, PidPGain) {
+fn breakaway_probe_and_floor() -> (UpwardBreakawayProbePlan, PidPGain, PidPGain) {
     let p_start = breakaway_gain(1);
     let p_top = breakaway_gain(1_024);
-    let probe_plan = plan_breakaway_probe(p_start, p_top, breakaway_probe_context()).unwrap();
+    let probe_plan =
+        plan_upward_breakaway_probe(p_start, p_top, breakaway_probe_context()).unwrap();
     let breakaway_index = probe_plan.search_gains[..usize::from(probe_plan.search_count)]
         .iter()
         .position(|gain| gain.raw() == 256)

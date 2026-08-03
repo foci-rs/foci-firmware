@@ -1643,8 +1643,8 @@ mod breakaway_reply_wire_tests {
     use super::{
         FociBreakawayCampaignTerminal, FociBreakawayConfirmationPlan,
         FociBreakawayConfirmationTerminalIdentity, FociBreakawayConfirmationTerminalMasks,
-        FociBreakawayDirectionalBreakaway, FociBreakawayDiscoveryPlanGeometry,
-        FociBreakawayDiscoveryPlanIdentity, FociBreakawayDiscoveryTerminal, FociBreakawayProbePlan,
+        FociBreakawayDiscoveryPlanGeometry, FociBreakawayDiscoveryPlanIdentity,
+        FociBreakawayDiscoveryTerminal, FociBreakawayProbePlan, FociBreakawayProbeResult,
         FociBreakawayProbeTerminal, FociBreakawayRungZeroDiagnostic,
     };
     use ankyra::ScratchOutput;
@@ -1685,13 +1685,14 @@ mod breakaway_reply_wire_tests {
             evidence_sequence: 3,
             plan_digest_low: 4,
             plan_digest_high: 5,
-            family_size: 6,
-            max_observations: 7,
-            search_count: 8,
-            p_start_raw: 9,
-            p_top_raw: 10,
+            max_observations: 6,
+            search_count: 7,
+            p_start_raw: 8,
+            p_top_raw: 9,
+            motion_threshold_counts: 10,
+            max_capture_interval_us: 11,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         assert_fits_with_id(
             &FociBreakawayProbePlan {
                 oid: u8::MAX,
@@ -1699,45 +1700,44 @@ mod breakaway_reply_wire_tests {
                 evidence_sequence: u16::MAX,
                 plan_digest_low: u32::MAX,
                 plan_digest_high: u32::MAX,
-                family_size: u16::MAX,
                 max_observations: u8::MAX,
                 search_count: u8::MAX,
                 p_start_raw: u16::MAX,
                 p_top_raw: u16::MAX,
+                motion_threshold_counts: u32::MAX,
+                max_capture_interval_us: u32::MAX,
             },
             "foci_breakaway_probe_plan",
         );
     }
 
     #[test]
-    fn breakaway_directional_breakaway_has_stable_wire_order() {
-        let reply = FociBreakawayDirectionalBreakaway {
+    fn breakaway_probe_result_has_stable_wire_order() {
+        let reply = FociBreakawayProbeResult {
             oid: 1,
             run_sequence: 2,
             evidence_sequence: 3,
             plan_digest_low: 4,
             plan_digest_high: 5,
-            direction: 6,
-            inert_present: 7,
-            inert_p_raw: 8,
-            moving_p_raw: 9,
-            observations: 10,
+            rung_index: 6,
+            breakaway_p_raw: 7,
+            motion_threshold_counts: 8,
+            observation_count: 9,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_fits_with_id(
-            &FociBreakawayDirectionalBreakaway {
+            &FociBreakawayProbeResult {
                 oid: u8::MAX,
                 run_sequence: u32::MAX,
                 evidence_sequence: u16::MAX,
                 plan_digest_low: u32::MAX,
                 plan_digest_high: u32::MAX,
-                direction: u8::MAX,
-                inert_present: u8::MAX,
-                inert_p_raw: u16::MAX,
-                moving_p_raw: u16::MAX,
-                observations: u8::MAX,
+                rung_index: u8::MAX,
+                breakaway_p_raw: u16::MAX,
+                motion_threshold_counts: u32::MAX,
+                observation_count: u8::MAX,
             },
-            "foci_breakaway_directional_breakaway",
+            "foci_breakaway_probe_result",
         );
     }
 
@@ -1749,11 +1749,10 @@ mod breakaway_reply_wire_tests {
             evidence_sequence: 3,
             plan_digest_low: 4,
             plan_digest_high: 5,
-            family_size: 6,
-            terminal_cause: 7,
-            has_safety_fault: 8,
+            terminal_cause: 6,
+            has_safety_fault: 7,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7]);
         assert_fits_with_id(
             &FociBreakawayProbeTerminal {
                 oid: u8::MAX,
@@ -1761,7 +1760,6 @@ mod breakaway_reply_wire_tests {
                 evidence_sequence: u16::MAX,
                 plan_digest_low: u32::MAX,
                 plan_digest_high: u32::MAX,
-                family_size: u16::MAX,
                 terminal_cause: u8::MAX,
                 has_safety_fault: u8::MAX,
             },
@@ -3629,9 +3627,7 @@ pub struct FociBreakawayProbePlan {
     pub plan_digest_low: u32,
     /// Exact high probe-plan digest word.
     pub plan_digest_high: u32,
-    /// Joint two-direction confidence family reserved for the probe.
-    pub family_size: u16,
-    /// Maximum probe observations permitted in a single direction.
+    /// Maximum observations permitted across the upward walk.
     pub max_observations: u8,
     /// Number of valid entries in the post-dedupe search grid.
     pub search_count: u8,
@@ -3639,11 +3635,15 @@ pub struct FociBreakawayProbePlan {
     pub p_start_raw: u16,
     /// Last structural search-grid gain.
     pub p_top_raw: u16,
+    /// Minimum commanded-direction excursion that counts as motion.
+    pub motion_threshold_counts: u32,
+    /// Maximum accepted interval between encoder captures.
+    pub max_capture_interval_us: u32,
 }
 
-/// Resolved inert/moving bracket for one signed probe direction.
+/// Resolved repeatable-motion rung for the upward probe.
 #[klipper_reply]
-pub struct FociBreakawayDirectionalBreakaway {
+pub struct FociBreakawayProbeResult {
     /// Endpoint object id.
     pub oid: u8,
     /// Caller-assigned run sequence.
@@ -3654,16 +3654,14 @@ pub struct FociBreakawayDirectionalBreakaway {
     pub plan_digest_low: u32,
     /// Exact high probe-plan digest word.
     pub plan_digest_high: u32,
-    /// Direction wire code.
-    pub direction: u8,
-    /// Nonzero when a confirmed inert bracket endpoint exists.
-    pub inert_present: u8,
-    /// Confirmed inert bracket endpoint gain, or zero when absent.
-    pub inert_p_raw: u16,
-    /// Confirmed moving bracket endpoint gain.
-    pub moving_p_raw: u16,
-    /// Total probe observations spent resolving this direction.
-    pub observations: u8,
+    /// Zero-based rung in the realized grid.
+    pub rung_index: u8,
+    /// Proportional gain at the resolved rung.
+    pub breakaway_p_raw: u16,
+    /// Minimum commanded-direction excursion that counted as motion.
+    pub motion_threshold_counts: u32,
+    /// Total observations consumed across the walk.
+    pub observation_count: u8,
 }
 
 /// Detailed terminal evidence for a probe campaign that did not resolve a breakaway.
@@ -3679,8 +3677,6 @@ pub struct FociBreakawayProbeTerminal {
     pub plan_digest_low: u32,
     /// Exact high probe-plan digest word.
     pub plan_digest_high: u32,
-    /// Joint two-direction confidence family reserved for the probe.
-    pub family_size: u16,
     /// Unified breakaway-campaign terminal-cause wire code.
     pub terminal_cause: u8,
     /// Nonzero when the terminal carries retained safety-fault evidence.

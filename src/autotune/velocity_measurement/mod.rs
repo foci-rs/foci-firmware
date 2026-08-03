@@ -22,7 +22,6 @@ pub use observation::{
 pub use rest::{
     RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, VELOCITY_SUFFIX_LENGTHS,
 };
-pub(crate) use stationarity::MAX_MOVING_DRIFT_PPM;
 pub use stationarity::{
     RestSelectionCompletion, StationarityDiagnostics, StationarityExclusion, StationarityResult,
     StationarityWork, StationarityWorkPoll, StationarySuffix, StructuredStationarityEvidence,

@@ -85,6 +85,7 @@ pub(super) const fn direction_sign(direction: VelocityDirection) -> i32 {
 
 /// Frozen inputs [`assemble_velocity_observation_input`] needs from either the
 /// sweep's per-rung plan or the breakaway probe's per-stroke session.
+#[derive(Clone, Copy)]
 pub(super) struct VelocityObservationInputRequest {
     /// Commanded mechanical direction.
     pub(super) direction: VelocityDirection,
@@ -107,8 +108,7 @@ pub(super) struct VelocityObservationInputRequest {
     pub(super) hard_torque_limit: u16,
     /// Whether this observation lacks the normal reversal lead-in.
     pub(super) initial_lead_in: bool,
-    /// Confidence family size: the sweep's `rung_count * observations_per_direction`,
-    /// or the probe's fixed `PROBE_CONFIDENCE_FAMILY_SIZE`.
+    /// Confidence family size used for derived comparison intervals.
     pub(super) confidence_family_size: u16,
     /// Validated encoder counts per mechanical revolution.
     pub(super) counts_per_rev: u32,
@@ -123,13 +123,7 @@ pub(super) struct VelocityObservationInputRequest {
 pub(super) fn assemble_velocity_observation_input(
     request: VelocityObservationInputRequest,
 ) -> Result<VelocityObservationInput, CommissionError> {
-    let predicted = u32::from(request.p.raw())
-        .checked_mul(request.target_velocity_rpm.raw().unsigned_abs())
-        .and_then(|value| value.checked_add(255))
-        .map(|value| value / 256)
-        .ok_or(CommissionError::InvalidSchedule)?
-        .max(u32::from(request.moving_pid_output_peak))
-        .min(u32::from(u16::MAX)) as u16;
+    let predicted = predicted_torque_target_abs(request)?;
 
     let mut input = VelocityObservationInput {
         direction: request.direction,
@@ -150,6 +144,59 @@ pub(super) fn assemble_velocity_observation_input(
         drift_ratio_ppm: request.drift_ratio_ppm,
         post_fit_lag_one_state: 0,
     };
+    populate_derived_observation_fields(&mut input, request)?;
+    Ok(input)
+}
+
+/// Assemble probe diagnostics without allowing their derivation to bind probe control.
+///
+/// Physical excursion decides whether the probe moved. If comparison-only interval
+/// derivation fails, the raw observation retains its stationarity code and frozen
+/// authority inputs while the unavailable derived fields remain zero.
+pub(super) fn assemble_probe_observation_input(
+    request: VelocityObservationInputRequest,
+) -> Result<VelocityObservationInput, CommissionError> {
+    let predicted = predicted_torque_target_abs(request)?;
+    match assemble_velocity_observation_input(request) {
+        Ok(input) => Ok(input),
+        Err(_) => Ok(VelocityObservationInput {
+            direction: request.direction,
+            p: request.p,
+            stationarity: request.stationarity,
+            settled_rate_low_q: 0,
+            settled_rate_high_q: 0,
+            settled_rate_mean_q: 0,
+            variance_of_mean_q2: 0,
+            deficit_low_q: 0,
+            deficit_high_q: 0,
+            disturbance: None,
+            disturbance_variance_q2: 0,
+            predicted_torque_target_abs: predicted,
+            usable_torque_limit: request.usable_torque_limit,
+            hard_torque_limit: request.hard_torque_limit,
+            initial_lead_in: request.initial_lead_in,
+            drift_ratio_ppm: request.drift_ratio_ppm,
+            post_fit_lag_one_state: 0,
+        }),
+    }
+}
+
+fn predicted_torque_target_abs(
+    request: VelocityObservationInputRequest,
+) -> Result<u16, CommissionError> {
+    Ok(u32::from(request.p.raw())
+        .checked_mul(request.target_velocity_rpm.raw().unsigned_abs())
+        .and_then(|value| value.checked_add(255))
+        .map(|value| value / 256)
+        .ok_or(CommissionError::InvalidSchedule)?
+        .max(u32::from(request.moving_pid_output_peak))
+        .min(u32::from(u16::MAX)) as u16)
+}
+
+fn populate_derived_observation_fields(
+    input: &mut VelocityObservationInput,
+    request: VelocityObservationInputRequest,
+) -> Result<(), CommissionError> {
     if let StationarityResult::Usable(suffix) = request.stationarity {
         input.drift_ratio_ppm = suffix.drift_ratio_ppm;
         let confidence = estimate_confidence(suffix.selection, request.confidence_family_size)
@@ -247,7 +294,7 @@ pub(super) fn assemble_velocity_observation_input(
             input.settled_rate_high_q,
         )?;
     }
-    Ok(input)
+    Ok(())
 }
 
 pub(super) fn poll_moving_observation_analysis(
@@ -528,9 +575,9 @@ mod tests {
     use crate::commissioning::outer::state::VelocityObservationRing;
 
     use super::{
-        ScoredRestPoll, VelocityObservationInputRequest, assemble_velocity_observation_input,
-        bounded_rest_displacement, deficit_interval_q, poll_scored_rest_confirmation,
-        poll_settle_confirmation_parts,
+        ScoredRestPoll, VelocityObservationInputRequest, assemble_probe_observation_input,
+        assemble_velocity_observation_input, bounded_rest_displacement, deficit_interval_q,
+        poll_scored_rest_confirmation, poll_settle_confirmation_parts,
     };
 
     #[test]
@@ -595,24 +642,30 @@ mod tests {
             }),
             ..rejection
         };
+        let malformed_request = VelocityObservationInputRequest {
+            direction: VelocityDirection::Forward,
+            p: PidPGain::new(256).unwrap(),
+            stationarity: StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift),
+            rejected_post_fit: Some(malformed),
+            drift_ratio_ppm: 300_000,
+            moving_pid_output_peak: 1,
+            target_velocity_rpm: TmcMechanicalRpm::from_register(100),
+            usable_torque_limit: 2_000,
+            hard_torque_limit: 3_000,
+            initial_lead_in: false,
+            confidence_family_size: 16,
+            counts_per_rev: 4_000,
+        };
         assert!(
-            assemble_velocity_observation_input(VelocityObservationInputRequest {
-                direction: VelocityDirection::Forward,
-                p: PidPGain::new(256).unwrap(),
-                stationarity: StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift,),
-                rejected_post_fit: Some(malformed),
-                drift_ratio_ppm: 300_000,
-                moving_pid_output_peak: 1,
-                target_velocity_rpm: TmcMechanicalRpm::from_register(100),
-                usable_torque_limit: 2_000,
-                hard_torque_limit: 3_000,
-                initial_lead_in: false,
-                confidence_family_size: 16,
-                counts_per_rev: 4_000,
-            })
-            .is_err(),
+            assemble_velocity_observation_input(malformed_request).is_err(),
             "a retained selection with a different block population is malformed"
         );
+
+        let probe_input = assemble_probe_observation_input(malformed_request).unwrap();
+        assert_eq!(probe_input.settled_rate_low_q, 0);
+        assert_eq!(probe_input.settled_rate_high_q, 0);
+        assert_eq!(probe_input.predicted_torque_target_abs, 100);
+        assert_eq!(probe_input.drift_ratio_ppm, 300_000);
     }
 
     #[test]

@@ -1,20 +1,17 @@
-//! Breakaway probe-phase driver: two independent bisection searches locate the
-//! per-direction breakaway gain through the existing guarded stroke and
-//! origin-recovery primitives.
+//! Breakaway campaign drivers: a deterministic upward excursion probe, additive
+//! discovery, and held-out confirmation over shared guarded-stroke primitives.
 //!
 //! This module drives motion. It reuses the lower-level primitives the trace-gated
 //! velocity sweep (`sweep.rs`) is built from -- [`current_guard`](super::current_guard),
 //! [`recovery`](super::recovery), and [`sweep_analysis`](super::sweep_analysis)'s
-//! `poll_stationarity`/`poll_scored_rest_confirmation`/`assemble_velocity_observation_input`
-//! -- and the sweep's own classifier via
-//! [`classify_breakaway_observation`](super::breakaway_search::classify_breakaway_observation),
-//! so the probe's fault surface is provably identical to the sweep's. It does not
+//! `poll_stationarity`/`poll_scored_rest_confirmation`/`assemble_probe_observation_input`
+//! -- plus the probe-local physical-excursion accumulator. It does not
 //! copy or re-derive the sweep's rung/slot-folding state machine: a probe stroke is a
 //! single direction, single observation, with no operating-region or handoff
 //! bookkeeping.
 //!
-//! Nothing here decides how the driver is wired into [`super::super::OuterPhase`];
-//! that is a later slice's job. This module exposes a self-contained, single-tick
+//! The live [`BreakawayCampaign`] wires all three phases into
+//! [`super::super::OuterPhase`]. Each phase exposes a single-tick
 //! cooperative stepper -- [`step_breakaway_probe`] -- that a caller (a future engine
 //! phase, or a test harness) drives exactly like [`super::sweep::step_velocity_sweep_with_trace`]:
 //! poll until [`BreakawayProbeStep::Done`], running the host-declared periodic safety
@@ -52,12 +49,6 @@
 //! use to authorize Stage C; every other outcome is a confirmation-owned
 //! terminal.
 //!
-//! Nothing outside this module's own tests calls into any of the three drivers
-//! yet -- wiring them into [`super::super::OuterPhase`] is a later slice's job
-//! (see the module-level docs above) -- so, matching
-//! [`super::current_guard`]'s own `#![cfg_attr(not(test), allow(dead_code))]`,
-//! dead-code warnings are suppressed outside test builds.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -93,24 +84,23 @@ use super::band_confirmation::{
     plan_band_confirmation, rung_nomination_bounds, rung_response_bounds_percent,
     validate_fixed_contract,
 };
+use super::breakaway_excursion::{ProbeExcursionCapture, ProbeExcursionError, ProbeMotionClass};
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError,
-    BreakawayProbeContext, BreakawayProbePlan, GridFloorOrigin, PROBE_CONFIDENCE_FAMILY_SIZE,
-    PROBE_MAX_OBSERVATIONS, plan_additive_discovery_ladder, plan_breakaway_probe,
-    resolve_grid_floor,
+    BreakawayProbeContext, GridFloorOrigin, PROBE_MAX_OBSERVATIONS, UpwardBreakawayProbePlan,
+    plan_additive_discovery_ladder, plan_upward_breakaway_probe, resolve_grid_floor,
 };
 use super::breakaway_reporting::{
     BreakawayPhase, ProbeDecisionReportInput, campaign_terminal_report,
     confirmation_evaluated_terminal_report, confirmation_partial_evidence_terminal_report,
     confirmation_plan_report, confirmation_zero_stroke_cause,
-    confirmation_zero_stroke_terminal_report, directional_breakaway_report, discovery_plan_report,
-    discovery_terminal_cause, discovery_terminal_report, probe_plan_report, probe_terminal_cause,
+    confirmation_zero_stroke_terminal_report, discovery_plan_report, discovery_terminal_cause,
+    discovery_terminal_report, probe_plan_report, probe_resolved_report, probe_terminal_cause,
     probe_terminal_report, rung_zero_diagnostic_report,
 };
 use super::breakaway_search::{
-    BreakawayMotionClass, BreakawaySearchCursor, BreakawaySearchError, BreakawaySearchStep,
-    DirectionalBreakaway, ProbeProductivityClass, ResolvedCampaignBreakaway,
-    classify_breakaway_observation, resolve_campaign_breakaway,
+    BreakawayMotionClass, BreakawaySearchError, ProbeStrokeRole, UpwardBreakawayCursor,
+    UpwardProbeStep,
 };
 use super::combined_plan::combined_workflow_geometry;
 use super::current_guard::{
@@ -132,8 +122,9 @@ use super::recovery::{
 };
 use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
-    ScoredRestPoll, VelocityObservationInputRequest, assemble_velocity_observation_input,
-    bounded_rest_displacement, direction_sign, poll_scored_rest_confirmation, poll_stationarity,
+    ScoredRestPoll, VelocityObservationInputRequest, assemble_probe_observation_input,
+    assemble_velocity_observation_input, bounded_rest_displacement, direction_sign,
+    poll_scored_rest_confirmation, poll_stationarity,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, depth_three_consensus,
@@ -167,6 +158,7 @@ const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 pub(crate) struct BreakawayProbeWorkspace {
     previous_encoder_raw: u32,
     previous_read_us: u64,
+    excursion: Option<ProbeExcursionCapture>,
     current_observer: VelocityCurrentObserver,
     settle_displacement_counts: i8,
     settle_min_displacement_counts: i8,
@@ -185,6 +177,7 @@ impl BreakawayProbeWorkspace {
         Self {
             previous_encoder_raw: 0,
             previous_read_us: 0,
+            excursion: None,
             current_observer: VelocityCurrentObserver::EMPTY,
             settle_displacement_counts: 0,
             settle_min_displacement_counts: 0,
@@ -196,22 +189,21 @@ impl BreakawayProbeWorkspace {
     }
 }
 
-/// Frozen campaign inputs and the mutable per-direction search progress.
+/// Frozen campaign inputs and the mutable upward-walk progress.
 ///
-/// Bundles the immutable [`BreakawayProbePlan`] together with the two independent
-/// [`BreakawaySearchCursor`]s so [`step_breakaway_probe`] stays within the five
-/// parameter guideline. Constructed once, before the first stroke, via
+/// Bundles the immutable [`UpwardBreakawayProbePlan`] and one
+/// [`UpwardBreakawayCursor`] so [`step_breakaway_probe`] stays within the five
+/// parameter guideline. Constructed before the first stroke via
 /// [`BreakawayProbeSession::new`].
 #[derive(Debug, defmt::Format)]
 pub(crate) struct BreakawayProbeSession {
-    plan: BreakawayProbePlan,
+    plan: UpwardBreakawayProbePlan,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
-    direction: VelocityDirection,
-    cursor: BreakawaySearchCursor,
+    cursor: UpwardBreakawayCursor,
     pending_index: u8,
-    forward_result: Option<DirectionalBreakaway>,
-    pending_class: Option<Result<ProbeProductivityClass, BreakawaySearchError>>,
+    pending_role: ProbeStrokeRole,
+    pending_result: Option<Result<bool, BreakawayProbeOutcome>>,
     pending_lower_rate_q: Option<u64>,
     pending_observation: Option<CollectedObservation>,
 }
@@ -223,20 +215,26 @@ impl BreakawayProbeSession {
     /// reachable through [`step_breakaway_probe`], and only once its state has left
     /// [`BreakawayProbeState::PlannedProbe`].
     pub(crate) fn new(
-        plan: BreakawayProbePlan,
+        plan: UpwardBreakawayProbePlan,
         target_velocity_rpm: TmcMechanicalRpm,
         planned_velocity_mrev_s: u32,
     ) -> Result<Self, BreakawaySearchError> {
-        let (cursor, pending_index) = BreakawaySearchCursor::start(plan.search_count)?;
+        let (cursor, first) = UpwardBreakawayCursor::start(plan.search_count)?;
+        let UpwardProbeStep::Probe {
+            rung_index: pending_index,
+            role: pending_role,
+        } = first
+        else {
+            return Err(BreakawaySearchError::InvalidRequest);
+        };
         Ok(Self {
             plan,
             target_velocity_rpm,
             planned_velocity_mrev_s,
-            direction: VelocityDirection::Forward,
             cursor,
             pending_index,
-            forward_result: None,
-            pending_class: None,
+            pending_role,
+            pending_result: None,
             pending_lower_rate_q: None,
             pending_observation: None,
         })
@@ -276,7 +274,7 @@ pub(crate) enum BreakawayProbeState {
     },
     /// Command zero and record the moving-phase current evidence boundary.
     CommandZero,
-    /// Classify the moving-phase stationarity result.
+    /// Finalize excursion and comparison-only stationarity diagnostics.
     AnalyzeMoving {
         settle_deadline_us: u64,
         analysis_deadline_us: u64,
@@ -313,7 +311,7 @@ pub(crate) enum BreakawayProbeStep {
         direction: VelocityDirection,
         /// Zero-based probe-grid index.
         rung_index: u8,
-        /// Disposition: 0 inert, 1 transient, 2 productive.
+        /// Disposition: 0 no motion, 1 moved.
         disposition: u8,
     },
     /// The probe campaign concluded.
@@ -332,21 +330,12 @@ pub(crate) enum BreakawayProbeStep {
 /// for free, the same way `sweep_fault_terminal` already does.
 #[derive(Debug, defmt::Format)]
 pub(crate) enum BreakawayProbeOutcome {
-    /// Both directional breakaways resolved and agreed (or differed by exactly one
-    /// grid step, resolved to the lower endpoint).
-    BreakawayFound(ResolvedCampaignBreakaway),
-    /// A bisection search reached the top of its grid without ever confirming
-    /// commanded-side motion.
-    NoProductiveResponseAtAuthority,
-    /// The mandatory bracket-repeat observation contradicted the search's own prior
-    /// read at that grid index.
-    UnstableBreakaway,
-    /// The two directional breakaways differed by more than one grid step.
-    DirectionalBreakawayDisagreement,
-    /// Target-independent stationarity evidence, or another controller-domain
-    /// evidence field, was unusable for classification -- or the completed
-    /// origin-recovery return could not confirm rest.
-    ProbeEvidenceExcluded(ProbeEvidenceExclusionReason),
+    /// The first rung with repeatable motion in both directions.
+    BreakawayFound(ResolvedUpwardBreakaway),
+    /// The authority rung was exhausted without repeatable motion.
+    NoRepeatableMotionAtAuthority,
+    /// Excursion timing or arithmetic was not trustworthy enough to advance.
+    ExcursionEvidenceInvalid,
     /// The observation reached the inclusive usable-current boundary before a
     /// motion or inert verdict was reached.
     AuthorityFailure,
@@ -358,54 +347,13 @@ pub(crate) enum BreakawayProbeOutcome {
     },
 }
 
-/// Exact evidence-quality branch that terminated a breakaway probe.
+/// Resolved upward-probe result retained for reporting and discovery planning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub(crate) enum ProbeEvidenceExclusionReason {
-    /// Moving-window controller evidence was invalid for classification.
-    InvalidMovingEvidence = 1,
-    /// Moving-window stationarity evidence excluded the observation.
-    ///
-    /// Historical v12 captures use this aggregate code. Version 13 and later
-    /// emit one of the precise stationarity codes below.
-    MovingStationarityExcluded = 2,
-    /// The zero-target settle window did not confirm rest.
-    SettleRestUnconfirmed = 3,
-    /// Origin recovery completed without confirming rest.
-    RecoveryRestUnconfirmed = 4,
-    /// Moving-window evidence had no usable blocking plateau.
-    MovingNoBlockingPlateau = 5,
-    /// Moving-window evidence had too few decorrelated blocks.
-    MovingTooFewDecorrelatedBlocks = 6,
-    /// Moving-window evidence retained a resolved slope.
-    MovingResolvedSlope = 7,
-    /// Moving-window evidence failed the structured-residual gate.
-    MovingStructuredResidual = 8,
-    /// Moving-window stationarity arithmetic was not representable.
-    MovingStationarityArithmetic = 9,
-    /// Moving-window drift exceeded the configured bound.
-    MovingExcessiveDrift = 10,
-}
-
-fn probe_stationarity_exclusion_reason(
-    reason: StationarityExclusion,
-) -> ProbeEvidenceExclusionReason {
-    match reason {
-        StationarityExclusion::NoBlockingPlateau => {
-            ProbeEvidenceExclusionReason::MovingNoBlockingPlateau
-        }
-        StationarityExclusion::TooFewDecorrelatedBlocks => {
-            ProbeEvidenceExclusionReason::MovingTooFewDecorrelatedBlocks
-        }
-        StationarityExclusion::ResolvedSlope => ProbeEvidenceExclusionReason::MovingResolvedSlope,
-        StationarityExclusion::StructuredResidual => {
-            ProbeEvidenceExclusionReason::MovingStructuredResidual
-        }
-        StationarityExclusion::Arithmetic => {
-            ProbeEvidenceExclusionReason::MovingStationarityArithmetic
-        }
-        StationarityExclusion::ExcessiveDrift => ProbeEvidenceExclusionReason::MovingExcessiveDrift,
-    }
+pub(crate) struct ResolvedUpwardBreakaway {
+    /// Zero-based resolved rung in the realized probe grid.
+    pub(crate) breakaway_index: u8,
+    /// Total observations consumed across the upward walk.
+    pub(crate) observations: u8,
 }
 
 fn fault(error: CommissionError) -> BreakawayProbeStep {
@@ -439,45 +387,6 @@ fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
     match error {
         BreakawaySearchError::InvalidRequest | BreakawaySearchError::Arithmetic => {
             fault(CommissionError::InvalidSchedule)
-        }
-        BreakawaySearchError::SafetyFault(class) => fault(match class {
-            VelocityObservationClass::WrongDirectionFault => {
-                CommissionError::VelocityValidationFailed
-            }
-            VelocityObservationClass::HardClipFault => CommissionError::SafetyEnvelopeViolation,
-            VelocityObservationClass::Eligible
-            | VelocityObservationClass::Inert
-            | VelocityObservationClass::DeficitUnresolved
-            | VelocityObservationClass::CurrentHeadroom
-            | VelocityObservationClass::StationarityExcluded(_)
-            | VelocityObservationClass::InvalidEvidenceFault => {
-                unreachable!(
-                    "classify_breakaway_observation only wraps WrongDirectionFault or \
-                     HardClipFault in BreakawaySearchError::SafetyFault"
-                )
-            }
-        }),
-        BreakawaySearchError::ProbeEvidenceExcluded(reason) => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                probe_stationarity_exclusion_reason(reason),
-            ))
-        }
-        BreakawaySearchError::InvalidEvidence => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                ProbeEvidenceExclusionReason::InvalidMovingEvidence,
-            ))
-        }
-        BreakawaySearchError::AuthorityFailure => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::AuthorityFailure)
-        }
-        BreakawaySearchError::NoProductiveResponseAtAuthority => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::NoProductiveResponseAtAuthority)
-        }
-        BreakawaySearchError::UnstableBreakaway => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::UnstableBreakaway)
-        }
-        BreakawaySearchError::DirectionalBreakawayDisagreement => {
-            BreakawayProbeStep::Done(BreakawayProbeOutcome::DirectionalBreakawayDisagreement)
         }
     }
 }
@@ -567,15 +476,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             crate::diagnostic::checkpoint_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::TargetCommand,
             );
-            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetBaselineRead);
-            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return fault(CommissionError::Spi),
-            };
-            let baseline_us = backend.elapsed_us();
             let target = match session
                 .target_velocity_rpm
-                .with_direction(direction_sign(session.direction))
+                .with_direction(direction_sign(session.pending_role.direction()))
             {
                 Ok(target) => target.raw(),
                 Err(_) => return fault(CommissionError::InvalidSchedule),
@@ -602,6 +505,13 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             {
                 return current_guard_fault(error);
             }
+            checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetBaselineRead);
+            let encoder_raw = match backend.read_capture_register(ABN_DECODER_COUNT).await {
+                Ok(value) => value,
+                Err(_) => return fault(CommissionError::Spi),
+            };
+            let baseline_us = backend.elapsed_us();
+            workspace.excursion = Some(ProbeExcursionCapture::new(encoder_raw, baseline_us));
             checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeTargetWrite);
             if backend
                 .write_register_verified(PID_VELOCITY_TARGET, target as u32)
@@ -651,6 +561,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 backend,
                 Some(BreakawayCheckpoint::ProbeMovingEncoderSample),
                 Some(BreakawayCheckpoint::ProbeMovingCurrentInputSample),
+                true,
             )
             .await
             {
@@ -738,8 +649,8 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 Ok(p) => p,
                 Err(error) => return search_error_outcome(error),
             };
-            let input = match assemble_velocity_observation_input(VelocityObservationInputRequest {
-                direction: session.direction,
+            let input = match assemble_probe_observation_input(VelocityObservationInputRequest {
+                direction: session.pending_role.direction(),
                 p,
                 stationarity,
                 rejected_post_fit,
@@ -749,19 +660,66 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 usable_torque_limit: workspace.current_observer.clamp_limit(),
                 hard_torque_limit: session.plan.context.hard_torque_limit,
                 initial_lead_in: false,
-                confidence_family_size: PROBE_CONFIDENCE_FAMILY_SIZE,
+                // Comparison-only diagnostics retain the stationarity work path's
+                // family. Physical excursion alone decides probe motion.
+                confidence_family_size: 3,
                 counts_per_rev: safety.counts_per_rev(),
             }) {
                 Ok(input) => input,
                 Err(error) => return fault(error),
             };
-            let shared_classification = classify_velocity_observation(input).classification;
             session.pending_lower_rate_q = commanded_side_lower_rate_q(
                 input.direction,
                 input.settled_rate_low_q,
                 input.settled_rate_high_q,
             );
-            session.pending_class = Some(classify_breakaway_observation(input));
+            let capture = match workspace.excursion.take() {
+                Some(capture) => capture,
+                None => return fault(CommissionError::InvalidSchedule),
+            };
+            let wire_fields = capture.wire_fields();
+            let excursion = capture.finish(
+                session.pending_role.direction(),
+                session.plan.motion_threshold_counts,
+                session.plan.max_capture_interval_us,
+            );
+            session.pending_result = Some(
+                if input.predicted_torque_target_abs >= input.hard_torque_limit {
+                    Err(BreakawayProbeOutcome::SafetyFault {
+                        error: CommissionError::SafetyEnvelopeViolation,
+                        safety: None,
+                    })
+                } else {
+                    match excursion {
+                        Err(error) => {
+                            checkpoint_breakaway_operation(match error {
+                                ProbeExcursionError::CaptureInterval => {
+                                    BreakawayCheckpoint::ProbeExcursionIntervalInvalid
+                                }
+                                ProbeExcursionError::Arithmetic => {
+                                    BreakawayCheckpoint::ProbeExcursionArithmeticInvalid
+                                }
+                            });
+                            Err(BreakawayProbeOutcome::ExcursionEvidenceInvalid)
+                        }
+                        Ok(super::breakaway_excursion::ProbeExcursionEvidence {
+                            motion: ProbeMotionClass::WrongDirection,
+                            ..
+                        }) => Err(BreakawayProbeOutcome::SafetyFault {
+                            error: CommissionError::VelocityValidationFailed,
+                            safety: None,
+                        }),
+                        Ok(evidence)
+                            if matches!(evidence.motion, ProbeMotionClass::Moved)
+                                && input.predicted_torque_target_abs
+                                    >= input.usable_torque_limit =>
+                        {
+                            Err(BreakawayProbeOutcome::AuthorityFailure)
+                        }
+                        Ok(evidence) => Ok(matches!(evidence.motion, ProbeMotionClass::Moved)),
+                    }
+                },
+            );
             let target_rate_q =
                 match discovery_target_rate_q(session.target_velocity_rpm, safety.counts_per_rev())
                 {
@@ -773,28 +731,27 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     mean_rate_q: input.settled_rate_mean_q,
                     variance_of_mean_q2: input.variance_of_mean_q2,
                     target_rate_q,
-                    direction: session.direction,
+                    direction: session.pending_role.direction(),
                 },
                 rung_index: session.pending_index,
-                slot_index: session.cursor.observations(),
+                slot_index: session.pending_role.slot_index(),
                 classifier_inputs: observation_classifier_inputs(&input),
+                stroke_min_displacement_counts: wire_fields.map_or(0, |fields| fields.0),
+                stroke_max_displacement_counts: wire_fields.map_or(0, |fields| fields.1),
+                capture_max_interval_us: wire_fields.map_or(0, |fields| fields.2),
             };
             session.pending_observation = Some(collected);
             workspace.analysis.reset();
             workspace.observations.clear();
-            *state = match shared_classification {
-                VelocityObservationClass::WrongDirectionFault
-                | VelocityObservationClass::HardClipFault
-                | VelocityObservationClass::InvalidEvidenceFault => BreakawayProbeState::Advance,
-                VelocityObservationClass::Eligible
-                | VelocityObservationClass::Inert
-                | VelocityObservationClass::DeficitUnresolved
-                | VelocityObservationClass::CurrentHeadroom
-                | VelocityObservationClass::StationarityExcluded(_) => {
-                    BreakawayProbeState::BeginSettleCapture {
-                        settle_deadline_us: *settle_deadline_us,
-                    }
-                }
+            if session.pending_result.as_ref().is_some_and(Result::is_err) {
+                safety.end_primitive();
+            }
+            *state = match session.pending_result.as_ref() {
+                Some(Ok(_)) => BreakawayProbeState::BeginSettleCapture {
+                    settle_deadline_us: *settle_deadline_us,
+                },
+                Some(Err(_)) => BreakawayProbeState::Advance,
+                None => return fault(CommissionError::InvalidSchedule),
             };
             BreakawayProbeStep::Observation(collected)
         }
@@ -841,6 +798,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 backend,
                 Some(BreakawayCheckpoint::ProbeSettleEncoderSample),
                 Some(BreakawayCheckpoint::ProbeSettleCurrentInputSample),
+                false,
             )
             .await
             {
@@ -916,9 +874,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             workspace.observations.clear();
             safety.end_primitive();
             if !confirmation.confirmed_rest {
-                return BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                    ProbeEvidenceExclusionReason::SettleRestUnconfirmed,
-                ));
+                return fault(CommissionError::VelocityValidationFailed);
             }
             let recovery_plan = match plan_rung_origin_recovery(
                 safety.budget,
@@ -983,7 +939,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 RungOriginRecoveryStep::RestSelection { .. }
                 | RungOriginRecoveryStep::RestAnalysis(_) => BreakawayProbeStep::ReadyNow,
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
-                    *state = if session.pending_class.as_ref().is_some_and(Result::is_ok) {
+                    *state = if session.pending_result.as_ref().is_some_and(Result::is_ok) {
                         BreakawayProbeState::EmitDecision
                     } else {
                         BreakawayProbeState::Advance
@@ -991,9 +947,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     BreakawayProbeStep::ReadyNow
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
-                    BreakawayProbeStep::Done(BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                        ProbeEvidenceExclusionReason::RecoveryRestUnconfirmed,
-                    ))
+                    fault(CommissionError::VelocityValidationFailed)
                 }
                 RungOriginRecoveryStep::Fault {
                     error,
@@ -1006,21 +960,12 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             }
         }
         BreakawayProbeState::EmitDecision => {
-            let class = session
-                .pending_class
+            let moved = session
+                .pending_result
                 .as_ref()
                 .and_then(|result| result.as_ref().ok())
                 .copied()
-                .expect("only a classified observation reaches decision emission");
-            let disposition = match class {
-                ProbeProductivityClass::BelowProductive(
-                    super::breakaway_search::BelowBoundaryDisposition::Inert,
-                ) => 0,
-                ProbeProductivityClass::BelowProductive(
-                    super::breakaway_search::BelowBoundaryDisposition::Transient,
-                ) => 1,
-                ProbeProductivityClass::Productive => 2,
-            };
+                .expect("only a motion verdict reaches decision emission");
             let observation = session
                 .pending_observation
                 .expect("raw observation retained until cursor commit");
@@ -1028,7 +973,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             BreakawayProbeStep::Decision {
                 direction: observation.atom.direction,
                 rung_index: observation.rung_index,
-                disposition,
+                disposition: u8::from(moved),
             }
         }
         BreakawayProbeState::Advance => {
@@ -1036,43 +981,33 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 .pending_observation
                 .take()
                 .expect("raw observation retained until cursor consumption");
-            let class_result = session
-                .pending_class
+            let result = session
+                .pending_result
                 .take()
                 .expect("classified before recovery started");
-            match session.cursor.advance(class_result) {
-                Ok(BreakawaySearchStep::Probe(next_index)) => {
-                    session.pending_index = next_index;
+            let moved = match result {
+                Ok(moved) => moved,
+                Err(outcome) => return BreakawayProbeStep::Done(outcome),
+            };
+            match session.cursor.advance(moved) {
+                Ok(UpwardProbeStep::Probe { rung_index, role }) => {
+                    session.pending_index = rung_index;
+                    session.pending_role = role;
                     *state = BreakawayProbeState::WriteGain;
                     BreakawayProbeStep::ReadyNow
                 }
-                Ok(BreakawaySearchStep::Resolved(directional)) => match session.direction {
-                    VelocityDirection::Forward => {
-                        session.forward_result = Some(directional);
-                        session.direction = VelocityDirection::Reverse;
-                        match BreakawaySearchCursor::start(session.plan.search_count) {
-                            Ok((cursor, pending_index)) => {
-                                session.cursor = cursor;
-                                session.pending_index = pending_index;
-                                *state = BreakawayProbeState::WriteGain;
-                                BreakawayProbeStep::ReadyNow
-                            }
-                            Err(error) => search_error_outcome(error),
-                        }
-                    }
-                    VelocityDirection::Reverse => {
-                        let forward = session
-                            .forward_result
-                            .take()
-                            .expect("forward direction resolves before reverse");
-                        match resolve_campaign_breakaway(forward, directional) {
-                            Ok(resolved) => BreakawayProbeStep::Done(
-                                BreakawayProbeOutcome::BreakawayFound(resolved),
-                            ),
-                            Err(error) => search_error_outcome(error),
-                        }
-                    }
-                },
+                Ok(UpwardProbeStep::Resolved {
+                    rung_index,
+                    observations,
+                }) => BreakawayProbeStep::Done(BreakawayProbeOutcome::BreakawayFound(
+                    ResolvedUpwardBreakaway {
+                        breakaway_index: rung_index,
+                        observations,
+                    },
+                )),
+                Ok(UpwardProbeStep::NoRepeatableMotionAtAuthority { .. }) => {
+                    BreakawayProbeStep::Done(BreakawayProbeOutcome::NoRepeatableMotionAtAuthority)
+                }
                 Err(error) => search_error_outcome(error),
             }
         }
@@ -1107,6 +1042,7 @@ async fn sample_one_tick<B: CommissioningBackend>(
     backend: &mut B,
     encoder_checkpoint: Option<BreakawayCheckpoint>,
     current_input_checkpoint: Option<BreakawayCheckpoint>,
+    record_excursion: bool,
 ) -> Result<u64, BreakawayProbeStep> {
     if let Some(checkpoint) = encoder_checkpoint {
         checkpoint_breakaway_operation(checkpoint);
@@ -1134,6 +1070,15 @@ async fn sample_one_tick<B: CommissioningBackend>(
     };
     let domain = EncoderDomain::new(safety.counts_per_rev())
         .map_err(|_| fault(CommissionError::InvalidSchedule))?;
+    if record_excursion {
+        let capture = workspace
+            .excursion
+            .as_mut()
+            .ok_or_else(|| fault(CommissionError::InvalidSchedule))?;
+        capture
+            .observe(domain, encoder_raw, read_us)
+            .map_err(|_| fault(CommissionError::InvalidSchedule))?;
+    }
     let delta = match domain.delta(
         domain.count(workspace.previous_encoder_raw),
         domain.count(encoder_raw),
@@ -1472,7 +1417,7 @@ fn additive_discovery_plan_error_outcome(
 /// recover, advance): a discovery stroke and a probe stroke are the same guarded
 /// primitive. The two states are kept separate rather than shared because
 /// `Advance` means different things for each driver: the probe folds a
-/// classification into a bisection cursor, while discovery folds one into a
+/// physical-motion verdict into the upward cursor, while discovery folds one into a
 /// per-rung, per-direction consensus accumulator and a ladder-wide stop rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum AdditiveDiscoveryState {
@@ -1554,15 +1499,21 @@ pub(crate) enum AdditiveDiscoveryStep {
 pub(crate) struct CollectedObservation {
     /// The raw settled-rate atom (mean, family-free variance, target, direction).
     pub(crate) atom: DiscoveryObservationAtom,
-    /// Ladder rung index (discovery); zero for confirmation.
+    /// Probe or discovery rung index; zero for confirmation.
     pub(crate) rung_index: u8,
-    /// Slot within the observation's grouping (within-direction for discovery,
-    /// fixed `0..=7` schedule slot for confirmation).
+    /// Probe direction-local slot, discovery within-direction slot, or fixed
+    /// `0..=7` confirmation schedule slot.
     pub(crate) slot_index: u8,
     /// The frozen inputs `classify_velocity_observation` and
     /// `depth_three_consensus` consume, streamed so an offline decoder derives
     /// the consensus masks itself instead of trusting firmware's decision.
     pub(crate) classifier_inputs: ObservationClassifierInputs,
+    /// Probe-only minimum start-relative displacement; zero in later phases.
+    pub(crate) stroke_min_displacement_counts: i32,
+    /// Probe-only maximum start-relative displacement; zero in later phases.
+    pub(crate) stroke_max_displacement_counts: i32,
+    /// Probe-only maximum capture interval; zero in later phases.
+    pub(crate) capture_max_interval_us: u32,
 }
 
 /// The exact inputs the depth-three consensus decision consumes for one stroke,
@@ -1802,8 +1753,7 @@ enum RungBandVerdict {
 
 /// Reduce one direction's four per-slot classifications to a single
 /// moving/inert diagnostic verdict, mirroring
-/// [`super::breakaway_search::classify_breakaway_observation`]'s
-/// classification-to-motion mapping (`Eligible`/`DeficitUnresolved` => moving,
+/// the discovery classification-to-motion mapping (`Eligible`/`DeficitUnresolved` => moving,
 /// `Inert` => inert) but folded across a whole rung's four-slot consensus
 /// schedule instead of a single probe observation: moving if any slot shows
 /// motion, inert otherwise. Used only for the rung-zero diagnostic (spec
@@ -1985,7 +1935,8 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return AdditiveDiscoveryStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None, false).await
+            {
                 Ok(read_us) => read_us,
                 Err(step) => return discovery_step_from_probe_fault(step),
             };
@@ -2180,7 +2131,8 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return AdditiveDiscoveryStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None, false).await
+            {
                 Ok(read_us) => read_us,
                 Err(step) => return discovery_step_from_probe_fault(step),
             };
@@ -2331,6 +2283,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                             rung_index: session.rung_index,
                             slot_index: session.slot,
                             classifier_inputs: record.classifier_inputs,
+                            stroke_min_displacement_counts: 0,
+                            stroke_max_displacement_counts: 0,
+                            capture_max_interval_us: 0,
                         }),
                         None => AdditiveDiscoveryStep::ReadyNow,
                     }
@@ -2962,7 +2917,8 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return BandConfirmationStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None, false).await
+            {
                 Ok(read_us) => read_us,
                 Err(step) => return confirmation_step_from_probe_fault(step),
             };
@@ -3154,7 +3110,8 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             if entry_us < *next_sample_us {
                 return BandConfirmationStep::At(*next_sample_us);
             }
-            let read_us = match sample_one_tick(workspace, safety, backend, None, None).await {
+            let read_us = match sample_one_tick(workspace, safety, backend, None, None, false).await
+            {
                 Ok(read_us) => read_us,
                 Err(step) => return confirmation_step_from_probe_fault(step),
             };
@@ -3307,6 +3264,9 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                             rung_index: 0,
                             slot_index,
                             classifier_inputs: record.classifier_inputs,
+                            stroke_min_displacement_counts: 0,
+                            stroke_max_displacement_counts: 0,
+                            capture_max_interval_us: 0,
                         }),
                         None => BandConfirmationStep::ReadyNow,
                     }
@@ -3441,7 +3401,7 @@ pub(crate) struct BreakawayCampaignRequest {
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum BreakawayCampaignPhase {
-    /// The two-direction bisection probe locating the campaign breakaway.
+    /// The upward physical-excursion probe locating the campaign breakaway.
     Probe {
         state: BreakawayProbeState,
         session: BreakawayProbeSession,
@@ -3510,7 +3470,7 @@ impl BreakawayCampaign {
             pwm_hz: request.pwm_hz,
             encoder_counts_per_rev: request.encoder_counts_per_rev,
         };
-        let probe_plan = plan_breakaway_probe(p_start, p_top, probe_context)
+        let probe_plan = plan_upward_breakaway_probe(p_start, p_top, probe_context)
             .map_err(|_| CommissionError::InvalidSchedule)?;
         let session = BreakawayProbeSession::new(
             probe_plan,
@@ -3758,10 +3718,8 @@ fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
         BreakawayProbeOutcome::SafetyFault { error, safety } => {
             BreakawayCampaignOutcome::Terminal { error, safety }
         }
-        BreakawayProbeOutcome::NoProductiveResponseAtAuthority
-        | BreakawayProbeOutcome::UnstableBreakaway
-        | BreakawayProbeOutcome::DirectionalBreakawayDisagreement
-        | BreakawayProbeOutcome::ProbeEvidenceExcluded(_)
+        BreakawayProbeOutcome::NoRepeatableMotionAtAuthority
+        | BreakawayProbeOutcome::ExcursionEvidenceInvalid
         | BreakawayProbeOutcome::AuthorityFailure => BreakawayCampaignOutcome::Terminal {
             error: CommissionError::VelocityValidationFailed,
             safety: None,
@@ -4133,8 +4091,8 @@ fn route_confirmed_accept<B: CommissioningBackend>(
 /// terminal, so a construction failure maps to the same
 /// `InvalidSchedule` safety fault.
 fn enter_discovery(
-    resolved: &ResolvedCampaignBreakaway,
-    probe_plan: &BreakawayProbePlan,
+    resolved: &ResolvedUpwardBreakaway,
+    probe_plan: &UpwardBreakawayProbePlan,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> EmitContinuation {
@@ -4180,31 +4138,24 @@ fn enter_discovery(
     }
 }
 
-/// Build the campaign's probe-success advance: report both directions'
-/// resolved breakaway brackets now, then enter discovery (or report its
+/// Build the campaign's probe-success advance: report the resolved rung now,
+/// then enter discovery (or report its
 /// construction failure) starting the following tick.
 fn probe_success_advance(
-    resolved: ResolvedCampaignBreakaway,
-    probe_plan: &BreakawayProbePlan,
+    resolved: ResolvedUpwardBreakaway,
+    probe_plan: &UpwardBreakawayProbePlan,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> CampaignAdvance {
     let sequence = next_sequence(evidence_sequence);
-    let forward = directional_breakaway_report(
+    let report = probe_resolved_report(
         probe_plan,
-        VelocityDirection::Forward,
-        &resolved.forward,
+        resolved.breakaway_index,
+        resolved.observations,
         inputs.run_sequence,
         sequence,
     );
-    let reverse = directional_breakaway_report(
-        probe_plan,
-        VelocityDirection::Reverse,
-        &resolved.reverse,
-        inputs.run_sequence,
-        sequence,
-    );
-    let now = BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse };
+    let now = BreakawayCampaignEvent::ProbeResolved(report);
     let next = enter_discovery(&resolved, probe_plan, inputs, evidence_sequence);
     CampaignAdvance::Emit { now, next }
 }
@@ -4214,7 +4165,7 @@ fn probe_success_advance(
 /// tick.
 fn probe_failure_advance(
     outcome: BreakawayProbeOutcome,
-    probe_plan: &BreakawayProbePlan,
+    probe_plan: &UpwardBreakawayProbePlan,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> CampaignAdvance {

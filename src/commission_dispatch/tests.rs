@@ -283,13 +283,13 @@ enum ReplyEvent {
     BreakawayProbePlan {
         plan_digest_low: u32,
         plan_digest_high: u32,
-        family_size: u16,
+        motion_threshold_counts: u32,
     },
-    BreakawayDirectionalBreakaway {
-        direction: u8,
-        inert_present: u8,
-        inert_p_raw: u16,
-        moving_p_raw: u16,
+    BreakawayProbeResult {
+        rung_index: u8,
+        breakaway_p_raw: u16,
+        motion_threshold_counts: u32,
+        observation_count: u8,
     },
     BreakawayDiscoveryPlanIdentity {
         plan_digest_low: u32,
@@ -462,19 +462,19 @@ impl CommissionReplySink for ReplyRecorder {
         self.events.push(ReplyEvent::BreakawayProbePlan {
             plan_digest_low: report.plan_digest_low,
             plan_digest_high: report.plan_digest_high,
-            family_size: report.family_size,
+            motion_threshold_counts: report.motion_threshold_counts,
         });
     }
 
-    fn foci_breakaway_directional_breakaway(
+    fn foci_breakaway_probe_result(
         &mut self,
-        report: crate::ankyra::replies::FociBreakawayDirectionalBreakaway,
+        report: crate::ankyra::replies::FociBreakawayProbeResult,
     ) {
-        self.events.push(ReplyEvent::BreakawayDirectionalBreakaway {
-            direction: report.direction,
-            inert_present: report.inert_present,
-            inert_p_raw: report.inert_p_raw,
-            moving_p_raw: report.moving_p_raw,
+        self.events.push(ReplyEvent::BreakawayProbeResult {
+            rung_index: report.rung_index,
+            breakaway_p_raw: report.breakaway_p_raw,
+            motion_threshold_counts: report.motion_threshold_counts,
+            observation_count: report.observation_count,
         });
     }
 
@@ -559,8 +559,7 @@ fn emit_breakaway_probe_plan_splits_the_digest_into_low_and_high_words() {
             run_sequence: 1,
             evidence_sequence: 2,
             plan_digest: 0x1122_3344_5566_7788,
-            family_size: 16,
-            max_observations: 8,
+            max_observations: 128,
             search_count: 20,
             p_start_raw: 1,
             p_top_raw: 1024,
@@ -570,6 +569,8 @@ fn emit_breakaway_probe_plan_splits_the_digest_into_low_and_high_words() {
             usable_torque_limit: 0,
             pwm_hz: 0,
             encoder_counts_per_rev: 0,
+            motion_threshold_counts: 63,
+            max_capture_interval_us: 2_000,
         },
     );
 
@@ -578,41 +579,39 @@ fn emit_breakaway_probe_plan_splits_the_digest_into_low_and_high_words() {
         std::vec![ReplyEvent::BreakawayProbePlan {
             plan_digest_low: 0x5566_7788,
             plan_digest_high: 0x1122_3344,
-            family_size: 16,
+            motion_threshold_counts: 63,
         }]
     );
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
-fn emit_breakaway_directional_breakaway_forwards_bracket_endpoints() {
-    use crate::commission_dispatch::replies::emit_breakaway_directional_breakaway;
-    use crate::commissioning::types::BreakawayDirectionalBreakaway;
+fn emit_breakaway_probe_result_forwards_resolved_rung() {
+    use crate::commission_dispatch::replies::emit_breakaway_probe_result;
+    use crate::commissioning::types::BreakawayProbeResolved;
 
     let mut sink = ReplyRecorder::default();
-    emit_breakaway_directional_breakaway(
+    emit_breakaway_probe_result(
         &mut sink,
         3,
-        BreakawayDirectionalBreakaway {
+        BreakawayProbeResolved {
             run_sequence: 1,
             evidence_sequence: 2,
             plan_digest: 9,
-            direction: 0,
-            inert_present: 1,
-            inert_p_raw: 91,
-            moving_p_raw: 128,
-            observations: 5,
-            lower_disposition_mask: 1,
+            rung_index: 7,
+            breakaway_p_raw: 128,
+            motion_threshold_counts: 63,
+            observation_count: 19,
         },
     );
 
     assert_eq!(
         sink.events,
-        std::vec![ReplyEvent::BreakawayDirectionalBreakaway {
-            direction: 0,
-            inert_present: 1,
-            inert_p_raw: 91,
-            moving_p_raw: 128,
+        std::vec![ReplyEvent::BreakawayProbeResult {
+            rung_index: 7,
+            breakaway_p_raw: 128,
+            motion_threshold_counts: 63,
+            observation_count: 19,
         }]
     );
 }

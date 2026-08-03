@@ -95,6 +95,10 @@ pub enum BreakawayCheckpoint {
     RecoverySettleCurrentOutputSample = 40,
     /// Origin recovery is reading status after confirmed rest.
     RecoveryZeroBoundary = 41,
+    /// Probe capture timing failed its frozen interval contract.
+    ProbeExcursionIntervalInvalid = 42,
+    /// Probe excursion arithmetic or representation was invalid.
+    ProbeExcursionArithmeticInvalid = 43,
 }
 
 impl BreakawayCheckpoint {
@@ -141,6 +145,8 @@ impl BreakawayCheckpoint {
             39 => Some(Self::RecoverySettleCurrentInputSample),
             40 => Some(Self::RecoverySettleCurrentOutputSample),
             41 => Some(Self::RecoveryZeroBoundary),
+            42 => Some(Self::ProbeExcursionIntervalInvalid),
+            43 => Some(Self::ProbeExcursionArithmeticInvalid),
             _ => None,
         }
     }

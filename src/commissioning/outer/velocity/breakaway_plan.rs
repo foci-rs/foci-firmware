@@ -1,12 +1,9 @@
-//! Pure, host-testable planning for the breakaway probe and the resolved additive
-//! discovery ladder.
+//! Pure, host-testable planning for the breakaway probe and additive discovery.
 //!
 //! Nothing here moves the axis. This module builds immutable plans:
 //!
-//! - [`BreakawayProbePlan`]: the diagnostic half-octave search grid the probe binary
-//!   searches, independently per direction, to find where the axis starts moving.
-//! - [`UpwardBreakawayProbePlan`]: the same realized grid plus the physical-excursion
-//!   contract for the pair-and-repeat upward walk that replaces the binary probe.
+//! - [`UpwardBreakawayProbePlan`]: the realized half-octave grid plus the
+//!   physical-excursion contract for the pair-and-repeat upward walk.
 //! - [`AdditiveDiscoveryPlan`]: the fixed-step ladder that spends the discovery
 //!   sweep's rung budget around the measured breakaway instead of across the whole
 //!   current-representable span.
@@ -42,20 +39,6 @@ pub const MAX_ADDITIVE_GAIN_RATIO_NUM: u32 = 181;
 /// See [`MAX_ADDITIVE_GAIN_RATIO_NUM`] for the provisional-value rationale.
 pub const MAX_ADDITIVE_GAIN_RATIO_DEN: u32 = 128;
 
-/// Joint two-direction confidence family reserved for the breakaway probe.
-///
-/// The probe searches up to the full [`super::sweep_plan::MAX_SWEEP_RUNGS`] = 32-rung
-/// grid, so the worst case is 6 binary-search bisections; the mandatory bracket
-/// repeat adds 2 more, giving 8 per direction, 16 joint, regardless of how few
-/// observations a particular run actually executes.
-pub const PROBE_CONFIDENCE_FAMILY_SIZE: u16 = 16;
-/// Maximum probe observations permitted in a single direction.
-///
-/// Six binary-search bisections (the worst case for the full
-/// [`super::sweep_plan::MAX_SWEEP_RUNGS`] = 32-rung grid, including the "no motion"
-/// outcome) plus two mandatory bracket-confirmation repeats.
-pub const PROBE_MAX_OBSERVATIONS_PER_DIRECTION: u8 = 8;
-
 /// Mechanical-revolution divisor used by the physical-excursion probe.
 pub const PROBE_MOTION_REVOLUTION_DENOMINATOR: u32 = 64;
 /// Largest baseline-to-sample or sample-to-sample interval accepted by the probe.
@@ -66,8 +49,8 @@ pub const PROBE_MAX_OBSERVATIONS: u8 = 128;
 /// Command-level workflow envelope and physical acquisition context a breakaway
 /// probe is planned under.
 ///
-/// Threaded from the orchestrator into [`plan_breakaway_probe`] and hashed into
-/// [`BreakawayProbePlan::digest`], so the whole downstream digest chain --
+/// Threaded from the orchestrator into [`plan_upward_breakaway_probe`] and hashed
+/// into [`UpwardBreakawayProbePlan::digest`], so the whole downstream digest chain --
 /// probe -> discovery (binds the probe digest) -> confirmation (binds the
 /// discovery digest) -> Stage C (binds the confirmation digest) -- is pinned to
 /// the exact command-level envelope and the physical parameters it was planned
@@ -88,63 +71,6 @@ pub struct BreakawayProbeContext {
     pub pwm_hz: u32,
     /// Encoder counts per mechanical revolution the campaign was planned under.
     pub encoder_counts_per_rev: u32,
-}
-
-/// Immutable, pre-motion plan for the breakaway probe's binary search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct BreakawayProbePlan {
-    /// Post-dedupe anchored half-octave search grid; unused entries are zero.
-    pub search_gains: [PidPGain; MAX_SWEEP_RUNGS],
-    /// Number of valid entries in `search_gains`.
-    pub search_count: u8,
-    /// Joint two-direction confidence family reserved for the probe.
-    pub confidence_family_size: u16,
-    /// Maximum probe observations permitted in a single direction.
-    pub maximum_observations: u8,
-    /// Command-level workflow envelope and physical acquisition context this
-    /// probe was planned under, bound into `plan_digest`.
-    pub context: BreakawayProbeContext,
-    /// Digest of every frozen field, each valid `search_gains` entry, and the
-    /// bound [`BreakawayProbeContext`].
-    pub plan_digest: u64,
-}
-
-impl BreakawayProbePlan {
-    /// Hash every frozen field, each valid search-grid entry, and the bound
-    /// acquisition context exactly once.
-    ///
-    /// Padding and unused `search_gains` slots beyond `search_count` are never
-    /// hashed. The [`BreakawayProbeContext`] (command-level workflow digest and
-    /// physical acquisition parameters) is hashed so the probe -- and thus the
-    /// whole downstream chain -- is bound to the command-level envelope it was
-    /// planned under, not just to the search geometry.
-    pub fn digest(self) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-        macro_rules! hash_value {
-            ($value:expr) => {
-                for byte in $value.to_le_bytes() {
-                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-                }
-            };
-        }
-        hash_value!(self.search_count);
-        for gain in self
-            .search_gains
-            .iter()
-            .take(usize::from(self.search_count))
-        {
-            hash_value!(gain.raw());
-        }
-        hash_value!(self.confidence_family_size);
-        hash_value!(self.maximum_observations);
-        hash_value!(self.context.workflow_digest);
-        hash_value!(self.context.target_velocity_rpm);
-        hash_value!(self.context.hard_torque_limit);
-        hash_value!(self.context.usable_torque_limit);
-        hash_value!(self.context.pwm_hz);
-        hash_value!(self.context.encoder_counts_per_rev);
-        hash
-    }
 }
 
 /// Immutable, pre-motion plan for the physical-excursion upward probe.
@@ -223,38 +149,6 @@ pub fn plan_upward_breakaway_probe(
         motion_threshold_counts: motion_threshold_counts(context.encoder_counts_per_rev)?,
         max_capture_interval_us: PROBE_MAX_CAPTURE_INTERVAL_US,
         maximum_observations: PROBE_MAX_OBSERVATIONS,
-        context,
-        plan_digest: 0,
-    };
-    plan.plan_digest = plan.digest();
-    Ok(plan)
-}
-
-/// Build the immutable breakaway probe plan from the arithmetic floor and authority
-/// ceiling already used for the ordinary current-representable gain span.
-///
-/// `p_start` is the smallest gain producing one nonzero controller-output quantum;
-/// `p_top` is the most restrictive applicable authority ceiling. The search grid is
-/// the same half-octave ladder the ordinary Stage-B sweep would walk end to end; the
-/// probe instead binary searches it. `context` binds the command-level workflow
-/// envelope and physical acquisition parameters into the resulting digest, so the
-/// whole downstream chain is enforced from the command-level envelope, not just the
-/// probe's own search geometry.
-pub fn plan_breakaway_probe(
-    p_start: PidPGain,
-    p_top: PidPGain,
-    context: BreakawayProbeContext,
-) -> Result<BreakawayProbePlan, VelocityPlanError> {
-    let ladder = build_gain_ladder(p_start.raw(), p_top.raw())?;
-    let search_count = u8::try_from(ladder.len()).map_err(|_| VelocityPlanError::Arithmetic)?;
-    let mut search_gains = [PidPGain::ZERO; MAX_SWEEP_RUNGS];
-    search_gains[..ladder.len()].copy_from_slice(ladder.as_slice());
-
-    let mut plan = BreakawayProbePlan {
-        search_gains,
-        search_count,
-        confidence_family_size: PROBE_CONFIDENCE_FAMILY_SIZE,
-        maximum_observations: PROBE_MAX_OBSERVATIONS_PER_DIRECTION,
         context,
         plan_digest: 0,
     };

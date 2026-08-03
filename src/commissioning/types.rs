@@ -1065,8 +1065,9 @@ pub struct VelocityIntegralTerminal {
 // `plan_digest` is the exact digest of the frozen phase plan it describes;
 // every phase after the first also carries `prior_plan_digest`, the digest of
 // the phase plan it was derived from, so the causal chain probe -> discovery
-// -> confirmation is auditable end to end. `family_size` is the predeclared
-// confidence family for the owning phase. See
+// -> confirmation is auditable end to end. Discovery and confirmation carry
+// their predeclared confidence families; the physical-excursion probe does not.
+// See
 // `crate::commissioning::outer::velocity::breakaway_reporting` for the pure
 // assembly functions that build these records from the campaign's own
 // produced evidence types.
@@ -1082,9 +1083,7 @@ pub struct BreakawayProbePlanned {
     pub evidence_sequence: u16,
     /// Exact digest of the frozen probe plan.
     pub plan_digest: u64,
-    /// Joint two-direction confidence family reserved for the probe.
-    pub family_size: u16,
-    /// Maximum probe observations permitted in a single direction.
+    /// Maximum observations permitted across the complete upward walk.
     pub max_observations: u8,
     /// Number of valid entries in the post-dedupe search grid.
     pub search_count: u8,
@@ -1104,30 +1103,30 @@ pub struct BreakawayProbePlanned {
     pub pwm_hz: u32,
     /// Encoder counts per mechanical revolution used by the probe.
     pub encoder_counts_per_rev: u32,
+    /// Minimum commanded-direction excursion that counts as motion.
+    pub motion_threshold_counts: u32,
+    /// Maximum accepted interval between consecutive encoder samples.
+    pub max_capture_interval_us: u32,
 }
 
-/// Resolved inert/moving bracket for one signed probe direction.
+/// Resolved repeatable-motion rung for the complete upward probe.
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct BreakawayDirectionalBreakaway {
+pub struct BreakawayProbeResolved {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
     /// Exact digest of the owning probe plan.
     pub plan_digest: u64,
-    /// Direction wire code (see `sweep_evidence::direction_report_code`).
-    pub direction: u8,
-    /// Nonzero when a confirmed inert bracket endpoint exists.
-    pub inert_present: u8,
-    /// Confirmed inert bracket endpoint gain, or zero when `inert_present == 0`.
-    pub inert_p_raw: u16,
-    /// Confirmed moving bracket endpoint gain: this direction's resolved breakaway.
-    pub moving_p_raw: u16,
-    /// Total probe observations spent resolving this direction.
-    pub observations: u8,
-    /// Confirmed lower-endpoint dispositions: bit 0 inert, bit 1 transient.
-    pub lower_disposition_mask: u8,
+    /// Zero-based rung in the realized probe grid.
+    pub rung_index: u8,
+    /// Proportional gain at the resolved rung.
+    pub breakaway_p_raw: u16,
+    /// Minimum commanded-direction excursion that counted as motion.
+    pub motion_threshold_counts: u32,
+    /// Total observations consumed across the upward walk.
+    pub observation_count: u8,
 }
 
 /// Detailed terminal evidence for a probe campaign that did not resolve a
@@ -1142,16 +1141,12 @@ pub struct BreakawayProbeTerminal {
     pub evidence_sequence: u16,
     /// Exact digest of the frozen probe plan.
     pub plan_digest: u64,
-    /// Joint two-direction confidence family reserved for the probe.
-    pub family_size: u16,
     /// Unified `BreakawayTerminalCause` wire code.
     pub terminal_cause: u8,
     /// Nonzero when the terminal carries retained safety-fault evidence.
     pub has_safety_fault: u8,
     /// Active breakaway operation checkpoint when a safety fault was raised, or zero.
     pub fault_checkpoint: u8,
-    /// Probe evidence-exclusion branch, or zero when not applicable.
-    pub exclusion_reason: u8,
 }
 
 /// Immutable additive-discovery plan evidence emitted before the first
@@ -1225,11 +1220,10 @@ pub struct BreakawayRawObservation {
     pub plan_digest: u64,
     /// Owning phase: probe (0), discovery (1), or confirmation (2).
     pub phase: u8,
-    /// Zero-based ladder rung this observation belongs to (discovery only;
-    /// `0` for confirmation, whose strokes share the single nominated gain).
+    /// Zero-based probe or discovery rung; `0` for confirmation.
     pub rung_index: u8,
-    /// Slot index within the observation's grouping: the within-direction slot
-    /// for discovery, or the fixed `0..=7` schedule slot for confirmation.
+    /// Probe direction-local slot (`0` initial, `1` repeat), discovery
+    /// within-direction slot, or confirmation's fixed `0..=7` schedule slot.
     pub slot_index: u8,
     /// Direction wire code (see `sweep_evidence::direction_report_code`).
     pub direction: u8,
@@ -1267,6 +1261,12 @@ pub struct BreakawayRawObservation {
     pub drift_ratio_ppm: u32,
     /// Post-fit lag-one state: 0 unavailable, 1 failed, 2 passed.
     pub post_fit_lag_one_state: u8,
+    /// Minimum start-relative displacement observed during a probe stroke.
+    pub stroke_min_displacement_counts: i32,
+    /// Maximum start-relative displacement observed during a probe stroke.
+    pub stroke_max_displacement_counts: i32,
+    /// Maximum interval between consecutive probe encoder captures.
+    pub capture_max_interval_us: u32,
 }
 
 /// One recovered probe observation committed to the adaptive cursor.
@@ -1283,7 +1283,7 @@ pub struct BreakawayProbeDecision {
     pub direction: u8,
     /// Zero-based index in the deduplicated probe grid.
     pub rung_index: u8,
-    /// Decision: 0 inert, 1 transient, 2 productive.
+    /// Decision: 0 no motion, 1 moved.
     pub disposition: u8,
 }
 
@@ -1504,14 +1504,8 @@ pub struct BreakawayCeilingSource {
 pub enum BreakawayCampaignEvent {
     /// Immutable probe plan, emitted before the probe's first stroke.
     ProbePlanned(BreakawayProbePlanned),
-    /// Both directions' resolved inert/moving breakaway brackets, emitted once
-    /// the probe locates a campaign breakaway.
-    DirectionalBreakaway {
-        /// Forward-direction resolved bracket.
-        forward: BreakawayDirectionalBreakaway,
-        /// Reverse-direction resolved bracket.
-        reverse: BreakawayDirectionalBreakaway,
-    },
+    /// The first rung with repeatable motion in both directions.
+    ProbeResolved(BreakawayProbeResolved),
     /// A probe-campaign terminal that did not resolve a breakaway.
     ProbeTerminal(BreakawayProbeTerminal),
     /// The immutable additive discovery plan and the ceiling's binding source,

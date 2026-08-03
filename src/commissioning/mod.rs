@@ -52,7 +52,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL,
     EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN,
     EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL, EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION,
-    EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED, EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
+    EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN, EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT,
     EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
     EVENT_COMMISSION_OUTER_SAFETY_TIMING, EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
     EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_SELECTED_RECOVERY_REST,
@@ -1732,18 +1732,16 @@ impl CommissioningEngine {
         use crate::commissioning::outer::velocity::breakaway_reporting::confirmation_observation_report;
         use crate::commissioning::outer::velocity::breakaway_trace_reporting::{
             encode_campaign_terminal, encode_ceiling_source, encode_confirmation_observation,
-            encode_confirmation_planned, encode_confirmation_terminal,
-            encode_directional_breakaway, encode_discovery_planned, encode_discovery_rung_margin,
-            encode_discovery_terminal, encode_probe_decision, encode_probe_planned,
-            encode_probe_terminal, encode_raw_observation, encode_rung_zero_diagnostic,
+            encode_confirmation_planned, encode_confirmation_terminal, encode_discovery_planned,
+            encode_discovery_rung_margin, encode_discovery_terminal, encode_probe_decision,
+            encode_probe_planned, encode_probe_resolved, encode_probe_terminal,
+            encode_raw_observation, encode_rung_zero_diagnostic,
         };
         use crate::commissioning::types::BreakawayCampaignEvent;
 
         let sequence = match &event {
             BreakawayCampaignEvent::ProbePlanned(report) => report.evidence_sequence,
-            BreakawayCampaignEvent::DirectionalBreakaway { forward, .. } => {
-                forward.evidence_sequence
-            }
+            BreakawayCampaignEvent::ProbeResolved(report) => report.evidence_sequence,
             BreakawayCampaignEvent::ProbeTerminal(report) => report.evidence_sequence,
             BreakawayCampaignEvent::DiscoveryPlanned { planned, .. } => planned.evidence_sequence,
             BreakawayCampaignEvent::RawObservation(report) => report.evidence_sequence,
@@ -1760,9 +1758,7 @@ impl CommissioningEngine {
         };
         let event_id = match &event {
             BreakawayCampaignEvent::ProbePlanned(_) => EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
-            BreakawayCampaignEvent::DirectionalBreakaway { .. } => {
-                EVENT_COMMISSION_BREAKAWAY_PROBE_DERIVED
-            }
+            BreakawayCampaignEvent::ProbeResolved(_) => EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT,
             BreakawayCampaignEvent::ProbeTerminal(_) => EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL,
             BreakawayCampaignEvent::DiscoveryPlanned { .. } => {
                 EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN
@@ -1791,9 +1787,8 @@ impl CommissioningEngine {
             BreakawayCampaignEvent::ProbePlanned(report) => {
                 backend.record_velocity_sweep_trace_record(encode_probe_planned(report));
             }
-            BreakawayCampaignEvent::DirectionalBreakaway { forward, reverse } => {
-                backend.record_velocity_sweep_trace_record(encode_directional_breakaway(forward));
-                backend.record_velocity_sweep_trace_record(encode_directional_breakaway(reverse));
+            BreakawayCampaignEvent::ProbeResolved(report) => {
+                backend.record_velocity_sweep_trace_record(encode_probe_resolved(report));
             }
             BreakawayCampaignEvent::ProbeTerminal(report) => {
                 backend.record_velocity_sweep_trace_record(encode_probe_terminal(report));
@@ -2181,9 +2176,15 @@ mod tests {
             // offline decoder derives the consensus masks itself instead of
             // trusting firmware's. Deliberate, bounded, still well under the
             // audited F407 ceiling.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_552);
+            // Protocol v15 adds 48 B after replacing the binary-search
+            // session with the upward cursor: the one live probe workspace now
+            // retains a wrap-aware excursion accumulator alongside the shared
+            // capture ring until the raw record is emitted. This is the minimum
+            // state needed to preserve stroke extrema and capture timing without
+            // touching the 10 kHz position tick.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_600);
         }
-        assert!(size_of::<CommissioningEngine>() <= 5_552);
+        assert!(size_of::<CommissioningEngine>() <= 5_600);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
@@ -2803,14 +2804,14 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn breakaway_safety_constructor_rejects_zero_encoder_resolution_as_encoder_fault() {
+    fn breakaway_planning_rejects_zero_encoder_resolution_before_motion() {
         use crate::autotune::TmcMechanicalRpm;
         use crate::commissioning::outer::velocity::breakaway_campaign::{
             BreakawayCampaign, BreakawayCampaignRequest,
         };
         use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
 
-        let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
+        let result = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
             planned_velocity_mrev_s: 4_394,
             hard_torque_limit: 2_816,
@@ -2822,18 +2823,9 @@ mod tests {
             run_sequence: 42,
             pwm_hz: 25_000,
             encoder_counts_per_rev: 0,
-        })
-        .expect("campaign planning freezes but does not validate the encoder domain");
+        });
 
-        let result = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
-            0,
-            tmc_state(),
-            sample_outer_params(),
-            sample_entry_snapshot(),
-            campaign,
-        );
-
-        assert!(matches!(result, Err(CommissionError::EncoderFault)));
+        assert!(matches!(result, Err(CommissionError::InvalidSchedule)));
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
@@ -3097,13 +3089,14 @@ mod tests {
                 .find(|record| record.as_bytes().first() == Some(&0))
                 .expect("no tag-0 (breakaway probe-planned) canonical record reached the FTRC trace stream");
             // Canonical record layout: tag(1) + run_sequence(4) + evidence_sequence(2)
-            // + plan_digest(8) + family_size(2) + max_observations(1) + search_count(1)
+            // + plan_digest(8) + max_observations(1) + search_count(1)
             // + p_start_raw(2) + p_top_raw(2) + workflow_digest(8)
             // + target_velocity_rpm(4) + hard_torque_limit(2)
             // + usable_torque_limit(2) + pwm_hz(4)
-            // + encoder_counts_per_rev(4) = 47 bytes; see
+            // + encoder_counts_per_rev(4) + motion_threshold_counts(4)
+            // + max_capture_interval_us(4) = 53 bytes; see
             // `breakaway_trace_reporting::encode_probe_planned` and its own golden test.
-            assert_eq!(detail.as_bytes().len(), 47);
+            assert_eq!(detail.as_bytes().len(), 53);
         });
     }
 

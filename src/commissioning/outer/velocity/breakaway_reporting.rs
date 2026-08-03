@@ -3,10 +3,9 @@
 //! Every function here is pure: it takes the same frozen plan and evidence
 //! types the probe, additive discovery, and held-out confirmation drivers in
 //! [`super::breakaway_campaign`] already produce, and assembles the
-//! `commissioning::types` records those drivers can hand a future caller to
-//! report. Nothing here drives motion or touches a backend, and nothing here
-//! is wired into the live campaign step functions yet -- that wiring is a
-//! later task's job. This module exists so the wire shape and the digest and
+//! `commissioning::types` records emitted by the live campaign. Nothing here
+//! drives motion or touches a backend. This module exists so the wire shape,
+//! digest, and
 //! terminal-cause bookkeeping are frozen and tested independently of that
 //! wiring.
 //!
@@ -15,22 +14,14 @@
 //! every probe, discovery, and confirmation terminal variant, so a host
 //! decoder needs exactly one cause table instead of three.
 //!
-//! Nothing outside this module's own tests calls into any of these assembly
-//! functions yet -- wiring them into the live campaign step functions is a
-//! later task's job (see the module-level docs above) -- so, matching
-//! [`super::breakaway_campaign`]'s own
-//! `#![cfg_attr(not(test), allow(dead_code))]`, dead-code warnings are
-//! suppressed outside test builds.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use foci_tmc4671::pid::PidPGain;
 
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
 use crate::commissioning::types::{
     AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
-    BreakawayDirectionalBreakaway, BreakawayDiscoveryRungMargin, BreakawayProbeDecision,
-    BreakawayProbePlanned, BreakawayProbeTerminal, BreakawayRawObservation,
+    BreakawayDiscoveryRungMargin, BreakawayProbeDecision, BreakawayProbePlanned,
+    BreakawayProbeResolved, BreakawayProbeTerminal, BreakawayRawObservation,
     BreakawayRungZeroDiagnostic,
 };
 
@@ -45,15 +36,17 @@ use super::band_confirmation::{
 use super::breakaway_campaign::{
     AdditiveDiscoveryOutcome, BandConfirmationOutcome, BreakawayProbeOutcome, CollectedObservation,
 };
-use super::breakaway_plan::{AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, BreakawayProbePlan};
-use super::breakaway_search::{BreakawayMotionClass, DirectionalBreakaway};
+use super::breakaway_plan::{
+    AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, UpwardBreakawayProbePlan,
+};
+use super::breakaway_search::BreakawayMotionClass;
 use super::sweep_evidence::direction_report_code;
 
 /// Phase that owns a breakaway-campaign wire record or terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub(crate) enum BreakawayPhase {
-    /// The two-direction bisection probe.
+    /// The deterministic upward physical-excursion probe.
     Probe = 0,
     /// The additive discovery ladder.
     Discovery = 1,
@@ -71,14 +64,8 @@ pub(crate) enum BreakawayPhase {
 pub(crate) enum BreakawayTerminalCause {
     /// No failure: the phase either succeeded or has not yet terminated.
     None = 0,
-    /// [`BreakawayProbeOutcome::NoProductiveResponseAtAuthority`].
-    ProbeNoProductiveResponseAtAuthority = 1,
-    /// [`BreakawayProbeOutcome::UnstableBreakaway`].
-    ProbeUnstableBreakaway = 2,
-    /// [`BreakawayProbeOutcome::DirectionalBreakawayDisagreement`].
-    ProbeDirectionalBreakawayDisagreement = 3,
-    /// [`BreakawayProbeOutcome::ProbeEvidenceExcluded`].
-    ProbeEvidenceExcluded = 4,
+    /// [`BreakawayProbeOutcome::NoRepeatableMotionAtAuthority`].
+    ProbeNoRepeatableMotionAtAuthority = 1,
     /// [`BreakawayProbeOutcome::AuthorityFailure`].
     ProbeAuthorityFailure = 5,
     /// [`BreakawayProbeOutcome::SafetyFault`].
@@ -113,6 +100,8 @@ pub(crate) enum BreakawayTerminalCause {
     ConfirmationSafetyFault = 20,
     /// [`BandConfirmationOutcome::Accepted`], or the campaign-level Stage-C hand-off.
     Accepted = 21,
+    /// [`BreakawayProbeOutcome::ExcursionEvidenceInvalid`].
+    ProbeExcursionEvidenceInvalid = 22,
 }
 
 /// Relative standard error above which no achievable response location could
@@ -160,19 +149,12 @@ pub(crate) fn probe_terminal_cause(
 ) -> (BreakawayTerminalCause, u8) {
     match outcome {
         BreakawayProbeOutcome::BreakawayFound(_) => (BreakawayTerminalCause::None, 0),
-        BreakawayProbeOutcome::NoProductiveResponseAtAuthority => (
-            BreakawayTerminalCause::ProbeNoProductiveResponseAtAuthority,
+        BreakawayProbeOutcome::NoRepeatableMotionAtAuthority => (
+            BreakawayTerminalCause::ProbeNoRepeatableMotionAtAuthority,
             0,
         ),
-        BreakawayProbeOutcome::UnstableBreakaway => {
-            (BreakawayTerminalCause::ProbeUnstableBreakaway, 0)
-        }
-        BreakawayProbeOutcome::DirectionalBreakawayDisagreement => (
-            BreakawayTerminalCause::ProbeDirectionalBreakawayDisagreement,
-            0,
-        ),
-        BreakawayProbeOutcome::ProbeEvidenceExcluded(_) => {
-            (BreakawayTerminalCause::ProbeEvidenceExcluded, 0)
+        BreakawayProbeOutcome::ExcursionEvidenceInvalid => {
+            (BreakawayTerminalCause::ProbeExcursionEvidenceInvalid, 0)
         }
         BreakawayProbeOutcome::AuthorityFailure => {
             (BreakawayTerminalCause::ProbeAuthorityFailure, 0)
@@ -273,7 +255,7 @@ const fn confirmation_failure_cause(cause: BandConfirmationFailureCause) -> Brea
 
 /// Report the immutable probe plan before the first probe stroke.
 pub(crate) fn probe_plan_report(
-    plan: &BreakawayProbePlan,
+    plan: &UpwardBreakawayProbePlan,
     p_start: PidPGain,
     p_top: PidPGain,
     run_sequence: u32,
@@ -283,7 +265,6 @@ pub(crate) fn probe_plan_report(
         run_sequence,
         evidence_sequence,
         plan_digest: plan.plan_digest,
-        family_size: plan.confidence_family_size,
         max_observations: plan.maximum_observations,
         search_count: plan.search_count,
         p_start_raw: p_start.raw(),
@@ -294,65 +275,57 @@ pub(crate) fn probe_plan_report(
         usable_torque_limit: plan.context.usable_torque_limit,
         pwm_hz: plan.context.pwm_hz,
         encoder_counts_per_rev: plan.context.encoder_counts_per_rev,
+        motion_threshold_counts: plan.motion_threshold_counts,
+        max_capture_interval_us: plan.max_capture_interval_us,
     }
 }
 
-/// Report one direction's resolved inert/moving bracket, resolving its
-/// post-dedupe grid indices back to gains through the owning probe plan.
-pub(crate) fn directional_breakaway_report(
-    plan: &BreakawayProbePlan,
-    direction: VelocityDirection,
-    breakaway: &DirectionalBreakaway,
+/// Report the first rung with repeatable physical motion in both directions.
+pub(crate) fn probe_resolved_report(
+    plan: &UpwardBreakawayProbePlan,
+    rung_index: u8,
+    observation_count: u8,
     run_sequence: u32,
     evidence_sequence: u16,
-) -> BreakawayDirectionalBreakaway {
-    let inert_p_raw = breakaway
-        .inert_index
-        .and_then(|index| plan.search_gains.get(usize::from(index)))
-        .map_or(0, |gain| gain.raw());
-    let moving_p_raw = plan
+) -> BreakawayProbeResolved {
+    let breakaway_p_raw = plan
         .search_gains
-        .get(usize::from(breakaway.moving_index))
+        .get(usize::from(rung_index))
         .map_or(0, |gain| gain.raw());
-    BreakawayDirectionalBreakaway {
+    BreakawayProbeResolved {
         run_sequence,
         evidence_sequence,
         plan_digest: plan.plan_digest,
-        direction: direction_report_code(direction),
-        inert_present: u8::from(breakaway.inert_index.is_some()),
-        inert_p_raw,
-        moving_p_raw,
-        observations: breakaway.observations,
-        lower_disposition_mask: breakaway.lower_disposition_mask,
+        rung_index,
+        breakaway_p_raw,
+        motion_threshold_counts: plan.motion_threshold_counts,
+        observation_count,
     }
 }
 
 /// Report a probe campaign terminal that did not resolve a breakaway.
 pub(crate) fn probe_terminal_report(
-    plan: &BreakawayProbePlan,
+    plan: &UpwardBreakawayProbePlan,
     outcome: &BreakawayProbeOutcome,
     run_sequence: u32,
     evidence_sequence: u16,
 ) -> BreakawayProbeTerminal {
     let (cause, has_safety_fault) = probe_terminal_cause(outcome);
-    let fault_checkpoint = if matches!(outcome, BreakawayProbeOutcome::SafetyFault { .. }) {
+    let fault_checkpoint = if matches!(
+        outcome,
+        BreakawayProbeOutcome::SafetyFault { .. } | BreakawayProbeOutcome::ExcursionEvidenceInvalid
+    ) {
         crate::diagnostic::active_breakaway_checkpoint().map_or(0, |checkpoint| checkpoint as u8)
     } else {
         0
-    };
-    let exclusion_reason = match outcome {
-        BreakawayProbeOutcome::ProbeEvidenceExcluded(reason) => *reason as u8,
-        _ => 0,
     };
     BreakawayProbeTerminal {
         run_sequence,
         evidence_sequence,
         plan_digest: plan.plan_digest,
-        family_size: plan.confidence_family_size,
         terminal_cause: cause as u8,
         has_safety_fault,
         fault_checkpoint,
-        exclusion_reason,
     }
 }
 
@@ -441,6 +414,9 @@ pub(crate) fn raw_observation_report(
         disturbance_high_q16: inputs.disturbance_high_q16,
         drift_ratio_ppm: inputs.drift_ratio_ppm,
         post_fit_lag_one_state: inputs.post_fit_lag_one_state,
+        stroke_min_displacement_counts: collected.stroke_min_displacement_counts,
+        stroke_max_displacement_counts: collected.stroke_max_displacement_counts,
+        capture_max_interval_us: collected.capture_max_interval_us,
     }
 }
 

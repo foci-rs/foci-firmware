@@ -17,9 +17,9 @@ use super::super::breakaway_campaign::{
 };
 use super::super::breakaway_plan::{
     AdditiveDiscoveryRequest, BreakawayProbeContext, plan_additive_discovery_ladder,
-    plan_breakaway_probe,
+    plan_upward_breakaway_probe,
 };
-use super::super::breakaway_search::{BreakawayMotionClass, DirectionalBreakaway};
+use super::super::breakaway_search::BreakawayMotionClass;
 use super::super::sweep_consensus::{CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus};
 use super::super::sweep_evidence::VelocityObservationClass;
 use super::*;
@@ -129,14 +129,14 @@ fn confirmation_input(
 fn probe_plan_report_carries_plan_digest_and_endpoints() {
     let p_start = gain(1);
     let p_top = gain(1024);
-    let plan = plan_breakaway_probe(p_start, p_top, probe_context()).expect("valid probe plan");
+    let plan =
+        plan_upward_breakaway_probe(p_start, p_top, probe_context()).expect("valid probe plan");
 
     let report = probe_plan_report(&plan, p_start, p_top, 7, 3);
 
     assert_eq!(report.run_sequence, 7);
     assert_eq!(report.evidence_sequence, 3);
     assert_eq!(report.plan_digest, plan.plan_digest);
-    assert_eq!(report.family_size, plan.confidence_family_size);
     assert_eq!(report.max_observations, plan.maximum_observations);
     assert_eq!(report.search_count, plan.search_count);
     assert_eq!(report.p_start_raw, 1);
@@ -150,61 +150,31 @@ fn probe_plan_report_carries_plan_digest_and_endpoints() {
         report.encoder_counts_per_rev,
         plan.context.encoder_counts_per_rev
     );
+    assert_eq!(report.motion_threshold_counts, plan.motion_threshold_counts);
+    assert_eq!(report.max_capture_interval_us, plan.max_capture_interval_us);
 }
 
-// --- Directional breakaway ----------------------------------------------
+// --- Resolved upward probe ----------------------------------------------
 
 #[test]
-fn directional_breakaway_report_resolves_gains_from_grid_indices() {
-    let plan =
-        plan_breakaway_probe(gain(1), gain(1024), probe_context()).expect("valid probe plan");
-    let breakaway = DirectionalBreakaway {
-        inert_index: Some(2),
-        moving_index: 3,
-        observations: 5,
-        lower_disposition_mask: 1,
-    };
-
-    let report = directional_breakaway_report(&plan, VelocityDirection::Forward, &breakaway, 1, 0);
+fn probe_resolved_report_resolves_the_grid_gain() {
+    let plan = plan_upward_breakaway_probe(gain(1), gain(1024), probe_context())
+        .expect("valid probe plan");
+    let report = probe_resolved_report(&plan, 3, 17, 1, 0);
 
     assert_eq!(report.plan_digest, plan.plan_digest);
-    assert_eq!(
-        report.direction,
-        direction_report_code(VelocityDirection::Forward)
-    );
-    assert_eq!(report.inert_present, 1);
-    assert_eq!(report.inert_p_raw, plan.search_gains[2].raw());
-    assert_eq!(report.moving_p_raw, plan.search_gains[3].raw());
-    assert_eq!(report.observations, 5);
-}
-
-#[test]
-fn directional_breakaway_report_clears_inert_when_clamped_at_breakaway() {
-    let plan =
-        plan_breakaway_probe(gain(1), gain(1024), probe_context()).expect("valid probe plan");
-    let breakaway = DirectionalBreakaway {
-        inert_index: None,
-        moving_index: 0,
-        observations: 2,
-        lower_disposition_mask: 0,
-    };
-
-    let report = directional_breakaway_report(&plan, VelocityDirection::Reverse, &breakaway, 1, 1);
-
-    assert_eq!(report.inert_present, 0);
-    assert_eq!(report.inert_p_raw, 0);
-    assert_eq!(report.moving_p_raw, plan.search_gains[0].raw());
+    assert_eq!(report.rung_index, 3);
+    assert_eq!(report.breakaway_p_raw, plan.search_gains[3].raw());
+    assert_eq!(report.motion_threshold_counts, plan.motion_threshold_counts);
+    assert_eq!(report.observation_count, 17);
 }
 
 // --- Probe terminal ------------------------------------------------------
 
 #[test]
-fn breakaway_terminal_cause_wire_values_remain_contiguous_through_accepted() {
+fn breakaway_terminal_cause_wire_values_preserve_reserved_probe_slots() {
     let causes = [
-        BreakawayTerminalCause::ProbeNoProductiveResponseAtAuthority,
-        BreakawayTerminalCause::ProbeUnstableBreakaway,
-        BreakawayTerminalCause::ProbeDirectionalBreakawayDisagreement,
-        BreakawayTerminalCause::ProbeEvidenceExcluded,
+        BreakawayTerminalCause::ProbeNoRepeatableMotionAtAuthority,
         BreakawayTerminalCause::ProbeAuthorityFailure,
         BreakawayTerminalCause::ProbeSafetyFault,
         BreakawayTerminalCause::DiscoveryTargetBandSkipped,
@@ -222,36 +192,30 @@ fn breakaway_terminal_cause_wire_values_remain_contiguous_through_accepted() {
         BreakawayTerminalCause::ConfirmationEvidenceExcluded,
         BreakawayTerminalCause::ConfirmationSafetyFault,
         BreakawayTerminalCause::Accepted,
+        BreakawayTerminalCause::ProbeExcursionEvidenceInvalid,
     ];
 
     assert_eq!(BreakawayTerminalCause::None as u8, 0);
-    for (index, cause) in causes.into_iter().enumerate() {
-        assert_eq!(cause as u8, u8::try_from(index + 1).unwrap());
-    }
+    assert_eq!(
+        causes.map(|cause| cause as u8),
+        [
+            1, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+        ]
+    );
 }
 
 #[test]
 fn probe_terminal_cause_maps_every_non_found_variant() {
-    use super::super::breakaway_campaign::{BreakawayProbeOutcome, ProbeEvidenceExclusionReason};
+    use super::super::breakaway_campaign::BreakawayProbeOutcome;
 
     let cases = [
         (
-            BreakawayProbeOutcome::NoProductiveResponseAtAuthority,
-            BreakawayTerminalCause::ProbeNoProductiveResponseAtAuthority,
+            BreakawayProbeOutcome::NoRepeatableMotionAtAuthority,
+            BreakawayTerminalCause::ProbeNoRepeatableMotionAtAuthority,
         ),
         (
-            BreakawayProbeOutcome::UnstableBreakaway,
-            BreakawayTerminalCause::ProbeUnstableBreakaway,
-        ),
-        (
-            BreakawayProbeOutcome::DirectionalBreakawayDisagreement,
-            BreakawayTerminalCause::ProbeDirectionalBreakawayDisagreement,
-        ),
-        (
-            BreakawayProbeOutcome::ProbeEvidenceExcluded(
-                ProbeEvidenceExclusionReason::MovingStationarityExcluded,
-            ),
-            BreakawayTerminalCause::ProbeEvidenceExcluded,
+            BreakawayProbeOutcome::ExcursionEvidenceInvalid,
+            BreakawayTerminalCause::ProbeExcursionEvidenceInvalid,
         ),
         (
             BreakawayProbeOutcome::AuthorityFailure,
@@ -281,34 +245,19 @@ fn probe_terminal_cause_maps_every_non_found_variant() {
 
 #[test]
 fn probe_terminal_report_carries_plan_identity_and_cause() {
-    use super::super::breakaway_campaign::{BreakawayProbeOutcome, ProbeEvidenceExclusionReason};
+    use super::super::breakaway_campaign::BreakawayProbeOutcome;
 
-    let plan =
-        plan_breakaway_probe(gain(1), gain(1024), probe_context()).expect("valid probe plan");
+    let plan = plan_upward_breakaway_probe(gain(1), gain(1024), probe_context())
+        .expect("valid probe plan");
     let report = probe_terminal_report(&plan, &BreakawayProbeOutcome::AuthorityFailure, 9, 4);
 
     assert_eq!(report.plan_digest, plan.plan_digest);
-    assert_eq!(report.family_size, plan.confidence_family_size);
     assert_eq!(
         report.terminal_cause,
         BreakawayTerminalCause::ProbeAuthorityFailure as u8
     );
     assert_eq!(report.has_safety_fault, 0);
     assert_eq!(report.fault_checkpoint, 0);
-    assert_eq!(report.exclusion_reason, 0);
-
-    let report = probe_terminal_report(
-        &plan,
-        &BreakawayProbeOutcome::ProbeEvidenceExcluded(
-            ProbeEvidenceExclusionReason::RecoveryRestUnconfirmed,
-        ),
-        9,
-        5,
-    );
-    assert_eq!(
-        report.exclusion_reason,
-        ProbeEvidenceExclusionReason::RecoveryRestUnconfirmed as u8
-    );
 
     crate::diagnostic::begin_breakaway_campaign();
     crate::diagnostic::checkpoint_breakaway_campaign(
@@ -326,6 +275,24 @@ fn probe_terminal_report_carries_plan_identity_and_cause() {
     assert_eq!(
         report.fault_checkpoint,
         crate::diagnostic::BreakawayCheckpoint::ProbeMovingEncoderSample as u8
+    );
+
+    crate::diagnostic::checkpoint_breakaway_campaign(
+        crate::diagnostic::BreakawayCheckpoint::ProbeExcursionIntervalInvalid,
+    );
+    let report = probe_terminal_report(
+        &plan,
+        &BreakawayProbeOutcome::ExcursionEvidenceInvalid,
+        9,
+        7,
+    );
+    assert_eq!(
+        report.terminal_cause,
+        BreakawayTerminalCause::ProbeExcursionEvidenceInvalid as u8
+    );
+    assert_eq!(
+        report.fault_checkpoint,
+        crate::diagnostic::BreakawayCheckpoint::ProbeExcursionIntervalInvalid as u8
     );
 }
 
@@ -415,6 +382,9 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
             drift_ratio_ppm: 123_456,
             post_fit_lag_one_state: 2,
         },
+        stroke_min_displacement_counts: -63,
+        stroke_max_displacement_counts: 127,
+        capture_max_interval_us: 2_001,
     };
     let report = raw_observation_report(
         0x1122_3344_5566_7788,
@@ -453,6 +423,9 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
     assert_eq!(report.disturbance_present, 1);
     assert_eq!(report.disturbance_low_q16, -88);
     assert_eq!(report.disturbance_high_q16, 99);
+    assert_eq!(report.stroke_min_displacement_counts, -63);
+    assert_eq!(report.stroke_max_displacement_counts, 127);
+    assert_eq!(report.capture_max_interval_us, 2_001);
 }
 
 // --- Discovery margins -----------------------------------------------------

@@ -1110,8 +1110,10 @@ mod tests {
 
     #[test]
     fn outer_phase_size_stays_within_reasonable_stack_budget() {
+        // Protocol v15 retains one 48-byte excursion accumulator in the live
+        // breakaway workspace; keep this bound pinned to the realized payload.
         assert!(
-            size_of::<OuterPhase>() <= 4096,
+            size_of::<OuterPhase>() <= 4112,
             "OuterPhase grew to {} bytes",
             size_of::<OuterPhase>()
         );
