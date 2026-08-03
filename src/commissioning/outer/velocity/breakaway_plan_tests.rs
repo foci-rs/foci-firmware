@@ -1,10 +1,9 @@
 use super::super::sweep_plan::{MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS, VelocityPlanError};
 use super::{
     AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, GridFloorOrigin,
-    MAX_ADDITIVE_GAIN_RATIO_DEN, MAX_ADDITIVE_GAIN_RATIO_NUM, PROBE_MAX_CAPTURE_INTERVAL_US,
-    PROBE_MAX_OBSERVATIONS, PROBE_MOTION_REVOLUTION_DENOMINATOR, motion_threshold_counts,
-    plan_additive_discovery_ladder, plan_upward_breakaway_probe, realize_candidate_additive_ladder,
-    resolve_grid_floor, satisfies_additive_ratio_guard,
+    PROBE_MAX_CAPTURE_INTERVAL_US, PROBE_MAX_OBSERVATIONS, PROBE_MOTION_REVOLUTION_DENOMINATOR,
+    motion_threshold_counts, plan_additive_discovery_ladder, plan_upward_breakaway_probe,
+    realize_candidate_additive_ladder, resolve_grid_floor, satisfies_additive_ratio_guard,
 };
 use foci_tmc4671::pid::PidPGain;
 
@@ -198,10 +197,6 @@ fn additive_step_dedupes_the_floor_when_it_equals_breakaway() {
 
 #[test]
 fn plan_additive_discovery_ladder_selects_the_representative_ladder() {
-    // The realized 256/181 grid bracket ratio exceeds the provisional guard
-    // (1.4143646 > 1.4141), proving the guard does not apply to it.
-    assert!(256_u32 * MAX_ADDITIVE_GAIN_RATIO_DEN > 181_u32 * MAX_ADDITIVE_GAIN_RATIO_NUM);
-
     let request = generous_request(181, 256, 1_088, 0xabcd_1234);
     let plan = plan_additive_discovery_ladder(request).unwrap();
 
@@ -233,6 +228,21 @@ fn plan_additive_discovery_ladder_selects_the_representative_ladder() {
 
     assert_ne!(plan.plan_digest, 0);
     assert_eq!(plan.plan_digest, plan.digest());
+}
+
+#[test]
+fn measured_stepper_x_geometry_admits_discovery_ladder() {
+    // 2026-08-02 cold-X hardware capture: the upward probe resolved P=543
+    // under the current-derived P=7456 ceiling. The finest 32-rung additive
+    // ladder therefore starts at 543 + ceil((7456 - 543) / 30) = 774.
+    let plan = plan_additive_discovery_ladder(generous_request(384, 543, 7_456, 0x213))
+        .expect("the measured first additive gap must remain admissible");
+
+    assert_eq!(plan.rung_count, 32);
+    assert_eq!(plan.gains[0].raw(), 384);
+    assert_eq!(plan.gains[1].raw(), 543);
+    assert_eq!(plan.gains[2].raw(), 774);
+    assert_eq!(plan.gains[31].raw(), 7_456);
 }
 
 #[test]
@@ -273,10 +283,9 @@ fn plan_additive_discovery_ladder_stays_checked_near_the_maximum_domain() {
 
 #[test]
 fn additive_ratio_guard_uses_exact_cross_multiplication() {
-    // breakaway = 256; max first-gap that still satisfies 181/128 is exactly 362
-    // (256 * 181 = 46_336 = 362 * 128).
-    assert!(satisfies_additive_ratio_guard(362, 256));
-    assert!(!satisfies_additive_ratio_guard(363, 256));
+    // breakaway = 256; max first additive gain that satisfies 3/2 is 384.
+    assert!(satisfies_additive_ratio_guard(384, 256));
+    assert!(!satisfies_additive_ratio_guard(385, 256));
 }
 
 // --- Terminal rejections before motion ------------------------------------------
@@ -349,13 +358,13 @@ fn command_envelope_rejection_fires_when_every_candidate_overruns_it() {
 #[test]
 fn additive_ladder_resolution_budget_boundary() {
     // breakaway = 256, floor = 181. At n = 32 (the finest resolution), ceiling =
-    // 3_436 lands the first additive gap exactly at the provisional limit (362);
-    // ceiling = 3_437 pushes it one gain unit past the limit (363).
-    let passing = generous_request(181, 256, 3_436, 0);
+    // 4_096 lands the first additive gain exactly at the provisional limit (384);
+    // ceiling = 4_097 pushes it one gain unit past the limit (385).
+    let passing = generous_request(181, 256, 4_096, 0);
     let plan = plan_additive_discovery_ladder(passing).unwrap();
-    assert_eq!(plan.gains[2].raw(), 362);
+    assert_eq!(plan.gains[2].raw(), 384);
 
-    let failing = generous_request(181, 256, 3_437, 0);
+    let failing = generous_request(181, 256, 4_097, 0);
     assert_eq!(
         plan_additive_discovery_ladder(failing),
         Err(AdditiveLadderPlanError::AdditiveLadderResolutionBudgetExceeded)

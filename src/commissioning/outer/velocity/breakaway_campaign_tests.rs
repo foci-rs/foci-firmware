@@ -969,11 +969,11 @@ fn insufficient_additive_span_is_a_plan_time_terminal_with_no_motion() {
 #[test]
 fn additive_ladder_resolution_budget_exceeded_is_a_plan_time_terminal_with_no_motion() {
     // Matches `additive_ladder_resolution_budget_boundary` in
-    // `breakaway_plan_tests.rs`: ceiling 3_437 pushes the first additive gap one
+    // `breakaway_plan_tests.rs`: ceiling 4_097 pushes the first additive gap one
     // gain unit past the provisional resolution guard at every candidate rung
     // count, including the finest (32).
     let request = AdditiveDiscoveryRequest {
-        authority_ceiling: gain(3_437),
+        authority_ceiling: gain(4_097),
         workflow_envelope_ms: u32::MAX,
         ..discovery_request()
     };

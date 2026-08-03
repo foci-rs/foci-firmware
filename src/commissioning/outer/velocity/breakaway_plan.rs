@@ -25,19 +25,16 @@ use super::sweep_plan::{
 
 /// Numerator of the provisional maximum additive first-gap ratio guard.
 ///
-/// **Provisional, conservative placeholder.** This is the nominal half-octave
-/// generator factor (`181/128 ~ 1.4141`), not a hardware-verified bound. It refuses
-/// additive first gaps coarser than the generator's own step, so a low-breakaway
-/// ladder is rejected before motion rather than run and mis-tuned. The production
-/// value is a Task 11 hardware-characterization deliverable derived from the
-/// discovery sweep's first hardware run; realized grid ratios (the exempt
-/// `floor -> breakaway` bracket) can exceed this nominal factor, and the additive
-/// portion may ultimately tolerate a different bound once characterized.
-pub const MAX_ADDITIVE_GAIN_RATIO_NUM: u32 = 181;
+/// **Provisional hardware-characterization bound.** The initial half-octave
+/// placeholder rejected the first measured upward-probe result (`543 -> 774`,
+/// ratio `1.4254`). `3/2` admits that result with a small margin while retaining
+/// a simple hard bound on additive coarseness. Representative-machine evidence
+/// is still required before this becomes a production value.
+pub const MAX_ADDITIVE_GAIN_RATIO_NUM: u32 = 3;
 /// Denominator of the provisional maximum additive first-gap ratio guard.
 ///
 /// See [`MAX_ADDITIVE_GAIN_RATIO_NUM`] for the provisional-value rationale.
-pub const MAX_ADDITIVE_GAIN_RATIO_DEN: u32 = 128;
+pub const MAX_ADDITIVE_GAIN_RATIO_DEN: u32 = 2;
 
 /// Mechanical-revolution divisor used by the physical-excursion probe.
 pub const PROBE_MOTION_REVOLUTION_DENOMINATOR: u32 = 64;
