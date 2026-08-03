@@ -8,7 +8,7 @@ use super::band_confirmation::{
     BandConfirmationAcceptance, BandConfirmationPlan, CONFIRMATION_FAMILY_SIZE,
     TargetBandConfirmationInconclusive, validate_fixed_contract,
 };
-use super::breakaway_plan::PROBE_MAX_OBSERVATIONS_PER_DIRECTION;
+use super::breakaway_plan::PROBE_MAX_OBSERVATIONS;
 use super::current_guard::VelocityLimitEvidenceCapability;
 use super::recovery::{
     RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
@@ -17,7 +17,7 @@ use super::recovery::{
 use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
 use super::sweep_plan::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US,
-    SWEEP_DIRECTION_COUNT, VelocitySweepExecutionPlan, VelocitySweepRequest, ZERO_SETTLE_US,
+    VelocitySweepExecutionPlan, VelocitySweepRequest, ZERO_SETTLE_US,
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
@@ -994,13 +994,11 @@ pub fn integral_workflow_maximum_ms(
 /// cooperative analysis allowance. `512_000 + 500_000 + 236_000 = 1_248_000`.
 const BREAKAWAY_PRIMITIVE_US: u32 = MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
 
-/// Worst-case joint probe observation count reserved before probe motion:
-/// [`PROBE_MAX_OBSERVATIONS_PER_DIRECTION`] per direction across
-/// [`SWEEP_DIRECTION_COUNT`] directions -- 16 primitives, 19.968 s.
+/// Worst-case upward-probe observation count reserved before motion:
+/// [`PROBE_MAX_OBSERVATIONS`] primitives, 159.744 s.
 pub fn breakaway_probe_slots_us() -> Result<u64, VelocityIntegralPlanError> {
-    u64::from(PROBE_MAX_OBSERVATIONS_PER_DIRECTION)
-        .checked_mul(u64::from(SWEEP_DIRECTION_COUNT))
-        .and_then(|slots| slots.checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US)))
+    u64::from(PROBE_MAX_OBSERVATIONS)
+        .checked_mul(u64::from(BREAKAWAY_PRIMITIVE_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 

@@ -5,7 +5,7 @@ use crate::autotune::TmcMechanicalRpm;
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::breakaway_plan::{
-    BreakawayProbeContext, plan_breakaway_probe,
+    BreakawayProbeContext, PROBE_MAX_OBSERVATIONS, plan_breakaway_probe,
 };
 use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
 use foci_tmc4671::pid::PidPGain;
@@ -3110,21 +3110,20 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
 // FIX B: recovery slot reservation must cover every recovered observation
 // ================================================================================
 
-/// The drivers recover after every observation, not once per rung: two probe
-/// directions at up to [`PROBE_MAX_OBSERVATIONS_PER_DIRECTION`] observations
-/// each, every discovery rung driven in both directions at
+/// The drivers recover after every observation, not once per rung: every upward
+/// probe stroke, every discovery rung driven in both directions at
 /// [`OBSERVATIONS_PER_DIRECTION_PER_RUNG`], and the confirmation family. Pin
-/// the concrete value (280) so a silent regression to an under-reserving
+/// the concrete value (392) so a silent regression to an under-reserving
 /// constant is caught, and re-derive it from the same named constants the
 /// implementation uses so the assertion tracks any future change to those
 /// constants rather than drifting into a second hardcoded magic number.
 #[test]
 fn recovery_slot_count_covers_every_recovered_observation() {
-    let derived = 2 * u32::from(PROBE_MAX_OBSERVATIONS_PER_DIRECTION)
+    let derived = u32::from(PROBE_MAX_OBSERVATIONS)
         + MAX_SWEEP_RUNGS as u32 * 2 * u32::from(OBSERVATIONS_PER_DIRECTION_PER_RUNG)
         + u32::from(CONFIRMATION_FAMILY_SIZE);
 
-    assert_eq!(BreakawayCampaign::RECOVERY_SLOT_COUNT, 280);
+    assert_eq!(BreakawayCampaign::RECOVERY_SLOT_COUNT, 392);
     assert_eq!(BreakawayCampaign::RECOVERY_SLOT_COUNT, derived);
 }
 

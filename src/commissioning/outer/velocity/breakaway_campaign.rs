@@ -96,7 +96,7 @@ use super::band_confirmation::{
 use super::breakaway_plan::{
     AdditiveDiscoveryPlan, AdditiveDiscoveryRequest, AdditiveLadderPlanError,
     BreakawayProbeContext, BreakawayProbePlan, GridFloorOrigin, PROBE_CONFIDENCE_FAMILY_SIZE,
-    PROBE_MAX_OBSERVATIONS_PER_DIRECTION, plan_additive_discovery_ladder, plan_breakaway_probe,
+    PROBE_MAX_OBSERVATIONS, plan_additive_discovery_ladder, plan_breakaway_probe,
     resolve_grid_floor,
 };
 use super::breakaway_reporting::{
@@ -3555,15 +3555,14 @@ impl BreakawayCampaign {
     ///
     /// The implemented state machines recover after every observation, not once
     /// per rung, so the reservation must cover every observation across probe,
-    /// discovery, and confirmation: two probe directions at up to
-    /// [`PROBE_MAX_OBSERVATIONS_PER_DIRECTION`] observations each, every discovery
-    /// rung driven in both directions at
+    /// discovery, and confirmation: every possible upward-probe stroke, every
+    /// discovery rung driven in both directions at
     /// [`OBSERVATIONS_PER_DIRECTION_PER_RUNG`], and the confirmation family. Each
     /// slot is reserved at the plan's per-slot maximum, bounding the recovery term
-    /// of [`breakaway_workflow_envelope_ms`]. This evaluates to 280
-    /// (`2 * 8 + 32 * 2 * 4 + 8`); a unit test asserts both the concrete value and
+    /// of [`breakaway_workflow_envelope_ms`]. This evaluates to 392
+    /// (`128 + 32 * 2 * 4 + 8`); a unit test asserts both the concrete value and
     /// that it tracks the derivation constants.
-    pub(crate) const RECOVERY_SLOT_COUNT: u32 = 2 * PROBE_MAX_OBSERVATIONS_PER_DIRECTION as u32
+    pub(crate) const RECOVERY_SLOT_COUNT: u32 = PROBE_MAX_OBSERVATIONS as u32
         + MAX_SWEEP_RUNGS as u32 * 2 * OBSERVATIONS_PER_DIRECTION_PER_RUNG as u32
         + CONFIRMATION_FAMILY_SIZE as u32;
 
@@ -3601,7 +3600,7 @@ impl BreakawayCampaign {
 /// velocity, planned amplitude, and per-slot recovery reservations, and
 /// [`combined_workflow_geometry`] for the worst-case Stage-C continuation, then
 /// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
-/// (280 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
+/// (392 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
 /// returned [`CommissioningWorkflowPlan`] carries the exact envelope the
 /// campaign reserves, so disclosing it before construction matches the envelope
 /// [`BreakawayCampaign::new`] validates. Any planning failure is a zero-motion

@@ -5,7 +5,8 @@ use super::band_confirmation::{
 };
 use super::breakaway_plan::{
     AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, BreakawayProbePlan,
-    GridFloorOrigin, plan_additive_discovery_ladder, plan_breakaway_probe, resolve_grid_floor,
+    GridFloorOrigin, PROBE_MAX_OBSERVATIONS, plan_additive_discovery_ladder, plan_breakaway_probe,
+    resolve_grid_floor,
 };
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use super::integral_plan::{
@@ -762,10 +763,11 @@ fn new_breakaway_reserves_the_command_level_envelope_before_probe_motion() {
 // --- Duration accounting ----------------------------------------------------
 
 #[test]
-fn worst_case_probe_is_sixteen_primitives_at_19_968_seconds() {
+fn breakaway_workflow_reserves_upward_probe() {
     let primitive_us = MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
     assert_eq!(primitive_us, 1_248_000);
-    assert_eq!(breakaway_probe_slots_us(), Ok(19_968_000));
+    assert_eq!(PROBE_MAX_OBSERVATIONS, 128);
+    assert_eq!(breakaway_probe_slots_us(), Ok(159_744_000));
 }
 
 #[test]
