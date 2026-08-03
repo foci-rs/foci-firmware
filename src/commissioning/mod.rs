@@ -1688,6 +1688,11 @@ impl CommissioningEngine {
             StepResult::BreakawayCampaignEvent(event) => {
                 self.emit_breakaway_campaign_trace(backend, *event);
             }
+            // The dispatch layer emits this hand-off's plan trace records, the
+            // same way it does for the combined path's Stage-C continuation, so
+            // emitting here too would duplicate them.
+            #[cfg(feature = "trace-velocity-sweep")]
+            StepResult::BreakawayStageCPlanReady { .. } => {}
             StepResult::CommissionDone(result) => {
                 self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
                 let level = Self::status_level(result.inner.status);

@@ -4836,15 +4836,21 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
             else {
                 unreachable!("phase was matched as a breakaway campaign above")
             };
+            let run_sequence = campaign.run_sequence();
             *phase = OuterPhase::VelocityIntegral {
                 state: VelocityIntegralState::Setup,
-                data: VelocityIntegralData::new(campaign.run_sequence(), plan.execution_plan()),
+                data: VelocityIntegralData::new(run_sequence, plan.execution_plan()),
                 safety,
             };
             crate::diagnostic::complete_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
             );
-            StepResult::ReadyNow
+            // Report the plan with the transition. The combined path emits its
+            // Stage-C plan alongside the equivalent transition; returning a bare
+            // `ReadyNow` here left the host assembler with no plan at all, so
+            // its first Stage-C observation failed `_require_plan` with
+            // "integral-response evidence arrived before exact plan".
+            StepResult::BreakawayStageCPlanReady { run_sequence, plan }
         }
         BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
             error,

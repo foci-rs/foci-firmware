@@ -181,6 +181,11 @@ pub fn adapt_step_result(
         StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayCampaignEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
+        // The hand-off already installed the Stage-C phase, so the engine stays
+        // immediately runnable; the plan it carries is reported by the dispatch
+        // layer, not by the scheduler.
+        #[cfg(feature = "trace-velocity-sweep")]
+        StepResult::BreakawayStageCPlanReady { .. } => Ok(CommissionPoll::ReadyNow { event: None }),
         StepResult::AcceptanceMatrixTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::AcceptanceMatrix(result),
         }),

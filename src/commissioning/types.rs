@@ -1618,6 +1618,22 @@ pub enum StepResult {
     /// Streamed breakaway-campaign evidence became available.
     #[cfg(feature = "trace-velocity-sweep")]
     BreakawayCampaignEvent(BreakawayCampaignEvent),
+    /// An accepted breakaway campaign handed off to Stage C, carrying the exact
+    /// plan that hand-off installed.
+    ///
+    /// The plan must be reported, not merely installed. The combined Stage-B
+    /// path emits its Stage-C plan alongside the same transition (see
+    /// `commission_dispatch`'s `VelocityIntegralContinuation` arm), and the host
+    /// assembler refuses every Stage-C observation until it has seen a complete
+    /// plan. A hand-off that transitions silently strands the host with no plan
+    /// and fails the run on its first observation.
+    #[cfg(feature = "trace-velocity-sweep")]
+    BreakawayStageCPlanReady {
+        /// Campaign run sequence the Stage-C evidence chains to.
+        run_sequence: u32,
+        /// Exact Stage-C plan installed by the hand-off.
+        plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+    },
     /// Inner commissioning failed.
     InnerFailed(CommissionError),
     /// Outer commissioning completed successfully.

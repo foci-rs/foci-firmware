@@ -3161,6 +3161,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     let mut stroke_numerator = 0_i32;
     let mut stroke_sign = 1_i32;
     let mut handed_off = false;
+    let mut handoff_plan = None;
 
     for _ in 0..2_000_000 {
         if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase {
@@ -3185,11 +3186,27 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
         let result =
             pollster::block_on(step_breakaway_campaign_with_trace(&mut phase, &mut backend));
         match result {
+            // The hand-off must REPORT the Stage-C plan, not just transition to
+            // it. The combined path emits its plan alongside the same
+            // transition (`commission_dispatch/mod.rs`); a breakaway hand-off
+            // that returns a bare `ReadyNow` leaves the host assembler with no
+            // plan, and its first Stage-C observation fails `_require_plan`
+            // ("integral-response evidence arrived before exact plan").
+            StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+                assert!(
+                    matches!(phase, OuterPhase::VelocityIntegral { .. }),
+                    "the plan-ready result must accompany the phase transition"
+                );
+                assert_eq!(run_sequence, 7);
+                handoff_plan = Some(plan);
+                handed_off = true;
+                break;
+            }
             StepResult::ReadyNow | StepResult::BreakawayCampaignEvent(_) => {
-                if matches!(phase, OuterPhase::VelocityIntegral { .. }) {
-                    handed_off = true;
-                    break;
-                }
+                assert!(
+                    !matches!(phase, OuterPhase::VelocityIntegral { .. }),
+                    "the Stage-C hand-off must report its plan, not a bare ReadyNow"
+                );
             }
             StepResult::At(deadline) => {
                 backend.elapsed_us_value = deadline;
@@ -3209,6 +3226,8 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
         handed_off,
         "an accepted confirmation must hand off to the VelocityIntegral phase"
     );
+    let reported_plan = handoff_plan.expect("the hand-off must report its exact Stage-C plan");
+    assert_eq!(reported_plan.execution_plan(), expected_execution_plan);
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         panic!("the phase must have become VelocityIntegral after the accept");
     };
@@ -3285,12 +3304,12 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
         let result =
             pollster::block_on(step_breakaway_campaign_with_trace(&mut phase, &mut backend));
         match result {
-            StepResult::ReadyNow => {
-                if matches!(phase, OuterPhase::VelocityIntegral { .. }) {
-                    handed_off = true;
-                    break;
-                }
+            StepResult::BreakawayStageCPlanReady { .. } => {
+                assert!(matches!(phase, OuterPhase::VelocityIntegral { .. }));
+                handed_off = true;
+                break;
             }
+            StepResult::ReadyNow => {}
             StepResult::BreakawayCampaignEvent(event) => {
                 events
                     .push(event)
