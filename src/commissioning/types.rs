@@ -1210,7 +1210,7 @@ pub struct AdditiveDiscoveryPlanned {
 /// reported values. The raw atoms are transient (built, enqueued, dropped);
 /// nothing here is retained, so this adds no RAM.
 #[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayRawObservation {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
@@ -1510,7 +1510,7 @@ pub struct BreakawayCeilingSource {
 /// emit one wire record per item, the same way `emit_acceptance_matrix_plan`
 /// already fans one Rust value out to several wire fragments.
 #[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, Clone, Copy, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub enum BreakawayCampaignEvent {
     /// Immutable probe plan, emitted before the probe's first stroke.

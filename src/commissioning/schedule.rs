@@ -34,6 +34,19 @@ pub enum CommissionEvent {
         /// Transport-neutral evidence group.
         event: VelocityIntegralEvent,
     },
+    /// Streamed breakaway-campaign evidence.
+    ///
+    /// Without this the scheduled tick -- the only path a cooperative campaign
+    /// runs on -- has no way to turn campaign evidence into a Klipper reply, so
+    /// the host's campaign assembler never completes and refuses every later
+    /// Stage-C reply.
+    #[cfg(feature = "trace-velocity-sweep")]
+    BreakawayCampaign {
+        /// Object id of the commissioning channel.
+        oid: u8,
+        /// Transport-neutral evidence group.
+        event: crate::commissioning::types::BreakawayCampaignEvent,
+    },
     /// The exact Stage-C plan an accepted breakaway campaign handed off to.
     ///
     /// Carried as its own variant because the host assembler refuses every
@@ -199,7 +212,12 @@ pub fn adapt_step_result(
         }),
         StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
         #[cfg(feature = "trace-velocity-sweep")]
-        StepResult::BreakawayCampaignEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
+        StepResult::BreakawayCampaignEvent(event) => {
+            let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
+            Ok(CommissionPoll::ReadyNow {
+                event: Some(CommissionEvent::BreakawayCampaign { oid, event }),
+            })
+        }
         // The hand-off already installed the Stage-C phase, so the engine stays
         // immediately runnable -- but the plan must ride along as an event. A
         // bare `ReadyNow` here drops it, and the host then fails its first
@@ -278,6 +296,42 @@ mod tests {
     #[test]
     fn exactly_due_grid_deadline_advances_one_period() {
         assert_eq!(next_grid_deadline(1_000, 200, 1_000), Ok(1_200));
+    }
+
+    /// A dropped campaign event never reaches the host, so the host's campaign
+    /// assembler never completes and every later Stage-C reply is refused as
+    /// arriving "before an accepted campaign terminal". The scheduled tick is
+    /// the only path a cooperative campaign runs on, so this is the sole route
+    /// its evidence has.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn breakaway_campaign_evidence_reaches_the_host() {
+        use crate::commissioning::types::{BreakawayCampaignEvent, BreakawayProbeTerminal};
+
+        let event = BreakawayCampaignEvent::ProbeTerminal(BreakawayProbeTerminal {
+            run_sequence: 1,
+            evidence_sequence: 2,
+            plan_digest: 3,
+            terminal_cause: 4,
+            has_safety_fault: 0,
+            fault_checkpoint: 0,
+        });
+        let poll = adapt_step_result(
+            StepResult::BreakawayCampaignEvent(event),
+            0,
+            Some((3, EngineKind::OuterTune)),
+        )
+        .expect("campaign evidence adapts");
+
+        assert!(
+            matches!(
+                poll,
+                CommissionPoll::ReadyNow {
+                    event: Some(CommissionEvent::BreakawayCampaign { oid: 3, .. })
+                }
+            ),
+            "campaign evidence must be carried to the host, got {poll:?}"
+        );
     }
 
     #[test]
