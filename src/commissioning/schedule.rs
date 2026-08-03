@@ -34,6 +34,25 @@ pub enum CommissionEvent {
         /// Transport-neutral evidence group.
         event: VelocityIntegralEvent,
     },
+    /// The exact Stage-C plan an accepted breakaway campaign handed off to.
+    ///
+    /// Carried as its own variant because the host assembler refuses every
+    /// Stage-C observation until it has seen a complete plan, and no other
+    /// event can deliver one: [`VelocityIntegralEvent::Planned`] holds only a
+    /// digest and rung count, and the reply layer ignores it outright. The
+    /// combined Stage-B path emits its plan through
+    /// `commission_dispatch`'s continuation reply instead; a breakaway campaign
+    /// reaches Stage C on the scheduled-tick path, which only speaks
+    /// [`CommissionEvent`], so it needs this route.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegralPlan {
+        /// Object id of the commissioning channel.
+        oid: u8,
+        /// Campaign run sequence the Stage-C evidence chains to.
+        run_sequence: u32,
+        /// Exact Stage-C plan installed by the hand-off.
+        plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+    },
 }
 
 /// Terminal result from one commissioning engine run.
@@ -182,10 +201,21 @@ pub fn adapt_step_result(
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayCampaignEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
         // The hand-off already installed the Stage-C phase, so the engine stays
-        // immediately runnable; the plan it carries is reported by the dispatch
-        // layer, not by the scheduler.
+        // immediately runnable -- but the plan must ride along as an event. A
+        // bare `ReadyNow` here drops it, and the host then fails its first
+        // Stage-C observation with "integral-response evidence arrived before
+        // exact plan".
         #[cfg(feature = "trace-velocity-sweep")]
-        StepResult::BreakawayStageCPlanReady { .. } => Ok(CommissionPoll::ReadyNow { event: None }),
+        StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+            let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
+            Ok(CommissionPoll::ReadyNow {
+                event: Some(CommissionEvent::VelocityIntegralPlan {
+                    oid,
+                    run_sequence,
+                    plan,
+                }),
+            })
+        }
         StepResult::AcceptanceMatrixTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::AcceptanceMatrix(result),
         }),

@@ -664,27 +664,20 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // Emit the breakaway hand-off's Stage-C plan exactly as the combined
-        // Stage-B terminal arm emits its own: the plan trace records first, then
-        // the plan reply. The phase transition already happened inside the
-        // hand-off, so this arm only reports it; the next step drives Stage C.
+        // A breakaway campaign normally reaches Stage C on the scheduled-tick
+        // path, where `adapt_step_result` carries the plan out as a
+        // `CommissionEvent`. This arm covers the request-driven path so the
+        // plan is reported either way. Trace records are not emitted here: the
+        // engine's own trace hook already emits them for this result, and doing
+        // it twice would duplicate the plan on the wire.
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
             let engine_ref = engine
                 .as_ref()
                 .expect("engine slot is None on BreakawayStageCPlanReady");
-            let oid = engine_ref.oid();
-            for record in
-                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
-                    run_sequence,
-                    plan,
-                )
-            {
-                backend.record_velocity_sweep_trace_record(record);
-            }
             CommissionOutcome::Evidence {
                 reply: ReplyPayload::VelocityIntegralPlan {
-                    oid,
+                    oid: engine_ref.oid(),
                     run_sequence,
                     plan,
                 },

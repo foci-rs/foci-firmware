@@ -3228,6 +3228,36 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     );
     let reported_plan = handoff_plan.expect("the hand-off must report its exact Stage-C plan");
     assert_eq!(reported_plan.execution_plan(), expected_execution_plan);
+
+    // The plan must survive the SCHEDULED-TICK contract, which is the path a
+    // cooperative campaign actually takes (`tmc_control::state` calls
+    // `adapt_step_result`, not `commission_dispatch`). Mapping this hand-off to
+    // a bare `ReadyNow` discards the plan and strands the host assembler with
+    // nothing, exactly as observed on hardware.
+    use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, adapt_step_result};
+    let poll = adapt_step_result(
+        StepResult::BreakawayStageCPlanReady {
+            run_sequence: 7,
+            plan: reported_plan,
+        },
+        0,
+        Some((3, crate::commissioning::types::EngineKind::OuterTune)),
+    )
+    .expect("the hand-off adapts to the scheduling contract");
+    let CommissionPoll::ReadyNow {
+        event:
+            Some(CommissionEvent::VelocityIntegralPlan {
+                oid,
+                run_sequence,
+                plan,
+            }),
+    } = poll
+    else {
+        panic!("the scheduled tick must carry the Stage-C plan as an event: {poll:?}");
+    };
+    assert_eq!(oid, 3);
+    assert_eq!(run_sequence, 7);
+    assert_eq!(plan, reported_plan);
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         panic!("the phase must have become VelocityIntegral after the accept");
     };
