@@ -1120,7 +1120,7 @@ async fn sample_one_tick<B: CommissioningBackend>(
     workspace
         .observations
         .push(delta.signed_counts(), elapsed_us as u16)
-        .map_err(|_| fault(CommissionError::EvidenceBufferFull))?;
+        .map_err(|_| fault(CommissionError::ZeroElapsedSample))?;
     workspace.previous_encoder_raw = encoder_raw;
     workspace.previous_read_us = read_us;
     Ok(read_us)

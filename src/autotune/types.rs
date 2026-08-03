@@ -236,6 +236,9 @@ pub enum CommissionError {
     SearchGridInvalid,
     /// A directional target rate could not be represented. Code 62.
     TargetRateInvalid,
+    /// Two consecutive encoder samples reported the same timestamp, so the
+    /// interval between them was zero and no rate is derivable. Code 63.
+    ZeroElapsedSample,
 }
 
 impl CommissionError {
@@ -307,6 +310,7 @@ impl CommissionError {
             Self::MissingCaptureState => 60,
             Self::SearchGridInvalid => 61,
             Self::TargetRateInvalid => 62,
+            Self::ZeroElapsedSample => 63,
         }
     }
 }
@@ -654,6 +658,7 @@ mod tests {
             CommissionError::MissingCaptureState,
             CommissionError::SearchGridInvalid,
             CommissionError::TargetRateInvalid,
+            CommissionError::ZeroElapsedSample,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -686,6 +691,7 @@ mod tests {
         assert_eq!(CommissionError::MissingCaptureState.status_code(), 60);
         assert_eq!(CommissionError::SearchGridInvalid.status_code(), 61);
         assert_eq!(CommissionError::TargetRateInvalid.status_code(), 62);
+        assert_eq!(CommissionError::ZeroElapsedSample.status_code(), 63);
     }
 
     #[test]
