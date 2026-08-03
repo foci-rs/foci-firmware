@@ -1267,6 +1267,17 @@ pub struct BreakawayRawObservation {
     pub stroke_max_displacement_counts: i32,
     /// Maximum interval between consecutive probe encoder captures.
     pub capture_max_interval_us: u32,
+    /// Measured peak velocity-controller output observed during this stroke's
+    /// moving window, in torque-target counts.
+    ///
+    /// Streamed separately from `predicted_torque_target_abs` because that
+    /// field is `max(P * rpm / 256, moving_pid_output_peak)`
+    /// (`sweep_analysis.rs::predicted_torque_target_abs`), so a headroom
+    /// terminus reported through it cannot be attributed to the open-loop model
+    /// term or to measured demand without this value. Carrying both makes the
+    /// `max` decomposable offline, which is needed to choose a
+    /// commissioning clamp from evidence rather than from a fixed fraction.
+    pub moving_pid_output_peak: u16,
 }
 
 /// One recovered probe observation committed to the adaptive cursor.

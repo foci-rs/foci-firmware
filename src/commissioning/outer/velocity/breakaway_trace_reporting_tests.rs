@@ -225,6 +225,7 @@ fn encode_raw_observation_has_stable_frame_layout() {
         stroke_min_displacement_counts: -0x1516_1718,
         stroke_max_displacement_counts: 0x2122_2324,
         capture_max_interval_us: 0x2526_2728,
+        moving_pid_output_peak: 0xa1a2,
     };
     let record = encode_raw_observation(report);
     let expected = Expected::new()
@@ -254,8 +255,9 @@ fn encode_raw_observation_has_stable_frame_layout() {
         .u8(report.post_fit_lag_one_state)
         .i32(report.stroke_min_displacement_counts)
         .i32(report.stroke_max_displacement_counts)
-        .u32(report.capture_max_interval_us);
-    assert_eq!(record.as_bytes().len(), 116);
+        .u32(report.capture_max_interval_us)
+        .u16(report.moving_pid_output_peak);
+    assert_eq!(record.as_bytes().len(), 118);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -579,6 +581,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             stroke_min_displacement_counts: 0,
             stroke_max_displacement_counts: 0,
             capture_max_interval_us: 0,
+            moving_pid_output_peak: 0,
         })
         .as_bytes()[0],
         encode_discovery_terminal(AdditiveDiscoveryTerminal {

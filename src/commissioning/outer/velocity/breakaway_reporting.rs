@@ -417,6 +417,7 @@ pub(crate) fn raw_observation_report(
         stroke_min_displacement_counts: collected.stroke_min_displacement_counts,
         stroke_max_displacement_counts: collected.stroke_max_displacement_counts,
         capture_max_interval_us: collected.capture_max_interval_us,
+        moving_pid_output_peak: inputs.moving_pid_output_peak,
     }
 }
 

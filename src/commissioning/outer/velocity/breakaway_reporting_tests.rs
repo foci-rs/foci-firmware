@@ -374,6 +374,7 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
             deficit_low_q: -33,
             deficit_high_q: 44,
             predicted_torque_target_abs: 55,
+            moving_pid_output_peak: 51,
             usable_torque_limit: 66,
             hard_torque_limit: 77,
             disturbance_present: true,

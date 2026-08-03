@@ -175,6 +175,11 @@ pub(crate) fn encode_raw_observation(
     record.push_i32(report.stroke_min_displacement_counts);
     record.push_i32(report.stroke_max_displacement_counts);
     record.push_u32(report.capture_max_interval_us);
+    // Appended rather than placed beside `predicted_torque_target_abs`, whose
+    // `max` it decomposes, so every earlier field keeps its byte offset and an
+    // offline decoder reads it as one trailing conditional block -- the same
+    // shape every prior addition to this record used.
+    record.push_u16(report.moving_pid_output_peak);
     record
 }
 

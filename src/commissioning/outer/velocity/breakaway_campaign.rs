@@ -735,7 +735,10 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 },
                 rung_index: session.pending_index,
                 slot_index: session.pending_role.slot_index(),
-                classifier_inputs: observation_classifier_inputs(&input),
+                classifier_inputs: observation_classifier_inputs(
+                    &input,
+                    workspace.current_observer.moving_pid_output_peak(),
+                ),
                 stroke_min_displacement_counts: wire_fields.map_or(0, |fields| fields.0),
                 stroke_max_displacement_counts: wire_fields.map_or(0, |fields| fields.1),
                 capture_max_interval_us: wire_fields.map_or(0, |fields| fields.2),
@@ -1543,8 +1546,13 @@ pub(crate) struct ObservationClassifierInputs {
     pub(crate) deficit_low_q: i64,
     /// Inclusive upper signed-deficit confidence edge.
     pub(crate) deficit_high_q: i64,
-    /// Predicted absolute velocity-controller torque target.
+    /// Predicted absolute velocity-controller torque target. Already folded
+    /// with the measured peak: `max(P * rpm / 256, moving_pid_output_peak)`.
     pub(crate) predicted_torque_target_abs: u16,
+    /// Measured peak velocity-controller output for this stroke's moving
+    /// window, carried alongside `predicted_torque_target_abs` so the `max`
+    /// above stays decomposable offline for clamp-evidence analysis.
+    pub(crate) moving_pid_output_peak: u16,
     /// Inclusive current-headroom terminus.
     pub(crate) usable_torque_limit: u16,
     /// Hard controller-output clip boundary.
@@ -1580,7 +1588,10 @@ fn stationarity_wire_code(result: StationarityResult) -> u8 {
 
 /// Capture the frozen classify/consensus inputs from a built
 /// [`VelocityObservationInput`] at classification time.
-fn observation_classifier_inputs(input: &VelocityObservationInput) -> ObservationClassifierInputs {
+fn observation_classifier_inputs(
+    input: &VelocityObservationInput,
+    moving_pid_output_peak: u16,
+) -> ObservationClassifierInputs {
     let (disturbance_present, disturbance_low_q16, disturbance_high_q16) = match input.disturbance {
         Some((_, interval)) => (true, interval.low().raw(), interval.high().raw()),
         None => (false, 0, 0),
@@ -1592,6 +1603,7 @@ fn observation_classifier_inputs(input: &VelocityObservationInput) -> Observatio
         deficit_low_q: input.deficit_low_q,
         deficit_high_q: input.deficit_high_q,
         predicted_torque_target_abs: input.predicted_torque_target_abs,
+        moving_pid_output_peak,
         usable_torque_limit: input.usable_torque_limit,
         hard_torque_limit: input.hard_torque_limit,
         disturbance_present,
@@ -2095,7 +2107,10 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     variance_of_mean_q2,
                     target_rate_q,
                 },
-                classifier_inputs: observation_classifier_inputs(&input),
+                classifier_inputs: observation_classifier_inputs(
+                    &input,
+                    workspace.current_observer.moving_pid_output_peak(),
+                ),
             });
             workspace.analysis.reset();
             workspace.observations.clear();
@@ -3100,7 +3115,10 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     variance_of_mean_q2,
                     target_rate_q,
                 },
-                classifier_inputs: observation_classifier_inputs(&input),
+                classifier_inputs: observation_classifier_inputs(
+                    &input,
+                    workspace.current_observer.moving_pid_output_peak(),
+                ),
             });
             workspace.analysis.reset();
             workspace.observations.clear();
