@@ -2,9 +2,11 @@ use super::super::sweep_plan::{MAX_SWEEP_RUNGS, MIN_STRUCTURAL_RUNGS, VelocityPl
 use super::{
     AdditiveDiscoveryRequest, AdditiveLadderPlanError, BreakawayProbeContext, BreakawayProbePlan,
     GridFloorOrigin, MAX_ADDITIVE_GAIN_RATIO_DEN, MAX_ADDITIVE_GAIN_RATIO_NUM,
-    PROBE_CONFIDENCE_FAMILY_SIZE, PROBE_MAX_OBSERVATIONS_PER_DIRECTION,
-    plan_additive_discovery_ladder, plan_breakaway_probe, realize_candidate_additive_ladder,
-    resolve_grid_floor, satisfies_additive_ratio_guard,
+    PROBE_CONFIDENCE_FAMILY_SIZE, PROBE_MAX_CAPTURE_INTERVAL_US, PROBE_MAX_OBSERVATIONS,
+    PROBE_MAX_OBSERVATIONS_PER_DIRECTION, PROBE_MOTION_REVOLUTION_DENOMINATOR,
+    motion_threshold_counts, plan_additive_discovery_ladder, plan_breakaway_probe,
+    plan_upward_breakaway_probe, realize_candidate_additive_ladder, resolve_grid_floor,
+    satisfies_additive_ratio_guard,
 };
 use foci_tmc4671::pid::PidPGain;
 
@@ -143,6 +145,53 @@ fn probe_plan_rejects_a_span_too_thin_for_five_structural_rungs() {
         plan_breakaway_probe(gain(1), gain(4), probe_context()),
         Err(VelocityPlanError::InsufficientStructuralSpan)
     );
+}
+
+#[test]
+fn upward_probe_plan_freezes_excursion_and_observation_bounds() {
+    let plan = plan_upward_breakaway_probe(gain(1), gain(1_024), probe_context()).unwrap();
+
+    assert_eq!(PROBE_MOTION_REVOLUTION_DENOMINATOR, 64);
+    assert_eq!(PROBE_MAX_CAPTURE_INTERVAL_US, 2_000);
+    assert_eq!(PROBE_MAX_OBSERVATIONS, 128);
+    assert_eq!(plan.motion_threshold_counts, 63);
+    assert_eq!(plan.max_capture_interval_us, 2_000);
+    assert_eq!(plan.maximum_observations, 128);
+    assert_eq!(plan.search_count, 20);
+    assert_eq!(plan.plan_digest, plan.digest());
+}
+
+#[test]
+fn upward_probe_motion_threshold_uses_checked_ceiling_division() {
+    assert_eq!(motion_threshold_counts(4_000), Ok(63));
+    assert_eq!(motion_threshold_counts(64), Ok(1));
+    assert_eq!(motion_threshold_counts(1), Ok(1));
+    assert_eq!(
+        motion_threshold_counts(0),
+        Err(VelocityPlanError::InvalidRequest)
+    );
+}
+
+#[test]
+fn upward_probe_digest_binds_excursion_contract_and_physical_context() {
+    let base = plan_upward_breakaway_probe(gain(1), gain(1_024), probe_context()).unwrap();
+
+    let mut threshold_changed = base;
+    threshold_changed.motion_threshold_counts += 1;
+    assert_ne!(base.plan_digest, threshold_changed.digest());
+
+    let mut interval_changed = base;
+    interval_changed.max_capture_interval_us += 1;
+    assert_ne!(base.plan_digest, interval_changed.digest());
+
+    let mut budget_changed = base;
+    budget_changed.maximum_observations -= 1;
+    assert_ne!(base.plan_digest, budget_changed.digest());
+
+    let mut context = probe_context();
+    context.encoder_counts_per_rev = 8_192;
+    let context_changed = plan_upward_breakaway_probe(gain(1), gain(1_024), context).unwrap();
+    assert_ne!(base.plan_digest, context_changed.plan_digest);
 }
 
 // --- Predecessor lookup, arithmetic-floor clamping, missing-bracket code -------

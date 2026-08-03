@@ -1,10 +1,12 @@
 //! Pure, host-testable planning for the breakaway probe and the resolved additive
 //! discovery ladder.
 //!
-//! Nothing here moves the axis. This module only builds two immutable plans:
+//! Nothing here moves the axis. This module builds immutable plans:
 //!
 //! - [`BreakawayProbePlan`]: the diagnostic half-octave search grid the probe binary
 //!   searches, independently per direction, to find where the axis starts moving.
+//! - [`UpwardBreakawayProbePlan`]: the same realized grid plus the physical-excursion
+//!   contract for the pair-and-repeat upward walk that replaces the binary probe.
 //! - [`AdditiveDiscoveryPlan`]: the fixed-step ladder that spends the discovery
 //!   sweep's rung budget around the measured breakaway instead of across the whole
 //!   current-representable span.
@@ -53,6 +55,13 @@ pub const PROBE_CONFIDENCE_FAMILY_SIZE: u16 = 16;
 /// [`super::sweep_plan::MAX_SWEEP_RUNGS`] = 32-rung grid, including the "no motion"
 /// outcome) plus two mandatory bracket-confirmation repeats.
 pub const PROBE_MAX_OBSERVATIONS_PER_DIRECTION: u8 = 8;
+
+/// Mechanical-revolution divisor used by the physical-excursion probe.
+pub const PROBE_MOTION_REVOLUTION_DENOMINATOR: u32 = 64;
+/// Largest baseline-to-sample or sample-to-sample interval accepted by the probe.
+pub const PROBE_MAX_CAPTURE_INTERVAL_US: u32 = 2_000;
+/// Maximum observations consumed by a 32-rung pair-and-repeat upward walk.
+pub const PROBE_MAX_OBSERVATIONS: u8 = 128;
 
 /// Command-level workflow envelope and physical acquisition context a breakaway
 /// probe is planned under.
@@ -136,6 +145,89 @@ impl BreakawayProbePlan {
         hash_value!(self.context.encoder_counts_per_rev);
         hash
     }
+}
+
+/// Immutable, pre-motion plan for the physical-excursion upward probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct UpwardBreakawayProbePlan {
+    /// Post-dedupe anchored half-octave search grid; unused entries are zero.
+    pub search_gains: [PidPGain; MAX_SWEEP_RUNGS],
+    /// Number of valid entries in `search_gains`.
+    pub search_count: u8,
+    /// Minimum commanded-direction excursion that counts as physical motion.
+    pub motion_threshold_counts: u32,
+    /// Maximum accepted interval between consecutive encoder captures.
+    pub max_capture_interval_us: u32,
+    /// Maximum observations permitted across the whole upward walk.
+    pub maximum_observations: u8,
+    /// Command-level workflow envelope and physical acquisition context.
+    pub context: BreakawayProbeContext,
+    /// Digest of every frozen field and valid realized search gain.
+    pub plan_digest: u64,
+}
+
+impl UpwardBreakawayProbePlan {
+    /// Hash the realized grid, excursion contract, budget, and physical context.
+    pub fn digest(self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        macro_rules! hash_value {
+            ($value:expr) => {
+                for byte in $value.to_le_bytes() {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            };
+        }
+        hash_value!(self.search_count);
+        for gain in self
+            .search_gains
+            .iter()
+            .take(usize::from(self.search_count))
+        {
+            hash_value!(gain.raw());
+        }
+        hash_value!(self.motion_threshold_counts);
+        hash_value!(self.max_capture_interval_us);
+        hash_value!(self.maximum_observations);
+        hash_value!(self.context.workflow_digest);
+        hash_value!(self.context.target_velocity_rpm);
+        hash_value!(self.context.hard_torque_limit);
+        hash_value!(self.context.usable_torque_limit);
+        hash_value!(self.context.pwm_hz);
+        hash_value!(self.context.encoder_counts_per_rev);
+        hash
+    }
+}
+
+/// Compute the probe threshold as an exact checked ceiling division.
+pub(crate) fn motion_threshold_counts(counts_per_rev: u32) -> Result<u32, VelocityPlanError> {
+    if counts_per_rev == 0 {
+        return Err(VelocityPlanError::InvalidRequest);
+    }
+    Ok(counts_per_rev.div_ceil(PROBE_MOTION_REVOLUTION_DENOMINATOR))
+}
+
+/// Build the immutable physical-excursion upward-probe plan.
+pub fn plan_upward_breakaway_probe(
+    p_start: PidPGain,
+    p_top: PidPGain,
+    context: BreakawayProbeContext,
+) -> Result<UpwardBreakawayProbePlan, VelocityPlanError> {
+    let ladder = build_gain_ladder(p_start.raw(), p_top.raw())?;
+    let search_count = u8::try_from(ladder.len()).map_err(|_| VelocityPlanError::Arithmetic)?;
+    let mut search_gains = [PidPGain::ZERO; MAX_SWEEP_RUNGS];
+    search_gains[..ladder.len()].copy_from_slice(ladder.as_slice());
+
+    let mut plan = UpwardBreakawayProbePlan {
+        search_gains,
+        search_count,
+        motion_threshold_counts: motion_threshold_counts(context.encoder_counts_per_rev)?,
+        max_capture_interval_us: PROBE_MAX_CAPTURE_INTERVAL_US,
+        maximum_observations: PROBE_MAX_OBSERVATIONS,
+        context,
+        plan_digest: 0,
+    };
+    plan.plan_digest = plan.digest();
+    Ok(plan)
 }
 
 /// Build the immutable breakaway probe plan from the arithmetic floor and authority
