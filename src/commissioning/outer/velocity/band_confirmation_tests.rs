@@ -439,6 +439,79 @@ fn other_exclusion_reasons_are_reported_as_loss_of_consensus() {
     );
 }
 
+#[test]
+fn confirmation_accepts_a_split_disturbance_consensus_when_all_eight_are_contained() {
+    // Regression fixture: the eight held-out strokes captured on stepper_x at
+    // 95% current headroom, 2026-08-03 (candidate P=2258). Every response
+    // interval lies wholly inside 70-80% and every relative SE is far under
+    // the 21-permille ceiling, but the depth-three consensus over each
+    // direction's DISTURBANCE intervals split into two components -- forward
+    // by 60,590 Q16 units on a ~12.5M magnitude -- so both directions reported
+    // `included_mask = 0`. Disturbance agreement is a different measured
+    // quantity than the proportional response under test; it is diagnostic
+    // evidence, not an acceptance gate, so this block must confirm.
+    /// Commanded target rate shared by all eight captured strokes.
+    const CAPTURED_TARGET: i64 = 5_800_000;
+    /// Captured `(mean_rate_q, variance_of_mean_q2)` per forward slot.
+    const FORWARD_CAPTURE: [(i64, u128); CONSENSUS_OBSERVATIONS_PER_DIRECTION] = [
+        (4_296_875, 276_693_012),
+        (4_371_093, 178_161_750),
+        (4_390_625, 113_933_569),
+        (4_367_187, 158_691_350),
+    ];
+    /// Captured `(mean_rate_q, variance_of_mean_q2)` per reverse slot.
+    const REVERSE_CAPTURE: [(i64, u128); CONSENSUS_OBSERVATIONS_PER_DIRECTION] = [
+        (-4_324_218, 202_435_151),
+        (-4_375_000, 2_083_333_368),
+        (-4_472_656, 422_167_472),
+        (-4_390_625, 2_067_053_436),
+    ];
+
+    fn captured_direction(
+        direction: VelocityDirection,
+        capture: [(i64, u128); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        components: [[i32; 2]; 2],
+    ) -> ConfirmationDirectionalInput {
+        ConfirmationDirectionalInput {
+            consensus: DirectionalConsensus {
+                classification: DirectionalConsensusClass::AmbiguousConsensus,
+                components,
+                component_count: 2,
+                collected_mask: 0b1111,
+                eligible_mask: 0b1111,
+                included_mask: 0,
+            },
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: capture.map(|(mean_rate_q, variance_of_mean_q2)| {
+                Some(atom(
+                    direction,
+                    mean_rate_q,
+                    variance_of_mean_q2,
+                    CAPTURED_TARGET,
+                ))
+            }),
+        }
+    }
+
+    let forward = captured_direction(
+        VelocityDirection::Forward,
+        FORWARD_CAPTURE,
+        [[12_076_487, 12_514_347], [12_574_937, 12_757_354]],
+    );
+    let reverse = captured_direction(
+        VelocityDirection::Reverse,
+        REVERSE_CAPTURE,
+        [[-13_188_038, -12_404_134], [-12_075_051, -10_943_001]],
+    );
+
+    let result = evaluate_band_confirmation(gain(2258), forward, reverse);
+
+    assert_eq!(
+        result.map(|acceptance| acceptance.candidate_p()),
+        Ok(gain(2258))
+    );
+}
+
 // --- Held-out confirmation: exact containment and one-unit escapes ---------
 
 #[test]

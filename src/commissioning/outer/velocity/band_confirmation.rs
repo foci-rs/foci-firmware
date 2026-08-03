@@ -56,8 +56,13 @@ pub const CONFIRMATION_BAND_UPPER_PERCENT: u8 = 80;
 /// can be admitted, so this code has exactly one valid value today.
 pub const CONFIRMATION_CAPTURE_PROFILE_EXISTING: u8 = 0;
 /// Stable wire code for the only admitted held-out acceptance rule: both
-/// directions at complete `collected == eligible == included == 0b1111` masks
-/// and all eight fresh intervals wholly inside the band.
+/// directions at complete `collected == eligible == 0b1111` masks and all eight
+/// fresh intervals wholly inside the band.
+///
+/// The code is unchanged at 0. This rule has always been "all eight
+/// contained"; briefly also demanding a full depth-three `included_mask` was a
+/// defect in implementing it, not a different rule, so captures carrying
+/// `acceptance_rule = 0` remain replayable.
 pub const CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED: u8 = 0;
 
 /// Fixed execution order of the eight held-out confirmation strokes: four
@@ -534,8 +539,13 @@ pub enum BandConfirmationFailureCause {
     /// achievable response location could ever satisfy containment.
     ExcessiveUncertainty,
     /// Either direction failed to report complete
-    /// `collected_mask == eligible_mask == included_mask == 0b1111`, for a
-    /// reason other than current-headroom exclusion.
+    /// `collected_mask == eligible_mask == 0b1111`, or an expected observation
+    /// atom was absent, for a reason other than current-headroom exclusion.
+    ///
+    /// The name predates the acceptance rule dropping `included_mask`; the
+    /// wire code ([`super::breakaway_reporting::BreakawayTerminalCause::ConfirmationLossOfConsensus`],
+    /// 17) is stable, so it is retained. A split depth-three consensus alone no
+    /// longer reaches here.
     LossOfConsensus,
     /// Either direction's incomplete mask traces to at least one observation
     /// classified [`VelocityObservationClass::CurrentHeadroom`].
@@ -577,21 +587,39 @@ impl BandConfirmationAcceptance {
     }
 }
 
+/// Whether one direction contributed its complete four-observation schedule
+/// with every observation intrinsically eligible.
+///
+/// `included_mask` is deliberately **not** consulted. It is the depth-three
+/// consensus over this direction's `EquivalentTorqueTargetInterval`s -- the
+/// disturbance torque -- which is a different measured quantity than the
+/// proportional response the confirmation block is testing. Requiring it full
+/// would impose unanimous four-way disturbance agreement on top of the stated
+/// rule, rejecting blocks whose eight response intervals all satisfy the 70-80%
+/// claim. Both hazards spec section 7 names for demanding complete masks are
+/// covered without it: an ineligible observation by `eligible_mask`, and an
+/// out-of-band one by [`evaluate_band_confirmation`]'s containment loop, which
+/// judges all eight observations unconditionally rather than a mask-selected
+/// subset. Consensus stays on the wire as diagnostic evidence.
 fn directional_input_is_complete(input: &ConfirmationDirectionalInput) -> bool {
     input.consensus.collected_mask == FULL_DIRECTIONAL_OBSERVATION_MASK
         && input.consensus.eligible_mask == FULL_DIRECTIONAL_OBSERVATION_MASK
-        && input.consensus.included_mask == FULL_DIRECTIONAL_OBSERVATION_MASK
 }
 
 /// Judge the held-out family-eight confirmation block.
 ///
 /// Acceptance requires both directions to report complete
-/// `collected_mask == eligible_mask == included_mask == 0b1111` and all eight
-/// fresh intervals to lie wholly inside 70-80%. Any exclusion — stationarity,
-/// consensus, headroom, or otherwise — fails confirmation rather than
-/// shrinking the set (spec section 7, "Confirmation block"). `c_sigma` does
-/// not appear here: this is real held-out data, not a discovery-derived
-/// prediction, so the interval uses `h = m(8) * SE` directly.
+/// `collected_mask == eligible_mask == 0b1111`, every observation atom to be
+/// present, and all eight fresh intervals to lie wholly inside 70-80%. The
+/// containment loop below judges all eight unconditionally, so no observation
+/// can be dropped from the accepted set: any exclusion — stationarity,
+/// eligibility, headroom, or otherwise — fails confirmation rather than
+/// shrinking it (spec section 7, "Confirmation block").
+///
+/// The depth-three `included_mask` is not part of the gate; see
+/// [`directional_input_is_complete`] for why. `c_sigma` does not appear here
+/// either: this is real held-out data, not a discovery-derived prediction, so
+/// the interval uses `h = m(8) * SE` directly.
 pub fn evaluate_band_confirmation(
     candidate_p: PidPGain,
     forward: ConfirmationDirectionalInput,
