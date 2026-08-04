@@ -2841,7 +2841,7 @@ mod tests {
             encoder_counts_per_rev: 0,
         });
 
-        assert!(matches!(result, Err(CommissionError::InvalidSchedule)));
+        assert!(matches!(result, Err(CommissionError::CampaignPlanInvalid)));
     }
 
     #[cfg(feature = "trace-velocity-sweep")]

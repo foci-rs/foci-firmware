@@ -239,6 +239,17 @@ pub enum CommissionError {
     /// Two consecutive encoder samples reported the same timestamp, so the
     /// interval between them was zero and no rate is derivable. Code 63.
     ZeroElapsedSample,
+    /// A campaign plan, ladder, envelope, or sub-plan could not be constructed
+    /// before motion. Code 64.
+    CampaignPlanInvalid,
+    /// Stage-C authority could not be bound from an accepted confirmation. Code 65.
+    StageCAuthorityDenied,
+    /// Discovery finished without a selected in-band ladder, so a path
+    /// requiring a nominated band had nothing to act on. Code 66.
+    ///
+    /// The accompanying `BreakawayTerminalCause` carries the specific reason
+    /// discovery did not select; this code says only that none was selected.
+    DiscoveryBandNotSelected,
 }
 
 impl CommissionError {
@@ -311,6 +322,9 @@ impl CommissionError {
             Self::SearchGridInvalid => 61,
             Self::TargetRateInvalid => 62,
             Self::ZeroElapsedSample => 63,
+            Self::CampaignPlanInvalid => 64,
+            Self::StageCAuthorityDenied => 65,
+            Self::DiscoveryBandNotSelected => 66,
         }
     }
 }
@@ -659,6 +673,9 @@ mod tests {
             CommissionError::SearchGridInvalid,
             CommissionError::TargetRateInvalid,
             CommissionError::ZeroElapsedSample,
+            CommissionError::CampaignPlanInvalid,
+            CommissionError::StageCAuthorityDenied,
+            CommissionError::DiscoveryBandNotSelected,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -692,6 +709,9 @@ mod tests {
         assert_eq!(CommissionError::SearchGridInvalid.status_code(), 61);
         assert_eq!(CommissionError::TargetRateInvalid.status_code(), 62);
         assert_eq!(CommissionError::ZeroElapsedSample.status_code(), 63);
+        assert_eq!(CommissionError::CampaignPlanInvalid.status_code(), 64);
+        assert_eq!(CommissionError::StageCAuthorityDenied.status_code(), 65);
+        assert_eq!(CommissionError::DiscoveryBandNotSelected.status_code(), 66);
     }
 
     #[test]

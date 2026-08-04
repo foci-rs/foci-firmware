@@ -2989,15 +2989,16 @@ fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
     assert_eq!(safety_fault, Some(fault));
 }
 
-// --- 6d routing: an impossible discovery outcome maps to InvalidSchedule -------
+// --- 6d routing: an impossible discovery outcome maps to band-not-selected ----
 
 #[test]
-fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedule() {
+fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_band_not_selected() {
     let inputs = stage_c_inputs(2_448);
 
     // `TargetBandSkipped` is a discovery-owned terminal that must never reach
-    // confirmation routing; if it does, it maps to the InvalidSchedule safety
-    // fault rather than silently proceeding.
+    // confirmation routing; if it does, it maps to `DiscoveryBandNotSelected`
+    // rather than silently proceeding. The terminal cause carries the specific
+    // reason discovery did not select.
     let mut evidence_sequence = 0_u16;
     let advance = route_discovery_outcome(
         AdditiveDiscoveryOutcome::TargetBandSkipped,
@@ -3012,7 +3013,7 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_invalid_schedul
     else {
         panic!("an impossible discovery outcome must be a Terminal step");
     };
-    assert_eq!(error, CommissionError::InvalidSchedule);
+    assert_eq!(error, CommissionError::DiscoveryBandNotSelected);
     assert!(safety.is_none());
 }
 
@@ -3100,7 +3101,7 @@ fn plan_time_resolution_refusal_keeps_its_discovery_terminal_cause() {
         campaign_terminal.terminal_cause,
         BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded as u8
     );
-    assert_eq!(error, CommissionError::InvalidSchedule);
+    assert_eq!(error, CommissionError::DiscoveryBandNotSelected);
 }
 
 // --- Accept hands off through the engine adapter into VelocityIntegral ---------

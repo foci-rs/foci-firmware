@@ -1406,7 +1406,7 @@ fn additive_discovery_plan_error_outcome(
         | AdditiveLadderPlanError::PrimitiveDurationExceeded
         | AdditiveLadderPlanError::WorkflowEnvelopeExceeded => {
             AdditiveDiscoveryOutcome::SafetyFault {
-                error: CommissionError::InvalidSchedule,
+                error: CommissionError::CampaignPlanInvalid,
                 safety: None,
             }
         }
@@ -2594,7 +2594,7 @@ pub(crate) fn begin_band_confirmation(
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
         | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. } => {
             return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
-                error: CommissionError::InvalidSchedule,
+                error: CommissionError::DiscoveryBandNotSelected,
                 safety: None,
             });
         }
@@ -2617,7 +2617,7 @@ pub(crate) fn begin_band_confirmation(
         Ok(plan) => plan,
         Err(_) => {
             return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
-                error: CommissionError::InvalidSchedule,
+                error: CommissionError::CampaignPlanInvalid,
                 safety: None,
             });
         }
@@ -3504,7 +3504,7 @@ impl BreakawayCampaign {
     pub(crate) fn new(request: BreakawayCampaignRequest) -> Result<Self, CommissionError> {
         let (p_start, p_top, usable_torque_limit, ceiling_binding_source) =
             current_gain_span(request.target_velocity_rpm, request.hard_torque_limit)
-                .map_err(|_| CommissionError::InvalidSchedule)?;
+                .map_err(|_| CommissionError::CampaignPlanInvalid)?;
         // Reserve the command-level envelope before any probe motion; every
         // phase plan must later fit inside `maximum_workflow_ms`. Its digest is
         // bound into the probe plan below, so the whole downstream digest chain
@@ -3514,7 +3514,7 @@ impl BreakawayCampaign {
             request.nominal_workflow_ms,
             request.maximum_workflow_ms,
         )
-        .map_err(|_| CommissionError::InvalidSchedule)?;
+        .map_err(|_| CommissionError::CampaignPlanInvalid)?;
         let probe_context = BreakawayProbeContext {
             workflow_digest: workflow.digest(),
             target_velocity_rpm: request.target_velocity_rpm.raw(),
@@ -3524,13 +3524,13 @@ impl BreakawayCampaign {
             encoder_counts_per_rev: request.encoder_counts_per_rev,
         };
         let probe_plan = plan_upward_breakaway_probe(p_start, p_top, probe_context)
-            .map_err(|_| CommissionError::InvalidSchedule)?;
+            .map_err(|_| CommissionError::CampaignPlanInvalid)?;
         let session = BreakawayProbeSession::new(
             probe_plan,
             request.target_velocity_rpm,
             request.planned_velocity_mrev_s,
         )
-        .map_err(|_| CommissionError::InvalidSchedule)?;
+        .map_err(|_| CommissionError::CampaignPlanInvalid)?;
         Ok(Self {
             inputs: BreakawayCampaignInputs {
                 p_start,
@@ -3633,9 +3633,9 @@ pub(crate) fn plan_breakaway_campaign_command(
         hard_torque_limit,
         limit_evidence_capability,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)?;
-    let geometry =
-        combined_workflow_geometry(plan, pwm_hz).map_err(|_| CommissionError::InvalidSchedule)?;
+    .map_err(|_| CommissionError::CampaignPlanInvalid)?;
+    let geometry = combined_workflow_geometry(plan, pwm_hz)
+        .map_err(|_| CommissionError::CampaignPlanInvalid)?;
     let stage_c_nominal_us = u64::from(geometry.i_nominal_ms)
         .checked_mul(1_000)
         .ok_or(CommissionError::InvalidSchedule)?;
@@ -3647,19 +3647,19 @@ pub(crate) fn plan_breakaway_campaign_command(
         plan.recovery_nominal_slot_us,
         stage_c_nominal_us,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)?;
+    .map_err(|_| CommissionError::CampaignPlanInvalid)?;
     let maximum_workflow_ms = breakaway_workflow_envelope_ms(
         BreakawayCampaign::RECOVERY_SLOT_COUNT,
         plan.recovery_maximum_slot_us,
         stage_c_maximum_us,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)?;
+    .map_err(|_| CommissionError::CampaignPlanInvalid)?;
     let workflow = CommissioningWorkflowPlan::new_breakaway(
         run_sequence,
         nominal_workflow_ms,
         maximum_workflow_ms,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)?;
+    .map_err(|_| CommissionError::CampaignPlanInvalid)?;
     let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
         target_velocity_rpm: plan.target_velocity_rpm,
         planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
@@ -4015,7 +4015,7 @@ fn discovery_construction_fault(
     EmitContinuation::Terminal {
         campaign_terminal,
         done: BreakawayCampaignOutcome::Terminal {
-            error: CommissionError::InvalidSchedule,
+            error: CommissionError::DiscoveryBandNotSelected,
             safety: None,
         },
     }
@@ -4098,7 +4098,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
         Ok(token) => token,
         Err(_) => {
             return BreakawayCampaignOutcome::Terminal {
-                error: CommissionError::InvalidSchedule,
+                error: CommissionError::StageCAuthorityDenied,
                 safety: None,
             };
         }
@@ -4188,12 +4188,12 @@ fn enter_discovery(
             let (cause, error, safety) = match outcome {
                 AdditiveDiscoveryOutcome::InsufficientAdditiveSpan => (
                     BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
-                    CommissionError::InvalidSchedule,
+                    CommissionError::DiscoveryBandNotSelected,
                     None,
                 ),
                 AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => (
                     BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded,
-                    CommissionError::InvalidSchedule,
+                    CommissionError::DiscoveryBandNotSelected,
                     None,
                 ),
                 AdditiveDiscoveryOutcome::SafetyFault { error, safety } => {
@@ -4204,7 +4204,7 @@ fn enter_discovery(
                 | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
                 | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. } => (
                     BreakawayTerminalCause::DiscoverySafetyFault,
-                    CommissionError::InvalidSchedule,
+                    CommissionError::DiscoveryBandNotSelected,
                     None,
                 ),
             };
@@ -4333,7 +4333,7 @@ fn discovery_done_advance(
             EmitContinuation::Terminal {
                 campaign_terminal,
                 done: BreakawayCampaignOutcome::Terminal {
-                    error: CommissionError::InvalidSchedule,
+                    error: CommissionError::DiscoveryBandNotSelected,
                     safety: None,
                 },
             }
