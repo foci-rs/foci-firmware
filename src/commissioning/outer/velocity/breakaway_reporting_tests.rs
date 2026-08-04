@@ -235,11 +235,14 @@ fn probe_terminal_cause_maps_every_non_found_variant() {
     assert_eq!(cause, BreakawayTerminalCause::ProbeSafetyFault);
     assert_eq!(has_fault, 1);
 
+    // An internal fault carries no safety fault, so it must not be reported as
+    // one. A `*_safety_fault` cause paired with `has_safety_fault = 0` reads as
+    // a safety event to anyone inspecting a capture, and is not.
     let (cause, has_fault) = probe_terminal_cause(&BreakawayProbeOutcome::SafetyFault {
         error: CommissionError::Spi,
         safety: None,
     });
-    assert_eq!(cause, BreakawayTerminalCause::ProbeSafetyFault);
+    assert_eq!(cause, BreakawayTerminalCause::ProbeInternalFault);
     assert_eq!(has_fault, 0);
 }
 

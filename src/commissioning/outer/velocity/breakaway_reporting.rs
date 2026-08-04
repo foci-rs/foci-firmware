@@ -102,6 +102,13 @@ pub(crate) enum BreakawayTerminalCause {
     Accepted = 21,
     /// [`BreakawayProbeOutcome::ExcursionEvidenceInvalid`].
     ProbeExcursionEvidenceInvalid = 22,
+    /// A probe fault that carries no safety fault: an internal error, not a
+    /// safety event. Paired with `has_safety_fault = 0`.
+    ProbeInternalFault = 23,
+    /// A discovery fault that carries no safety fault.
+    DiscoveryInternalFault = 24,
+    /// A confirmation fault that carries no safety fault.
+    ConfirmationInternalFault = 25,
 }
 
 /// Relative standard error above which no achievable response location could
@@ -160,7 +167,11 @@ pub(crate) fn probe_terminal_cause(
             (BreakawayTerminalCause::ProbeAuthorityFailure, 0)
         }
         BreakawayProbeOutcome::SafetyFault { safety, .. } => (
-            BreakawayTerminalCause::ProbeSafetyFault,
+            if safety.is_some() {
+                BreakawayTerminalCause::ProbeSafetyFault
+            } else {
+                BreakawayTerminalCause::ProbeInternalFault
+            },
             u8::from(safety.is_some()),
         ),
     }
@@ -195,7 +206,11 @@ pub(crate) fn discovery_terminal_cause(
             (BreakawayTerminalCause::DiscoveryEvidenceExcluded, 0)
         }
         AdditiveDiscoveryOutcome::SafetyFault { safety, .. } => (
-            BreakawayTerminalCause::DiscoverySafetyFault,
+            if safety.is_some() {
+                BreakawayTerminalCause::DiscoverySafetyFault
+            } else {
+                BreakawayTerminalCause::DiscoveryInternalFault
+            },
             u8::from(safety.is_some()),
         ),
     }
@@ -230,7 +245,11 @@ pub(crate) fn confirmation_zero_stroke_cause(
             (BreakawayTerminalCause::ConfirmationEvidenceExcluded, 0)
         }
         BandConfirmationOutcome::SafetyFault { safety, .. } => (
-            BreakawayTerminalCause::ConfirmationSafetyFault,
+            if safety.is_some() {
+                BreakawayTerminalCause::ConfirmationSafetyFault
+            } else {
+                BreakawayTerminalCause::ConfirmationInternalFault
+            },
             u8::from(safety.is_some()),
         ),
     }
