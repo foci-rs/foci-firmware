@@ -7,13 +7,18 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Firmware trace protocol version. Version 17 adds `error_code` to the
+/// Firmware trace protocol version. Version 18 adds the breakaway
+/// rejected-recovery-rest record, the only evidence that explains a
+/// `velocity_rest_not_confirmed` terminal: it pairs the scored-rest selector's
+/// per-suffix verdicts with the settle displacement bounds that gate the
+/// one-count fallback. Only rejections are reported, so an accepted campaign
+/// emits none. Version 17 added `error_code` to the
 /// breakaway discovery terminal, so a `*_internal_fault` names the
 /// `CommissionError` behind it rather than leaving the fault unattributable.
 /// Version 16 added the measured `moving_pid_output_peak` to the breakaway
 /// raw-observation record. Version 15 published the
 /// physical-excursion upward-probe contract.
-pub const PROTOCOL_VERSION: u8 = 17;
+pub const PROTOCOL_VERSION: u8 = 18;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -643,7 +648,7 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 17);
+        assert_eq!(PROTOCOL_VERSION, 18);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);

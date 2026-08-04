@@ -1013,6 +1013,14 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         BreakawayCampaignEvent::CampaignTerminal(report) => {
             emit_breakaway_campaign_terminal(sink, oid, report);
         }
+        // Diagnostic-only: the rejected-rest record exists to explain a
+        // `VelocityRestNotConfirmed` terminal offline, and every field it
+        // carries is already reconstructible from the FTRC trace stream.
+        // Giving it a Klipper reply too would add a wire type to both board
+        // sinks and the host extra for evidence no host-side decision reads,
+        // so this path deliberately drops it. The campaign terminal the
+        // rejection produces still reports over the reply channel as usual.
+        BreakawayCampaignEvent::RecoveryRestRejected(_) => {}
     }
 }
 

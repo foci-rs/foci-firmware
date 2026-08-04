@@ -1504,6 +1504,69 @@ pub struct BreakawayCeilingSource {
     pub binding_source: u8,
 }
 
+/// One rejected recovery-rest scoring window.
+///
+/// Emitted only when the scored-rest selector returned
+/// [`crate::autotune::velocity_measurement::RestSelectionDisposition::Rejected`].
+/// Accepted recoveries emit nothing: a campaign passes roughly 160 recovery
+/// rest gates, so streaming every one would bury the single rejection that
+/// ends the campaign under two orders of magnitude of noise.
+///
+/// A rejection needs both acceptance routes to fail at once, and the two are
+/// evidenced separately. The selector's per-suffix verdicts explain the
+/// statistical route; `scored_min_displacement_counts` and
+/// `scored_max_displacement_counts` explain the one-count fallback, which is
+/// only offered when their span is at most one count. Pairing them in one
+/// record lets an offline decoder tell a two-count displacement span, a
+/// structural rejection, and a resolved non-zero interval apart -- none of
+/// which is otherwise observable, because the settle displacement never
+/// reaches the wire and `RecoveryRestDiagnostic` is only produced under the
+/// stabilized rest schedule that the breakaway campaign never uses.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayRecoveryRestRejected {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning probe, discovery, or confirmation plan.
+    pub plan_digest: u64,
+    /// Owning phase: probe (0), discovery (1), or confirmation (2).
+    pub phase: u8,
+    /// Recovery stage that scored the window.
+    pub stage: u8,
+    /// Zero-based probe or discovery rung; `0` for confirmation.
+    pub rung_index: u8,
+    /// Phase-local slot of the stroke whose recovery was scored.
+    pub slot_index: u8,
+    /// Direction of the stroke whose recovery was scored.
+    pub direction: u8,
+    /// Raw velocity P gain in force for the stroke.
+    pub p_raw: u16,
+    /// Structural result codes in `VELOCITY_SUFFIX_LENGTHS` order.
+    pub structural_codes: [u8; 3],
+    /// Bit set when the matching suffix interval is present.
+    pub interval_present_mask: u8,
+    /// Bit set when every structural stationarity gate passed.
+    pub usable_mask: u8,
+    /// Bit set when a structurally usable closed interval contains zero.
+    pub zero_compatible_mask: u8,
+    /// Bit naming the selected suffix, or zero when none was selected.
+    pub selected_mask: u8,
+    /// Selected suffix length, or zero when none was selected.
+    pub selected_suffix_len: u16,
+    /// Final selector disposition; always `Rejected` for this record.
+    pub disposition: u8,
+    /// Exact simultaneous intervals in `VELOCITY_SUFFIX_LENGTHS` order.
+    pub intervals_q: [[i64; 2]; 3],
+    /// Net settle displacement over the scored window, clamped to `-2..=2`.
+    pub scored_net_displacement_counts: i8,
+    /// Minimum settle displacement over the scored window.
+    pub scored_min_displacement_counts: i8,
+    /// Maximum settle displacement over the scored window.
+    pub scored_max_displacement_counts: i8,
+}
+
 /// One breakaway-campaign evidence record ready for wire emission.
 ///
 /// Mirrors [`VelocitySweepEvent`]: the campaign driver
@@ -1584,6 +1647,9 @@ pub enum BreakawayCampaignEvent {
     },
     /// The canonical closure record for one complete breakaway campaign.
     CampaignTerminal(BreakawayCampaignTerminal),
+    /// One rejected recovery-rest scoring window, streamed on the tick the
+    /// selector rejected it. Accepted rest windows produce no event.
+    RecoveryRestRejected(BreakawayRecoveryRestRejected),
 }
 
 /// Generic terminal tying an inconclusive outer phase to its detailed report.

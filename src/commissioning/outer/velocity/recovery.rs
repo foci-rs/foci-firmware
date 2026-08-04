@@ -494,6 +494,14 @@ impl RungOriginRecoveryRuntime {
         self.flags & Self::STABILIZED != 0
     }
 
+    /// Raw velocity P gain this recovery is running under.
+    ///
+    /// Exposed so a phase driver can name the gain on a diagnostic record
+    /// without reaching into the runtime's private plan state.
+    pub(crate) fn p_raw(&self) -> u16 {
+        self.p.raw()
+    }
+
     fn rest_allowance_us(&self) -> u32 {
         ZERO_SETTLE_US
             + SETTLE_ANALYSIS_BUDGET_US

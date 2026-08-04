@@ -54,9 +54,10 @@ use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL, EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION,
     EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN, EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT,
     EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
-    EVENT_COMMISSION_OUTER_SAFETY_TIMING, EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
-    EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY, EVENT_COMMISSION_SELECTED_RECOVERY_REST,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
+    EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+    EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -1751,7 +1752,7 @@ impl CommissioningEngine {
             encode_confirmation_planned, encode_confirmation_terminal, encode_discovery_planned,
             encode_discovery_rung_margin, encode_discovery_terminal, encode_probe_decision,
             encode_probe_planned, encode_probe_resolved, encode_probe_terminal,
-            encode_raw_observation, encode_rung_zero_diagnostic,
+            encode_raw_observation, encode_recovery_rest_rejected, encode_rung_zero_diagnostic,
         };
         use crate::commissioning::types::BreakawayCampaignEvent;
 
@@ -1771,6 +1772,7 @@ impl CommissioningEngine {
                 terminal.evidence_sequence
             }
             BreakawayCampaignEvent::CampaignTerminal(report) => report.evidence_sequence,
+            BreakawayCampaignEvent::RecoveryRestRejected(report) => report.evidence_sequence,
         };
         let event_id = match &event {
             BreakawayCampaignEvent::ProbePlanned(_) => EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
@@ -1795,6 +1797,9 @@ impl CommissioningEngine {
             }
             BreakawayCampaignEvent::CampaignTerminal(_) => {
                 EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL
+            }
+            BreakawayCampaignEvent::RecoveryRestRejected(_) => {
+                EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED
             }
         };
 
@@ -1889,6 +1894,9 @@ impl CommissioningEngine {
             }
             BreakawayCampaignEvent::CampaignTerminal(report) => {
                 backend.record_velocity_sweep_trace_record(encode_campaign_terminal(report));
+            }
+            BreakawayCampaignEvent::RecoveryRestRejected(report) => {
+                backend.record_velocity_sweep_trace_record(encode_recovery_rest_rejected(report));
             }
         }
         #[cfg(not(feature = "trace"))]

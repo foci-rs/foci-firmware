@@ -447,6 +447,76 @@ pub(crate) struct ProbeDecisionReportInput {
     pub(crate) disposition: u8,
 }
 
+/// Driver-local identity for one rejected recovery-rest scoring window.
+///
+/// The phase driver names the stroke and hands over the selector's verdict and
+/// the settle bounds it scored; the campaign layer attaches the wire identity
+/// (owning phase, plan digest, run sequence, evidence sequence).
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct RecoveryRestRejectedInput {
+    /// The scored-rest selector's complete decision.
+    pub(crate) decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+    /// Recovery stage that scored the window.
+    pub(crate) stage: u8,
+    /// Zero-based probe or discovery rung; `0` for confirmation.
+    pub(crate) rung_index: u8,
+    /// Phase-local slot of the stroke whose recovery was scored.
+    pub(crate) slot_index: u8,
+    /// Direction of the stroke whose recovery was scored.
+    pub(crate) direction: VelocityDirection,
+    /// Raw velocity P gain in force for the stroke.
+    pub(crate) p_raw: u16,
+    /// Net settle displacement over the scored window.
+    pub(crate) scored_net_displacement_counts: i8,
+    /// Minimum settle displacement over the scored window.
+    pub(crate) scored_min_displacement_counts: i8,
+    /// Maximum settle displacement over the scored window.
+    pub(crate) scored_max_displacement_counts: i8,
+}
+
+/// Report one rejected recovery-rest scoring window.
+///
+/// Only rejections reach this function; accepted rest windows are never
+/// reported, so the record's `disposition` is always `Rejected`. It is carried
+/// on the wire regardless, so a decoder validates rather than assumes it.
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) fn recovery_rest_rejected_report(
+    plan_digest: u64,
+    phase: BreakawayPhase,
+    input: RecoveryRestRejectedInput,
+    run_sequence: u32,
+    evidence_sequence: u16,
+) -> crate::commissioning::types::BreakawayRecoveryRestRejected {
+    let decision = input.decision;
+    crate::commissioning::types::BreakawayRecoveryRestRejected {
+        run_sequence,
+        evidence_sequence,
+        plan_digest,
+        phase: phase as u8,
+        stage: input.stage,
+        rung_index: input.rung_index,
+        slot_index: input.slot_index,
+        direction: direction_report_code(input.direction),
+        p_raw: input.p_raw,
+        structural_codes: [
+            decision.structural_codes[0] as u8,
+            decision.structural_codes[1] as u8,
+            decision.structural_codes[2] as u8,
+        ],
+        interval_present_mask: decision.interval_present_mask,
+        usable_mask: decision.usable_mask,
+        zero_compatible_mask: decision.zero_compatible_mask,
+        selected_mask: decision.selected_mask,
+        selected_suffix_len: decision.selected_suffix_len,
+        disposition: decision.disposition as u8,
+        intervals_q: decision.intervals_q,
+        scored_net_displacement_counts: input.scored_net_displacement_counts,
+        scored_min_displacement_counts: input.scored_min_displacement_counts,
+        scored_max_displacement_counts: input.scored_max_displacement_counts,
+    }
+}
+
 /// Report one recovered probe observation immediately before cursor mutation.
 pub(crate) fn probe_decision_report(
     plan_digest: u64,

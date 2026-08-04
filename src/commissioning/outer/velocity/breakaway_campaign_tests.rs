@@ -129,6 +129,7 @@ fn run_probe_with_target(
                 backend.set_abn_decoder_count(encoder_count);
             }
             BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => return (outcome, backend),
         }
     }
@@ -290,6 +291,7 @@ fn probe_retains_setup_safety_contract_through_capture_and_recovery() {
             BreakawayProbeStep::ReadyNow => {}
             BreakawayProbeStep::At(deadline) => backend.elapsed_us_value = deadline,
             BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => {
                 panic!("first probe stroke terminated unexpectedly: {outcome:?}")
             }
@@ -376,6 +378,7 @@ fn probe_streams_raw_evidence_before_recovery_and_decision_after_recovery() {
                 assert_eq!(state, BreakawayProbeState::Advance);
                 return;
             }
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => {
                 panic!("first inert observation terminated unexpectedly: {outcome:?}")
             }
@@ -424,6 +427,7 @@ fn recovery_fault_leaves_raw_probe_evidence_without_a_decision() {
                 saw_observation = true;
             }
             BreakawayProbeStep::Decision { .. } => saw_decision = true,
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => {
                 assert!(
                     saw_observation,
@@ -542,6 +546,7 @@ fn wrong_direction_short_circuits_without_recovering() {
                 backend.set_abn_decoder_count(encoder_count);
             }
             BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => {
                 let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
@@ -627,6 +632,7 @@ fn capture_interval_refusal_streams_evidence_then_terminates_without_decision() 
             BreakawayProbeStep::Decision { .. } => {
                 panic!("an invalid excursion must not emit a cursor decision");
             }
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => {
                 assert!(saw_observation);
                 assert!(matches!(
@@ -698,6 +704,7 @@ fn an_unconfirmed_settle_reports_validation_failure() {
                 backend.set_abn_decoder_count(encoder_count);
             }
             BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => {
                 let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected validation failure, got {outcome:?}");
@@ -743,6 +750,7 @@ fn safety_faults_propagate_unchanged() {
                 }
             }
             BreakawayProbeStep::Observation(_) | BreakawayProbeStep::Decision { .. } => {}
+            BreakawayProbeStep::RestRejected(_) => {}
             BreakawayProbeStep::Done(outcome) => {
                 let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
@@ -840,6 +848,7 @@ fn run_discovery(
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(outcome) => return (outcome, session, backend),
         }
     }
@@ -916,6 +925,7 @@ fn discovery_retains_inherited_safety_contract_through_recovery() {
                 observation = Some(collected);
                 break;
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(outcome) => {
                 panic!("first discovery stroke terminated unexpectedly: {outcome:?}")
             }
@@ -1068,6 +1078,7 @@ fn discovery_streams_each_raw_observation_on_its_collection_tick() {
                 previous_was_observation = true;
                 observations.push(collected);
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(_) => break,
         }
     }
@@ -1237,6 +1248,7 @@ fn stream_margins_emits_one_margin_per_collected_rung_then_selects_the_band() {
                 );
                 expected_index += 1;
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(done) => {
                 assert!(
                     matches!(done, AdditiveDiscoveryOutcome::TargetBandSelected(_)),
@@ -1360,6 +1372,7 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(outcome) => {
                 let AdditiveDiscoveryOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
@@ -1448,6 +1461,7 @@ fn one_unconfirmed_discovery_settle_retries_before_recovery() {
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(outcome) => {
                 panic!("one rejected rest window must be retried: {outcome:?}")
             }
@@ -1505,6 +1519,7 @@ fn an_actionable_status_on_the_first_settle_is_not_retried() {
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(outcome) => {
                 let AdditiveDiscoveryOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("actionable status must remain a safety fault: {outcome:?}");
@@ -1562,6 +1577,7 @@ fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            AdditiveDiscoveryStep::RestRejected(_) => {}
             AdditiveDiscoveryStep::Done(outcome) => {
                 assert!(matches!(
                     outcome,
@@ -1700,6 +1716,7 @@ fn run_confirmation(
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            BandConfirmationStep::RestRejected(_) => {}
             BandConfirmationStep::Done(outcome) => {
                 return (outcome, backend, write_gain_count, direction_sequence);
             }
@@ -1785,6 +1802,7 @@ fn confirmation_retains_inherited_safety_contract_through_recovery() {
                 observation = Some(collected);
                 break;
             }
+            BandConfirmationStep::RestRejected(_) => {}
             BandConfirmationStep::Done(outcome) => {
                 panic!("first confirmation stroke terminated unexpectedly: {outcome:?}")
             }
@@ -2072,6 +2090,7 @@ fn wrong_direction_short_circuits_confirmation_without_recovering() {
                 encoder_count -= 1;
                 backend.set_abn_decoder_count(encoder_count);
             }
+            BandConfirmationStep::RestRejected(_) => {}
             BandConfirmationStep::Done(outcome) => {
                 let BandConfirmationOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
@@ -2167,6 +2186,7 @@ fn an_unconfirmed_settle_reports_confirmation_evidence_excluded() {
                 }
                 backend.set_abn_decoder_count(encoder_count);
             }
+            BandConfirmationStep::RestRejected(_) => {}
             BandConfirmationStep::Done(outcome) => {
                 assert!(matches!(
                     outcome,

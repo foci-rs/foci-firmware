@@ -26,7 +26,7 @@ use crate::commissioning::types::{
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
     BreakawayCeilingSource, BreakawayDiscoveryRungMargin, BreakawayProbeDecision,
     BreakawayProbePlanned, BreakawayProbeResolved, BreakawayProbeTerminal, BreakawayRawObservation,
-    BreakawayRungZeroDiagnostic,
+    BreakawayRecoveryRestRejected, BreakawayRungZeroDiagnostic,
 };
 
 use crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord;
@@ -326,6 +326,45 @@ pub(crate) fn encode_campaign_terminal(
     record.push_u8(report.terminal_cause);
     record.push_u8(report.accepted);
     push_u64(&mut record, report.stage_c_plan_digest);
+    record
+}
+
+/// Encode one rejected recovery-rest scoring window (tag 14).
+///
+/// Carries the scored-rest selector's own per-suffix verdicts alongside the
+/// settle-window displacement bounds that gate the one-count fallback, so a
+/// decoder can attribute the rejection to the statistical route, the fallback
+/// route, or both without re-running the selector.
+pub(crate) fn encode_recovery_rest_rejected(
+    report: BreakawayRecoveryRestRejected,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(14);
+    record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
+    push_u64(&mut record, report.plan_digest);
+    record.push_u8(report.phase);
+    record.push_u8(report.stage);
+    record.push_u8(report.rung_index);
+    record.push_u8(report.slot_index);
+    record.push_u8(report.direction);
+    record.push_u16(report.p_raw);
+    for code in report.structural_codes {
+        record.push_u8(code);
+    }
+    record.push_u8(report.interval_present_mask);
+    record.push_u8(report.usable_mask);
+    record.push_u8(report.zero_compatible_mask);
+    record.push_u8(report.selected_mask);
+    record.push_u16(report.selected_suffix_len);
+    record.push_u8(report.disposition);
+    for interval in report.intervals_q {
+        push_i64(&mut record, interval[0]);
+        push_i64(&mut record, interval[1]);
+    }
+    record.push_u8(report.scored_net_displacement_counts as u8);
+    record.push_u8(report.scored_min_displacement_counts as u8);
+    record.push_u8(report.scored_max_displacement_counts as u8);
     record
 }
 

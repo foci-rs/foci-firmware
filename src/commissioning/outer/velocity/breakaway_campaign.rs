@@ -91,12 +91,13 @@ use super::breakaway_plan::{
     plan_additive_discovery_ladder, plan_upward_breakaway_probe, resolve_grid_floor,
 };
 use super::breakaway_reporting::{
-    BreakawayPhase, BreakawayTerminalCause, ProbeDecisionReportInput, campaign_terminal_report,
-    confirmation_evaluated_terminal_report, confirmation_partial_evidence_terminal_report,
-    confirmation_plan_report, confirmation_zero_stroke_cause,
-    confirmation_zero_stroke_terminal_report, discovery_plan_report, discovery_terminal_cause,
-    discovery_terminal_report, probe_plan_report, probe_resolved_report, probe_terminal_cause,
-    probe_terminal_report, rung_zero_diagnostic_report,
+    BreakawayPhase, BreakawayTerminalCause, ProbeDecisionReportInput, RecoveryRestRejectedInput,
+    campaign_terminal_report, confirmation_evaluated_terminal_report,
+    confirmation_partial_evidence_terminal_report, confirmation_plan_report,
+    confirmation_zero_stroke_cause, confirmation_zero_stroke_terminal_report,
+    discovery_plan_report, discovery_terminal_cause, discovery_terminal_report, probe_plan_report,
+    probe_resolved_report, probe_terminal_cause, probe_terminal_report,
+    rung_zero_diagnostic_report,
 };
 use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchError, ProbeStrokeRole, UpwardBreakawayCursor,
@@ -314,6 +315,11 @@ pub(crate) enum BreakawayProbeStep {
         /// Disposition: 0 no motion, 1 moved.
         disposition: u8,
     },
+    /// The scored-rest selector rejected this stroke's recovery rest window.
+    /// Diagnostic only: the campaign layer streams it and the recovery worker
+    /// still reaches its own terminal on a following tick. Call again
+    /// immediately.
+    RestRejected(RecoveryRestRejectedInput),
     /// The probe campaign concluded.
     Done(BreakawayProbeOutcome),
 }
@@ -936,11 +942,33 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 settle_max_displacement_counts: &mut workspace.settle_max_displacement_counts,
                 current_observer: &mut workspace.current_observer,
             };
-            match step_rung_origin_recovery(runtime, &mut resources, backend).await {
+            let step = step_rung_origin_recovery(runtime, &mut resources, backend).await;
+            let settle = (
+                *resources.settle_displacement_counts,
+                *resources.settle_min_displacement_counts,
+                *resources.settle_max_displacement_counts,
+            );
+            let p_raw = runtime.p_raw();
+            match step {
                 RungOriginRecoveryStep::ReadyNow => BreakawayProbeStep::ReadyNow,
                 RungOriginRecoveryStep::At(deadline_us) => BreakawayProbeStep::At(deadline_us),
-                RungOriginRecoveryStep::RestSelection { .. }
-                | RungOriginRecoveryStep::RestAnalysis(_) => BreakawayProbeStep::ReadyNow,
+                RungOriginRecoveryStep::RestSelection {
+                    decision,
+                    stage,
+                    rung_index,
+                } => match rest_rejected_input(
+                    decision,
+                    stage,
+                    rung_index,
+                    session.pending_role.slot_index(),
+                    session.pending_role.direction(),
+                    p_raw,
+                    settle,
+                ) {
+                    Some(input) => BreakawayProbeStep::RestRejected(input),
+                    None => BreakawayProbeStep::ReadyNow,
+                },
+                RungOriginRecoveryStep::RestAnalysis(_) => BreakawayProbeStep::ReadyNow,
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
                     *state = if session.pending_result.as_ref().is_some_and(Result::is_ok) {
                         BreakawayProbeState::EmitDecision
@@ -1494,6 +1522,11 @@ pub(crate) enum AdditiveDiscoveryStep {
     /// builds the record (a non-nominatable index yields no record). Call again
     /// immediately; the next index streams on the following tick.
     Margin { collected_index: u8 },
+    /// The scored-rest selector rejected this stroke's recovery rest window.
+    /// Diagnostic only: the campaign layer streams it and the recovery worker
+    /// still reaches its own terminal on a following tick. Call again
+    /// immediately.
+    RestRejected(RecoveryRestRejectedInput),
     /// The discovery campaign concluded.
     Done(AdditiveDiscoveryOutcome),
 }
@@ -2312,11 +2345,33 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 settle_max_displacement_counts: &mut workspace.settle_max_displacement_counts,
                 current_observer: &mut workspace.current_observer,
             };
-            match step_rung_origin_recovery(runtime, &mut resources, backend).await {
+            let step = step_rung_origin_recovery(runtime, &mut resources, backend).await;
+            let settle = (
+                *resources.settle_displacement_counts,
+                *resources.settle_min_displacement_counts,
+                *resources.settle_max_displacement_counts,
+            );
+            let p_raw = runtime.p_raw();
+            match step {
                 RungOriginRecoveryStep::ReadyNow => AdditiveDiscoveryStep::ReadyNow,
                 RungOriginRecoveryStep::At(deadline_us) => AdditiveDiscoveryStep::At(deadline_us),
-                RungOriginRecoveryStep::RestSelection { .. }
-                | RungOriginRecoveryStep::RestAnalysis(_) => AdditiveDiscoveryStep::ReadyNow,
+                RungOriginRecoveryStep::RestSelection {
+                    decision,
+                    stage,
+                    rung_index,
+                } => match rest_rejected_input(
+                    decision,
+                    stage,
+                    rung_index,
+                    session.slot,
+                    session.direction,
+                    p_raw,
+                    settle,
+                ) {
+                    Some(input) => AdditiveDiscoveryStep::RestRejected(input),
+                    None => AdditiveDiscoveryStep::ReadyNow,
+                },
+                RungOriginRecoveryStep::RestAnalysis(_) => AdditiveDiscoveryStep::ReadyNow,
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
                     // The stroke is complete and classified: stream its raw
                     // settled-rate atom now, on the collection tick, before the
@@ -2757,6 +2812,11 @@ pub(crate) enum BandConfirmationStep {
     /// before the atom is folded and judged. Call again immediately; the fold
     /// happens on the following tick.
     Observation(CollectedObservation),
+    /// The scored-rest selector rejected this stroke's recovery rest window.
+    /// Diagnostic only: the campaign layer streams it and the recovery worker
+    /// still reaches its own terminal on a following tick. Call again
+    /// immediately.
+    RestRejected(RecoveryRestRejectedInput),
     /// The confirmation campaign concluded.
     Done(BandConfirmationOutcome),
 }
@@ -3293,11 +3353,33 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 settle_max_displacement_counts: &mut workspace.settle_max_displacement_counts,
                 current_observer: &mut workspace.current_observer,
             };
-            match step_rung_origin_recovery(runtime, &mut resources, backend).await {
+            let step = step_rung_origin_recovery(runtime, &mut resources, backend).await;
+            let settle = (
+                *resources.settle_displacement_counts,
+                *resources.settle_min_displacement_counts,
+                *resources.settle_max_displacement_counts,
+            );
+            let p_raw = runtime.p_raw();
+            match step {
                 RungOriginRecoveryStep::ReadyNow => BandConfirmationStep::ReadyNow,
                 RungOriginRecoveryStep::At(deadline_us) => BandConfirmationStep::At(deadline_us),
-                RungOriginRecoveryStep::RestSelection { .. }
-                | RungOriginRecoveryStep::RestAnalysis(_) => BandConfirmationStep::ReadyNow,
+                RungOriginRecoveryStep::RestSelection {
+                    decision,
+                    stage,
+                    rung_index,
+                } => match rest_rejected_input(
+                    decision,
+                    stage,
+                    rung_index,
+                    session.slot_within_direction(),
+                    session.current_direction(),
+                    p_raw,
+                    settle,
+                ) {
+                    Some(input) => BandConfirmationStep::RestRejected(input),
+                    None => BandConfirmationStep::ReadyNow,
+                },
+                RungOriginRecoveryStep::RestAnalysis(_) => BandConfirmationStep::ReadyNow,
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
                     // The held-out stroke is complete and classified: stream its
                     // raw settled-rate atom now, on the collection tick, before
@@ -3833,6 +3915,68 @@ fn raw_observation_step(
         sequence,
     );
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::RawObservation(report))
+}
+
+/// Build the streamed rejected-rest event, mirroring [`raw_observation_step`]:
+/// the phase driver names the stroke and its scored evidence, and this attaches
+/// the wire identity (owning phase, plan digest, run sequence, a fresh evidence
+/// sequence).
+#[cfg(feature = "trace-velocity-sweep")]
+fn rest_rejected_step(
+    plan_digest: u64,
+    phase: super::breakaway_reporting::BreakawayPhase,
+    input: RecoveryRestRejectedInput,
+    run_sequence: u32,
+    evidence_sequence: &mut u16,
+) -> BreakawayCampaignStep {
+    let sequence = next_sequence(evidence_sequence);
+    let report = super::breakaway_reporting::recovery_rest_rejected_report(
+        plan_digest,
+        phase,
+        input,
+        run_sequence,
+        sequence,
+    );
+    BreakawayCampaignStep::Event(BreakawayCampaignEvent::RecoveryRestRejected(report))
+}
+
+/// Gate a scored-rest decision down to the rejections worth reporting.
+///
+/// A campaign passes roughly 160 recovery rest gates, so reporting every
+/// decision would cost two orders of magnitude more wire traffic than the
+/// single rejection that ends the campaign is worth. Only
+/// [`RestSelectionDisposition::Rejected`] survives; every acceptance yields
+/// `None` and the driver simply continues, exactly as it did before this
+/// record existed.
+///
+/// `settle` is `(net, min, max)` read straight off the recovery worker's
+/// resources after the step returned, so the bounds are the ones the selector
+/// was handed rather than a later window's.
+#[cfg(feature = "trace-velocity-sweep")]
+fn rest_rejected_input(
+    decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+    stage: RecoveryStage,
+    rung_index: u8,
+    slot_index: u8,
+    direction: VelocityDirection,
+    p_raw: u16,
+    settle: (i8, i8, i8),
+) -> Option<RecoveryRestRejectedInput> {
+    use crate::autotune::velocity_measurement::RestSelectionDisposition;
+
+    (decision.disposition == RestSelectionDisposition::Rejected).then_some(
+        RecoveryRestRejectedInput {
+            decision,
+            stage: stage as u8,
+            rung_index,
+            slot_index,
+            direction,
+            p_raw,
+            scored_net_displacement_counts: settle.0,
+            scored_min_displacement_counts: settle.1,
+            scored_max_displacement_counts: settle.2,
+        },
+    )
 }
 
 fn probe_decision_step(
@@ -4732,6 +4876,15 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                         inputs.run_sequence,
                         evidence_sequence,
                     )),
+                    BreakawayProbeStep::RestRejected(input) => {
+                        CampaignAdvance::Step(rest_rejected_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Probe,
+                            input,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
                     BreakawayProbeStep::Done(BreakawayProbeOutcome::BreakawayFound(resolved)) => {
                         probe_success_advance(resolved, &session.plan, inputs, evidence_sequence)
                     }
@@ -4766,6 +4919,15 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                             evidence_sequence,
                         ))
                     }
+                    AdditiveDiscoveryStep::RestRejected(input) => {
+                        CampaignAdvance::Step(rest_rejected_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Discovery,
+                            input,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
                     AdditiveDiscoveryStep::Done(outcome) => {
                         discovery_done_advance(outcome, session, inputs, evidence_sequence)
                     }
@@ -4784,6 +4946,15 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                             session.plan.plan_digest,
                             super::breakaway_reporting::BreakawayPhase::Confirmation,
                             collected,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
+                    BandConfirmationStep::RestRejected(input) => {
+                        CampaignAdvance::Step(rest_rejected_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Confirmation,
+                            input,
                             inputs.run_sequence,
                             evidence_sequence,
                         ))

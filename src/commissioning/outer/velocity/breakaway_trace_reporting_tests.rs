@@ -683,6 +683,29 @@ fn every_encoder_uses_a_distinct_local_tag() {
             disposition: 0,
         })
         .as_bytes()[0],
+        encode_recovery_rest_rejected(BreakawayRecoveryRestRejected {
+            run_sequence: 0,
+            evidence_sequence: 0,
+            plan_digest: 0,
+            phase: 0,
+            stage: 0,
+            rung_index: 0,
+            slot_index: 0,
+            direction: 0,
+            p_raw: 0,
+            structural_codes: [0; 3],
+            interval_present_mask: 0,
+            usable_mask: 0,
+            zero_compatible_mask: 0,
+            selected_mask: 0,
+            selected_suffix_len: 0,
+            disposition: 0,
+            intervals_q: [[0; 2]; 3],
+            scored_net_displacement_counts: 0,
+            scored_min_displacement_counts: 0,
+            scored_max_displacement_counts: 0,
+        })
+        .as_bytes()[0],
     ];
     for (index, tag) in tags.iter().enumerate() {
         assert_eq!(
@@ -696,4 +719,103 @@ fn every_encoder_uses_a_distinct_local_tag() {
             }
         }
     }
+}
+
+#[test]
+fn encode_recovery_rest_rejected_has_stable_frame_layout() {
+    let report = BreakawayRecoveryRestRejected {
+        run_sequence: 0x1020_3040,
+        evidence_sequence: 0x5060,
+        plan_digest: 0x1122_3344_5566_7788,
+        phase: 1,
+        stage: 2,
+        rung_index: 0x0f,
+        slot_index: 0x03,
+        direction: 1,
+        p_raw: 0x00b5,
+        structural_codes: [0, 3, 2],
+        interval_present_mask: 0b111,
+        usable_mask: 0b001,
+        zero_compatible_mask: 0b000,
+        selected_mask: 0,
+        selected_suffix_len: 0,
+        disposition: 2,
+        // Suffix 64 is structurally usable but its interval resolves strictly
+        // away from zero, which is exactly what a statistical rejection looks
+        // like; the wider suffixes are present but not usable.
+        intervals_q: [
+            [0x0102_0304_0506_0708, 0x1112_1314_1516_1718],
+            [0x2122_2324_2526_2728, 0x3132_3334_3536_3738],
+            [-0x5152_5354_5556_5758, -0x4142_4344_4546_4748],
+        ],
+        scored_net_displacement_counts: -2,
+        scored_min_displacement_counts: -2,
+        scored_max_displacement_counts: 1,
+    };
+
+    let expected = Expected::new()
+        .u8(14)
+        .u32(report.run_sequence)
+        .u16(report.evidence_sequence)
+        .u64(report.plan_digest)
+        .u8(report.phase)
+        .u8(report.stage)
+        .u8(report.rung_index)
+        .u8(report.slot_index)
+        .u8(report.direction)
+        .u16(report.p_raw)
+        .u8(report.structural_codes[0])
+        .u8(report.structural_codes[1])
+        .u8(report.structural_codes[2])
+        .u8(report.interval_present_mask)
+        .u8(report.usable_mask)
+        .u8(report.zero_compatible_mask)
+        .u8(report.selected_mask)
+        .u16(report.selected_suffix_len)
+        .u8(report.disposition)
+        .i64(report.intervals_q[0][0])
+        .i64(report.intervals_q[0][1])
+        .i64(report.intervals_q[1][0])
+        .i64(report.intervals_q[1][1])
+        .i64(report.intervals_q[2][0])
+        .i64(report.intervals_q[2][1])
+        .u8(report.scored_net_displacement_counts as u8)
+        .u8(report.scored_min_displacement_counts as u8)
+        .u8(report.scored_max_displacement_counts as u8);
+
+    assert_eq!(
+        encode_recovery_rest_rejected(report).as_bytes(),
+        expected.bytes()
+    );
+}
+
+/// The record's exact length is the host decoder's dispatch key alongside its
+/// local tag, so a field added or widened without a matching host change would
+/// silently decode as a different record. Pin it.
+#[test]
+fn recovery_rest_rejected_record_has_exact_length() {
+    let report = BreakawayRecoveryRestRejected {
+        run_sequence: 0,
+        evidence_sequence: 0,
+        plan_digest: 0,
+        phase: 0,
+        stage: 0,
+        rung_index: 0,
+        slot_index: 0,
+        direction: 0,
+        p_raw: 0,
+        structural_codes: [0; 3],
+        interval_present_mask: 0,
+        usable_mask: 0,
+        zero_compatible_mask: 0,
+        selected_mask: 0,
+        selected_suffix_len: 0,
+        disposition: 0,
+        intervals_q: [[0; 2]; 3],
+        scored_net_displacement_counts: 0,
+        scored_min_displacement_counts: 0,
+        scored_max_displacement_counts: 0,
+    };
+
+    assert_eq!(encode_recovery_rest_rejected(report).as_bytes().len(), 83);
 }

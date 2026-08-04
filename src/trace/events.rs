@@ -146,6 +146,10 @@ pub const EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN: u16 = 161;
 /// Breakaway-seeded campaign: one recovered probe decision committed to the
 /// adaptive cursor.
 pub const EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION: u16 = 162;
+/// Breakaway-seeded campaign: one rejected recovery-rest scoring window.
+/// Accepted rest windows emit nothing, so this id appears at most a handful of
+/// times per run and normally not at all.
+pub const EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED: u16 = 163;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
