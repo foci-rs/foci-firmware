@@ -87,11 +87,29 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     resources.current_observer.peak_pid_output_abs(),
                 ));
             }
-            if resources.safety.unwrapped_position != runtime.start_offset_counts {
+            // The captured start offset feeds only the planned return distance
+            // (hence the deadline budget) and, before this, the drive
+            // direction. Every verdict -- `in_band`, containment, the final
+            // offset -- reads the live position instead, so a slightly stale
+            // plan input cannot produce a wrong outcome, only a deadline off by
+            // that much travel against a budget carrying `MOVING_STROKE_US` of
+            // slack. Exact equality therefore failed campaigns for drift three
+            // orders of magnitude below anything that mattered: one
+            // outer-safety encoder sample landing between the tick that
+            // captured the origin and this one was enough, and it discarded
+            // every stroke collected so far.
+            //
+            // Tolerate drift up to the band recovery is aiming for. A
+            // perturbation smaller than the target band cannot change whether
+            // the return lands inside it, which makes the bound self-justifying
+            // rather than a constant fitted to one observation.
+            let origin_drift_counts = resources
+                .safety
+                .unwrapped_position
+                .saturating_sub(runtime.start_offset_counts);
+            if origin_drift_counts.unsigned_abs() > runtime.plan.origin_band_counts {
                 // Report the measured discrepancy before faulting. The fault is
-                // raised unchanged on the next tick from `OriginMismatchFault`;
-                // without this a one-count sample race and a real runaway are
-                // indistinguishable on the wire.
+                // raised unchanged on the next tick from `OriginMismatchFault`.
                 runtime.state = RecoveryState::OriginMismatchFault;
                 return RungOriginRecoveryStep::OriginMismatch(RecoveryOriginMismatchEvidence {
                     expected_counts: runtime.start_offset_counts,
@@ -125,7 +143,13 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             RungOriginRecoveryStep::ReadyNow
         }
         RecoveryState::CommandTowardOrigin => {
-            let direction = if runtime.start_offset_counts > 0 {
+            // Derive the direction from the live position, not the offset
+            // captured when the runtime was built. Driving on a stale sign is
+            // the one way a moved origin can do real harm -- it would command
+            // the motor away from the origin -- and reading it live removes
+            // that hazard outright rather than relying on the tolerance below
+            // to notice.
+            let direction = if resources.safety.unwrapped_position > 0 {
                 -1
             } else {
                 1

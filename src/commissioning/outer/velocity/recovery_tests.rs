@@ -1288,3 +1288,100 @@ fn recovery_safety_rejects_unconfirmed_rest() {
         }
     }
 }
+
+/// The origin having drifted by a single encoder sample must not end the
+/// campaign.
+///
+/// The captured start offset feeds only the planned return distance; every
+/// verdict reads the live position for direction. Exact
+/// equality here discarded whole campaigns for one count of drift out of a
+/// thousand-count target band.
+#[test]
+fn recovery_tolerates_origin_drift_within_the_target_band() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    // One outer-safety encoder sample landing between the tick that captured
+    // the origin and the tick recovery begins.
+    fixture.safety.unwrapped_position = 1_041;
+
+    assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
+}
+
+/// The tolerance is the band recovery aims for, and is applied in both
+/// directions.
+#[test]
+fn recovery_tolerates_origin_drift_up_to_the_whole_band() {
+    let band = i32::try_from(origin_band_counts()).unwrap();
+
+    for drift in [band, -band] {
+        let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+        fixture.safety.unwrapped_position = 1_040 + drift;
+        assert_eq!(
+            fixture.step(),
+            RungOriginRecoveryStep::ReadyNow,
+            "drift of {drift} counts is inside the band and must be tolerated"
+        );
+    }
+}
+
+/// Drift beyond the band still faults, and reports the measurement first.
+#[test]
+fn recovery_reports_and_faults_on_drift_beyond_the_band() {
+    let band = i32::try_from(origin_band_counts()).unwrap();
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.safety.unwrapped_position = 1_040 + band + 1;
+
+    let RungOriginRecoveryStep::OriginMismatch(evidence) = fixture.step() else {
+        panic!("drift beyond the band must report its measurement");
+    };
+    assert_eq!(evidence.expected_counts, 1_040);
+    assert_eq!(evidence.observed_counts, 1_040 + band + 1);
+
+    // The fault itself is unchanged; it simply arrives one tick later.
+    assert_eq!(
+        fixture.step(),
+        RungOriginRecoveryStep::Fault {
+            error: crate::autotune::CommissionError::RecoveryOriginMismatch,
+            safety: None,
+        }
+    );
+}
+
+/// A drift that crosses zero is necessarily already inside the band.
+///
+/// This is why tolerating band-sized drift is safe with respect to direction.
+/// Commanding on a stale sign would drive the motor away from the origin, so
+/// the question is whether a tolerated drift can flip the sign while motion is
+/// still required. It cannot: crossing zero within a drift of at most `band`
+/// forces `|captured| + |live| <= band`, hence `|live| < band`, and a position
+/// inside the band is `AlreadyCentered` with no motion commanded at all.
+///
+/// The controller reads the live position for its direction regardless, so the
+/// hazard stays closed if this tolerance is ever widened.
+#[test]
+fn a_sign_flip_within_the_drift_tolerance_needs_no_motion() {
+    let band = i32::try_from(origin_band_counts()).unwrap();
+
+    for (captured, live) in [(band - 1, -1), (1, -(band - 1)), (-(band - 1), 1)] {
+        assert!(
+            (live - captured).abs() <= band,
+            "fixture must stay inside the tolerance"
+        );
+        let mut fixture = RecoveryFixture::new(captured, Some(14_000_000));
+        fixture.safety.unwrapped_position = live;
+
+        let RungOriginRecoveryStep::Finished(report) = fixture.step() else {
+            panic!("a position inside the band needs no recovery motion");
+        };
+        assert_eq!(
+            report.outcome,
+            RungOriginRecoveryOutcome::AlreadyCentered,
+            "captured {captured} live {live} should be already centered"
+        );
+    }
+}
+
+fn origin_band_counts() -> u32 {
+    plan_rung_origin_recovery(live_budget(), 4_000, 4_394)
+        .expect("live geometry plans")
+        .origin_band_counts
+}
