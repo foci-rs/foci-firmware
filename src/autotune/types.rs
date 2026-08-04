@@ -259,6 +259,9 @@ pub enum CommissionError {
     /// A sequencing fault: some path reached the next stroke without closing
     /// the previous primitive's window.
     PrimitiveAlreadyOpen,
+    /// Origin recovery found the axis away from the offset it recorded before
+    /// the stroke. Code 72.
+    RecoveryOriginMismatch,
     /// The outer safety check found the active primitive's start timestamp
     /// ahead of the current time. Code 71.
     ///
@@ -352,6 +355,7 @@ impl CommissionError {
             Self::ScheduleDeadlineOverflow => 69,
             Self::PrimitiveAlreadyOpen => 70,
             Self::PrimitiveStartInFuture => 71,
+            Self::RecoveryOriginMismatch => 72,
         }
     }
 }
@@ -708,6 +712,7 @@ mod tests {
             CommissionError::ScheduleDeadlineOverflow,
             CommissionError::PrimitiveAlreadyOpen,
             CommissionError::PrimitiveStartInFuture,
+            CommissionError::RecoveryOriginMismatch,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -749,6 +754,7 @@ mod tests {
         assert_eq!(CommissionError::ScheduleDeadlineOverflow.status_code(), 69);
         assert_eq!(CommissionError::PrimitiveAlreadyOpen.status_code(), 70);
         assert_eq!(CommissionError::PrimitiveStartInFuture.status_code(), 71);
+        assert_eq!(CommissionError::RecoveryOriginMismatch.status_code(), 72);
     }
 
     #[test]

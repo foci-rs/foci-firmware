@@ -85,7 +85,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 ));
             }
             if resources.safety.unwrapped_position != runtime.start_offset_counts {
-                return recovery_fault(CommissionError::InvalidSchedule, None);
+                return recovery_fault(CommissionError::RecoveryOriginMismatch, None);
             }
             checkpoint(BreakawayCheckpoint::RecoveryGainWrite);
             if backend
@@ -121,7 +121,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             };
             let started_us = backend.elapsed_us();
             if resources.safety.begin_primitive(started_us).is_err() {
-                return recovery_fault(CommissionError::InvalidSchedule, None);
+                return recovery_fault(CommissionError::PrimitiveAlreadyOpen, None);
             }
             checkpoint(BreakawayCheckpoint::RecoveryCurrentPrimitiveStart);
             if let Err(error) =
@@ -310,7 +310,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     .max(*resources.settle_displacement_counts);
             }
             if resources.observations.push(delta, elapsed_us).is_err() {
-                return recovery_fault(CommissionError::InvalidSchedule, None);
+                return recovery_fault(CommissionError::ZeroElapsedSample, None);
             }
             let read_us = backend.elapsed_us();
             if read_us >= deadline_us {
