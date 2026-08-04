@@ -138,30 +138,36 @@ pub enum CommissionPoll {
 ///
 /// # Errors
 ///
-/// Returns [`CommissionError::InvalidSchedule`] for a zero period, an early
-/// invocation, or arithmetic overflow.
+/// Returns [`CommissionError::SchedulePeriodZero`],
+/// [`CommissionError::ScheduleEarlyInvocation`], or
+/// [`CommissionError::ScheduleDeadlineOverflow`]. These are separate codes
+/// because they point at different faults: a misconfigured grid, a caller that
+/// polled early, and an unrepresentable deadline.
 pub(crate) fn next_grid_deadline(
     previous_deadline_us: u64,
     period_us: u64,
     now_us: u64,
 ) -> Result<u64, CommissionError> {
     if period_us == 0 {
-        return Err(CommissionError::InvalidSchedule);
+        return Err(CommissionError::SchedulePeriodZero);
     }
+    // Distinguished from overflow: an early invocation means the caller polled
+    // before its previous deadline was due, which is a sequencing error and
+    // points somewhere entirely different from an unrepresentable value.
     let elapsed_us = now_us
         .checked_sub(previous_deadline_us)
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::ScheduleEarlyInvocation)?;
     let slots = elapsed_us
         .checked_div(period_us)
         .and_then(|elapsed_slots| elapsed_slots.checked_add(1))
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::ScheduleDeadlineOverflow)?;
     previous_deadline_us
         .checked_add(
             slots
                 .checked_mul(period_us)
-                .ok_or(CommissionError::InvalidSchedule)?,
+                .ok_or(CommissionError::ScheduleDeadlineOverflow)?,
         )
-        .ok_or(CommissionError::InvalidSchedule)
+        .ok_or(CommissionError::ScheduleDeadlineOverflow)
 }
 
 /// Adapt an engine step result to the explicit scheduling contract.
@@ -343,7 +349,7 @@ mod tests {
     fn grid_deadline_rejects_early_invocation() {
         assert!(matches!(
             next_grid_deadline(1_000, 200, 999),
-            Err(CommissionError::InvalidSchedule)
+            Err(CommissionError::ScheduleEarlyInvocation)
         ));
     }
 
@@ -351,7 +357,7 @@ mod tests {
     fn grid_deadline_rejects_zero_period() {
         assert!(matches!(
             next_grid_deadline(1_000, 0, 1_000),
-            Err(CommissionError::InvalidSchedule)
+            Err(CommissionError::SchedulePeriodZero)
         ));
     }
 
@@ -360,7 +366,7 @@ mod tests {
         let period_us = u64::MAX / 2 + 1;
         assert!(matches!(
             next_grid_deadline(0, period_us, u64::MAX),
-            Err(CommissionError::InvalidSchedule)
+            Err(CommissionError::ScheduleDeadlineOverflow)
         ));
     }
 
@@ -368,7 +374,7 @@ mod tests {
     fn grid_deadline_rejects_deadline_addition_overflow() {
         assert!(matches!(
             next_grid_deadline(u64::MAX - 5, 10, u64::MAX - 5),
-            Err(CommissionError::InvalidSchedule)
+            Err(CommissionError::ScheduleDeadlineOverflow)
         ));
     }
 

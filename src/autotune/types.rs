@@ -244,6 +244,16 @@ pub enum CommissionError {
     CampaignPlanInvalid,
     /// Stage-C authority could not be bound from an accepted confirmation. Code 65.
     StageCAuthorityDenied,
+    /// A periodic sampling grid was configured with a zero period. Code 67.
+    SchedulePeriodZero,
+    /// A grid deadline was advanced before its previous deadline was due, so
+    /// the elapsed-time subtraction had no defined result. Code 68.
+    ///
+    /// Distinct from an arithmetic overflow: this means the caller polled
+    /// early, which is a sequencing error rather than an unrepresentable value.
+    ScheduleEarlyInvocation,
+    /// Advancing a grid deadline overflowed. Code 69.
+    ScheduleDeadlineOverflow,
     /// Discovery finished without a selected in-band ladder, so a path
     /// requiring a nominated band had nothing to act on. Code 66.
     ///
@@ -325,6 +335,9 @@ impl CommissionError {
             Self::CampaignPlanInvalid => 64,
             Self::StageCAuthorityDenied => 65,
             Self::DiscoveryBandNotSelected => 66,
+            Self::SchedulePeriodZero => 67,
+            Self::ScheduleEarlyInvocation => 68,
+            Self::ScheduleDeadlineOverflow => 69,
         }
     }
 }
@@ -676,6 +689,9 @@ mod tests {
             CommissionError::CampaignPlanInvalid,
             CommissionError::StageCAuthorityDenied,
             CommissionError::DiscoveryBandNotSelected,
+            CommissionError::SchedulePeriodZero,
+            CommissionError::ScheduleEarlyInvocation,
+            CommissionError::ScheduleDeadlineOverflow,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -712,6 +728,9 @@ mod tests {
         assert_eq!(CommissionError::CampaignPlanInvalid.status_code(), 64);
         assert_eq!(CommissionError::StageCAuthorityDenied.status_code(), 65);
         assert_eq!(CommissionError::DiscoveryBandNotSelected.status_code(), 66);
+        assert_eq!(CommissionError::SchedulePeriodZero.status_code(), 67);
+        assert_eq!(CommissionError::ScheduleEarlyInvocation.status_code(), 68);
+        assert_eq!(CommissionError::ScheduleDeadlineOverflow.status_code(), 69);
     }
 
     #[test]
