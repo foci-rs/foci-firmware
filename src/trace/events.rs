@@ -150,6 +150,9 @@ pub const EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION: u16 = 162;
 /// Accepted rest windows emit nothing, so this id appears at most a handful of
 /// times per run and normally not at all.
 pub const EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED: u16 = 163;
+/// Breakaway-seeded campaign: one recovery refused because its origin moved
+/// between the tick that captured it and the tick recovery began.
+pub const EVENT_COMMISSION_BREAKAWAY_RECOVERY_ORIGIN_MISMATCH: u16 = 164;
 
 /// Single-frame commissioning diagnostic warning event.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;

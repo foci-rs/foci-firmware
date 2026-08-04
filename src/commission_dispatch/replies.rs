@@ -1021,6 +1021,8 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
         // so this path deliberately drops it. The campaign terminal the
         // rejection produces still reports over the reply channel as usual.
         BreakawayCampaignEvent::RecoveryRestRejected(_) => {}
+        // Diagnostic-only, for the same reason as the rejected-rest record.
+        BreakawayCampaignEvent::RecoveryOriginMismatch(_) => {}
     }
 }
 

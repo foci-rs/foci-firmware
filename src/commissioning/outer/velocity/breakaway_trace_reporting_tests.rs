@@ -706,6 +706,22 @@ fn every_encoder_uses_a_distinct_local_tag() {
             scored_max_displacement_counts: 0,
         })
         .as_bytes()[0],
+        encode_recovery_origin_mismatch(BreakawayRecoveryOriginMismatch {
+            run_sequence: 0,
+            evidence_sequence: 0,
+            plan_digest: 0,
+            phase: 0,
+            stage: 0,
+            rung_index: 0,
+            slot_index: 0,
+            direction: 0,
+            p_raw: 0,
+            expected_start_offset_counts: 0,
+            observed_position_counts: 0,
+            delta_counts: 0,
+            position_window_counts: 0,
+        })
+        .as_bytes()[0],
     ];
     for (index, tag) in tags.iter().enumerate() {
         assert_eq!(
@@ -818,4 +834,43 @@ fn recovery_rest_rejected_record_has_exact_length() {
     };
 
     assert_eq!(encode_recovery_rest_rejected(report).as_bytes().len(), 83);
+}
+
+#[test]
+fn encode_recovery_origin_mismatch_has_stable_frame_layout() {
+    let report = BreakawayRecoveryOriginMismatch {
+        run_sequence: 0x1020_3040,
+        evidence_sequence: 0x5060,
+        plan_digest: 0x1122_3344_5566_7788,
+        phase: 1,
+        stage: 0,
+        rung_index: 7,
+        slot_index: 2,
+        direction: 1,
+        p_raw: 181,
+        expected_start_offset_counts: -1_481,
+        observed_position_counts: -1_480,
+        delta_counts: 1,
+        position_window_counts: 4_000,
+    };
+
+    let expected = Expected::new()
+        .u8(15)
+        .u32(report.run_sequence)
+        .u16(report.evidence_sequence)
+        .u64(report.plan_digest)
+        .u8(report.phase)
+        .u8(report.stage)
+        .u8(report.rung_index)
+        .u8(report.slot_index)
+        .u8(report.direction)
+        .u16(report.p_raw)
+        .i32(report.expected_start_offset_counts)
+        .i32(report.observed_position_counts)
+        .i32(report.delta_counts)
+        .u32(report.position_window_counts);
+
+    let record = encode_recovery_origin_mismatch(report);
+    assert_eq!(record.as_bytes(), expected.bytes());
+    assert_eq!(record.as_bytes().len(), 38);
 }

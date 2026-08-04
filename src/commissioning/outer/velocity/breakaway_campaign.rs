@@ -116,10 +116,10 @@ use super::integral_plan::{
     plan_breakaway_velocity_integral_response,
 };
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestSchedule, RecoveryStage,
-    RungOriginRecoveryConfig, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
-    RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
-    step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryOriginMismatchEvidence,
+    RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
+    plan_rung_origin_recovery, step_rung_origin_recovery,
 };
 use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
@@ -320,6 +320,9 @@ pub(crate) enum BreakawayProbeStep {
     /// still reaches its own terminal on a following tick. Call again
     /// immediately.
     RestRejected(RecoveryRestRejectedInput),
+    /// This stroke's recovery refused to start because the origin moved.
+    /// Diagnostic only: the worker raises its fault on the following tick.
+    OriginMismatch(RecoveryOriginMismatchEvidence),
     /// The probe campaign concluded.
     Done(BreakawayProbeOutcome),
 }
@@ -969,6 +972,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     None => BreakawayProbeStep::ReadyNow,
                 },
                 RungOriginRecoveryStep::RestAnalysis(_) => BreakawayProbeStep::ReadyNow,
+                RungOriginRecoveryStep::OriginMismatch(evidence) => {
+                    BreakawayProbeStep::OriginMismatch(evidence)
+                }
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
                     *state = if session.pending_result.as_ref().is_some_and(Result::is_ok) {
                         BreakawayProbeState::EmitDecision
@@ -1527,6 +1533,9 @@ pub(crate) enum AdditiveDiscoveryStep {
     /// still reaches its own terminal on a following tick. Call again
     /// immediately.
     RestRejected(RecoveryRestRejectedInput),
+    /// This stroke's recovery refused to start because the origin moved.
+    /// Diagnostic only: the worker raises its fault on the following tick.
+    OriginMismatch(RecoveryOriginMismatchEvidence),
     /// The discovery campaign concluded.
     Done(AdditiveDiscoveryOutcome),
 }
@@ -2372,6 +2381,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     None => AdditiveDiscoveryStep::ReadyNow,
                 },
                 RungOriginRecoveryStep::RestAnalysis(_) => AdditiveDiscoveryStep::ReadyNow,
+                RungOriginRecoveryStep::OriginMismatch(evidence) => {
+                    AdditiveDiscoveryStep::OriginMismatch(evidence)
+                }
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
                     // The stroke is complete and classified: stream its raw
                     // settled-rate atom now, on the collection tick, before the
@@ -2817,6 +2829,9 @@ pub(crate) enum BandConfirmationStep {
     /// still reaches its own terminal on a following tick. Call again
     /// immediately.
     RestRejected(RecoveryRestRejectedInput),
+    /// This stroke's recovery refused to start because the origin moved.
+    /// Diagnostic only: the worker raises its fault on the following tick.
+    OriginMismatch(RecoveryOriginMismatchEvidence),
     /// The confirmation campaign concluded.
     Done(BandConfirmationOutcome),
 }
@@ -3380,6 +3395,9 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     None => BandConfirmationStep::ReadyNow,
                 },
                 RungOriginRecoveryStep::RestAnalysis(_) => BandConfirmationStep::ReadyNow,
+                RungOriginRecoveryStep::OriginMismatch(evidence) => {
+                    BandConfirmationStep::OriginMismatch(evidence)
+                }
                 RungOriginRecoveryStep::Finished(_) | RungOriginRecoveryStep::Contained(_) => {
                     // The held-out stroke is complete and classified: stream its
                     // raw settled-rate atom now, on the collection tick, before
@@ -3938,6 +3956,32 @@ fn rest_rejected_step(
         sequence,
     );
     BreakawayCampaignStep::Event(BreakawayCampaignEvent::RecoveryRestRejected(report))
+}
+
+/// Build the streamed origin-mismatch event, mirroring [`rest_rejected_step`]:
+/// the worker supplies the measured discrepancy, the phase driver's session
+/// names the stroke, and this attaches the wire identity.
+#[cfg(feature = "trace-velocity-sweep")]
+fn origin_mismatch_step(
+    plan_digest: u64,
+    phase: super::breakaway_reporting::BreakawayPhase,
+    evidence: RecoveryOriginMismatchEvidence,
+    slot_index: u8,
+    direction: VelocityDirection,
+    run_sequence: u32,
+    evidence_sequence: &mut u16,
+) -> BreakawayCampaignStep {
+    let sequence = next_sequence(evidence_sequence);
+    let report = super::breakaway_reporting::recovery_origin_mismatch_report(
+        plan_digest,
+        phase,
+        evidence,
+        slot_index,
+        direction,
+        run_sequence,
+        sequence,
+    );
+    BreakawayCampaignStep::Event(BreakawayCampaignEvent::RecoveryOriginMismatch(report))
 }
 
 /// Gate a scored-rest decision down to the rejections worth reporting.
@@ -4885,6 +4929,17 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                             evidence_sequence,
                         ))
                     }
+                    BreakawayProbeStep::OriginMismatch(evidence) => {
+                        CampaignAdvance::Step(origin_mismatch_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Probe,
+                            evidence,
+                            session.pending_role.slot_index(),
+                            session.pending_role.direction(),
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
                     BreakawayProbeStep::Done(BreakawayProbeOutcome::BreakawayFound(resolved)) => {
                         probe_success_advance(resolved, &session.plan, inputs, evidence_sequence)
                     }
@@ -4928,6 +4983,17 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                             evidence_sequence,
                         ))
                     }
+                    AdditiveDiscoveryStep::OriginMismatch(evidence) => {
+                        CampaignAdvance::Step(origin_mismatch_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Discovery,
+                            evidence,
+                            session.slot,
+                            session.direction,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
                     AdditiveDiscoveryStep::Done(outcome) => {
                         discovery_done_advance(outcome, session, inputs, evidence_sequence)
                     }
@@ -4955,6 +5021,17 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                             session.plan.plan_digest,
                             super::breakaway_reporting::BreakawayPhase::Confirmation,
                             input,
+                            inputs.run_sequence,
+                            evidence_sequence,
+                        ))
+                    }
+                    BandConfirmationStep::OriginMismatch(evidence) => {
+                        CampaignAdvance::Step(origin_mismatch_step(
+                            session.plan.plan_digest,
+                            super::breakaway_reporting::BreakawayPhase::Confirmation,
+                            evidence,
+                            session.slot_within_direction(),
+                            session.current_direction(),
                             inputs.run_sequence,
                             evidence_sequence,
                         ))

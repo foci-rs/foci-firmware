@@ -1567,6 +1567,49 @@ pub struct BreakawayRecoveryRestRejected {
     pub scored_max_displacement_counts: i8,
 }
 
+/// One recovery attempt refused because the origin moved under it.
+///
+/// Rung-origin recovery captures `start_offset_counts` on the tick it is
+/// constructed and re-reads the position on the following tick, faulting on
+/// exact inequality. `unwrapped_position` advances on every outer-safety
+/// encoder sample, so a single sample landing between those two ticks is
+/// enough. The fault itself carries no measurement, which leaves a
+/// one-count race and a genuine runaway indistinguishable.
+///
+/// This record supplies the missing magnitude and direction: `delta_counts` is
+/// the exact discrepancy, and `position_window_counts` gives the containment
+/// bound it should be judged against.
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct BreakawayRecoveryOriginMismatch {
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Monotonic evidence sequence within the run.
+    pub evidence_sequence: u16,
+    /// Exact digest of the owning probe, discovery, or confirmation plan.
+    pub plan_digest: u64,
+    /// Owning phase: probe (0), discovery (1), or confirmation (2).
+    pub phase: u8,
+    /// Recovery stage that refused to start.
+    pub stage: u8,
+    /// Zero-based probe or discovery rung; `0` for confirmation.
+    pub rung_index: u8,
+    /// Phase-local slot of the stroke whose recovery refused to start.
+    pub slot_index: u8,
+    /// Direction of that stroke.
+    pub direction: u8,
+    /// Raw velocity P gain in force for the stroke.
+    pub p_raw: u16,
+    /// Position captured when the recovery runtime was constructed.
+    pub expected_start_offset_counts: i32,
+    /// Position observed on the tick recovery actually began.
+    pub observed_position_counts: i32,
+    /// `observed - expected`; the exact discrepancy that raised the fault.
+    pub delta_counts: i32,
+    /// Outer-safety containment window the offsets are judged against.
+    pub position_window_counts: u32,
+}
+
 /// One breakaway-campaign evidence record ready for wire emission.
 ///
 /// Mirrors [`VelocitySweepEvent`]: the campaign driver
@@ -1650,6 +1693,10 @@ pub enum BreakawayCampaignEvent {
     /// One rejected recovery-rest scoring window, streamed on the tick the
     /// selector rejected it. Accepted rest windows produce no event.
     RecoveryRestRejected(BreakawayRecoveryRestRejected),
+    /// One recovery refused because the origin moved between the tick that
+    /// captured it and the tick recovery began. Streamed immediately before
+    /// the fault it explains.
+    RecoveryOriginMismatch(BreakawayRecoveryOriginMismatch),
 }
 
 /// Generic terminal tying an inconclusive outer phase to its detailed report.

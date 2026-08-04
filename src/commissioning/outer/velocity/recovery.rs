@@ -215,12 +215,34 @@ pub(crate) struct RecoveryRestAnalysis {
     pub(crate) disposition: u8,
 }
 
+/// Measured discrepancy behind a [`CommissionError::RecoveryOriginMismatch`].
+#[cfg(feature = "trace-velocity-sweep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct RecoveryOriginMismatchEvidence {
+    /// Position captured when the recovery runtime was constructed.
+    pub(crate) expected_counts: i32,
+    /// Position observed on the tick recovery actually began.
+    pub(crate) observed_counts: i32,
+    /// Outer-safety containment window the offsets are judged against.
+    pub(crate) position_window: u32,
+    /// Recovery stage that refused to start.
+    pub(crate) stage: RecoveryStage,
+    /// Zero-based rung index.
+    pub(crate) rung_index: u8,
+    /// Raw velocity P gain in force.
+    pub(crate) p_raw: u16,
+}
+
 /// One cooperative result from the shared recovery worker.
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RungOriginRecoveryStep {
     ReadyNow,
     At(u64),
+    /// The origin moved out from under this recovery. Diagnostic only: the
+    /// worker reports the measured discrepancy now and raises the fault it
+    /// explains on the following tick, so the fault itself is unchanged.
+    OriginMismatch(RecoveryOriginMismatchEvidence),
     RestSelection {
         decision: crate::autotune::velocity_measurement::RestSelectionDecision,
         stage: RecoveryStage,
@@ -240,6 +262,8 @@ pub(crate) enum RungOriginRecoveryStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum RecoveryState {
     WriteGains,
+    /// The origin-mismatch evidence has been reported; raise its fault now.
+    OriginMismatchFault,
     ClearMovingIntegrator,
     CommandTowardOrigin,
     Observe {
@@ -462,7 +486,9 @@ impl RungOriginRecoveryRuntime {
             | RecoveryState::CaptureSettle { .. }
             | RecoveryState::AnalyzeSettle { .. } => (OuterSafetyTimingPhase::RecoverySettle, true),
             RecoveryState::RestTerminal { .. } => (OuterSafetyTimingPhase::Terminalization, true),
-            RecoveryState::Terminal { .. } => (OuterSafetyTimingPhase::Terminalization, true),
+            RecoveryState::Terminal { .. } | RecoveryState::OriginMismatchFault => {
+                (OuterSafetyTimingPhase::Terminalization, true)
+            }
         }
     }
 

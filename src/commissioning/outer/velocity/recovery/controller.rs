@@ -19,10 +19,10 @@ use super::super::sweep_analysis::{
 };
 use super::super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 use super::{
-    ExactU64Parts, RECOVERY_STABILIZATION_US, RecoveryBindingSource, RecoveryRestAnalysis,
-    RecoveryStabilizationSummary, RecoveryState, RungOriginRecoveryOutcome,
-    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
-    recovery_return_distance_counts,
+    ExactU64Parts, RECOVERY_STABILIZATION_US, RecoveryBindingSource,
+    RecoveryOriginMismatchEvidence, RecoveryRestAnalysis, RecoveryStabilizationSummary,
+    RecoveryState, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, recovery_return_distance_counts,
 };
 
 /// Advance one bounded unit of shared rung-origin recovery work.
@@ -70,6 +70,9 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             );
             RungOriginRecoveryStep::Finished(report)
         }
+        RecoveryState::OriginMismatchFault => {
+            recovery_fault(CommissionError::RecoveryOriginMismatch, None)
+        }
         RecoveryState::WriteGains => {
             if runtime.start_offset_counts.unsigned_abs() > resources.safety.position_window {
                 runtime.state = RecoveryState::Terminal {
@@ -85,7 +88,19 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 ));
             }
             if resources.safety.unwrapped_position != runtime.start_offset_counts {
-                return recovery_fault(CommissionError::RecoveryOriginMismatch, None);
+                // Report the measured discrepancy before faulting. The fault is
+                // raised unchanged on the next tick from `OriginMismatchFault`;
+                // without this a one-count sample race and a real runaway are
+                // indistinguishable on the wire.
+                runtime.state = RecoveryState::OriginMismatchFault;
+                return RungOriginRecoveryStep::OriginMismatch(RecoveryOriginMismatchEvidence {
+                    expected_counts: runtime.start_offset_counts,
+                    observed_counts: resources.safety.unwrapped_position,
+                    position_window: resources.safety.position_window,
+                    stage: runtime.stage,
+                    rung_index: runtime.rung_index,
+                    p_raw: runtime.p_raw(),
+                });
             }
             checkpoint(BreakawayCheckpoint::RecoveryGainWrite);
             if backend

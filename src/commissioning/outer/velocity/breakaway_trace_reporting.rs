@@ -26,7 +26,7 @@ use crate::commissioning::types::{
     BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
     BreakawayCeilingSource, BreakawayDiscoveryRungMargin, BreakawayProbeDecision,
     BreakawayProbePlanned, BreakawayProbeResolved, BreakawayProbeTerminal, BreakawayRawObservation,
-    BreakawayRecoveryRestRejected, BreakawayRungZeroDiagnostic,
+    BreakawayRecoveryOriginMismatch, BreakawayRecoveryRestRejected, BreakawayRungZeroDiagnostic,
 };
 
 use crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord;
@@ -365,6 +365,31 @@ pub(crate) fn encode_recovery_rest_rejected(
     record.push_u8(report.scored_net_displacement_counts as u8);
     record.push_u8(report.scored_min_displacement_counts as u8);
     record.push_u8(report.scored_max_displacement_counts as u8);
+    record
+}
+
+/// Encode one recovery refused because its origin moved (tag 15).
+///
+/// Carries both offsets and their exact difference, so a decoder can separate
+/// a single-sample race from a real runaway without re-deriving either.
+pub(crate) fn encode_recovery_origin_mismatch(
+    report: BreakawayRecoveryOriginMismatch,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(15);
+    record.push_u32(report.run_sequence);
+    record.push_u16(report.evidence_sequence);
+    push_u64(&mut record, report.plan_digest);
+    record.push_u8(report.phase);
+    record.push_u8(report.stage);
+    record.push_u8(report.rung_index);
+    record.push_u8(report.slot_index);
+    record.push_u8(report.direction);
+    record.push_u16(report.p_raw);
+    record.push_i32(report.expected_start_offset_counts);
+    record.push_i32(report.observed_position_counts);
+    record.push_i32(report.delta_counts);
+    record.push_u32(report.position_window_counts);
     record
 }
 

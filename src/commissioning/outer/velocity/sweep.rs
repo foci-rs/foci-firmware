@@ -1708,6 +1708,9 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             };
             match step_rung_origin_recovery(runtime, &mut resources, backend).await {
                 RungOriginRecoveryStep::ReadyNow => StepResult::ReadyNow,
+                // Breakaway-only diagnostic; the fault it precedes arrives
+                // on the following tick and is handled below unchanged.
+                RungOriginRecoveryStep::OriginMismatch(_) => StepResult::ReadyNow,
                 RungOriginRecoveryStep::At(deadline_us) => StepResult::At(deadline_us),
                 RungOriginRecoveryStep::RestSelection {
                     decision,

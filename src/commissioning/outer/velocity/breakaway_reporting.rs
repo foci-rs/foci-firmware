@@ -517,6 +517,40 @@ pub(crate) fn recovery_rest_rejected_report(
     }
 }
 
+/// Report one recovery refused because its origin moved.
+///
+/// The worker supplies the measured discrepancy; the stroke's slot and
+/// direction come from the phase driver, and the campaign layer attaches the
+/// wire identity.
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) fn recovery_origin_mismatch_report(
+    plan_digest: u64,
+    phase: BreakawayPhase,
+    evidence: super::recovery::RecoveryOriginMismatchEvidence,
+    slot_index: u8,
+    direction: VelocityDirection,
+    run_sequence: u32,
+    evidence_sequence: u16,
+) -> crate::commissioning::types::BreakawayRecoveryOriginMismatch {
+    crate::commissioning::types::BreakawayRecoveryOriginMismatch {
+        run_sequence,
+        evidence_sequence,
+        plan_digest,
+        phase: phase as u8,
+        stage: evidence.stage as u8,
+        rung_index: evidence.rung_index,
+        slot_index,
+        direction: direction_report_code(direction),
+        p_raw: evidence.p_raw,
+        expected_start_offset_counts: evidence.expected_counts,
+        observed_position_counts: evidence.observed_counts,
+        delta_counts: evidence
+            .observed_counts
+            .saturating_sub(evidence.expected_counts),
+        position_window_counts: evidence.position_window,
+    }
+}
+
 /// Report one recovered probe observation immediately before cursor mutation.
 pub(crate) fn probe_decision_report(
     plan_digest: u64,
