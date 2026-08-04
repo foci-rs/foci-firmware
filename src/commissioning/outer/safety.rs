@@ -314,7 +314,7 @@ impl OuterSafetyLimits {
     /// Begin a bounded motion primitive after its nonzero target is applied.
     pub(crate) fn begin_primitive(&mut self, now_us: u64) -> Result<(), CommissionError> {
         if self.primitive_start_us.is_some() {
-            return Err(CommissionError::InvalidSchedule);
+            return Err(CommissionError::PrimitiveAlreadyOpen);
         }
         self.primitive_start_us = Some(now_us);
         self.primitive_start_position = Some(self.unwrapped_position);
@@ -817,7 +817,7 @@ mod tests {
 
         assert!(matches!(
             safety.begin_primitive(2_000),
-            Err(CommissionError::InvalidSchedule)
+            Err(CommissionError::PrimitiveAlreadyOpen)
         ));
         assert_eq!(safety.primitive_start_us, Some(1_000));
     }

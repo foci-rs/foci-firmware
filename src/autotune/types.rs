@@ -254,6 +254,18 @@ pub enum CommissionError {
     ScheduleEarlyInvocation,
     /// Advancing a grid deadline overflowed. Code 69.
     ScheduleDeadlineOverflow,
+    /// A safety primitive was opened while one was already open. Code 70.
+    ///
+    /// A sequencing fault: some path reached the next stroke without closing
+    /// the previous primitive's window.
+    PrimitiveAlreadyOpen,
+    /// The outer safety check found the active primitive's start timestamp
+    /// ahead of the current time. Code 71.
+    ///
+    /// Raised outside the campaign, on the per-tick safety check, so it is
+    /// stamped with whatever phase happened to be active rather than with the
+    /// phase that caused it.
+    PrimitiveStartInFuture,
     /// Discovery finished without a selected in-band ladder, so a path
     /// requiring a nominated band had nothing to act on. Code 66.
     ///
@@ -338,6 +350,8 @@ impl CommissionError {
             Self::SchedulePeriodZero => 67,
             Self::ScheduleEarlyInvocation => 68,
             Self::ScheduleDeadlineOverflow => 69,
+            Self::PrimitiveAlreadyOpen => 70,
+            Self::PrimitiveStartInFuture => 71,
         }
     }
 }
@@ -692,6 +706,8 @@ mod tests {
             CommissionError::SchedulePeriodZero,
             CommissionError::ScheduleEarlyInvocation,
             CommissionError::ScheduleDeadlineOverflow,
+            CommissionError::PrimitiveAlreadyOpen,
+            CommissionError::PrimitiveStartInFuture,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -731,6 +747,8 @@ mod tests {
         assert_eq!(CommissionError::SchedulePeriodZero.status_code(), 67);
         assert_eq!(CommissionError::ScheduleEarlyInvocation.status_code(), 68);
         assert_eq!(CommissionError::ScheduleDeadlineOverflow.status_code(), 69);
+        assert_eq!(CommissionError::PrimitiveAlreadyOpen.status_code(), 70);
+        assert_eq!(CommissionError::PrimitiveStartInFuture.status_code(), 71);
     }
 
     #[test]
