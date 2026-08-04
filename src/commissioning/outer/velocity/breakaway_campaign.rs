@@ -3944,18 +3944,34 @@ pub(crate) fn breakaway_campaign_fault_terminal(
     let OuterPhase::BreakawayCampaign { campaign, .. } = phase else {
         return StepResult::OuterFailed(error);
     };
+    // A fault carrying no safety fault is an internal fault, not a safety
+    // event; reporting it as one puts `*_safety_fault` next to
+    // `has_safety_fault = 0` in the capture.
+    let raised_safety = safety_fault.is_some();
     let (owning_phase, terminal_cause) = match campaign.phase() {
         BreakawayCampaignPhase::Probe { .. } => (
             BreakawayPhase::Probe,
-            super::breakaway_reporting::BreakawayTerminalCause::ProbeSafetyFault,
+            if raised_safety {
+                super::breakaway_reporting::BreakawayTerminalCause::ProbeSafetyFault
+            } else {
+                super::breakaway_reporting::BreakawayTerminalCause::ProbeInternalFault
+            },
         ),
         BreakawayCampaignPhase::Discovery { .. } => (
             BreakawayPhase::Discovery,
-            super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault,
+            if raised_safety {
+                super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault
+            } else {
+                super::breakaway_reporting::BreakawayTerminalCause::DiscoveryInternalFault
+            },
         ),
         BreakawayCampaignPhase::Confirmation { .. } => (
             BreakawayPhase::Confirmation,
-            super::breakaway_reporting::BreakawayTerminalCause::ConfirmationSafetyFault,
+            if raised_safety {
+                super::breakaway_reporting::BreakawayTerminalCause::ConfirmationSafetyFault
+            } else {
+                super::breakaway_reporting::BreakawayTerminalCause::ConfirmationInternalFault
+            },
         ),
     };
     let campaign_terminal = campaign_terminal_event(
@@ -4006,7 +4022,7 @@ fn discovery_construction_fault(
 ) -> EmitContinuation {
     let campaign_terminal = campaign_terminal_event(
         BreakawayPhase::Discovery,
-        super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault,
+        super::breakaway_reporting::BreakawayTerminalCause::DiscoveryInternalFault,
         false,
         0,
         inputs,
@@ -4196,14 +4212,20 @@ fn enter_discovery(
                     CommissionError::DiscoveryBandNotSelected,
                     None,
                 ),
-                AdditiveDiscoveryOutcome::SafetyFault { error, safety } => {
-                    (BreakawayTerminalCause::DiscoverySafetyFault, error, safety)
-                }
+                AdditiveDiscoveryOutcome::SafetyFault { error, safety } => (
+                    if safety.is_some() {
+                        BreakawayTerminalCause::DiscoverySafetyFault
+                    } else {
+                        BreakawayTerminalCause::DiscoveryInternalFault
+                    },
+                    error,
+                    safety,
+                ),
                 AdditiveDiscoveryOutcome::TargetBandSelected(_)
                 | AdditiveDiscoveryOutcome::TargetBandSkipped
                 | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
                 | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. } => (
-                    BreakawayTerminalCause::DiscoverySafetyFault,
+                    BreakawayTerminalCause::DiscoveryInternalFault,
                     CommissionError::DiscoveryBandNotSelected,
                     None,
                 ),
@@ -4358,7 +4380,11 @@ fn discovery_done_advance(
         AdditiveDiscoveryOutcome::SafetyFault { error, safety } => {
             let campaign_terminal = campaign_terminal_event(
                 BreakawayPhase::Discovery,
-                super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault,
+                if safety.is_some() {
+                    super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault
+                } else {
+                    super::breakaway_reporting::BreakawayTerminalCause::DiscoveryInternalFault
+                },
                 false,
                 0,
                 inputs,

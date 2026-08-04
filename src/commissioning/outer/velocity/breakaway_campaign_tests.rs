@@ -3734,8 +3734,11 @@ fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
         panic!("expected the deferred campaign-closure record, got {closure_step:?}");
     };
     assert_eq!(closure.phase, BreakawayPhase::Discovery as u8);
+    // The fault was raised with no safety fault, so it must close as an
+    // internal fault; `DiscoverySafetyFault` beside `has_safety_fault = 0`
+    // reads as a safety event to anyone inspecting the capture.
     assert_eq!(
         closure.terminal_cause,
-        BreakawayTerminalCause::DiscoverySafetyFault as u8
+        BreakawayTerminalCause::DiscoveryInternalFault as u8
     );
 }
