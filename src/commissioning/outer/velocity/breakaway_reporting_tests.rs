@@ -571,6 +571,7 @@ fn discovery_terminal_report_matches_the_field_level_assembly() {
         0,
         6,
         2,
+        0,
     );
 
     assert_eq!(via_outcome, via_fields);

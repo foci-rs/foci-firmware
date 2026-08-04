@@ -295,6 +295,7 @@ fn encode_discovery_terminal_has_stable_frame_layout() {
         terminal_cause: 0,
         collected_count: 2,
         has_safety_fault: 0,
+        error_code: 24,
     };
     let record = encode_discovery_terminal(report);
     let expected = Expected::new()
@@ -306,7 +307,8 @@ fn encode_discovery_terminal_has_stable_frame_layout() {
         .u16(report.family_size)
         .u8(report.terminal_cause)
         .u8(report.collected_count)
-        .u8(report.has_safety_fault);
+        .u8(report.has_safety_fault)
+        .u8(report.error_code);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
 
@@ -593,6 +595,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             terminal_cause: 0,
             collected_count: 0,
             has_safety_fault: 0,
+            error_code: 0,
         })
         .as_bytes()[0],
         encode_discovery_rung_margin(BreakawayDiscoveryRungMargin {

@@ -212,6 +212,7 @@ pub(crate) fn encode_discovery_terminal(
     record.push_u8(report.terminal_cause);
     record.push_u8(report.collected_count);
     record.push_u8(report.has_safety_fault);
+    record.push_u8(report.error_code);
     record
 }
 

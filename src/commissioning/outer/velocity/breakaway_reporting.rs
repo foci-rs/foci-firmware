@@ -559,6 +559,7 @@ pub(crate) fn discovery_terminal_fields(
     collected_count: u8,
     run_sequence: u32,
     evidence_sequence: u16,
+    error_code: u8,
 ) -> AdditiveDiscoveryTerminal {
     AdditiveDiscoveryTerminal {
         run_sequence,
@@ -569,6 +570,7 @@ pub(crate) fn discovery_terminal_fields(
         terminal_cause: cause as u8,
         collected_count,
         has_safety_fault,
+        error_code,
     }
 }
 
@@ -584,6 +586,17 @@ pub(crate) fn discovery_terminal_report(
     evidence_sequence: u16,
 ) -> AdditiveDiscoveryTerminal {
     let (cause, has_safety_fault) = discovery_terminal_cause(outcome);
+    // The outcome already carries the error; dropping it here is what left a
+    // `*_internal_fault` terminal unattributable.
+    let error_code = match outcome {
+        AdditiveDiscoveryOutcome::SafetyFault { error, .. }
+        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { error } => error.status_code(),
+        AdditiveDiscoveryOutcome::TargetBandSelected(_)
+        | AdditiveDiscoveryOutcome::TargetBandSkipped
+        | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
+        | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
+        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => 0,
+    };
     let collected_count = match outcome {
         AdditiveDiscoveryOutcome::TargetBandSelected(rungs) => rungs.count(),
         AdditiveDiscoveryOutcome::TargetBandSkipped
@@ -600,6 +613,7 @@ pub(crate) fn discovery_terminal_report(
         collected_count,
         run_sequence,
         evidence_sequence,
+        error_code,
     )
 }
 

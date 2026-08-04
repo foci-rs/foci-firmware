@@ -1363,6 +1363,14 @@ pub struct AdditiveDiscoveryTerminal {
     pub collected_count: u8,
     /// Nonzero when the terminal carries retained safety-fault evidence.
     pub has_safety_fault: u8,
+    /// `CommissionError::status_code()` for a faulted terminal, or `0` when the
+    /// terminal carries no error.
+    ///
+    /// The terminal cause says which phase stopped and whether a safety fault
+    /// was retained; it does not say why. Without this a `*_internal_fault`
+    /// is unattributable, which is exactly the state the 2026-08-03
+    /// intermittent left the campaign in.
+    pub error_code: u8,
 }
 
 /// Immutable held-out confirmation plan evidence emitted before the first
