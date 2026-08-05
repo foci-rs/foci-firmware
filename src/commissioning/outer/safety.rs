@@ -608,7 +608,15 @@ fn clamp_u64_to_u32(value: u64) -> u32 {
     value.min(u32::MAX as u64) as u32
 }
 
-fn velocity_counts_per_ms_for_fault(delta_counts: i32, magnitude: u64) -> i32 {
+fn clamp_u128_to_u64(value: u128) -> u64 {
+    value.min(u64::MAX as u128) as u64
+}
+
+/// Apply the observed direction's sign to a magnitude, clamped to the report domain.
+///
+/// Used for both the window's summed counts and its resulting velocity, so the
+/// two carry the same direction as the observation that closed the window.
+fn signed_report_value(delta_counts: i32, magnitude: u64) -> i32 {
     if delta_counts < 0 {
         let magnitude = magnitude.min(i32::MAX as u64 + 1);
         -(magnitude as i64) as i32
@@ -818,29 +826,47 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
     // preserves actual elapsed time without rounding either interval first, and
     // the cap is carried in milli-counts per second so it is not rounded either.
     let active_cap_milli_counts_per_s = safety.active_velocity_cap_milli_counts_per_s();
-    let velocity_window_exceeds_cap = previous_velocity_observation.is_some_and(|previous| {
-        let absolute_delta_counts = u128::from(previous.absolute_delta_counts)
-            + u128::from(velocity_observation.absolute_delta_counts);
-        let elapsed_us =
-            u128::from(previous.elapsed_us) + u128::from(velocity_observation.elapsed_us);
-        absolute_delta_counts * 1_000_000_000
-            > u128::from(active_cap_milli_counts_per_s) * elapsed_us
-    });
-    if velocity_window_exceeds_cap {
+    // The window the check evaluates is also the window the fault reports. A
+    // violating two-interval window routinely contains a latest interval that
+    // is itself under the cap, so reporting that interval alone presents the
+    // fault as arithmetically impossible.
+    let violating_window = previous_velocity_observation
+        .map(|previous| {
+            let window_counts = u128::from(previous.absolute_delta_counts)
+                + u128::from(velocity_observation.absolute_delta_counts);
+            let window_elapsed_us =
+                u128::from(previous.elapsed_us) + u128::from(velocity_observation.elapsed_us);
+            (window_counts, window_elapsed_us)
+        })
+        .filter(|(window_counts, window_elapsed_us)| {
+            window_counts * 1_000_000_000
+                > u128::from(active_cap_milli_counts_per_s) * window_elapsed_us
+        });
+    if let Some((window_counts, window_elapsed_us)) = violating_window {
+        let window_magnitude_cpms = clamp_u128_to_u64(
+            (window_counts * 1_000)
+                .checked_div(window_elapsed_us)
+                .unwrap_or(0),
+        );
+        let window_delta_counts =
+            signed_report_value(delta_counts, clamp_u128_to_u64(window_counts));
+        let window_velocity_cpms = signed_report_value(delta_counts, window_magnitude_cpms);
         defmt::warn!(
-            "outer safety: velocity {} exceeds cap {} milli-counts/s (delta={} dt_us={} settle={})",
-            velocity_magnitude_cpms,
+            "outer safety: window velocity {} exceeds cap {} milli-counts/s \
+             (window delta={} dt_us={}, latest delta={} dt_us={}, settle={})",
+            window_magnitude_cpms,
             active_cap_milli_counts_per_s,
+            window_delta_counts,
+            clamp_u128_to_u64(window_elapsed_us),
             delta_counts,
             dt_us,
             safety.in_settle_phase,
         );
-        let velocity_cpms = velocity_counts_per_ms_for_fault(delta_counts, velocity_magnitude_cpms);
         return Ok(Some(safety.fault(
             OUTER_SAFETY_FAULT_VELOCITY,
-            delta_counts,
-            dt_us,
-            velocity_cpms,
+            window_delta_counts,
+            clamp_u128_to_u64(window_elapsed_us),
+            window_velocity_cpms,
             elapsed_us,
         )));
     }
@@ -863,7 +889,7 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
             safety.negative_position_window,
             safety.positive_position_window,
         );
-        let velocity_cpms = velocity_counts_per_ms_for_fault(delta_counts, velocity_magnitude_cpms);
+        let velocity_cpms = signed_report_value(delta_counts, velocity_magnitude_cpms);
         return Ok(Some(safety.fault(
             OUTER_SAFETY_FAULT_POSITION,
             delta_counts,
@@ -1833,6 +1859,45 @@ mod tests {
     }
 
     #[test]
+    fn outer_safety_velocity_fault_reports_the_window_that_tripped() {
+        pollster::block_on(async {
+            // The check sums two intervals, so the latest one alone can sit
+            // below the cap while the window that fired is above it. Reporting
+            // the latest interval invites the reader to conclude the firmware
+            // faulted spuriously.
+            let mut safety = armed_safety(Some(100_000), 101_000);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 30;
+
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first velocity observation should succeed")
+                    .is_none(),
+                "the first interval only primes the window"
+            );
+
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 50;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed")
+                .expect("50 counts over 2 ms is 25 counts/ms against the 24 counts/ms cap");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            // The latest interval alone is 20 counts/ms, under the cap.
+            assert_eq!(fault.delta_counts, 50, "summed counts across the window");
+            assert_eq!(fault.dt_us, 2_000, "summed elapsed across the window");
+            assert_eq!(fault.velocity_counts_per_ms, 25);
+            assert!(
+                fault.velocity_counts_per_ms >= fault.velocity_cap_counts_per_ms,
+                "a reported velocity below the reported cap reads as a spurious fault"
+            );
+        });
+    }
+
+    #[test]
     fn outer_safety_velocity_window_resets_with_encoder_baseline() {
         pollster::block_on(async {
             let mut safety = armed_safety(Some(100_000), 101_000);
@@ -2077,8 +2142,10 @@ mod tests {
             assert_eq!(fault.max_velocity_mrev_s, 6000);
             assert_eq!(fault.max_duration_ms, 3000);
             assert_eq!(fault.direction_mask, 3);
-            assert_eq!(fault.delta_counts, 25);
-            assert_eq!(fault.dt_us, 1_000);
+            // The window that tripped, not the latest interval: two 25-count
+            // intervals of 1 ms each.
+            assert_eq!(fault.delta_counts, 50);
+            assert_eq!(fault.dt_us, 2_000);
             assert_eq!(fault.velocity_counts_per_ms, 25);
             assert_eq!(fault.velocity_cap_counts_per_ms, 24);
             assert_eq!(fault.position_counts, 50);
@@ -2116,8 +2183,10 @@ mod tests {
                 .expect("velocity should violate the safety envelope");
 
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
-            assert_eq!(fault.delta_counts, LARGE_DELTA as i32);
-            assert_eq!(fault.velocity_counts_per_ms, LARGE_DELTA as i32);
+            // Window: both intervals summed, over 1 us + 1000 us.
+            assert_eq!(fault.delta_counts, (LARGE_DELTA * 2) as i32);
+            assert_eq!(fault.dt_us, 1_001);
+            assert_eq!(fault.velocity_counts_per_ms, 1_072_669_150);
         });
     }
 
@@ -2150,8 +2219,9 @@ mod tests {
                 .expect("velocity should violate the safety envelope");
 
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
-            assert_eq!(fault.delta_counts, -(LARGE_DELTA as i32));
-            assert_eq!(fault.velocity_counts_per_ms, -(LARGE_DELTA as i32));
+            assert_eq!(fault.delta_counts, -((LARGE_DELTA * 2) as i32));
+            assert_eq!(fault.dt_us, 1_001);
+            assert_eq!(fault.velocity_counts_per_ms, -1_072_669_150);
         });
     }
 
