@@ -1399,6 +1399,61 @@ mod tests {
     }
 
     #[test]
+    fn outer_safety_settle_allowance_does_not_survive_into_the_next_primitive() {
+        pollster::block_on(async {
+            // Motion the settle bound admits is not admitted once the next
+            // primitive opens under a commanded amplitude again. This is the
+            // boundary that decides where an axis still moving at the end of
+            // settle gets reported: here, two observations into the following
+            // primitive, rather than during the settle it carried over from.
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            safety.begin_primitive(100_000).unwrap();
+            safety.enter_settle_phase();
+            let mut backend = MockBackend::new();
+
+            // 20 counts/ms throughout: above the 13.8 moving envelope, inside
+            // the 40 counts/ms settle ceiling.
+            for (elapsed_us, counts) in [(101_000, 20), (102_000, 40), (103_000, 60)] {
+                backend.elapsed_us_value = elapsed_us;
+                backend.mechanical_encoder_position_counts_value = counts;
+                assert!(
+                    check_outer_safety(&mut safety, &mut backend)
+                        .await
+                        .expect("settle observation should succeed")
+                        .is_none(),
+                    "20 counts/ms is inside the settle ceiling"
+                );
+            }
+
+            safety.end_primitive();
+            safety.begin_primitive(103_000).unwrap();
+
+            backend.elapsed_us_value = 104_000;
+            backend.mechanical_encoder_position_counts_value = 80;
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first observation of the new primitive should succeed")
+                    .is_none(),
+                "begin_primitive resets the window, so the first interval only primes it"
+            );
+
+            backend.elapsed_us_value = 105_000;
+            backend.mechanical_encoder_position_counts_value = 100;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second observation of the new primitive should succeed")
+                .expect("unchanged motion must fault once the moving envelope applies again");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(
+                fault.elapsed_us, 2_000,
+                "the fault lands two observations into the primitive, not during settle"
+            );
+        });
+    }
+
+    #[test]
     fn outer_safety_settle_phase_keeps_the_quarter_turn_fault() {
         pollster::block_on(async {
             let mut safety = envelope_armed_safety(1_450, 10_000);
