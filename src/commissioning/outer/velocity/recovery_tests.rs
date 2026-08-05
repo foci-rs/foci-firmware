@@ -784,7 +784,7 @@ fn recovery_controller_releases_contained_primitive() {
 }
 
 #[test]
-fn recovery_controller_uses_constant_signed_target_and_faults_wrong_way_growth() {
+fn recovery_controller_uses_constant_signed_target_and_bounds_wrong_way_growth() {
     let mut runtime = runtime(8_458, Some(14_000_000));
     let mut safety = configured_safety(8_458);
     let mut observations = VelocityObservationRing::new();
@@ -836,18 +836,54 @@ fn recovery_controller_uses_constant_signed_target_and_faults_wrong_way_growth()
         RungOriginRecoveryStep::At(_)
     ));
 
+    // Two counts of wrong-way growth is jitter, not a wrong-direction drive.
+    // Recovery's own success criterion accepts anything within
+    // `origin_band_counts`, so a fatal gate an order of magnitude tighter than
+    // the band it aims for discards a whole campaign for nothing.
     backend.elapsed_us_value = 2_000;
     backend.mechanical_encoder_position_counts_value = 460;
-    let RungOriginRecoveryStep::Fault {
-        safety: Some(fault),
-        ..
-    } = pollster::block_on(step_rung_origin_recovery(
-        &mut runtime,
-        &mut resources,
-        &mut backend,
-    ))
-    else {
-        panic!("two counts of wrong-way growth must fault")
+    assert!(
+        !matches!(
+            pollster::block_on(step_rung_origin_recovery(
+                &mut runtime,
+                &mut resources,
+                &mut backend,
+            )),
+            RungOriginRecoveryStep::Fault { .. }
+        ),
+        "two counts of wrong-way growth is inside the band and must be tolerated"
+    );
+
+    // Beyond the band it is a genuine wrong-direction drive and still faults.
+    // Stepped at 12 counts/ms, just under the 13 counts/ms envelope cap, so the
+    // velocity gate does not fire first and mask the reason under test.
+    let band = origin_band_counts();
+    let mut elapsed = 2_000_u64;
+    let mut position = 460_u32;
+    let mut step_fault = None;
+    let mut last_step = None;
+    while position < 460 + band + 200 {
+        elapsed += 1_000;
+        position += 12;
+        backend.elapsed_us_value = elapsed;
+        backend.mechanical_encoder_position_counts_value = position;
+        let step = pollster::block_on(step_rung_origin_recovery(
+            &mut runtime,
+            &mut resources,
+            &mut backend,
+        ));
+        if let RungOriginRecoveryStep::Fault {
+            safety: Some(fault),
+            ..
+        } = step
+        {
+            step_fault = Some(fault);
+            break;
+        }
+        last_step = Some(step);
+    }
+    let Some(fault) = step_fault else {
+        panic!("wrong-way growth beyond the band must fault, last step: {last_step:?}");
     };
     assert_eq!(fault.reason, OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY);
 }

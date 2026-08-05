@@ -204,7 +204,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             }
             let offset = resources.safety.unwrapped_position;
             update_closest(runtime, offset);
-            if wrong_way(runtime.start_offset_counts, offset) {
+            if wrong_way(
+                runtime.start_offset_counts,
+                offset,
+                runtime.plan.origin_band_counts,
+            ) {
                 let elapsed_us = backend
                     .elapsed_us()
                     .saturating_sub(runtime.recovery_started_us.to_u64());
@@ -311,7 +315,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             }
             let offset = resources.safety.unwrapped_position;
             update_closest(runtime, offset);
-            if wrong_way(runtime.start_offset_counts, offset) {
+            if wrong_way(
+                runtime.start_offset_counts,
+                offset,
+                runtime.plan.origin_band_counts,
+            ) {
                 let elapsed_us = backend
                     .elapsed_us()
                     .saturating_sub(runtime.recovery_started_us.to_u64());
@@ -696,8 +704,23 @@ fn update_closest(runtime: &mut RungOriginRecoveryRuntime, offset: i32) {
     }
 }
 
-fn wrong_way(start_offset: i32, current_offset: i32) -> bool {
-    current_offset.unsigned_abs() > start_offset.unsigned_abs().saturating_add(1)
+/// Return whether recovery is driving away from the origin rather than toward it.
+///
+/// The tolerance is `origin_band_counts`: the same band recovery aims for and
+/// accepts as success two statements later, and the same band
+/// `recovery_origin_mismatch` was independently widened for the identical
+/// defect shape.
+///
+/// A fixed one-count allowance made this a per-stroke, exact-threshold,
+/// campaign-fatal gate on a physical quantity: two counts of jitter discarded a
+/// whole campaign of accumulated evidence, against a containment window three
+/// orders of magnitude larger. Growth inside the band is harmless by
+/// construction, because recovery would accept that same offset as complete.
+fn wrong_way(start_offset: i32, current_offset: i32, origin_band_counts: u32) -> bool {
+    current_offset.unsigned_abs()
+        > start_offset
+            .unsigned_abs()
+            .saturating_add(origin_band_counts)
 }
 
 fn recovery_fault(
