@@ -215,8 +215,10 @@ fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
     // 5_696 -> 5_728: +32 B for the deferred phase-terminal record reported
     // by a dispatcher-detected fault.
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_728);
+    // 3_888 -> 3_904: +16 B for the exact velocity envelope carried by
+    // `OuterSafetyLimits`, which the non-trace engine holds too.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_888);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_904);
 }
 
 #[test]

@@ -158,8 +158,27 @@ impl PartialEq<Option<u64>> for OuterSafetyTimestamp {
 /// Outer safety limits, computed once at the start of outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct OuterSafetyLimits {
-    /// Maximum absolute velocity in encoder counts per millisecond.
-    pub(crate) velocity_cap: u32,
+    /// Maximum absolute velocity while a commanded amplitude is active, in
+    /// milli-counts per second.
+    ///
+    /// Held at 1000x counts per second so the runtime comparison never rounds
+    /// the cap, matching the cross-multiplication that already keeps it from
+    /// rounding the observation intervals. Flooring the envelope to whole
+    /// counts per millisecond cost 6% of it at the commissioning amplitude.
+    velocity_cap_milli_counts_per_s: u64,
+    /// Frozen `M_effective` bounding velocity once the active primitive's
+    /// target has been zeroed, in mechanical millirevolutions per second.
+    ///
+    /// Braking through a zero target has no commanded amplitude to be sized
+    /// against, so the applicable bound is the effective ceiling the plan is
+    /// already validated under. Held in `mrev/s` rather than as a second
+    /// milli-counts cap so the retained state costs four bytes instead of
+    /// eight; the encoder-domain product is formed at comparison time. Zero
+    /// means no separate settle allowance, which is what the classic sweeps and
+    /// mechanical identification want.
+    settle_ceiling_mrev_s: u32,
+    /// Whether the active primitive has passed its zero-target boundary.
+    in_settle_phase: bool,
     /// Maximum distance from start position in encoder counts.
     pub(crate) position_window: u32,
     /// Maximum negative displacement from the Stage-2 entry position.
@@ -195,7 +214,11 @@ pub(crate) struct OuterSafetyLimits {
 impl OuterSafetyLimits {
     pub(crate) fn new(torque_cap: u16, budget: OuterMotionBudget) -> Self {
         Self {
-            velocity_cap: MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS,
+            velocity_cap_milli_counts_per_s: counts_per_ms_to_milli_counts_per_s(
+                MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS,
+            ),
+            settle_ceiling_mrev_s: 0,
+            in_settle_phase: false,
             position_window: POSITION_WINDOW_COUNTS,
             negative_position_window: POSITION_WINDOW_COUNTS,
             positive_position_window: POSITION_WINDOW_COUNTS,
@@ -233,8 +256,13 @@ impl OuterSafetyLimits {
         self.prev_encoder_count = None;
         self.previous_velocity_observation = None;
         self.quarter_turn_fault_counts = counts_per_rev.div_ceil(4);
-        self.velocity_cap = mechanical_id_velocity_cap_counts_per_ms(counts_per_rev)
-            .min(self.budget.velocity_counts_per_ms(counts_per_rev));
+        // Mechanical identification has no zero-target settle of its own, so its
+        // settle bound stays equal to its moving bound.
+        self.velocity_cap_milli_counts_per_s = counts_per_ms_to_milli_counts_per_s(
+            mechanical_id_velocity_cap_counts_per_ms(counts_per_rev)
+                .min(self.budget.velocity_counts_per_ms(counts_per_rev)),
+        );
+        self.settle_ceiling_mrev_s = 0;
         self.position_window =
             position_window_counts(counts_per_rev).min(self.budget.travel_counts(counts_per_rev));
         self.negative_position_window = position_window_counts(counts_per_rev).min(mrev_to_counts(
@@ -267,12 +295,9 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
-    /// Configure the runtime envelope around the frozen sweep amplitude.
-    #[allow(dead_code)]
-    pub(crate) fn configure_velocity_envelope(
-        &mut self,
-        planned_velocity_mrev_s: u32,
-    ) -> Result<(), CommissionError> {
+    /// The amplitude-relative runaway envelope
+    /// `E(planned) = max(ceil(3 * planned / 2), planned + 2000)`.
+    fn envelope_mrev_s(planned_velocity_mrev_s: u32) -> Result<u32, CommissionError> {
         if planned_velocity_mrev_s == 0 {
             return Err(CommissionError::InvalidSchedule);
         }
@@ -284,10 +309,111 @@ impl OuterSafetyLimits {
         let absolute = planned_velocity_mrev_s
             .checked_add(ENVELOPE_ABSOLUTE_MARGIN_MREV_S)
             .ok_or(CommissionError::InvalidSchedule)?;
-        let envelope_mrev_s = proportional.max(absolute);
-        self.velocity_cap =
-            velocity_mrev_s_to_counts_per_ms(envelope_mrev_s, self.counts_per_rev());
+        Ok(proportional.max(absolute))
+    }
+
+    fn apply_velocity_envelope(&mut self, moving_mrev_s: u32, settle_ceiling_mrev_s: u32) {
+        let counts_per_rev = self.counts_per_rev();
+        self.velocity_cap_milli_counts_per_s =
+            velocity_mrev_s_to_milli_counts_per_s(moving_mrev_s, counts_per_rev);
+        self.settle_ceiling_mrev_s = settle_ceiling_mrev_s;
+    }
+
+    /// Configure the runtime envelope around the frozen sweep amplitude.
+    ///
+    /// The zero-target settle is bounded identically to the moving stroke. Only
+    /// callers that carry a frozen `M_effective` widen it, through
+    /// [`Self::configure_velocity_envelope_with_settle_ceiling`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommissionError::InvalidSchedule`] when the amplitude is zero
+    /// or the envelope arithmetic overflows.
+    #[allow(dead_code)]
+    pub(crate) fn configure_velocity_envelope(
+        &mut self,
+        planned_velocity_mrev_s: u32,
+    ) -> Result<(), CommissionError> {
+        let envelope_mrev_s = Self::envelope_mrev_s(planned_velocity_mrev_s)?;
+        self.apply_velocity_envelope(envelope_mrev_s, 0);
         Ok(())
+    }
+
+    /// Configure the runtime envelope with a separate zero-target settle bound.
+    ///
+    /// The moving bound stays `E(planned)`. The settle bound is
+    /// `effective_ceiling_mrev_s` itself: once the target has been zeroed there
+    /// is no commanded amplitude to size a margin against, and the effective
+    /// ceiling is already the outermost bound the plan is validated under. It is
+    /// `min(host machine ceiling, encoder-observable)`, so the trip still sits
+    /// inside the range the encoder resolves unambiguously.
+    ///
+    /// `sweep_plan::envelope_cap` chooses the planned amplitude so that
+    /// `E(planned) <= M_effective`. A pair violating that is a planning fault
+    /// rather than a wider runtime allowance, and is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommissionError::InvalidSchedule`] when either input is zero,
+    /// when the envelope arithmetic overflows, or when the envelope exceeds the
+    /// effective ceiling.
+    #[allow(dead_code)]
+    pub(crate) fn configure_velocity_envelope_with_settle_ceiling(
+        &mut self,
+        planned_velocity_mrev_s: u32,
+        effective_ceiling_mrev_s: u32,
+    ) -> Result<(), CommissionError> {
+        if effective_ceiling_mrev_s == 0 {
+            return Err(CommissionError::InvalidSchedule);
+        }
+        let envelope_mrev_s = Self::envelope_mrev_s(planned_velocity_mrev_s)?;
+        if envelope_mrev_s > effective_ceiling_mrev_s {
+            return Err(CommissionError::InvalidSchedule);
+        }
+        self.apply_velocity_envelope(envelope_mrev_s, effective_ceiling_mrev_s);
+        Ok(())
+    }
+
+    /// Mark the active primitive as past its zero-target boundary.
+    ///
+    /// Called where the phase writes `PID_VELOCITY_TARGET = 0`, so the wider
+    /// braking bound covers exactly the interval where the axis is decelerating
+    /// under no commanded amplitude. Cleared by [`Self::begin_primitive`] and
+    /// [`Self::end_primitive`], so it can never outlive its primitive.
+    #[allow(dead_code)]
+    pub(crate) const fn enter_settle_phase(&mut self) {
+        self.in_settle_phase = true;
+    }
+
+    /// The velocity bound in force for the active primitive phase.
+    ///
+    /// The settle allowance can never be tighter than the moving envelope: the
+    /// `max` re-asserts at the point of use what
+    /// [`Self::configure_velocity_envelope_with_settle_ceiling`] validates at
+    /// configuration time. Without a configured encoder domain or settle
+    /// ceiling the moving bound stands.
+    pub(crate) fn active_velocity_cap_milli_counts_per_s(&self) -> u64 {
+        let moving = self.velocity_cap_milli_counts_per_s;
+        if !self.in_settle_phase || self.settle_ceiling_mrev_s == 0 {
+            return moving;
+        }
+        match self.encoder_domain {
+            Some(domain) => velocity_mrev_s_to_milli_counts_per_s(
+                self.settle_ceiling_mrev_s,
+                domain.counts_per_rev(),
+            )
+            .max(moving),
+            None => moving,
+        }
+    }
+
+    /// The moving-phase bound, truncated to whole counts per millisecond.
+    ///
+    /// Reporting and legacy-comparison use only. The runtime check uses the
+    /// exact milli-counts-per-second value; this floor never claims a higher
+    /// cap than the one actually enforced.
+    pub(crate) const fn velocity_cap_counts_per_ms(&self) -> u32 {
+        milli_counts_per_s_to_counts_per_ms(self.velocity_cap_milli_counts_per_s)
     }
 
     pub(crate) fn set_encoder_baseline(&mut self, raw_counts: u32) -> Result<(), EncoderMathError> {
@@ -319,6 +445,7 @@ impl OuterSafetyLimits {
         self.primitive_start_us = Some(now_us);
         self.primitive_start_position = Some(self.unwrapped_position);
         self.previous_velocity_observation = None;
+        self.in_settle_phase = false;
         Ok(())
     }
 
@@ -327,6 +454,7 @@ impl OuterSafetyLimits {
         self.primitive_start_us = None;
         self.primitive_start_position = None;
         self.previous_velocity_observation = None;
+        self.in_settle_phase = false;
     }
 
     /// Whether the latest accepted observation met the 1 kHz scoring cadence.
@@ -360,7 +488,10 @@ impl OuterSafetyLimits {
         self.budget_request_is_valid()
             && self.budget.max_duration_ms >= MIN_USEFUL_DURATION_MS
             && self.position_window >= response::MECHANICAL_ID_MIN_TRAVEL_COUNTS
-            && self.velocity_cap >= response::MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS
+            && self.velocity_cap_milli_counts_per_s
+                >= counts_per_ms_to_milli_counts_per_s(
+                    response::MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS,
+                )
     }
 
     pub(crate) fn motion_budget_mrev(&self) -> u16 {
@@ -397,7 +528,9 @@ impl OuterSafetyLimits {
             delta_counts,
             dt_us: clamp_u64_to_u32(dt_us),
             velocity_counts_per_ms,
-            velocity_cap_counts_per_ms: clamp_u32_to_i32(self.velocity_cap),
+            velocity_cap_counts_per_ms: clamp_u32_to_i32(milli_counts_per_s_to_counts_per_ms(
+                self.active_velocity_cap_milli_counts_per_s(),
+            )),
             position_counts: self.unwrapped_position,
             position_window_counts: clamp_u32_to_i32(self.position_window),
             elapsed_us: clamp_u64_to_u32(elapsed_us),
@@ -429,10 +562,28 @@ fn mrev_to_counts(mrev: u32, counts_per_rev: u32) -> u32 {
     clamp_positive_u32(scaled / 1_000)
 }
 
-#[allow(dead_code)]
-fn velocity_mrev_s_to_counts_per_ms(velocity_mrev_s: u32, counts_per_rev: u32) -> u32 {
-    let scaled = u64::from(velocity_mrev_s).saturating_mul(u64::from(counts_per_rev));
-    clamp_positive_u32(scaled / 1_000_000)
+/// Milli-counts per second per whole count per millisecond.
+const MILLI_COUNTS_PER_S_PER_COUNT_PER_MS: u64 = 1_000_000;
+
+/// Convert a mechanical velocity to milli-counts per second exactly.
+///
+/// `mrev/s * counts/rev` is already milli-counts per second, so this carries no
+/// division and therefore no truncation.
+fn velocity_mrev_s_to_milli_counts_per_s(velocity_mrev_s: u32, counts_per_rev: u32) -> u64 {
+    u64::from(velocity_mrev_s).saturating_mul(u64::from(counts_per_rev))
+}
+
+const fn counts_per_ms_to_milli_counts_per_s(counts_per_ms: u32) -> u64 {
+    (counts_per_ms as u64).saturating_mul(MILLI_COUNTS_PER_S_PER_COUNT_PER_MS)
+}
+
+const fn milli_counts_per_s_to_counts_per_ms(milli_counts_per_s: u64) -> u32 {
+    let counts_per_ms = milli_counts_per_s / MILLI_COUNTS_PER_S_PER_COUNT_PER_MS;
+    if counts_per_ms > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        counts_per_ms as u32
+    }
 }
 
 fn clamp_positive_u32(value: u64) -> u32 {
@@ -664,21 +815,25 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
         .replace(velocity_observation);
 
     // Check velocity using a sliding two-interval window. Cross multiplication
-    // preserves actual elapsed time without rounding either interval first.
+    // preserves actual elapsed time without rounding either interval first, and
+    // the cap is carried in milli-counts per second so it is not rounded either.
+    let active_cap_milli_counts_per_s = safety.active_velocity_cap_milli_counts_per_s();
     let velocity_window_exceeds_cap = previous_velocity_observation.is_some_and(|previous| {
         let absolute_delta_counts = u128::from(previous.absolute_delta_counts)
             + u128::from(velocity_observation.absolute_delta_counts);
         let elapsed_us =
             u128::from(previous.elapsed_us) + u128::from(velocity_observation.elapsed_us);
-        absolute_delta_counts * 1_000 > u128::from(safety.velocity_cap) * elapsed_us
+        absolute_delta_counts * 1_000_000_000
+            > u128::from(active_cap_milli_counts_per_s) * elapsed_us
     });
     if velocity_window_exceeds_cap {
         defmt::warn!(
-            "outer safety: velocity {} exceeds cap {} (delta={} dt_us={})",
+            "outer safety: velocity {} exceeds cap {} milli-counts/s (delta={} dt_us={} settle={})",
             velocity_magnitude_cpms,
-            safety.velocity_cap,
+            active_cap_milli_counts_per_s,
             delta_counts,
             dt_us,
+            safety.in_settle_phase,
         );
         let velocity_cpms = velocity_counts_per_ms_for_fault(delta_counts, velocity_magnitude_cpms);
         return Ok(Some(safety.fault(
@@ -961,7 +1116,7 @@ mod tests {
     fn outer_safety_uses_mechanical_id_velocity_cap() {
         let safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
         assert_eq!(
-            safety.velocity_cap,
+            safety.velocity_cap_counts_per_ms(),
             MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS
         );
     }
@@ -973,7 +1128,7 @@ mod tests {
         safety.configure_encoder_resolution(8_000).unwrap();
 
         assert_eq!(safety.counts_per_rev(), 8_000);
-        assert_eq!(safety.velocity_cap, 48);
+        assert_eq!(safety.velocity_cap_counts_per_ms(), 48);
         assert_eq!(safety.position_window, 16_000);
     }
 
@@ -987,7 +1142,7 @@ mod tests {
         assert_eq!(safety.position_window, 2_000);
         assert_eq!(safety.negative_position_window, 8_000);
         assert_eq!(safety.positive_position_window, 8_000);
-        assert_eq!(safety.velocity_cap, 24);
+        assert_eq!(safety.velocity_cap_counts_per_ms(), 24);
     }
 
     #[test]
@@ -1011,7 +1166,255 @@ mod tests {
 
         safety.configure_velocity_envelope(1_000).unwrap();
 
-        assert_eq!(safety.velocity_cap, 12);
+        // E(1000) = max(ceil(3 * 1000 / 2), 1000 + 2000) = 3000 mrev/s, which is
+        // exactly 12 counts/ms at 4000 counts/rev.
+        assert_eq!(safety.velocity_cap_counts_per_ms(), 12);
+    }
+
+    /// Arm a safety envelope around a frozen amplitude and machine ceiling.
+    fn envelope_armed_safety(
+        planned_velocity_mrev_s: u32,
+        effective_ceiling_mrev_s: u32,
+    ) -> OuterSafetyLimits {
+        let mut safety = armed_safety(Some(100_000), 101_000);
+        safety
+            .configure_velocity_envelope_with_settle_ceiling(
+                planned_velocity_mrev_s,
+                effective_ceiling_mrev_s,
+            )
+            .expect("the ceiling admits the envelope");
+        safety
+    }
+
+    #[test]
+    fn outer_safety_velocity_envelope_is_not_truncated_to_whole_counts_per_ms() {
+        pollster::block_on(async {
+            // E(1450) = max(ceil(3 * 1450 / 2), 1450 + 2000) = 3450 mrev/s, which is
+            // 13.8 counts/ms at 4000 counts/rev. Flooring that to 13 rejected
+            // two-interval windows the envelope was sized to admit.
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 13;
+
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first velocity observation should succeed")
+                    .is_none(),
+                "the first interval only primes the window"
+            );
+
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 27;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed");
+
+            assert!(
+                fault.is_none(),
+                "27 counts over 2 ms is 13.5 counts/ms, inside the 13.8 counts/ms envelope"
+            );
+        });
+    }
+
+    #[test]
+    fn outer_safety_velocity_envelope_admits_the_exact_cap() {
+        pollster::block_on(async {
+            // 69 counts over 5 ms is exactly 13.8 counts/ms.
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 102_500;
+            backend.mechanical_encoder_position_counts_value = 34;
+
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first velocity observation should succeed")
+                    .is_none(),
+                "the first interval only primes the window"
+            );
+
+            backend.elapsed_us_value = 105_000;
+            backend.mechanical_encoder_position_counts_value = 69;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed");
+
+            assert!(fault.is_none(), "the cap itself is not a violation");
+        });
+    }
+
+    #[test]
+    fn outer_safety_velocity_envelope_rejects_one_count_above_the_exact_cap() {
+        pollster::block_on(async {
+            // 70 counts over 5 ms is 14.0 counts/ms, above the 13.8 envelope.
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 102_500;
+            backend.mechanical_encoder_position_counts_value = 35;
+
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first velocity observation should succeed")
+                    .is_none(),
+                "the first interval only primes the window"
+            );
+
+            backend.elapsed_us_value = 105_000;
+            backend.mechanical_encoder_position_counts_value = 70;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed")
+                .expect("14.0 counts/ms must exceed the 13.8 counts/ms envelope");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+        });
+    }
+
+    #[test]
+    fn outer_safety_settle_phase_admits_braking_up_to_the_effective_ceiling() {
+        pollster::block_on(async {
+            // Moving envelope 13.8 counts/ms; the 10_000 mrev/s machine ceiling is
+            // 40 counts/ms. Braking through zero target is bounded by the ceiling,
+            // not by the amplitude the stroke was commanded at.
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            safety.begin_primitive(100_000).unwrap();
+            safety.enter_settle_phase();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 20;
+
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first velocity observation should succeed")
+                    .is_none(),
+                "the first interval only primes the window"
+            );
+
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 40;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed");
+
+            assert!(
+                fault.is_none(),
+                "20 counts/ms is above the moving envelope and inside the settle ceiling"
+            );
+        });
+    }
+
+    #[test]
+    fn outer_safety_moving_phase_still_rejects_settle_scale_velocity() {
+        pollster::block_on(async {
+            // The same motion as the settle test, without entering settle.
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            safety.begin_primitive(100_000).unwrap();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 20;
+
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first velocity observation should succeed")
+                    .is_none(),
+                "the first interval only primes the window"
+            );
+
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 40;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed")
+                .expect("20 counts/ms must exceed the 13.8 counts/ms moving envelope");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+        });
+    }
+
+    #[test]
+    fn outer_safety_settle_phase_still_faults_above_the_effective_ceiling() {
+        pollster::block_on(async {
+            // Runaway remains runaway: the settle allowance is a wider bound, not
+            // an absent one.
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            safety.begin_primitive(100_000).unwrap();
+            safety.enter_settle_phase();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 45;
+
+            assert!(
+                check_outer_safety(&mut safety, &mut backend)
+                    .await
+                    .expect("first velocity observation should succeed")
+                    .is_none(),
+                "the first interval only primes the window"
+            );
+
+            backend.elapsed_us_value = 102_000;
+            backend.mechanical_encoder_position_counts_value = 90;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed")
+                .expect("45 counts/ms must exceed the 40 counts/ms settle ceiling");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+        });
+    }
+
+    #[test]
+    fn outer_safety_settle_allowance_ends_with_the_primitive() {
+        let mut safety = envelope_armed_safety(1_450, 10_000);
+        safety.begin_primitive(100_000).unwrap();
+        safety.enter_settle_phase();
+        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
+
+        safety.end_primitive();
+        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 13_800_000);
+
+        safety.begin_primitive(200_000).unwrap();
+        assert_eq!(
+            safety.active_velocity_cap_milli_counts_per_s(),
+            13_800_000,
+            "a fresh primitive starts in its moving phase"
+        );
+    }
+
+    #[test]
+    fn outer_safety_settle_ceiling_is_never_below_the_moving_envelope() {
+        let mut safety = armed_safety(Some(100_000), 101_000);
+
+        // envelope_cap() picks the planned amplitude so E(planned) <= M_effective.
+        // A ceiling that violates that pairing is a planning fault, not a wider
+        // runtime allowance.
+        assert_eq!(
+            safety.configure_velocity_envelope_with_settle_ceiling(1_450, 3_000),
+            Err(CommissionError::InvalidSchedule)
+        );
+    }
+
+    #[test]
+    fn outer_safety_settle_phase_keeps_the_quarter_turn_fault() {
+        pollster::block_on(async {
+            let mut safety = envelope_armed_safety(1_450, 10_000);
+            safety.begin_primitive(100_000).unwrap();
+            safety.enter_settle_phase();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 101_000;
+            backend.mechanical_encoder_position_counts_value = 1_000;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("encoder read should succeed")
+                .expect("a quarter turn in one sample must fault regardless of phase");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_QUARTER_TURN);
+        });
     }
 
     #[test]

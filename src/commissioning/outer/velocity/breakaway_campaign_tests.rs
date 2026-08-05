@@ -2268,6 +2268,7 @@ fn campaign_request() -> BreakawayCampaignRequest {
     BreakawayCampaignRequest {
         target_velocity_rpm: TmcMechanicalRpm::from_register(100),
         planned_velocity_mrev_s: 4_394,
+        effective_ceiling_mrev_s: 10_000,
         hard_torque_limit: 2_448,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
         max_duration_ms: 3_000,
@@ -2288,6 +2289,7 @@ fn stage_c_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
         p_top: gain(1_024),
         target_velocity_rpm: TmcMechanicalRpm::from_register(100),
         planned_velocity_mrev_s: 4_394,
+        effective_ceiling_mrev_s: 10_000,
         hard_torque_limit: 2_448,
         usable_torque_limit,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,

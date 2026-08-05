@@ -1540,7 +1540,7 @@ pub(crate) async fn step_mechanical_id_with_trace<B: CommissioningBackend>(
                     safety.budget.max_duration_ms,
                     0x03_u8,
                     safety.position_window,
-                    safety.velocity_cap,
+                    safety.velocity_cap_counts_per_ms(),
                 );
                 let fault = safety.fault(OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, 0, 0, 0, 0);
                 return fail_outer_with_safety(

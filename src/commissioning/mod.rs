@@ -634,7 +634,10 @@ impl CommissioningEngine {
         safety
             .configure_velocity_sweep_encoder_resolution(campaign.encoder_counts_per_rev())
             .map_err(|_| CommissionError::EncoderFault)?;
-        safety.configure_velocity_envelope(campaign.planned_velocity_mrev_s())?;
+        safety.configure_velocity_envelope_with_settle_ceiling(
+            campaign.planned_velocity_mrev_s(),
+            campaign.effective_ceiling_mrev_s(),
+        )?;
         *phase = OuterPhase::BreakawayCampaign {
             campaign,
             workspace:
@@ -2124,8 +2127,15 @@ mod tests {
 
         // Outer safety retains independent local and asymmetric absolute travel
         // bounds in the largest engine variant.
+        //
+        // 3_824 -> 3_840: +16 B for the exact velocity envelope. The runtime cap
+        // moved from whole counts per millisecond to milli-counts per second so
+        // the comparison stops rounding it (the floor cost 6% of the envelope at
+        // the commissioning amplitude), plus the frozen settle ceiling and the
+        // primitive's moving/settle marker. The trace build absorbs the same
+        // fields in existing padding, so only this baseline moves.
         #[cfg(not(feature = "trace-velocity-sweep"))]
-        assert_eq!(size_of::<CommissioningEngine>(), 3_824);
+        assert_eq!(size_of::<CommissioningEngine>(), 3_840);
         // The feature-on immutable plan and engine-owned cooperative analysis
         // state make VelocitySweep the largest outer payload. Resumable
         // partial-block analysis reaches, but does not raise, the audited F407
@@ -2845,6 +2855,7 @@ mod tests {
         let result = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
             planned_velocity_mrev_s: 4_394,
+            effective_ceiling_mrev_s: 10_000,
             hard_torque_limit: 2_816,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
             max_duration_ms: 3_000,
@@ -2871,6 +2882,7 @@ mod tests {
         let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
             planned_velocity_mrev_s: u32::MAX / 3 + 1,
+            effective_ceiling_mrev_s: u32::MAX,
             hard_torque_limit: 2_816,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
             max_duration_ms: 3_000,

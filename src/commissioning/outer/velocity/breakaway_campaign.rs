@@ -612,6 +612,9 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             {
                 return fault(CommissionError::Spi);
             }
+            // The axis is braking under no commanded amplitude from here until
+            // the primitive ends.
+            safety.enter_settle_phase();
             if let Err(error) = boundary {
                 return current_guard_fault(error);
             }
@@ -2033,6 +2036,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             {
                 return discovery_fault(CommissionError::Spi);
             }
+            // The axis is braking under no commanded amplitude from here until
+            // the primitive ends.
+            safety.enter_settle_phase();
             if let Err(error) = boundary {
                 return discovery_current_guard_fault(error);
             }
@@ -3079,6 +3085,9 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             {
                 return confirmation_fault(CommissionError::Spi);
             }
+            // The axis is braking under no commanded amplitude from here until
+            // the primitive ends.
+            safety.enter_settle_phase();
             if let Err(error) = boundary {
                 return confirmation_current_guard_fault(error);
             }
@@ -3491,6 +3500,8 @@ pub(crate) struct BreakawayCampaignInputs {
     p_top: PidPGain,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
+    /// Frozen `M_effective`, the settle-phase velocity bound.
+    effective_ceiling_mrev_s: u32,
     hard_torque_limit: u16,
     usable_torque_limit: u16,
     limit_evidence_capability: VelocityLimitEvidenceCapability,
@@ -3526,6 +3537,10 @@ pub(crate) struct BreakawayCampaignRequest {
     pub(crate) target_velocity_rpm: TmcMechanicalRpm,
     /// Frozen encoder-domain velocity amplitude.
     pub(crate) planned_velocity_mrev_s: u32,
+    /// Frozen `M_effective`: the tightest of the host machine ceiling and the
+    /// firmware's own encoder-observability bound. The runtime safety envelope
+    /// uses it as the settle-phase velocity bound.
+    pub(crate) effective_ceiling_mrev_s: u32,
     /// Configured hard torque-target limit.
     pub(crate) hard_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
@@ -3651,6 +3666,7 @@ impl BreakawayCampaign {
                 p_top,
                 target_velocity_rpm: request.target_velocity_rpm,
                 planned_velocity_mrev_s: request.planned_velocity_mrev_s,
+                effective_ceiling_mrev_s: request.effective_ceiling_mrev_s,
                 hard_torque_limit: request.hard_torque_limit,
                 usable_torque_limit,
                 limit_evidence_capability: request.limit_evidence_capability,
@@ -3712,6 +3728,11 @@ impl BreakawayCampaign {
     /// Planned encoder-domain velocity amplitude frozen before campaign motion.
     pub(crate) const fn planned_velocity_mrev_s(&self) -> u32 {
         self.inputs.planned_velocity_mrev_s
+    }
+
+    /// Frozen `M_effective`, the settle-phase bound of the safety envelope.
+    pub(crate) const fn effective_ceiling_mrev_s(&self) -> u32 {
+        self.inputs.effective_ceiling_mrev_s
     }
 
     /// The active campaign phase, for engine-adapter routing and test scripting.
@@ -3778,6 +3799,7 @@ pub(crate) fn plan_breakaway_campaign_command(
     let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
         target_velocity_rpm: plan.target_velocity_rpm,
         planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
+        effective_ceiling_mrev_s: plan.effective_ceiling_mrev_s,
         hard_torque_limit,
         limit_evidence_capability: plan.limit_evidence_capability,
         max_duration_ms: request.max_duration_ms,
