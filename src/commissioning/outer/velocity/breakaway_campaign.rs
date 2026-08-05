@@ -3589,6 +3589,20 @@ pub(crate) struct BreakawayCampaign {
     evidence_sequence: u16,
     pending_event: Option<crate::commissioning::types::BreakawayCampaignTerminal>,
     pending_done: Option<BreakawayCampaignOutcome>,
+    /// Phase-owned terminal record deferred by
+    /// [`breakaway_campaign_fault_terminal`], drained before `pending_event`.
+    ///
+    /// Holds the record, not the [`BreakawayCampaignEvent`] wrapper: that enum
+    /// is sized at `MAX_SWEEP_RUNGS` worst case and this phase lives on the
+    /// RTIC interrupt stack, which the outer-phase size gates enforce.
+    ///
+    /// A fault raised at the dispatch boundary still has to report the phase's
+    /// own terminal record: it carries `has_safety_fault` and the count of
+    /// in-band rungs already collected, and the host's safety-fault gate reads
+    /// it. Emitting only the campaign closure made a dispatcher-detected fault
+    /// indistinguishable from one that collected nothing, and left the
+    /// retained safety evidence unreachable.
+    pending_phase_terminal: Option<crate::commissioning::types::AdditiveDiscoveryTerminal>,
 }
 
 impl BreakawayCampaign {
@@ -3656,6 +3670,7 @@ impl BreakawayCampaign {
             evidence_sequence: 0,
             pending_event: None,
             pending_done: None,
+            pending_phase_terminal: None,
         })
     }
 
@@ -4162,6 +4177,28 @@ pub(crate) fn breakaway_campaign_fault_terminal(
             },
         ),
     };
+    // Report the owning phase's own terminal before the campaign closure. For
+    // discovery that record carries `collected_count`, so a fault that
+    // destroyed measured in-band rungs is distinguishable from one that had
+    // collected nothing, and `has_safety_fault`, which the host's safety-fault
+    // gate reads before it will surface the retained evidence.
+    let phase_terminal = match &campaign.phase {
+        BreakawayCampaignPhase::Discovery { session, .. } => {
+            let sequence = next_sequence(&mut campaign.evidence_sequence);
+            Some(super::breakaway_reporting::discovery_terminal_fields(
+                &session.plan,
+                terminal_cause,
+                u8::from(raised_safety),
+                session.in_band.count(),
+                campaign.inputs.run_sequence,
+                sequence,
+                error.status_code(),
+            ))
+        }
+        // Probe and confirmation have no collected-rung evidence to preserve,
+        // and their terminal records are not what the host gate consults.
+        BreakawayCampaignPhase::Probe { .. } | BreakawayCampaignPhase::Confirmation { .. } => None,
+    };
     let campaign_terminal = campaign_terminal_event(
         owning_phase,
         terminal_cause,
@@ -4170,6 +4207,7 @@ pub(crate) fn breakaway_campaign_fault_terminal(
         &campaign.inputs,
         &mut campaign.evidence_sequence,
     );
+    campaign.pending_phase_terminal = phase_terminal;
     campaign.pending_event = Some(campaign_terminal);
     campaign.pending_done = Some(BreakawayCampaignOutcome::Terminal {
         error,
@@ -4498,8 +4536,13 @@ fn discovery_done_advance(
     evidence_sequence: &mut u16,
 ) -> CampaignAdvance {
     let sequence = next_sequence(evidence_sequence);
-    let terminal =
-        discovery_terminal_report(&session.plan, &outcome, inputs.run_sequence, sequence);
+    let terminal = discovery_terminal_report(
+        &session.plan,
+        &outcome,
+        session.in_band.count(),
+        inputs.run_sequence,
+        sequence,
+    );
     let rung_zero = session.rung_zero_classification.map(|(forward, reverse)| {
         rung_zero_diagnostic_report(
             &session.plan,
@@ -4869,6 +4912,14 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
 ) -> BreakawayCampaignStep {
+    if let Some(terminal) = campaign.pending_phase_terminal.take() {
+        return checkpoint_event_routing(BreakawayCampaignStep::Event(
+            BreakawayCampaignEvent::DiscoveryTerminal {
+                terminal,
+                rung_zero: None,
+            },
+        ));
+    }
     if let Some(campaign_terminal) = campaign.pending_event.take() {
         return checkpoint_event_routing(BreakawayCampaignStep::Event(
             BreakawayCampaignEvent::CampaignTerminal(campaign_terminal),

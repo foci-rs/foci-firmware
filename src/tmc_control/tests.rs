@@ -212,7 +212,9 @@ fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
     // fixed overhead. The non-trace runtime is
     // unaffected: the campaign is trace-feature-gated, so that baseline holds.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_696);
+    // 5_696 -> 5_728: +32 B for the deferred phase-terminal record reported
+    // by a dispatcher-detected fault.
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_728);
     #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_888);
 }

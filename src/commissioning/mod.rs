@@ -2216,9 +2216,11 @@ mod tests {
             // capture ring until the raw record is emitted. This is the minimum
             // state needed to preserve stroke extrema and capture timing without
             // touching the 10 kHz position tick.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_600);
+            // 5_600 -> 5_632: +32 B for the deferred phase-terminal record
+            // reported by a dispatcher-detected fault.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_632);
         }
-        assert!(size_of::<CommissioningEngine>() <= 5_600);
+        assert!(size_of::<CommissioningEngine>() <= 5_632);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);

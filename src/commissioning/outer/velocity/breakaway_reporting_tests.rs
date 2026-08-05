@@ -563,7 +563,7 @@ fn discovery_terminal_report_matches_the_field_level_assembly() {
     let (_, plan) = discovery_fixture();
 
     let outcome = AdditiveDiscoveryOutcome::InsufficientAdditiveSpan;
-    let via_outcome = discovery_terminal_report(&plan, &outcome, 6, 2);
+    let via_outcome = discovery_terminal_report(&plan, &outcome, 0, 6, 2);
     let via_fields = discovery_terminal_fields(
         &plan,
         BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
@@ -575,6 +575,29 @@ fn discovery_terminal_report_matches_the_field_level_assembly() {
     );
 
     assert_eq!(via_outcome, via_fields);
+}
+
+#[test]
+fn discovery_safety_fault_terminal_reports_the_rungs_already_collected() {
+    let (_, plan) = discovery_fixture();
+
+    // Discovery collected three in-band rungs, then a stroke faulted. The
+    // rungs are measured evidence and survive in the session; the terminal
+    // must say so, otherwise a capture cannot distinguish a fault that lost
+    // nothing from one that discarded a qualifying candidate.
+    let outcome = AdditiveDiscoveryOutcome::SafetyFault {
+        error: CommissionError::SafetyEnvelopeViolation,
+        safety: Some(zero_safety_fault()),
+    };
+
+    let report = discovery_terminal_report(&plan, &outcome, 3, 6, 2);
+
+    assert_eq!(report.collected_count, 3);
+    assert_eq!(report.has_safety_fault, 1);
+    assert_eq!(
+        report.terminal_cause,
+        BreakawayTerminalCause::DiscoverySafetyFault as u8
+    );
 }
 
 // --- Confirmation plan ------------------------------------------------------

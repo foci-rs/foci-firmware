@@ -686,6 +686,7 @@ pub(crate) fn discovery_terminal_fields(
 pub(crate) fn discovery_terminal_report(
     plan: &AdditiveDiscoveryPlan,
     outcome: &AdditiveDiscoveryOutcome,
+    session_collected_count: u8,
     run_sequence: u32,
     evidence_sequence: u16,
 ) -> AdditiveDiscoveryTerminal {
@@ -701,14 +702,23 @@ pub(crate) fn discovery_terminal_report(
         | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => 0,
     };
+    // In-band rungs are measured evidence held in the discovery session, not a
+    // property of the outcome. Reporting zero for every non-selecting outcome
+    // made a fault that discarded a qualifying candidate indistinguishable
+    // from one that had collected nothing, which is what left the corpus
+    // unable to say how much evidence each fault destroyed.
+    //
+    // `TargetBandSelected` carries a copy of `session.in_band`, so both arms
+    // resolve to the same count on the success path.
     let collected_count = match outcome {
         AdditiveDiscoveryOutcome::TargetBandSelected(rungs) => rungs.count(),
         AdditiveDiscoveryOutcome::TargetBandSkipped
         | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
-        | AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
-        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded
         | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. }
-        | AdditiveDiscoveryOutcome::SafetyFault { .. } => 0,
+        | AdditiveDiscoveryOutcome::SafetyFault { .. } => session_collected_count,
+        // Plan-time refusals: no ladder ran, so no session evidence exists.
+        AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
+        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => 0,
     };
     discovery_terminal_fields(
         plan,

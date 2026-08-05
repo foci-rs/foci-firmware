@@ -3191,6 +3191,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
             evidence_sequence: 0,
             pending_event: None,
             pending_done: None,
+            pending_phase_terminal: None,
         },
         workspace: BreakawayProbeWorkspace::new(),
         safety: test_safety(),
@@ -3338,6 +3339,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
             evidence_sequence: 0,
             pending_event: None,
             pending_done: None,
+            pending_phase_terminal: None,
         },
         workspace: BreakawayProbeWorkspace::new(),
         safety: test_safety(),
@@ -3726,6 +3728,79 @@ fn terminal_phase_precedes_completed_breadcrumb_for_all_failure_kinds() {
 /// record's phase and terminal cause must track whichever phase was actually
 /// active, not always report `Probe`.
 #[test]
+fn a_dispatcher_fault_reports_the_discovery_rungs_already_collected() {
+    let session = AdditiveDiscoverySession::new(
+        discovery_request(),
+        false,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+    )
+    .expect("valid discovery session");
+    let mut campaign = BreakawayCampaign::new(campaign_request()).expect("valid campaign request");
+    campaign.phase = BreakawayCampaignPhase::Discovery {
+        state: AdditiveDiscoveryState::PlannedDiscovery,
+        session,
+    };
+    let mut phase = OuterPhase::BreakawayCampaign {
+        campaign,
+        workspace: BreakawayProbeWorkspace::new(),
+        safety: test_safety(),
+    };
+
+    // A safety fault raised at the dispatch boundary, mid-discovery.
+    let step = breakaway_campaign_fault_terminal(
+        &mut phase,
+        CommissionError::SafetyEnvelopeViolation,
+        Some(zero_safety_fault(4)),
+    );
+    assert!(matches!(step, StepResult::ReadyNow));
+
+    let OuterPhase::BreakawayCampaign {
+        mut campaign,
+        mut workspace,
+        mut safety,
+    } = phase
+    else {
+        panic!("phase must still be a breakaway campaign");
+    };
+
+    // The phase-owned terminal must drain first: it is what carries
+    // `has_safety_fault` and the collected-rung count to the host, and the
+    // host gate reads it. Without it a dispatcher-detected fault is
+    // indistinguishable from one that collected nothing.
+    let first = pollster::block_on(step_breakaway_campaign(
+        &mut campaign,
+        &mut workspace,
+        &mut safety,
+        &mut test_backend(),
+    ));
+    let BreakawayCampaignStep::Event(BreakawayCampaignEvent::DiscoveryTerminal {
+        terminal, ..
+    }) = first
+    else {
+        panic!("expected a discovery terminal before the closure, got {first:?}");
+    };
+    assert_eq!(terminal.has_safety_fault, 1);
+    assert_eq!(
+        terminal.terminal_cause,
+        BreakawayTerminalCause::DiscoverySafetyFault as u8
+    );
+
+    // The campaign closure still follows.
+    let second = pollster::block_on(step_breakaway_campaign(
+        &mut campaign,
+        &mut workspace,
+        &mut safety,
+        &mut test_backend(),
+    ));
+    let BreakawayCampaignStep::Event(BreakawayCampaignEvent::CampaignTerminal(closure)) = second
+    else {
+        panic!("expected the deferred campaign-closure record, got {second:?}");
+    };
+    assert_eq!(closure.phase, BreakawayPhase::Discovery as u8);
+}
+
+#[test]
 fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
     let session = AdditiveDiscoverySession::new(
         discovery_request(),
@@ -3760,6 +3835,22 @@ fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
     else {
         panic!("phase must still be a breakaway campaign");
     };
+    // Discovery's own terminal drains first, carrying the collected-rung count
+    // and the safety flag the host gate reads.
+    let phase_step = pollster::block_on(step_breakaway_campaign(
+        &mut campaign,
+        &mut workspace,
+        &mut safety,
+        &mut test_backend(),
+    ));
+    let BreakawayCampaignStep::Event(BreakawayCampaignEvent::DiscoveryTerminal {
+        terminal, ..
+    }) = phase_step
+    else {
+        panic!("expected the deferred discovery terminal, got {phase_step:?}");
+    };
+    assert_eq!(terminal.has_safety_fault, 0);
+
     let closure_step = pollster::block_on(step_breakaway_campaign(
         &mut campaign,
         &mut workspace,
