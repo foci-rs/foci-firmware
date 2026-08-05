@@ -1772,22 +1772,6 @@ mod tests {
         set_auto_calibrate_on_enable_allowed(0, false);
     }
 
-    fn run_request_test(future: impl core::future::Future<Output = ()>) {
-        pollster::block_on(async {
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            // The mutex only serializes access; it does not reset state. Without
-            // this, whichever test last configured (or left dirty) channel 0's
-            // atomics -- e.g. pi_representation_established -- leaks into
-            // whichever test acquires the guard next, in whatever order the
-            // parallel test scheduler picks that run.
-            crate::state::tmc::reset_all_tmc_channels();
-            crate::state::stepper::reset_all_stepper_channels();
-            future.await;
-        });
-    }
-
     fn stored_gains() -> crate::pid::InnerLoopGains {
         crate::pid::InnerLoopGains {
             flux_p: crate::pid::p_gain(11),
@@ -1923,109 +1907,107 @@ mod tests {
         }
     }
 
-    #[test]
-    fn commission_wait_reject_preserves_active_run_and_emits_busy_reply() {
-        run_request_test(async {
-            enum ExpectedReply {
-                None,
-                Calibrate(u8),
-                Selftest(u8),
-                Commission(u8),
-                Diagnostic,
-            }
+    #[fixture_test]
+    async fn commission_wait_reject_preserves_active_run_and_emits_busy_reply() {
+        enum ExpectedReply {
+            None,
+            Calibrate(u8),
+            Selftest(u8),
+            Commission(u8),
+            Diagnostic,
+        }
 
-            let cases = [
-                (
-                    TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
-                    ExpectedReply::None,
+        let cases = [
+            (
+                TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
+                ExpectedReply::None,
+            ),
+            (
+                TmcRequest::new(0, TmcRequestKind::DumpRegisters { oid: 2 }),
+                ExpectedReply::None,
+            ),
+            (
+                TmcRequest::new(
+                    0,
+                    TmcRequestKind::CurrentStepTest {
+                        oid: 3,
+                        axis: crate::tmc::CurrentStepAxis::Torque,
+                        target: 64,
+                        duration_ms: 5,
+                        voltage_limit: 512,
+                    },
                 ),
-                (
-                    TmcRequest::new(0, TmcRequestKind::DumpRegisters { oid: 2 }),
-                    ExpectedReply::None,
-                ),
-                (
-                    TmcRequest::new(
-                        0,
-                        TmcRequestKind::CurrentStepTest {
-                            oid: 3,
-                            axis: crate::tmc::CurrentStepAxis::Torque,
-                            target: 64,
-                            duration_ms: 5,
-                            voltage_limit: 512,
-                        },
-                    ),
-                    ExpectedReply::Diagnostic,
-                ),
-                (
-                    TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 4 }),
-                    ExpectedReply::Calibrate(4),
-                ),
-                (
-                    TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 5 }),
-                    ExpectedReply::Selftest(5),
-                ),
-                (
-                    TmcRequest::new(0, TmcRequestKind::Commission { oid: 6, profile: 1 }),
-                    ExpectedReply::Commission(6),
-                ),
-                (tune_request(), ExpectedReply::Commission(4)),
-            ];
+                ExpectedReply::Diagnostic,
+            ),
+            (
+                TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 4 }),
+                ExpectedReply::Calibrate(4),
+            ),
+            (
+                TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 5 }),
+                ExpectedReply::Selftest(5),
+            ),
+            (
+                TmcRequest::new(0, TmcRequestKind::Commission { oid: 6, profile: 1 }),
+                ExpectedReply::Commission(6),
+            ),
+            (tune_request(), ExpectedReply::Commission(4)),
+        ];
 
-            for (request, expected) in cases {
-                let mut runtime = TmcControlRuntime::new_for_channel(0);
-                runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(
-                    11,
-                    tmc_channel0(),
-                ));
-                let active_kind = runtime.pending_commission_kind();
-                let mut board = RecordingBoard::skip_tick_tail();
-                tmc_channel0().commission_in_flight.store(true, Relaxed);
-                let tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        for (request, expected) in cases {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(
+                11,
+                tmc_channel0(),
+            ));
+            let active_kind = runtime.pending_commission_kind();
+            let mut board = RecordingBoard::skip_tick_tail();
+            tmc_channel0().commission_in_flight.store(true, Relaxed);
+            let tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-                let outcome = handle_commission_wait_reject(request.clone(), &mut board);
+            let outcome = handle_commission_wait_reject(request.clone(), &mut board);
 
-                assert_eq!(runtime.pending_commission_kind(), active_kind);
-                assert!(tmc_channel0().commission_in_flight.load(Relaxed));
-                assert!(tmc.into_inner().write_attempts.is_empty());
-                assert_eq!(board.arm_calls, 0);
-                assert_eq!(board.disarm_calls, 0);
-                assert_eq!(board.diagnostic_calls, 0);
-                assert_eq!(board.disable_action_count, 0);
-                assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+            assert_eq!(runtime.pending_commission_kind(), active_kind);
+            assert!(tmc_channel0().commission_in_flight.load(Relaxed));
+            assert!(tmc.into_inner().write_attempts.is_empty());
+            assert_eq!(board.arm_calls, 0);
+            assert_eq!(board.disarm_calls, 0);
+            assert_eq!(board.diagnostic_calls, 0);
+            assert_eq!(board.disable_action_count, 0);
+            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
 
-                match expected {
-                    ExpectedReply::None => {
-                        assert!(board.replies.is_empty());
-                        assert!(board.busy_diagnostic_requests.is_empty());
-                    }
-                    ExpectedReply::Calibrate(oid) => {
-                        assert_calibrate_failure(
-                            board.replies.first().expect("calibrate busy reply"),
-                            oid,
-                            CalibrationError::InternalError.status_code(),
-                        );
-                    }
-                    ExpectedReply::Selftest(oid) => {
-                        assert_selftest_failure(
-                            board.replies.first().expect("selftest busy reply"),
-                            oid,
-                            CommissionError::AlreadyRunning.status_code(),
-                        );
-                    }
-                    ExpectedReply::Commission(oid) => {
-                        assert_commission_phase_failure(
-                            board.replies.first().expect("commission busy reply"),
-                            oid,
-                            CommissionError::AlreadyRunning.status_code(),
-                        );
-                    }
-                    ExpectedReply::Diagnostic => {
-                        assert!(board.replies.is_empty());
-                        assert_eq!(board.busy_diagnostic_requests, std::vec![request]);
-                    }
+            match expected {
+                ExpectedReply::None => {
+                    assert!(board.replies.is_empty());
+                    assert!(board.busy_diagnostic_requests.is_empty());
+                }
+                ExpectedReply::Calibrate(oid) => {
+                    assert_calibrate_failure(
+                        board.replies.first().expect("calibrate busy reply"),
+                        oid,
+                        CalibrationError::InternalError.status_code(),
+                    );
+                }
+                ExpectedReply::Selftest(oid) => {
+                    assert_selftest_failure(
+                        board.replies.first().expect("selftest busy reply"),
+                        oid,
+                        CommissionError::AlreadyRunning.status_code(),
+                    );
+                }
+                ExpectedReply::Commission(oid) => {
+                    assert_commission_phase_failure(
+                        board.replies.first().expect("commission busy reply"),
+                        oid,
+                        CommissionError::AlreadyRunning.status_code(),
+                    );
+                }
+                ExpectedReply::Diagnostic => {
+                    assert!(board.replies.is_empty());
+                    assert_eq!(board.busy_diagnostic_requests, std::vec![request]);
                 }
             }
-        });
+        }
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -2238,225 +2220,162 @@ mod tests {
         }
     }
 
-    #[test]
-    fn auto_calibrate_on_enable_uses_stored_gains() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_stored_gains(stored_gains());
-            let mut board = RecordingBoard::skip_tick_tail();
-            set_auto_calibrate_on_enable_allowed(0, true);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[fixture_test]
+    async fn auto_calibrate_on_enable_uses_stored_gains() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_stored_gains(stored_gains());
+        let mut board = RecordingBoard::skip_tick_tail();
+        set_auto_calibrate_on_enable_allowed(0, true);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-            assert_eq!(
-                runtime.pending_commission_kind(),
-                Some(EngineKind::Calibrate)
-            );
-            assert_eq!(
-                runtime.pending_calibrate_inner_gains_for_test(),
-                Some(stored_gains())
-            );
-        });
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Calibrate)
+        );
+        assert_eq!(
+            runtime.pending_calibrate_inner_gains_for_test(),
+            Some(stored_gains())
+        );
     }
 
-    #[test]
-    fn same_channel_auto_calibrate_preserves_stage_b_candidate() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    #[fixture_test]
+    async fn same_channel_auto_calibrate_preserves_stage_b_candidate() {
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
-            let retained = retained_stage_b_candidate();
-            let mut slot = StageBCandidateSlot::new();
-            slot.observe_sufficient(retained);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::skip_tick_tail();
-            set_auto_calibrate_on_enable_allowed(0, true);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let retained = retained_stage_b_candidate();
+        let mut slot = StageBCandidateSlot::new();
+        slot.observe_sufficient(retained);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::skip_tick_tail();
+        set_auto_calibrate_on_enable_allowed(0, true);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            handle_tmc_control_request_with_stage_b(
-                TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut slot,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        handle_tmc_control_request_with_stage_b(
+            TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut slot,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
 
-            assert_eq!(
-                runtime.pending_commission_kind(),
-                Some(EngineKind::Calibrate)
-            );
-            assert_eq!(slot.candidate(), Some(retained));
-        });
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Calibrate)
+        );
+        assert_eq!(slot.candidate(), Some(retained));
     }
 
-    #[test]
-    fn same_channel_explicit_calibrate_preserves_stage_b_candidate() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    #[fixture_test]
+    async fn same_channel_explicit_calibrate_preserves_stage_b_candidate() {
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
-            let retained = retained_stage_b_candidate();
-            let mut slot = StageBCandidateSlot::new();
-            slot.observe_sufficient(retained);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::skip_tick_tail();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let retained = retained_stage_b_candidate();
+        let mut slot = StageBCandidateSlot::new();
+        slot.observe_sufficient(retained);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::skip_tick_tail();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            handle_tmc_control_request_with_stage_b(
-                TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 9 }),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut slot,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        handle_tmc_control_request_with_stage_b(
+            TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 9 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut slot,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
 
-            assert_eq!(
-                runtime.pending_commission_kind(),
-                Some(EngineKind::Calibrate)
-            );
-            assert_eq!(slot.candidate(), Some(retained));
-        });
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Calibrate)
+        );
+        assert_eq!(slot.candidate(), Some(retained));
     }
 
-    #[test]
-    fn explicit_calibrate_uses_stored_gains() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_stored_gains(stored_gains());
-            let mut board = RecordingBoard::fall_through();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[fixture_test]
+    async fn explicit_calibrate_uses_stored_gains() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_stored_gains(stored_gains());
+        let mut board = RecordingBoard::fall_through();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 9 }),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 9 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-            assert_eq!(
-                runtime.pending_commission_kind(),
-                Some(EngineKind::Calibrate)
-            );
-            assert_eq!(
-                runtime.pending_calibrate_inner_gains_for_test(),
-                Some(stored_gains())
-            );
-        });
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Calibrate)
+        );
+        assert_eq!(
+            runtime.pending_calibrate_inner_gains_for_test(),
+            Some(stored_gains())
+        );
     }
 
-    #[test]
-    fn auto_calibrate_without_stored_gains_still_starts_engine() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::skip_tick_tail();
-            set_auto_calibrate_on_enable_allowed(0, true);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[fixture_test]
+    async fn auto_calibrate_without_stored_gains_still_starts_engine() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::skip_tick_tail();
+        set_auto_calibrate_on_enable_allowed(0, true);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-            assert_eq!(
-                runtime.pending_commission_kind(),
-                Some(EngineKind::Calibrate)
-            );
-            assert_eq!(
-                runtime.pending_calibrate_inner_gains_for_test(),
-                Some(crate::pid::DEFAULT_INNER_GAINS)
-            );
-        });
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Calibrate)
+        );
+        assert_eq!(
+            runtime.pending_calibrate_inner_gains_for_test(),
+            Some(crate::pid::DEFAULT_INNER_GAINS)
+        );
     }
 
-    #[test]
-    fn commissioning_blocked_emits_existing_failure_replies() {
-        run_request_test(async {
-            let requests = [
-                TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 1 }),
-                TmcRequest::new(0, TmcRequestKind::Commission { oid: 2, profile: 0 }),
-                tune_request(),
-                TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 5 }),
-            ];
+    #[fixture_test]
+    async fn commissioning_blocked_emits_existing_failure_replies() {
+        let requests = [
+            TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 1 }),
+            TmcRequest::new(0, TmcRequestKind::Commission { oid: 2, profile: 0 }),
+            tune_request(),
+            TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 5 }),
+        ];
 
-            for req in requests {
-                let mut runtime = TmcControlRuntime::new_for_channel(0);
-                let mut board = RecordingBoard::skip_tick_tail();
-                board.commissioning_blocked = true;
-                let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-                let _outcome = handle_tmc_control_request(
-                    req,
-                    TmcPreRequestDisposition::ContinueRequest,
-                    &mut runtime,
-                    &mut tmc,
-                    &mut board,
-                )
-                .await;
-
-                assert_eq!(board.replies.len(), 1);
-                match board.replies.first().unwrap() {
-                    reply @ ReplyPayload::CalibrateResult { .. } => assert_calibrate_failure(
-                        reply,
-                        1,
-                        CalibrationError::InternalError.status_code(),
-                    ),
-                    reply @ ReplyPayload::CommissionPhase { oid: 2, .. } => {
-                        assert_commission_phase_failure(
-                            reply,
-                            2,
-                            CommissionError::AlreadyRunning.status_code(),
-                        );
-                    }
-                    reply @ ReplyPayload::CommissionPhase { oid: 4, .. } => {
-                        assert_commission_phase_failure(
-                            reply,
-                            4,
-                            CommissionError::AlreadyRunning.status_code(),
-                        );
-                    }
-                    reply @ ReplyPayload::Selftest { .. } => assert_selftest_failure(
-                        reply,
-                        5,
-                        CommissionError::AlreadyRunning.status_code(),
-                    ),
-                    _ => panic!("unexpected reply"),
-                }
-            }
-        });
-    }
-
-    #[test]
-    fn commissioning_admission_refuses_missing_pi_representation() {
-        run_request_test(async {
+        for req in requests {
             let mut runtime = TmcControlRuntime::new_for_channel(0);
             let mut board = RecordingBoard::skip_tick_tail();
-            board
-                .tmc_state()
-                .store_current_limit(current_limit(2_816), Relaxed);
-            board.tmc_state().clear_pi_representation_established();
+            board.commissioning_blocked = true;
             let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::Commission { oid: 2, profile: 0 }),
+            let _outcome = handle_tmc_control_request(
+                req,
                 TmcPreRequestDisposition::ContinueRequest,
                 &mut runtime,
                 &mut tmc,
@@ -2464,996 +2383,985 @@ mod tests {
             )
             .await;
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-            assert_eq!(runtime.pending_commission_kind(), None);
             assert_eq!(board.replies.len(), 1);
-            assert_commission_phase_failure(
-                &board.replies[0],
-                2,
-                CommissionError::ChipResetDetected.status_code(),
-            );
-            let spi = tmc.into_inner();
-            assert!(spi.write_attempts.is_empty());
-            assert!(spi.read_requests.is_empty());
-        });
-    }
-
-    #[test]
-    fn commissioning_block_false_preserves_openffboard_overwrite_behavior() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_commission_engine(
-                crate::commission::CommissioningEngine::new_selftest_for_tmc_with_trace_seq(
-                    8,
-                    tmc_channel0(),
+            match board.replies.first().unwrap() {
+                reply @ ReplyPayload::CalibrateResult { .. } => assert_calibrate_failure(
+                    reply,
                     1,
+                    CalibrationError::InternalError.status_code(),
                 ),
-            );
-            let mut board = RecordingBoard::fall_through();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 9 }),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert!(board.replies.is_empty());
-            assert_eq!(
-                runtime.pending_commission_kind(),
-                Some(EngineKind::Calibrate)
-            );
-            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-        });
-    }
-
-    #[test]
-    fn tune_restore_phase_advance_failure_emits_spi_failure() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-            let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0()
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-            let mut tmc = Tmc4671Spi::new(
-                RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-            );
-
-            let outcome = handle_tmc_control_request(
-                tune_request(),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            #[cfg(feature = "trace-velocity-sweep")]
-            assert_eq!(board.replies.len(), 2);
-            #[cfg(not(feature = "trace-velocity-sweep"))]
-            assert_eq!(board.replies.len(), 1);
-            assert_commission_phase_failure(
-                board
-                    .replies
-                    .get(if cfg!(feature = "trace-velocity-sweep") {
-                        1
-                    } else {
-                        0
-                    })
-                    .unwrap(),
-                4,
-                CommissionError::Spi.status_code(),
-            );
-            #[cfg(feature = "trace-velocity-sweep")]
-            assert!(matches!(
-                board.replies[0],
-                ReplyPayload::CommissioningWorkflowPlan { .. }
-            ));
-            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-            assert!(runtime.phase_advance_active_for_test());
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn combined_workflow_is_declared_and_recorded_before_engine_execution() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-            use crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event;
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            board.velocity_limit_evidence_capability =
-                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG;
-            let tmc_state = tmc_channel0();
-            tmc_state
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut slot = StageBCandidateSlot::new();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stage_b(
-                tune_request(),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut slot,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
-            else {
-                panic!("combined workflow envelope must be first")
-            };
-            assert_eq!(
-                workflow.shape,
-                crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::CombinedPThenI
-            );
-            assert_eq!(workflow.maximum_workflow_ms, 496_528);
-            let ReplyPayload::VelocitySweepEvent { event, .. } = board.replies[1] else {
-                panic!("accepted combined request must publish its Stage-B plan")
-            };
-            let crate::commissioning::types::VelocitySweepEvent::Planned(planned) = event else {
-                panic!("first Stage B event must be its immutable plan")
-            };
-            let expected =
-                crate::commissioning::outer::velocity::sweep_plan::plan_combined_velocity_sweep(
-                    velocity_sweep_request(),
-                    4_000,
-                    2_816,
-                    crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
-            )
-            .unwrap();
-            assert_eq!(planned.plan_digest, expected.digest());
-            assert_eq!(
-                board.velocity_sweep_records,
-                [encode_velocity_sweep_event(event)]
-            );
-            assert!(slot.candidate().is_none());
-            assert!(runtime.is_commission_active());
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn breakaway_breadcrumb_begins_when_workflow_is_installed() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
-            crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
-            let mut board = RecordingBoard::skip_tick_tail();
-            let tmc_state = tmc_channel0();
-            tmc_state
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut slot = StageBCandidateSlot::new();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stage_b(
-                tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut slot,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            // The campaign discloses only its command-level envelope before
-            // construction; the probe's Planned evidence is recorded on its first
-            // engine step, not at admission, so exactly one reply is emitted.
-            assert_eq!(board.replies.len(), 1);
-            let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
-            else {
-                panic!("breakaway workflow envelope must be the only admission reply")
-            };
-            assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
-            assert!(workflow.nominal_workflow_ms > 0);
-            assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
-            assert!(runtime.is_commission_active());
-            assert_eq!(
-                crate::diagnostic::current_breakaway_breadcrumb_for_test(),
-                Some(crate::diagnostic::BreakawayBreadcrumb {
-                    checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
-                    interrupted: true,
-                })
-            );
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn matrix_request_without_acceptance_point_fails_without_motion_writes() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-            use crate::commissioning::types::{AcceptanceMatrixCause, AcceptanceMatrixOutcome};
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0()
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert_eq!(board.replies.len(), 1);
-            let ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } = board.replies[0] else {
-                panic!("missing point must use the matrix terminal namespace")
-            };
-            assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Failed);
-            assert_eq!(
-                terminal.cause,
-                AcceptanceMatrixCause::MissingAcceptancePoint
-            );
-            assert!(!runtime.is_commission_active());
-            assert_eq!(board.velocity_sweep_records.len(), 1);
-            let spi = tmc.into_inner();
-            assert!(spi.write_attempts.iter().all(|(addr, _)| {
-                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-            }));
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn admitted_matrix_discloses_exact_plan_before_engine_execution() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_reproduction::{
-                AcceptanceMatrixProgress, StageCCandidateSlot,
-            };
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0()
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            stage_c.install_acceptance_point(
-                crate::commission_dispatch::acceptance::test_acceptance_point(
-                    velocity_sweep_request(),
-                    AcceptanceMatrixProgress::ReadyAscending,
-                ),
-            );
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert_eq!(board.replies.len(), 2);
-            let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
-            else {
-                panic!("matrix workflow envelope must be first")
-            };
-            assert_eq!(
-                workflow.shape,
-                crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::
-                    AcceptanceMatrixAscending
-            );
-            assert_eq!(workflow.maximum_workflow_ms, 66_456);
-            let ReplyPayload::AcceptanceMatrixPlan { plan, .. } = board.replies[1] else {
-                panic!("matrix plan must be disclosed before execution")
-            };
-            assert_eq!(plan.target_rpm, [16, 33, 66, 132, 263]);
-            assert_eq!(board.velocity_sweep_records.len(), 3);
-            assert!(runtime.is_commission_active());
-            assert_eq!(
-                stage_c.acceptance_point().unwrap().progress,
-                AcceptanceMatrixProgress::ReadyAscending
-            );
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn combined_replacement_clears_same_channel_point_only_after_admission() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_reproduction::{
-                AcceptanceMatrixProgress, StageCCandidateSlot,
-            };
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0()
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            stage_c.install_acceptance_point(
-                crate::commission_dispatch::acceptance::test_acceptance_point(
-                    velocity_sweep_request(),
-                    AcceptanceMatrixProgress::ReadyAscending,
-                ),
-            );
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                tune_request(),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert!(runtime.is_commission_active());
-            assert_eq!(stage_c.acceptance_point(), None);
-            assert!(matches!(
-                board.replies.as_slice(),
-                [
-                    ReplyPayload::CommissioningWorkflowPlan { .. },
-                    ReplyPayload::VelocitySweepEvent { .. }
-                ]
-            ));
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn matrix_order_mismatch_preserves_point_without_motion() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_reproduction::{
-                AcceptanceMatrixProgress, StageCCandidateSlot,
-            };
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-            use crate::commissioning::types::AcceptanceMatrixCause;
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0()
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            let point = crate::commission_dispatch::acceptance::test_acceptance_point(
-                velocity_sweep_request(),
-                AcceptanceMatrixProgress::ReadyDescending,
-            );
-            stage_c.install_acceptance_point(point);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            let ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } = board.replies[0] else {
-                panic!("wrong order must use the matrix terminal namespace")
-            };
-            assert_eq!(terminal.cause, AcceptanceMatrixCause::MatrixOrderMismatch);
-            assert_eq!(stage_c.acceptance_point(), Some(point));
-            assert!(!runtime.is_commission_active());
-            assert!(tmc.into_inner().write_attempts.iter().all(|(addr, _)| {
-                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-            }));
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn combined_workflow_rejects_retained_stage_c_without_mutating_it() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_reproduction::{
-                StageCCandidateSlot, StageCSlotState,
-            };
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-            use crate::commissioning::types::VelocitySweepOutcome;
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            let tmc_state = tmc_channel0();
-            tmc_state
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            let retained = retained_stage_c_authority();
-            stage_c.install_authority(retained);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                tune_request(),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert_eq!(board.replies.len(), 1);
-            let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
-                panic!("legacy state must produce one Stage-B-family rejection")
-            };
-            assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
-            assert_eq!(
-                terminal.cause,
-                crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
-            );
-            assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
-            assert_eq!(stage_c.authority(), Some(retained));
-            assert!(stage_b.candidate().is_none());
-            assert!(!runtime.is_commission_active());
-            assert!(board.velocity_sweep_records.is_empty());
-            let spi = tmc.into_inner();
-            assert!(spi.write_attempts.iter().all(|(addr, _)| {
-                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-            }));
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn combined_workflow_rejects_retained_stage_b_without_mutating_it() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-            use crate::commissioning::outer::velocity::reproduction::{
-                StageBCandidateSlot, StageBReproductionDecision,
-            };
-            use crate::commissioning::types::VelocitySweepOutcome;
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            let tmc_state = tmc_channel0();
-            tmc_state
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            let retained = retained_stage_b_candidate();
-            assert!(matches!(
-                stage_b.observe_sufficient(retained),
-                StageBReproductionDecision::CompleteCandidate(_)
-            ));
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                tune_request(),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert_eq!(board.replies.len(), 1);
-            let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
-                panic!("legacy state must produce one Stage-B-family rejection");
-            };
-            assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
-            assert_eq!(
-                terminal.cause,
-                crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
-            );
-            assert_eq!(stage_b.candidate(), Some(retained));
-            assert!(stage_c.authority().is_none());
-            assert!(!runtime.is_commission_active());
-            let spi = tmc.into_inner();
-            assert!(spi.write_attempts.iter().all(|(addr, _)| {
-                *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                    && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-            }));
-            assert!(board.velocity_sweep_records.is_empty());
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn same_channel_explicit_calibration_preserves_stage_c_authority() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::integral_reproduction::{
-                StageCCandidateSlot, StageCSlotState,
-            };
-            use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut stage_b = StageBCandidateSlot::new();
-            let mut stage_c = StageCCandidateSlot::new();
-            stage_c.install_authority(retained_stage_c_authority());
-            let mut board = RecordingBoard::skip_tick_tail();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-            handle_tmc_control_request_with_stages(
-                TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 7 }),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut stage_b,
-                &mut stage_c,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
-            assert_eq!(stage_c.authority(), Some(retained_stage_c_authority()));
-            assert_eq!(
-                runtime.pending_commission_kind(),
-                Some(EngineKind::Calibrate)
-            );
-        });
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn stage_b_changed_plan_is_rejected_before_actuation_and_preserves_candidate() {
-        run_request_test(async {
-            use crate::commissioning::outer::velocity::reproduction::{
-                StageBCandidateSlot, StageBCandidateSummary,
-            };
-
-            let mut board = RecordingBoard::skip_tick_tail();
-            let tmc_state = tmc_channel0();
-            tmc_state
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-            let request = match tune_request().kind {
-                TmcRequestKind::Tune {
-                    requested_velocity_mrev_s,
-                    machine_velocity_ceiling_mrev_s,
-                    requested_velocity_source,
-                    max_stroke_travel_mrev,
-                    settle_travel_reserve_mrev,
-                    negative_position_headroom_mrev,
-                    positive_position_headroom_mrev,
-                    max_duration_ms,
-                    ..
-                } => crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
-                    requested_velocity_mrev_s,
-                    machine_velocity_ceiling_mrev_s,
-                    requested_velocity_source,
-                    max_stroke_travel_mrev,
-                    settle_travel_reserve_mrev,
-                    negative_position_headroom_mrev,
-                    positive_position_headroom_mrev,
-                    max_duration_ms,
-                },
-                _ => unreachable!(),
-            };
-            let mut slot = StageBCandidateSlot::new();
-            let accepted = crate::commission_dispatch::stage_b::preflight_stage_b_request(
-                request, 4_000, 2_816, 0, 0, 1, &mut slot,
-            )
-            .expect("valid retained plan");
-            let retained = StageBCandidateSummary {
-                identity: accepted.identity,
-                forward_membership: 0b111,
-                reverse_membership: 0b111,
-                joint_membership: 0b111,
-                nominated_p: 4,
-                p_start: accepted.plan.p_start.raw(),
-                p_top: accepted.plan.p_top.raw(),
-                rung_count: accepted.plan.rung_count,
-                forward_interval: [1, 2],
-                reverse_interval: [-2, -1],
-                forward_common_interval: [1, 2],
-                reverse_common_interval: [-2, -1],
-                run_completed_us: 2,
-                run_digest: 3,
-            };
-            slot.observe_sufficient(retained);
-
-            let mut changed = tune_request();
-            let TmcRequestKind::Tune {
-                ref mut max_stroke_travel_mrev,
-                ..
-            } = changed.kind
-            else {
-                unreachable!()
-            };
-            *max_stroke_travel_mrev += 100;
-            let outcome = handle_tmc_control_request_with_stage_b(
-                changed,
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut slot,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-
-            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-            assert!(!runtime.is_commission_active());
-            assert_eq!(slot.candidate(), Some(retained));
-            assert_eq!(
-                tmc.into_inner().writes,
-                [(
-                    foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
-                        .addr
-                        .addr(),
-                    u32::from(foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr),
-                )]
-            );
-            assert_eq!(board.replies.len(), 1);
-            let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
-                match board.replies[0] {
-                    ReplyPayload::CommissionPhase { status, .. } => {
-                        panic!("unexpected commissioning failure status {status}")
-                    }
-                    ReplyPayload::VelocitySweepEvent { .. } => {
-                        panic!("changed plan was incorrectly admitted")
-                    }
-                    _ => panic!("plan mismatch must use the dedicated Stage B terminal"),
+                reply @ ReplyPayload::CommissionPhase { oid: 2, .. } => {
+                    assert_commission_phase_failure(
+                        reply,
+                        2,
+                        CommissionError::AlreadyRunning.status_code(),
+                    );
                 }
-            };
-            assert_eq!(
-                terminal.outcome,
-                crate::commissioning::types::VelocitySweepOutcome::RejectedPlanMismatch
-            );
-        });
+                reply @ ReplyPayload::CommissionPhase { oid: 4, .. } => {
+                    assert_commission_phase_failure(
+                        reply,
+                        4,
+                        CommissionError::AlreadyRunning.status_code(),
+                    );
+                }
+                reply @ ReplyPayload::Selftest { .. } => {
+                    assert_selftest_failure(reply, 5, CommissionError::AlreadyRunning.status_code())
+                }
+                _ => panic!("unexpected reply"),
+            }
+        }
     }
 
-    #[test]
-    fn set_motion_scale_success_uses_board_tail() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::fall_through();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[fixture_test]
+    async fn commissioning_admission_refuses_missing_pi_representation() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::skip_tick_tail();
+        board
+            .tmc_state()
+            .store_current_limit(current_limit(2_816), Relaxed);
+        board.tmc_state().clear_pi_representation_established();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(
-                    0,
-                    TmcRequestKind::SetMotionScale {
-                        oid: 7,
-                        encoder_ppr: 4000,
-                        planner_steps_per_rev: 3200,
-                    },
-                ),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::Commission { oid: 2, profile: 0 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-            assert!(outcome.should_refresh_velocity_scale);
-            assert_eq!(outcome.shutdown, None);
-            assert!(tmc_channel0().motion_scale_configured());
-            assert_eq!(board.mapper_install_calls, 1);
-            let mapper = board.installed_mapper.unwrap();
-            assert_eq!(mapper.planner_steps_per_rev(), 3200);
-            assert_eq!(mapper.tmc_grid(), 4096);
-            assert_eq!(mapper.step_width(), 16);
-            assert!(!board.configured_during_mapper_install);
-            assert_eq!(board.arm_calls, 0);
-        });
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        assert_eq!(runtime.pending_commission_kind(), None);
+        assert_eq!(board.replies.len(), 1);
+        assert_commission_phase_failure(
+            &board.replies[0],
+            2,
+            CommissionError::ChipResetDetected.status_code(),
+        );
+        let spi = tmc.into_inner();
+        assert!(spi.write_attempts.is_empty());
+        assert!(spi.read_requests.is_empty());
     }
 
-    #[test]
-    fn set_motion_scale_mapper_install_failure_shuts_down_before_publication() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::fall_through();
-            board.mapper_install_result = Err(MotionScaleMapperInstallError);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[fixture_test]
+    async fn commissioning_block_false_preserves_openffboard_overwrite_behavior() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_commission_engine(
+            crate::commission::CommissioningEngine::new_selftest_for_tmc_with_trace_seq(
+                8,
+                tmc_channel0(),
+                1,
+            ),
+        );
+        let mut board = RecordingBoard::fall_through();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(
-                    0,
-                    TmcRequestKind::SetMotionScale {
-                        oid: 7,
-                        encoder_ppr: 4000,
-                        planner_steps_per_rev: 3200,
-                    },
-                ),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
-            let spi = tmc.into_inner();
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 9 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
 
-            assert_eq!(
-                spi.writes,
-                std::vec![
-                    (foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000),
-                    (foci_tmc4671::registers::STEP_WIDTH.addr(), 16),
-                ]
-            );
-            assert_eq!(board.mapper_install_calls, 1);
-            assert!(!board.configured_during_mapper_install);
-            assert!(!tmc_channel0().motion_scale_configured());
-            assert_eq!(
-                board.motion_scale_rejections,
-                std::vec![(
-                    7,
-                    crate::motion_scale::MotionScaleRejection::MapperInstallFailed,
-                )]
-            );
-            assert_eq!(
-                outcome.shutdown,
-                Some(ShutdownReason::RequestValidationFailed)
-            );
-            assert!(outcome.should_refresh_velocity_scale);
-        });
+        assert!(board.replies.is_empty());
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Calibrate)
+        );
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
     }
 
-    #[test]
-    fn set_motion_scale_rejects_invalid_scale_before_spi_or_publication() {
-        run_request_test(async {
-            assert_motion_scale_revalidation_rejected(
-                MotionScaleRevalidationRejection::InvalidScale(
-                    crate::motion_scale::MotionScaleRejection::EncoderPprZero,
-                ),
-            )
-            .await;
-        });
+    #[fixture_test]
+    async fn tune_restore_phase_advance_failure_emits_spi_failure() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+        );
+
+        let outcome = handle_tmc_control_request(
+            tune_request(),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        #[cfg(feature = "trace-velocity-sweep")]
+        assert_eq!(board.replies.len(), 2);
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        assert_eq!(board.replies.len(), 1);
+        assert_commission_phase_failure(
+            board
+                .replies
+                .get(if cfg!(feature = "trace-velocity-sweep") {
+                    1
+                } else {
+                    0
+                })
+                .unwrap(),
+            4,
+            CommissionError::Spi.status_code(),
+        );
+        #[cfg(feature = "trace-velocity-sweep")]
+        assert!(matches!(
+            board.replies[0],
+            ReplyPayload::CommissioningWorkflowPlan { .. }
+        ));
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        assert!(runtime.phase_advance_active_for_test());
     }
 
-    #[test]
-    fn set_motion_scale_rejects_runtime_enabled_before_spi_or_publication() {
-        run_request_test(async {
-            assert_motion_scale_revalidation_rejected(
-                MotionScaleRevalidationRejection::RuntimeEnabled,
-            )
-            .await;
-        });
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn combined_workflow_is_declared_and_recorded_before_engine_execution() {
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        board.velocity_limit_evidence_capability =
+            crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG;
+        let tmc_state = tmc_channel0();
+        tmc_state
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut slot = StageBCandidateSlot::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stage_b(
+            tune_request(),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut slot,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+        else {
+            panic!("combined workflow envelope must be first")
+        };
+        assert_eq!(
+            workflow.shape,
+            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::CombinedPThenI
+        );
+        assert_eq!(workflow.maximum_workflow_ms, 496_528);
+        let ReplyPayload::VelocitySweepEvent { event, .. } = board.replies[1] else {
+            panic!("accepted combined request must publish its Stage-B plan")
+        };
+        let crate::commissioning::types::VelocitySweepEvent::Planned(planned) = event else {
+            panic!("first Stage B event must be its immutable plan")
+        };
+        let expected =
+            crate::commissioning::outer::velocity::sweep_plan::plan_combined_velocity_sweep(
+                velocity_sweep_request(),
+                4_000,
+                2_816,
+                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
+        )
+        .unwrap();
+        assert_eq!(planned.plan_digest, expected.digest());
+        assert_eq!(
+            board.velocity_sweep_records,
+            [encode_velocity_sweep_event(event)]
+        );
+        assert!(slot.candidate().is_none());
+        assert!(runtime.is_commission_active());
     }
 
-    #[test]
-    fn set_motion_scale_rejects_motor_armed_mirror_before_spi_or_publication() {
-        run_request_test(async {
-            assert_motion_scale_revalidation_rejected(
-                MotionScaleRevalidationRejection::MotorArmedMirror,
-            )
-            .await;
-        });
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn breakaway_breadcrumb_begins_when_workflow_is_installed() {
+        use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+        let mut board = RecordingBoard::skip_tick_tail();
+        let tmc_state = tmc_channel0();
+        tmc_state
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut slot = StageBCandidateSlot::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stage_b(
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut slot,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        // The campaign discloses only its command-level envelope before
+        // construction; the probe's Planned evidence is recorded on its first
+        // engine step, not at admission, so exactly one reply is emitted.
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+        else {
+            panic!("breakaway workflow envelope must be the only admission reply")
+        };
+        assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
+        assert!(workflow.nominal_workflow_ms > 0);
+        assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
+        assert!(runtime.is_commission_active());
+        assert_eq!(
+            crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+            Some(crate::diagnostic::BreakawayBreadcrumb {
+                checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
+                interrupted: true,
+            })
+        );
     }
 
-    #[test]
-    fn set_motion_scale_rejects_physical_queue_before_spi_or_publication() {
-        run_request_test(async {
-            assert_motion_scale_revalidation_rejected(
-                MotionScaleRevalidationRejection::PhysicalQueueNonempty,
-            )
-            .await;
-        });
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn matrix_request_without_acceptance_point_fails_without_motion_writes() {
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::commissioning::types::{AcceptanceMatrixCause, AcceptanceMatrixOutcome};
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } = board.replies[0] else {
+            panic!("missing point must use the matrix terminal namespace")
+        };
+        assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Failed);
+        assert_eq!(
+            terminal.cause,
+            AcceptanceMatrixCause::MissingAcceptancePoint
+        );
+        assert!(!runtime.is_commission_active());
+        assert_eq!(board.velocity_sweep_records.len(), 1);
+        let spi = tmc.into_inner();
+        assert!(spi.write_attempts.iter().all(|(addr, _)| {
+            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+        }));
     }
 
-    #[test]
-    fn set_motion_scale_rejects_active_timer_before_spi_or_publication() {
-        run_request_test(async {
-            assert_motion_scale_revalidation_rejected(
-                MotionScaleRevalidationRejection::TimerActive,
-            )
-            .await;
-        });
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn admitted_matrix_discloses_exact_plan_before_engine_execution() {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            AcceptanceMatrixProgress, StageCCandidateSlot,
+        };
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        stage_c.install_acceptance_point(
+            crate::commission_dispatch::acceptance::test_acceptance_point(
+                velocity_sweep_request(),
+                AcceptanceMatrixProgress::ReadyAscending,
+            ),
+        );
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 2);
+        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+        else {
+            panic!("matrix workflow envelope must be first")
+        };
+        assert_eq!(
+            workflow.shape,
+            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::
+                AcceptanceMatrixAscending
+        );
+        assert_eq!(workflow.maximum_workflow_ms, 66_456);
+        let ReplyPayload::AcceptanceMatrixPlan { plan, .. } = board.replies[1] else {
+            panic!("matrix plan must be disclosed before execution")
+        };
+        assert_eq!(plan.target_rpm, [16, 33, 66, 132, 263]);
+        assert_eq!(board.velocity_sweep_records.len(), 3);
+        assert!(runtime.is_commission_active());
+        assert_eq!(
+            stage_c.acceptance_point().unwrap().progress,
+            AcceptanceMatrixProgress::ReadyAscending
+        );
     }
 
-    #[test]
-    fn set_motion_scale_abn_decoder_ppr_failure_shuts_down_without_publication() {
-        run_request_test(async {
-            assert_motion_scale_spi_failure(
-                foci_tmc4671::registers::ABN_DECODER_PPR.addr(),
-                &[(foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000)],
-                &[],
-            )
-            .await;
-        });
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn combined_replacement_clears_same_channel_point_only_after_admission() {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            AcceptanceMatrixProgress, StageCCandidateSlot,
+        };
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        stage_c.install_acceptance_point(
+            crate::commission_dispatch::acceptance::test_acceptance_point(
+                velocity_sweep_request(),
+                AcceptanceMatrixProgress::ReadyAscending,
+            ),
+        );
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request(),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert!(runtime.is_commission_active());
+        assert_eq!(stage_c.acceptance_point(), None);
+        assert!(matches!(
+            board.replies.as_slice(),
+            [
+                ReplyPayload::CommissioningWorkflowPlan { .. },
+                ReplyPayload::VelocitySweepEvent { .. }
+            ]
+        ));
     }
 
-    #[test]
-    fn set_motion_scale_step_width_failure_shuts_down_without_publication() {
-        run_request_test(async {
-            assert_motion_scale_spi_failure(
-                foci_tmc4671::registers::STEP_WIDTH.addr(),
-                &[
-                    (foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000),
-                    (foci_tmc4671::registers::STEP_WIDTH.addr(), 16),
-                ],
-                &[(foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000)],
-            )
-            .await;
-        });
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn matrix_order_mismatch_preserves_point_without_motion() {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            AcceptanceMatrixProgress, StageCCandidateSlot,
+        };
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::commissioning::types::AcceptanceMatrixCause;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let point = crate::commission_dispatch::acceptance::test_acceptance_point(
+            velocity_sweep_request(),
+            AcceptanceMatrixProgress::ReadyDescending,
+        );
+        stage_c.install_acceptance_point(point);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        let ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } = board.replies[0] else {
+            panic!("wrong order must use the matrix terminal namespace")
+        };
+        assert_eq!(terminal.cause, AcceptanceMatrixCause::MatrixOrderMismatch);
+        assert_eq!(stage_c.acceptance_point(), Some(point));
+        assert!(!runtime.is_commission_active());
+        assert!(tmc.into_inner().write_attempts.iter().all(|(addr, _)| {
+            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+        }));
     }
 
-    #[test]
-    fn generic_register_failure_uses_board_tail() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::fall_through();
-            board.register_result = Err(crate::tmc_control::dispatch::RegisterRequestError::Other);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn combined_workflow_rejects_retained_stage_c_without_mutating_it() {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            StageCCandidateSlot, StageCSlotState,
+        };
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::commissioning::types::VelocitySweepOutcome;
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 1000 }),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let mut board = RecordingBoard::skip_tick_tail();
+        let tmc_state = tmc_channel0();
+        tmc_state
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let retained = retained_stage_c_authority();
+        stage_c.install_authority(retained);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-            assert_eq!(
-                outcome.shutdown,
-                Some(ShutdownReason::RequestValidationFailed)
-            );
-            assert!(!outcome.should_refresh_velocity_scale);
-        });
+        handle_tmc_control_request_with_stages(
+            tune_request(),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
+            panic!("legacy state must produce one Stage-B-family rejection")
+        };
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
+        assert_eq!(
+            terminal.cause,
+            crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
+        );
+        assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
+        assert_eq!(stage_c.authority(), Some(retained));
+        assert!(stage_b.candidate().is_none());
+        assert!(!runtime.is_commission_active());
+        assert!(board.velocity_sweep_records.is_empty());
+        let spi = tmc.into_inner();
+        assert!(spi.write_attempts.iter().all(|(addr, _)| {
+            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+        }));
     }
 
-    #[test]
-    fn current_limit_invalid_uses_dedicated_shutdown() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::fall_through();
-            board.register_result =
-                Err(crate::tmc_control::dispatch::RegisterRequestError::CurrentLimitInvalid);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn combined_workflow_rejects_retained_stage_b_without_mutating_it() {
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::reproduction::{
+            StageBCandidateSlot, StageBReproductionDecision,
+        };
+        use crate::commissioning::types::VelocitySweepOutcome;
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: u32::MAX }),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let mut board = RecordingBoard::skip_tick_tail();
+        let tmc_state = tmc_channel0();
+        tmc_state
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let retained = retained_stage_b_candidate();
+        assert!(matches!(
+            stage_b.observe_sufficient(retained),
+            StageBReproductionDecision::CompleteCandidate(_)
+        ));
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-            assert_eq!(outcome.shutdown, Some(ShutdownReason::CurrentLimitInvalid));
-            assert!(!outcome.should_refresh_velocity_scale);
-        });
+        handle_tmc_control_request_with_stages(
+            tune_request(),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
+            panic!("legacy state must produce one Stage-B-family rejection");
+        };
+        assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
+        assert_eq!(
+            terminal.cause,
+            crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
+        );
+        assert_eq!(stage_b.candidate(), Some(retained));
+        assert!(stage_c.authority().is_none());
+        assert!(!runtime.is_commission_active());
+        let spi = tmc.into_inner();
+        assert!(spi.write_attempts.iter().all(|(addr, _)| {
+            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+        }));
+        assert!(board.velocity_sweep_records.is_empty());
     }
 
-    #[test]
-    fn pre_request_diagnostic_disposition_uses_board_tail() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::fall_through();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn same_channel_explicit_calibration_preserves_stage_c_authority() {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            StageCCandidateSlot, StageCSlotState,
+        };
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 1000 }),
-                TmcPreRequestDisposition::RunDiagnostic(TmcRequest::new(
-                    0,
-                    TmcRequestKind::CurrentStepTest {
-                        oid: 1,
-                        axis: crate::tmc::CurrentStepAxis::Torque,
-                        target: 10,
-                        duration_ms: 20,
-                        voltage_limit: 12000,
-                    },
-                )),
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        stage_c.install_authority(retained_stage_c_authority());
+        let mut board = RecordingBoard::skip_tick_tail();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            assert_eq!(board.diagnostic_calls, 1);
-            assert!(board.replies.is_empty());
-            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-        });
+        handle_tmc_control_request_with_stages(
+            TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 7 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
+        assert_eq!(stage_c.authority(), Some(retained_stage_c_authority()));
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Calibrate)
+        );
     }
 
-    #[test]
-    fn resistance_test_runs_diagnostic_request() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            let mut board = RecordingBoard::fall_through();
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn stage_b_changed_plan_is_rejected_before_actuation_and_preserves_candidate() {
+        use crate::commissioning::outer::velocity::reproduction::{
+            StageBCandidateSlot, StageBCandidateSummary,
+        };
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::ResistanceTest { oid: 7, detail: 1 }),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
-            .await;
+        let mut board = RecordingBoard::skip_tick_tail();
+        let tmc_state = tmc_channel0();
+        tmc_state
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let request = match tune_request().kind {
+            TmcRequestKind::Tune {
+                requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s,
+                requested_velocity_source,
+                max_stroke_travel_mrev,
+                settle_travel_reserve_mrev,
+                negative_position_headroom_mrev,
+                positive_position_headroom_mrev,
+                max_duration_ms,
+                ..
+            } => crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
+                requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s,
+                requested_velocity_source,
+                max_stroke_travel_mrev,
+                settle_travel_reserve_mrev,
+                negative_position_headroom_mrev,
+                positive_position_headroom_mrev,
+                max_duration_ms,
+            },
+            _ => unreachable!(),
+        };
+        let mut slot = StageBCandidateSlot::new();
+        let accepted = crate::commission_dispatch::stage_b::preflight_stage_b_request(
+            request, 4_000, 2_816, 0, 0, 1, &mut slot,
+        )
+        .expect("valid retained plan");
+        let retained = StageBCandidateSummary {
+            identity: accepted.identity,
+            forward_membership: 0b111,
+            reverse_membership: 0b111,
+            joint_membership: 0b111,
+            nominated_p: 4,
+            p_start: accepted.plan.p_start.raw(),
+            p_top: accepted.plan.p_top.raw(),
+            rung_count: accepted.plan.rung_count,
+            forward_interval: [1, 2],
+            reverse_interval: [-2, -1],
+            forward_common_interval: [1, 2],
+            reverse_common_interval: [-2, -1],
+            run_completed_us: 2,
+            run_digest: 3,
+        };
+        slot.observe_sufficient(retained);
 
-            assert_eq!(board.diagnostic_calls, 1);
-            assert!(board.replies.is_empty());
-            assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
-        });
+        let mut changed = tune_request();
+        let TmcRequestKind::Tune {
+            ref mut max_stroke_travel_mrev,
+            ..
+        } = changed.kind
+        else {
+            unreachable!()
+        };
+        *max_stroke_travel_mrev += 100;
+        let outcome = handle_tmc_control_request_with_stage_b(
+            changed,
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut slot,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        assert!(!runtime.is_commission_active());
+        assert_eq!(slot.candidate(), Some(retained));
+        assert_eq!(
+            tmc.into_inner().writes,
+            [(
+                foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                    .addr
+                    .addr(),
+                u32::from(foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr),
+            )]
+        );
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
+            match board.replies[0] {
+                ReplyPayload::CommissionPhase { status, .. } => {
+                    panic!("unexpected commissioning failure status {status}")
+                }
+                ReplyPayload::VelocitySweepEvent { .. } => {
+                    panic!("changed plan was incorrectly admitted")
+                }
+                _ => panic!("plan mismatch must use the dedicated Stage B terminal"),
+            }
+        };
+        assert_eq!(
+            terminal.outcome,
+            crate::commissioning::types::VelocitySweepOutcome::RejectedPlanMismatch
+        );
     }
 
-    #[test]
-    fn failed_arm_disarms_once_and_returns_skip_tick_tail() {
-        run_request_test(async {
-            let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_calibrated_for_test(true);
-            let mut board = RecordingBoard::fall_through();
-            board.arm_result = Err(CommissionError::Spi);
-            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+    #[fixture_test]
+    async fn set_motion_scale_success_uses_board_tail() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-            let outcome = handle_tmc_control_request(
-                TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
-                TmcPreRequestDisposition::ContinueRequest,
-                &mut runtime,
-                &mut tmc,
-                &mut board,
-            )
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetMotionScale {
+                    oid: 7,
+                    encoder_ppr: 4000,
+                    planner_steps_per_rev: 3200,
+                },
+            ),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        assert!(outcome.should_refresh_velocity_scale);
+        assert_eq!(outcome.shutdown, None);
+        assert!(tmc_channel0().motion_scale_configured());
+        assert_eq!(board.mapper_install_calls, 1);
+        let mapper = board.installed_mapper.unwrap();
+        assert_eq!(mapper.planner_steps_per_rev(), 3200);
+        assert_eq!(mapper.tmc_grid(), 4096);
+        assert_eq!(mapper.step_width(), 16);
+        assert!(!board.configured_during_mapper_install);
+        assert_eq!(board.arm_calls, 0);
+    }
+
+    #[fixture_test]
+    async fn set_motion_scale_mapper_install_failure_shuts_down_before_publication() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        board.mapper_install_result = Err(MotionScaleMapperInstallError);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(
+                0,
+                TmcRequestKind::SetMotionScale {
+                    oid: 7,
+                    encoder_ppr: 4000,
+                    planner_steps_per_rev: 3200,
+                },
+            ),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+        let spi = tmc.into_inner();
+
+        assert_eq!(
+            spi.writes,
+            std::vec![
+                (foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000),
+                (foci_tmc4671::registers::STEP_WIDTH.addr(), 16),
+            ]
+        );
+        assert_eq!(board.mapper_install_calls, 1);
+        assert!(!board.configured_during_mapper_install);
+        assert!(!tmc_channel0().motion_scale_configured());
+        assert_eq!(
+            board.motion_scale_rejections,
+            std::vec![(
+                7,
+                crate::motion_scale::MotionScaleRejection::MapperInstallFailed,
+            )]
+        );
+        assert_eq!(
+            outcome.shutdown,
+            Some(ShutdownReason::RequestValidationFailed)
+        );
+        assert!(outcome.should_refresh_velocity_scale);
+    }
+
+    #[fixture_test]
+    async fn set_motion_scale_rejects_invalid_scale_before_spi_or_publication() {
+        assert_motion_scale_revalidation_rejected(MotionScaleRevalidationRejection::InvalidScale(
+            crate::motion_scale::MotionScaleRejection::EncoderPprZero,
+        ))
+        .await;
+    }
+
+    #[fixture_test]
+    async fn set_motion_scale_rejects_runtime_enabled_before_spi_or_publication() {
+        assert_motion_scale_revalidation_rejected(MotionScaleRevalidationRejection::RuntimeEnabled)
             .await;
+    }
 
-            assert_eq!(board.arm_calls, 1);
-            assert_eq!(board.disarm_calls, 1);
-            assert_eq!(board.motor_arm_events, 0);
-            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-        });
+    #[fixture_test]
+    async fn set_motion_scale_rejects_motor_armed_mirror_before_spi_or_publication() {
+        assert_motion_scale_revalidation_rejected(
+            MotionScaleRevalidationRejection::MotorArmedMirror,
+        )
+        .await;
+    }
+
+    #[fixture_test]
+    async fn set_motion_scale_rejects_physical_queue_before_spi_or_publication() {
+        assert_motion_scale_revalidation_rejected(
+            MotionScaleRevalidationRejection::PhysicalQueueNonempty,
+        )
+        .await;
+    }
+
+    #[fixture_test]
+    async fn set_motion_scale_rejects_active_timer_before_spi_or_publication() {
+        assert_motion_scale_revalidation_rejected(MotionScaleRevalidationRejection::TimerActive)
+            .await;
+    }
+
+    #[fixture_test]
+    async fn set_motion_scale_abn_decoder_ppr_failure_shuts_down_without_publication() {
+        assert_motion_scale_spi_failure(
+            foci_tmc4671::registers::ABN_DECODER_PPR.addr(),
+            &[(foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000)],
+            &[],
+        )
+        .await;
+    }
+
+    #[fixture_test]
+    async fn set_motion_scale_step_width_failure_shuts_down_without_publication() {
+        assert_motion_scale_spi_failure(
+            foci_tmc4671::registers::STEP_WIDTH.addr(),
+            &[
+                (foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000),
+                (foci_tmc4671::registers::STEP_WIDTH.addr(), 16),
+            ],
+            &[(foci_tmc4671::registers::ABN_DECODER_PPR.addr(), 16000)],
+        )
+        .await;
+    }
+
+    #[fixture_test]
+    async fn generic_register_failure_uses_board_tail() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        board.register_result = Err(crate::tmc_control::dispatch::RegisterRequestError::Other);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 1000 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        assert_eq!(
+            outcome.shutdown,
+            Some(ShutdownReason::RequestValidationFailed)
+        );
+        assert!(!outcome.should_refresh_velocity_scale);
+    }
+
+    #[fixture_test]
+    async fn current_limit_invalid_uses_dedicated_shutdown() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        board.register_result =
+            Err(crate::tmc_control::dispatch::RegisterRequestError::CurrentLimitInvalid);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: u32::MAX }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+        assert_eq!(outcome.shutdown, Some(ShutdownReason::CurrentLimitInvalid));
+        assert!(!outcome.should_refresh_velocity_scale);
+    }
+
+    #[fixture_test]
+    async fn pre_request_diagnostic_disposition_uses_board_tail() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 1000 }),
+            TmcPreRequestDisposition::RunDiagnostic(TmcRequest::new(
+                0,
+                TmcRequestKind::CurrentStepTest {
+                    oid: 1,
+                    axis: crate::tmc::CurrentStepAxis::Torque,
+                    target: 10,
+                    duration_ms: 20,
+                    voltage_limit: 12000,
+                },
+            )),
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.diagnostic_calls, 1);
+        assert!(board.replies.is_empty());
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+    }
+
+    #[fixture_test]
+    async fn resistance_test_runs_diagnostic_request() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::fall_through();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::ResistanceTest { oid: 7, detail: 1 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.diagnostic_calls, 1);
+        assert!(board.replies.is_empty());
+        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
+    }
+
+    #[fixture_test]
+    async fn failed_arm_disarms_once_and_returns_skip_tick_tail() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_calibrated_for_test(true);
+        let mut board = RecordingBoard::fall_through();
+        board.arm_result = Err(CommissionError::Spi);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.arm_calls, 1);
+        assert_eq!(board.disarm_calls, 1);
+        assert_eq!(board.motor_arm_events, 0);
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
@@ -3504,21 +3412,52 @@ mod tests {
         assert_eq!(board.disarm_calls, 2);
     }
 
-    #[test]
-    fn tune_entry_snapshot_uses_default_current_filters_when_unconfigured() {
-        run_request_test(async {
+    #[fixture_test]
+    async fn tune_entry_snapshot_uses_default_current_filters_when_unconfigured() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            tune_request(),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        let engine = runtime
+            .take_commission_engine()
+            .expect("tune should start outer engine");
+        let snapshot = engine
+            .entry_snapshot()
+            .expect("outer engine should carry entry snapshot");
+        assert_eq!(snapshot.velocity_filter_hz, 0);
+        assert_eq!(snapshot.torque_filter_hz, 6000);
+        assert_eq!(snapshot.position_filter_hz, 0);
+        assert_eq!(snapshot.flux_filter_hz, 6000);
+    }
+
+    #[fixture_test]
+    async fn success_paths_preserve_both_normal_tail_policies() {
+        for normal_tail in [
+            TmcControlRequestTail::SkipTickTail,
+            TmcControlRequestTail::FallThrough,
+        ] {
             let mut runtime = TmcControlRuntime::new_for_channel(0);
-            runtime.set_motor_enabled_for_test(true);
-            runtime.set_calibrated_for_test(true);
-            let mut board = RecordingBoard::skip_tick_tail();
-            tmc_channel0()
-                .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-                .expect("valid motion scale");
-            tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+            let mut board = RecordingBoard::new(normal_tail);
             let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
             let outcome = handle_tmc_control_request(
-                tune_request(),
+                TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 1000 }),
                 TmcPreRequestDisposition::ContinueRequest,
                 &mut runtime,
                 &mut tmc,
@@ -3526,43 +3465,8 @@ mod tests {
             )
             .await;
 
-            assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-            let engine = runtime
-                .take_commission_engine()
-                .expect("tune should start outer engine");
-            let snapshot = engine
-                .entry_snapshot()
-                .expect("outer engine should carry entry snapshot");
-            assert_eq!(snapshot.velocity_filter_hz, 0);
-            assert_eq!(snapshot.torque_filter_hz, 6000);
-            assert_eq!(snapshot.position_filter_hz, 0);
-            assert_eq!(snapshot.flux_filter_hz, 6000);
-        });
-    }
-
-    #[test]
-    fn success_paths_preserve_both_normal_tail_policies() {
-        run_request_test(async {
-            for normal_tail in [
-                TmcControlRequestTail::SkipTickTail,
-                TmcControlRequestTail::FallThrough,
-            ] {
-                let mut runtime = TmcControlRuntime::new_for_channel(0);
-                let mut board = RecordingBoard::new(normal_tail);
-                let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-                let outcome = handle_tmc_control_request(
-                    TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 1000 }),
-                    TmcPreRequestDisposition::ContinueRequest,
-                    &mut runtime,
-                    &mut tmc,
-                    &mut board,
-                )
-                .await;
-
-                assert_eq!(outcome.tail, normal_tail);
-                assert_eq!(outcome.shutdown, None);
-            }
-        });
+            assert_eq!(outcome.tail, normal_tail);
+            assert_eq!(outcome.shutdown, None);
+        }
     }
 }
