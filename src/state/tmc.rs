@@ -84,6 +84,18 @@ pub struct TmcChannelState {
     tmc_grid: AtomicU32,
     step_width: AtomicU32,
     motion_scale_configured: AtomicBool,
+    /// Set when a config setter has recorded a value the TMC task has not yet
+    /// written to the chip.
+    ///
+    /// Config-time setters are pure state writes: they do not need to be
+    /// ordered SPI transactions, so they record their value here instead of
+    /// enqueueing a request. The TMC task drains this flag on its periodic
+    /// control tick and applies the recorded state.
+    ///
+    /// This keeps the connect-time configuration burst entirely off the
+    /// bounded TMC request channel. That burst can exceed `TMC_CHANNEL_SIZE`,
+    /// and a dropped `#[klipper_command]` is an MCU shutdown.
+    pub config_apply_pending: AtomicBool,
     /// Optional velocity biquad filter cutoff frequency in Hz.
     pub velocity_filter_hz: AtomicOptionalFilterHz,
     /// Optional torque biquad filter cutoff frequency in Hz.
@@ -181,6 +193,7 @@ impl TmcChannelState {
             tmc_grid: AtomicU32::new(0),
             step_width: AtomicU32::new(0),
             motion_scale_configured: AtomicBool::new(false),
+            config_apply_pending: AtomicBool::new(false),
             velocity_filter_hz: AtomicOptionalFilterHz::new(None),
             torque_filter_hz: AtomicOptionalFilterHz::new(None),
             position_filter_hz: AtomicOptionalFilterHz::new(None),

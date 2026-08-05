@@ -195,67 +195,63 @@ pub fn tmc_set_pid_gains(
 }
 
 /// Set velocity biquad filter cutoff frequency from host config.
+///
+/// Recorded in channel state and applied by the TMC task on its control tick.
+/// See [`TmcChannelState::config_apply_pending`] for why this does not enqueue.
 #[klipper_command]
 pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_velocity_filter(channel, filter_hz))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
-    }
+    state
+        .velocity_filter_hz
+        .store(Some(filter_hz), Ordering::Relaxed);
+    state.config_apply_pending.store(true, Ordering::Relaxed);
 }
 
 /// Set torque biquad filter cutoff frequency from host config.
+///
+/// Recorded in channel state and applied by the TMC task on its control
+/// tick. See [`TmcChannelState::config_apply_pending`].
 #[klipper_command]
 pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_torque_filter(channel, filter_hz))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
-    }
+    state
+        .torque_filter_hz
+        .store(Some(filter_hz), Ordering::Relaxed);
+    state.config_apply_pending.store(true, Ordering::Relaxed);
 }
 
 /// Set position target biquad filter cutoff frequency from host config.
+///
+/// Recorded in channel state and applied by the TMC task on its control
+/// tick. See [`TmcChannelState::config_apply_pending`].
 #[klipper_command]
 pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_position_filter(channel, filter_hz))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
-    }
+    state
+        .position_filter_hz
+        .store(Some(filter_hz), Ordering::Relaxed);
+    state.config_apply_pending.store(true, Ordering::Relaxed);
 }
 
 /// Set flux biquad filter cutoff frequency from host config.
+///
+/// Recorded in channel state and applied by the TMC task on its control
+/// tick. See [`TmcChannelState::config_apply_pending`].
 #[klipper_command]
 pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_flux_filter(channel, filter_hz))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetFilterLostQueueFull, clock);
-    }
+    state
+        .flux_filter_hz
+        .store(Some(filter_hz), Ordering::Relaxed);
+    state.config_apply_pending.store(true, Ordering::Relaxed);
 }
 
 /// Set position/velocity PI gains from host config.
@@ -507,7 +503,7 @@ pub fn tmc_set_velocity_limit(ctx: &mut dyn ShutdownRecovery, oid: u8, limit: u3
 /// Set PIDOUT_UQ_UD_LIMITS from a live diagnostic command.
 #[klipper_command]
 pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit: u32) {
-    let Some((channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     if !(crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT
@@ -523,14 +519,7 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
     state
         .voltage_limit_cfg
         .store(voltage_limit, Ordering::Relaxed);
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_voltage_limit(channel, voltage_limit))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetVoltageLimitLostQueueFull, clock);
-    }
+    state.config_apply_pending.store(true, Ordering::Relaxed);
 }
 
 /// Run a bounded current-loop step diagnostic.
@@ -1148,6 +1137,71 @@ mod tests {
     }
 
     #[test]
+    fn tmc_set_velocity_filter_records_config_without_queueing() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.velocity_filter_hz.store(None, Relaxed);
+        tmc_state.config_apply_pending.store(false, Relaxed);
+
+        tmc_set_velocity_filter(&mut ctx, &mut sender, 10, 200);
+
+        // The cutoff is recorded in channel state...
+        assert_eq!(tmc_state.velocity_filter_hz.load(Relaxed), Some(200));
+        // ...and flagged for the TMC task to apply on its control tick...
+        assert!(tmc_state.config_apply_pending.load(Relaxed));
+        // ...without consuming a slot on the bounded request channel.
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_voltage_limit_records_config_without_queueing() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        // A full channel is the connect-time condition that shut the MCU down.
+        ctx.accept_request = false;
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.voltage_limit_cfg.store(16_000, Relaxed);
+        tmc_state.config_apply_pending.store(false, Relaxed);
+
+        tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 29_000);
+
+        assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 29_000);
+        assert!(tmc_state.config_apply_pending.load(Relaxed));
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_velocity_filter_cannot_shut_down_on_a_full_queue() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        // A full request channel is exactly the connect-time condition that
+        // shut the MCU down; recording config must be immune to it.
+        ctx.accept_request = false;
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.velocity_filter_hz.store(None, Relaxed);
+
+        tmc_set_velocity_filter(&mut ctx, &mut sender, 10, 200);
+
+        assert_eq!(tmc_state.velocity_filter_hz.load(Relaxed), Some(200));
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
     fn tmc_set_voltage_limit_updates_saved_state_before_worker_runs() {
         use core::sync::atomic::Ordering::Relaxed;
 
@@ -1160,15 +1214,11 @@ mod tests {
 
         tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 20_000);
 
+        // Recorded in channel state for the TMC task to apply on its control
+        // tick; config setters no longer consume a request-channel slot.
         assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 20_000);
-        let req = ctx.last_request.borrow().clone().unwrap();
-        assert_eq!(req.channel, 1);
-        assert!(matches!(
-            req.kind,
-            crate::tmc::TmcRequestKind::SetVoltageLimit {
-                voltage_limit: 20_000,
-            }
-        ));
+        assert!(tmc_state.config_apply_pending.load(Relaxed));
+        assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
     }
 
@@ -1185,13 +1235,9 @@ mod tests {
 
         tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 0);
 
+        // Raw chip minimum is accepted, not rejected as out of range.
         assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 0);
-        let req = ctx.last_request.borrow().clone().unwrap();
-        assert_eq!(req.channel, 1);
-        assert!(matches!(
-            req.kind,
-            crate::tmc::TmcRequestKind::SetVoltageLimit { voltage_limit: 0 }
-        ));
+        assert!(tmc_state.config_apply_pending.load(Relaxed));
         assert_eq!(ctx.last_shutdown, None);
     }
 

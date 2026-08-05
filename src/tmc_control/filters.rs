@@ -392,6 +392,73 @@ async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
     .await
 }
 
+/// Apply configuration recorded by config-time setters, if any is pending.
+///
+/// Config-time setters record their value in [`TmcChannelState`] and set
+/// `config_apply_pending` rather than enqueueing an SPI request, so a
+/// connect-time configuration burst cannot overflow the bounded TMC request
+/// channel. The TMC task calls this from its periodic control tick to push
+/// that recorded state to the chip.
+///
+/// The pending flag is cleared before the writes are attempted, so a failure
+/// does not spin the tick retrying a bad value; the next setter call re-arms
+/// it. Routes through [`apply_live_filter`] so a recorded `0` disables its
+/// filter, which the `apply_stored_filters` fast path does not do.
+///
+/// # Errors
+///
+/// Returns `Err(())` if any filter write fails.
+pub async fn apply_pending_config<B>(
+    tmc: &mut Tmc4671Spi<B>,
+    tmc_state: &TmcChannelState,
+    pwm_maxcnt: u16,
+) -> Result<(), ()>
+where
+    B: SpiDevice<u8>,
+{
+    use core::sync::atomic::Ordering::Relaxed;
+
+    if !tmc_state.config_apply_pending.swap(false, Relaxed) {
+        return Ok(());
+    }
+
+    crate::tmc_control::request_writes::apply_set_voltage_limit(
+        tmc,
+        tmc_state,
+        tmc_state.voltage_limit_cfg.load(Relaxed),
+    )
+    .await?;
+
+    // Outer gains are deliberately NOT applied here. `load_outer_gains` holds
+    // gains *confirmed written to hardware*, which is why
+    // `apply_live_outer_gains` reports a per-write status and publishes only
+    // after both writes succeed. Recording a requested value into that state
+    // would publish unconfirmed gains, so moving `tmc_set_position_gains` off
+    // the queue needs a separate pending-gain field first.
+
+    for (target, filter_hz) in [
+        (
+            BiquadFilterTarget::Velocity,
+            tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+        ),
+        (
+            BiquadFilterTarget::Torque,
+            tmc_state.torque_filter_hz.load_or_zero(Relaxed),
+        ),
+        (
+            BiquadFilterTarget::Position,
+            tmc_state.position_filter_hz.load_or_zero(Relaxed),
+        ),
+        (
+            BiquadFilterTarget::Flux,
+            tmc_state.flux_filter_hz.load_or_zero(Relaxed),
+        ),
+    ] {
+        apply_live_filter(tmc, tmc_state, target, filter_hz, pwm_maxcnt).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
