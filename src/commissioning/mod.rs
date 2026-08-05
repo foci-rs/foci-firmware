@@ -2066,6 +2066,7 @@ mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::{SpiOp, current_limit};
     use crate::commissioning::types::EngineKind;
+    use foci_firmware_macros::fixture_test;
 
     #[test]
     fn size_regression_gates() {
@@ -2626,49 +2627,44 @@ mod tests {
         );
     }
 
-    #[test]
-    fn calibrate_constructor_uses_stored_gains_for_closed_loop_entry() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering::Relaxed;
+    #[fixture_test]
+    async fn calibrate_constructor_uses_stored_gains_for_closed_loop_entry() {
+        use core::sync::atomic::Ordering::Relaxed;
 
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let tmc_state = tmc_state();
-            let outer = crate::pid::test_outer_gains(627, 1, 1434, 2);
-            tmc_state.store_outer_gains(outer, Relaxed);
-            tmc_state.velocity_limit_cfg.store(500_000, Relaxed);
-            tmc_state.velocity_filter_hz.store(Some(11), Relaxed);
-            tmc_state.torque_filter_hz.store(Some(13), Relaxed);
-            tmc_state.position_filter_hz.store(Some(17), Relaxed);
-            tmc_state.flux_filter_hz.store(Some(19), Relaxed);
+        let tmc_state = tmc_state();
+        let outer = crate::pid::test_outer_gains(627, 1, 1434, 2);
+        tmc_state.store_outer_gains(outer, Relaxed);
+        tmc_state.velocity_limit_cfg.store(500_000, Relaxed);
+        tmc_state.velocity_filter_hz.store(Some(11), Relaxed);
+        tmc_state.torque_filter_hz.store(Some(13), Relaxed);
+        tmc_state.position_filter_hz.store(Some(17), Relaxed);
+        tmc_state.flux_filter_hz.store(Some(19), Relaxed);
 
-            let inner = crate::pid::InnerLoopGains {
-                flux_p: crate::pid::p_gain(711),
-                flux_i: crate::pid::i_gain(2_544),
-                torque_p: crate::pid::p_gain(711),
-                torque_i: crate::pid::i_gain(2_544),
-            };
+        let inner = crate::pid::InnerLoopGains {
+            flux_p: crate::pid::p_gain(711),
+            flux_i: crate::pid::i_gain(2_544),
+            torque_p: crate::pid::p_gain(711),
+            torque_i: crate::pid::i_gain(2_544),
+        };
 
-            let engine =
-                CommissioningEngine::new_calibrate_for_tmc_with_gains(0, tmc_state, Some(inner));
+        let engine =
+            CommissioningEngine::new_calibrate_for_tmc_with_gains(0, tmc_state, Some(inner));
 
-            let EngineMode::Inner {
-                calibrate_entry_gains: Some(gains),
-                ..
-            } = engine.engine_mode
-            else {
-                panic!("calibrate constructor should snapshot entry gains");
-            };
+        let EngineMode::Inner {
+            calibrate_entry_gains: Some(gains),
+            ..
+        } = engine.engine_mode
+        else {
+            panic!("calibrate constructor should snapshot entry gains");
+        };
 
-            assert_eq!(gains.inner, inner);
-            assert_eq!(gains.outer, Some(outer));
-            assert_eq!(gains.velocity_limit, 500_000);
-            assert_eq!(gains.velocity_filter_hz, 11);
-            assert_eq!(gains.torque_filter_hz, 13);
-            assert_eq!(gains.position_filter_hz, 17);
-            assert_eq!(gains.flux_filter_hz, 19);
-        });
+        assert_eq!(gains.inner, inner);
+        assert_eq!(gains.outer, Some(outer));
+        assert_eq!(gains.velocity_limit, 500_000);
+        assert_eq!(gains.velocity_filter_hz, 11);
+        assert_eq!(gains.torque_filter_hz, 13);
+        assert_eq!(gains.position_filter_hz, 17);
+        assert_eq!(gains.flux_filter_hz, 19);
     }
 
     #[test]
@@ -2756,7 +2752,7 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
+    #[fixture_test]
     fn stage_b_constructor_seeds_the_admitted_plan_once() {
         use crate::commission_dispatch::stage_b::preflight_stage_b_request;
         use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
@@ -2862,7 +2858,7 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
+    #[fixture_test]
     fn breakaway_safety_constructor_rejects_velocity_envelope_overflow() {
         use crate::autotune::TmcMechanicalRpm;
         use crate::commissioning::outer::velocity::breakaway_campaign::{
@@ -3006,7 +3002,7 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
+    #[fixture_test]
     fn breakaway_command_enters_the_campaign_and_reports_its_torque_limit() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
         use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
@@ -3064,73 +3060,73 @@ mod tests {
     /// `StepResult::BreakawayCampaignEvent`: both the canonical detail record
     /// and the lightweight marker land on the `MockBackend`.
     #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn a_live_campaign_emits_its_probe_plan_onto_the_ftrc_trace_stream() {
+    #[fixture_test]
+    async fn a_live_campaign_emits_its_probe_plan_onto_the_ftrc_trace_stream() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
         use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 
-        pollster::block_on(async {
-            let params = sample_outer_params();
-            let request = VelocitySweepRequest {
-                requested_velocity_mrev_s: params.requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
-                requested_velocity_source: params.requested_velocity_source,
-                max_stroke_travel_mrev: params.max_stroke_travel_mrev,
-                settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
-                negative_position_headroom_mrev: params.negative_position_headroom_mrev,
-                positive_position_headroom_mrev: params.positive_position_headroom_mrev,
-                max_duration_ms: params.max_duration_ms,
-            };
-            let (campaign, _workflow) =
-                plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
-                    .expect("a valid host request must admit a breakaway campaign");
-            let mut engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
-                0,
-                tmc_state(),
-                params,
-                sample_entry_snapshot(),
-                campaign,
-            )
-            .expect("valid breakaway safety configuration");
-            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let params = sample_outer_params();
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: params.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: params.requested_velocity_source,
+            max_stroke_travel_mrev: params.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: params.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: params.positive_position_headroom_mrev,
+            max_duration_ms: params.max_duration_ms,
+        };
+        let (campaign, _workflow) =
+            plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
+                .expect("a valid host request must admit a breakaway campaign");
+        let mut engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+            0,
+            tmc_state(),
+            params,
+            sample_entry_snapshot(),
+            campaign,
+        )
+        .expect("valid breakaway safety configuration");
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
 
-            // The probe plan freezes and is reported before its first stroke
-            // (`PlannedProbe -> SetupSafety` touches no SPI register), so this
-            // one tick is enough to reach it.
-            let result = engine.step(&mut backend).await;
-            assert!(
-                matches!(
-                    result,
-                    StepResult::BreakawayCampaignEvent(
-                        crate::commissioning::types::BreakawayCampaignEvent::ProbePlanned(_)
-                    )
-                ),
-                "expected the probe-planned event on the first substantive tick, got {result:?}"
-            );
+        // The probe plan freezes and is reported before its first stroke
+        // (`PlannedProbe -> SetupSafety` touches no SPI register), so this
+        // one tick is enough to reach it.
+        let result = engine.step(&mut backend).await;
+        assert!(
+            matches!(
+                result,
+                StepResult::BreakawayCampaignEvent(
+                    crate::commissioning::types::BreakawayCampaignEvent::ProbePlanned(_)
+                )
+            ),
+            "expected the probe-planned event on the first substantive tick, got {result:?}"
+        );
 
-            assert!(
-                backend
-                    .trace_events
-                    .iter()
-                    .any(|event| event.event_id == EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN),
-                "no EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN marker reached the FTRC trace stream: {:?}",
-                backend.trace_events
-            );
-            let detail = backend
-                .velocity_sweep_trace_records
+        assert!(
+            backend
+                .trace_events
                 .iter()
-                .find(|record| record.as_bytes().first() == Some(&0))
-                .expect("no tag-0 (breakaway probe-planned) canonical record reached the FTRC trace stream");
-            // Canonical record layout: tag(1) + run_sequence(4) + evidence_sequence(2)
-            // + plan_digest(8) + max_observations(1) + search_count(1)
-            // + p_start_raw(2) + p_top_raw(2) + workflow_digest(8)
-            // + target_velocity_rpm(4) + hard_torque_limit(2)
-            // + usable_torque_limit(2) + pwm_hz(4)
-            // + encoder_counts_per_rev(4) + motion_threshold_counts(4)
-            // + max_capture_interval_us(4) = 53 bytes; see
-            // `breakaway_trace_reporting::encode_probe_planned` and its own golden test.
-            assert_eq!(detail.as_bytes().len(), 53);
-        });
+                .any(|event| event.event_id == EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN),
+            "no EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN marker reached the FTRC trace stream: {:?}",
+            backend.trace_events
+        );
+        let detail = backend
+            .velocity_sweep_trace_records
+            .iter()
+            .find(|record| record.as_bytes().first() == Some(&0))
+            .expect(
+                "no tag-0 (breakaway probe-planned) canonical record reached the FTRC trace stream",
+            );
+        // Canonical record layout: tag(1) + run_sequence(4) + evidence_sequence(2)
+        // + plan_digest(8) + max_observations(1) + search_count(1)
+        // + p_start_raw(2) + p_top_raw(2) + workflow_digest(8)
+        // + target_velocity_rpm(4) + hard_torque_limit(2)
+        // + usable_torque_limit(2) + pwm_hz(4)
+        // + encoder_counts_per_rev(4) + motion_threshold_counts(4)
+        // + max_capture_interval_us(4) = 53 bytes; see
+        // `breakaway_trace_reporting::encode_probe_planned` and its own golden test.
+        assert_eq!(detail.as_bytes().len(), 53);
     }
 
     #[test]
@@ -3563,61 +3559,54 @@ mod tests {
         );
     }
 
-    #[test]
-    fn step_restores_safe_state_when_shutdown_requested_mid_inner() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut engine = CommissioningEngine::new_commission(
-                0,
-                crate::autotune::CommissionProfile::Balanced,
-            );
-            if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
-                let mut data = inner::ElectricalIdData::new(512);
-                data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
-                *phase = InnerPhase::ElectricalId {
-                    state: inner::ElectricalIdState::DelaySample {
-                        capture: inner::DelayCaptureState {
-                            baseline: 0,
-                            origin_us: 1_000,
-                            next_sample_us: 1_160,
-                            offsets: crate::autotune::DelayTimestampOffsets::new(),
-                            timing: capture_timing::CaptureTiming::new(
-                                160,
-                                capture_timing::TimingEnvelope::DELAY,
-                            ),
-                        },
+    #[fixture_test]
+    async fn step_restores_safe_state_when_shutdown_requested_mid_inner() {
+        use core::sync::atomic::Ordering;
+        let mut engine =
+            CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced);
+        if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
+            let mut data = inner::ElectricalIdData::new(512);
+            data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
+            *phase = InnerPhase::ElectricalId {
+                state: inner::ElectricalIdState::DelaySample {
+                    capture: inner::DelayCaptureState {
+                        baseline: 0,
+                        origin_us: 1_000,
+                        next_sample_us: 1_160,
+                        offsets: crate::autotune::DelayTimestampOffsets::new(),
+                        timing: capture_timing::CaptureTiming::new(
+                            160,
+                            capture_timing::TimingEnvelope::DELAY,
+                        ),
                     },
-                    data,
-                };
-            }
-            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
-            backend.shutdown_requested = true;
-            backend.enable_pin = true;
-            tmc_state().motor_armed.store(true, Ordering::Relaxed);
+                },
+                data,
+            };
+        }
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        backend.shutdown_requested = true;
+        backend.enable_pin = true;
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
 
-            let result = engine.step(&mut backend).await;
+        let result = engine.step(&mut backend).await;
 
-            assert!(matches!(
-                result,
-                crate::commissioning::types::StepResult::InnerFailed(
-                    crate::autotune::CommissionError::Shutdown,
-                )
-            ));
-            assert!(!backend.enable_pin, "shutdown abort must lower enable pin");
-            assert!(
-                !tmc_state().motor_armed.load(Ordering::Relaxed),
-                "shutdown abort must gate step processing before reporting failure"
-            );
-            let diagnostics = engine.take_diagnostics();
-            let delay = diagnostics
-                .iter()
-                .find(|event| event.code == 38)
-                .expect("shutdown timing diagnostic");
-            assert_eq!((delay.value1 >> 24) & 0x03, 2);
-        });
+        assert!(matches!(
+            result,
+            crate::commissioning::types::StepResult::InnerFailed(
+                crate::autotune::CommissionError::Shutdown,
+            )
+        ));
+        assert!(!backend.enable_pin, "shutdown abort must lower enable pin");
+        assert!(
+            !tmc_state().motor_armed.load(Ordering::Relaxed),
+            "shutdown abort must gate step processing before reporting failure"
+        );
+        let diagnostics = engine.take_diagnostics();
+        let delay = diagnostics
+            .iter()
+            .find(|event| event.code == 38)
+            .expect("shutdown timing diagnostic");
+        assert_eq!((delay.value1 >> 24) & 0x03, 2);
     }
 
     #[test]

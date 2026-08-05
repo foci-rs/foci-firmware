@@ -108,8 +108,9 @@ pub fn reset_all_stepper_channels() {
 mod tests {
     use super::*;
     use core::sync::atomic::Ordering::Relaxed;
+    use foci_firmware_macros::fixture_test;
 
-    #[test]
+    #[fixture_test]
     fn stepper_channels_have_independent_positions() {
         let channel0 = stepper_channel(0).unwrap();
         let channel1 = stepper_channel(1).unwrap();

@@ -1462,6 +1462,7 @@ mod tests {
     use crate::state::tmc::{reset_all_tmc_channels, tmc_channel0};
     use crate::tmc::{TmcRequestKind, set_auto_calibrate_on_enable_allowed};
     use crate::tmc_control::actions::{BoardAction, ShutdownReason, StepperAction};
+    use foci_firmware_macros::fixture_test;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct MockSpiError;
@@ -1531,7 +1532,7 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
+    #[fixture_test]
     fn trace_request_future_size_stays_bounded() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
         use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
@@ -1776,6 +1777,13 @@ mod tests {
             let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
                 .lock()
                 .await;
+            // The mutex only serializes access; it does not reset state. Without
+            // this, whichever test last configured (or left dirty) channel 0's
+            // atomics -- e.g. pi_representation_established -- leaks into
+            // whichever test acquires the guard next, in whatever order the
+            // parallel test scheduler picks that run.
+            crate::state::tmc::reset_all_tmc_channels();
+            crate::state::stepper::reset_all_stepper_channels();
             future.await;
         });
     }

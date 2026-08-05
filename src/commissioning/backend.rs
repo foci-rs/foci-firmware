@@ -755,6 +755,7 @@ mod tests {
     };
 
     use embedded_hal_async::spi::Operation;
+    use foci_firmware_macros::fixture_test;
     use foci_tmc4671::registers::PID_POSITION_TARGET;
     use std::sync::Mutex;
     use std::vec::Vec;
@@ -915,7 +916,7 @@ mod tests {
         >();
     }
 
-    #[test]
+    #[fixture_test]
     fn shared_backend_delegates_access_traits() {
         let _guard = TEST_LOCK
             .lock()

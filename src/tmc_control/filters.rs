@@ -395,6 +395,7 @@ async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foci_firmware_macros::fixture_test;
     use foci_tmc4671::spi::Tmc4671Spi;
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -450,110 +451,100 @@ mod tests {
         }
     }
 
-    #[test]
-    fn apply_stored_filters_via_backend_writes_enabled_filters() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state()
-                .velocity_filter_hz
-                .store(Some(100), Ordering::Relaxed);
-            tmc_state()
-                .torque_filter_hz
-                .store(Some(0), Ordering::Relaxed);
-            tmc_state()
-                .position_filter_hz
-                .store(Some(0), Ordering::Relaxed);
-            tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
+    #[fixture_test]
+    async fn apply_stored_filters_via_backend_writes_enabled_filters() {
+        use core::sync::atomic::Ordering;
+        tmc_state()
+            .velocity_filter_hz
+            .store(Some(100), Ordering::Relaxed);
+        tmc_state()
+            .torque_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .position_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
 
-            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
-            apply_stored_filters_via_backend(&mut backend, tmc_state(), 4095)
-                .await
-                .expect("filter writes should succeed");
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        apply_stored_filters_via_backend(&mut backend, tmc_state(), 4095)
+            .await
+            .expect("filter writes should succeed");
 
-            use crate::commission_dispatch::test_support::SpiOp;
-            use foci_tmc4671::registers::*;
-            let writes: std::vec::Vec<(u8, u32)> = backend
-                .spi_log
-                .iter()
-                .filter_map(|op| {
-                    if let SpiOp::Write(addr, val) = op {
-                        Some((*addr, *val))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+        use crate::commission_dispatch::test_support::SpiOp;
+        use foci_tmc4671::registers::*;
+        let writes: std::vec::Vec<(u8, u32)> = backend
+            .spi_log
+            .iter()
+            .filter_map(|op| {
+                if let SpiOp::Write(addr, val) = op {
+                    Some((*addr, *val))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-            let has_sub_write = |sub: foci_tmc4671::registers::SubRegister, data_val: u32| {
-                writes.windows(2).any(|pair| {
-                    pair[0].0 == sub.addr.addr()
-                        && pair[0].1 == sub.sub_addr as u32
-                        && pair[1].0 == sub.data.addr()
-                        && pair[1].1 == data_val
-                })
-            };
+        let has_sub_write = |sub: foci_tmc4671::registers::SubRegister, data_val: u32| {
+            writes.windows(2).any(|pair| {
+                pair[0].0 == sub.addr.addr()
+                    && pair[0].1 == sub.sub_addr as u32
+                    && pair[1].0 == sub.data.addr()
+                    && pair[1].1 == data_val
+            })
+        };
 
-            assert!(
-                has_sub_write(CONFIG_BIQUAD_V_ENABLE, 1),
-                "velocity filter enable=1 write pair not found"
-            );
-            assert!(
-                !has_sub_write(CONFIG_BIQUAD_T_ENABLE, 1),
-                "torque filter should not have been enabled"
-            );
-            assert!(
-                !has_sub_write(CONFIG_BIQUAD_X_ENABLE, 1),
-                "position filter should not have been enabled"
-            );
-            assert!(
-                !has_sub_write(CONFIG_BIQUAD_F_ENABLE, 1),
-                "flux filter should not have been enabled"
-            );
+        assert!(
+            has_sub_write(CONFIG_BIQUAD_V_ENABLE, 1),
+            "velocity filter enable=1 write pair not found"
+        );
+        assert!(
+            !has_sub_write(CONFIG_BIQUAD_T_ENABLE, 1),
+            "torque filter should not have been enabled"
+        );
+        assert!(
+            !has_sub_write(CONFIG_BIQUAD_X_ENABLE, 1),
+            "position filter should not have been enabled"
+        );
+        assert!(
+            !has_sub_write(CONFIG_BIQUAD_F_ENABLE, 1),
+            "flux filter should not have been enabled"
+        );
 
-            tmc_state()
-                .velocity_filter_hz
-                .store(None, Ordering::Relaxed);
-        });
+        tmc_state()
+            .velocity_filter_hz
+            .store(None, Ordering::Relaxed);
     }
 
-    #[test]
-    fn apply_stored_filters_reports_raw_spi_write_failure() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state()
-                .velocity_filter_hz
-                .store(Some(100), Ordering::Relaxed);
-            tmc_state()
-                .torque_filter_hz
-                .store(Some(0), Ordering::Relaxed);
-            tmc_state()
-                .position_filter_hz
-                .store(Some(0), Ordering::Relaxed);
-            tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
+    #[fixture_test]
+    async fn apply_stored_filters_reports_raw_spi_write_failure() {
+        use core::sync::atomic::Ordering;
+        tmc_state()
+            .velocity_filter_hz
+            .store(Some(100), Ordering::Relaxed);
+        tmc_state()
+            .torque_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .position_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
 
-            let raw_spi = MockRawSpi {
-                fail_write_after: Some(1),
-                ..MockRawSpi::default()
-            };
-            let mut tmc = Tmc4671Spi::new(raw_spi);
+        let raw_spi = MockRawSpi {
+            fail_write_after: Some(1),
+            ..MockRawSpi::default()
+        };
+        let mut tmc = Tmc4671Spi::new(raw_spi);
 
-            let result = apply_stored_filters(&mut tmc, tmc_state(), 4095).await;
+        let result = apply_stored_filters(&mut tmc, tmc_state(), 4095).await;
 
-            assert!(
-                result.is_err(),
-                "raw stored-filter restore should report SPI write failures"
-            );
+        assert!(
+            result.is_err(),
+            "raw stored-filter restore should report SPI write failures"
+        );
 
-            tmc_state()
-                .velocity_filter_hz
-                .store(None, Ordering::Relaxed);
-        });
+        tmc_state()
+            .velocity_filter_hz
+            .store(None, Ordering::Relaxed);
     }
 
     #[test]

@@ -766,6 +766,11 @@ fn commissioning_runtime_config() -> TmcControlConfig {
 #[test]
 fn scheduled_step_preserves_explicit_engine_deadline_without_consuming_engine() {
     pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
         let tmc = crate::state::tmc::tmc_channel0();
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -934,6 +939,11 @@ fn scheduled_step_keeps_delay_capture_inside_one_deadline_loop() {
 #[test]
 fn scheduled_dispatch_preserves_wait_action() {
     pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
         let tmc = crate::state::tmc::tmc_channel0();
         let stepper = crate::state::stepper::stepper_channel0();
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -971,6 +981,9 @@ fn scheduled_dispatch_preserves_wait_action() {
 
 #[test]
 fn scheduled_classification_is_synchronous_for_at_action() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    crate::state::tmc::reset_all_tmc_channels();
+    crate::state::stepper::reset_all_stepper_channels();
     let tmc = crate::state::tmc::tmc_channel0();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
@@ -994,6 +1007,11 @@ fn scheduled_classification_is_synchronous_for_at_action() {
 #[test]
 fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
     pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
         let tmc = crate::state::tmc::tmc_channel0();
         let stepper = crate::state::stepper::stepper_channel0();
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -1058,6 +1076,11 @@ fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
 #[test]
 fn scheduled_dispatch_preserves_terminal_reply_and_actions() {
     pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
         let tmc = crate::state::tmc::tmc_channel0();
         let stepper = crate::state::stepper::stepper_channel0();
         let mut runtime = TmcControlRuntime::new_for_channel(0);

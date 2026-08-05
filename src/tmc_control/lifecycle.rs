@@ -213,6 +213,7 @@ mod tests {
     #[cfg(feature = "trace-velocity-sweep")]
     use crate::commission_dispatch::test_support::breakaway_campaign_engine;
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+    use foci_firmware_macros::fixture_test;
 
     fn dispatch_state<'a>(
         calibrated: &'a mut bool,
@@ -252,369 +253,321 @@ mod tests {
         arm_motor_for_steps(&mut state);
     }
 
-    #[test]
-    fn arm_then_disarm_returns_to_baseline() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut backend = MockBackend::new();
-            let (_, mut en, mut gains) = fresh_state_locals();
-            let mut cal = true;
-            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-            tmc_state()
-                .motor_sentinel
-                .store(0x0002_0032, Ordering::Relaxed);
-            let _ = backend
-                .write_register(
-                    foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
-                    0x0002_0032,
-                )
-                .await;
-            arm_motor_electrical(&mut backend, &mut state)
-                .await
-                .expect("sentinel should match");
-            arm_motor_for_steps(&mut state);
-            assert!(backend.enable_pin);
-            assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
-            disarm_motor(&mut backend, &mut state).await;
-            assert!(!backend.enable_pin);
-            assert!(!*state.calibrated);
-            assert!(!*state.motor_enabled);
-            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-            tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
-        });
+    #[fixture_test]
+    async fn arm_then_disarm_returns_to_baseline() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        arm_motor_electrical(&mut backend, &mut state)
+            .await
+            .expect("sentinel should match");
+        arm_motor_for_steps(&mut state);
+        assert!(backend.enable_pin);
+        assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
+        disarm_motor(&mut backend, &mut state).await;
+        assert!(!backend.enable_pin);
+        assert!(!*state.calibrated);
+        assert!(!*state.motor_enabled);
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
     }
 
-    #[test]
-    fn arm_motor_success_path() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut backend = MockBackend::new();
-            let (_, mut en, mut gains) = fresh_state_locals();
-            let mut cal = true;
-            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-            tmc_state()
-                .motor_sentinel
-                .store(0x0002_0032, Ordering::Relaxed);
-            let _ = backend
-                .write_register(
-                    foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
-                    0x0002_0032,
-                )
-                .await;
-            arm_motor_electrical(&mut backend, &mut state)
-                .await
-                .expect("sentinel should match");
-            assert!(backend.enable_pin);
-            assert!(*state.motor_enabled);
-            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-            arm_motor_for_steps(&mut state);
-            assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
-            tmc_state().motor_armed.store(false, Ordering::Relaxed);
-            tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
-        });
+    #[fixture_test]
+    async fn arm_motor_success_path() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        arm_motor_electrical(&mut backend, &mut state)
+            .await
+            .expect("sentinel should match");
+        assert!(backend.enable_pin);
+        assert!(*state.motor_enabled);
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        arm_motor_for_steps(&mut state);
+        assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
+        tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
     }
 
-    #[test]
-    fn arm_motor_for_voltage_vectors_keeps_stepper_disarmed() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut backend = MockBackend::new();
-            let (_, mut en, mut gains) = fresh_state_locals();
-            let mut cal = true;
-            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-            tmc_state()
-                .motor_sentinel
-                .store(0x0002_0032, Ordering::Relaxed);
-            let _ = backend
-                .write_register(
-                    foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
-                    0x0002_0032,
-                )
-                .await;
-
-            arm_motor_for_voltage_vectors(&mut backend, &mut state)
-                .await
-                .expect("sentinel should match");
-
-            assert!(backend.enable_pin);
-            assert!(*state.motor_enabled);
-            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-
-            disarm_motor(&mut backend, &mut state).await;
-            tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
-        });
-    }
-
-    #[test]
-    fn arm_motor_electrical_refuses_when_sentinel_mismatches() {
-        pollster::block_on(async {
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut backend = MockBackend::new();
-            tmc_state()
-                .motor_sentinel
-                .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
-            backend.read_override =
-                Some((foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr(), 0));
-            let (_, mut en, mut gains) = fresh_state_locals();
-            let mut cal = true;
-            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-            let result = arm_motor_electrical(&mut backend, &mut state).await;
-            assert_eq!(
-                result,
-                Err(crate::autotune::CommissionError::ChipResetDetected)
-            );
-            assert!(
-                !backend.enable_pin,
-                "enable pin must remain low on mismatch"
-            );
-            tmc_state()
-                .motor_sentinel
-                .store(0, core::sync::atomic::Ordering::Relaxed);
-        });
-    }
-
-    #[test]
-    fn arm_motor_electrical_refuses_when_pi_representation_mismatches() {
-        pollster::block_on(async {
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut backend = MockBackend::new();
-            tmc_state()
-                .motor_sentinel
-                .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
-            tmc_state().mark_pi_representation_established();
-            let _ = backend
-                .write_register(
-                    foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
-                    0x0002_0032,
-                )
-                .await;
-            backend.read_override = Some((
-                foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
-                    .data
-                    .addr(),
-                0,
-            ));
-            let (_, mut en, mut gains) = fresh_state_locals();
-            let mut cal = true;
-            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-
-            let result = arm_motor_electrical(&mut backend, &mut state).await;
-
-            assert_eq!(
-                result,
-                Err(crate::autotune::CommissionError::ChipResetDetected)
-            );
-            assert!(!backend.enable_pin);
-            tmc_state()
-                .motor_sentinel
-                .store(0, core::sync::atomic::Ordering::Relaxed);
-            tmc_state().clear_pi_representation_established();
-        });
-    }
-
-    #[test]
-    fn arm_motor_electrical_succeeds_when_sentinel_matches() {
-        pollster::block_on(async {
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut backend = MockBackend::new();
-            tmc_state()
-                .motor_sentinel
-                .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
-            let _ = backend
-                .write_register(
-                    foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
-                    0x0002_0032,
-                )
-                .await;
-            let (_, mut en, mut gains) = fresh_state_locals();
-            let mut cal = true;
-            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-            let result = arm_motor_electrical(&mut backend, &mut state).await;
-            assert_eq!(result, Ok(()));
-            assert!(backend.enable_pin);
-            tmc_state()
-                .motor_sentinel
-                .store(0, core::sync::atomic::Ordering::Relaxed);
-        });
-    }
-
-    #[test]
-    fn arm_motor_electrical_sets_hold_target_before_enable_in_position_mode() {
-        pollster::block_on(async {
-            use foci_tmc4671::registers::{
-                MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, PID_POSITION_ACTUAL,
-                PID_POSITION_TARGET, STATUS_FLAGS,
-            };
-
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut backend = MockBackend::new();
-            tmc_state()
-                .motor_sentinel
-                .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
-            let _ = backend
-                .write_register(MOTOR_TYPE_N_POLE_PAIRS, 0x0002_0032)
-                .await;
-            let _ = backend
-                .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
-                .await;
-            let _ = backend.write_register(PID_POSITION_TARGET, 0).await;
-            let _ = backend.write_register(PID_POSITION_ACTUAL, 11).await;
-            backend.spi_log.clear();
-
-            let (_, mut en, mut gains) = fresh_state_locals();
-            let mut cal = true;
-            let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-            let result = arm_motor_electrical(&mut backend, &mut state).await;
-
-            assert_eq!(result, Ok(()));
-            let enable_index = backend
-                .spi_log
-                .iter()
-                .position(|op| {
-                    matches!(
-                        op,
-                        crate::commission_dispatch::test_support::SpiOp::EnablePin(true)
-                    )
-                })
-                .expect("arm should assert enable");
-            let target_rewrite_index = backend
-                .spi_log
-                .iter()
-                .position(|op| {
-                    matches!(
-                        op,
-                        crate::commission_dispatch::test_support::SpiOp::Write(addr, 11)
-                            if *addr == PID_POSITION_ACTUAL.addr()
-                    )
-                })
-                .expect("arm should rewrite PID_POSITION_ACTUAL to observed actual");
-            let status_clear_index = backend
-                .spi_log
-                .iter()
-                .position(|op| {
-                    matches!(
-                        op,
-                        crate::commission_dispatch::test_support::SpiOp::Write(addr, 0)
-                            if *addr == STATUS_FLAGS.addr()
-                    )
-                })
-                .expect("arm should clear STATUS_FLAGS");
-            assert!(target_rewrite_index < enable_index);
-            assert!(status_clear_index < enable_index);
-            tmc_state()
-                .motor_sentinel
-                .store(0, core::sync::atomic::Ordering::Relaxed);
-        });
-    }
-
-    #[test]
-    fn shutdown_safe_state_restores_phase_advance_and_disarms() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
-
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
-            runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-            let mut backend = MockBackend::new();
-            {
-                let state = runtime.dispatch_state(
-                    crate::state::tmc::tmc_channel0(),
-                    crate::state::stepper::stepper_channel0(),
-                );
-                *state.calibrated = true;
-                *state.motor_enabled = true;
-            }
-            tmc_state().motor_armed.store(true, Ordering::Relaxed);
-
-            let complete = apply_shutdown_safe_state(
-                &mut runtime,
-                &mut backend,
-                crate::state::tmc::tmc_channel0(),
-                crate::state::stepper::stepper_channel0(),
+    #[fixture_test]
+    async fn arm_motor_for_voltage_vectors_keeps_stepper_disarmed() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
             )
             .await;
 
-            assert!(complete);
-            assert!(!runtime.phase_advance_active_for_test());
-            assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
-            assert_eq!(
-                backend
-                    .registers
-                    .get(&foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
-                Some(&0x1111_2222)
-            );
-            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-            assert!(!runtime.is_calibrated());
-            assert!(!runtime.is_motor_enabled());
-        });
+        arm_motor_for_voltage_vectors(&mut backend, &mut state)
+            .await
+            .expect("sentinel should match");
+
+        assert!(backend.enable_pin);
+        assert!(*state.motor_enabled);
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+
+        disarm_motor(&mut backend, &mut state).await;
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
     }
 
-    #[test]
-    fn shutdown_safe_state_reports_incomplete_when_phase_restore_fails() {
-        pollster::block_on(async {
-            use core::sync::atomic::Ordering;
+    #[fixture_test]
+    async fn arm_motor_electrical_refuses_when_sentinel_mismatches() {
+        let mut backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        backend.read_override = Some((foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr(), 0));
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::ChipResetDetected)
+        );
+        assert!(
+            !backend.enable_pin,
+            "enable pin must remain low on mismatch"
+        );
+        tmc_state()
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+    }
 
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
-            runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-            let mut backend = MockBackend::new();
-            backend.fail_on_write =
-                Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-            {
-                let state = runtime.dispatch_state(
-                    crate::state::tmc::tmc_channel0(),
-                    crate::state::stepper::stepper_channel0(),
-                );
-                *state.calibrated = true;
-                *state.motor_enabled = true;
-            }
-            tmc_state().motor_armed.store(true, Ordering::Relaxed);
-
-            let complete = apply_shutdown_safe_state(
-                &mut runtime,
-                &mut backend,
-                crate::state::tmc::tmc_channel0(),
-                crate::state::stepper::stepper_channel0(),
+    #[fixture_test]
+    async fn arm_motor_electrical_refuses_when_pi_representation_mismatches() {
+        let mut backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        tmc_state().mark_pi_representation_established();
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
             )
             .await;
+        backend.read_override = Some((
+            foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+                .data
+                .addr(),
+            0,
+        ));
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
 
-            assert!(!complete);
-            assert!(runtime.phase_advance_active_for_test());
-            assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
-            assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-            assert!(!runtime.is_calibrated());
-            assert!(!runtime.is_motor_enabled());
-        });
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::ChipResetDetected)
+        );
+        assert!(!backend.enable_pin);
+        tmc_state()
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+        tmc_state().clear_pi_representation_established();
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_succeeds_when_sentinel_matches() {
+        let mut backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+        assert_eq!(result, Ok(()));
+        assert!(backend.enable_pin);
+        tmc_state()
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_sets_hold_target_before_enable_in_position_mode() {
+        use foci_tmc4671::registers::{
+            MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS, PID_POSITION_ACTUAL,
+            PID_POSITION_TARGET, STATUS_FLAGS,
+        };
+
+        let mut backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        let _ = backend
+            .write_register(MOTOR_TYPE_N_POLE_PAIRS, 0x0002_0032)
+            .await;
+        let _ = backend
+            .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+            .await;
+        let _ = backend.write_register(PID_POSITION_TARGET, 0).await;
+        let _ = backend.write_register(PID_POSITION_ACTUAL, 11).await;
+        backend.spi_log.clear();
+
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+        assert_eq!(result, Ok(()));
+        let enable_index = backend
+            .spi_log
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    crate::commission_dispatch::test_support::SpiOp::EnablePin(true)
+                )
+            })
+            .expect("arm should assert enable");
+        let target_rewrite_index = backend
+            .spi_log
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    crate::commission_dispatch::test_support::SpiOp::Write(addr, 11)
+                        if *addr == PID_POSITION_ACTUAL.addr()
+                )
+            })
+            .expect("arm should rewrite PID_POSITION_ACTUAL to observed actual");
+        let status_clear_index = backend
+            .spi_log
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    crate::commission_dispatch::test_support::SpiOp::Write(addr, 0)
+                        if *addr == STATUS_FLAGS.addr()
+                )
+            })
+            .expect("arm should clear STATUS_FLAGS");
+        assert!(target_rewrite_index < enable_index);
+        assert!(status_clear_index < enable_index);
+        tmc_state()
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn shutdown_safe_state_restores_phase_advance_and_disarms() {
+        use core::sync::atomic::Ordering;
+
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut backend = MockBackend::new();
+        {
+            let state = runtime.dispatch_state(
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+            );
+            *state.calibrated = true;
+            *state.motor_enabled = true;
+        }
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
+
+        let complete = apply_shutdown_safe_state(
+            &mut runtime,
+            &mut backend,
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+        )
+        .await;
+
+        assert!(complete);
+        assert!(!runtime.phase_advance_active_for_test());
+        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x1111_2222);
+        assert_eq!(
+            backend
+                .registers
+                .get(&foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+            Some(&0x1111_2222)
+        );
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        assert!(!runtime.is_calibrated());
+        assert!(!runtime.is_motor_enabled());
+    }
+
+    #[fixture_test]
+    async fn shutdown_safe_state_reports_incomplete_when_phase_restore_fails() {
+        use core::sync::atomic::Ordering;
+
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut backend = MockBackend::new();
+        backend.fail_on_write =
+            Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+        {
+            let state = runtime.dispatch_state(
+                crate::state::tmc::tmc_channel0(),
+                crate::state::stepper::stepper_channel0(),
+            );
+            *state.calibrated = true;
+            *state.motor_enabled = true;
+        }
+        tmc_state().motor_armed.store(true, Ordering::Relaxed);
+
+        let complete = apply_shutdown_safe_state(
+            &mut runtime,
+            &mut backend,
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+        )
+        .await;
+
+        assert!(!complete);
+        assert!(runtime.phase_advance_active_for_test());
+        assert_eq!(runtime.phase_advance_last_register_for_test(), 0x3333_4444);
+        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+        assert!(!runtime.is_calibrated());
+        assert!(!runtime.is_motor_enabled());
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
+    #[fixture_test]
     fn shutdown_breakaway_cancellation_completes_after_safe_state() {
         use core::sync::atomic::Ordering;
 
-        let _guard =
-            pollster::block_on(crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.lock());
         let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
         runtime.set_commission_engine(breakaway_campaign_engine());
         runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
@@ -668,40 +621,35 @@ mod tests {
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn shutdown_breakaway_cancellation_restore_failure_stays_active() {
-        pollster::block_on(async {
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
-            runtime.set_commission_engine(breakaway_campaign_engine());
-            runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-            let mut backend = MockBackend::new();
-            backend.fail_on_write =
-                Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-            backend.enable_pin = true;
-            crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
-            crate::diagnostic::begin_breakaway_campaign();
+    #[fixture_test]
+    async fn shutdown_breakaway_cancellation_restore_failure_stays_active() {
+        let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+        runtime.set_commission_engine(breakaway_campaign_engine());
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut backend = MockBackend::new();
+        backend.fail_on_write =
+            Some(foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
+        backend.enable_pin = true;
+        crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+        crate::diagnostic::begin_breakaway_campaign();
 
-            let complete = apply_shutdown_safe_state(
-                &mut runtime,
-                &mut backend,
-                crate::state::tmc::tmc_channel0(),
-                crate::state::stepper::stepper_channel0(),
-            )
-            .await;
+        let complete = apply_shutdown_safe_state(
+            &mut runtime,
+            &mut backend,
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+        )
+        .await;
 
-            assert!(!complete);
-            assert!(!runtime.is_commission_active());
-            assert!(!backend.enable_pin, "failed restoration must still disarm");
-            assert_eq!(
-                crate::diagnostic::current_breakaway_breadcrumb_for_test(),
-                Some(crate::diagnostic::BreakawayBreadcrumb {
-                    checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
-                    interrupted: true,
-                })
-            );
-        });
+        assert!(!complete);
+        assert!(!runtime.is_commission_active());
+        assert!(!backend.enable_pin, "failed restoration must still disarm");
+        assert_eq!(
+            crate::diagnostic::current_breakaway_breadcrumb_for_test(),
+            Some(crate::diagnostic::BreakawayBreadcrumb {
+                checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
+                interrupted: true,
+            })
+        );
     }
 }

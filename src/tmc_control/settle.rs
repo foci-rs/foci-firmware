@@ -87,6 +87,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foci_firmware_macros::fixture_test;
     use foci_tmc4671::spi::Tmc4671Spi;
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -137,54 +138,44 @@ mod tests {
         }
     }
 
-    #[test]
-    fn settle_hold_uses_configured_physical_step_width() {
-        pollster::block_on(async {
-            use foci_tmc4671::registers::PID_POSITION_ACTUAL;
+    #[fixture_test]
+    async fn settle_hold_uses_configured_physical_step_width() {
+        use foci_tmc4671::registers::PID_POSITION_ACTUAL;
 
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state()
-                .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
-                .expect("motion scale should configure");
-            let mut raw_spi = MockRawSpi::default();
-            raw_spi.reads.push_back(0x0000_bb80);
-            raw_spi.reads.push_back(0x0000_bbc0);
-            let mut tmc = Tmc4671Spi::new(raw_spi);
+        tmc_state()
+            .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+            .expect("motion scale should configure");
+        let mut raw_spi = MockRawSpi::default();
+        raw_spi.reads.push_back(0x0000_bb80);
+        raw_spi.reads.push_back(0x0000_bbc0);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
 
-            settle_hold_and_clear_pid_errors(&mut tmc, tmc_state())
-                .await
-                .expect("settle should succeed");
+        settle_hold_and_clear_pid_errors(&mut tmc, tmc_state())
+            .await
+            .expect("settle should succeed");
 
-            let raw_spi = tmc.into_inner();
-            assert!(
-                raw_spi.writes.iter().any(|write| {
-                    write == &[PID_POSITION_ACTUAL.addr() | 0x80, 0x00, 0x00, 0xbb, 0xc0]
-                }),
-                "expected PID_POSITION_ACTUAL to be rewritten with the observed actual"
-            );
+        let raw_spi = tmc.into_inner();
+        assert!(
+            raw_spi.writes.iter().any(|write| {
+                write == &[PID_POSITION_ACTUAL.addr() | 0x80, 0x00, 0x00, 0xbb, 0xc0]
+            }),
+            "expected PID_POSITION_ACTUAL to be rewritten with the observed actual"
+        );
 
-            tmc_state().clear_motion_scale(crate::state::stepper::stepper_channel0());
-        });
+        tmc_state().clear_motion_scale(crate::state::stepper::stepper_channel0());
     }
 
-    #[test]
-    fn settle_hold_rejects_missing_motion_scale() {
-        pollster::block_on(async {
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state().clear_motion_scale(crate::state::stepper::stepper_channel0());
-            let mut tmc = Tmc4671Spi::new(MockRawSpi::default());
+    #[fixture_test]
+    async fn settle_hold_rejects_missing_motion_scale() {
+        tmc_state().clear_motion_scale(crate::state::stepper::stepper_channel0());
+        let mut tmc = Tmc4671Spi::new(MockRawSpi::default());
 
-            let result = settle_hold_and_clear_pid_errors(&mut tmc, tmc_state()).await;
+        let result = settle_hold_and_clear_pid_errors(&mut tmc, tmc_state()).await;
 
-            assert_eq!(result, Err(()));
-            assert!(
-                tmc.into_inner().writes.is_empty(),
-                "missing scale must not substitute or mutate controller state"
-            );
-        });
+        assert_eq!(result, Err(()));
+        assert!(
+            tmc.into_inner().writes.is_empty(),
+            "missing scale must not substitute or mutate controller state"
+        );
     }
 }

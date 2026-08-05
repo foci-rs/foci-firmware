@@ -195,6 +195,7 @@ where
 mod tests {
     use super::*;
     use core::sync::atomic::Ordering;
+    use foci_firmware_macros::fixture_test;
     use foci_tmc4671::spi::Tmc4671Spi;
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -243,138 +244,118 @@ mod tests {
         }
     }
 
-    #[test]
-    fn apply_set_current_writes_single_current_limit_register() {
-        pollster::block_on(async {
-            use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+    #[fixture_test]
+    async fn apply_set_current_writes_single_current_limit_register() {
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state().store_current_limit(
-                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
-                Ordering::Relaxed,
-            );
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
 
-            let raw_spi = MockRawSpi::default();
-            let mut tmc = Tmc4671Spi::new(raw_spi);
-            apply_set_current(&mut tmc, tmc_state(), 1500, 1.155)
-                .await
-                .expect("current write should succeed");
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        apply_set_current(&mut tmc, tmc_state(), 1500, 1.155)
+            .await
+            .expect("current write should succeed");
 
-            assert_eq!(
-                tmc_state().load_current_limit(Ordering::Relaxed).raw(),
-                0x072c
-            );
-            let raw_spi = tmc.into_inner();
-            assert_eq!(raw_spi.writes.len(), 1);
-            assert_eq!(
-                raw_spi.writes[0],
-                [PID_TORQUE_FLUX_LIMITS.addr() | 0x80, 0x00, 0x00, 0x07, 0x2c]
-            );
+        assert_eq!(
+            tmc_state().load_current_limit(Ordering::Relaxed).raw(),
+            0x072c
+        );
+        let raw_spi = tmc.into_inner();
+        assert_eq!(raw_spi.writes.len(), 1);
+        assert_eq!(
+            raw_spi.writes[0],
+            [PID_TORQUE_FLUX_LIMITS.addr() | 0x80, 0x00, 0x00, 0x07, 0x2c]
+        );
 
-            tmc_state().store_current_limit(
-                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
-                Ordering::Relaxed,
-            );
-        });
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
     }
 
-    #[test]
-    fn apply_set_current_rejects_before_write_or_publication() {
-        pollster::block_on(async {
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state().store_current_limit(
-                crate::commission_dispatch::test_support::current_limit(123),
-                Ordering::Relaxed,
-            );
+    #[fixture_test]
+    async fn apply_set_current_rejects_before_write_or_publication() {
+        tmc_state().store_current_limit(
+            crate::commission_dispatch::test_support::current_limit(123),
+            Ordering::Relaxed,
+        );
 
-            let raw_spi = MockRawSpi::default();
-            let mut tmc = Tmc4671Spi::new(raw_spi);
-            let result = apply_set_current(&mut tmc, tmc_state(), u32::MAX, 1.155).await;
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let result = apply_set_current(&mut tmc, tmc_state(), u32::MAX, 1.155).await;
 
-            assert_eq!(
-                result,
-                Err(SetCurrentError::InvalidLimit(
-                    crate::tmc_control::current_limit::CurrentLimitConversionError::OutOfRange,
-                )),
-            );
-            assert_eq!(tmc_state().load_current_limit(Ordering::Relaxed).raw(), 123);
-            assert!(tmc.into_inner().writes.is_empty());
+        assert_eq!(
+            result,
+            Err(SetCurrentError::InvalidLimit(
+                crate::tmc_control::current_limit::CurrentLimitConversionError::OutOfRange,
+            )),
+        );
+        assert_eq!(tmc_state().load_current_limit(Ordering::Relaxed).raw(), 123);
+        assert!(tmc.into_inner().writes.is_empty());
 
-            tmc_state().store_current_limit(
-                foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
-                Ordering::Relaxed,
-            );
-        });
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
     }
 
-    #[test]
-    fn apply_set_voltage_limit_writes_pidout_limit_register() {
-        pollster::block_on(async {
-            use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+    #[fixture_test]
+    async fn apply_set_voltage_limit_writes_pidout_limit_register() {
+        use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
 
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state()
-                .voltage_limit_cfg
-                .store(16_000, Ordering::Relaxed);
+        tmc_state()
+            .voltage_limit_cfg
+            .store(16_000, Ordering::Relaxed);
 
-            let raw_spi = MockRawSpi::default();
-            let mut tmc = Tmc4671Spi::new(raw_spi);
-            apply_set_voltage_limit(&mut tmc, tmc_state(), 32_767)
-                .await
-                .expect("voltage-limit write should succeed");
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        apply_set_voltage_limit(&mut tmc, tmc_state(), 32_767)
+            .await
+            .expect("voltage-limit write should succeed");
 
-            assert_eq!(
-                tmc_state().voltage_limit_cfg.load(Ordering::Relaxed),
-                32_767
-            );
-            let raw_spi = tmc.into_inner();
-            assert_eq!(raw_spi.writes.len(), 1);
-            assert_eq!(
-                raw_spi.writes[0],
-                [PIDOUT_UQ_UD_LIMITS.addr() | 0x80, 0x00, 0x00, 0x7f, 0xff]
-            );
+        assert_eq!(
+            tmc_state().voltage_limit_cfg.load(Ordering::Relaxed),
+            32_767
+        );
+        let raw_spi = tmc.into_inner();
+        assert_eq!(raw_spi.writes.len(), 1);
+        assert_eq!(
+            raw_spi.writes[0],
+            [PIDOUT_UQ_UD_LIMITS.addr() | 0x80, 0x00, 0x00, 0x7f, 0xff]
+        );
 
-            tmc_state()
-                .voltage_limit_cfg
-                .store(16_000, Ordering::Relaxed);
-        });
+        tmc_state()
+            .voltage_limit_cfg
+            .store(16_000, Ordering::Relaxed);
     }
 
-    #[test]
-    fn apply_set_voltage_limit_accepts_raw_chip_minimum() {
-        pollster::block_on(async {
-            use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+    #[fixture_test]
+    async fn apply_set_voltage_limit_accepts_raw_chip_minimum() {
+        use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
 
-            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-                .lock()
-                .await;
-            tmc_state()
-                .voltage_limit_cfg
-                .store(16_000, Ordering::Relaxed);
+        tmc_state()
+            .voltage_limit_cfg
+            .store(16_000, Ordering::Relaxed);
 
-            let raw_spi = MockRawSpi::default();
-            let mut tmc = Tmc4671Spi::new(raw_spi);
-            apply_set_voltage_limit(&mut tmc, tmc_state(), 0)
-                .await
-                .expect("raw minimum voltage-limit write should succeed");
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        apply_set_voltage_limit(&mut tmc, tmc_state(), 0)
+            .await
+            .expect("raw minimum voltage-limit write should succeed");
 
-            assert_eq!(tmc_state().voltage_limit_cfg.load(Ordering::Relaxed), 0);
-            let raw_spi = tmc.into_inner();
-            assert_eq!(raw_spi.writes.len(), 1);
-            assert_eq!(
-                raw_spi.writes[0],
-                [PIDOUT_UQ_UD_LIMITS.addr() | 0x80, 0x00, 0x00, 0x00, 0x00]
-            );
+        assert_eq!(tmc_state().voltage_limit_cfg.load(Ordering::Relaxed), 0);
+        let raw_spi = tmc.into_inner();
+        assert_eq!(raw_spi.writes.len(), 1);
+        assert_eq!(
+            raw_spi.writes[0],
+            [PIDOUT_UQ_UD_LIMITS.addr() | 0x80, 0x00, 0x00, 0x00, 0x00]
+        );
 
-            tmc_state()
-                .voltage_limit_cfg
-                .store(16_000, Ordering::Relaxed);
-        });
+        tmc_state()
+            .voltage_limit_cfg
+            .store(16_000, Ordering::Relaxed);
     }
 }

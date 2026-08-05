@@ -49,7 +49,8 @@ pub fn apply_stepper_post_action_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commission_dispatch::test_support::{SHARED_STATE_MUTEX, fresh_state_locals};
+    use crate::commission_dispatch::test_support::fresh_state_locals;
+    use foci_firmware_macros::fixture_test;
 
     fn dispatch_state<'a>(
         calibrated: &'a mut bool,
@@ -73,10 +74,9 @@ mod tests {
         crate::state::stepper::stepper_channel0()
     }
 
-    #[test]
+    #[fixture_test]
     fn stepper_post_action_zeroes_before_arm_check_directive() {
         use core::sync::atomic::Ordering;
-        let _guard = SHARED_STATE_MUTEX.blocking_lock();
         let (mut cal, _, mut gains) = fresh_state_locals();
         let mut en = true;
         stepper_state().position.store(123, Ordering::Relaxed);
@@ -92,10 +92,9 @@ mod tests {
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
     }
 
-    #[test]
+    #[fixture_test]
     fn stepper_post_action_stop_clears_before_stop_check_directive() {
         use core::sync::atomic::Ordering;
-        let _guard = SHARED_STATE_MUTEX.blocking_lock();
         let (mut cal, mut en, mut gains) = fresh_state_locals();
         tmc_state().motor_armed.store(true, Ordering::Relaxed);
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);

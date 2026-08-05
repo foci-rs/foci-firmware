@@ -533,6 +533,7 @@ mod tests {
     use super::*;
     use core::mem::size_of;
     use core::sync::atomic::Ordering::Relaxed;
+    use foci_firmware_macros::fixture_test;
     use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
     #[test]
@@ -584,7 +585,7 @@ mod tests {
         assert!(state.load_outer_gains(Relaxed).is_err());
     }
 
-    #[test]
+    #[fixture_test]
     fn tmc_channels_have_independent_current_limits() {
         let channel0 = tmc_channel(0).unwrap();
         let channel1 = tmc_channel(1).unwrap();
