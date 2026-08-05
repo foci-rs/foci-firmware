@@ -22,7 +22,31 @@ use crate::commissioning::types::{
 use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0109;
+/// `phi_m_abn` feedback (low byte) with the standard velocity meter (high byte).
+///
+/// Datasheet 4.6.11 offers two velocity algorithms. Meter 1 synchronises
+/// sampling to the PWM carrier, giving a 40 us update but a quantum of one
+/// encoder count per carrier period -- 375 RPM at 25 kHz and 4000 counts/rev.
+/// That put the commissioning target below the `389/2` crossover, where the
+/// velocity loop's error is dominated by the quantisation excursion instead of
+/// by the target, inflating measured peak controller output 3.47x.
+///
+/// Meter 0 differentiates at ~4369.067 Hz for a 229 us update and a 65.5 RPM
+/// quantum, moving the crossover to ~33 RPM -- below the default commissioning
+/// target on any travel and rotation distance. It also removes the reason the
+/// 200 Hz velocity biquad existed, and that filter's ~796 us time constant
+/// dominated loop lag: 229 us total here against roughly 836 us before.
+///
+/// The datasheet pairs meter 0 with the standard PI structure and meter 1 with
+/// the advanced structure this firmware selects (`MODE_PID_TYPE = 1`), warning
+/// that the loop "might tend to be unstable due to non-matched sampling". That
+/// pairing is untested rather than prohibited, and the alternatives were worse:
+/// shortening `MOVING_STROKE_US` cannot reach the crossover at default travel
+/// (it needs a stroke below the 256-sample analysis tail), and adopting the
+/// standard PI structure would invalidate the advanced-PI decay constant
+/// `tau = 65536 / (I_raw * f_pwm)` that the I-rung seeding depends on.
+/// Closed-loop entry's stability and runaway thresholds are the gate.
+const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0009;
 // phi_m_abn selects the mechanical ABN angle directly; no pole-pair scaling applies.
 const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
 const CLOSED_LOOP_PWM_SV_CHOP: u32 = 7;
@@ -957,6 +981,32 @@ mod tests {
         STEP_WIDTH, VELOCITY_SELECTION,
     };
 
+    #[test]
+    fn closed_loop_velocity_selection_uses_the_standard_meter_on_the_mechanical_angle() {
+        use foci_tmc4671::registers::VelocitySelection;
+
+        let selection = VelocitySelection::from(CLOSED_LOOP_VELOCITY_SELECTION);
+
+        // Datasheet 4.6.11: meter 0 differentiates at ~4369.067 Hz, giving a
+        // 65.5 RPM quantum at 4000 counts/rev against meter 1's PWM-synchronous
+        // 375 RPM. The 375 RPM quantum put the commissioning target below the
+        // 389/2 crossover, where the velocity loop's error is dominated by the
+        // quantisation excursion rather than by the target.
+        assert_eq!(
+            selection.velocity_meter_selection(),
+            0,
+            "commissioning must run the standard velocity meter"
+        );
+        // The feedback source stays the mechanical ABN angle. `TmcMechanicalRpm`
+        // documents that this field, not the meter, fixes the RPM domain shared
+        // by PID_VELOCITY_TARGET and PID_VELOCITY_ACTUAL.
+        assert_eq!(
+            selection.velocity_selection(),
+            9,
+            "phi_m_abn must remain the velocity feedback source"
+        );
+    }
+
     fn closed_loop_phase_at(state: ClosedLoopEntryState) -> InnerPhase {
         InnerPhase::ClosedLoopEntry {
             state,
@@ -1197,7 +1247,7 @@ mod tests {
             assert_eq!(
                 write_log(&backend).as_slice(),
                 &[
-                    (VELOCITY_SELECTION.addr(), 0x0000_0109),
+                    (VELOCITY_SELECTION.addr(), CLOSED_LOOP_VELOCITY_SELECTION),
                     (POSITION_SELECTION.addr(), 9),
                     (STEP_WIDTH.addr(), 16),
                 ]
@@ -1668,7 +1718,9 @@ mod tests {
                 (MOTOR_TYPE_N_POLE_PAIRS.addr(), 3 << 16),
                 (PHI_E_SELECTION.addr(), 1),
                 (POSITION_SELECTION.addr(), 8),
-                (VELOCITY_SELECTION.addr(), 9),
+                // The superseded PWM-synchronous meter: a chip that retained it
+                // must not pass the armed-state readback.
+                (VELOCITY_SELECTION.addr(), 0x0000_0109),
                 (ABN_DECODER_PPR.addr(), 3999),
                 (ADC_I_SELECT.addr(), 0),
                 (PID_TORQUE_FLUX_LIMITS.addr(), 1024),
