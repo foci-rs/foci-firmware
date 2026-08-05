@@ -394,6 +394,28 @@ impl RecoveryFixture {
         report
     }
 
+    /// Drive to a terminal step, counting the recovery-owned diagnostics
+    /// (`RestSelection`, `RestAnalysis`) returned along the way.
+    ///
+    /// The caller must already have driven every time-based `At(_)` wait
+    /// (the moving deadline, the settle capture window) with `sample`/`step`,
+    /// exactly as the other fixture-driven tests do. From that point on, the
+    /// remaining steps are `ReadyNow`, at most one `RestSelection`, at most
+    /// one `RestAnalysis`, and finally a genuine terminal step (`Finished`,
+    /// `Contained`, `Fault`, or `RestUnconfirmed`).
+    fn drive_to_terminal(&mut self) -> (RungOriginRecoveryStep, u32, u32) {
+        let mut selection_count = 0u32;
+        let mut analysis_count = 0u32;
+        loop {
+            match self.step() {
+                RungOriginRecoveryStep::ReadyNow => {}
+                RungOriginRecoveryStep::RestSelection { .. } => selection_count += 1,
+                RungOriginRecoveryStep::RestAnalysis(_) => analysis_count += 1,
+                terminal => return (terminal, selection_count, analysis_count),
+            }
+        }
+    }
+
     fn step(&mut self) -> RungOriginRecoveryStep {
         let mut resources = RungOriginRecoveryResources {
             safety: &mut self.safety,
@@ -1384,4 +1406,410 @@ fn origin_band_counts() -> u32 {
     plan_rung_origin_recovery(live_budget(), 4_000, 4_394)
         .expect("live geometry plans")
         .origin_band_counts
+}
+
+// The Klipper host assembler accepts a hidden trace-only evidence run of 0 to
+// 2 positions before a rung-origin recovery, and refuses 0 for outcomes 1
+// (`Recovered`) and 5 (`RecoveredWithCurrentHeadroom`). Both bounds are
+// properties of this controller, not of the host, and they follow from a
+// structural fact rather than an exhaustive search:
+//
+// `step_rung_origin_recovery` returns a recovery-owned diagnostic at exactly
+// two sites, both inside `RecoveryState::AnalyzeSettle`
+// (`recovery/controller.rs`): `RestSelection` when `poll_scored_rest_confirmation`
+// yields `Diagnostic`, and `RestAnalysis`, guarded by `runtime.uses_stabilization()`,
+// immediately after. Every other return site yields `ReadyNow`, `At`,
+// `OriginMismatch`, `Finished`, `Contained`, `RestUnconfirmed`, or a
+// `recovery_fault`, none of which commits a recovery-owned trace record.
+//
+// The count is bounded by 2 because each site fires at most once per
+// recovery:
+//
+// - `AnalyzeSettle` is entered at most once. Nothing in the controller ever
+//   transitions back into `CaptureSettle` with `lead_in: false` (the only
+//   predecessor that calls `analysis.reset_for_scored_rest` and advances into
+//   `AnalyzeSettle`) after `AnalyzeSettle` has been reached.
+// - Within one `AnalyzeSettle` visit, `poll_scored_rest_confirmation` can
+//   yield `Diagnostic` at most once. `StationarityWork::poll` only returns
+//   `RestDiagnostic` from its `Idle { mode: RestDiagnostic { .. } }` stage,
+//   and that stage transitions to `RestDecisionReady` in the same call that
+//   produces the diagnostic (`stationarity.rs`, `advance_rest_diagnostic` and
+//   the empty-suffix branch of `poll`). Every subsequent poll dispatches
+//   through `RestDecisionReady` (`resume_rest_decision`) or `Blocking`
+//   (`RestWitness` reconstruction), never back through `Idle`, so the next
+//   non-`Pending` result is always `RestComplete`. This is also covered
+//   independently, at the `StationarityWork` level, by
+//   `sweep_analysis::tests::scored_rest_contract_yields_diagnostic_before_conditioned_witness`,
+//   which fails via `Option::replace` if `Diagnostic` is ever produced twice.
+// - `RestAnalysis` is returned once, from the tail of that same
+//   `AnalyzeSettle` visit, and immediately moves `runtime.state` to
+//   `RecoveryState::RestTerminal`, which never returns to `AnalyzeSettle`.
+//
+// The tests below drive every legal outcome through `RecoveryFixture` and
+// assert the exact diagnostic count each one commits, reusing the existing
+// scenario setups rather than rebuilding them.
+
+#[test]
+fn recovery_diagnostic_count_already_centered() {
+    let mut fixture = RecoveryFixture::new(1_000, None);
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Finished(report) = terminal else {
+        panic!("already-centered recovery must finish immediately: {terminal:?}");
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::AlreadyCentered);
+    assert_eq!(selections, 0);
+    assert_eq!(analyses, 0);
+    assert!(selections + analyses <= 2);
+}
+
+#[test]
+fn recovery_diagnostic_count_no_commanded_side_rate() {
+    let mut fixture = RecoveryFixture::new(8_458, None);
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Contained(report) = terminal else {
+        panic!("missing commanded-side rate must remain contained: {terminal:?}");
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::ContainedNoRate);
+    assert_eq!(selections, 0);
+    assert_eq!(analyses, 0);
+    assert!(selections + analyses <= 2);
+}
+
+#[test]
+fn recovery_diagnostic_count_start_offset_outside_position_window() {
+    // `position_window` under `configured_safety` is `max_stroke_travel_mrev`
+    // (2_500) converted at 4_000 counts/rev, i.e. 10_000 counts. 11_040 trips
+    // the `WriteGains` guard while still fitting the recovery deadline
+    // (~1.97 ms of 3.0 ms), so the runtime reaches `WriteGains` instead of
+    // being turned away at construction with `RecoveryBindingSource::Deadline`.
+    let mut fixture = RecoveryFixture::new_with_source(
+        11_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+    );
+    assert_eq!(fixture.safety.position_window, 10_000);
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Contained(report) = terminal else {
+        panic!("start offset outside position_window must remain contained: {terminal:?}");
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::ContainedDeadline);
+    assert_eq!(report.binding_source, RecoveryBindingSource::LocalTravel);
+    assert_eq!(selections, 0);
+    assert_eq!(analyses, 0);
+    assert!(selections + analyses <= 2);
+}
+
+#[test]
+fn recovery_diagnostic_count_current_contact_before_settle_poll() {
+    // Same setup as `recovery_current_observer_covers_motion_and_zero_target_settle`:
+    // clamp contact is detected while finishing the moving phase, inside
+    // `RecoveryState::Observe`, well before `AnalyzeSettle` is ever entered.
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        2_816,
+    );
+    fixture.backend.elapsed_us_value = 2_000;
+    fixture.backend.mechanical_encoder_position_counts_value = 1_000_i32.rem_euclid(4_000) as u32;
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Contained(report) = terminal else {
+        panic!("contact during the moving phase must remain contained: {terminal:?}");
+    };
+    assert_eq!(
+        report.outcome,
+        RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
+    );
+    assert_eq!(selections, 0);
+    assert_eq!(analyses, 0);
+    assert!(selections + analyses <= 2);
+}
+
+#[test]
+fn recovery_diagnostic_count_current_contact_after_settle_poll_immediate() {
+    // Same timeline as `recovery_controller_confirms_fixed_settle_and_reports_complete_geometry`
+    // (a normal, immediate-schedule completion), but the velocity-output
+    // clamp status flag is only raised once the scored settle capture has
+    // finished. `recovery_safety_sample` never reads `STATUS_FLAGS`, so this
+    // register never trips contact detection during `CaptureSettle`; contact
+    // is discovered only when `AnalyzeSettle` calls
+    // `finish_velocity_current_zero_phase` after `poll_scored_rest_confirmation`
+    // has already produced its one `RestSelection`.
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    assert!(matches!(
+        fixture.sample(1_000, 1_020),
+        RungOriginRecoveryStep::At(_)
+    ));
+    assert_eq!(
+        fixture.sample(2_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(3_000)));
+
+    for sample in 3..=502 {
+        let result = fixture.sample(sample * 1_000, 1_000);
+        if sample < 502 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let _ = fixture
+        .backend
+        .registers
+        .insert(foci_tmc4671::registers::STATUS_FLAGS.addr(), 0x80);
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Contained(report) = terminal else {
+        panic!("contact discovered at the settle boundary must remain contained: {terminal:?}");
+    };
+    assert_eq!(
+        report.outcome,
+        RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
+    );
+    assert_eq!(selections, 1);
+    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
+    assert!(selections + analyses <= 2);
+}
+
+#[test]
+fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
+    // Same setup as `recovery_contact_passive_settle_proves_an_in_band_origin`:
+    // `ProvePassiveSettle` marks contact detected in `Observe`, then still
+    // runs the ordinary scored settle in `AnalyzeSettle`, so the run commits
+    // one `RestSelection` but skips `RestAnalysis` (`ImmediateScored`).
+    let mut fixture = RecoveryFixture::new_with_policy(
+        1_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+        RecoveryCurrentContactPolicy::ProvePassiveSettle,
+    );
+    fixture.command_motion();
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        2_816,
+    );
+
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert_eq!(
+        fixture.backend.registers.get(&PID_VELOCITY_TARGET.addr()),
+        Some(&0)
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+
+    let _ = fixture.backend.registers.insert(
+        foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+            .data
+            .addr(),
+        100,
+    );
+    for sample in 2..=501 {
+        let result = fixture.sample(sample * 1_000, 998);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Finished(report) = terminal else {
+        panic!("passive in-band rest should recover: {terminal:?}");
+    };
+    assert_eq!(
+        report.outcome,
+        RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
+    );
+    assert_eq!(selections, 1);
+    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
+    assert!(selections + analyses <= 2);
+    assert!(
+        selections + analyses >= 1,
+        "outcome 5 must commit at least one diagnostic"
+    );
+}
+
+#[test]
+fn recovery_diagnostic_count_normal_completion_immediate() {
+    // Same timeline as `recovery_controller_confirms_fixed_settle_and_reports_complete_geometry`.
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    assert!(matches!(
+        fixture.sample(1_000, 1_020),
+        RungOriginRecoveryStep::At(_)
+    ));
+    assert_eq!(
+        fixture.sample(2_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(3_000)));
+
+    for sample in 3..=502 {
+        let result = fixture.sample(sample * 1_000, 1_000);
+        if sample < 502 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Finished(report) = terminal else {
+        panic!("fixed rest should recover: {terminal:?}");
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::Recovered);
+    assert_eq!(selections, 1);
+    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
+    assert!(selections + analyses <= 2);
+    assert!(
+        selections + analyses >= 1,
+        "outcome 1 must commit at least one diagnostic"
+    );
+}
+
+/// Pins the Step-3 structural argument: a `Stabilized` recovery that
+/// completes normally commits exactly one `RestSelection` and one
+/// `RestAnalysis`, never more.
+///
+/// Same timeline as `selected_recovery_discards_lead_in_before_scoring_rest`,
+/// carried through to a confirmed, in-band completion.
+#[test]
+fn recovery_diagnostic_count_normal_completion_stabilized() {
+    let mut fixture = RecoveryFixture::new_with_schedule(
+        1_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+        RecoveryCurrentContactPolicy::StopImmediately,
+        RecoveryRestSchedule::Stabilized,
+    );
+    fixture.command_motion();
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+
+    for sample in 2..=501 {
+        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+        let result = fixture.sample(sample * 1_000, offset);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+        }
+    }
+    for sample in 502..=1_001 {
+        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+        let result = fixture.sample(sample * 1_000, offset);
+        if sample < 1_001 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    let RungOriginRecoveryStep::Finished(report) = terminal else {
+        panic!("confirmed stabilized rest should recover: {terminal:?}");
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::Recovered);
+    assert_eq!(selections, 1);
+    assert_eq!(analyses, 1);
+    assert!(selections + analyses <= 2);
+    assert!(
+        selections + analyses >= 1,
+        "outcome 1 must commit at least one diagnostic"
+    );
+}
+
+#[test]
+fn recovery_diagnostic_count_scored_rest_rejected_immediate() {
+    // Same timeline as `recovery_safety_rejects_unconfirmed_rest`.
+    let mut fixture = RecoveryFixture::new(1_020, Some(14_000_000));
+    fixture.command_motion();
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    for sample in 2..=501 {
+        let offset = 1_000 - (sample as i32 - 1);
+        let result = fixture.sample(sample * 1_000, offset);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    assert_eq!(
+        terminal,
+        RungOriginRecoveryStep::Fault {
+            error: crate::autotune::CommissionError::VelocityRestNotConfirmed,
+            safety: None,
+        }
+    );
+    assert_eq!(selections, 1);
+    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
+    assert!(selections + analyses <= 2);
+}
+
+#[test]
+fn recovery_diagnostic_count_scored_rest_rejected_stabilized() {
+    // Same timeline as `selected_recovery_reports_completed_unconfirmed_rest_without_a_fault`.
+    let mut fixture = RecoveryFixture::new_with_schedule(
+        1_040,
+        Some(14_000_000),
+        RecoveryBindingSource::SettledRate,
+        RecoveryCurrentContactPolicy::StopImmediately,
+        RecoveryRestSchedule::Stabilized,
+    );
+    fixture.command_motion();
+    assert_eq!(
+        fixture.sample(1_000, 1_000),
+        RungOriginRecoveryStep::ReadyNow
+    );
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    for sample in 2..=501 {
+        let result = fixture.sample(sample * 1_000, 1_000);
+        if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+        }
+    }
+    for sample in 502..=1_001 {
+        let offset = 1_000 - (sample as i32 - 501);
+        let result = fixture.sample(sample * 1_000, offset);
+        if sample < 1_001 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
+        }
+    }
+    let (terminal, selections, analyses) = fixture.drive_to_terminal();
+
+    assert_eq!(terminal, RungOriginRecoveryStep::RestUnconfirmed);
+    assert_eq!(selections, 1);
+    assert_eq!(analyses, 1);
+    assert!(selections + analyses <= 2);
 }
