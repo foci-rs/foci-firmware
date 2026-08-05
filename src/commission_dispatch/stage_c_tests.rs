@@ -1,7 +1,7 @@
 use super::stage_c::{
     STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, STAGE_C_CAUSE_PLAN_MISMATCH,
-    STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightRejection, apply_stage_c_terminal,
-    preflight_stage_c_request,
+    STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightConfig, StageCPreflightRejection,
+    apply_stage_c_terminal, preflight_stage_c_request,
 };
 use super::{CommissionOutcome, ReplyPayload};
 use crate::commissioning::outer::OuterMotionBudget;
@@ -27,6 +27,16 @@ const CHANNEL: u8 = 0;
 const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 const COUNTS_PER_REV: u32 = 4_000;
+
+fn preflight_config() -> StageCPreflightConfig {
+    StageCPreflightConfig {
+        encoder_counts_per_rev: COUNTS_PER_REV,
+        torque_limit: TORQUE_LIMIT,
+        limit_evidence_capability: VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        channel: CHANNEL,
+        pwm_hz: PWM_HZ,
+    }
+}
 
 fn selected_combined_response()
 -> crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse {
@@ -322,18 +332,9 @@ fn combined_selected_rest_rejection_retains_stage_c_authority_without_continuing
             retained.identity.schema_revision,
             crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
         );
-        let resume = preflight_stage_c_request(
-            request(),
-            COUNTS_PER_REV,
-            TORQUE_LIMIT,
-            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-            CHANNEL,
-            PWM_HZ,
-            9,
-            &stage_c_slot,
-        )
-        .expect("retained combined authority must admit the matching Stage-C request")
-        .expect("retained combined authority must resume directly in Stage C");
+        let resume = preflight_stage_c_request(request(), &preflight_config(), 9, &stage_c_slot)
+            .expect("retained combined authority must admit the matching Stage-C request")
+            .expect("retained combined authority must resume directly in Stage C");
         assert_eq!(
             resume.plan.schema_revision,
             crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
@@ -559,18 +560,9 @@ fn retained_authority_regenerates_the_exact_stage_c_plan_before_motion() {
     let mut slot = StageCCandidateSlot::new();
     slot.install_authority(retained_authority());
 
-    let preflight = preflight_stage_c_request(
-        request(),
-        COUNTS_PER_REV,
-        TORQUE_LIMIT,
-        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-        CHANNEL,
-        PWM_HZ,
-        7,
-        &slot,
-    )
-    .expect("matching retained plan")
-    .expect("nonempty Stage-C slot");
+    let preflight = preflight_stage_c_request(request(), &preflight_config(), 7, &slot)
+        .expect("matching retained plan")
+        .expect("nonempty Stage-C slot");
 
     assert_eq!(preflight.plan, stage_c_plan());
     assert_eq!(preflight.identity, retained_authority().identity);
@@ -586,17 +578,8 @@ fn changed_resume_plan_is_rejected_without_mutating_retention() {
     let mut changed = request();
     changed.max_stroke_travel_mrev += 1;
 
-    let rejection = preflight_stage_c_request(
-        changed,
-        COUNTS_PER_REV,
-        TORQUE_LIMIT,
-        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-        CHANNEL,
-        PWM_HZ,
-        8,
-        &slot,
-    )
-    .expect_err("changed frozen plan must reject before motion");
+    let rejection = preflight_stage_c_request(changed, &preflight_config(), 8, &slot)
+        .expect_err("changed frozen plan must reject before motion");
 
     assert!(matches!(
         rejection,
@@ -1160,18 +1143,9 @@ fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
                 ..
             } if terminal.recovery_unavailable
         ));
-        let resume = preflight_stage_c_request(
-            request(),
-            COUNTS_PER_REV,
-            TORQUE_LIMIT,
-            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-            CHANNEL,
-            PWM_HZ,
-            9,
-            &stage_c_slot,
-        )
-        .expect("retained authority must admit the next matching command")
-        .expect("retained authority must route directly to Stage C");
+        let resume = preflight_stage_c_request(request(), &preflight_config(), 9, &stage_c_slot)
+            .expect("retained authority must admit the next matching command")
+            .expect("retained authority must route directly to Stage C");
         assert_eq!(resume.plan.final_p, retained.final_p);
         assert_eq!(resume.plan.digest(), retained.identity.plan_digest);
     });
@@ -1192,18 +1166,9 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
             crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
         let mut stage_c_slot = StageCCandidateSlot::new();
         stage_c_slot.install_authority(retained_authority());
-        let preflight = preflight_stage_c_request(
-            request(),
-            COUNTS_PER_REV,
-            TORQUE_LIMIT,
-            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-            CHANNEL,
-            PWM_HZ,
-            9,
-            &stage_c_slot,
-        )
-        .unwrap()
-        .unwrap();
+        let preflight = preflight_stage_c_request(request(), &preflight_config(), 9, &stage_c_slot)
+            .unwrap()
+            .unwrap();
         let mut engine = Some(
             CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
                 1,

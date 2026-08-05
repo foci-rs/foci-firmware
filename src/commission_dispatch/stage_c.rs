@@ -149,27 +149,32 @@ pub(crate) fn combined_acceptance_point(
     }))
 }
 
+/// Device parameters needed to reproduce a retained Stage-C authority's plan.
+///
+/// Grouped out of `preflight_stage_c_request`'s argument list to bring it under the
+/// project's <=5-parameter rule: these five are the axis/hardware description the
+/// preflight reproduces against, distinct from the per-call request and sequence.
+pub struct StageCPreflightConfig {
+    pub encoder_counts_per_rev: u32,
+    pub torque_limit: u16,
+    pub limit_evidence_capability: u32,
+    pub channel: u8,
+    pub pwm_hz: u32,
+}
+
 /// Reconstruct and identity-check retained Stage-C authority before any SPI work.
 ///
 /// `Ok(None)` means no Stage-C authority exists and admission must proceed to Stage B.
-// Eight parameters here are the reproduced-authority inputs; grouping them into a config
-// struct is a separate refactor. Silence the lint so `--features trace-velocity-sweep`
-// clippy is clean.
-#[allow(clippy::too_many_arguments)]
 pub fn preflight_stage_c_request(
     request: VelocitySweepRequest,
-    encoder_counts_per_rev: u32,
-    torque_limit: u16,
-    limit_evidence_capability: u32,
-    channel: u8,
-    pwm_hz: u32,
+    config: &StageCPreflightConfig,
     run_sequence: u32,
     stage_c_candidate: &StageCCandidateSlot,
 ) -> Result<Option<StageCPreflight>, StageCPreflightRejection> {
     let Some(authority) = stage_c_candidate.authority() else {
         return Ok(None);
     };
-    if authority.identity.channel != channel {
+    if authority.identity.channel != config.channel {
         return Err(StageCPreflightRejection::RejectedPlanMismatch {
             retained: authority.identity,
             requested_stage_b_plan_digest: 0,
@@ -180,16 +185,16 @@ pub fn preflight_stage_c_request(
     let stage_b_plan = if combined {
         plan_combined_velocity_sweep(
             request,
-            encoder_counts_per_rev,
-            torque_limit,
-            limit_evidence_capability,
+            config.encoder_counts_per_rev,
+            config.torque_limit,
+            config.limit_evidence_capability,
         )
     } else {
         plan_velocity_sweep(
             request,
-            encoder_counts_per_rev,
-            torque_limit,
-            limit_evidence_capability,
+            config.encoder_counts_per_rev,
+            config.torque_limit,
+            config.limit_evidence_capability,
         )
     }
     .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
@@ -224,16 +229,16 @@ pub fn preflight_stage_c_request(
             selected,
             stage_b_execution,
             motion_budget,
-            pwm_hz,
-            encoder_counts_per_rev,
+            config.pwm_hz,
+            config.encoder_counts_per_rev,
         )
     } else {
         plan_velocity_integral_response(
             authority.stage_c_authority(),
             stage_b_execution,
             motion_budget,
-            pwm_hz,
-            encoder_counts_per_rev,
+            config.pwm_hz,
+            config.encoder_counts_per_rev,
         )
     };
     let plan = match plan_result {
@@ -246,7 +251,7 @@ pub fn preflight_stage_c_request(
         Err(_) => return Err(StageCPreflightRejection::InvalidPlan),
     };
     let identity = StageCPlanIdentity {
-        channel,
+        channel: config.channel,
         build_revision: STAGE_B_BUILD_REVISION,
         schema_revision: plan.schema_revision,
         plan_digest: plan.digest(),
