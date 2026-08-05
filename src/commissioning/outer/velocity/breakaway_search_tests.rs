@@ -98,10 +98,7 @@ fn upward_probe_failed_repeat_advances_once_without_a_reroll() {
 #[test]
 fn upward_probe_worst_case_consumes_exactly_128_strokes() {
     let (mut cursor, mut step) = UpwardBreakawayCursor::start(MAX_SWEEP_RUNGS as u8).unwrap();
-    loop {
-        let UpwardProbeStep::Probe { role, .. } = step else {
-            break;
-        };
+    while let UpwardProbeStep::Probe { role, .. } = step {
         let moved = role != ProbeStrokeRole::RepeatReverse;
         step = cursor.advance(moved).unwrap();
     }

@@ -30,15 +30,17 @@ fn verdict(p: u16, class: VelocityRungClass, low: i32, high: i32) -> VelocityRun
         p: PidPGain::new(p).unwrap(),
         classification: class,
         disturbance_interval: eligible.then(|| interval(low, high)),
-        disturbance_intervals: eligible
-            .then(|| [Some(interval(low, high)); 2])
-            .unwrap_or([None; 2]),
-        disturbance_points: eligible
-            .then(|| {
-                let middle = low + (high - low) / 2;
-                [Some(EquivalentTorqueTargetQ16::from_raw(middle)); 2]
-            })
-            .unwrap_or([None; 2]),
+        disturbance_intervals: if eligible {
+            [Some(interval(low, high)); 2]
+        } else {
+            [None; 2]
+        },
+        disturbance_points: if eligible {
+            let middle = low + (high - low) / 2;
+            [Some(EquivalentTorqueTargetQ16::from_raw(middle)); 2]
+        } else {
+            [None; 2]
+        },
         disturbance_variances_q2: [CompactVariance::encode(4); 2],
         settled_rate_bounds_q: [
             CompactSignedRate::encode(1_000, BoundRounding::TowardNegativeInfinity),

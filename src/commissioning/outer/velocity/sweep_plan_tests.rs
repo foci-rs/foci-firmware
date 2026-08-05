@@ -118,8 +118,9 @@ fn combined_target_execution_stays_inside_the_declared_travel_cap() {
         i64::from(plan.target_velocity_rpm.raw()) * 4_000 * 1_000 / 60,
         17_533_333
     );
-    assert!(263_u64 * 512 < 2_250_u64 * 60);
-    assert!(264_u64 * 512 > 2_250_u64 * 60);
+    // 263 is the correct floor, not an off-by-one: 263 * 512 = 134_656 is under the
+    // travel-cap numerator (max_stroke_travel_mrev - settle_travel_reserve_mrev) * 60
+    // = 2_250 * 60 = 135_000, while 264 * 512 = 135_168 is over it.
 }
 
 #[test]
@@ -481,7 +482,7 @@ fn analysis_budget_preserves_the_shortest_scored_rest_suffix() {
     assert_eq!(ZERO_SETTLE_US, 500_000);
     assert_eq!(MIN_SETTLE_CAPTURE_US, 64_000);
     assert_eq!(SETTLE_ANALYSIS_BUDGET_US, 236_000);
-    assert!(SETTLE_ANALYSIS_BUDGET_US + MIN_SETTLE_CAPTURE_US <= ZERO_SETTLE_US);
+    const { assert!(SETTLE_ANALYSIS_BUDGET_US + MIN_SETTLE_CAPTURE_US <= ZERO_SETTLE_US) };
 }
 
 #[test]

@@ -684,10 +684,10 @@ mod tests {
         let mut blocker = DyadicBlocker::<5>::new();
 
         let result = loop {
-            match poll_settle_confirmation_parts(&mut analysis, &ring, &mut blocker, 0, 1).unwrap()
+            if let Some(result) =
+                poll_settle_confirmation_parts(&mut analysis, &ring, &mut blocker, 0, 1).unwrap()
             {
-                Some(result) => break result,
-                None => {}
+                break result;
             }
         };
 

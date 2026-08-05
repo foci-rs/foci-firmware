@@ -820,7 +820,7 @@ fn scheduled_step_keeps_inductance_capture_inside_one_deadline_loop() {
         let actual = ((-84i16 as u16 as u32) << 16) | 20;
         for index in 1..=100u32 {
             phi_samples
-                .push(index.wrapping_mul(20 * 65_536) / 100 & 0xffff)
+                .push((index.wrapping_mul(20 * 65_536) / 100) & 0xffff)
                 .unwrap();
             current_samples.push(actual).unwrap();
         }

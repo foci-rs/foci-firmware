@@ -2753,7 +2753,7 @@ mod tests {
         use foci_tmc4671::registers::{
             DSADC_MDEC_B_MDEC_A, MOTOR_TYPE_N_POLE_PAIRS, PWM_BBM_H_BBM_L, PWM_MAXCNT,
         };
-        let config = backend.tmc_config().clone();
+        let config = *backend.tmc_config();
         backend
             .registers
             .insert(

@@ -3205,13 +3205,12 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     let mut handoff_plan = None;
 
     for _ in 0..2_000_000 {
-        if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase {
-            if let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase() {
-                if matches!(state, BandConfirmationState::CommandTarget) {
-                    stroke_numerator = 5; // 75%: inside the confirmable band both ways.
-                    stroke_sign = direction_sign(session.current_direction());
-                }
-            }
+        if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase
+            && let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase()
+            && matches!(state, BandConfirmationState::CommandTarget)
+        {
+            stroke_numerator = 5; // 75%: inside the confirmable band both ways.
+            stroke_sign = direction_sign(session.current_direction());
         }
         let is_capture_phase = matches!(
             &phase,
@@ -3353,13 +3352,12 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
     let mut handed_off = false;
 
     for _ in 0..2_000_000 {
-        if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase {
-            if let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase() {
-                if matches!(state, BandConfirmationState::CommandTarget) {
-                    stroke_numerator = 5; // 75%: inside the confirmable band both ways.
-                    stroke_sign = direction_sign(session.current_direction());
-                }
-            }
+        if let OuterPhase::BreakawayCampaign { campaign, .. } = &phase
+            && let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase()
+            && matches!(state, BandConfirmationState::CommandTarget)
+        {
+            stroke_numerator = 5; // 75%: inside the confirmable band both ways.
+            stroke_sign = direction_sign(session.current_direction());
         }
         let is_capture_phase = matches!(
             &phase,

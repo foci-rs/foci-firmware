@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(gains.velocity_limit, 16);
         assert_ne!(
             gains.velocity_limit,
-            MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS as u32
+            MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS
         );
     }
 

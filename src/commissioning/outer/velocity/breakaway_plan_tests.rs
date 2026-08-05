@@ -172,7 +172,7 @@ fn every_candidate_rung_count_matches_the_representative_geometry() {
 
     for (n, expected_step, expected_rung_count) in EXPECTED {
         let candidate = realize_candidate_additive_ladder(n, 181, 256, 1_088).unwrap();
-        assert_eq!(candidate.step, u32::from(expected_step), "n = {n}");
+        assert_eq!(candidate.step, expected_step, "n = {n}");
         assert_eq!(candidate.rung_count, expected_rung_count, "n = {n}");
         assert_eq!(
             candidate.gains[usize::from(expected_rung_count) - 1],

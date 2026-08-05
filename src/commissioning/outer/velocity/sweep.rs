@@ -3352,13 +3352,12 @@ mod tests {
         let last_pid_sample = backend
             .velocity_trace_observations
             .iter()
-            .filter(|observation| {
+            .rfind(|observation| {
                 observation.stroke_index & SETTLE_TRACE_STROKE_MARKER == 0
                     && observation.flags
                         & crate::trace::stream::VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID
                         != 0
             })
-            .next_back()
             .expect("moving stroke must retain the final PID diagnostic");
         assert_eq!(last_pid_sample.velocity_diagnostic_value, 389);
         assert_eq!(last_pid_sample.peak_torque_target_abs, 320);

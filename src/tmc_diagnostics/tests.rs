@@ -1196,7 +1196,6 @@ fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
         crate::resistance_identification::ResistanceBackend::set_enable_pin(&mut backend, true);
         crate::resistance_identification::ResistanceBackend::set_enable_pin(&mut backend, false);
     }
-    drop(ctx);
     assert_eq!(power_stage.trip_calls, 0);
     assert!(runtime.is_motor_enabled());
     assert!(runtime.is_calibrated());
