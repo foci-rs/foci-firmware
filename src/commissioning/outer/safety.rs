@@ -339,18 +339,29 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
-    /// Configure the runtime envelope with a separate zero-target settle bound.
+    /// Configure the runtime envelope from the plan's effective ceiling.
     ///
-    /// The moving bound stays `E(planned)`. The settle bound is
-    /// `effective_ceiling_mrev_s` itself: once the target has been zeroed there
-    /// is no commanded amplitude to size a margin against, and the effective
-    /// ceiling is already the outermost bound the plan is validated under. It is
-    /// `min(host machine ceiling, encoder-observable)`, so the trip still sits
-    /// inside the range the encoder resolves unambiguously.
+    /// Both the commanded stroke and its zero-target settle are bounded by
+    /// `effective_ceiling_mrev_s` -- `min(host machine ceiling,
+    /// encoder-observable)` -- so the trip sits at what the machine is declared
+    /// capable of, inside the range the encoder resolves unambiguously.
     ///
-    /// `sweep_plan::envelope_cap` chooses the planned amplitude so that
-    /// `E(planned) <= M_effective`. A pair violating that is a planning fault
-    /// rather than a wider runtime allowance, and is rejected.
+    /// The amplitude-relative envelope `E(planned)` is deliberately **not** the
+    /// runtime bound. It scales from the commissioning amplitude, which is a
+    /// travel-over-stroke-time geometry constant: at the default travel it is
+    /// 58 mm/s on a machine whose configured maximum is 400 mm/s, so the same
+    /// physical motion would be legal or fatal depending on the bed allowance.
+    /// A runaway bound cannot depend on that. `E(planned)` keeps its planning
+    /// role in `sweep_plan::envelope_cap`, which picks the amplitude so that
+    /// `E(planned) <= M_effective`; a pair violating that is a planning fault
+    /// and is rejected here.
+    ///
+    /// This leaves each guard owning one axis: the two-interval debounce owns
+    /// measurement validity, the quarter-turn fault owns per-sample
+    /// aliasing, this envelope owns instantaneous magnitude, and the position
+    /// window owns integrated excursion. Bounding a commanded stroke's opening
+    /// transient by its own amplitude made this guard duplicate the position
+    /// window's job, less directly.
     ///
     /// # Errors
     ///
@@ -370,7 +381,7 @@ impl OuterSafetyLimits {
         if envelope_mrev_s > effective_ceiling_mrev_s {
             return Err(CommissionError::InvalidSchedule);
         }
-        self.apply_velocity_envelope(envelope_mrev_s, effective_ceiling_mrev_s);
+        self.apply_velocity_envelope(effective_ceiling_mrev_s, effective_ceiling_mrev_s);
         Ok(())
     }
 
@@ -1218,7 +1229,7 @@ mod tests {
             // E(1450) = max(ceil(3 * 1450 / 2), 1450 + 2000) = 3450 mrev/s, which is
             // 13.8 counts/ms at 4000 counts/rev. Flooring that to 13 rejected
             // two-interval windows the envelope was sized to admit.
-            let mut safety = envelope_armed_safety(1_450, 10_000);
+            let mut safety = envelope_armed_safety(1_450, 3_450);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 101_000;
             backend.mechanical_encoder_position_counts_value = 13;
@@ -1248,7 +1259,7 @@ mod tests {
     fn outer_safety_velocity_envelope_admits_the_exact_cap() {
         pollster::block_on(async {
             // 69 counts over 5 ms is exactly 13.8 counts/ms.
-            let mut safety = envelope_armed_safety(1_450, 10_000);
+            let mut safety = envelope_armed_safety(1_450, 3_450);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
             backend.mechanical_encoder_position_counts_value = 34;
@@ -1275,7 +1286,7 @@ mod tests {
     fn outer_safety_velocity_envelope_rejects_one_count_above_the_exact_cap() {
         pollster::block_on(async {
             // 70 counts over 5 ms is 14.0 counts/ms, above the 13.8 envelope.
-            let mut safety = envelope_armed_safety(1_450, 10_000);
+            let mut safety = envelope_armed_safety(1_450, 3_450);
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 102_500;
             backend.mechanical_encoder_position_counts_value = 35;
@@ -1334,9 +1345,13 @@ mod tests {
     }
 
     #[test]
-    fn outer_safety_moving_phase_still_rejects_settle_scale_velocity() {
+    fn outer_safety_moving_phase_admits_machine_scale_velocity() {
         pollster::block_on(async {
-            // The same motion as the settle test, without entering settle.
+            // A commanded stroke's transient is bounded by what the machine can
+            // do, not by the amplitude the stroke was commanded at. `E(planned)`
+            // scales from bed geometry (travel over stroke time), which is not a
+            // safety quantity; `M_effective` is the host-declared kinematic
+            // ceiling. Same motion as the settle test, without entering settle.
             let mut safety = envelope_armed_safety(1_450, 10_000);
             safety.begin_primitive(100_000).unwrap();
             let mut backend = MockBackend::new();
@@ -1355,10 +1370,12 @@ mod tests {
             backend.mechanical_encoder_position_counts_value = 40;
             let fault = check_outer_safety(&mut safety, &mut backend)
                 .await
-                .expect("second velocity observation should succeed")
-                .expect("20 counts/ms must exceed the 13.8 counts/ms moving envelope");
+                .expect("second velocity observation should succeed");
 
-            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert!(
+                fault.is_none(),
+                "20 counts/ms is inside the 40 counts/ms machine ceiling"
+            );
         });
     }
 
@@ -1394,21 +1411,19 @@ mod tests {
     }
 
     #[test]
-    fn outer_safety_settle_allowance_ends_with_the_primitive() {
+    fn outer_safety_both_phases_share_the_effective_ceiling_bound() {
+        // The commanded stroke and its settle are bounded identically, by what
+        // the machine is declared capable of. The phase marker is retained as a
+        // seam, not because the two bounds currently differ.
         let mut safety = envelope_armed_safety(1_450, 10_000);
         safety.begin_primitive(100_000).unwrap();
+        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
+
         safety.enter_settle_phase();
         assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
 
         safety.end_primitive();
-        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 13_800_000);
-
-        safety.begin_primitive(200_000).unwrap();
-        assert_eq!(
-            safety.active_velocity_cap_milli_counts_per_s(),
-            13_800_000,
-            "a fresh primitive starts in its moving phase"
-        );
+        assert_eq!(safety.active_velocity_cap_milli_counts_per_s(), 40_000_000);
     }
 
     #[test]
@@ -1422,61 +1437,6 @@ mod tests {
             safety.configure_velocity_envelope_with_settle_ceiling(1_450, 3_000),
             Err(CommissionError::InvalidSchedule)
         );
-    }
-
-    #[test]
-    fn outer_safety_settle_allowance_does_not_survive_into_the_next_primitive() {
-        pollster::block_on(async {
-            // Motion the settle bound admits is not admitted once the next
-            // primitive opens under a commanded amplitude again. This is the
-            // boundary that decides where an axis still moving at the end of
-            // settle gets reported: here, two observations into the following
-            // primitive, rather than during the settle it carried over from.
-            let mut safety = envelope_armed_safety(1_450, 10_000);
-            safety.begin_primitive(100_000).unwrap();
-            safety.enter_settle_phase();
-            let mut backend = MockBackend::new();
-
-            // 20 counts/ms throughout: above the 13.8 moving envelope, inside
-            // the 40 counts/ms settle ceiling.
-            for (elapsed_us, counts) in [(101_000, 20), (102_000, 40), (103_000, 60)] {
-                backend.elapsed_us_value = elapsed_us;
-                backend.mechanical_encoder_position_counts_value = counts;
-                assert!(
-                    check_outer_safety(&mut safety, &mut backend)
-                        .await
-                        .expect("settle observation should succeed")
-                        .is_none(),
-                    "20 counts/ms is inside the settle ceiling"
-                );
-            }
-
-            safety.end_primitive();
-            safety.begin_primitive(103_000).unwrap();
-
-            backend.elapsed_us_value = 104_000;
-            backend.mechanical_encoder_position_counts_value = 80;
-            assert!(
-                check_outer_safety(&mut safety, &mut backend)
-                    .await
-                    .expect("first observation of the new primitive should succeed")
-                    .is_none(),
-                "begin_primitive resets the window, so the first interval only primes it"
-            );
-
-            backend.elapsed_us_value = 105_000;
-            backend.mechanical_encoder_position_counts_value = 100;
-            let fault = check_outer_safety(&mut safety, &mut backend)
-                .await
-                .expect("second observation of the new primitive should succeed")
-                .expect("unchanged motion must fault once the moving envelope applies again");
-
-            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
-            assert_eq!(
-                fault.elapsed_us, 2_000,
-                "the fault lands two observations into the primitive, not during settle"
-            );
-        });
     }
 
     #[test]
