@@ -1,5 +1,5 @@
 //! Lifecycle state primitives: shutdown / fault flags, stats
-//! timestamps, reporting signal.
+//! timestamps, deferred-report pending signals.
 
 use core::sync::atomic::{AtomicBool, AtomicU32};
 
@@ -19,3 +19,7 @@ pub static FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Indicates trsync_state reports are pending delivery.
 /// Set by TIM5 CC2 ISR, cleared by report_task.
 pub static REPORT_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Indicates stepper diagnostic events are pending delivery.
+/// Set by `record_stepper_event`, cleared by stepper_diag_task.
+pub static STEPPER_DIAG_PENDING: AtomicBool = AtomicBool::new(false);

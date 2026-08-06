@@ -3,4 +3,5 @@
 //! dependencies. Hardware helpers live on capability traits in
 //! `crate::context`.
 
+pub mod drain;
 pub mod lifecycle;
