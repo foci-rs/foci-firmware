@@ -43,6 +43,25 @@ const ENCODER_MOVEMENT_CURRENT_MIN: u32 = 100;
 
 /// Maximum D-axis current target used while forcing encoder movement.
 const ENCODER_MOVEMENT_CURRENT_MAX: u32 = 1000;
+
+/// Number of direction-sweep attempts allowed before surfacing a hard
+/// `EncoderFault` to the host. A sweep that measures no rotor movement is
+/// retried internally, escalating the movement current on each attempt,
+/// since marginal breakaway torque at a given rotor start angle can leave
+/// the first attempt short even on a healthy drive and encoder.
+const ENCODER_DIRECTION_MAX_ATTEMPTS: u8 = 3;
+
+/// Per-attempt (numerator, denominator, ceiling) applied to `current_limit`
+/// to compute the D-axis movement current target. The ceiling never lets an
+/// attempt exceed `current_limit` itself (enforced separately below); it
+/// only controls how far below the original 1000-count default an attempt
+/// may be raised.
+const ENCODER_MOVEMENT_CURRENT_SCALE: [(u32, u32, u32); ENCODER_DIRECTION_MAX_ATTEMPTS as usize] = [
+    (1, 2, ENCODER_MOVEMENT_CURRENT_MAX),
+    (3, 4, 2_000),
+    (1, 1, u32::MAX),
+];
+
 /// OpenFFBoard bringup motors use 50 pole pairs.
 const ENCODER_ALIGNMENT_POLE_PAIRS: u32 = 50;
 
@@ -62,6 +81,17 @@ fn encoder_alignment_min_movement(encoder_counts_per_rev: u32) -> u32 {
     let denominator = 20_u64 * u64::from(ENCODER_ALIGNMENT_POLE_PAIRS);
     let numerator = u64::from(encoder_counts_per_rev);
     ((numerator + denominator / 2) / denominator).max(2) as u32
+}
+
+/// D-axis current target for encoder movement drive at a given attempt.
+///
+/// Escalates from the original 50%-of-limit default toward the full
+/// configured `current_limit` on later attempts, never exceeding it.
+fn encoder_movement_current_target(current_limit: u32, attempt: u8) -> i16 {
+    let index = usize::from(attempt.min(ENCODER_DIRECTION_MAX_ATTEMPTS - 1));
+    let (numerator, denominator, ceiling) = ENCODER_MOVEMENT_CURRENT_SCALE[index];
+    ((current_limit * numerator / denominator).clamp(ENCODER_MOVEMENT_CURRENT_MIN, ceiling))
+        .min(current_limit) as i16
 }
 
 fn saturating_u16(value: u32) -> u16 {
@@ -187,6 +217,7 @@ async fn read_mechanical_encoder_position_counts_stable<B: CommissioningBackend>
 pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
     backend: &mut B,
     phi_e: u32,
+    attempt: u8,
 ) -> Result<(), CommissionError> {
     use foci_tmc4671::registers::*;
 
@@ -195,9 +226,7 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
         return Err(CommissionError::NoCurrent);
     }
 
-    let target = (current_limit / 2)
-        .clamp(ENCODER_MOVEMENT_CURRENT_MIN, ENCODER_MOVEMENT_CURRENT_MAX)
-        .min(current_limit) as i16;
+    let target = encoder_movement_current_target(current_limit, attempt);
     let defaults = crate::pid::DEFAULT_INNER_GAINS;
     let (flux_reg, torque_reg) = defaults.to_registers();
     let target_reg: u32 = PidTorqueFluxTarget::new()
@@ -310,7 +339,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 Err(error) => return super::fail_inner(phase, error),
             };
 
-            if let Err(error) = start_encoder_current_drive(backend, 0).await {
+            if let Err(error) = start_encoder_current_drive(backend, 0, 0).await {
                 return super::fail_inner(phase, error);
             }
 
@@ -322,6 +351,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 step: 0,
                 deadline_us: deadline,
                 count_start,
+                attempt: 0,
             };
             StepResult::At(deadline)
         }
@@ -330,6 +360,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             step,
             deadline_us,
             count_start,
+            attempt,
         } => {
             let now_us = backend.elapsed_us();
             if now_us < *deadline_us {
@@ -339,7 +370,11 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             *step += 1;
             if *step > ENCODER_DIRECTION_STEPS {
                 let cs = *count_start;
-                *state = EncoderCheckState::Finalize { count_start: cs };
+                let att = *attempt;
+                *state = EncoderCheckState::Finalize {
+                    count_start: cs,
+                    attempt: att,
+                };
                 return StepResult::ReadyNow;
             }
 
@@ -362,7 +397,10 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             StepResult::At(next_deadline)
         }
 
-        EncoderCheckState::Finalize { count_start } => {
+        EncoderCheckState::Finalize {
+            count_start,
+            attempt,
+        } => {
             let count_end = match read_mechanical_encoder_position_counts_stable(
                 backend,
                 Some(diagnostics),
@@ -407,10 +445,34 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                     true,
                 );
                 defmt::warn!(
-                    "encoder-dir FAIL: start={} end={} delta=0",
+                    "encoder-dir FAIL (attempt {}): start={} end={} delta=0",
+                    attempt,
                     count_start.raw_counts(),
                     count_end.raw_counts()
                 );
+
+                let next_attempt = *attempt + 1;
+                if next_attempt < ENCODER_DIRECTION_MAX_ATTEMPTS {
+                    if let Err(error) = start_encoder_current_drive(backend, 0, next_attempt).await
+                    {
+                        return super::fail_inner(phase, error);
+                    }
+                    let deadline = match backend.elapsed_us().checked_add(ENCODER_DIRECTION_STEP_US)
+                    {
+                        Some(deadline) => deadline,
+                        None => {
+                            return super::fail_inner(phase, CommissionError::InvalidSchedule);
+                        }
+                    };
+                    *state = EncoderCheckState::Sweep {
+                        step: 0,
+                        deadline_us: deadline,
+                        count_start: count_end,
+                        attempt: next_attempt,
+                    };
+                    return StepResult::At(deadline);
+                }
+
                 if matches!(sequence, InnerSequence::Selftest) {
                     selftest_results.set(5, crate::selftest::SelftestStageValue::fail(0));
                 }
@@ -487,7 +549,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::NoCurrent);
             }
 
-            if let Err(error) = start_encoder_current_drive(backend, 0).await {
+            if let Err(error) = start_encoder_current_drive(backend, 0, 0).await {
                 return super::fail_inner(phase, error);
             }
 
@@ -901,6 +963,20 @@ mod tests {
     }
 
     #[test]
+    fn encoder_movement_current_target_escalates_within_current_limit() {
+        // Attempt 0 keeps the original 50%-of-limit, 1000-count ceiling.
+        assert_eq!(encoder_movement_current_target(2_448, 0), 1_000);
+        // Later attempts raise the ceiling toward the full current limit.
+        assert_eq!(encoder_movement_current_target(2_448, 1), 1_836);
+        assert_eq!(encoder_movement_current_target(2_448, 2), 2_448);
+        // Out-of-range attempts saturate at the final (highest) tier.
+        assert_eq!(encoder_movement_current_target(2_448, 9), 2_448);
+        // Never exceeds the configured current limit, even at small limits.
+        assert_eq!(encoder_movement_current_target(50, 0), 50);
+        assert_eq!(encoder_movement_current_target(50, 2), 50);
+    }
+
+    #[test]
     fn stable_helper_accepts_when_all_samples_agree() {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
@@ -998,12 +1074,61 @@ mod tests {
     }
 
     #[test]
+    fn encoder_check_zero_delta_retries_before_exhausting_attempts() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut phase = InnerPhase::EncoderCheck {
+                state: EncoderCheckState::Finalize {
+                    count_start: encoder_count(1234),
+                    attempt: 0,
+                },
+            };
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(2_448);
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            backend.set_abn_decoder_count_sequence(&[1234, 1234, 1234]);
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(result, StepResult::At(_)),
+                "zero delta on the first attempt should retry, got {result:?}"
+            );
+            assert!(matches!(
+                phase,
+                InnerPhase::EncoderCheck {
+                    state: EncoderCheckState::Sweep {
+                        step: 0,
+                        attempt: 1,
+                        ..
+                    }
+                }
+            ));
+            // The failed attempt is still recorded even though it retried.
+            let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].code, DIAG_ENCODER_DIRECTION_RESULT);
+            assert_eq!(events[0].status, 1);
+        });
+    }
+
+    #[test]
     fn encoder_check_zero_delta_records_diagnostic() {
         pollster::block_on(async {
             let _guard = SHARED_STATE_MUTEX.lock().await;
             let mut phase = InnerPhase::EncoderCheck {
                 state: EncoderCheckState::Finalize {
                     count_start: encoder_count(1234),
+                    attempt: ENCODER_DIRECTION_MAX_ATTEMPTS - 1,
                 },
             };
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -1043,6 +1168,7 @@ mod tests {
             let mut phase = InnerPhase::EncoderCheck {
                 state: EncoderCheckState::Finalize {
                     count_start: encoder_count(3998),
+                    attempt: 0,
                 },
             };
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -1076,6 +1202,7 @@ mod tests {
             let mut phase = InnerPhase::EncoderCheck {
                 state: EncoderCheckState::Finalize {
                     count_start: encoder_count(0),
+                    attempt: 0,
                 },
             };
             let mut selftest_results = crate::selftest::SelftestResults::default();

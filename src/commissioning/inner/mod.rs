@@ -127,9 +127,17 @@ pub(crate) enum EncoderCheckState {
         step: u16,
         deadline_us: u64,
         count_start: EncoderCount,
+        /// Zero-based direction-sweep attempt, bounded and retried internally
+        /// before a hard failure is surfaced to the host.
+        attempt: u8,
     },
     /// Read final count and determine direction.
-    Finalize { count_start: EncoderCount },
+    Finalize {
+        count_start: EncoderCount,
+        /// Zero-based direction-sweep attempt, bounded and retried internally
+        /// before a hard failure is surfaced to the host.
+        attempt: u8,
+    },
 }
 
 /// Encoder D-axis alignment sub-state.
