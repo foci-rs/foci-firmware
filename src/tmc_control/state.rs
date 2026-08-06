@@ -109,6 +109,8 @@ pub struct TmcControlRuntime {
     planner_velocity_scale: Option<crate::motion_scale::PlannerVelocityScale>,
     feedforward_was_active: bool,
     torque_flux_offset_was_active: bool,
+    applied_velocity_offset: Option<u32>,
+    applied_torque_flux_offset: Option<u32>,
     position_lead_applied_units: i32,
     phase_advance_was_active: bool,
     phase_advance_base_register: u32,
@@ -133,6 +135,8 @@ impl TmcControlRuntime {
             planner_velocity_scale: None,
             feedforward_was_active: false,
             torque_flux_offset_was_active: false,
+            applied_velocity_offset: None,
+            applied_torque_flux_offset: None,
             position_lead_applied_units: 0,
             phase_advance_was_active: false,
             phase_advance_base_register: 0,
@@ -221,6 +225,8 @@ impl TmcControlRuntime {
         self.planner_velocity_scale = None;
         self.feedforward_was_active = false;
         self.torque_flux_offset_was_active = false;
+        self.applied_velocity_offset = None;
+        self.applied_torque_flux_offset = None;
         self.position_lead_applied_units = 0;
         self.phase_advance_was_active = false;
         self.phase_advance_base_register = 0;
@@ -317,6 +323,8 @@ impl TmcControlRuntime {
         self.calibrated = false;
         self.feedforward_was_active = false;
         self.torque_flux_offset_was_active = false;
+        self.applied_velocity_offset = None;
+        self.applied_torque_flux_offset = None;
         self.pid_error_clear_countdown_ms = 0;
         push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
         actions
@@ -334,6 +342,8 @@ impl TmcControlRuntime {
         if signals.shutdown_active.load(Relaxed) {
             if !self.shutdown_handled {
                 self.commission_engine = None;
+                self.applied_velocity_offset = None;
+                self.applied_torque_flux_offset = None;
                 push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
                 self.motor_enabled = false;
                 self.calibrated = false;
@@ -422,13 +432,24 @@ impl TmcControlRuntime {
     }
 
     /// Install a new commissioning engine, replacing any existing one.
+    ///
+    /// Invalidates the feedforward-offset write cache: commissioning writes
+    /// `PID_VELOCITY_OFFSET`/`PID_TORQUE_FLUX_OFFSET` directly while a
+    /// commission engine is installed, bypassing the control tick's cache.
     pub fn set_commission_engine(&mut self, engine: CommissioningEngine) {
         self.commission_engine = Some(engine);
+        self.applied_velocity_offset = None;
+        self.applied_torque_flux_offset = None;
     }
 
     /// Remove and return the active commissioning engine without completing a
     /// breakaway-campaign breadcrumb.
+    ///
+    /// Invalidates the feedforward-offset write cache; see
+    /// [`Self::set_commission_engine`].
     pub fn take_commission_engine(&mut self) -> Option<CommissioningEngine> {
+        self.applied_velocity_offset = None;
+        self.applied_torque_flux_offset = None;
         self.commission_engine.take()
     }
 
@@ -436,7 +457,11 @@ impl TmcControlRuntime {
     ///
     /// Callers must first restore their path-specific safe state. Non-breakaway
     /// engines are removed without changing persistent breakaway evidence.
+    /// Invalidates the feedforward-offset write cache; see
+    /// [`Self::set_commission_engine`].
     pub fn take_commission_engine_after_handled_stop(&mut self) -> Option<CommissioningEngine> {
+        self.applied_velocity_offset = None;
+        self.applied_torque_flux_offset = None;
         CommissioningEngine::take_after_handled_stop(&mut self.commission_engine)
     }
 
@@ -837,6 +862,8 @@ impl TmcControlRuntime {
     pub fn contain_diagnostic_trip(&mut self) {
         self.motor_enabled = false;
         self.calibrated = false;
+        self.applied_velocity_offset = None;
+        self.applied_torque_flux_offset = None;
         if let Some(tmc) = crate::state::tmc::tmc_channel(self.channel) {
             tmc.motor_armed.store(false, Relaxed);
         }
@@ -868,6 +895,16 @@ impl TmcControlRuntime {
     /// Store whether velocity feedforward is active for the current control tick.
     pub fn set_feedforward_was_active(&mut self, active: bool) {
         self.feedforward_was_active = active;
+    }
+
+    /// Invalidate the cached applied `PID_TORQUE_FLUX_OFFSET` value.
+    ///
+    /// Call this after any write to that register outside the control tick's
+    /// own feedforward path (for example a diagnostic that writes a test
+    /// value and restores the prior one), so the next tick re-verifies rather
+    /// than trusting a value it never wrote.
+    pub fn invalidate_torque_flux_offset_cache(&mut self) {
+        self.applied_torque_flux_offset = None;
     }
 
     /// Return the remaining PID error-clear settle countdown in milliseconds.
@@ -991,10 +1028,14 @@ impl TmcControlRuntime {
                 0
             };
             let offset = base_offset.saturating_add(transient_offset);
+            let desired = offset as u32;
 
-            let _ = tmc_spi
-                .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, offset as u32)
-                .await;
+            if self.applied_velocity_offset != Some(desired) {
+                let _ = tmc_spi
+                    .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, desired)
+                    .await
+                    .inspect(|_| self.applied_velocity_offset = Some(desired));
+            }
             #[cfg(feature = "trace")]
             {
                 let trace = self.trace_state_mut();
@@ -1006,6 +1047,7 @@ impl TmcControlRuntime {
                 .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, 0)
                 .await
                 .map_err(|_| ())?;
+            self.applied_velocity_offset = Some(0);
             #[cfg(feature = "trace")]
             {
                 let trace = self.trace_state_mut();
@@ -1087,9 +1129,12 @@ impl TmcControlRuntime {
                 trace.cached_accel_flags = flags;
             }
             let offset_reg = crate::tmc::pack_torque_flux_target(torque_offset, flux_offset);
-            let _ = tmc_spi
-                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
-                .await;
+            if self.applied_torque_flux_offset != Some(offset_reg) {
+                let _ = tmc_spi
+                    .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
+                    .await
+                    .inspect(|_| self.applied_torque_flux_offset = Some(offset_reg));
+            }
         } else if accel_ff_active {
             let accel_gain_permille = refs.tmc.accel_feedforward_accel_gain_permille.load(Relaxed);
             let decel_gain_permille = refs.tmc.accel_feedforward_decel_gain_permille.load(Relaxed);
@@ -1150,14 +1195,18 @@ impl TmcControlRuntime {
                 trace.cached_accel_flags = flags;
             }
             let offset_reg = u32::from(offset as u16) << 16;
-            let _ = tmc_spi
-                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
-                .await;
+            if self.applied_torque_flux_offset != Some(offset_reg) {
+                let _ = tmc_spi
+                    .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, offset_reg)
+                    .await
+                    .inspect(|_| self.applied_torque_flux_offset = Some(offset_reg));
+            }
         } else if self.torque_flux_offset_was_active {
             tmc_spi
                 .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_OFFSET, 0)
                 .await
                 .map_err(|_| ())?;
+            self.applied_torque_flux_offset = Some(0);
             #[cfg(feature = "trace")]
             {
                 let trace = self.trace_state_mut();

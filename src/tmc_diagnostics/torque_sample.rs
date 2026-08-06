@@ -637,6 +637,7 @@ where
                     saved_offset,
                 )
                 .await;
+            runtime.invalidate_torque_flux_offset_cache();
             let _ = tmc
                 .write_register(
                     foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS,

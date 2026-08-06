@@ -214,11 +214,16 @@ fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
     #[cfg(feature = "trace")]
     // 5_696 -> 5_728: +32 B for the deferred phase-terminal record reported
     // by a dispatcher-detected fault.
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_728);
+    // 5_728 -> 5_744: +16 B for the cached applied PID_VELOCITY_OFFSET and
+    // PID_TORQUE_FLUX_OFFSET values (two Option<u32>) that let the control
+    // tick skip an unchanged feedforward register write.
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_744);
     // 3_888 -> 3_904: +16 B for the exact velocity envelope carried by
     // `OuterSafetyLimits`, which the non-trace engine holds too.
+    // 3_904 -> 3_920: +16 B for the same cached feedforward-offset values
+    // described above.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_904);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_920);
 }
 
 #[test]
@@ -2589,6 +2594,261 @@ fn feedforward_tick_retries_failed_torque_flux_offset_clear() {
                 .into_inner()
                 .attempted_write_to(PID_TORQUE_FLUX_OFFSET)
         );
+    });
+}
+
+#[test]
+fn feedforward_tick_skips_unchanged_velocity_offset_write() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.direction.store(false, Relaxed);
+        let mut first_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut first_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+        assert_eq!(first_tmc.into_inner().writes.len(), 1);
+
+        let mut second_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut second_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+        assert!(
+            second_tmc.into_inner().writes.is_empty(),
+            "constant cruise must not rewrite an unchanged velocity offset"
+        );
+    });
+}
+
+#[test]
+fn feedforward_tick_retries_velocity_offset_after_a_failed_change() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.direction.store(false, Relaxed);
+        let mut first_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        runtime
+            .apply_feedforward_tick(
+                &mut first_tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &config,
+                false,
+                false,
+                true,
+            )
+            .await
+            .expect("first tick applies the initial offset");
+        let first_offset = first_tmc.into_inner().writes[0].1;
+
+        stepper_state.interval.store(1_400, Relaxed);
+        let mut failed_tmc =
+            Tmc4671Spi::new(RuntimeMockSpi::default().fail_writes_to(PID_VELOCITY_OFFSET.addr()));
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut failed_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(()),
+            "active-tick writes stay best-effort; only inactive-transition clears propagate errors"
+        );
+        assert_eq!(failed_tmc.into_inner().write_attempts.len(), 1);
+
+        let mut retry_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut retry_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+        let retry_writes = retry_tmc.into_inner().writes;
+        assert_eq!(
+            retry_writes.len(),
+            1,
+            "a failed write must leave the cache invalid so the changed value is retried"
+        );
+        assert_ne!(retry_writes[0].1, first_offset);
+    });
+}
+
+#[test]
+fn feedforward_tick_skips_unchanged_torque_flux_offset_write() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.accel_feedforward.store(true, Relaxed);
+        tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state
+            .accel_feedforward_decel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state.store_current_limit(current_limit(10_000), Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.interval_add.store(-10, Relaxed);
+        let mut first_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut first_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+        assert_eq!(first_tmc.into_inner().writes.len(), 1);
+
+        let mut second_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut second_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+        assert!(
+            second_tmc.into_inner().writes.is_empty(),
+            "steady acceleration must not rewrite an unchanged torque/flux offset"
+        );
+    });
+}
+
+#[test]
+fn feedforward_tick_retries_torque_flux_offset_after_a_failed_change() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.accel_feedforward.store(true, Relaxed);
+        tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state
+            .accel_feedforward_decel_gain_permille
+            .store(200, Relaxed);
+        tmc_state.store_current_limit(current_limit(10_000), Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.interval_add.store(-10, Relaxed);
+        let mut first_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        runtime
+            .apply_feedforward_tick(
+                &mut first_tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &config,
+                false,
+                false,
+                true,
+            )
+            .await
+            .expect("first tick applies the initial offset");
+        let first_offset = first_tmc.into_inner().writes[0].1;
+
+        stepper_state.interval_add.store(10, Relaxed);
+        let mut failed_tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_OFFSET.addr()),
+        );
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut failed_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(()),
+            "active-tick writes stay best-effort; only inactive-transition clears propagate errors"
+        );
+        assert_eq!(failed_tmc.into_inner().write_attempts.len(), 1);
+
+        let mut retry_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut retry_tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+        let retry_writes = retry_tmc.into_inner().writes;
+        assert_eq!(
+            retry_writes.len(),
+            1,
+            "a failed write must leave the cache invalid so the changed value is retried"
+        );
+        assert_ne!(retry_writes[0].1, first_offset);
     });
 }
 
