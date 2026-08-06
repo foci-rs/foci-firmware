@@ -275,6 +275,11 @@ pub enum CommissionError {
     /// The accompanying `BreakawayTerminalCause` carries the specific reason
     /// discovery did not select; this code says only that none was selected.
     DiscoveryBandNotSelected,
+    /// Resistance identification's fitted or signed-anchor slope was zero or
+    /// negative -- a physically impossible reading indicating reversed
+    /// current polarity or a sign error, not a data-quality gate failure.
+    /// Code 73.
+    ResistanceNonPositiveSlope,
 }
 
 impl CommissionError {
@@ -356,6 +361,7 @@ impl CommissionError {
             Self::PrimitiveAlreadyOpen => 70,
             Self::PrimitiveStartInFuture => 71,
             Self::RecoveryOriginMismatch => 72,
+            Self::ResistanceNonPositiveSlope => 73,
         }
     }
 }

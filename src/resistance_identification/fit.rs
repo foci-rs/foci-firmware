@@ -58,6 +58,9 @@ pub fn fit_resistance_axis(
     }
 
     let slope_num = n * sum_xy - sum_x * sum_y;
+    if slope_num <= 0 {
+        return Err(ResistanceError::NonPositiveSlope);
+    }
     let r_count_slope_milli = ((slope_num * 1000) / denom) as i32;
     let intercept_count = ((sum_y * denom - slope_num * sum_x) / (n * denom)) as i32;
 
@@ -90,6 +93,9 @@ pub fn fit_resistance_axis(
     }
 
     if let Some(anchor) = signed_anchor {
+        if anchor.signed_count_slope_milli <= 0 {
+            return Err(ResistanceError::NonPositiveSlope);
+        }
         if anchor.drift_permille >= profile.thermal_drift_fail_permille {
             return Err(ResistanceError::ThermalDrift);
         }
@@ -225,6 +231,70 @@ mod tests {
         assert_eq!(result.selected_count, 5);
         assert_eq!(result.excluded_point_mask & 0b0000_0111, 0b0000_0111);
         assert!((1030..=1070).contains(&result.r_count_slope_milli));
+    }
+
+    #[test]
+    fn fit_rejects_negative_slope() {
+        let profile = ResistanceProfile::standard();
+        let points = synthetic_axis_points([450, 575, 710, 850, 990, 1130, 1275, 1420], -1050, 20);
+
+        let err = fit_resistance_axis(ElectricalAxis::PHASE0, &profile, &points, None).unwrap_err();
+
+        assert_eq!(err, ResistanceError::NonPositiveSlope);
+    }
+
+    #[test]
+    fn fit_rejects_zero_slope() {
+        let profile = ResistanceProfile::standard();
+        let points = synthetic_axis_points([450, 575, 710, 850, 990, 1130, 1275, 1420], 0, 20);
+
+        let err = fit_resistance_axis(ElectricalAxis::PHASE0, &profile, &points, None).unwrap_err();
+
+        assert_eq!(err, ResistanceError::NonPositiveSlope);
+    }
+
+    #[test]
+    fn fit_rejects_nonpositive_signed_anchor_slope() {
+        let profile = ResistanceProfile::standard();
+        let points = synthetic_axis_points([800, 900, 1000, 1100, 1200, 1300, 1400, 1500], 1050, 0);
+        // Fitted slope is healthy and positive; only the independent
+        // signed-anchor cross-check slope is sign-inverted. Drift/asymmetry
+        // are well under their warn thresholds so this isolates the sign
+        // check from the thermal-drift gate.
+        let anchor = SignedAnchorEvidence {
+            positive_current_count: 900,
+            negative_current_count: -880,
+            signed_count_slope_milli: -1070,
+            asymmetry_permille: 10,
+            repeated_positive_current_count: 900,
+            drift_permille: 10,
+        };
+
+        let err = fit_resistance_axis(ElectricalAxis::PHASE0, &profile, &points, Some(anchor))
+            .unwrap_err();
+
+        assert_eq!(err, ResistanceError::NonPositiveSlope);
+    }
+
+    #[test]
+    fn two_similarly_negative_axes_are_rejected_at_the_first_fit_not_the_mismatch_gate() {
+        // Regression case from the issue: two negative axes that agree with
+        // each other in magnitude would sail through evaluate_resistance_result's
+        // abs_diff mismatch gate undetected. The fit-layer rejection must catch
+        // axis0 before a second fit or the mismatch gate is ever reached.
+        let profile = ResistanceProfile::standard();
+        let axis0_points =
+            synthetic_axis_points([450, 575, 710, 850, 990, 1130, 1275, 1420], -1000, 20);
+        let axis1_points =
+            synthetic_axis_points([450, 575, 710, 850, 990, 1130, 1275, 1420], -1050, 20);
+
+        let axis0_err =
+            fit_resistance_axis(ElectricalAxis::PHASE0, &profile, &axis0_points, None).unwrap_err();
+        let axis1_err = fit_resistance_axis(ElectricalAxis::PHASE90, &profile, &axis1_points, None)
+            .unwrap_err();
+
+        assert_eq!(axis0_err, ResistanceError::NonPositiveSlope);
+        assert_eq!(axis1_err, ResistanceError::NonPositiveSlope);
     }
 
     #[test]

@@ -185,6 +185,11 @@ pub enum ResistanceError {
     PhaseDeadlineExceeded,
     /// An actionable TMC4671 status bit was sampled while energized.
     CriticalStatus,
+    /// The fitted or signed-anchor slope was zero or negative. Resistance is
+    /// physically always positive, so this indicates reversed current
+    /// polarity or a voltage/current sign error upstream, not a data-quality
+    /// issue the residual or drift gates would catch.
+    NonPositiveSlope,
 }
 
 impl ResistanceError {
@@ -220,6 +225,7 @@ impl From<ResistanceError> for crate::autotune::CommissionError {
             ResistanceError::TimingRejected => Self::ResistanceTimingRejected,
             ResistanceError::PhaseDeadlineExceeded => Self::ResistanceDeadlineExceeded,
             ResistanceError::CriticalStatus => Self::ResistanceIdFailed,
+            ResistanceError::NonPositiveSlope => Self::ResistanceNonPositiveSlope,
         }
     }
 }
@@ -253,6 +259,7 @@ mod tests {
             (ResistanceError::MeasurementEnvelopeUnsupported, 31),
             (ResistanceError::TimingRejected, 48),
             (ResistanceError::PhaseDeadlineExceeded, 49),
+            (ResistanceError::NonPositiveSlope, 73),
         ];
         let mut seen = [false; 256];
         for (error, code) in expected {
