@@ -23,8 +23,12 @@ const ADC_CALIBRATION_SETTLE_US: u64 = 250_000;
 const ADC_CALIBRATION_SAMPLE_PERIOD_US: u64 = 1_000;
 
 /// Maximum backend register operations issued by one ADC state arm.
+///
+/// 26, not 17: nine pre-enable writes in `AdcCalState::Setup` now go through
+/// `write_register_verified` (write + readback) instead of a bare write, so
+/// each of those nine costs two ops instead of one.
 #[allow(dead_code)]
-pub(super) const ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM: usize = 17;
+pub(super) const ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM: usize = 26;
 
 /// Valid ADC offset range (centered around ~33000).
 const ADC_OFFSET_MIN: u16 = 30_000;
@@ -125,17 +129,31 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 _ => return super::fail_inner(phase, CommissionError::Spi),
             }
 
-            let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-            let _ = backend.write_register(UQ_UD_EXT, 0).await;
+            if backend
+                .write_register_verified(PID_TORQUE_FLUX_TARGET, 0)
+                .await
+                .is_err()
+                || backend.write_register_verified(UQ_UD_EXT, 0).await.is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
 
             // PWM config: chopping disabled for calibration.
-            let _ = backend.write_register(PWM_POLARITIES, 0).await;
-            let _ = backend
-                .write_register(PWM_MAXCNT, backend.pwm_maxcnt() as u32)
-                .await;
-            let _ = backend
-                .write_register(PWM_BBM_H_BBM_L, backend.bbm_register())
-                .await;
+            if backend
+                .write_register_verified(PWM_POLARITIES, 0)
+                .await
+                .is_err()
+                || backend
+                    .write_register_verified(PWM_MAXCNT, backend.pwm_maxcnt() as u32)
+                    .await
+                    .is_err()
+                || backend
+                    .write_register_verified(PWM_BBM_H_BBM_L, backend.bbm_register())
+                    .await
+                    .is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
             if backend.write_register(PWM_SV_CHOP, 0).await.is_err() {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
@@ -154,12 +172,17 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             }
 
             // ADC configuration.
-            let _ = backend
-                .write_register(DSADC_MDEC_B_MDEC_A, backend.dsadc_mdec_register())
-                .await;
-            let _ = backend
-                .write_register(ADC_I_SELECT, backend.tmc_config().adc_i_select)
-                .await;
+            if backend
+                .write_register_verified(DSADC_MDEC_B_MDEC_A, backend.dsadc_mdec_register())
+                .await
+                .is_err()
+                || backend
+                    .write_register_verified(ADC_I_SELECT, backend.tmc_config().adc_i_select)
+                    .await
+                    .is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
 
             // Motor type: 2-phase stepper, 50 pole pairs. The MOTOR_TYPE write
             // must be verified before storing the sentinel — silently continuing
@@ -178,8 +201,17 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             backend.store_motor_sentinel(MOTOR_TYPE_VALUE);
 
             // Clear offsets, enable outputs.
-            let _ = backend.write_register(ADC_I0_SCALE_OFFSET, 256 << 16).await;
-            let _ = backend.write_register(ADC_I1_SCALE_OFFSET, 256 << 16).await;
+            if backend
+                .write_register_verified(ADC_I0_SCALE_OFFSET, 256 << 16)
+                .await
+                .is_err()
+                || backend
+                    .write_register_verified(ADC_I1_SCALE_OFFSET, 256 << 16)
+                    .await
+                    .is_err()
+            {
+                return super::fail_inner(phase, CommissionError::Spi);
+            }
             backend.set_enable_pin(true);
 
             let deadline = match backend.elapsed_us().checked_add(ADC_CALIBRATION_SETTLE_US) {
@@ -515,6 +547,51 @@ mod tests {
             .iter()
             .filter(|op| !matches!(op, SpiOp::EnablePin(_)))
             .count()
+    }
+
+    #[test]
+    fn setup_fails_closed_when_a_pre_enable_write_fails() {
+        use foci_tmc4671::registers::*;
+
+        let pre_enable_registers = [
+            PID_TORQUE_FLUX_TARGET.addr(),
+            UQ_UD_EXT.addr(),
+            PWM_POLARITIES.addr(),
+            PWM_MAXCNT.addr(),
+            PWM_BBM_H_BBM_L.addr(),
+            DSADC_MDEC_B_MDEC_A.addr(),
+            ADC_I_SELECT.addr(),
+            ADC_I0_SCALE_OFFSET.addr(),
+            ADC_I1_SCALE_OFFSET.addr(),
+        ];
+
+        for addr in pre_enable_registers {
+            pollster::block_on(async {
+                let mut backend = MockBackend::new();
+                backend.fail_on_write = Some(addr);
+                let mut phase = InnerPhase::AdcCalibrate(AdcCalState::Setup);
+                let mut adc_cal = None;
+                let mut selftest_results = crate::selftest::SelftestResults::default();
+
+                let result = step_adc_calibrate(
+                    &mut phase,
+                    InnerSequence::Calibrate,
+                    &mut adc_cal,
+                    &mut selftest_results,
+                    &mut backend,
+                )
+                .await;
+
+                assert!(
+                    matches!(result, StepResult::InnerFailed(CommissionError::Spi)),
+                    "register 0x{addr:02x} write failure must fail the setup arm, got {result:?}"
+                );
+                assert!(
+                    !backend.enable_pin,
+                    "register 0x{addr:02x} write failure must not leave the motor enabled"
+                );
+            });
+        }
     }
 
     #[test]
