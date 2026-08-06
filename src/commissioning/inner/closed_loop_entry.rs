@@ -780,14 +780,17 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
 
             // Stability check: a small two-sample drift can be a bounded
-            // hunt. In commissioning, keep it as evidence and let the
-            // sustained-hold sampler decide with a longer window; larger
-            // walk-off and all non-commissioning drift remain hard failures.
+            // hunt at entry. Every sequence that reaches this phase accepts
+            // it rather than treating it as a hard failure -- Commission
+            // additionally carries it into the longer sustained-hold window
+            // as evidence; Calibrate (which has no sustained-hold path)
+            // simply completes normally, same as a clean pass. Only
+            // drift beyond the bounded band remains a hard failure.
             let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
-            if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD
-                && matches!(sequence, InnerSequence::Commission)
-                && drift <= CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD
-            {
+            let bounded_hunt = drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD
+                && drift <= CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD;
+
+            if bounded_hunt && matches!(sequence, InnerSequence::Commission) {
                 defmt::warn!(
                     "closed-loop: bounded entry drift: pos1={}, pos2={}, drift={}",
                     position_1,
@@ -808,7 +811,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 return StepResult::ReadyNow;
             }
 
-            if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD {
+            if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD && !bounded_hunt {
                 defmt::error!(
                     "closed-loop: unstable (attempt {}): pos1={}, pos2={}, drift={}",
                     attempt,
@@ -1949,7 +1952,7 @@ mod tests {
     }
 
     #[test]
-    fn stability_drift_retries_before_exhausting_attempts() {
+    fn calibrate_accepts_bounded_entry_drift_without_retry_or_failure() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
                 position_1: 0,
@@ -1959,7 +1962,45 @@ mod tests {
             let mut backend = MockBackend::new();
             backend
                 .registers
-                .insert(PID_POSITION_ACTUAL.addr(), 10)
+                .insert(PID_POSITION_ACTUAL.addr(), 16)
+                .ok();
+            let mut diagnostics = CommissionDiagnostics::default();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(result, StepResult::CalibrateDone(_)),
+                "bounded drift within the warn band should be accepted, got {result:?}"
+            );
+            assert!(
+                diagnostics.iter().next().is_none(),
+                "accepted bounded drift should not push a failure diagnostic"
+            );
+        });
+    }
+
+    #[test]
+    fn stability_drift_retries_before_exhausting_attempts() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+                position_1: 0,
+                deadline_us: 0,
+            });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            // Above CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD (64):
+            // a bounded hunt inside that band is now accepted for every
+            // sequence, so this exercises genuinely excessive drift.
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 100)
                 .ok();
             let mut diagnostics = CommissionDiagnostics::default();
 
@@ -1992,8 +2033,8 @@ mod tests {
             );
             assert_eq!(events[0].code, DIAG_CLOSED_LOOP_ENTRY_RESULT);
             assert_eq!(events[0].status, CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT);
-            assert_eq!(events[0].value1, 10);
-            assert_eq!(events[0].value2, 10);
+            assert_eq!(events[0].value1, 100);
+            assert_eq!(events[0].value2, 100);
         });
     }
 
@@ -2011,7 +2052,7 @@ mod tests {
             let mut backend = MockBackend::new();
             backend
                 .registers
-                .insert(PID_POSITION_ACTUAL.addr(), 10)
+                .insert(PID_POSITION_ACTUAL.addr(), 100)
                 .ok();
 
             let result = step_closed_loop_entry(
