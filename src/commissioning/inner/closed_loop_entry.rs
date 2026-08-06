@@ -19,6 +19,7 @@ use crate::commissioning::types::{
     AdcCalResult, AdcResidualEvidence, CommissionResult, CommissioningBackend, InnerResult,
     StepResult,
 };
+use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
 use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -58,6 +59,31 @@ const CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
 const CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
 #[allow(dead_code)]
 pub(super) const CLOSED_LOOP_ENTRY_MAX_REGISTER_OPS_PER_ARM: usize = 48;
+
+/// Number of attempts allowed for a bounded-drift `ClosedLoopEntryUnstable`
+/// failure before surfacing a hard failure. Runaway failures (position error
+/// large and still growing -- the signature of wrong-sign feedback or genuine
+/// instability) never retry regardless of this budget.
+const CLOSED_LOOP_ENTRY_MAX_ATTEMPTS: u8 = 3;
+
+const DIAG_CLOSED_LOOP_ENTRY_RESULT: u8 = 1;
+
+fn push_closed_loop_entry_result(
+    diagnostics: &mut CommissionDiagnostics,
+    entry_status: u8,
+    position_1: i32,
+    position_2: i32,
+    drift: u32,
+) {
+    diagnostics.push(CommissionDiagnostic {
+        phase: crate::autotune::PhaseId::ClosedLoopEntry.to_u8(),
+        code: DIAG_CLOSED_LOOP_ENTRY_RESULT,
+        status: entry_status,
+        value0: position_1 as u32,
+        value1: position_2 as u32,
+        value2: drift,
+    });
+}
 
 fn gain_registers(
     inner: crate::pid::InnerLoopGains,
@@ -289,6 +315,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
     adc_cal: &mut Option<AdcCalResult>,
+    diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
 ) -> StepResult {
     use foci_tmc4671::registers::*;
@@ -309,6 +336,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
         position_filter_hz,
         flux_filter_hz,
         inner_result,
+        attempt,
     ) = match phase {
         InnerPhase::ClosedLoopEntry {
             state,
@@ -326,6 +354,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             position_filter_hz,
             flux_filter_hz,
             inner_result,
+            attempt,
         } => (
             state,
             *flux_p,
@@ -342,6 +371,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             *position_filter_hz,
             *flux_filter_hz,
             inner_result,
+            *attempt,
         ),
         _ => return StepResult::ReadyNow,
     };
@@ -715,6 +745,13 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     pos2
                 );
                 let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
+                push_closed_loop_entry_result(
+                    diagnostics,
+                    CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
+                    *position_1,
+                    pos2,
+                    drift,
+                );
                 if matches!(sequence, InnerSequence::Commission)
                     && let Some(result) = fail_closed_loop_entry(
                         inner_result,
@@ -773,11 +810,31 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
             if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD {
                 defmt::error!(
-                    "closed-loop: unstable: pos1={}, pos2={}, drift={}",
+                    "closed-loop: unstable (attempt {}): pos1={}, pos2={}, drift={}",
+                    attempt,
                     position_1,
                     pos2,
                     drift
                 );
+                push_closed_loop_entry_result(
+                    diagnostics,
+                    CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT,
+                    *position_1,
+                    pos2,
+                    drift,
+                );
+                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+
+                let next_attempt = attempt + 1;
+                if next_attempt < CLOSED_LOOP_ENTRY_MAX_ATTEMPTS {
+                    let InnerPhase::ClosedLoopEntry { state, attempt, .. } = phase else {
+                        unreachable!("phase was just matched as ClosedLoopEntry");
+                    };
+                    *state = ClosedLoopEntryState::WriteGains;
+                    *attempt = next_attempt;
+                    return StepResult::ReadyNow;
+                }
+
                 if matches!(sequence, InnerSequence::Commission)
                     && let Some(result) = fail_closed_loop_entry(
                         inner_result,
@@ -801,7 +858,6 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 {
                     return result;
                 }
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
                 return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
             }
 
@@ -1024,6 +1080,7 @@ mod tests {
             position_filter_hz: 0,
             flux_filter_hz: 0,
             inner_result: Some(sample_inner_result(CommissionStatus::Accepted)),
+            attempt: 0,
         }
     }
 
@@ -1033,6 +1090,19 @@ mod tests {
             unreachable!();
         };
         *inner_result = None;
+        phase
+    }
+
+    fn closed_loop_phase_at_with_attempt(state: ClosedLoopEntryState, attempt: u8) -> InnerPhase {
+        let mut phase = closed_loop_phase_at(state);
+        let InnerPhase::ClosedLoopEntry {
+            attempt: phase_attempt,
+            ..
+        } = &mut phase
+        else {
+            unreachable!();
+        };
+        *phase_attempt = attempt;
         phase
     }
 
@@ -1232,6 +1302,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1268,6 +1339,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1299,6 +1371,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1329,6 +1402,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1356,6 +1430,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1386,6 +1461,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1416,6 +1492,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1458,6 +1535,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1496,6 +1574,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1509,6 +1588,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1531,6 +1611,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1565,6 +1646,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1597,6 +1679,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1645,6 +1728,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1670,6 +1754,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1695,6 +1780,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1739,6 +1825,7 @@ mod tests {
                     &mut phase,
                     InnerSequence::Calibrate,
                     &mut adc_cal,
+                    &mut CommissionDiagnostics::default(),
                     &mut backend,
                 )
                 .await;
@@ -1766,6 +1853,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1799,6 +1887,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1850,6 +1939,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1859,7 +1949,7 @@ mod tests {
     }
 
     #[test]
-    fn stability_drift_reports_closed_loop_unstable_not_spi() {
+    fn stability_drift_retries_before_exhausting_attempts() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
                 position_1: 0,
@@ -1871,11 +1961,64 @@ mod tests {
                 .registers
                 .insert(PID_POSITION_ACTUAL.addr(), 10)
                 .ok();
+            let mut diagnostics = CommissionDiagnostics::default();
 
             let result = step_closed_loop_entry(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(result, StepResult::ReadyNow),
+                "bounded drift on the first attempt should retry, got {result:?}"
+            );
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopEntry {
+                    state: ClosedLoopEntryState::WriteGains,
+                    attempt: 1,
+                    ..
+                }
+            ));
+            let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
+            assert_eq!(events.len(), 1);
+            assert_eq!(
+                events[0].phase,
+                crate::autotune::PhaseId::ClosedLoopEntry.to_u8()
+            );
+            assert_eq!(events[0].code, DIAG_CLOSED_LOOP_ENTRY_RESULT);
+            assert_eq!(events[0].status, CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT);
+            assert_eq!(events[0].value1, 10);
+            assert_eq!(events[0].value2, 10);
+        });
+    }
+
+    #[test]
+    fn stability_drift_reports_closed_loop_unstable_after_exhausting_attempts() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at_with_attempt(
+                ClosedLoopEntryState::StabilityCheck2 {
+                    position_1: 0,
+                    deadline_us: 0,
+                },
+                CLOSED_LOOP_ENTRY_MAX_ATTEMPTS - 1,
+            );
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 10)
+                .ok();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1888,12 +2031,55 @@ mod tests {
     }
 
     #[test]
-    fn commission_large_entry_drift_returns_failed_result_with_entry_evidence() {
+    fn stability_runaway_never_retries_even_on_first_attempt() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
                 position_1: 0,
                 deadline_us: 0,
             });
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            backend
+                .registers
+                .insert(
+                    PID_POSITION_ACTUAL.addr(),
+                    CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD + 1,
+                )
+                .ok();
+            let mut diagnostics = CommissionDiagnostics::default();
+
+            let result = step_closed_loop_entry(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(
+                    result,
+                    StepResult::InnerFailed(CommissionError::ClosedLoopEntryUnstable)
+                ),
+                "runaway must fail immediately regardless of attempt budget, got {result:?}"
+            );
+            let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].status, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY);
+        });
+    }
+
+    #[test]
+    fn commission_large_entry_drift_returns_failed_result_with_entry_evidence() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at_with_attempt(
+                ClosedLoopEntryState::StabilityCheck2 {
+                    position_1: 0,
+                    deadline_us: 0,
+                },
+                CLOSED_LOOP_ENTRY_MAX_ATTEMPTS - 1,
+            );
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend
@@ -1905,6 +2091,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -1973,6 +2160,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -2032,6 +2220,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -2095,6 +2284,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -2156,6 +2346,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -2195,6 +2386,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -2240,6 +2432,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;
@@ -2299,6 +2492,7 @@ mod tests {
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
                 &mut backend,
             )
             .await;

@@ -22,6 +22,9 @@ pub enum CalibrationError {
     ConfigFault,
     /// Encoder presence, movement, or alignment validation failed.
     EncoderFault,
+    /// Closed-loop entry position hold was unstable (runaway or excess
+    /// drift) after exhausting the bounded-drift retry budget. Code 9.
+    ClosedLoopEntryUnstable,
 }
 
 impl CalibrationError {
@@ -35,6 +38,7 @@ impl CalibrationError {
             Self::InternalError => 6,
             Self::ConfigFault => 7,
             Self::EncoderFault => 8,
+            Self::ClosedLoopEntryUnstable => 9,
         }
     }
 }
@@ -46,5 +50,10 @@ mod tests {
     #[test]
     fn calibration_chip_reset_detected_has_status_code_2() {
         assert_eq!(CalibrationError::ChipResetDetected.status_code(), 2);
+    }
+
+    #[test]
+    fn calibration_closed_loop_entry_unstable_has_status_code_9() {
+        assert_eq!(CalibrationError::ClosedLoopEntryUnstable.status_code(), 9);
     }
 }

@@ -2240,10 +2240,13 @@ mod tests {
         // backend future used by this host-side size gate.
         // Resistance current evidence adds 16 bytes to the terminal result
         // carried by the engine-step future.
-        assert_eq!(engine_step, 4_320);
-        assert!(engine_step <= 4_320);
-        assert_eq!(step_inner, 4_272);
-        assert!(step_inner <= 4_272);
+        // Closed-loop-entry bounded-drift retry adds an `attempt: u8` field
+        // to `InnerPhase::ClosedLoopEntry`, growing the phase enum by 16
+        // bytes after alignment.
+        assert_eq!(engine_step, 4_336);
+        assert!(engine_step <= 4_336);
+        assert_eq!(step_inner, 4_288);
+        assert!(step_inner <= 4_288);
         // Run-owned current evidence adds 32 bytes to electrical ID state.
         assert_eq!(electrical_id, 640);
         assert!(electrical_id <= 640);
@@ -2251,10 +2254,11 @@ mod tests {
         // The capture-owned deadline loop adds 48 bytes to the scheduled
         // future while removing per-sample reconstruction of that future.
         // Production-semantic mock retries add another 32 bytes in tests.
-        assert_eq!(scheduled_step, 4_400);
+        // Closed-loop-entry bounded-drift retry adds 16 bytes (see engine_step).
+        assert_eq!(scheduled_step, 4_416);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
-        assert!(scheduled_step <= 4_400);
+        assert!(scheduled_step <= 4_416);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -2464,6 +2468,7 @@ mod tests {
                 inner_result: Some(sample_inner_result(
                     crate::autotune::CommissionStatus::Accepted,
                 )),
+                attempt: 0,
             };
 
             let mut backend = crate::commission_dispatch::test_support::MockBackend::new();

@@ -2075,6 +2075,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         position_filter_hz: 0,
                         flux_filter_hz,
                         inner_result: Some(result),
+                        attempt: 0,
                     };
                     StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
                 }

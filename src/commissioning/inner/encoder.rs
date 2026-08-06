@@ -808,6 +808,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                         position_filter_hz: gains.position_filter_hz,
                         flux_filter_hz: gains.flux_filter_hz,
                         inner_result: None,
+                        attempt: 0,
                     };
                     StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
                 }

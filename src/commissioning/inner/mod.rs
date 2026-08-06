@@ -508,6 +508,10 @@ pub(crate) enum InnerPhase {
         flux_filter_hz: u16,
         /// Inner result carried forward for CommissionDone (Commission sequence only).
         inner_result: Option<InnerResult>,
+        /// Zero-based bounded-drift retry attempt. Runaway failures never
+        /// retry regardless of this count; only the bounded-drift-exceeded
+        /// failure is retried, and only up to a fixed attempt budget.
+        attempt: u8,
     },
     /// A phase failed.
     Failed(CommissionError),
@@ -647,7 +651,14 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
                 .await
         }
         InnerPhase::ClosedLoopEntry { .. } => {
-            closed_loop_entry::step_closed_loop_entry(phase, sequence, adc_cal, backend).await
+            closed_loop_entry::step_closed_loop_entry(
+                phase,
+                sequence,
+                adc_cal,
+                diagnostics,
+                backend,
+            )
+            .await
         }
         InnerPhase::Failed(err) => StepResult::InnerFailed(*err),
     }

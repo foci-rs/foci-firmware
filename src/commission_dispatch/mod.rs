@@ -475,6 +475,7 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
         CommissionError::ChipResetDetected => CalibrationError::ChipResetDetected,
         CommissionError::MotorEnabled => CalibrationError::AlreadyEnabled,
         CommissionError::EncoderFault => CalibrationError::EncoderFault,
+        CommissionError::ClosedLoopEntryUnstable => CalibrationError::ClosedLoopEntryUnstable,
         _ => CalibrationError::InternalError,
     };
     calibration_error.status_code()
