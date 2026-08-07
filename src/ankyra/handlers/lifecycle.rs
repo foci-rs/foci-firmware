@@ -59,16 +59,22 @@ pub fn get_config(ctx: &mut dyn StateAccess) {
 /// Clear shutdown state, allowing normal command processing to resume.
 ///
 /// Matches Klipper C `command_clear_shutdown` (basecmd.c). If called
-/// when not in shutdown, triggers a shutdown instead.
+/// when not in shutdown, triggers a shutdown instead. `SHUTDOWN_ACTIVE`
+/// is only cleared when the underlying clear actually succeeds, so an
+/// invalid clear that enters shutdown does not immediately undo it.
 #[klipper_command(in_shutdown)]
 pub fn clear_shutdown(ctx: &mut dyn ShutdownRecovery) {
-    if foci_klipper::commands::lifecycle::clear_shutdown(ctx.state()).is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::ShutdownClearedWhenNotShutdown, clock);
+    match foci_klipper::commands::lifecycle::clear_shutdown(ctx.state()) {
+        Ok(()) => {
+            SHUTDOWN_ACTIVE.store(false, core::sync::atomic::Ordering::Relaxed);
+        }
+        Err(_) => {
+            if ctx.enter_shutdown() {
+                let clock = ctx.now();
+                ctx.send_shutdown(ShutdownReason::ShutdownClearedWhenNotShutdown, clock);
+            }
+        }
     }
-    SHUTDOWN_ACTIVE.store(false, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Full config reset: clear all OIDs, steppers, and shutdown state.
@@ -137,3 +143,95 @@ pub fn reset(ctx: &mut dyn ShutdownRecovery) {
 
 #[klipper_command(in_shutdown)]
 pub fn debug_nop(_ctx: &mut dyn StateAccess) {}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::Ordering::Relaxed;
+    use std::sync::Mutex;
+
+    use foci_klipper::shutdown::McuState;
+    use foci_klipper::state::State;
+
+    use super::*;
+
+    /// Serializes tests touching the global `SHUTDOWN_ACTIVE` atomic.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct MockCtx {
+        state: State,
+        last_shutdown: Option<ShutdownReason>,
+    }
+
+    impl MockCtx {
+        fn new() -> Self {
+            Self {
+                state: State::new(),
+                last_shutdown: None,
+            }
+        }
+    }
+
+    impl StateAccess for MockCtx {
+        fn state(&mut self) -> &mut State {
+            &mut self.state
+        }
+    }
+
+    impl ClockSource for MockCtx {
+        fn now(&self) -> u32 {
+            123
+        }
+    }
+
+    impl ShutdownRecovery for MockCtx {
+        fn enter_shutdown(&mut self) -> bool {
+            crate::helpers::lifecycle::enter_shutdown(&mut self.state)
+        }
+
+        fn reset_to_bootloader(&mut self) -> ! {
+            panic!("reset_to_bootloader not used in tests")
+        }
+
+        fn send_shutdown(&mut self, reason: ShutdownReason, _clock: u32) {
+            self.last_shutdown = Some(reason);
+        }
+    }
+
+    #[test]
+    fn invalid_clear_shutdown_leaves_shutdown_active_set() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        SHUTDOWN_ACTIVE.store(false, Relaxed);
+
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+        ctx.state.mcu_state = McuState::Running;
+
+        clear_shutdown(&mut ctx, &mut sender);
+
+        assert!(ctx.state.mcu_state.is_shutdown());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::ShutdownClearedWhenNotShutdown)
+        );
+        assert!(
+            SHUTDOWN_ACTIVE.load(Relaxed),
+            "an invalid clear_shutdown call entered shutdown but then cleared the shared flag"
+        );
+    }
+
+    #[test]
+    fn valid_clear_shutdown_clears_shutdown_active() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        SHUTDOWN_ACTIVE.store(true, Relaxed);
+
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+        ctx.state.mcu_state = McuState::Shutdown { reason: 0 };
+
+        clear_shutdown(&mut ctx, &mut sender);
+
+        assert!(!ctx.state.mcu_state.is_shutdown());
+        assert_eq!(ctx.last_shutdown, None);
+        assert!(!SHUTDOWN_ACTIVE.load(Relaxed));
+    }
+}
