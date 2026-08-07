@@ -287,25 +287,25 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
 }
 
 /// Stop current-regulated open-loop encoder movement.
+///
+/// Lowers the enable GPIO first so a stalled or failed register write
+/// cannot retain current-regulated drive, then attempts every cleanup
+/// write regardless of earlier failures and reports whether any failed.
 pub(crate) async fn stop_encoder_current_drive<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<(), CommissionError> {
     use foci_tmc4671::registers::*;
 
-    backend
-        .write_register(PID_TORQUE_FLUX_TARGET, 0)
-        .await
-        .map_err(|_| CommissionError::Spi)?;
-    backend
-        .write_register(UQ_UD_EXT, 0)
-        .await
-        .map_err(|_| CommissionError::Spi)?;
-    backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0)
-        .await
-        .map_err(|_| CommissionError::Spi)?;
     backend.set_enable_pin(false);
-    Ok(())
+
+    let flux_target = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+    let uq_ud_ext = backend.write_register(UQ_UD_EXT, 0).await;
+    let ramp_mode = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+
+    flux_target
+        .and(uq_ud_ext)
+        .and(ramp_mode)
+        .map_err(|_| CommissionError::Spi)
 }
 
 /// Advance encoder check sub-state.
@@ -415,8 +415,9 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 }
             };
 
-            // Stop and disable (always, regardless of result).
-            let _ = stop_encoder_current_drive(backend).await;
+            if let Err(error) = stop_encoder_current_drive(backend).await {
+                return super::fail_inner(phase, error);
+            }
 
             let domain =
                 match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
@@ -1232,6 +1233,55 @@ mod tests {
                 InnerPhase::Failed(CommissionError::EncoderFault)
             ));
             assert!(selftest_results.stage(6).is_none());
+        });
+    }
+
+    #[test]
+    fn stop_encoder_current_drive_lowers_gpio_before_a_failed_write() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend.fail_on_write = Some(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr());
+
+            let result = stop_encoder_current_drive(&mut backend).await;
+
+            assert!(matches!(result, Err(CommissionError::Spi)));
+            assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn encoder_check_finalize_fails_when_stop_drive_write_fails() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut phase = InnerPhase::EncoderCheck {
+                state: EncoderCheckState::Finalize {
+                    count_start: encoder_count(3998),
+                    attempt: 0,
+                },
+            };
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            backend.set_abn_decoder_count_sequence(&[2, 2, 2]);
+            backend.fail_on_write = Some(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr());
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Selftest,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(matches!(phase, InnerPhase::Failed(CommissionError::Spi)));
         });
     }
 
