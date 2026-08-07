@@ -1,8 +1,8 @@
 //! Board-agnostic FOCI firmware library.
 //!
 //! Provides the [`tmc::TmcRequest`] communication type, register [`dump`]
-//! protocol, autotune / commissioning logic, and the [`platform`] trait
-//! surface that board binaries implement to plug in their hardware.
+//! protocol, and autotune / commissioning logic. Board binaries plug in
+//! their hardware directly rather than through a shared trait surface.
 
 #![no_std]
 
@@ -26,7 +26,6 @@ pub mod electrical_capture;
 pub mod helpers;
 pub mod motion_scale;
 pub mod pid;
-pub mod platform;
 pub mod resistance_identification;
 pub mod sample_timing;
 pub mod selftest;
