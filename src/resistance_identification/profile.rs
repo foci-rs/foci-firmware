@@ -3,6 +3,24 @@ use super::types::ElectricalAxis;
 /// Standard positive UD point candidates for adaptive resistance identification.
 pub const STANDARD_UD_POINTS: [i16; 8] = [512, 640, 800, 960, 1120, 1280, 1440, 1600];
 
+// STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout. It may
+// appear in sampled flags, but it is not an actionable resistance-run
+// fault. See `autotune::current::current_loop_actionable_status_mask`'s
+// identical exclusion of this bit.
+const RESISTANCE_RUN_RESERVED_STATUS_MASK: u32 = 1 << 31;
+
+/// Documented actionable mask for resistance-run `STATUS_FLAGS` warnings.
+///
+/// Deliberately broader than `autotune::current::current_loop_actionable_status_mask`,
+/// which also excludes several bits that are specifically not meaningful for
+/// closed-loop current validation (PID output clipping, inactive-encoder
+/// bits). Those distinctions do not apply to the resistance run's open-loop
+/// excitation, so only the one bit documented as hardware-reserved is
+/// excluded here.
+pub const fn resistance_run_actionable_status_mask() -> u32 {
+    !RESISTANCE_RUN_RESERVED_STATUS_MASK
+}
+
 /// Profile constants for one resistance-identification run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ResistanceProfile {
@@ -59,7 +77,7 @@ impl ResistanceProfile {
             pwm_sv_chop: 7,
             max_expected_current_count: 1600,
             encoder_move_warn_counts: 128,
-            status_flags_warn_mask: u32::MAX,
+            status_flags_warn_mask: resistance_run_actionable_status_mask(),
             max_window_exposure: 30_000_000_000,
             max_total_exposure: 100_000_000_000,
             scale_metadata_validated: true,
@@ -127,5 +145,18 @@ mod tests {
         assert!(profile.max_expected_current_count >= 1400);
         assert_eq!(profile.encoder_move_warn_counts, 128);
         assert_ne!(profile.status_flags_warn_mask, 0);
+    }
+
+    #[test]
+    fn standard_profile_status_flags_warn_mask_excludes_only_the_reserved_bit() {
+        let profile = ResistanceProfile::standard();
+
+        // STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout (see
+        // `autotune::current::current_loop_actionable_status_mask`'s
+        // identical exclusion) and must never itself trigger a warning.
+        // Every other bit remains actionable for the resistance-run warning
+        // classification, unlike the hard-fail current-loop mask which also
+        // excludes several current-loop-specific bits not relevant here.
+        assert_eq!(profile.status_flags_warn_mask, !(1u32 << 31));
     }
 }

@@ -4540,7 +4540,9 @@ mod tests {
 
         ResistanceRunResult {
             selected_r_count_slope_milli: 1000,
+            baseline_flags: 0,
             status_flags_or: 0,
+            new_flags: 0,
             axis0: axis_result(ElectricalAxis::PHASE0),
             axis1: axis_result(ElectricalAxis::PHASE90),
             warning_flags: ResistanceWarningFlags::NONE,

@@ -125,6 +125,10 @@ pub fn fit_resistance_axis(
 /// Combines two per-axis fits into a two-axis run result, applying the
 /// electrical-axis mismatch gate and aggregating warning flags.
 ///
+/// `baseline_flags` is the `STATUS_FLAGS` value read once before excitation;
+/// it never contributes to `warning_flags` classification, only to the
+/// reported `baseline_flags`/`new_flags` split.
+///
 /// # Errors
 ///
 /// Returns [`ResistanceError::ElectricalAxisMismatch`] when the two axes'
@@ -134,6 +138,7 @@ pub fn evaluate_resistance_result(
     axis0: ResistanceAxisResult,
     axis1: ResistanceAxisResult,
     status_flags_or: u32,
+    baseline_flags: u32,
 ) -> Result<ResistanceRunResult, ResistanceError> {
     let diff = axis0
         .r_count_slope_milli
@@ -156,7 +161,9 @@ pub fn evaluate_resistance_result(
 
     Ok(ResistanceRunResult {
         selected_r_count_slope_milli: (axis0.r_count_slope_milli + axis1.r_count_slope_milli) / 2,
+        baseline_flags,
         status_flags_or,
+        new_flags: status_flags_or & !baseline_flags,
         axis0,
         axis1,
         warning_flags,
@@ -355,7 +362,7 @@ mod tests {
         let a = axis_result_for_test(ElectricalAxis::PHASE0, 1000);
         let b = axis_result_for_test(ElectricalAxis::PHASE90, 1300);
 
-        let err = evaluate_resistance_result(&profile, a, b, 0).unwrap_err();
+        let err = evaluate_resistance_result(&profile, a, b, 0, 0).unwrap_err();
 
         assert_eq!(err, ResistanceError::ElectricalAxisMismatch);
     }
@@ -367,12 +374,27 @@ mod tests {
         let b = axis_result_for_test(ElectricalAxis::PHASE90, 1000);
 
         let result =
-            evaluate_resistance_result(&profile, a, b, profile.status_flags_warn_mask).unwrap();
+            evaluate_resistance_result(&profile, a, b, profile.status_flags_warn_mask, 0).unwrap();
 
         assert!(
             result
                 .warning_flags
                 .contains(ResistanceWarningFlags::STATUS_FLAGS)
         );
+    }
+
+    #[test]
+    fn baseline_flags_are_excluded_from_new_flags_but_not_from_status_flags_or() {
+        let profile = ResistanceProfile::standard();
+        let a = axis_result_for_test(ElectricalAxis::PHASE0, 1000);
+        let b = axis_result_for_test(ElectricalAxis::PHASE90, 1000);
+        let baseline = 1 << 5;
+        let run = baseline | (1 << 9);
+
+        let result = evaluate_resistance_result(&profile, a, b, run, baseline).unwrap();
+
+        assert_eq!(result.baseline_flags, baseline);
+        assert_eq!(result.status_flags_or, run);
+        assert_eq!(result.new_flags, 1 << 9);
     }
 }

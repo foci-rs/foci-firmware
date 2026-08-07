@@ -113,7 +113,10 @@ impl ResistanceRunner {
             }
             8 => match backend.read_register(STATUS_FLAGS.addr()).await {
                 Ok(flags) => {
-                    self.record_status_evidence(flags);
+                    // Baseline only; never mixed into status_flags_or or
+                    // warning_flags, which report evidence observed after
+                    // the clear below.
+                    self.baseline_status_flags = flags;
                     Ok(())
                 }
                 Err(_) => Err(ResistanceError::BackendIo),

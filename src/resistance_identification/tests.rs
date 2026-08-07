@@ -1085,7 +1085,11 @@ fn runner_sets_status_flags_warning_when_sampled_status_matches_mask() {
         expected_status_flags & backend.profile().status_flags_warn_mask,
         0
     );
-    backend.scripted_status_flags = expected_status_flags;
+    // A clean baseline (read 1), then the flag first appears at the
+    // post-clear verify read (read 2) and every read after, since the
+    // script queue is exhausted and reads fall back to the last scripted
+    // value: this is genuinely sampled evidence, not an inherited baseline.
+    backend.script_status_reads(&[0, expected_status_flags]);
 
     let result = block_on(run_resistance_identification(
         &mut backend,
@@ -1100,6 +1104,7 @@ fn runner_sets_status_flags_warning_when_sampled_status_matches_mask() {
             .contains(ResistanceWarningFlags::STATUS_FLAGS)
     );
     assert_eq!(result.status_flags_or, expected_status_flags);
+    assert_eq!(result.baseline_flags, 0);
 }
 
 /// Assert that `addr` was written with `value` before the safe-state restore
@@ -1628,7 +1633,37 @@ fn critical_status_stops_measurement_and_lowers_gpio_before_restore_io() {
 #[test]
 fn warning_only_status_is_retained_without_terminating_sample() {
     let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
+    // Raised only after the pre-excitation baseline read and clear, so this
+    // is genuinely observed during the run rather than inherited.
     backend.scripted_status_flags = 1 << 28;
+
+    assert!(matches!(
+        poll_runner(&mut runner, &mut backend, due),
+        ResistancePoll::At(_)
+    ));
+    assert!(backend.enable_pin);
+    assert_eq!(runner.baseline_status_flags(), 0);
+    assert_eq!(runner.status_flags_or(), 1 << 28);
+    assert!(
+        runner
+            .warning_flags()
+            .contains(ResistanceWarningFlags::STATUS_FLAGS)
+    );
+}
+
+#[test]
+fn new_status_flags_excludes_bits_also_present_in_baseline() {
+    let mut backend = FakeResistanceBackend::standard();
+    // read 1 (baseline, op 8) = bit 28; read 2 (post-clear verify, op 10) =
+    // bit 28 re-asserted; read 3 (first sample) adds bit 29.
+    backend.script_status_reads(&[1 << 28, 1 << 28, (1 << 28) | (1 << 29)]);
     let mut runner = ResistanceRunner::new(
         ResistanceRunMode::CommissioningManagedEnable,
         backend.profile(),
@@ -1641,12 +1676,13 @@ fn warning_only_status_is_retained_without_terminating_sample() {
         poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::At(_)
     ));
-    assert!(backend.enable_pin);
-    assert_eq!(runner.status_flags_or(), 1 << 28);
-    assert!(
-        runner
-            .warning_flags()
-            .contains(ResistanceWarningFlags::STATUS_FLAGS)
+    assert_eq!(runner.baseline_status_flags(), 1 << 28);
+    assert_eq!(runner.status_flags_or(), (1 << 28) | (1 << 29));
+    assert_eq!(
+        runner.new_status_flags(),
+        1 << 29,
+        "a bit re-observed during the run that also appeared in the \
+         pre-clear baseline must not count as newly raised"
     );
 }
 
@@ -1756,9 +1792,10 @@ fn inherited_status_is_retained_cleared_and_absent_from_first_sample() {
             .iter()
             .any(|write| { write.addr == STATUS_FLAGS.addr() && write.value == 0 })
     );
-    assert_eq!(runner.status_flags_or(), 0x7000_4480);
+    assert_eq!(runner.baseline_status_flags(), 0x7000_4480);
+    assert_eq!(runner.status_flags_or(), 0);
     assert!(
-        runner
+        !runner
             .warning_flags()
             .contains(ResistanceWarningFlags::STATUS_FLAGS)
     );
@@ -1768,7 +1805,8 @@ fn inherited_status_is_retained_cleared_and_absent_from_first_sample() {
         poll_runner(&mut runner, &mut backend, first_settle_deadline),
         ResistancePoll::At(_) | ResistancePoll::ReadyNow
     ));
-    assert_eq!(runner.status_flags_or(), 0x7000_4480);
+    assert_eq!(runner.baseline_status_flags(), 0x7000_4480);
+    assert_eq!(runner.status_flags_or(), 0);
     assert_eq!(runner.primary_error(), None);
     assert!(backend.enable_pin);
 }
@@ -1799,7 +1837,8 @@ fn fresh_critical_status_after_clear_refuses_enable_and_starts_restore() {
         }
     }
 
-    assert_eq!(runner.status_flags_or(), 0x7400_4480);
+    assert_eq!(runner.baseline_status_flags(), 0x7000_4480);
+    assert_eq!(runner.status_flags_or(), 1 << 26);
     assert_eq!(
         runner.primary_error(),
         Some(ResistanceError::CriticalStatus)
@@ -1832,7 +1871,8 @@ fn critical_sample_status_precedes_coincident_timing_rejection() {
         poll_runner(&mut runner, &mut backend, due),
         ResistancePoll::ReadyNow
     );
-    assert_eq!(runner.status_flags_or(), 0x7400_4480);
+    assert_eq!(runner.baseline_status_flags(), 0x7000_4480);
+    assert_eq!(runner.status_flags_or(), 1 << 26);
     assert_eq!(
         runner.primary_error(),
         Some(ResistanceError::CriticalStatus)

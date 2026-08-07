@@ -196,6 +196,7 @@ pub struct ResistanceRunner {
     saved_voltage_limit: u32,
     energized: bool,
     primary_error: Option<ResistanceError>,
+    baseline_status_flags: u32,
     status_flags_or: u32,
     warning_flags: ResistanceWarningFlags,
     axis_index: u8,
@@ -230,6 +231,7 @@ impl ResistanceRunner {
             saved_voltage_limit: 0,
             energized: false,
             primary_error: None,
+            baseline_status_flags: 0,
             status_flags_or: 0,
             warning_flags: ResistanceWarningFlags::NONE,
             axis_index: 0,
@@ -258,10 +260,28 @@ impl ResistanceRunner {
         timing
     }
 
-    /// Return the raw OR of all STATUS observations made so far.
+    /// Return the raw `STATUS_FLAGS` value read once before excitation,
+    /// prior to the pre-excitation clear. Never contributes to
+    /// `status_flags_or`, `new_status_flags`, or `warning_flags`.
+    #[must_use]
+    pub const fn baseline_status_flags(&self) -> u32 {
+        self.baseline_status_flags
+    }
+
+    /// Return the raw OR of all STATUS observations made after the
+    /// pre-excitation clear, excluding the pre-clear baseline.
     #[must_use]
     pub const fn status_flags_or(&self) -> u32 {
         self.status_flags_or
+    }
+
+    /// Return the subset of `status_flags_or` not already present in
+    /// `baseline_status_flags`: bits genuinely first observed during the
+    /// run, as opposed to a bit that was already sticky beforehand and
+    /// happened to reassert after the clear.
+    #[must_use]
+    pub const fn new_status_flags(&self) -> u32 {
+        self.status_flags_or & !self.baseline_status_flags
     }
 
     /// Return the primary failure retained while restoration is in progress.

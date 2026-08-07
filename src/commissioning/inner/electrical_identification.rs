@@ -2519,7 +2519,9 @@ mod tests {
     fn resistance_result(slope0_milli: i32, slope1_milli: i32) -> ResistanceRunResult {
         ResistanceRunResult {
             selected_r_count_slope_milli: (slope0_milli + slope1_milli) / 2,
+            baseline_flags: 0,
             status_flags_or: 0,
+            new_flags: 0,
             axis0: axis_result(ElectricalAxis::PHASE0, slope0_milli),
             axis1: axis_result(ElectricalAxis::PHASE90, slope1_milli),
             warning_flags: ResistanceWarningFlags::NONE,
@@ -4530,7 +4532,9 @@ mod tests {
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-            let warning_status = 1 << 31;
+            // Bit 28 (inactive-encoder) is excluded from the current-loop
+            // hard-fail mask, so it warns without terminating the run.
+            let warning_status = 1 << 28;
             let mut injected = false;
 
             // A 20 s resistance run can schedule up to 4,000 observations at

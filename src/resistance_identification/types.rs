@@ -155,7 +155,15 @@ impl ResistanceCurrentEvidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ResistanceRunResult {
     pub selected_r_count_slope_milli: i32,
+    /// Raw `STATUS_FLAGS` read once before excitation, prior to the
+    /// pre-excitation clear. Never contributes to `status_flags_or`,
+    /// `new_flags`, or `warning_flags`.
+    pub baseline_flags: u32,
+    /// Raw OR of all STATUS observations made after the pre-excitation
+    /// clear, excluding the pre-clear baseline.
     pub status_flags_or: u32,
+    /// Subset of `status_flags_or` not already present in `baseline_flags`.
+    pub new_flags: u32,
     pub axis0: ResistanceAxisResult,
     pub axis1: ResistanceAxisResult,
     pub warning_flags: ResistanceWarningFlags,

@@ -156,6 +156,7 @@ impl ResistanceRunner {
             self.axis_results[0].expect("axis zero evaluated"),
             self.axis_results[1].expect("axis one evaluated"),
             self.status_flags_or,
+            self.baseline_status_flags,
         );
         match result {
             Ok(mut result) => {
