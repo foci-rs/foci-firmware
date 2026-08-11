@@ -58,7 +58,13 @@ impl StageCPreflight {
 }
 
 /// Install retained Stage-C authority from one exact execution plan.
-pub(crate) fn install_authority_from_plan(
+///
+/// Public so a board can retain authority directly from the scheduled plan
+/// event. Boards whose budget keeps nonterminal classification outside the
+/// terminal async dispatch future cannot reach the retention inside
+/// [`crate::tmc_control::TmcControlRuntime::drive_commissioning_poll_with_stages`],
+/// and a Stage-C terminal arriving with an empty slot fails closed.
+pub fn install_authority_from_plan(
     channel: u8,
     stage_c_candidate: &mut StageCCandidateSlot,
     plan: VelocityIntegralPlan,
