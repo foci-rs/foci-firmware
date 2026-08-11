@@ -1306,6 +1306,68 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
     ));
 }
 
+#[cfg(feature = "trace-velocity-sweep")]
+#[fixture_test]
+async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
+    crate::state::tmc::reset_all_tmc_channels();
+    crate::state::stepper::reset_all_stepper_channels();
+
+    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commissioning::CommissioningEngine;
+    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    use crate::commissioning::schedule::{CommissionEvent, CommissionPoll};
+    use crate::config::TmcConfig;
+    use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
+
+    let plan = stage_c_plan();
+    let expected_authority = retained_authority();
+    let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
+    runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(
+        1,
+        crate::state::tmc::tmc_channel0(),
+    ));
+    let mut stage_b_slot = StageBCandidateSlot::new();
+    let mut stage_c_slot = StageCCandidateSlot::new();
+    let mut backend = MockBackend::new();
+    let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, TmcConfig::default_for_test());
+    let poll = CommissionPoll::ReadyNow {
+        event: Some(CommissionEvent::VelocityIntegralPlan {
+            oid: 1,
+            run_sequence: 9,
+            plan,
+        }),
+    };
+    let mut emitted_reply = None;
+
+    let action = runtime
+        .drive_commissioning_poll_with_stages(
+            poll,
+            &mut backend,
+            super::CommissionTerminalContext::new(&mut stage_b_slot, &mut stage_c_slot, |reply| {
+                emitted_reply = Some(reply)
+            }),
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+            &config,
+        )
+        .await
+        .expect("active engine should classify the scheduled plan event");
+
+    assert_eq!(stage_c_slot.state(), StageCSlotState::AuthorityOnly);
+    assert_eq!(stage_c_slot.authority(), Some(expected_authority));
+    assert!(emitted_reply.is_none());
+    assert!(matches!(
+        action,
+        ScheduledCommissionTickAction::ReadyNow {
+            event: Some(CommissionEvent::VelocityIntegralPlan {
+                oid: 1,
+                run_sequence: 9,
+                plan: reported,
+            }),
+        } if reported == plan
+    ));
+}
+
 #[test]
 fn outer_safety_timing_terminal_order_stage_c_resume() {
     pollster::block_on(async {

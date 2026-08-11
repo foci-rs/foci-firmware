@@ -57,6 +57,24 @@ impl StageCPreflight {
     }
 }
 
+/// Install retained Stage-C authority from one exact execution plan.
+pub(crate) fn install_authority_from_plan(
+    channel: u8,
+    stage_c_candidate: &mut StageCCandidateSlot,
+    plan: VelocityIntegralPlan,
+) -> StageCAuthoritySummary {
+    let authority = StageCAuthoritySummary::from_plan(
+        channel,
+        STAGE_B_BUILD_REVISION,
+        plan.schema_revision,
+        plan.authority.stage_b_plan_digest,
+        plan.execution_plan(),
+        plan.authority,
+    );
+    stage_c_candidate.install_authority(authority);
+    authority
+}
+
 /// Fail-closed reason a retained Stage-C request was rejected before actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StageCPreflightRejection {

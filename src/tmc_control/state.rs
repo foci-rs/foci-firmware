@@ -4,6 +4,8 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::CommissioningEngine;
+#[cfg(feature = "trace-velocity-sweep")]
+use crate::commissioning::schedule::CommissionEvent;
 use crate::commissioning::schedule::{CommissionPoll, CommissionTerminal, adapt_step_result};
 use crate::commissioning::types::{CommissioningBackend, EngineKind};
 use crate::pid::InnerLoopGains;
@@ -123,6 +125,21 @@ pub struct TmcControlRuntime {
 }
 
 impl TmcControlRuntime {
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn retain_stage_c_authority_from_event(
+        channel: u8,
+        event: &Option<CommissionEvent>,
+        retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
+    ) {
+        if let Some(CommissionEvent::VelocityIntegralPlan { plan, .. }) = event {
+            crate::commission_dispatch::stage_c::install_authority_from_plan(
+                channel,
+                retention.stage_c,
+                *plan,
+            );
+        }
+    }
+
     /// Create a runtime for one board-local TMC channel.
     pub const fn new_for_channel(channel: u8) -> Self {
         Self {
@@ -649,7 +666,7 @@ impl TmcControlRuntime {
         &mut self,
         poll: CommissionPoll,
         backend: &mut B,
-        context: crate::commission_dispatch::CommissionTerminalContext<'_, E>,
+        mut context: crate::commission_dispatch::CommissionTerminalContext<'_, E>,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
@@ -660,15 +677,27 @@ impl TmcControlRuntime {
     {
         match poll {
             CommissionPoll::ReadyNow { event } => {
+                Self::retain_stage_c_authority_from_event(
+                    self.channel,
+                    &event,
+                    &mut context.retention,
+                );
                 self.classify_commission_poll(CommissionPoll::ReadyNow { event })
             }
             CommissionPoll::At {
                 timestamp_us,
                 event,
-            } => self.classify_commission_poll(CommissionPoll::At {
-                timestamp_us,
-                event,
-            }),
+            } => {
+                Self::retain_stage_c_authority_from_event(
+                    self.channel,
+                    &event,
+                    &mut context.retention,
+                );
+                self.classify_commission_poll(CommissionPoll::At {
+                    timestamp_us,
+                    event,
+                })
+            }
             CommissionPoll::Terminal { result } => {
                 self.drive_commissioning_terminal_with_stages(
                     result, backend, context, tmc, stepper, config,
