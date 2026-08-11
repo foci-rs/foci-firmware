@@ -1552,6 +1552,29 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             )
             .await
         }
+        StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+            use crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary;
+            use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
+
+            retention
+                .stage_c
+                .install_authority(StageCAuthoritySummary::from_plan(
+                    channel,
+                    STAGE_B_BUILD_REVISION,
+                    plan.schema_revision,
+                    plan.authority.stage_b_plan_digest,
+                    plan.execution_plan(),
+                    plan.authority,
+                ));
+            drive_commission_result(
+                StepResult::BreakawayStageCPlanReady { run_sequence, plan },
+                engine,
+                backend,
+                state,
+                pwm_maxcnt,
+            )
+            .await
+        }
         StepResult::VelocitySweepTerminal(mut terminal)
             if engine
                 .as_ref()

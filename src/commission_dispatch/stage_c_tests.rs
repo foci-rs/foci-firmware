@@ -1,7 +1,7 @@
 use super::stage_c::{
-    STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, STAGE_C_CAUSE_PLAN_MISMATCH,
-    STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightConfig, StageCPreflightRejection,
-    apply_stage_c_terminal, preflight_stage_c_request,
+    STAGE_C_CAUSE_EVIDENCE_INTEGRITY, STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
+    STAGE_C_CAUSE_PLAN_MISMATCH, STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightConfig,
+    StageCPreflightRejection, apply_stage_c_terminal, preflight_stage_c_request,
 };
 use super::{CommissionOutcome, ReplyPayload};
 use crate::commissioning::outer::OuterMotionBudget;
@@ -717,6 +717,83 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
 }
 
 #[test]
+fn unexpected_complete_terminal_fails_closed_in_retained_stage_c_dispatch() {
+    // Combined workflow terminals are handled before this retained dispatcher.
+    // Non-combined retained Stage C reports sufficiency as `CompleteCandidate`.
+    // A bare `Complete` reaching this function is therefore a contract
+    // violation, so it must not be accepted as success.
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_authority(retained_authority());
+
+    let dispatch = apply_stage_c_terminal(
+        terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0)),
+        &mut slot,
+    );
+
+    assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(dispatch.terminal.cause, STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+    assert_eq!(slot.state(), StageCSlotState::Empty);
+}
+
+#[test]
+fn every_engine_outcome_has_a_declared_dispatch_verdict() {
+    // The engine has six outcomes and `apply_stage_c_terminal` has five arms;
+    // nothing tested the cross-product, which is why three instances of
+    // dispatch-level fault promotion reached hardware before a test. Each row
+    // states the intended verdict, so grouping a success with a rejection
+    // cannot pass unnoticed again.
+    let expectations = [
+        (
+            VelocityIntegralOutcome::Complete,
+            VelocityIntegralOutcome::Fault,
+            STAGE_C_CAUSE_EVIDENCE_INTEGRITY,
+        ),
+        (
+            VelocityIntegralOutcome::CompleteCandidate,
+            VelocityIntegralOutcome::CompleteCandidate,
+            0,
+        ),
+        (
+            VelocityIntegralOutcome::Inconclusive,
+            VelocityIntegralOutcome::Inconclusive,
+            0,
+        ),
+        (
+            VelocityIntegralOutcome::Fault,
+            VelocityIntegralOutcome::Fault,
+            0,
+        ),
+        (
+            VelocityIntegralOutcome::Failed,
+            VelocityIntegralOutcome::Failed,
+            0,
+        ),
+        (
+            VelocityIntegralOutcome::RejectedPlanMismatch,
+            VelocityIntegralOutcome::Fault,
+            STAGE_C_CAUSE_EVIDENCE_INTEGRITY,
+        ),
+    ];
+
+    for (engine_outcome, expected_outcome, expected_cause) in expectations {
+        let mut slot = StageCCandidateSlot::new();
+        slot.install_authority(retained_authority());
+
+        let dispatch =
+            apply_stage_c_terminal(terminal(engine_outcome, sufficient_evidence(0)), &mut slot);
+
+        assert_eq!(
+            dispatch.terminal.outcome, expected_outcome,
+            "engine outcome {engine_outcome:?} produced the wrong dispatch outcome"
+        );
+        assert_eq!(
+            dispatch.terminal.cause, expected_cause,
+            "engine outcome {engine_outcome:?} produced the wrong dispatch cause"
+        );
+    }
+}
+
+#[test]
 fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
     let mut slot = StageCCandidateSlot::new();
     slot.install_authority(retained_authority());
@@ -1160,6 +1237,73 @@ fn reproduced_joint_authority_with_fragment_survives_suppressed_continuation() {
         assert_eq!(resume.plan.final_p, retained.final_p);
         assert_eq!(resume.plan.digest(), retained.identity.plan_digest);
     });
+}
+
+#[cfg(feature = "trace-velocity-sweep")]
+#[fixture_test]
+async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
+    crate::state::tmc::reset_all_tmc_channels();
+    crate::state::stepper::reset_all_stepper_channels();
+
+    use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+    use crate::commissioning::CommissioningEngine;
+    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+    use crate::commissioning::types::StepResult;
+
+    let plan = stage_c_plan();
+    let expected_authority = StageCAuthoritySummary::from_plan(
+        CHANNEL,
+        STAGE_B_BUILD_REVISION,
+        plan.schema_revision,
+        plan.authority.stage_b_plan_digest,
+        plan.execution_plan(),
+        plan.authority,
+    );
+    let mut stage_b_slot = StageBCandidateSlot::new();
+    let mut stage_c_slot = StageCCandidateSlot::new();
+    let mut backend = MockBackend::new();
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut calibrated = true;
+    let mut enabled = true;
+    let mut state = super::DispatchState::new(
+        crate::state::tmc::tmc_channel0(),
+        crate::state::stepper::stepper_channel0(),
+        &mut calibrated,
+        &mut enabled,
+        &mut gains,
+    );
+    let mut engine = Some(CommissioningEngine::new_outer(
+        1,
+        outer_params(),
+        entry_snapshot(),
+    ));
+
+    let outcome = super::drive_commission_result_with_stages(
+        StepResult::BreakawayStageCPlanReady {
+            run_sequence: 9,
+            plan,
+        },
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4_095,
+        CHANNEL,
+        super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
+    )
+    .await;
+
+    assert_eq!(stage_c_slot.state(), StageCSlotState::AuthorityOnly);
+    assert_eq!(stage_c_slot.authority(), Some(expected_authority));
+    assert!(matches!(
+        outcome,
+        CommissionOutcome::Evidence {
+            reply: ReplyPayload::VelocityIntegralPlan {
+                oid: 1,
+                run_sequence: 9,
+                plan: reported,
+            },
+        } if reported == plan
+    ));
 }
 
 #[test]
