@@ -8,8 +8,8 @@ use super::recovery::{
     RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
     RungOriginRecoveryPlanError, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
     RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
-    recovery_return_distance_counts, recovery_runtime_us, recovery_runtime_us_with_schedule,
-    step_rung_origin_recovery,
+    recovery_moving_target_counts, recovery_return_distance_counts, recovery_runtime_us,
+    recovery_runtime_us_with_schedule, step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -371,11 +371,12 @@ impl RecoveryFixture {
 
     fn finish_short_recovery(&mut self) -> super::recovery::RungOriginRecoveryReport {
         self.command_motion();
-        assert_eq!(self.sample(1_000, 1_000), RungOriginRecoveryStep::ReadyNow);
-        assert!(matches!(self.step(), RungOriginRecoveryStep::At(2_000)));
-        for sample in 2..=501 {
-            let result = self.sample(sample * 1_000, 1_000);
-            if sample < 501 {
+        let handover_us = self.arrive_at_moving_target(1_040);
+        let first = handover_us / 1_000 + 1;
+        assert!(matches!(self.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
+        for sample in first..=first + 499 {
+            let result = self.sample(sample * 1_000, moving_arrival_counts());
+            if sample < first + 499 {
                 assert!(matches!(result, RungOriginRecoveryStep::At(_)));
             } else {
                 assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -446,6 +447,53 @@ impl RecoveryFixture {
             absolute_offset_counts.rem_euclid(4_000) as u32;
         self.step()
     }
+
+    /// Drive to one step short of the moving target, returning the elapsed time.
+    ///
+    /// Leaves the final observation to the caller, which is how a dispatcher-taken
+    /// sample completes the moving phase.
+    fn approach_moving_target(&mut self, start_offset_counts: i32) -> u64 {
+        const STEP_COUNTS: i32 = 20;
+        let target = moving_arrival_counts();
+        let sign = if start_offset_counts < 0 { -1 } else { 1 };
+        let mut magnitude = start_offset_counts.abs();
+        let mut elapsed_us = 0;
+        while magnitude - STEP_COUNTS > target {
+            magnitude -= STEP_COUNTS;
+            elapsed_us += 1_000;
+            assert!(matches!(
+                self.sample(elapsed_us, sign * magnitude),
+                RungOriginRecoveryStep::At(_)
+            ));
+        }
+        elapsed_us
+    }
+
+    /// Drive the axis in to the moving target and return the handover time.
+    ///
+    /// The moving phase ends inside the origin band rather than on its edge, so
+    /// arriving takes several samples: the outer envelope caps how far the axis
+    /// may travel per millisecond, and a single jump to the target trips it.
+    /// Walking at a legal rate is also what the axis actually does.
+    fn arrive_at_moving_target(&mut self, start_offset_counts: i32) -> u64 {
+        const STEP_COUNTS: i32 = 20;
+        let target = moving_arrival_counts();
+        let sign = if start_offset_counts < 0 { -1 } else { 1 };
+        let mut magnitude = start_offset_counts.abs();
+        let mut elapsed_us = 0;
+        loop {
+            magnitude = (magnitude - STEP_COUNTS).max(target);
+            elapsed_us += 1_000;
+            match self.sample(elapsed_us, sign * magnitude) {
+                RungOriginRecoveryStep::ReadyNow => return elapsed_us,
+                RungOriginRecoveryStep::At(_) => assert!(
+                    magnitude > target,
+                    "the moving phase must hand over once the target is reached"
+                ),
+                other => panic!("driving toward the origin must not fault: {other:?}"),
+            }
+        }
+    }
 }
 
 #[test]
@@ -458,25 +506,31 @@ fn selected_recovery_discards_lead_in_before_scoring_rest() {
         RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
-    for sample in 2..=501 {
-        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+    for sample in first..=first + 499 {
+        let offset = if sample % 2 == 0 {
+            moving_arrival_counts() - 1
+        } else {
+            moving_arrival_counts()
+        };
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 501 {
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
-            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
         }
     }
-    for sample in 502..=1_001 {
-        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+    for sample in first + 500..=first + 999 {
+        let offset = if sample % 2 == 0 {
+            moving_arrival_counts() - 1
+        } else {
+            moving_arrival_counts()
+        };
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 1_001 {
+        if sample < first + 999 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -509,8 +563,13 @@ fn selected_recovery_discards_lead_in_before_scoring_rest() {
         }
     };
 
-    assert_eq!(analysis.first_in_band_offset_counts, 1_000);
-    assert_eq!(analysis.entry_to_band_duration_us, 1_000);
+    // The moving phase now hands over at the target inside the band, so entry is
+    // recorded there rather than on the band edge.
+    assert_eq!(
+        analysis.first_in_band_offset_counts,
+        moving_arrival_counts()
+    );
+    assert_eq!(u64::from(analysis.entry_to_band_duration_us), handover_us);
     assert_eq!(analysis.lead_in.net_displacement_counts, 0);
     assert_eq!(analysis.lead_in.displacement_span_counts, 1);
     assert_eq!(analysis.scored_net_displacement_counts, 0);
@@ -532,23 +591,21 @@ fn selected_recovery_reports_completed_unconfirmed_rest_without_a_fault() {
         RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
-    for sample in 2..=501 {
-        let result = fixture.sample(sample * 1_000, 1_000);
-        if sample < 501 {
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
+    for sample in first..=first + 499 {
+        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
-            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
         }
     }
-    for sample in 502..=1_001 {
-        let offset = 1_000 - (sample as i32 - 501);
+    for sample in first + 500..=first + 999 {
+        let offset = moving_arrival_counts() - (sample as i32 - (first as i32 + 499));
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 1_001 {
+        if sample < first + 999 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -734,6 +791,49 @@ fn recovery_controller_contained_paths_never_write_a_nonzero_target() {
 }
 
 #[test]
+fn moving_phase_drives_inside_the_band_before_settling() {
+    // The moving phase used to end on the first sample inside the band, so
+    // settle began at the edge and any outward movement before the final
+    // in-band test pushed the rung out of it. Measured across 29 moving
+    // recoveries on 2026-08-11: the final position is outward of the closest
+    // approach every time, by 11 to 50 counts, leaving a final margin of 0 to
+    // 62. Two rungs finished 2 and 5 counts outside and ended Stage C.
+    //
+    // The moving phase therefore drives to a target inside the band. The band
+    // itself is unchanged: it is the settle travel reserve in counts, and the
+    // acceptance test, the return-distance plan and the already-centered
+    // short-circuit all still use it.
+    let band = i32::try_from(origin_band_counts()).unwrap();
+    let target = i32::try_from(recovery_moving_target_counts(origin_band_counts())).unwrap();
+    assert!(target < band, "the moving target sits inside the band");
+
+    let mut fixture = RecoveryFixture::new(1_400, Some(14_000_000));
+    fixture.command_motion();
+
+    // Walk in toward the origin at the cadence the envelope allows, and record
+    // the offset at which the moving phase hands over to settle.
+    let mut handover = None;
+    for sample in 1..=40 {
+        let offset = 1_400 - sample as i32 * 20;
+        match fixture.sample(sample * 1_000, offset) {
+            RungOriginRecoveryStep::At(_) => {}
+            RungOriginRecoveryStep::ReadyNow => {
+                handover = Some(offset);
+                break;
+            }
+            other => panic!("recovery must drive toward the origin: {other:?}"),
+        }
+    }
+    let handover = handover.expect("the moving phase completes");
+
+    assert!(
+        handover <= target,
+        "settle must begin inside the band, not on its edge: handed over at \
+         {handover} with band {band} and target {target}"
+    );
+}
+
+#[test]
 fn recovery_controller_releases_contained_primitive() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
@@ -897,24 +997,18 @@ fn recovery_safety_reason_is_unique_and_stable() {
 fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    assert!(matches!(
-        fixture.sample(1_000, 1_020),
-        RungOriginRecoveryStep::At(_)
-    ));
-    assert_eq!(
-        fixture.sample(2_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
+    let handover_us = fixture.arrive_at_moving_target(1_040);
     assert_eq!(
         fixture.backend.registers.get(&PID_VELOCITY_TARGET.addr()),
         Some(&0)
     );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(3_000)));
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
     assert_eq!(fixture.backend.pid_velocity_error_sum_clears, 2);
 
-    for sample in 3..=502 {
-        let result = fixture.sample(sample * 1_000, 1_000);
-        if sample < 502 {
+    for sample in first..=first + 499 {
+        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -930,13 +1024,13 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
     };
     assert_eq!(report.outcome, RungOriginRecoveryOutcome::Recovered);
     assert_eq!(report.start_offset_counts, 1_040);
-    assert_eq!(report.closest_offset_counts, 1_000);
-    assert_eq!(report.final_offset_counts, 1_000);
+    assert_eq!(report.closest_offset_counts, moving_arrival_counts());
+    assert_eq!(report.final_offset_counts, moving_arrival_counts());
     assert_eq!(report.origin_band_counts, 1_000);
     assert_eq!(report.lower_rate_q.to_u64(), 14_000_000);
-    assert_eq!(report.moving_duration_us, 2_000);
+    assert_eq!(u64::from(report.moving_duration_us), handover_us);
     assert_eq!(report.settle_duration_us, 500_000);
-    assert_eq!(report.total_duration_us, 502_000);
+    assert_eq!(u64::from(report.total_duration_us), handover_us + 500_000);
     assert_eq!(report.peak_torque_target_abs, 100);
     assert!(fixture.safety.primitive_start_us.is_none());
     assert_eq!(fixture.observations.len(), 0);
@@ -946,11 +1040,9 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
 fn recovery_current_observer_covers_motion_and_zero_target_settle() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
     let _ = fixture.backend.registers.insert(
         foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
@@ -958,7 +1050,9 @@ fn recovery_current_observer_covers_motion_and_zero_target_settle() {
             .addr(),
         2_816,
     );
-    let RungOriginRecoveryStep::Contained(report) = fixture.sample(2_000, 1_000) else {
+    let RungOriginRecoveryStep::Contained(report) =
+        fixture.sample(handover_us + 1_000, moving_arrival_counts())
+    else {
         panic!("recovery clamp contact must be contained")
     };
     assert_eq!(
@@ -997,16 +1091,14 @@ fn recovery_contact_passive_settle_proves_an_in_band_origin() {
         2_816,
     );
 
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
+    let handover_us = fixture.arrive_at_moving_target(1_040);
     assert_eq!(
         fixture.backend.registers.get(&PID_VELOCITY_TARGET.addr()),
         Some(&0)
     );
     assert_eq!(fixture.backend.pid_velocity_error_sum_clears, 2);
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
     let _ = fixture.backend.registers.insert(
         foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
@@ -1014,9 +1106,9 @@ fn recovery_contact_passive_settle_proves_an_in_band_origin() {
             .addr(),
         100,
     );
-    for sample in 2..=501 {
+    for sample in first..=first + 499 {
         let result = fixture.sample(sample * 1_000, 998);
-        if sample < 501 {
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1117,8 +1209,12 @@ fn recovery_contact_passive_settle_rejects_an_out_of_band_origin() {
 fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    fixture.backend.elapsed_us_value = 1_000;
-    fixture.backend.mechanical_encoder_position_counts_value = 1_000;
+    // Drive to one step short of the target so the dispatcher's own observation
+    // is the one that completes the moving phase.
+    let elapsed_us = fixture.approach_moving_target(1_040);
+    fixture.backend.elapsed_us_value = elapsed_us + 1_000;
+    fixture.backend.mechanical_encoder_position_counts_value =
+        moving_arrival_counts().rem_euclid(4_000) as u32;
 
     assert_eq!(
         pollster::block_on(check_outer_safety(
@@ -1127,7 +1223,7 @@ fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
         )),
         Ok(None)
     );
-    assert_eq!(fixture.safety.unwrapped_position, 1_000);
+    assert_eq!(fixture.safety.unwrapped_position, moving_arrival_counts());
 
     assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
     assert_eq!(
@@ -1140,8 +1236,12 @@ fn recovery_consumes_the_safety_observation_taken_by_the_outer_dispatcher() {
 fn recovery_retains_dispatcher_timing_for_the_zero_target_settle() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    fixture.backend.elapsed_us_value = 1_000;
-    fixture.backend.mechanical_encoder_position_counts_value = 1_000;
+    // Drive to one step short of the target, then let the dispatcher take the
+    // observation that completes the moving phase.
+    let elapsed_us = fixture.approach_moving_target(1_040);
+    fixture.backend.elapsed_us_value = elapsed_us + 1_000;
+    fixture.backend.mechanical_encoder_position_counts_value =
+        moving_arrival_counts().rem_euclid(4_000) as u32;
     assert_eq!(
         pollster::block_on(check_outer_safety(
             &mut fixture.safety,
@@ -1150,9 +1250,11 @@ fn recovery_retains_dispatcher_timing_for_the_zero_target_settle() {
         Ok(None)
     );
     assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    assert!(
+        matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == elapsed_us + 2_000)
+    );
 
-    fixture.backend.elapsed_us_value = 2_000;
+    fixture.backend.elapsed_us_value = elapsed_us + 2_000;
     assert_eq!(
         pollster::block_on(check_outer_safety(
             &mut fixture.safety,
@@ -1161,7 +1263,9 @@ fn recovery_retains_dispatcher_timing_for_the_zero_target_settle() {
         Ok(None)
     );
 
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(3_000)));
+    assert!(
+        matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == elapsed_us + 3_000)
+    );
     assert_eq!(fixture.observations.len(), 1);
     let observation = fixture.observations.iter().next().unwrap();
     assert_eq!(observation.delta_counts, 0);
@@ -1192,10 +1296,7 @@ fn recovery_timing_context_tracks_setup_motion_and_settle() {
         (OuterSafetyTimingPhase::RecoveryMove, false)
     );
 
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
+    let _ = fixture.arrive_at_moving_target(1_040);
     assert_eq!(
         fixture.runtime.outer_safety_timing_phase(),
         (OuterSafetyTimingPhase::RecoverySettle, true)
@@ -1318,15 +1419,13 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
 fn recovery_safety_rejects_unconfirmed_rest() {
     let mut fixture = RecoveryFixture::new(1_020, Some(14_000_000));
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
-    for sample in 2..=501 {
-        let offset = 1_000 - (sample as i32 - 1);
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
+    for sample in first..=first + 499 {
+        let offset = moving_arrival_counts() - (sample as i32 - first as i32);
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 501 {
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1438,6 +1537,12 @@ fn a_sign_flip_within_the_drift_tolerance_needs_no_motion() {
     }
 }
 
+/// Offset at which the moving phase completes: inside the band by the
+/// stopping margin, so settle begins with room for outward movement.
+fn moving_arrival_counts() -> i32 {
+    i32::try_from(recovery_moving_target_counts(origin_band_counts())).unwrap()
+}
+
 fn origin_band_counts() -> u32 {
     plan_rung_origin_recovery(live_budget(), 4_000, 4_394)
         .expect("live geometry plans")
@@ -1545,11 +1650,9 @@ fn recovery_diagnostic_count_current_contact_before_settle_poll() {
     // `RecoveryState::Observe`, well before `AnalyzeSettle` is ever entered.
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
     let _ = fixture.backend.registers.insert(
         foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
@@ -1557,8 +1660,9 @@ fn recovery_diagnostic_count_current_contact_before_settle_poll() {
             .addr(),
         2_816,
     );
-    fixture.backend.elapsed_us_value = 2_000;
-    fixture.backend.mechanical_encoder_position_counts_value = 1_000_i32.rem_euclid(4_000) as u32;
+    fixture.backend.elapsed_us_value = handover_us + 1_000;
+    fixture.backend.mechanical_encoder_position_counts_value =
+        moving_arrival_counts().rem_euclid(4_000) as u32;
     let (terminal, selections, analyses) = fixture.drive_to_terminal();
 
     let RungOriginRecoveryStep::Contained(report) = terminal else {
@@ -1585,19 +1689,13 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll_immediate() {
     // has already produced its one `RestSelection`.
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    assert!(matches!(
-        fixture.sample(1_000, 1_020),
-        RungOriginRecoveryStep::At(_)
-    ));
-    assert_eq!(
-        fixture.sample(2_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(3_000)));
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
-    for sample in 3..=502 {
-        let result = fixture.sample(sample * 1_000, 1_000);
-        if sample < 502 {
+    for sample in first..=first + 499 {
+        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1641,15 +1739,13 @@ fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
         2_816,
     );
 
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
+    let handover_us = fixture.arrive_at_moving_target(1_040);
     assert_eq!(
         fixture.backend.registers.get(&PID_VELOCITY_TARGET.addr()),
         Some(&0)
     );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
     let _ = fixture.backend.registers.insert(
         foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
@@ -1657,9 +1753,9 @@ fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
             .addr(),
         100,
     );
-    for sample in 2..=501 {
+    for sample in first..=first + 499 {
         let result = fixture.sample(sample * 1_000, 998);
-        if sample < 501 {
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1688,19 +1784,13 @@ fn recovery_diagnostic_count_normal_completion_immediate() {
     // Same timeline as `recovery_controller_confirms_fixed_settle_and_reports_complete_geometry`.
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
-    assert!(matches!(
-        fixture.sample(1_000, 1_020),
-        RungOriginRecoveryStep::At(_)
-    ));
-    assert_eq!(
-        fixture.sample(2_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(3_000)));
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
-    for sample in 3..=502 {
-        let result = fixture.sample(sample * 1_000, 1_000);
-        if sample < 502 {
+    for sample in first..=first + 499 {
+        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1737,25 +1827,31 @@ fn recovery_diagnostic_count_normal_completion_stabilized() {
         RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
 
-    for sample in 2..=501 {
-        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+    for sample in first..=first + 499 {
+        let offset = if sample % 2 == 0 {
+            moving_arrival_counts() - 1
+        } else {
+            moving_arrival_counts()
+        };
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 501 {
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
-            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
         }
     }
-    for sample in 502..=1_001 {
-        let offset = if sample % 2 == 0 { 999 } else { 1_000 };
+    for sample in first + 500..=first + 999 {
+        let offset = if sample % 2 == 0 {
+            moving_arrival_counts() - 1
+        } else {
+            moving_arrival_counts()
+        };
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 1_001 {
+        if sample < first + 999 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1781,15 +1877,13 @@ fn recovery_diagnostic_count_scored_rest_rejected_immediate() {
     // Same timeline as `recovery_safety_rejects_unconfirmed_rest`.
     let mut fixture = RecoveryFixture::new(1_020, Some(14_000_000));
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
-    for sample in 2..=501 {
-        let offset = 1_000 - (sample as i32 - 1);
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
+    for sample in first..=first + 499 {
+        let offset = moving_arrival_counts() - (sample as i32 - first as i32);
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 501 {
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1820,23 +1914,21 @@ fn recovery_diagnostic_count_scored_rest_rejected_stabilized() {
         RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
-    assert_eq!(
-        fixture.sample(1_000, 1_000),
-        RungOriginRecoveryStep::ReadyNow
-    );
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(2_000)));
-    for sample in 2..=501 {
-        let result = fixture.sample(sample * 1_000, 1_000);
-        if sample < 501 {
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
+    for sample in first..=first + 499 {
+        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
+        if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
-            assert_eq!(result, RungOriginRecoveryStep::At(502_000));
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
         }
     }
-    for sample in 502..=1_001 {
-        let offset = 1_000 - (sample as i32 - 501);
+    for sample in first + 500..=first + 999 {
+        let offset = moving_arrival_counts() - (sample as i32 - (first as i32 + 499));
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < 1_001 {
+        if sample < first + 999 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);

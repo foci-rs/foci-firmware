@@ -650,6 +650,26 @@ pub(crate) const fn commanded_side_lower_rate_q(
     }
 }
 
+/// Fraction of the origin band held back as the moving phase's stopping margin.
+pub(crate) const RECOVERY_BAND_MARGIN_DIVISOR: u32 = 8;
+
+/// Return the offset the moving phase drives to before commanding zero.
+///
+/// The moving phase stops on the first sample at or inside this target, which
+/// sits inside [`RungOriginRecoveryPlan::origin_band_counts`] rather than on its
+/// edge. Position moves outward between that sample and the post-settle
+/// acceptance test, so stopping at the edge leaves the outcome to that
+/// movement: measured across 29 moving recoveries, the final position was
+/// outward of the closest approach every time, by 11 to 50 counts.
+///
+/// The band is unchanged. It is the settle travel reserve expressed in counts
+/// and remains the acceptance test, the return-distance basis, and the
+/// already-centered short-circuit; only the stopping point moves.
+#[allow(dead_code)]
+pub(crate) const fn recovery_moving_target_counts(origin_band_counts: u32) -> u32 {
+    origin_band_counts - origin_band_counts / RECOVERY_BAND_MARGIN_DIVISOR
+}
+
 /// Return the distance that must be traversed before entering the inclusive band.
 #[allow(dead_code)]
 pub(crate) const fn recovery_return_distance_counts(
