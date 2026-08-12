@@ -117,7 +117,7 @@ fn combined_preflight_rejects_legacy_state_without_mutating_it() {
         Err(StageBPreflightRejection::RejectedLegacyState {
             requested: crate::commissioning::outer::velocity::reproduction::StageBPlanIdentity {
                 channel: 0,
-                build_revision: accepted.identity.build_revision,
+                build_features: accepted.identity.build_features,
                 schema_revision: COMBINED_STAGE_B_SCHEMA_REVISION,
                 plan_digest: accepted.plan.digest(),
             },
@@ -2363,8 +2363,8 @@ async fn outer_safety_timing_terminal_order_standalone_stage_b() {
     slot.observe_sufficient(StageBCandidateSummary {
         identity: StageBPlanIdentity {
             channel: 0,
-            build_revision:
-                crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
+            build_features:
+                crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES,
             schema_revision: crate::commissioning::outer::velocity::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION,
             plan_digest: terminal.plan_digest,
         },

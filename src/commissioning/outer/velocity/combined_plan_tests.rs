@@ -314,7 +314,7 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
     historical.nominal_workflow_ms = 177_751;
     historical.maximum_workflow_ms = 195_496;
     historical.recovery_nominal_slot_us = 1_816_958;
-    assert_eq!(historical.digest(), 0x8674_2390_3e5e_a3f2);
+    assert_eq!(historical.digest(), 0x1696_a76c_4d42_83fd);
     assert_eq!(plan.authority.joint_membership, 0);
     assert_eq!(
         plan.positive_rungs(),
@@ -325,7 +325,56 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
     assert_eq!(plan.recovery_nominal_slot_us, 2_316_958);
     assert_eq!(plan.nominal_workflow_ms, 187_651);
     assert_eq!(plan.maximum_workflow_ms, 197_896);
-    assert_eq!(plan.digest(), 0xf50e_486d_5689_6c60);
+    assert_eq!(plan.digest(), 0x7384_6cd7_1326_ab1e);
+}
+
+fn live_combined_plan() -> super::integral_plan::VelocityIntegralPlan {
+    let request = VelocitySweepRequest {
+        requested_velocity_mrev_s: 6_666,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source: RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 2_500,
+        settle_travel_reserve_mrev: 250,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
+    };
+    let stage_b = plan_combined_velocity_sweep(
+        request,
+        4_000,
+        2_816,
+        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+    let selected = select_proportional_response(
+        response_report(1_024, 13_359_104, 13_492_224),
+        response_report(1_024, -12_968_960, -12_921_856),
+        264,
+        4_000,
+    )
+    .unwrap()
+    .unwrap();
+    plan_combined_velocity_integral_response(
+        selected,
+        stage_b.execution_plan(stage_b.digest()),
+        motion_budget(request),
+        25_000,
+        4_000,
+    )
+    .unwrap()
+}
+
+#[test]
+fn digest_gates_the_selected_response_on_content_not_schema() {
+    // Content, not the schema number, decides whether the selected-response
+    // block is digested. Even below the historical FIRST_COMBINED threshold --
+    // which the old `>= FIRST_COMBINED` guard used to suppress the block --
+    // dropping the selected response must change the digest.
+    let mut with_response = live_combined_plan();
+    with_response.schema_revision = 1;
+    let mut without_response = with_response;
+    without_response.combined_selected_response = None;
+    assert_ne!(with_response.digest(), without_response.digest());
 }
 
 #[test]

@@ -1911,14 +1911,14 @@ mod tests {
     fn retained_stage_b_candidate()
     -> crate::commissioning::outer::velocity::reproduction::StageBCandidateSummary {
         use crate::commissioning::outer::velocity::reproduction::{
-            STAGE_B_BUILD_REVISION, STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCandidateSummary,
+            BUILD_FEATURES, STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCandidateSummary,
             StageBPlanIdentity,
         };
 
         StageBCandidateSummary {
             identity: StageBPlanIdentity {
                 channel: 0,
-                build_revision: STAGE_B_BUILD_REVISION,
+                build_features: BUILD_FEATURES,
                 schema_revision: STAGE_B_EVIDENCE_SCHEMA_REVISION,
                 plan_digest: 0x1234,
             },
@@ -1948,7 +1948,7 @@ mod tests {
         StageCAuthoritySummary {
             identity: StageCPlanIdentity {
                 channel: 0,
-                build_revision: 1,
+                build_features: 1,
                 schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
                 plan_digest: 2,
             },

@@ -8,6 +8,7 @@ use crate::commissioning::types::{
 
 use super::acceptance_evidence::{AcceptanceAmplitudeReport, AcceptanceDirectionalEvidence};
 use super::acceptance_plan::{AcceptanceMatrixPlan, schedule_order_code};
+use super::reproduction::BUILD_IDENTITY;
 
 /// Bytes in the compact ordinary matrix-plan reply payload.
 pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 66;
@@ -148,7 +149,8 @@ pub(crate) fn encode_acceptance_plan(
     core.push_u8(0);
     core.push_u16(plan.schema_revision);
     core.push_u8(plan.acceptance_identity.channel);
-    core.push_u32(plan.acceptance_identity.build_revision);
+    core.push_u16(plan.acceptance_identity.build_features);
+    core.push_u32(BUILD_IDENTITY);
     core.push_u16(plan.acceptance_identity.schema_revision);
     push_u64(&mut core, plan.acceptance_identity.plan_digest);
     core.push_u8(schedule_order_code(plan.order, plan.slot_order));
@@ -441,7 +443,7 @@ mod tests {
                 crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
             acceptance_identity: StageCPlanIdentity {
                 channel: 0,
-                build_revision: 0x1234_5678,
+                build_features: 0x1234,
                 schema_revision:
                     crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
                 plan_digest: 0x1111_2222_3333_4444,
@@ -490,7 +492,7 @@ mod tests {
 
         let records = super::encode_acceptance_plan(7, plan);
 
-        assert_eq!(records.map(|record| record.as_bytes().len()), [73, 72, 43]);
+        assert_eq!(records.map(|record| record.as_bytes().len()), [75, 72, 43]);
         assert!(
             records
                 .iter()

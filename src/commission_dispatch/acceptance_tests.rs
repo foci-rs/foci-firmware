@@ -17,7 +17,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot, StageCPlanIdentity,
 };
 use crate::commissioning::outer::velocity::operating_region::{BoundRounding, CompactSignedRate};
-use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
+use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
 use crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport;
 use crate::commissioning::outer::velocity::sweep_plan::{
@@ -106,7 +106,7 @@ fn point(plan: VelocityIntegralPlan, progress: AcceptanceMatrixProgress) -> Acce
     AcceptancePoint {
         identity: StageCPlanIdentity {
             channel: CHANNEL,
-            build_revision: STAGE_B_BUILD_REVISION,
+            build_features: BUILD_FEATURES,
             schema_revision: plan.schema_revision,
             plan_digest: plan.digest(),
         },

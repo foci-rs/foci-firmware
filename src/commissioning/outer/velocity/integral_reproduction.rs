@@ -20,8 +20,8 @@ pub struct StageCRestBoundaryReference {
 pub struct StageCPlanIdentity {
     /// Physical firmware channel.
     pub channel: u8,
-    /// Shared-firmware package revision.
-    pub build_revision: u32,
+    /// Analysis-rule contract this plan was built under.
+    pub build_features: u16,
     /// Stage-C evidence schema revision.
     pub schema_revision: u16,
     /// Exact digest of Stage-C authority, geometry, durations, and safety identity.
@@ -81,7 +81,7 @@ impl StageCAuthoritySummary {
     /// Compact one emitted Stage-C execution plan into retained authority.
     pub fn from_plan(
         channel: u8,
-        build_revision: u32,
+        build_features: u16,
         schema_revision: u16,
         acquisition: super::integral_plan::StageCAcquisition,
         plan: VelocityIntegralExecutionPlan,
@@ -90,7 +90,7 @@ impl StageCAuthoritySummary {
         Self {
             identity: StageCPlanIdentity {
                 channel,
-                build_revision,
+                build_features,
                 schema_revision,
                 plan_digest: plan.plan_digest,
             },

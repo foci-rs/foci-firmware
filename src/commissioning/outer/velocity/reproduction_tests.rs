@@ -1,17 +1,16 @@
 use super::{
-    STAGE_B_BUILD_REVISION, STAGE_B_EVIDENCE_SCHEMA_REVISION,
-    STAGE_B_REPRO_REASON_FORWARD_CORE_TOO_SMALL, STAGE_B_REPRO_REASON_FORWARD_POOLED_DISJOINT,
-    STAGE_B_REPRO_REASON_JOINT_CORE_EMPTY, STAGE_B_REPRO_REASON_REVERSE_CORE_TOO_SMALL,
-    STAGE_B_REPRO_REASON_REVERSE_POOLED_DISJOINT, StageBCandidateSlot, StageBCandidateSummary,
-    StageBDirectionalValidity, StageBPlanIdentity, StageBReproductionDecision, const_fnv1a32,
-    summary_geometry_valid,
+    BUILD_FEATURES, STAGE_B_EVIDENCE_SCHEMA_REVISION, STAGE_B_REPRO_REASON_FORWARD_CORE_TOO_SMALL,
+    STAGE_B_REPRO_REASON_FORWARD_POOLED_DISJOINT, STAGE_B_REPRO_REASON_JOINT_CORE_EMPTY,
+    STAGE_B_REPRO_REASON_REVERSE_CORE_TOO_SMALL, STAGE_B_REPRO_REASON_REVERSE_POOLED_DISJOINT,
+    StageBCandidateSlot, StageBCandidateSummary, StageBDirectionalValidity, StageBPlanIdentity,
+    StageBReproductionDecision, summary_geometry_valid,
 };
 use crate::commissioning::outer::velocity::operating_region::CoverageKind;
 
 fn identity(channel: u8, plan_digest: u64) -> StageBPlanIdentity {
     StageBPlanIdentity {
         channel,
-        build_revision: STAGE_B_BUILD_REVISION,
+        build_features: BUILD_FEATURES,
         schema_revision: STAGE_B_EVIDENCE_SCHEMA_REVISION,
         plan_digest,
     }
@@ -49,18 +48,19 @@ fn compare(
 }
 
 #[test]
-fn reproduction_fnv_vectors_and_build_revision_are_stable() {
-    assert_eq!(const_fnv1a32(b""), 0x811c_9dc5);
-    assert_eq!(const_fnv1a32(b"a"), 0xe40c_292c);
+fn build_features_and_schema_revision_are_stable() {
+    // The current firmware compiles in all four analysis rules.
+    assert_eq!(BUILD_FEATURES, 0b1111);
     assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 8);
-    assert_eq!(STAGE_B_BUILD_REVISION, 0x05e2_1f75);
 }
 
 #[test]
 fn q8_8_package_candidate_rejects_before_current_build_comparison() {
     let mut slot = StageBCandidateSlot::new();
     let mut retained = summary(0, 1);
-    retained.identity.build_revision = 0x7553_6758;
+    // A retained plan from the legacy Q8.8 build carries an older rule contract
+    // (no rule bits set) that differs from the current BUILD_FEATURES.
+    retained.identity.build_features = 0b0000;
     slot.observe_sufficient(retained);
 
     let requested = identity(0, retained.identity.plan_digest);

@@ -2195,7 +2195,7 @@ mod tests {
             // outweigh the classic VelocitySweep variant. Exact, so retained
             // engine state cannot grow unnoticed; the audited F407 ceiling is
             // the `<= 6_144` bound below.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_776);
+            assert_eq!(size_of::<CommissioningEngine>(), 5_760);
         }
         assert!(size_of::<CommissioningEngine>() <= 5_776);
         assert!(size_of::<CommissioningEngine>() <= 6_144);

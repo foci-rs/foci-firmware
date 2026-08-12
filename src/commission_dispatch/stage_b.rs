@@ -1,9 +1,8 @@
 //! Board-owned Stage B preflight and cross-run reproduction policy.
 
 use crate::commissioning::outer::velocity::reproduction::{
-    STAGE_B_BUILD_REVISION, STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCandidateSlot,
-    StageBCandidateSummary, StageBDirectionalValidity, StageBPlanIdentity,
-    StageBReproductionDecision,
+    BUILD_FEATURES, STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCandidateSlot, StageBCandidateSummary,
+    StageBDirectionalValidity, StageBPlanIdentity, StageBReproductionDecision,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepPlan, VelocitySweepRequest, plan_combined_velocity_sweep, plan_velocity_sweep,
@@ -99,7 +98,7 @@ pub fn preflight_stage_b_request(
     .map_err(|_| StageBPreflightRejection::InvalidPlan)?;
     let identity = StageBPlanIdentity {
         channel,
-        build_revision: STAGE_B_BUILD_REVISION,
+        build_features: BUILD_FEATURES,
         schema_revision: STAGE_B_EVIDENCE_SCHEMA_REVISION,
         plan_digest: plan.digest(),
     };
@@ -144,7 +143,7 @@ pub fn preflight_combined_stage_b_request(
     .map_err(|_| StageBPreflightRejection::InvalidPlan)?;
     let identity = StageBPlanIdentity {
         channel,
-        build_revision: STAGE_B_BUILD_REVISION,
+        build_features: BUILD_FEATURES,
         schema_revision:
             crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
         plan_digest: plan.digest(),
@@ -178,7 +177,7 @@ pub fn apply_stage_b_terminal(
     let current = StageBCandidateSummary {
         identity: StageBPlanIdentity {
             channel,
-            build_revision: STAGE_B_BUILD_REVISION,
+            build_features: BUILD_FEATURES,
             schema_revision: STAGE_B_EVIDENCE_SCHEMA_REVISION,
             plan_digest: terminal.plan_digest,
         },

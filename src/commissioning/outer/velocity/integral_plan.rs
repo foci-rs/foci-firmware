@@ -14,7 +14,7 @@ use super::recovery::{
     RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
     plan_rung_origin_recovery,
 };
-use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
+use super::reproduction::{BUILD_FEATURES, StageBDirectionalValidity};
 use super::sweep_plan::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US,
     VelocitySweepExecutionPlan, VelocitySweepRequest, ZERO_SETTLE_US,
@@ -351,8 +351,8 @@ pub struct VelocityIntegralLadder {
 /// Complete immutable Stage-C plan emitted before its first stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralPlan {
-    /// Shared-firmware build identity.
-    pub build_revision: u32,
+    /// Analysis-rule contract this plan was built under.
+    pub build_features: u16,
     /// Stage-C evidence schema.
     pub schema_revision: u16,
     /// Reproduced Stage-B authority.
@@ -429,7 +429,7 @@ impl VelocityIntegralPlan {
                 }
             };
         }
-        hash_value!(self.build_revision);
+        hash_value!(self.build_features);
         hash_value!(self.schema_revision);
         hash_value!(self.authority.channel);
         hash_value!(self.authority.acquisition.digest());
@@ -447,14 +447,15 @@ impl VelocityIntegralPlan {
             hash_value!(interval[0]);
             hash_value!(interval[1]);
         }
-        if self.schema_revision >= super::combined_plan::FIRST_COMBINED_STAGE_C_SCHEMA_REVISION {
-            hash_value!(u8::from(self.combined_selected_response.is_some()));
-            if let Some(selected) = self.combined_selected_response {
-                hash_value!(selected.p.raw());
-                for interval in selected.response_intervals_q() {
-                    hash_value!(interval[0]);
-                    hash_value!(interval[1]);
-                }
+        // Content, not the schema number, gates the selected-response block: the
+        // firmware is a single-path writer and digests exactly what its plan
+        // carries, so the digest no longer depends on FIRST_COMBINED.
+        hash_value!(u8::from(self.combined_selected_response.is_some()));
+        if let Some(selected) = self.combined_selected_response {
+            hash_value!(selected.p.raw());
+            for interval in selected.response_intervals_q() {
+                hash_value!(interval[0]);
+                hash_value!(interval[1]);
             }
         }
         hash_value!(self.planned_velocity_mrev_s);
@@ -471,9 +472,9 @@ impl VelocityIntegralPlan {
         hash_value!(self.moving_stroke_us);
         hash_value!(self.zero_settle_us);
         hash_value!(self.analysis_budget_us);
-        if self.schema_revision == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
-            && self.combined_selected_response.is_some()
-        {
+        // `is_some()` already implies the combined workflow (only combined plans
+        // ever carry a selected response), so the schema equality is redundant.
+        if self.combined_selected_response.is_some() {
             hash_value!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
             hash_value!(STABILIZED_RECOVERY_SCHEDULE_CODE);
         }
@@ -1685,7 +1686,7 @@ fn plan_velocity_integral_response_from_source(
 
     Ok(VelocityIntegralPlan {
         slot_order: IntegralSlotOrder::ForwardFirst,
-        build_revision: STAGE_B_BUILD_REVISION,
+        build_features: BUILD_FEATURES,
         schema_revision: source.schema_revision,
         authority: source.authority,
         combined_selected_response: source.combined_selected_response,
@@ -1786,7 +1787,7 @@ fn failed_admission_digest(
             }
         };
     }
-    hash_value!(STAGE_B_BUILD_REVISION);
+    hash_value!(BUILD_FEATURES);
     hash_value!(STAGE_C_EVIDENCE_SCHEMA_REVISION);
     hash_value!(authority.channel);
     hash_value!(authority.acquisition.digest());

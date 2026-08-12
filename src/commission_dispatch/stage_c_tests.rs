@@ -18,7 +18,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, StageCAuthoritySummary, StageCCandidateSlot, StageCSlotState,
 };
 use crate::commissioning::outer::velocity::reproduction::{
-    STAGE_B_BUILD_REVISION, StageBDirectionalValidity,
+    BUILD_FEATURES, StageBDirectionalValidity,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
@@ -479,7 +479,7 @@ fn retained_authority() -> StageCAuthoritySummary {
     let plan = stage_c_plan();
     StageCAuthoritySummary::from_plan(
         CHANNEL,
-        STAGE_B_BUILD_REVISION,
+        BUILD_FEATURES,
         STAGE_C_EVIDENCE_SCHEMA_REVISION,
         authority().acquisition,
         plan.execution_plan(),
@@ -1287,7 +1287,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
     let plan = stage_c_plan();
     let expected_authority = StageCAuthoritySummary::from_plan(
         CHANNEL,
-        STAGE_B_BUILD_REVISION,
+        BUILD_FEATURES,
         plan.schema_revision,
         plan.authority.acquisition,
         plan.execution_plan(),

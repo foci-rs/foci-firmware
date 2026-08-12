@@ -18,6 +18,7 @@ use super::combined_plan::{
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
 use super::integral_plan::VelocityIntegralAcquisitionKind;
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
+use super::reproduction::BUILD_IDENTITY;
 
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 pub(crate) const PLAN_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 0;
@@ -258,7 +259,8 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(0);
     push_u64(&mut core, plan.digest());
     core.push_u8(0);
-    core.push_u32(plan.build_revision);
+    core.push_u16(plan.build_features);
+    core.push_u32(BUILD_IDENTITY);
     core.push_u16(plan.schema_revision);
     core.push_u8(plan.authority.channel);
     push_u64(&mut core, plan.authority.acquisition.digest());
@@ -905,7 +907,7 @@ mod tests {
         }
         let plan = super::super::integral_plan::VelocityIntegralPlan {
             slot_order: IntegralSlotOrder::ForwardFirst,
-            build_revision: 3,
+            build_features: 3,
             schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
             authority: super::super::integral_plan::StageCAuthority {
                 channel: 0,
@@ -973,23 +975,23 @@ mod tests {
         assert_eq!(records[0].as_bytes()[15], 0);
         assert_eq!(records[1].as_bytes()[15], 1);
         assert_eq!(records[2].as_bytes()[15], 2);
-        assert_eq!(records[0].as_bytes().len(), 95);
+        assert_eq!(records[0].as_bytes().len(), 97);
         assert_eq!(
-            &records[0].as_bytes()[41..45],
+            &records[0].as_bytes()[43..47],
             &plan.authority.stage_b_joint_membership.to_le_bytes()
         );
         assert_eq!(
-            &records[0].as_bytes()[45..49],
+            &records[0].as_bytes()[47..51],
             &plan.authority.joint_membership.to_le_bytes()
         );
         assert_eq!(
-            &records[0].as_bytes()[49..51],
+            &records[0].as_bytes()[51..53],
             &[super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP
                 as u8; 2]
         );
-        assert_eq!(records[0].as_bytes()[51], 0);
+        assert_eq!(records[0].as_bytes()[53], 0);
         assert_eq!(
-            records[0].as_bytes()[94],
+            records[0].as_bytes()[96],
             super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u8
         );
         assert_eq!(

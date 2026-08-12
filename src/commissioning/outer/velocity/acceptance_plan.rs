@@ -7,7 +7,7 @@ use super::integral_plan::{
 };
 use super::integral_reproduction::{AcceptancePoint, StageCPlanIdentity};
 use super::recovery::commanded_side_lower_rate_q;
-use super::reproduction::STAGE_B_BUILD_REVISION;
+use super::reproduction::BUILD_FEATURES;
 use super::sweep_plan::VelocitySweepRequest;
 use crate::autotune::velocity_measurement::VelocityDirection;
 
@@ -149,7 +149,7 @@ impl AcceptanceMatrixPlan {
         }
         hash_value!(self.schema_revision);
         hash_value!(self.acceptance_identity.channel);
-        hash_value!(self.acceptance_identity.build_revision);
+        hash_value!(self.acceptance_identity.build_features);
         hash_value!(self.acceptance_identity.schema_revision);
         hash_value!(self.acceptance_identity.plan_digest);
         hash_value!(schedule_order_code(self.order, self.slot_order));
@@ -279,7 +279,7 @@ pub fn plan_acceptance_matrix(
     slot_order: IntegralSlotOrder,
     current_config: VelocityIntegralPlan,
 ) -> Result<AcceptanceMatrixPlan, AcceptanceMatrixPlanError> {
-    if point.identity.build_revision != STAGE_B_BUILD_REVISION
+    if point.identity.build_features != BUILD_FEATURES
         || point.identity.schema_revision != current_config.schema_revision
         || point.identity.plan_digest != current_config.digest()
         || point.selected_p != current_config.final_p

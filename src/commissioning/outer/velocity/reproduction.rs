@@ -16,27 +16,39 @@ pub const STAGE_B_REPRO_REASON_FORWARD_POOLED_DISJOINT: u8 = 1 << 3;
 /// Reverse per-run pooled intervals do not overlap.
 pub const STAGE_B_REPRO_REASON_REVERSE_POOLED_DISJOINT: u8 = 1 << 4;
 
-/// Shared-firmware package revision stored in the RAM-only Stage B slot.
-pub const STAGE_B_BUILD_REVISION: u32 = const_fnv1a32(env!("CARGO_PKG_VERSION").as_bytes());
+// Injected by build.rs: `BUILD_IDENTITY`, the first four bytes of the
+// foci-firmware HEAD commit (or 0 when unresolved). Pure image provenance; it is
+// emitted on every plan for attestation but never digested or identity-checked,
+// so a rebuild does not spuriously stale retained authority.
+include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 
-const fn const_fnv1a32(bytes: &[u8]) -> u32 {
-    let mut hash = 0x811c_9dc5_u32;
-    let mut index = 0;
-    while index < bytes.len() {
-        hash ^= bytes[index] as u32;
-        hash = hash.wrapping_mul(0x0100_0193);
-        index += 1;
-    }
-    hash
-}
+/// Integral gains are encoded Q4.12 rather than the legacy Q8.8.
+pub const BUILD_FEATURE_Q4_12_GAINS: u16 = 1 << 0;
+/// The moving-stroke gate applies the stationarity drift bound.
+pub const BUILD_FEATURE_DRIFT_BOUND_GATE: u16 = 1 << 1;
+/// The suffix walk continues past a rejected window instead of ending there.
+pub const BUILD_FEATURE_SUFFIX_WALK_CONTINUES: u16 = 1 << 2;
+/// The scored-rest chain closes only on evidence against rest.
+pub const BUILD_FEATURE_REST_CHAIN_ON_EVIDENCE: u16 = 1 << 3;
+
+/// Analysis-rule contract this firmware build compiles in, stamped on every
+/// plan so a capture states which rules produced it rather than being dated by
+/// schema revision. Replaces the crate-version `build_revision`, whose only real
+/// consumer selected the gain representation (now bit 0 here). It is digested
+/// and identity-checked, so retained authority refuses to resume across a rules
+/// change.
+pub const BUILD_FEATURES: u16 = BUILD_FEATURE_Q4_12_GAINS
+    | BUILD_FEATURE_DRIFT_BOUND_GATE
+    | BUILD_FEATURE_SUFFIX_WALK_CONTINUES
+    | BUILD_FEATURE_REST_CHAIN_ON_EVIDENCE;
 
 /// Pre-motion identity for one frozen Stage B plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageBPlanIdentity {
     /// Physical firmware channel.
     pub channel: u8,
-    /// Shared-firmware package build revision.
-    pub build_revision: u32,
+    /// Analysis-rule contract this plan was built under.
+    pub build_features: u16,
     /// Stage B evidence schema revision.
     pub schema_revision: u16,
     /// Exact digest of the frozen motion and analysis plan.

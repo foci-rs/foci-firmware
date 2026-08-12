@@ -1593,7 +1593,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                         retention.stage_c.install_authority(
                             crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
                                 channel,
-                                crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
+                                crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES,
                                 stage_c_plan.schema_revision,
                                 stage_c_plan.authority.acquisition,
                                 stage_c_plan.execution_plan(),
@@ -1869,7 +1869,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             retention.stage_c.install_authority(
                 crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
                     channel,
-                    crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
+                    crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES,
                     crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
                     stage_c_plan.authority.acquisition,
                     stage_c_plan.execution_plan(),

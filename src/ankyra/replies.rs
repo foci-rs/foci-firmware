@@ -3964,8 +3964,10 @@ pub struct FociVelocityIntegralPlanCore {
     pub stage_b_digest_low: u32,
     /// Exact high authorizing Stage-B plan digest word.
     pub stage_b_digest_high: u32,
-    /// Shared-firmware build revision.
-    pub build_revision: u32,
+    /// Analysis-rule contract this plan was built under.
+    pub build_features: u16,
+    /// Image identity of the firmware that produced this plan.
+    pub build_identity: u32,
     /// Stage-C evidence schema revision.
     pub schema_revision: u16,
     /// Physical firmware channel.
@@ -5390,7 +5392,8 @@ mod velocity_sweep_reply_tests {
                 plan_digest_high: WIDE_U32,
                 stage_b_digest_low: WIDE_U32,
                 stage_b_digest_high: WIDE_U32,
-                build_revision: WIDE_U32,
+                build_features: u16::MAX,
+                build_identity: WIDE_U32,
                 schema_revision: u16::MAX,
                 channel: u8::MAX,
                 final_p: u16::MAX,

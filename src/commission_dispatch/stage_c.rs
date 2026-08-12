@@ -10,7 +10,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     StageCCandidateSummary, StageCPlanIdentity, StageCReproductionDecision,
     StageCReproductionDelta, StageCRestBoundaryReference,
 };
-use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
+use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepRequest, plan_combined_velocity_sweep, plan_velocity_sweep,
 };
@@ -78,7 +78,7 @@ pub fn install_authority_from_plan(
 ) -> StageCAuthoritySummary {
     let authority = StageCAuthoritySummary::from_plan(
         channel,
-        STAGE_B_BUILD_REVISION,
+        BUILD_FEATURES,
         plan.schema_revision,
         plan.authority.acquisition,
         plan.execution_plan(),
@@ -167,7 +167,7 @@ pub(crate) fn combined_acceptance_point(
     Ok(Some(AcceptancePoint {
         identity: StageCPlanIdentity {
             channel,
-            build_revision: STAGE_B_BUILD_REVISION,
+            build_features: BUILD_FEATURES,
             schema_revision: COMBINED_STAGE_C_SCHEMA_REVISION,
             plan_digest: plan.plan_digest,
         },
@@ -252,7 +252,7 @@ fn preflight_retained_breakaway(
     };
     let identity = StageCPlanIdentity {
         channel: authority.identity.channel,
-        build_revision: STAGE_B_BUILD_REVISION,
+        build_features: BUILD_FEATURES,
         schema_revision: plan.schema_revision,
         plan_digest: plan.digest(),
     };
@@ -380,7 +380,7 @@ pub fn preflight_stage_c_request(
     };
     let identity = StageCPlanIdentity {
         channel: config.channel,
-        build_revision: STAGE_B_BUILD_REVISION,
+        build_features: BUILD_FEATURES,
         schema_revision: plan.schema_revision,
         plan_digest: plan.digest(),
     };

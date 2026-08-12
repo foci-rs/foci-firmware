@@ -9,7 +9,7 @@ use super::integral_reproduction::{
     StageCRestBoundaryReference, StageCSlotState, closed_intersection, compare_integral_runs,
     delta_e, signed_divergence_gap,
 };
-use super::reproduction::{STAGE_B_BUILD_REVISION, StageBDirectionalValidity};
+use super::reproduction::{BUILD_FEATURES, StageBDirectionalValidity};
 
 fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
     ExactRateInterval::new(low_q, high_q).unwrap()
@@ -18,7 +18,7 @@ fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
 fn identity(channel: u8, digest: u64) -> StageCPlanIdentity {
     StageCPlanIdentity {
         channel,
-        build_revision: 0x1234_5678,
+        build_features: 0x1234,
         schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
         plan_digest: digest,
     }
@@ -465,9 +465,11 @@ fn schema_one_candidate_rejects_before_motion_without_losing_authority() {
 #[test]
 fn q8_8_package_authority_rejects_before_stage_c_motion() {
     let mut retained = authority(0, 7);
-    retained.identity.build_revision = 0x7553_6758;
+    // A retained plan from the legacy Q8.8 build carries an older rule contract
+    // (no rule bits set) that differs from the current BUILD_FEATURES.
+    retained.identity.build_features = 0b0000;
     let mut current = retained.identity;
-    current.build_revision = STAGE_B_BUILD_REVISION;
+    current.build_features = BUILD_FEATURES;
     let mut slot = StageCCandidateSlot::new();
     slot.install_authority(retained);
 
@@ -483,7 +485,7 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // Exact sizes, so retained Stage-C state cannot grow unnoticed on a target
     // with no heap. A failure here is a prompt to justify the growth, not to
     // update the number reflexively.
-    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 240);
+    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 232);
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 112);
     assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 104);
     assert_eq!(

@@ -285,7 +285,7 @@ pub(crate) fn test_acceptance_point(
     use crate::commissioning::outer::velocity::operating_region::{
         BoundRounding, CompactSignedRate,
     };
-    use crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION;
+    use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
     use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
     use crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport;
 
@@ -346,7 +346,7 @@ pub(crate) fn test_acceptance_point(
         identity:
             crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity {
                 channel: 0,
-                build_revision: STAGE_B_BUILD_REVISION,
+                build_features: BUILD_FEATURES,
                 schema_revision: plan.schema_revision,
                 plan_digest: plan.digest(),
             },

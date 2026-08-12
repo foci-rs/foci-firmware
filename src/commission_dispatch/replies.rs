@@ -1109,7 +1109,8 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         plan_digest_high: (digest >> 32) as u32,
         stage_b_digest_low: plan.authority.acquisition.digest() as u32,
         stage_b_digest_high: (plan.authority.acquisition.digest() >> 32) as u32,
-        build_revision: plan.build_revision,
+        build_features: plan.build_features,
+        build_identity: crate::commissioning::outer::velocity::reproduction::BUILD_IDENTITY,
         schema_revision: plan.schema_revision,
         channel: plan.authority.channel,
         final_p: plan.final_p,
@@ -6411,7 +6412,7 @@ mod tests {
         use crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION;
         use crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary;
         use crate::commissioning::outer::velocity::reproduction::{
-            STAGE_B_BUILD_REVISION, StageBDirectionalValidity,
+            BUILD_FEATURES, StageBDirectionalValidity,
         };
         use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
 
@@ -6421,7 +6422,7 @@ mod tests {
         plan.authority.directional_pooled_intervals[1] = [0, 0];
         let authority = StageCAuthoritySummary::from_plan(
             plan.authority.channel,
-            STAGE_B_BUILD_REVISION,
+            BUILD_FEATURES,
             STAGE_C_EVIDENCE_SCHEMA_REVISION,
             plan.authority.acquisition,
             plan.execution_plan(),

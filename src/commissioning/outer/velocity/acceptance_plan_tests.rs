@@ -11,7 +11,7 @@ use super::integral_plan::{
 use super::integral_reporting::plan_recovery_flags;
 use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
 use super::operating_region::{BoundRounding, CompactSignedRate};
-use super::reproduction::STAGE_B_BUILD_REVISION;
+use super::reproduction::BUILD_FEATURES;
 use super::sweep_consensus::DirectionalConsensusClass;
 use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{
@@ -97,7 +97,7 @@ fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
     AcceptancePoint {
         identity: StageCPlanIdentity {
             channel: 0,
-            build_revision: STAGE_B_BUILD_REVISION,
+            build_features: BUILD_FEATURES,
             schema_revision: plan.schema_revision,
             plan_digest: plan.digest(),
         },
@@ -195,7 +195,7 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
     .unwrap();
     historical.schema_revision = 3;
 
-    assert_eq!(historical.digest(), 0x03be_270c_ef0c_d2e4);
+    assert_eq!(historical.digest(), 0x815b_bfa7_0613_55da);
 }
 
 #[test]

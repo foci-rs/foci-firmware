@@ -1064,11 +1064,16 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
 
 // --- Legacy replay compatibility ---------------------------------------------
 
-/// Pins the legacy reproduced-Stage-B plan's exact digest, captured from
-/// `plan_velocity_integral_response` before the shared-tail refactor that
-/// introduced [`AcquisitionContext`]. If this ever changes, the refactor
-/// broke replay compatibility for every already-commissioned schema-7 plan;
-/// do not update the literal to make this pass.
+/// Pins `plan_velocity_integral_response`'s exact digest. An earlier change altered this
+/// value deliberately in two ways: `build_features` (u16) replaced
+/// `build_revision` (u32) in the digest input, and the selected-response block
+/// now gates on `combined_selected_response.is_some()` instead of the schema
+/// number, so a standalone plan hashes the `is_some = 0` byte it previously
+/// skipped. Replay of older captures stays intact because the host
+/// recomputes their digest from what each capture recorded (its `build_revision`
+/// and the old schema-gated rule), not from the current firmware. Any *other*
+/// change to this literal means a refactor silently altered the digest and broke
+/// in-boot authority retention; do not update it to make a test pass.
 #[test]
 fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
     let stage_b = stage_b_plan();
@@ -1083,7 +1088,7 @@ fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
     )
     .unwrap();
 
-    assert_eq!(plan.digest(), 16_955_161_603_566_328_915);
+    assert_eq!(plan.digest(), 13_608_396_835_480_267_211);
 }
 
 // --- Breakaway Stage-C constructor -------------------------------------------
