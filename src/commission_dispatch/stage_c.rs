@@ -200,17 +200,23 @@ pub struct StageCPreflightConfig {
 /// the retained authority alone. Correspondingly there is no requested Stage-B
 /// digest to report on a mismatch, and the rejection carries zero.
 ///
-/// The physical context comes from the retained authority rather than live
-/// configuration. That is deliberate for the torque limits: the campaign
-/// measured its usable limit from the current observer, so recomputing it here
-/// could silently plan against a different boundary than the one the
-/// confirmation evidence was gathered under. Divergence surfaces as a plan
-/// digest that no longer matches the retained identity, which is refused below.
+/// The torque limits and evidence capability come from the retained authority
+/// because the campaign measured its usable limit from the current observer, so
+/// recomputing them here could plan against a different boundary than the one
+/// the confirmation evidence was gathered under.
+///
+/// PWM and encoder resolution are the opposite case: they must be compared
+/// against live configuration, which is why both are passed in separately from
+/// the retained values the context freezes. The plan digest cannot police this
+/// on its own, because a plan rebuilt from retained context hashes those same
+/// retained values and still matches the retained identity while execution does
+/// its target-rate math against the stale resolution.
 #[cfg(feature = "trace-velocity-sweep")]
 fn preflight_retained_breakaway(
     token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
     authority: StageCAuthoritySummary,
     motion_budget: OuterMotionBudget,
+    config: &StageCPreflightConfig,
     run_sequence: u32,
     stage_c_candidate: &StageCCandidateSlot,
 ) -> Result<Option<StageCPreflight>, StageCPreflightRejection> {
@@ -233,8 +239,8 @@ fn preflight_retained_breakaway(
         authority.final_p,
         context,
         motion_budget,
-        authority.pwm_hz,
-        authority.encoder_counts_per_rev,
+        config.pwm_hz,
+        config.encoder_counts_per_rev,
     ) {
         Ok(plan) => plan,
         Err(VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure)) => {
@@ -303,6 +309,7 @@ pub fn preflight_stage_c_request(
             token,
             authority,
             motion_budget,
+            config,
             run_sequence,
             stage_c_candidate,
         );

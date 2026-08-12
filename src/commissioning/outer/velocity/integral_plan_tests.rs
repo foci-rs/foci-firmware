@@ -1178,6 +1178,57 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
 
 /// The plan-digest check is the only identity guard on the resume path, so it
 /// has to carry the weight the Stage-B digest comparison carries elsewhere.
+/// Live PWM and encoder resolution must be re-checked, not assumed.
+///
+/// The plan digest cannot catch this on its own: a plan rebuilt from retained
+/// context hashes the retained PWM and encoder values again, so it still
+/// matches the retained identity even when the live configuration has moved.
+/// Execution then does its target-rate math against the stale resolution.
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn a_resume_under_changed_physical_context_is_refused() {
+    use crate::commission_dispatch::stage_c::{
+        StageCPreflightConfig, StageCPreflightRejection, install_authority_from_plan,
+        preflight_stage_c_request,
+    };
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+
+    let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
+    let plan = plan_breakaway_velocity_integral_response(
+        breakaway_token_for(confirmation_plan),
+        confirmation_plan,
+        breakaway_acquisition_context(),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .expect("the campaign's own Stage-C plan");
+    let mut slot = StageCCandidateSlot::new();
+    install_authority_from_plan(0, &mut slot, plan);
+    let config = |pwm_hz, encoder_counts_per_rev| StageCPreflightConfig {
+        encoder_counts_per_rev,
+        torque_limit: 2_816,
+        limit_evidence_capability: super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        channel: 0,
+        pwm_hz,
+    };
+
+    for (pwm_hz, counts) in [(26_000, 4_000), (25_000, 8_000)] {
+        let rejection =
+            preflight_stage_c_request(stage_b_request(), &config(pwm_hz, counts), 13, &slot)
+                .expect_err("a moved physical context must not resume");
+        assert!(matches!(rejection, StageCPreflightRejection::InvalidPlan));
+    }
+
+    // The unchanged context still resumes, so the guard is not simply refusing
+    // everything.
+    assert!(
+        preflight_stage_c_request(stage_b_request(), &config(25_000, 4_000), 13, &slot)
+            .expect("the retained context is unchanged")
+            .is_some()
+    );
+}
+
 #[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
