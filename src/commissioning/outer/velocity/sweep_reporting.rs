@@ -1,7 +1,8 @@
 //! Streamed velocity-sweep evidence sequencing and integrity.
 
 use crate::autotune::velocity_measurement::{
-    RestSelectionDisposition, RestStructuralCode, StationarityResult, VELOCITY_SUFFIX_LENGTHS,
+    RestSelectionDisposition, RestStructuralCode, RestSuffixEvaluation, StationarityResult,
+    select_causal_rest_suffixes,
 };
 use crate::commissioning::types::{
     RecoveryRestDiagnostic, RestSelectionDiagnostic, RungOriginRecoveryEvidence,
@@ -325,16 +326,14 @@ fn validate_rest_selection(
         }
     }
 
-    let mut expected_interval_mask = 0_u8;
-    let mut expected_usable_mask = 0_u8;
-    let mut expected_zero_mask = 0_u8;
+    let mut suffixes = [RestSuffixEvaluation {
+        structural_code: RestStructuralCode::TooFewDecorrelatedBlocks,
+        interval_present: false,
+        interval_q: [0; 2],
+    }; 3];
     for (index, code) in report.structural_codes.into_iter().enumerate() {
-        let bit = 1_u8 << index;
         let interval_expected = match code {
-            RestStructuralCode::Usable => {
-                expected_usable_mask |= bit;
-                true
-            }
+            RestStructuralCode::Usable => true,
             RestStructuralCode::ResolvedSlope | RestStructuralCode::StructuredResidual => true,
             RestStructuralCode::NoBlockingPlateau
             | RestStructuralCode::TooFewDecorrelatedBlocks => false,
@@ -343,59 +342,38 @@ fn validate_rest_selection(
             }
         };
         if interval_expected {
-            expected_interval_mask |= bit;
             let [low, high] = report.intervals_q[index];
             if low > high {
                 return Err(RestSelectionEncodingError::InvalidInterval);
             }
-            if code == RestStructuralCode::Usable && low <= 0 && 0 <= high {
-                expected_zero_mask |= bit;
-            }
         } else if report.intervals_q[index] != [0, 0] {
             return Err(RestSelectionEncodingError::InvalidInterval);
         }
+        suffixes[index] = RestSuffixEvaluation {
+            structural_code: code,
+            interval_present: interval_expected,
+            interval_q: report.intervals_q[index],
+        };
     }
-    if report.interval_present_mask != expected_interval_mask
-        || report.usable_mask != expected_usable_mask
+    let expected = select_causal_rest_suffixes(
+        suffixes,
+        report.disposition == RestSelectionDisposition::OneCountFallbackAcceptance,
+    );
+    if report.structural_codes != expected.structural_codes
+        || report.intervals_q != expected.intervals_q
+        || report.interval_present_mask != expected.interval_present_mask
+        || report.usable_mask != expected.usable_mask
     {
         return Err(RestSelectionEncodingError::StructuralMismatch);
     }
-    if report.zero_compatible_mask != expected_zero_mask {
+    if report.zero_compatible_mask != expected.zero_compatible_mask {
         return Err(RestSelectionEncodingError::ZeroCompatibilityMismatch);
     }
-
-    let mut expected_selected_mask = 0_u8;
-    let mut expected_selected_len = 0_u16;
-    for (index, suffix_len) in VELOCITY_SUFFIX_LENGTHS.into_iter().enumerate() {
-        let bit = 1_u8 << index;
-        let [low, high] = report.intervals_q[index];
-        let contradicts_rest = (expected_interval_mask & bit != 0 && (high < 0 || 0 < low))
-            || report.structural_codes[index] == RestStructuralCode::ResolvedSlope;
-        if expected_zero_mask & bit != 0 {
-            expected_selected_mask = bit;
-            expected_selected_len = suffix_len;
-        } else if contradicts_rest {
-            break;
-        }
-    }
-    match report.disposition {
-        RestSelectionDisposition::StatisticalAcceptance => {
-            if expected_selected_mask == 0
-                || report.selected_mask != expected_selected_mask
-                || report.selected_suffix_len != expected_selected_len
-            {
-                return Err(RestSelectionEncodingError::InvalidSelection);
-            }
-        }
-        RestSelectionDisposition::OneCountFallbackAcceptance
-        | RestSelectionDisposition::Rejected => {
-            if expected_selected_mask != 0
-                || report.selected_mask != 0
-                || report.selected_suffix_len != 0
-            {
-                return Err(RestSelectionEncodingError::InvalidSelection);
-            }
-        }
+    if report.selected_mask != expected.selected_mask
+        || report.selected_suffix_len != expected.selected_suffix_len
+        || report.disposition != expected.disposition
+    {
+        return Err(RestSelectionEncodingError::InvalidSelection);
     }
     Ok(())
 }
@@ -915,7 +893,10 @@ mod tests {
         report.selected_mask = 0b100;
         report.selected_suffix_len = 256;
 
-        assert!(encode_rest_selection(report).is_ok());
+        let record = encode_rest_selection(report).unwrap();
+
+        assert_eq!(record.as_bytes()[26], 0b100);
+        assert_eq!(&record.as_bytes()[27..29], &256_u16.to_le_bytes());
     }
 
     #[test]
@@ -981,6 +962,18 @@ mod tests {
         selected_outside_prefix.intervals_q[0] = [1, 9];
         selected_outside_prefix.zero_compatible_mask = 0b010;
         assert!(encode_rest_selection(selected_outside_prefix).is_err());
+
+        let mut selected_past_contradicting_middle = valid;
+        selected_past_contradicting_middle.structural_codes = [
+            RestStructuralCode::Usable,
+            RestStructuralCode::ResolvedSlope,
+            RestStructuralCode::Usable,
+        ];
+        selected_past_contradicting_middle.usable_mask = 0b101;
+        selected_past_contradicting_middle.zero_compatible_mask = 0b101;
+        selected_past_contradicting_middle.selected_mask = 0b100;
+        selected_past_contradicting_middle.selected_suffix_len = 256;
+        assert!(encode_rest_selection(selected_past_contradicting_middle).is_err());
 
         let mut nonzero_unused_interval = valid;
         nonzero_unused_interval.interval_present_mask = 0b011;

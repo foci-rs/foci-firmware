@@ -22,6 +22,7 @@ pub use observation::{
 pub use rest::{
     RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, VELOCITY_SUFFIX_LENGTHS,
 };
+pub(crate) use rest::{RestSuffixEvaluation, select_causal_rest_suffixes};
 pub use stationarity::{
     RestSelectionCompletion, StationarityDiagnostics, StationarityExclusion, StationarityResult,
     StationarityWork, StationarityWorkPoll, StationarySuffix, StructuredStationarityEvidence,
