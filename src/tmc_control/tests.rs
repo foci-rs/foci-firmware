@@ -203,25 +203,11 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 
 #[test]
 fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
-    // The trace-gated runtime holds the `CommissioningEngine`, so it grows by
-    // the breakaway campaign's deliberate retained-state increases (the round-2
-    // Stage-C gate hardening that freezes the plan-time PWM/encoder in
-    // `BreakawayCampaignInputs`, the finding-1 independent-replay classifier
-    // inputs retained per pending observation, and the protocol-v15 excursion
-    // accumulator): the engine's re-baselined 5_600 B plus the runtime's own
-    // fixed overhead. The non-trace runtime is
-    // unaffected: the campaign is trace-feature-gated, so that baseline holds.
+    // The trace-gated runtime embeds the `CommissioningEngine`, so it tracks
+    // that engine's size plus the runtime's own fixed overhead. The two
+    // baselines differ because the breakaway campaign is trace-gated.
     #[cfg(feature = "trace")]
-    // 5_696 -> 5_728: +32 B for the deferred phase-terminal record reported
-    // by a dispatcher-detected fault.
-    // 5_728 -> 5_744: +16 B for the cached applied PID_VELOCITY_OFFSET and
-    // PID_TORQUE_FLUX_OFFSET values (two Option<u32>) that let the control
-    // tick skip an unchanged feedforward register write.
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_744);
-    // 3_888 -> 3_904: +16 B for the exact velocity envelope carried by
-    // `OuterSafetyLimits`, which the non-trace engine holds too.
-    // 3_904 -> 3_920: +16 B for the same cached feedforward-offset values
-    // described above.
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_760);
     #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_920);
 }

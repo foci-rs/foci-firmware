@@ -2787,7 +2787,16 @@ fn an_accepted_confirmation_routes_through_the_token_chain_to_a_stage_c_plan() {
     // accepted confirmation plan's digest (the token chain, not a fabricated
     // value).
     assert_eq!(stage_c_plan.final_p, 512);
-    assert_eq!(stage_c_plan.authority.stage_b_plan_digest, plan.plan_digest);
+    assert_eq!(
+        stage_c_plan.authority.acquisition.digest(),
+        plan.plan_digest
+    );
+    // A confirmation, not a reproduced Stage B: nothing downstream may try to
+    // recompute a sweep plan from this authority.
+    assert_eq!(
+        stage_c_plan.authority.acquisition.reproduced_stage_b(),
+        None
+    );
     assert_eq!(
         stage_c_plan.schema_revision,
         crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION

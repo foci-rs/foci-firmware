@@ -1110,16 +1110,12 @@ mod tests {
 
     #[test]
     fn outer_phase_size_stays_within_reasonable_stack_budget() {
-        // Protocol v15 retains one 48-byte excursion accumulator in the live
-        // breakaway workspace; keep this bound pinned to the realized payload.
-        //
-        // +32 B (4112 -> 4144) for the deferred phase-terminal record a
-        // dispatcher-detected fault must report, carrying `collected_count`
-        // and `has_safety_fault`. Deliberate: without it a fault raised at the
-        // dispatch boundary emits no phase terminal at all, so the host cannot
-        // tell how much measured evidence the fault destroyed.
+        // `OuterPhase` is the largest thing the outer engine holds inline, so
+        // its bound is what keeps retained phase state from creeping. This is a
+        // struct bound; the per-future stack gates live in
+        // `commissioning::tests::size_regression_gates`.
         assert!(
-            size_of::<OuterPhase>() <= 4144,
+            size_of::<OuterPhase>() <= 4160,
             "OuterPhase grew to {} bytes",
             size_of::<OuterPhase>()
         );

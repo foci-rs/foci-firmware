@@ -6,6 +6,7 @@ use super::combined_plan::{
     integral_response_reaches_target, proportional_response_in_initial_band,
     select_proportional_response,
 };
+use super::integral_plan::StageCAcquisition;
 use super::integral_plan::{
     CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCPlanShape,
     build_integral_ladder, plan_combined_velocity_integral_response,
@@ -307,7 +308,8 @@ fn combined_stage_c_plan_uses_only_the_live_selected_response() {
     }
     let mut historical = plan;
     historical.schema_revision = FIRST_COMBINED_STAGE_C_SCHEMA_REVISION;
-    historical.authority.stage_b_plan_digest = historical_stage_b.digest();
+    historical.authority.acquisition =
+        StageCAcquisition::ReproducedStageB(historical_stage_b.digest());
     historical.target_velocity_rpm = historical_stage_b.target_velocity_rpm.raw();
     historical.nominal_workflow_ms = 177_751;
     historical.maximum_workflow_ms = 195_496;

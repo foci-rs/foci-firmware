@@ -197,27 +197,62 @@ impl CommissioningWorkflowPlan {
     }
 }
 
+/// Which acquisition authorized one Stage-C plan.
+///
+/// Both variants carry one u64 digest, and [`Self::digest`] is what
+/// [`VelocityIntegralPlan::digest`] hashes and what the wire reports, so the
+/// bytes are identical to the single `u64` field this replaced.
+///
+/// The variants exist because the two digests are not comparable. A reproduced
+/// Stage-B digest can be recomputed from a request; a confirmation token cannot,
+/// and naming one where the other is meant is the defect this type makes
+/// unrepresentable. Ask for [`Self::reproduced_stage_b`] when a Stage-B sweep
+/// plan is what must match, so a breakaway authority is refused by the type
+/// rather than by a comparison that can never succeed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StageCAcquisition {
+    /// Digest of the reproduced Stage-B sweep plan that authorized Stage C.
+    ReproducedStageB(u64),
+    /// Accepted breakaway confirmation, named by its unforgeable token.
+    ///
+    /// There is no Stage-B sweep plan behind this: the breakaway campaign has
+    /// no Stage-B phase, so nothing recomputes from the request.
+    ConfirmedBreakaway(ConfirmedAcquisitionDigest),
+}
+
+impl StageCAcquisition {
+    /// The acquisition digest, in the one u64 form the plan digest and wire use.
+    pub const fn digest(self) -> u64 {
+        match self {
+            Self::ReproducedStageB(digest) => digest,
+            Self::ConfirmedBreakaway(token) => token.get(),
+        }
+    }
+
+    /// The reproduced Stage-B sweep digest, or `None` for a confirmation.
+    pub const fn reproduced_stage_b(self) -> Option<u64> {
+        match self {
+            Self::ReproducedStageB(digest) => Some(digest),
+            Self::ConfirmedBreakaway(_) => None,
+        }
+    }
+
+    /// The accepted confirmation token, or `None` for a reproduced Stage B.
+    pub const fn confirmed_breakaway(self) -> Option<ConfirmedAcquisitionDigest> {
+        match self {
+            Self::ConfirmedBreakaway(token) => Some(token),
+            Self::ReproducedStageB(_) => None,
+        }
+    }
+}
+
 /// Reproduced Stage-B evidence that authorizes one fixed-P Stage-C plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageCAuthority {
     /// Physical firmware channel.
     pub channel: u8,
-    /// Exact digest of the acquisition plan that authorized this Stage-C plan.
-    ///
-    /// For the historical Stage-B sweep workflow (schemas up to and including
-    /// [`super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION`]) this is the
-    /// Stage-B sweep plan's digest, and [`plan_velocity_integral_response`]
-    /// binds it directly. For the breakaway campaign
-    /// ([`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`]) there is
-    /// no Stage-B sweep plan: this field instead names the digest of the
-    /// accepted [`BandConfirmationPlan`], and only
-    /// [`bind_breakaway_stage_c_authority`] may produce it -- see
-    /// [`StageCAuthority::new_breakaway`], which requires a
-    /// [`ConfirmedAcquisitionDigest`] and is the only in-tree constructor
-    /// that fills this field for a breakaway-schema authority. The field
-    /// keeps its historical name, position, and type so every existing
-    /// [`VelocityIntegralPlan::digest`] stays byte for byte identical.
-    pub stage_b_plan_digest: u64,
+    /// Which acquisition authorized this Stage-C plan, and its exact digest.
+    pub acquisition: StageCAcquisition,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
     /// Reproduced Stage-B joint-operability component before Stage-C filtering.
@@ -276,7 +311,7 @@ impl StageCAuthority {
     ) -> Self {
         Self {
             channel,
-            stage_b_plan_digest: confirmed_digest.get(),
+            acquisition: StageCAcquisition::ConfirmedBreakaway(confirmed_digest),
             directional_memberships: [0; 2],
             stage_b_joint_membership: 0,
             joint_membership: 0,
@@ -397,7 +432,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.build_revision);
         hash_value!(self.schema_revision);
         hash_value!(self.authority.channel);
-        hash_value!(self.authority.stage_b_plan_digest);
+        hash_value!(self.authority.acquisition.digest());
         hash_value!(self.final_p);
         for membership in self.authority.directional_memberships {
             hash_value!(membership);
@@ -757,14 +792,17 @@ pub enum BreakawayAuthorityBindingError {
 /// anything other than an accepted confirmation" a compile-time
 /// impossibility for every breakaway authority built through
 /// [`StageCAuthority::new_breakaway`], not merely an untested code path.
+///
+/// The type is `pub` only so [`StageCAcquisition`] can name it. Its field is
+/// private and no public constructor exists, so the unforgeability above holds
+/// outside the crate as well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) struct ConfirmedAcquisitionDigest(u64);
+pub struct ConfirmedAcquisitionDigest(u64);
 
 impl ConfirmedAcquisitionDigest {
-    /// The validated digest, exactly as bound into
-    /// [`StageCAuthority::stage_b_plan_digest`] by
-    /// [`StageCAuthority::new_breakaway`].
-    pub(crate) const fn get(self) -> u64 {
+    /// The validated digest, exactly as carried by
+    /// [`StageCAcquisition::ConfirmedBreakaway`].
+    pub const fn get(self) -> u64 {
         self.0
     }
 }
@@ -1091,7 +1129,10 @@ pub(crate) fn plan_velocity_integral_response(
     if !stage_b_plan.is_present() {
         return Err(VelocityIntegralPlanError::MissingStageBPlan);
     }
-    if authority.stage_b_plan_digest != stage_b_plan.plan_digest {
+    // A confirmation token names no Stage-B sweep plan, so it can never match
+    // here. Asking for the reproduced digest refuses that authority outright
+    // rather than comparing values from two different namespaces.
+    if authority.acquisition.reproduced_stage_b() != Some(stage_b_plan.plan_digest) {
         return Err(VelocityIntegralPlanError::MismatchedAuthority);
     }
     if authority.stage_b_joint_membership == 0 {
@@ -1203,7 +1244,7 @@ pub(crate) fn plan_combined_velocity_integral_response(
         IntegralPlanSource {
             authority: StageCAuthority {
                 channel: 0,
-                stage_b_plan_digest: stage_b_plan.plan_digest,
+                acquisition: StageCAcquisition::ReproducedStageB(stage_b_plan.plan_digest),
                 directional_memberships: [0; 2],
                 stage_b_joint_membership: 0,
                 joint_membership: 0,
@@ -1688,7 +1729,7 @@ fn failed_admission_digest(
     hash_value!(STAGE_B_BUILD_REVISION);
     hash_value!(STAGE_C_EVIDENCE_SCHEMA_REVISION);
     hash_value!(authority.channel);
-    hash_value!(authority.stage_b_plan_digest);
+    hash_value!(authority.acquisition.digest());
     hash_value!(authority.stage_b_joint_membership);
     hash_value!(0_u32);
     hash_value!(0_u16);

@@ -10,6 +10,7 @@ use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BE
 use crate::commissioning::outer::velocity::integral_evidence::{
     ExactRateInterval, IntegralRunEvidence,
 };
+use crate::commissioning::outer::velocity::integral_plan::StageCAcquisition;
 use crate::commissioning::outer::velocity::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, plan_velocity_integral_response,
 };
@@ -324,7 +325,7 @@ fn combined_selected_rest_rejection_retains_stage_c_authority_without_continuing
             .authority()
             .expect("selected Stage B must retain the exact Stage-C plan");
         assert_eq!(retained.final_p, 1_024);
-        assert_eq!(retained.stage_b_plan_digest, stage_b_plan.digest());
+        assert_eq!(retained.acquisition.digest(), stage_b_plan.digest());
         assert_eq!(
             retained.identity.schema_revision,
             crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
@@ -355,7 +356,7 @@ fn combined_selected_rest_rejection_retains_stage_c_authority_without_continuing
 fn authority() -> StageCAuthority {
     StageCAuthority {
         channel: CHANNEL,
-        stage_b_plan_digest: stage_b_plan().digest(),
+        acquisition: StageCAcquisition::ReproducedStageB(stage_b_plan().digest()),
         directional_memberships: [0x000e_0000; 2],
         stage_b_joint_membership: 0x000e_0000,
         joint_membership: 0x000e_0000,
@@ -480,7 +481,7 @@ fn retained_authority() -> StageCAuthoritySummary {
         CHANNEL,
         STAGE_B_BUILD_REVISION,
         STAGE_C_EVIDENCE_SCHEMA_REVISION,
-        authority().stage_b_plan_digest,
+        authority().acquisition,
         plan.execution_plan(),
         plan.authority,
     )
@@ -1288,7 +1289,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
         CHANNEL,
         STAGE_B_BUILD_REVISION,
         plan.schema_revision,
-        plan.authority.stage_b_plan_digest,
+        plan.authority.acquisition,
         plan.execution_plan(),
         plan.authority,
     );

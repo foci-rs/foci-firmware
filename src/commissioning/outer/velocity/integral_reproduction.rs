@@ -33,8 +33,8 @@ pub struct StageCPlanIdentity {
 pub struct StageCAuthoritySummary {
     /// Exact pre-motion identity.
     pub identity: StageCPlanIdentity,
-    /// Stage-B plan that produced the reproduced handoff.
-    pub stage_b_plan_digest: u64,
+    /// Which acquisition authorized this Stage-C plan, and its exact digest.
+    pub acquisition: super::integral_plan::StageCAcquisition,
     /// Firmware-authoritative fixed proportional gain.
     pub final_p: u16,
     /// Cross-run forward and reverse model-or-fragment intersections.
@@ -73,7 +73,7 @@ impl StageCAuthoritySummary {
         channel: u8,
         build_revision: u32,
         schema_revision: u16,
-        stage_b_plan_digest: u64,
+        acquisition: super::integral_plan::StageCAcquisition,
         plan: VelocityIntegralExecutionPlan,
         authority: super::integral_plan::StageCAuthority,
     ) -> Self {
@@ -84,7 +84,7 @@ impl StageCAuthoritySummary {
                 schema_revision,
                 plan_digest: plan.plan_digest,
             },
-            stage_b_plan_digest,
+            acquisition,
             final_p: plan.final_p,
             directional_memberships: authority.directional_memberships,
             stage_b_joint_membership: authority.stage_b_joint_membership,
@@ -111,7 +111,7 @@ impl StageCAuthoritySummary {
     pub const fn stage_c_authority(self) -> super::integral_plan::StageCAuthority {
         super::integral_plan::StageCAuthority {
             channel: self.identity.channel,
-            stage_b_plan_digest: self.stage_b_plan_digest,
+            acquisition: self.acquisition,
             directional_memberships: self.directional_memberships,
             stage_b_joint_membership: self.stage_b_joint_membership,
             joint_membership: self.joint_membership,
@@ -188,7 +188,7 @@ pub enum StageCSlotState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 // Fixed inline storage is required because firmware has no heap. The exact
-// slot remains below its explicit 640-byte ceiling.
+// slot remains below its explicit 648-byte ceiling.
 #[allow(clippy::large_enum_variant)]
 enum RetainedStageC {
     Empty,
@@ -454,7 +454,9 @@ impl Default for StageCCandidateSlot {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<StageCCandidateSlot>() <= 640);
+// The retained slot is fixed inline storage on a target with no heap, so its
+// ceiling is enforced rather than assumed.
+const _: () = assert!(core::mem::size_of::<StageCCandidateSlot>() <= 648);
 
 /// Derive one anchor-relative response interval with checked outward subtraction.
 pub fn delta_e(

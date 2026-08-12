@@ -1573,6 +1573,7 @@ fn stage_b_preflight_failure_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commissioning::outer::velocity::integral_plan::StageCAcquisition;
     use core::sync::atomic::Ordering::Relaxed;
 
     use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation};
@@ -1951,7 +1952,7 @@ mod tests {
                 schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
                 plan_digest: 2,
             },
-            stage_b_plan_digest: 3,
+            acquisition: StageCAcquisition::ReproducedStageB(3),
             final_p: 724,
             directional_memberships: [0x001c_0000; 2],
             stage_b_joint_membership: 0x001c_0000,
@@ -2893,7 +2894,7 @@ mod tests {
         plan_velocity_integral_response(
             StageCAuthority {
                 channel: 0,
-                stage_b_plan_digest: stage_b.digest(),
+                acquisition: StageCAcquisition::ReproducedStageB(stage_b.digest()),
                 directional_memberships: [0x000e_0000; 2],
                 stage_b_joint_membership: 0x000e_0000,
                 joint_membership: 0x000e_0000,

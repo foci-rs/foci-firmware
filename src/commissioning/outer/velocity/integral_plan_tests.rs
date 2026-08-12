@@ -9,6 +9,7 @@ use super::breakaway_plan::{
     plan_upward_breakaway_probe, resolve_grid_floor,
 };
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
+use super::integral_plan::StageCAcquisition;
 use super::integral_plan::{
     AcquisitionContext, BreakawayAuthorityBindingError, CommissioningWorkflowPlan,
     ConfirmedAcquisitionDigest, IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION,
@@ -51,7 +52,7 @@ fn stage_b_request() -> VelocitySweepRequest {
 fn authority() -> StageCAuthority {
     StageCAuthority {
         channel: 0,
-        stage_b_plan_digest: 0x0123_4567_89ab_cdef,
+        acquisition: StageCAcquisition::ReproducedStageB(0x0123_4567_89ab_cdef),
         directional_memberships: [0x0007_0000, 0x0007_0000],
         stage_b_joint_membership: 0x0007_0000,
         joint_membership: 0x0007_0000,
@@ -327,7 +328,7 @@ fn preflight_duration_reserves_the_fixed_cleanup_window() {
 fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     let stage_b = stage_b_plan();
     let mut authority = authority();
-    authority.stage_b_plan_digest = stage_b.digest();
+    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
     let plan = plan_velocity_integral_response(
         authority,
         stage_b.execution_plan(stage_b.digest()),
@@ -370,7 +371,7 @@ fn workflow_shape_does_not_change_either_stage_identity() {
     let stage_b = stage_b_plan();
     let stage_b_digest = stage_b.digest();
     let mut authority = authority();
-    authority.stage_b_plan_digest = stage_b_digest;
+    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b_digest);
     let stage_c = plan_velocity_integral_response(
         authority,
         stage_b.execution_plan(stage_b_digest),
@@ -435,7 +436,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
     let stage_b = stage_b_plan();
     let digest = stage_b.digest();
     let mut missing = authority();
-    missing.stage_b_plan_digest = digest;
+    missing.acquisition = StageCAcquisition::ReproducedStageB(digest);
     missing.stage_b_joint_membership = 0;
     missing.joint_membership = 0;
     assert_eq!(
@@ -459,7 +460,7 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
         Err(VelocityIntegralPlanError::MissingStageBPlan)
     );
     let mut mismatched = authority();
-    mismatched.stage_b_plan_digest = digest.wrapping_add(1);
+    mismatched.acquisition = StageCAcquisition::ReproducedStageB(digest.wrapping_add(1));
     assert_eq!(
         plan_velocity_integral_response(
             mismatched,
@@ -477,7 +478,7 @@ fn stage_c_accepts_local_authority_without_model() {
     let stage_b = stage_b_plan();
     let digest = stage_b.digest();
     let mut local = authority();
-    local.stage_b_plan_digest = digest;
+    local.acquisition = StageCAcquisition::ReproducedStageB(digest);
     local.stage_b_joint_membership = 0x0003_0000;
     local.joint_membership = 0x0003_0000;
     local.directional_memberships = [0x0003_0000, 0];
@@ -531,7 +532,7 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
     let stage_b = stage_b_plan();
     let digest = stage_b.digest();
     let mut baseline = authority();
-    baseline.stage_b_plan_digest = digest;
+    baseline.acquisition = StageCAcquisition::ReproducedStageB(digest);
     let baseline = plan_velocity_integral_response(
         baseline,
         stage_b.execution_plan(digest),
@@ -542,7 +543,7 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
     .unwrap();
 
     let mut transferred = authority();
-    transferred.stage_b_plan_digest = digest;
+    transferred.acquisition = StageCAcquisition::ReproducedStageB(digest);
     transferred.directional_memberships[0] = 0x001c_0000;
     let transferred = plan_velocity_integral_response(
         transferred,
@@ -555,7 +556,7 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
     assert_ne!(baseline.digest(), transferred.digest());
 
     let mut reduced = authority();
-    reduced.stage_b_plan_digest = digest;
+    reduced.acquisition = StageCAcquisition::ReproducedStageB(digest);
     reduced.stage_b_joint_membership = 0x0003_0000;
     reduced.joint_membership = 0x0003_0000;
     let reduced = plan_velocity_integral_response(
@@ -932,13 +933,21 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     assert_ne!(bound.get(), probe_plan.plan_digest);
     assert_ne!(discovery_plan.plan_digest, probe_plan.plan_digest);
 
-    // The token is the only way to fill a breakaway authority's
-    // `stage_b_plan_digest`: `StageCAuthority::new_breakaway` takes a
-    // `ConfirmedAcquisitionDigest`, not a bare `u64`, so this call could not
-    // have compiled with a hand-picked digest, only with the value the gate
-    // above actually validated.
+    // The token is the only way to fill a breakaway authority's acquisition:
+    // `StageCAuthority::new_breakaway` takes a `ConfirmedAcquisitionDigest`,
+    // not a bare `u64`, so this call could not have compiled with a hand-picked
+    // digest, only with the value the gate above actually validated.
     let authority = StageCAuthority::new_breakaway(0, bound);
-    assert_eq!(authority.stage_b_plan_digest, confirmation_plan.plan_digest);
+    assert_eq!(
+        authority.acquisition,
+        StageCAcquisition::ConfirmedBreakaway(bound)
+    );
+    assert_eq!(
+        authority.acquisition.digest(),
+        confirmation_plan.plan_digest
+    );
+    // It names no Stage-B sweep plan, so nothing can try to recompute one.
+    assert_eq!(authority.acquisition.reproduced_stage_b(), None);
     assert_eq!(authority.stage_b_joint_membership, 0);
     assert_eq!(authority.joint_membership, 0);
 }
@@ -1064,7 +1073,7 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
 fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
     let stage_b = stage_b_plan();
     let mut authority = authority();
-    authority.stage_b_plan_digest = stage_b.digest();
+    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
     let plan = plan_velocity_integral_response(
         authority,
         stage_b.execution_plan(stage_b.digest()),
@@ -1135,7 +1144,11 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
     assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
     assert_eq!(plan.final_p, candidate_p.raw());
     assert_eq!(
-        plan.authority.stage_b_plan_digest,
+        plan.authority.acquisition,
+        StageCAcquisition::ConfirmedBreakaway(token)
+    );
+    assert_eq!(
+        plan.authority.acquisition.digest(),
         confirmation_plan.plan_digest
     );
     assert_eq!(plan.authority.stage_b_joint_membership, 0);

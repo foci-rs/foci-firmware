@@ -80,7 +80,7 @@ pub fn install_authority_from_plan(
         channel,
         STAGE_B_BUILD_REVISION,
         plan.schema_revision,
-        plan.authority.stage_b_plan_digest,
+        plan.authority.acquisition,
         plan.execution_plan(),
         plan.authority,
     );
@@ -230,7 +230,11 @@ pub fn preflight_stage_c_request(
     }
     .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
     let stage_b_plan_digest = stage_b_plan.digest();
-    if authority.stage_b_plan_digest != stage_b_plan_digest {
+    // Only a reproduced Stage-B authority names a sweep plan that can be
+    // recomputed from the request. A breakaway confirmation names none, so it
+    // is refused here by the type instead of by a comparison across namespaces
+    // that could never have succeeded.
+    if authority.acquisition.reproduced_stage_b() != Some(stage_b_plan_digest) {
         return Err(StageCPreflightRejection::RejectedPlanMismatch {
             retained: authority.identity,
             requested_stage_b_plan_digest: stage_b_plan_digest,

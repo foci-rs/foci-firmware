@@ -1595,7 +1595,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                                 channel,
                                 crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
                                 stage_c_plan.schema_revision,
-                                terminal.plan_digest,
+                                stage_c_plan.authority.acquisition,
                                 stage_c_plan.execution_plan(),
                                 stage_c_plan.authority,
                             ),
@@ -1757,7 +1757,8 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             };
             let authority = crate::commissioning::outer::velocity::integral_plan::StageCAuthority {
                 channel,
-                stage_b_plan_digest: dispatch.terminal.plan_digest,
+                acquisition: crate::commissioning::outer::velocity::integral_plan::
+                    StageCAcquisition::ReproducedStageB(dispatch.terminal.plan_digest),
                 directional_memberships: [
                     dispatch.terminal.selected_memberships[0],
                     dispatch.terminal.selected_memberships[1],
@@ -1870,7 +1871,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     channel,
                     crate::commissioning::outer::velocity::reproduction::STAGE_B_BUILD_REVISION,
                     crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
-                    dispatch.terminal.plan_digest,
+                    stage_c_plan.authority.acquisition,
                     stage_c_plan.execution_plan(),
                     stage_c_plan.authority,
                 ),

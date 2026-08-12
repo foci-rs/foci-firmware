@@ -1,4 +1,5 @@
 use super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
+use super::integral_plan::StageCAcquisition;
 use super::integral_plan::{
     StageCAuthority, VelocityIntegralPlanError, plan_velocity_integral_response,
     transition_capable_stage_c_gain,
@@ -37,7 +38,7 @@ fn budget() -> OuterMotionBudget {
 fn authority(plan_digest: u64, source: u32) -> StageCAuthority {
     StageCAuthority {
         channel: 0,
-        stage_b_plan_digest: plan_digest,
+        acquisition: StageCAcquisition::ReproducedStageB(plan_digest),
         directional_memberships: [0x001c_0000; 2],
         stage_b_joint_membership: source,
         joint_membership: source,

@@ -1107,8 +1107,8 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         fragment: 0,
         plan_digest_low: digest as u32,
         plan_digest_high: (digest >> 32) as u32,
-        stage_b_digest_low: plan.authority.stage_b_plan_digest as u32,
-        stage_b_digest_high: (plan.authority.stage_b_plan_digest >> 32) as u32,
+        stage_b_digest_low: plan.authority.acquisition.digest() as u32,
+        stage_b_digest_high: (plan.authority.acquisition.digest() >> 32) as u32,
         build_revision: plan.build_revision,
         schema_revision: plan.schema_revision,
         channel: plan.authority.channel,
@@ -2931,6 +2931,7 @@ fn commission_closed_loop_entry_report(oid: u8, inner: &InnerResult) -> ClosedLo
 
 #[cfg(test)]
 mod tests {
+    use crate::commissioning::outer::velocity::integral_plan::StageCAcquisition;
     use std::vec;
     use std::vec::Vec;
 
@@ -6045,7 +6046,7 @@ mod tests {
         plan_velocity_integral_response(
             StageCAuthority {
                 channel: 0,
-                stage_b_plan_digest: digest,
+                acquisition: StageCAcquisition::ReproducedStageB(digest),
                 directional_memberships: [0x001c_0000; 2],
                 stage_b_joint_membership: 0x001c_0000,
                 joint_membership: 0x001c_0000,
@@ -6422,7 +6423,7 @@ mod tests {
             plan.authority.channel,
             STAGE_B_BUILD_REVISION,
             STAGE_C_EVIDENCE_SCHEMA_REVISION,
-            plan.authority.stage_b_plan_digest,
+            plan.authority.acquisition,
             plan.execution_plan(),
             plan.authority,
         );

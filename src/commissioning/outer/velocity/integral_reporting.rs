@@ -261,7 +261,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u32(plan.build_revision);
     core.push_u16(plan.schema_revision);
     core.push_u8(plan.authority.channel);
-    push_u64(&mut core, plan.authority.stage_b_plan_digest);
+    push_u64(&mut core, plan.authority.acquisition.digest());
     core.push_u16(plan.final_p);
     for membership in plan.authority.directional_memberships {
         core.push_u32(membership);
@@ -750,6 +750,7 @@ fn push_i64(record: &mut VelocitySweepCanonicalRecord, value: i64) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::integral_plan::StageCAcquisition;
     use super::*;
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
     use crate::autotune::velocity_measurement::{
@@ -908,7 +909,7 @@ mod tests {
             schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
             authority: super::super::integral_plan::StageCAuthority {
                 channel: 0,
-                stage_b_plan_digest: 0xfedc_ba98_7654_3210,
+                acquisition: StageCAcquisition::ReproducedStageB(0xfedc_ba98_7654_3210),
                 directional_memberships: [0x0038_0000, 0x0038_0000],
                 stage_b_joint_membership: 0x0038_0000,
                 joint_membership: 0x0018_0000,

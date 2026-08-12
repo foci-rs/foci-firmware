@@ -5,6 +5,7 @@ use super::current_guard::{
     VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, classify_phase_evidence,
     derive_probe_limit,
 };
+use super::integral_plan::StageCAcquisition;
 use super::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, plan_velocity_integral_response,
 };
@@ -174,7 +175,7 @@ fn velocity_current_guard_contract() {
     let stage_c = plan_velocity_integral_response(
         StageCAuthority {
             channel: 0,
-            stage_b_plan_digest: stage_b.digest(),
+            acquisition: StageCAcquisition::ReproducedStageB(stage_b.digest()),
             directional_memberships: [0x001c_0000, 0x001c_0000],
             stage_b_joint_membership: 0x001c_0000,
             joint_membership: 0x001c_0000,

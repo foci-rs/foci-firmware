@@ -2190,71 +2190,30 @@ mod tests {
                 129
             );
             assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
-            // The breakaway campaign embeds the probe/discovery/confirmation
-            // state machine plus its one borrowed workspace as a new outer phase.
-            // Its retained footprint (the shared workspace coexisting with the
-            // discovery session's collected in-band evidence) exceeds the classic
-            // VelocitySweep variant, so it is now the largest outer payload. This
-            // is deliberate, bounded retained state, re-baselined once here; it
-            // stays well under the audited F407 ceiling asserted below.
-            //
-            // Adds 304 B: the campaign's frozen discovery/confirmation
-            // planning inputs retained for live wire reporting (the discovery
-            // session's `AdditiveDiscoveryRequest` and floor-origin flag, the
-            // confirmation session's nominated margin, rung zero's per-direction
-            // motion classification), the deferred one-tick-ahead evidence slot
-            // (`BreakawayCampaignTerminal`, not the full event enum -- see
-            // `EmitContinuation`'s own doc comment for why that distinction
-            // matters), and the deferred campaign `Done` outcome.
-            //
-            // The Stage-C gate hardening adds 16 B: the campaign
-            // now freezes the plan-time PWM frequency and encoder resolution in
-            // `BreakawayCampaignInputs` so the Stage-C gate can fail closed when
-            // the live physical context diverges from the one the confirmation
-            // evidence was gathered under. Deliberate, bounded retained state;
-            // still well under the audited F407 ceiling.
-            // The independent-replay hardening adds 48 B: each
-            // pending discovery/confirmation observation now retains the frozen
-            // classify/consensus inputs (stationarity code, settled-rate and
-            // deficit edges, torque authority, disturbance interval) so an
-            // offline decoder derives the consensus masks itself instead of
-            // trusting firmware's. Deliberate, bounded, still well under the
-            // audited F407 ceiling.
-            // Protocol v15 adds 48 B after replacing the binary-search
-            // session with the upward cursor: the one live probe workspace now
-            // retains a wrap-aware excursion accumulator alongside the shared
-            // capture ring until the raw record is emitted. This is the minimum
-            // state needed to preserve stroke extrema and capture timing without
-            // touching the 10 kHz position tick.
-            // 5_600 -> 5_632: +32 B for the deferred phase-terminal record
-            // reported by a dispatcher-detected fault.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_632);
+            // The breakaway campaign is the largest outer payload: its
+            // probe/discovery/confirmation state machine and borrowed workspace
+            // outweigh the classic VelocitySweep variant. Exact, so retained
+            // engine state cannot grow unnoticed; the audited F407 ceiling is
+            // the `<= 6_144` bound below.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_648);
         }
-        assert!(size_of::<CommissioningEngine>() <= 5_632);
+        assert!(size_of::<CommissioningEngine>() <= 5_648);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);
         assert_eq!(size_of::<[u16; crate::autotune::TRANSIENT_LEN]>(), 512);
         assert_eq!(size_of::<crate::autotune::DelayTimestampOffsets>(), 514);
-        // Production-semantic verified retries add loop state to the mock
-        // backend future used by this host-side size gate.
-        // Resistance current evidence adds 16 bytes to the terminal result
-        // carried by the engine-step future.
-        // Closed-loop-entry bounded-drift retry adds an `attempt: u8` field
-        // to `InnerPhase::ClosedLoopEntry`, growing the phase enum by 16
-        // bytes after alignment.
+        // Async future sizes are stack, not static allocation, and the F407
+        // budget is roughly 4 KB each. Treat a failure here as a design
+        // question: a future that grows past its bound has overflowed the
+        // interrupt stack on real hardware before.
         assert_eq!(engine_step, 4_336);
         assert!(engine_step <= 4_336);
         assert_eq!(step_inner, 4_288);
         assert!(step_inner <= 4_288);
-        // Run-owned current evidence adds 32 bytes to electrical ID state.
         assert_eq!(electrical_id, 640);
         assert!(electrical_id <= 640);
         assert!(electrical_id <= 960);
-        // The capture-owned deadline loop adds 48 bytes to the scheduled
-        // future while removing per-sample reconstruction of that future.
-        // Production-semantic mock retries add another 32 bytes in tests.
-        // Closed-loop-entry bounded-drift retry adds 16 bytes (see engine_step).
         assert_eq!(scheduled_step, 4_416);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
