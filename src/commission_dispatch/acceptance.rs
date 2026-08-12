@@ -31,7 +31,8 @@ impl AutotuneAction {
             Self::Combined
             | Self::CombinedMirrored
             | Self::CombinedPaired
-            | Self::BreakawaySeeded => None,
+            | Self::BreakawaySeeded
+            | Self::StageCResume => None,
             Self::MatrixAscending | Self::MatrixAscendingMirrored => {
                 Some(AcceptanceMatrixOrder::Ascending)
             }
@@ -50,7 +51,8 @@ impl AutotuneAction {
             Self::Combined
             | Self::CombinedMirrored
             | Self::CombinedPaired
-            | Self::BreakawaySeeded => None,
+            | Self::BreakawaySeeded
+            | Self::StageCResume => None,
             Self::MatrixAscending | Self::MatrixDescending => Some(IntegralSlotOrder::ForwardFirst),
             Self::MatrixAscendingMirrored | Self::MatrixDescendingMirrored => {
                 Some(IntegralSlotOrder::ReverseFirst)

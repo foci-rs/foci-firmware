@@ -470,6 +470,13 @@ pub enum AutotuneAction {
     /// non-trace build the request enters the same generic outer tune as every
     /// other action, since the campaign phase does not exist there.
     BreakawaySeeded = 7,
+    /// Re-run Stage C against retained firmware authority.
+    ///
+    /// Replays one exact retained plan so a sufficient run can reproduce and
+    /// promote to `Complete`. Retention is RAM-only, so this succeeds only in
+    /// the same power cycle as the run that produced the candidate, and a
+    /// campaign in between resets the slot.
+    StageCResume = 8,
 }
 
 impl AutotuneAction {
@@ -484,6 +491,7 @@ impl AutotuneAction {
             5 => Some(Self::CombinedMirrored),
             6 => Some(Self::CombinedPaired),
             7 => Some(Self::BreakawaySeeded),
+            8 => Some(Self::StageCResume),
             _ => None,
         }
     }
@@ -508,7 +516,12 @@ impl AutotuneAction {
             // The breakaway campaign runs its own probe/discovery/confirmation
             // schedule and does not consult the classic forward/reverse slot
             // order; report the default so the field stays well defined.
-            Self::BreakawaySeeded => IntegralSlotOrder::ForwardFirst,
+            //
+            // A resume rebuilds from retained authority, which does not carry
+            // the original acquisition's slot order, so it reconstructs at the
+            // same default. Mirrored and paired acquisitions cannot be resumed
+            // faithfully until slot order joins retained identity.
+            Self::BreakawaySeeded | Self::StageCResume => IntegralSlotOrder::ForwardFirst,
         }
     }
 }
@@ -1469,6 +1482,30 @@ mod tests {
 
     fn i_gain(raw: u16) -> foci_tmc4671::pid::PidIGain {
         foci_tmc4671::pid::PidIGain::new(raw).expect("test gain must be in range")
+    }
+
+    #[test]
+    fn stage_c_resume_decodes_and_carries_no_matrix_order() {
+        // Resuming Stage C replays one retained plan, so it selects neither an
+        // amplitude order nor a mirrored slot schedule.
+        assert_eq!(
+            AutotuneAction::from_u8(8),
+            Some(AutotuneAction::StageCResume)
+        );
+        assert_eq!(AutotuneAction::from_u8(9), None);
+        assert_eq!(AutotuneAction::StageCResume as u8, 8);
+        #[cfg(feature = "trace-velocity-sweep")]
+        {
+            assert_eq!(AutotuneAction::StageCResume.matrix_order(), None);
+            assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
+        }
+        // Retained authority does not carry the acquisition's slot order, so a
+        // resume reconstructs at the default. Mirrored and paired acquisitions
+        // therefore cannot be resumed faithfully.
+        assert_eq!(
+            AutotuneAction::StageCResume.slot_order(),
+            crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst
+        );
     }
 
     #[test]

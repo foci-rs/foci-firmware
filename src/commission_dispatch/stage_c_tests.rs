@@ -1,7 +1,8 @@
 use super::stage_c::{
-    STAGE_C_CAUSE_EVIDENCE_INTEGRITY, STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
-    STAGE_C_CAUSE_PLAN_MISMATCH, STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightConfig,
-    StageCPreflightRejection, apply_stage_c_terminal, preflight_stage_c_request,
+    STAGE_C_CAUSE_EVIDENCE_INTEGRITY, STAGE_C_CAUSE_NO_RETAINED_AUTHORITY,
+    STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, STAGE_C_CAUSE_PLAN_MISMATCH,
+    STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightConfig, StageCPreflightRejection,
+    apply_stage_c_terminal, missing_authority_stage_c_terminal, preflight_stage_c_request,
 };
 use super::{CommissionOutcome, ReplyPayload};
 use crate::commissioning::outer::OuterMotionBudget;
@@ -549,6 +550,38 @@ fn terminal(
 
 fn empty_evidence() -> IntegralRunEvidence {
     IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2])
+}
+
+#[test]
+fn a_resume_without_retained_authority_fails_closed_and_carries_no_plan() {
+    // A resume asked for against an empty slot has no exact plan to name, so
+    // the terminal reports a zero plan digest rather than inventing one. It is
+    // its own cause: the request was well formed and the machine simply has
+    // nothing retained, which is the ordinary state after any reset.
+    let slot = StageCCandidateSlot::new();
+    assert!(
+        preflight_stage_c_request(request(), &preflight_config(), 4, &slot)
+            .expect("an empty slot is not a rejection")
+            .is_none()
+    );
+
+    let terminal = missing_authority_stage_c_terminal(4);
+
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
+    assert_eq!(terminal.cause, STAGE_C_CAUSE_NO_RETAINED_AUTHORITY);
+    assert_ne!(
+        terminal.cause,
+        STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT
+    );
+    assert_eq!(terminal.run_sequence, 4);
+    assert_eq!(terminal.plan_digest, 0);
+    assert_eq!(terminal.digest, 0);
+    assert_eq!(terminal.evidence_sequence, 0);
+    assert_eq!(terminal.expected_observations, 0);
+    assert_eq!(terminal.emitted_observations, 0);
+    assert_eq!(terminal.expected_rungs, 0);
+    assert_eq!(terminal.emitted_rungs, 0);
+    assert!(terminal.safety_fault.is_none());
 }
 
 #[test]

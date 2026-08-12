@@ -174,7 +174,12 @@ fn action_codes_and_invalid_values_are_exact() {
         AutotuneAction::from_u8(7),
         Some(AutotuneAction::BreakawaySeeded)
     );
-    assert_eq!(AutotuneAction::from_u8(8), None);
+    assert_eq!(AutotuneAction::StageCResume as u8, 8);
+    assert_eq!(
+        AutotuneAction::from_u8(8),
+        Some(AutotuneAction::StageCResume)
+    );
+    assert_eq!(AutotuneAction::from_u8(9), None);
     // The breakaway campaign runs its own schedule; it is neither a matrix
     // acquisition nor a classic forward/reverse slot order.
     assert_eq!(

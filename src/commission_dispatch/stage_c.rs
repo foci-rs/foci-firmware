@@ -27,6 +27,13 @@ pub const STAGE_C_CAUSE_REPRODUCTION_MISMATCH: u8 = 6;
 pub const STAGE_C_CAUSE_PLAN_MISMATCH: u8 = 7;
 /// No reproduced operating rung can run under the Stage-C probe clamp.
 pub const STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT: u8 = 11;
+/// A Stage-C resume was requested with nothing retained to resume from.
+///
+/// Distinct from every rejection cause: the request was well formed and the
+/// slot is simply empty, which is the ordinary state after any reset because
+/// retention is RAM-only. Sharing a cause with a rejection would tell the
+/// operator to inspect a mismatch that does not exist.
+pub const STAGE_C_CAUSE_NO_RETAINED_AUTHORITY: u8 = 12;
 
 const ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED: u16 = 1 << 7;
 const ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT: u16 = 1 << 8;
@@ -397,6 +404,42 @@ pub fn apply_stage_c_terminal(
 }
 
 /// Build the authoritative zero-motion terminal for a failed Stage-C admission.
+/// Terminal for a Stage-C resume with nothing retained to resume from.
+///
+/// Reports a zero plan digest because there is genuinely no exact plan: the
+/// slot held no authority to reconstruct one from. Every other failed-admission
+/// terminal names the plan it rejected, so consumers must branch on the cause
+/// rather than assume a digest is present.
+pub fn missing_authority_stage_c_terminal(run_sequence: u32) -> VelocityIntegralTerminal {
+    use crate::commissioning::outer::velocity::integral_evidence::{
+        ExactRateInterval, IntegralRunEvidence,
+    };
+
+    VelocityIntegralTerminal {
+        run_sequence,
+        evidence_sequence: 0,
+        plan_digest: 0,
+        digest: 0,
+        outcome: VelocityIntegralOutcome::Failed,
+        cause: STAGE_C_CAUSE_NO_RETAINED_AUTHORITY,
+        final_p: 0,
+        recovery_unavailable: false,
+        recovered_with_current_headroom: false,
+        recovery_quantization_exposed: false,
+        probe_constrained_test_point: false,
+        rest_boundary_rung_plus_one: 0,
+        rest_boundary_slot_plus_one: 0,
+        evidence: IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
+        expected_observations: 0,
+        emitted_observations: 0,
+        expected_rungs: 0,
+        emitted_rungs: 0,
+        run_started_us: 0,
+        run_completed_us: 0,
+        safety_fault: None,
+    }
+}
+
 pub(crate) fn failed_stage_c_terminal(
     run_sequence: u32,
     failure: StageCFailedAdmission,

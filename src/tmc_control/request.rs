@@ -43,6 +43,40 @@ enum TuneRoute {
     Combined(crate::commission_dispatch::stage_b::StageBPreflight),
     Acceptance(crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight),
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
+    StageCResume(crate::commission_dispatch::stage_c::StageCPreflight),
+}
+
+/// Map a refused Stage-C resume onto the terminal the host will render.
+///
+/// Every rejection here names retained state that disagrees with the request,
+/// so each keeps a plan digest where one exists. The empty-slot case is not a
+/// rejection and is built separately.
+#[cfg(feature = "trace-velocity-sweep")]
+fn stage_c_resume_rejection_terminal(
+    run_sequence: u32,
+    rejection: crate::commission_dispatch::stage_c::StageCPreflightRejection,
+) -> crate::commissioning::types::VelocityIntegralTerminal {
+    use crate::commission_dispatch::stage_c::{
+        STAGE_C_CAUSE_PLAN_MISMATCH, StageCPreflightRejection, failed_stage_c_terminal,
+        missing_authority_stage_c_terminal,
+    };
+
+    match rejection {
+        StageCPreflightRejection::NoTransitionCapableOperatingPoint(failure) => {
+            failed_stage_c_terminal(run_sequence, failure)
+        }
+        StageCPreflightRejection::RejectedPlanMismatch { retained, .. } => {
+            let mut terminal = missing_authority_stage_c_terminal(run_sequence);
+            terminal.cause = STAGE_C_CAUSE_PLAN_MISMATCH;
+            terminal.plan_digest = retained.plan_digest;
+            terminal
+        }
+        StageCPreflightRejection::InvalidPlan => {
+            let mut terminal = missing_authority_stage_c_terminal(run_sequence);
+            terminal.cause = STAGE_C_CAUSE_PLAN_MISMATCH;
+            terminal
+        }
+    }
 }
 
 /// A board could not install the validated mapper into its idle P3 scheduler.
@@ -914,6 +948,65 @@ where
                     });
                     TuneRoute::Acceptance(preflight)
                 }
+                crate::tmc::AutotuneAction::StageCResume => {
+                    let config = crate::commission_dispatch::stage_c::StageCPreflightConfig {
+                        encoder_counts_per_rev,
+                        torque_limit: current_limit.raw(),
+                        limit_evidence_capability: board.velocity_limit_evidence_capability(),
+                        channel: board.channel(),
+                        pwm_hz: board.pwm_freq_hz(),
+                    };
+                    // `Ok(None)` is the admission path's "proceed to Stage B"
+                    // signal. A resume has no Stage B to fall back to, and
+                    // running a campaign here would actuate the motor for
+                    // minutes when the operator asked to reproduce a plan that
+                    // does not exist. Translate it here rather than changing
+                    // what the shared preflight means.
+                    let refusal = match crate::commission_dispatch::stage_c::
+                        preflight_stage_c_request(request, &config, run_sequence, stage_c_candidate)
+                    {
+                        Ok(Some(preflight)) => Ok(preflight),
+                        Ok(None) => Err(crate::commission_dispatch::stage_c::
+                            missing_authority_stage_c_terminal(run_sequence)),
+                        Err(rejection) => {
+                            Err(stage_c_resume_rejection_terminal(run_sequence, rejection))
+                        }
+                    };
+                    let preflight = match refusal {
+                        Ok(preflight) => preflight,
+                        Err(terminal) => {
+                            board.record_velocity_sweep_trace_record(
+                                crate::commissioning::outer::velocity::integral_reporting::
+                                    encode_velocity_integral_terminal(&terminal),
+                            );
+                            board.emit_reply(ReplyPayload::VelocityIntegralTerminal {
+                                oid,
+                                terminal,
+                                reproduction: None,
+                                authority: None,
+                            });
+                            board
+                                .tmc_state()
+                                .commission_in_flight
+                                .store(false, core::sync::atomic::Ordering::Relaxed);
+                            return TmcControlRequestOutcome::skip_tick_tail();
+                        }
+                    };
+                    let workflow = crate::commissioning::outer::velocity::integral_plan::
+                        CommissioningWorkflowPlan::new(
+                            run_sequence,
+                            crate::commissioning::outer::velocity::integral_plan::
+                                StageCPlanShape::StageCResume,
+                            0,
+                            preflight.plan.maximum_workflow_ms,
+                        )
+                        .expect("a preflighted resume has a valid workflow envelope");
+                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                        oid,
+                        plan: workflow,
+                    });
+                    TuneRoute::StageCResume(preflight)
+                }
                 crate::tmc::AutotuneAction::BreakawaySeeded => {
                     let (campaign, workflow) = match crate::commissioning::outer::velocity::
                         breakaway_campaign::plan_breakaway_campaign_command(
@@ -1051,6 +1144,17 @@ where
                     TuneRoute::Acceptance(preflight) => {
                         runtime.set_commission_engine(
                             CommissioningEngine::new_outer_for_tmc_with_acceptance_preflight(
+                                oid,
+                                tmc_state,
+                                outer_params,
+                                entry_snapshot,
+                                preflight,
+                            ),
+                        );
+                    }
+                    TuneRoute::StageCResume(preflight) => {
+                        runtime.set_commission_engine(
+                            CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
                                 oid,
                                 tmc_state,
                                 outer_params,
