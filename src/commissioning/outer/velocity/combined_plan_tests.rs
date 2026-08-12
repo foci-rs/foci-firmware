@@ -158,11 +158,8 @@ fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
     // The breakaway campaign is additive: it must not renumber or otherwise
     // disturb any historical Stage-B or Stage-C schema revision.
-    // 15 -> 16 and 14 -> 15 when the stationarity walk stopped ending at the
-    // first rejected suffix: the same plan now measures differently, so the
-    // revision that declares how it measured has to move with it.
-    assert_eq!(BREAKAWAY_STAGE_B_SCHEMA_REVISION, 16);
-    assert_eq!(BREAKAWAY_STAGE_C_SCHEMA_REVISION, 15);
+    assert_eq!(BREAKAWAY_STAGE_B_SCHEMA_REVISION, 17);
+    assert_eq!(BREAKAWAY_STAGE_C_SCHEMA_REVISION, 16);
     assert_ne!(
         BREAKAWAY_STAGE_B_SCHEMA_REVISION,
         COMBINED_STAGE_B_SCHEMA_REVISION

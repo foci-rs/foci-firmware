@@ -90,10 +90,15 @@ pub(super) fn select_causal_rest_suffixes(
         if zero_compatible {
             zero_compatible_mask |= bit;
         }
+        // Closes the chain only on evidence against rest. An unfittable window is
+        // inconclusive, not a veto.
+        let contradicts_rest = (suffix.interval_present
+            && (suffix.interval_q[1] < 0 || 0 < suffix.interval_q[0]))
+            || suffix.structural_code == RestStructuralCode::ResolvedSlope;
         if chain_open && zero_compatible {
             selected_mask = bit;
             selected_suffix_len = VELOCITY_SUFFIX_LENGTHS[index];
-        } else {
+        } else if contradicts_rest {
             chain_open = false;
         }
     }

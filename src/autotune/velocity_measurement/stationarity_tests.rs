@@ -148,6 +148,49 @@ fn slot_157_recent_directional_motion_cannot_be_masked_by_older_suffixes() {
     assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
 }
 
+/// Real values from a campaign-ending rejection.
+#[test]
+fn an_unfittable_shortest_window_does_not_veto_longer_windows_that_confirm_rest() {
+    let decision = select_causal_rest_suffixes(
+        [
+            excluded_rest_suffix(
+                RestStructuralCode::StructuredResidual,
+                Some([-122_952, 122_952]),
+            ),
+            usable_rest_suffix([-13_234, 28_858]),
+            usable_rest_suffix([-14_721, 22_533]),
+        ],
+        false,
+    );
+
+    assert_eq!(decision.usable_mask, 0b110);
+    assert_eq!(decision.zero_compatible_mask, 0b110);
+    assert_eq!(
+        decision.selected_suffix_len, 256,
+        "the longest window that confirmed rest must be selected"
+    );
+    assert_eq!(
+        decision.disposition,
+        RestSelectionDisposition::StatisticalAcceptance
+    );
+}
+
+/// The counterpart: a fittable shortest window excluding zero is recent motion.
+#[test]
+fn a_fittable_shortest_window_excluding_zero_still_vetoes_longer_windows() {
+    let decision = select_causal_rest_suffixes(
+        [
+            usable_rest_suffix([7_977, 181_103]),
+            usable_rest_suffix([-89, 109_923]),
+            usable_rest_suffix([-7_780, 62_582]),
+        ],
+        false,
+    );
+
+    assert_eq!(decision.selected_mask, 0);
+    assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
+}
+
 #[test]
 fn causal_rest_selector_treats_closed_interval_endpoints_as_zero_compatible() {
     for interval in [[0, 1], [-1, 0]] {

@@ -28,7 +28,7 @@ pub const FIRST_COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 8;
 /// `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md`. Historical
 /// schemas 8 through [`COMBINED_STAGE_B_SCHEMA_REVISION`] keep their exact
 /// digest and behavior; this schema is additive.
-pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 16;
+pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
 /// Live Stage-C schema for the breakaway-seeded campaign.
 ///
 /// A Stage-C plan built under this schema binds the accepted
@@ -37,7 +37,7 @@ pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 16;
 /// [`super::integral_plan::bind_breakaway_stage_c_authority`]. Historical
 /// schemas up to and including [`COMBINED_STAGE_C_SCHEMA_REVISION`] keep
 /// their exact digest and behavior; this schema is additive.
-pub const BREAKAWAY_STAGE_C_SCHEMA_REVISION: u16 = 15;
+pub const BREAKAWAY_STAGE_C_SCHEMA_REVISION: u16 = 16;
 
 const P_RESPONSE_LOW_PERCENT: i128 = 70;
 const P_RESPONSE_HIGH_PERCENT: i128 = 80;
