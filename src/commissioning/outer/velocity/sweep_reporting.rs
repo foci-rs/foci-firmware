@@ -368,11 +368,15 @@ fn validate_rest_selection(
     let mut expected_selected_len = 0_u16;
     for (index, suffix_len) in VELOCITY_SUFFIX_LENGTHS.into_iter().enumerate() {
         let bit = 1_u8 << index;
-        if expected_zero_mask & bit == 0 {
+        let [low, high] = report.intervals_q[index];
+        let contradicts_rest = (expected_interval_mask & bit != 0 && (high < 0 || 0 < low))
+            || report.structural_codes[index] == RestStructuralCode::ResolvedSlope;
+        if expected_zero_mask & bit != 0 {
+            expected_selected_mask = bit;
+            expected_selected_len = suffix_len;
+        } else if contradicts_rest {
             break;
         }
-        expected_selected_mask = bit;
-        expected_selected_len = suffix_len;
     }
     match report.disposition {
         RestSelectionDisposition::StatisticalAcceptance => {
@@ -894,6 +898,24 @@ mod tests {
 
         assert_eq!(record.as_bytes(), expected);
         assert_eq!(record.as_bytes().len(), 78);
+    }
+
+    #[test]
+    fn rest_selection_accepts_noncontiguous_causal_suffix_chain() {
+        let mut report = rest_selection_diagnostic();
+        report.structural_codes = [
+            RestStructuralCode::Usable,
+            RestStructuralCode::StructuredResidual,
+            RestStructuralCode::Usable,
+        ];
+        report.intervals_q = [[-58_721, 90_287], [-29_401, 45_103], [-6_848, 22_512]];
+        report.interval_present_mask = 0b111;
+        report.usable_mask = 0b101;
+        report.zero_compatible_mask = 0b101;
+        report.selected_mask = 0b100;
+        report.selected_suffix_len = 256;
+
+        assert!(encode_rest_selection(report).is_ok());
     }
 
     #[test]
