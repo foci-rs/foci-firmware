@@ -57,6 +57,16 @@ pub struct StageCAuthoritySummary {
     pub pwm_hz: u32,
     /// Mechanical encoder quadrature counts per revolution.
     pub encoder_counts_per_rev: u32,
+    /// Hard torque-target limit the plan was built under.
+    pub hard_torque_limit: u16,
+    /// Inclusive usable torque-target boundary the plan was built under.
+    ///
+    /// Retained rather than recomputed because the breakaway campaign measures
+    /// it from the live current observer's clamp limit, so nothing derives it
+    /// from configuration at resume time.
+    pub usable_torque_limit: u16,
+    /// Available authority for proving absence of transient clamp contact.
+    pub(crate) limit_evidence_capability: super::current_guard::VelocityLimitEvidenceCapability,
     /// Number of positive-I rungs.
     pub positive_rung_count: u8,
     /// Simultaneous interval family size per direction.
@@ -100,6 +110,9 @@ impl StageCAuthoritySummary {
             target_velocity_rpm: plan.target_velocity_rpm,
             pwm_hz: plan.pwm_hz,
             encoder_counts_per_rev: plan.encoder_counts_per_rev,
+            hard_torque_limit: plan.hard_torque_limit,
+            usable_torque_limit: plan.usable_torque_limit,
+            limit_evidence_capability: plan.limit_evidence_capability,
             positive_rung_count: plan.positive_rung_count,
             family_size: plan.family_size,
             maximum_workflow_ms: plan.maximum_workflow_ms,
@@ -456,7 +469,7 @@ impl Default for StageCCandidateSlot {
 
 // The retained slot is fixed inline storage on a target with no heap, so its
 // ceiling is enforced rather than assumed.
-const _: () = assert!(core::mem::size_of::<StageCCandidateSlot>() <= 648);
+const _: () = assert!(core::mem::size_of::<StageCCandidateSlot>() <= 656);
 
 /// Derive one anchor-relative response interval with checked outward subtraction.
 pub fn delta_e(

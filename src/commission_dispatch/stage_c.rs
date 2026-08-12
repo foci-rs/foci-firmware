@@ -193,6 +193,79 @@ pub struct StageCPreflightConfig {
     pub pwm_hz: u32,
 }
 
+/// Admit one resume against retained breakaway authority.
+///
+/// Split out because it shares no reconstruction with the reproduced-Stage-B
+/// path: a breakaway campaign has no Stage-B phase, so the plan is rebuilt from
+/// the retained authority alone. Correspondingly there is no requested Stage-B
+/// digest to report on a mismatch, and the rejection carries zero.
+///
+/// The physical context comes from the retained authority rather than live
+/// configuration. That is deliberate for the torque limits: the campaign
+/// measured its usable limit from the current observer, so recomputing it here
+/// could silently plan against a different boundary than the one the
+/// confirmation evidence was gathered under. Divergence surfaces as a plan
+/// digest that no longer matches the retained identity, which is refused below.
+#[cfg(feature = "trace-velocity-sweep")]
+fn preflight_retained_breakaway(
+    token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
+    authority: StageCAuthoritySummary,
+    motion_budget: OuterMotionBudget,
+    run_sequence: u32,
+    stage_c_candidate: &StageCCandidateSlot,
+) -> Result<Option<StageCPreflight>, StageCPreflightRejection> {
+    use crate::commissioning::outer::velocity::integral_plan::{
+        AcquisitionContext, plan_retained_breakaway_velocity_integral_response,
+    };
+
+    let context = AcquisitionContext {
+        planned_velocity_mrev_s: authority.planned_velocity_mrev_s,
+        target_velocity_rpm: authority.target_velocity_rpm,
+        hard_torque_limit: authority.hard_torque_limit,
+        usable_torque_limit: authority.usable_torque_limit,
+        limit_evidence_capability: authority.limit_evidence_capability,
+        channel: authority.identity.channel,
+        plan_time_pwm_hz: authority.pwm_hz,
+        plan_time_encoder_counts_per_rev: authority.encoder_counts_per_rev,
+    };
+    let plan = match plan_retained_breakaway_velocity_integral_response(
+        token,
+        authority.final_p,
+        context,
+        motion_budget,
+        authority.pwm_hz,
+        authority.encoder_counts_per_rev,
+    ) {
+        Ok(plan) => plan,
+        Err(VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure)) => {
+            return Err(StageCPreflightRejection::NoTransitionCapableOperatingPoint(
+                failure,
+            ));
+        }
+        Err(_) => return Err(StageCPreflightRejection::InvalidPlan),
+    };
+    let identity = StageCPlanIdentity {
+        channel: authority.identity.channel,
+        build_revision: STAGE_B_BUILD_REVISION,
+        schema_revision: plan.schema_revision,
+        plan_digest: plan.digest(),
+    };
+    // The sole identity check on this path: the rebuilt plan must be the exact
+    // plan that was retained. A request that changed anything material produces
+    // a different digest and is refused before any stroke.
+    if stage_c_candidate.preflight(identity).is_some() {
+        return Err(StageCPreflightRejection::RejectedPlanMismatch {
+            retained: authority.identity,
+            requested_stage_b_plan_digest: 0,
+        });
+    }
+    Ok(Some(StageCPreflight {
+        plan,
+        identity,
+        run_sequence,
+    }))
+}
+
 /// Reconstruct and identity-check retained Stage-C authority before any SPI work.
 ///
 /// `Ok(None)` means no Stage-C authority exists and admission must proceed to Stage B.
@@ -210,6 +283,29 @@ pub fn preflight_stage_c_request(
             retained: authority.identity,
             requested_stage_b_plan_digest: 0,
         });
+    }
+    let motion_budget = OuterMotionBudget {
+        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: request.requested_velocity_source,
+        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+        max_duration_ms: request.max_duration_ms,
+    };
+    // A breakaway campaign has no Stage-B phase, so there is no sweep plan to
+    // recompute and compare. Rebuild its Stage-C plan from the retained
+    // authority instead and let the plan-digest check below carry the whole
+    // burden of proving the request still reproduces what was retained.
+    if let Some(token) = authority.acquisition.confirmed_breakaway() {
+        return preflight_retained_breakaway(
+            token,
+            authority,
+            motion_budget,
+            run_sequence,
+            stage_c_candidate,
+        );
     }
     let combined = authority.identity.schema_revision
         == crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION;
@@ -240,16 +336,6 @@ pub fn preflight_stage_c_request(
             requested_stage_b_plan_digest: stage_b_plan_digest,
         });
     }
-    let motion_budget = OuterMotionBudget {
-        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-        requested_velocity_source: request.requested_velocity_source,
-        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-        max_duration_ms: request.max_duration_ms,
-    };
     let stage_b_execution = stage_b_plan.execution_plan(stage_b_plan_digest);
     let plan_result = if combined {
         let p = foci_tmc4671::pid::PidPGain::new(authority.final_p)

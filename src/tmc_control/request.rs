@@ -1962,6 +1962,10 @@ mod tests {
                 2
             ],
             reduced_margin: true,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+            limit_evidence_capability:
+                crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
             directional_pooled_intervals: [[100, 120], [-130, -100]],
             planned_velocity_mrev_s: 2_929,
             target_velocity_rpm: 176,

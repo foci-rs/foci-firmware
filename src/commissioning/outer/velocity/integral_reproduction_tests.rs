@@ -42,6 +42,10 @@ fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
         target_velocity_rpm: 176,
         pwm_hz: 25_000,
         encoder_counts_per_rev: 4_000,
+        hard_torque_limit: 2_816,
+        usable_torque_limit: 2_534,
+        limit_evidence_capability:
+            super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
         positive_rung_count: 6,
         family_size: 32,
         maximum_workflow_ms: 79_872,
@@ -105,7 +109,7 @@ fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authori
     assert_eq!(slot.acceptance_point(), Some(point));
     assert_eq!(slot.authority(), None);
     assert_eq!(slot.candidate(), None);
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
+    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 656);
 }
 
 #[test]
@@ -481,12 +485,12 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // update the number reflexively.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 240);
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 112);
-    assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 96);
+    assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 104);
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
         632
     );
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
+    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 656);
     assert_eq!(
         core::mem::size_of::<super::integral_reproduction::StageCReproductionDelta>(),
         596

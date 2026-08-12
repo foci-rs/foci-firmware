@@ -1486,6 +1486,66 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     )
 }
 
+/// Rebuild one breakaway Stage-C plan from authority firmware already retained.
+///
+/// The resume counterpart to [`plan_breakaway_velocity_integral_response`]. It
+/// takes the same unforgeable [`ConfirmedAcquisitionDigest`], so a gain still
+/// cannot reach Stage C without a genuine accepted confirmation; the token here
+/// comes from the retention slot, which only a plan that already passed that
+/// gate can write.
+///
+/// It omits the confirmation-plan contract validation and the plan-to-token
+/// digest binding, because both admitted this gain when the campaign ran and
+/// neither has an input at resume time -- the confirmation plan is not retained.
+/// Everything that bounds *this* run is re-checked live: the physical-context
+/// guard, the transition-capable test for the confirmed gain, and the shared
+/// tail's recovery-geometry and duration admission.
+///
+/// The caller must still compare the resulting plan digest against the retained
+/// identity. That comparison is what proves the request reproduces the retained
+/// plan, and it replaces the Stage-B digest check the reproduced-Stage-B path
+/// uses, which has no meaning here.
+#[allow(dead_code)]
+pub(crate) fn plan_retained_breakaway_velocity_integral_response(
+    token: ConfirmedAcquisitionDigest,
+    final_p: u16,
+    context: AcquisitionContext,
+    motion_budget: OuterMotionBudget,
+    pwm_hz: u32,
+    encoder_counts_per_rev: u32,
+) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
+    if context.plan_time_pwm_hz != pwm_hz
+        || context.plan_time_encoder_counts_per_rev != encoder_counts_per_rev
+    {
+        return Err(VelocityIntegralPlanError::PhysicalContextMismatch);
+    }
+    let authority = StageCAuthority::new_breakaway(context.channel, token);
+    if !transition_capable_stage_c_gain(
+        final_p,
+        context.target_velocity_rpm,
+        encoder_counts_per_rev,
+        pwm_hz,
+        MOVING_STROKE_US,
+        context.usable_torque_limit,
+    )? {
+        return Err(VelocityIntegralPlanError::ConfirmedGainNotTransitionCapable(token.get()));
+    }
+    plan_velocity_integral_response_from_source(
+        IntegralPlanSource {
+            authority,
+            combined_selected_response: None,
+            final_p,
+            schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+            append_exact_cap: false,
+            probe_constrained_test_point: false,
+        },
+        context,
+        motion_budget,
+        pwm_hz,
+        encoder_counts_per_rev,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct IntegralPlanSource {
     authority: StageCAuthority,

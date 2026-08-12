@@ -1124,6 +1124,105 @@ fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcqu
     .unwrap()
 }
 
+/// A campaign's Stage-C plan must be resumable from retained authority alone.
+///
+/// The breakaway campaign has no Stage-B phase, so nothing recomputes a sweep
+/// plan for it. Before this the preflight compared the retained confirmation
+/// token against a freshly planned Stage-B digest and refused every resume,
+/// which made the `CompleteCandidate` to `Complete` promotion unreachable for
+/// the only campaign that produces candidates.
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn retained_breakaway_authority_regenerates_its_exact_plan() {
+    use crate::commission_dispatch::stage_c::{
+        StageCPreflightConfig, install_authority_from_plan, preflight_stage_c_request,
+    };
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+
+    let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
+    let plan = plan_breakaway_velocity_integral_response(
+        breakaway_token_for(confirmation_plan),
+        confirmation_plan,
+        breakaway_acquisition_context(),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .expect("the campaign's own Stage-C plan");
+    let mut slot = StageCCandidateSlot::new();
+    install_authority_from_plan(0, &mut slot, plan);
+
+    let preflight = preflight_stage_c_request(
+        stage_b_request(),
+        &StageCPreflightConfig {
+            encoder_counts_per_rev: 4_000,
+            torque_limit: 2_816,
+            limit_evidence_capability: super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+            channel: 0,
+            pwm_hz: 25_000,
+        },
+        11,
+        &slot,
+    )
+    .expect("retained breakaway authority is resumable")
+    .expect("the slot is not empty");
+
+    assert_eq!(preflight.plan, plan);
+    assert_eq!(preflight.identity.plan_digest, plan.digest());
+    assert_eq!(
+        preflight.identity.schema_revision,
+        BREAKAWAY_STAGE_C_SCHEMA_REVISION
+    );
+    assert_eq!(preflight.run_sequence, 11);
+}
+
+/// The plan-digest check is the only identity guard on the resume path, so it
+/// has to carry the weight the Stage-B digest comparison carries elsewhere.
+#[cfg(feature = "trace-velocity-sweep")]
+#[test]
+fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
+    use crate::commission_dispatch::stage_c::{
+        StageCPreflightConfig, StageCPreflightRejection, install_authority_from_plan,
+        preflight_stage_c_request,
+    };
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+
+    let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
+    let plan = plan_breakaway_velocity_integral_response(
+        breakaway_token_for(confirmation_plan),
+        confirmation_plan,
+        breakaway_acquisition_context(),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .expect("the campaign's own Stage-C plan");
+    let mut slot = StageCCandidateSlot::new();
+    let retained = install_authority_from_plan(0, &mut slot, plan);
+    let mut changed = stage_b_request();
+    changed.max_stroke_travel_mrev += 1;
+
+    let rejection = preflight_stage_c_request(
+        changed,
+        &StageCPreflightConfig {
+            encoder_counts_per_rev: 4_000,
+            torque_limit: 2_816,
+            limit_evidence_capability: super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+            channel: 0,
+            pwm_hz: 25_000,
+        },
+        12,
+        &slot,
+    )
+    .expect_err("a changed budget must not resume the retained plan");
+
+    assert!(matches!(
+        rejection,
+        StageCPreflightRejection::RejectedPlanMismatch { .. }
+    ));
+    assert_eq!(slot.authority(), Some(retained));
+}
+
 #[test]
 fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
     let candidate_p = breakaway_gain(512);
