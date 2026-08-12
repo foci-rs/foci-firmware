@@ -55,6 +55,7 @@ enum TuneRoute {
 fn stage_c_resume_rejection_terminal(
     run_sequence: u32,
     rejection: crate::commission_dispatch::stage_c::StageCPreflightRejection,
+    retained_plan_digest: u64,
 ) -> crate::commissioning::types::VelocityIntegralTerminal {
     use crate::commission_dispatch::stage_c::{
         STAGE_C_CAUSE_PLAN_MISMATCH, StageCPreflightRejection, failed_stage_c_terminal,
@@ -65,6 +66,10 @@ fn stage_c_resume_rejection_terminal(
         StageCPreflightRejection::NoTransitionCapableOperatingPoint(failure) => {
             failed_stage_c_terminal(run_sequence, failure)
         }
+        // Both remaining rejections mean retained authority exists and the
+        // request disagrees with it, so both name the retained plan. Only the
+        // empty slot reports no plan at all, which is what lets the host tell
+        // "nothing to resume" apart from "that is not what was retained".
         StageCPreflightRejection::RejectedPlanMismatch { retained, .. } => {
             let mut terminal = missing_authority_stage_c_terminal(run_sequence);
             terminal.cause = STAGE_C_CAUSE_PLAN_MISMATCH;
@@ -74,6 +79,7 @@ fn stage_c_resume_rejection_terminal(
         StageCPreflightRejection::InvalidPlan => {
             let mut terminal = missing_authority_stage_c_terminal(run_sequence);
             terminal.cause = STAGE_C_CAUSE_PLAN_MISMATCH;
+            terminal.plan_digest = retained_plan_digest;
             terminal
         }
     }
@@ -968,9 +974,13 @@ where
                         Ok(Some(preflight)) => Ok(preflight),
                         Ok(None) => Err(crate::commission_dispatch::stage_c::
                             missing_authority_stage_c_terminal(run_sequence)),
-                        Err(rejection) => {
-                            Err(stage_c_resume_rejection_terminal(run_sequence, rejection))
-                        }
+                        Err(rejection) => Err(stage_c_resume_rejection_terminal(
+                            run_sequence,
+                            rejection,
+                            stage_c_candidate
+                                .authority()
+                                .map_or(0, |authority| authority.identity.plan_digest),
+                        )),
                     };
                     let preflight = match refusal {
                         Ok(preflight) => preflight,
@@ -1004,6 +1014,20 @@ where
                     board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
                         oid,
                         plan: workflow,
+                    });
+                    // The workflow envelope only discloses the shape and its
+                    // durations. The exact plan is a separate reply, and the
+                    // host refuses Stage-C evidence that arrives before it, so
+                    // it has to be on the wire before the engine takes a stroke.
+                    for record in crate::commissioning::outer::velocity::integral_reporting::
+                        encode_velocity_integral_plan_trace(run_sequence, preflight.plan)
+                    {
+                        board.record_velocity_sweep_trace_record(record);
+                    }
+                    board.emit_reply(ReplyPayload::VelocityIntegralPlan {
+                        oid,
+                        run_sequence,
+                        plan: preflight.plan,
                     });
                     TuneRoute::StageCResume(preflight)
                 }
@@ -2846,6 +2870,243 @@ mod tests {
             stage_c.acceptance_point().unwrap().progress,
             AcceptanceMatrixProgress::ReadyAscending
         );
+    }
+
+    /// Build the exact Stage-C plan a resume of `velocity_sweep_request` reproduces.
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn resumable_stage_c_plan()
+    -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+        use crate::commissioning::outer::OuterMotionBudget;
+        use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
+        use crate::commissioning::outer::velocity::integral_plan::{
+            StageCAuthority, plan_velocity_integral_response,
+        };
+        use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
+        use crate::commissioning::outer::velocity::sweep_plan::plan_velocity_sweep;
+
+        let request = velocity_sweep_request();
+        let stage_b = plan_velocity_sweep(
+            request,
+            4_000,
+            2_816,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        )
+        .expect("valid Stage-B plan");
+        plan_velocity_integral_response(
+            StageCAuthority {
+                channel: 0,
+                stage_b_plan_digest: stage_b.digest(),
+                directional_memberships: [0x000e_0000; 2],
+                stage_b_joint_membership: 0x000e_0000,
+                joint_membership: 0x000e_0000,
+                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
+                reduced_margin: false,
+                directional_pooled_intervals: [
+                    [15_000_000, 17_000_000],
+                    [-19_000_000, -17_000_000],
+                ],
+            },
+            stage_b.execution_plan(stage_b.digest()),
+            OuterMotionBudget {
+                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: request.requested_velocity_source,
+                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+                max_duration_ms: request.max_duration_ms,
+            },
+            25_000,
+            4_000,
+        )
+        .expect("valid Stage-C plan")
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn admitted_resume_discloses_exact_plan_before_engine_execution() {
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let plan = resumable_stage_c_plan();
+        crate::commission_dispatch::stage_c::install_authority_from_plan(0, &mut stage_c, plan);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::StageCResume),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 2);
+        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+        else {
+            panic!("resume workflow envelope must be first")
+        };
+        assert_eq!(
+            workflow.shape,
+            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageCResume
+        );
+        assert_eq!(workflow.maximum_workflow_ms, plan.maximum_workflow_ms);
+        // The exact plan, not just the envelope: motion evidence that reaches
+        // the host before this reply has no plan to be assembled against.
+        let ReplyPayload::VelocityIntegralPlan {
+            plan: disclosed, ..
+        } = board.replies[1]
+        else {
+            panic!("exact Stage-C plan must be disclosed before execution")
+        };
+        assert_eq!(disclosed, plan);
+        assert_eq!(board.velocity_sweep_records.len(), 3);
+        assert!(runtime.is_commission_active());
+        assert_eq!(
+            stage_c
+                .authority()
+                .map(|authority| authority.identity.plan_digest),
+            Some(plan.digest())
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn resume_plan_mismatch_names_the_retained_plan_without_motion_writes() {
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::commissioning::types::VelocityIntegralOutcome;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let plan = resumable_stage_c_plan();
+        let retained =
+            crate::commission_dispatch::stage_c::install_authority_from_plan(0, &mut stage_c, plan);
+        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::StageCResume);
+        let TmcRequestKind::Tune {
+            max_stroke_travel_mrev,
+            ..
+        } = &mut request.kind
+        else {
+            unreachable!()
+        };
+        *max_stroke_travel_mrev += 1;
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            request,
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = board.replies[0] else {
+            panic!("a refused resume must use the Stage-C terminal namespace")
+        };
+        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
+        assert_eq!(
+            terminal.cause,
+            crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+        );
+        // The host tells "nothing retained" from "not what was retained" by the
+        // digest, so a mismatch has to name the plan it disagreed with.
+        assert_eq!(terminal.plan_digest, retained.identity.plan_digest);
+        assert_ne!(terminal.plan_digest, 0);
+        assert!(!runtime.is_commission_active());
+        assert_eq!(stage_c.authority(), Some(retained));
+        let spi = tmc.into_inner();
+        assert!(spi.write_attempts.iter().all(|(addr, _)| {
+            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+        }));
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn resume_of_an_unplannable_request_still_names_the_retained_plan() {
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+        use crate::commissioning::types::VelocityIntegralOutcome;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_b = StageBCandidateSlot::new();
+        let mut stage_c = StageCCandidateSlot::new();
+        let retained = crate::commission_dispatch::stage_c::install_authority_from_plan(
+            0,
+            &mut stage_c,
+            resumable_stage_c_plan(),
+        );
+        // No Stage-B plan reconstructs from this, so the preflight refuses
+        // before it can compare digests. The refusal still has to say which
+        // retained plan the operator failed to resume.
+        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::StageCResume);
+        let TmcRequestKind::Tune {
+            max_duration_ms, ..
+        } = &mut request.kind
+        else {
+            unreachable!()
+        };
+        *max_duration_ms = 0;
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            request,
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_b,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = board.replies[0] else {
+            panic!("a refused resume must use the Stage-C terminal namespace")
+        };
+        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
+        assert_eq!(
+            terminal.cause,
+            crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+        );
+        assert_eq!(terminal.plan_digest, retained.identity.plan_digest);
+        assert_ne!(terminal.plan_digest, 0);
+        assert!(!runtime.is_commission_active());
+        assert_eq!(stage_c.authority(), Some(retained));
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
