@@ -989,11 +989,9 @@ where
                                 crate::commissioning::outer::velocity::integral_reporting::
                                     encode_velocity_integral_terminal(&terminal),
                             );
-                            board.emit_reply(ReplyPayload::VelocityIntegralTerminal {
+                            board.emit_reply(ReplyPayload::VelocityIntegralRefusal {
                                 oid,
                                 terminal,
-                                reproduction: None,
-                                authority: None,
                             });
                             board
                                 .tmc_state()
@@ -3026,8 +3024,10 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 1);
-        let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = board.replies[0] else {
-            panic!("a refused resume must use the Stage-C terminal namespace")
+        // The refusal namespace, not the ordinary terminal: an ordinary terminal
+        // expands to leading evidence fragments describing a run that never ran.
+        let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
+            panic!("a refused resume must use the Stage-C refusal namespace")
         };
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(
@@ -3095,8 +3095,10 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 1);
-        let ReplyPayload::VelocityIntegralTerminal { terminal, .. } = board.replies[0] else {
-            panic!("a refused resume must use the Stage-C terminal namespace")
+        // The refusal namespace, not the ordinary terminal: an ordinary terminal
+        // expands to leading evidence fragments describing a run that never ran.
+        let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
+            panic!("a refused resume must use the Stage-C refusal namespace")
         };
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(

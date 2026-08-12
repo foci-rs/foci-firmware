@@ -1397,13 +1397,9 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
         FociVelocityIntegralReproductionCore, FociVelocityIntegralReproductionDigest,
         FociVelocityIntegralReproductionInterval, FociVelocityIntegralReproductionMask,
         FociVelocityIntegralRunSummary, FociVelocityIntegralStageBComparison,
-        FociVelocityIntegralTerminalCore, FociVelocityIntegralTerminalIdentity,
-        FociVelocityIntegralTerminalTiming,
     };
     use crate::commissioning::outer::velocity::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS;
-    use crate::commissioning::outer::velocity::integral_reporting::{
-        outcome_code, stage_b_deficit_bounds_q,
-    };
+    use crate::commissioning::outer::velocity::integral_reporting::stage_b_deficit_bounds_q;
     use crate::commissioning::outer::velocity::integral_reproduction::{
         closed_intersection, delta_e, signed_divergence_gap,
     };
@@ -1625,6 +1621,27 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
     if let Some(fault) = terminal.safety_fault {
         sink.foci_outer_safety_fault(oid, fault);
     }
+    emit_velocity_integral_terminal_fragments(sink, oid, terminal);
+}
+
+/// Emit the three fragments that carry one Stage-C terminal itself.
+///
+/// Split from [`emit_velocity_integral_terminal`] so a request refused before
+/// any exact plan can report its terminal without the derived evidence
+/// fragments, which would otherwise describe a run that never happened.
+#[cfg(feature = "trace-velocity-sweep")]
+pub fn emit_velocity_integral_terminal_fragments<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    terminal: crate::commissioning::types::VelocityIntegralTerminal,
+) {
+    use crate::ankyra::replies::{
+        FociVelocityIntegralTerminalCore, FociVelocityIntegralTerminalIdentity,
+        FociVelocityIntegralTerminalTiming,
+    };
+    use crate::commissioning::outer::velocity::integral_reporting::outcome_code;
+
+    let sequence = terminal.evidence_sequence;
     sink.foci_velocity_integral_terminal_core(FociVelocityIntegralTerminalCore {
         oid,
         run_sequence: terminal.run_sequence,
@@ -2471,7 +2488,9 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 emit_velocity_stage_b_reproduction(sink, oid, report);
             }
             emit_velocity_sweep_terminal_fragments(sink, oid, stage_b_terminal);
-            emit_velocity_integral_terminal(sink, oid, stage_c_terminal, None, None);
+            // Stage B ran and reports its own evidence above. Stage C did not:
+            // it was refused at admission, so only its terminal exists.
+            emit_velocity_integral_terminal_fragments(sink, oid, stage_c_terminal);
         }
         #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::VelocityIntegralPlan {
@@ -2490,6 +2509,10 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             reproduction,
             authority,
         } => emit_velocity_integral_terminal(sink, oid, terminal, reproduction, authority),
+        #[cfg(feature = "trace-velocity-sweep")]
+        ReplyPayload::VelocityIntegralRefusal { oid, terminal } => {
+            emit_velocity_integral_terminal_fragments(sink, oid, terminal);
+        }
         #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::AcceptanceMatrixPlan {
             oid,
@@ -6342,6 +6365,35 @@ mod tests {
         assert_eq!(
             &combined_sink.events[combined_sink.events.len() - 3..],
             &[
+                Event::IntegralTerminal(0),
+                Event::IntegralTerminal(1),
+                Event::IntegralTerminal(2),
+            ]
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[test]
+    fn a_refused_stage_c_admission_emits_no_evidence_ahead_of_its_terminal() {
+        // The ordinary terminal derives its leading fragments from run evidence.
+        // A refusal happens before any stroke, so those fragments would describe
+        // a run that never took place, and the host reads anything ahead of the
+        // terminal as motion evidence that arrived before its exact plan.
+        use crate::commission_dispatch::stage_c::missing_authority_stage_c_terminal;
+
+        let mut sink = RecordingSink::default();
+
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::VelocityIntegralRefusal {
+                oid: 3,
+                terminal: missing_authority_stage_c_terminal(21),
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
                 Event::IntegralTerminal(0),
                 Event::IntegralTerminal(1),
                 Event::IntegralTerminal(2),

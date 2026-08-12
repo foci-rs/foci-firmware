@@ -374,6 +374,17 @@ pub enum ReplyPayload {
             crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
         >,
     },
+    /// Stage-C terminal for a request refused before any exact plan existed.
+    ///
+    /// Distinct from [`ReplyPayload::VelocityIntegralTerminal`] because that one
+    /// derives leading fragments from run evidence. A refusal has no run, so
+    /// those fragments would describe motion that never happened, and the host
+    /// reads anything ahead of the terminal as evidence preceding its plan.
+    #[cfg(feature = "trace-velocity-sweep")]
+    VelocityIntegralRefusal {
+        oid: u8,
+        terminal: crate::commissioning::types::VelocityIntegralTerminal,
+    },
     /// Complete immutable fixed-I confidence-matrix plan disclosed before motion.
     #[cfg(feature = "trace-velocity-sweep")]
     AcceptanceMatrixPlan {
