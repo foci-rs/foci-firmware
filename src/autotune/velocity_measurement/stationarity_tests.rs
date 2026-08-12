@@ -233,8 +233,8 @@ fn suffix_family_is_fixed_and_dyadic() {
 
 #[test]
 fn scored_rest_state_stays_inside_the_existing_storage_seam() {
-    assert_eq!(core::mem::size_of::<StationarityWork>(), 256);
-    assert!(core::mem::size_of::<super::StationarityWorkOutput>() <= 128);
+    assert_eq!(core::mem::size_of::<StationarityWork>(), 384);
+    assert!(core::mem::size_of::<super::StationarityWorkOutput>() <= 256);
 }
 
 #[test]
@@ -277,10 +277,10 @@ fn stationarity_diagnostics_report_longer_suffix_after_binding_lag_rejection() {
     assert!(short.lag_one_rejection_margin_q < 0);
     assert!(medium.slope_passed);
     assert!(medium.lag_one_passed);
-    assert_eq!(
-        diagnostics.binding,
-        StationarityResult::Excluded(StationarityExclusion::StructuredResidual)
-    );
+    let StationarityResult::Usable(binding) = diagnostics.binding else {
+        panic!("a lag-one rejection at the shortest window must not condemn the stroke");
+    };
+    assert_eq!(binding.suffix_len, 256);
 }
 
 #[test]
@@ -788,6 +788,31 @@ fn first_nonstationary_extension_stops_without_stitching() {
     assert_eq!(suffix.tested_suffixes, 2);
 }
 
+#[test]
+fn a_rejected_short_window_does_not_end_the_walk() {
+    // Structure confined to the newest quarter: the 64-sample window sees only
+    // that, while 128 and 256 reach back into the settled part and are
+    // stationary.
+    let samples = observations::<256>(|index| {
+        if index >= 192 {
+            if (index / 4) % 2 == 0 { 10 } else { -10 }
+        } else {
+            [1, -1, 0, -1, 1][index % 5]
+        }
+    });
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+
+    let result = select_stationary_suffix(&samples, &mut blocker).unwrap();
+
+    let StationarityResult::Usable(suffix) = result else {
+        panic!("a longer stationary window must be selected, got {result:?}")
+    };
+    assert!(
+        suffix.suffix_len > 64,
+        "the selected window must be one the short rejection used to hide"
+    );
+}
+
 /// A tail rejected by the slope or lag-one gate must retain the statistics that
 /// rejected it. Without this the failing observations are the only ones carrying
 /// no evidence, which is backwards for a diagnostic instrument.
@@ -819,8 +844,8 @@ fn a_gate_rejected_tail_retains_the_margins_that_rejected_it() {
         .selection
         .expect("a post-fit rejection must retain its blocker selection");
     assert_eq!(
-        rejection.suffix_len, 64,
-        "the family is tried shortest first"
+        rejection.suffix_len, 256,
+        "an exhausted walk reports the last window it tried, not the first"
     );
     assert_eq!(
         selection.block_count,

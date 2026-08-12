@@ -207,7 +207,7 @@ fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
     // that engine's size plus the runtime's own fixed overhead. The two
     // baselines differ because the breakaway campaign is trace-gated.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_760);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_888);
     #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_920);
 }

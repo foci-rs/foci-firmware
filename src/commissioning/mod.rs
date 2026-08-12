@@ -2146,7 +2146,7 @@ mod tests {
             assert_eq!(size_of::<TraceSummarySeqs>(), 16);
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_816
+                2_944
             );
             assert!(
                 size_of::<
@@ -2161,7 +2161,7 @@ mod tests {
             );
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocitySweepData>(),
-                2_896
+                3_024
             );
             assert_eq!(
                 size_of::<crate::commissioning::types::VelocitySweepEvent>(),
@@ -2195,9 +2195,9 @@ mod tests {
             // outweigh the classic VelocitySweep variant. Exact, so retained
             // engine state cannot grow unnoticed; the audited F407 ceiling is
             // the `<= 6_144` bound below.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_648);
+            assert_eq!(size_of::<CommissioningEngine>(), 5_776);
         }
-        assert!(size_of::<CommissioningEngine>() <= 5_648);
+        assert!(size_of::<CommissioningEngine>() <= 5_776);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
         assert!(size_of::<capture_timing::CaptureTimingEvidence>() <= 32);

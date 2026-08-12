@@ -272,6 +272,18 @@ struct StructuredStationarityAccumulator {
     binding_lag_one_margin_q: i32,
     /// Drift ratio evaluated for the binding suffix, or [`u32::MAX`] if none was.
     binding_drift_ratio_ppm: u32,
+    /// Longest suffix that cleared both gates, if any did after the binding one failed.
+    selected: Option<StationarySuffix>,
+}
+
+/// Why one suffix was refused, and the evidence behind that refusal.
+#[derive(Debug, Clone, Copy)]
+struct SuffixRefusal {
+    exclusion: StationarityExclusion,
+    rejection: Option<SuffixDiagnostic>,
+    /// Ratio evaluated for the rejected candidate, or
+    /// [`NO_REPORTABLE_DRIFT_RATIO_PPM`] when it never reached a regression.
+    drift_ratio_ppm: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -369,6 +381,7 @@ impl StructuredStationarityAccumulator {
             binding_slope_margin_q: binding.slope_rejection_margin_q,
             binding_lag_one_margin_q: binding.lag_one_rejection_margin_q,
             binding_drift_ratio_ppm,
+            selected: None,
         })
     }
 
@@ -593,7 +606,7 @@ impl StationarityWork {
                 StationarityExclusion::NoBlockingPlateau
             };
             if matches!(self.output, StationarityWorkOutput::Structured(_)) {
-                return self.advance_structured(observations, blocker, suffix_index, None);
+                return self.advance_structured(observations, blocker, suffix_index, None, None);
             }
             if matches!(self.output, StationarityWorkOutput::RestAccumulator(_)) {
                 let structural = if blocker.has_two_doubling_plateau() {
@@ -613,12 +626,17 @@ impl StationarityWork {
                 );
             }
             // Returns before any regression is attempted, so there is no ratio.
-            return Ok(self.finish_on_exclusion(
-                exclusion,
+            return self.finish_on_exclusion(
+                observations,
+                blocker,
                 suffix_index,
-                None,
-                NO_REPORTABLE_DRIFT_RATIO_PPM,
-            ));
+                SuffixRefusal {
+                    exclusion,
+                    rejection: None,
+                    drift_ratio_ppm: NO_REPORTABLE_DRIFT_RATIO_PPM,
+                },
+                mode,
+            );
         };
         let block_observations = 1u16
             .checked_shl(u32::from(selection.level))
@@ -626,7 +644,7 @@ impl StationarityWork {
         let block_count = suffix_len / block_observations;
         if usize::from(block_count) < VELOCITY_MIN_SELECTED_BLOCKS as usize {
             if matches!(self.output, StationarityWorkOutput::Structured(_)) {
-                return self.advance_structured(observations, blocker, suffix_index, None);
+                return self.advance_structured(observations, blocker, suffix_index, None, None);
             }
             if matches!(self.output, StationarityWorkOutput::RestAccumulator(_)) {
                 return self.advance_rest_diagnostic(
@@ -641,12 +659,17 @@ impl StationarityWork {
                 );
             }
             // Returns before slope_q or span_x2_us exist, so there is no ratio.
-            return Ok(self.finish_on_exclusion(
-                StationarityExclusion::TooFewDecorrelatedBlocks,
+            return self.finish_on_exclusion(
+                observations,
+                blocker,
                 suffix_index,
-                None,
-                NO_REPORTABLE_DRIFT_RATIO_PPM,
-            ));
+                SuffixRefusal {
+                    exclusion: StationarityExclusion::TooFewDecorrelatedBlocks,
+                    rejection: None,
+                    drift_ratio_ppm: NO_REPORTABLE_DRIFT_RATIO_PPM,
+                },
+                mode,
+            );
         }
         self.stage = StationarityWorkStage::Regression {
             mode,
@@ -962,14 +985,6 @@ impl StationarityWork {
                 };
                 match classified {
                     Ok(metrics) => {
-                        if let StationarityWorkOutput::Structured(_) = self.output {
-                            return self.advance_structured(
-                                observations,
-                                blocker,
-                                suffix_index,
-                                Some(diagnostic),
-                            );
-                        }
                         let selected = StationarySuffix {
                             selection,
                             suffix_len,
@@ -982,6 +997,15 @@ impl StationarityWork {
                             drift_ratio_ppm: metrics.drift_ratio_ppm,
                             tested_suffixes: suffix_index.saturating_add(1),
                         };
+                        if let StationarityWorkOutput::Structured(_) = self.output {
+                            return self.advance_structured(
+                                observations,
+                                blocker,
+                                suffix_index,
+                                Some(diagnostic),
+                                Some(selected),
+                            );
+                        }
                         if mode == StationarityWorkMode::RestWitness {
                             return self
                                 .finish_rest_witness(selected, diagnostic.settled_rate_interval_q);
@@ -999,24 +1023,29 @@ impl StationarityWork {
                                 metrics.drift_ratio_ppm,
                             )?,
                         );
-                        self.advance_structured(observations, blocker, suffix_index, None)
+                        self.advance_structured(observations, blocker, suffix_index, None, None)
                     }
                     Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
-                        self.advance_structured(observations, blocker, suffix_index, None)
+                        self.advance_structured(observations, blocker, suffix_index, None, None)
                     }
                     Err(exclusion) => {
                         // A post-fit rejection evaluated a ratio, so it reports it.
-                        Ok(self.finish_on_exclusion(
-                            exclusion,
+                        self.finish_on_exclusion(
+                            observations,
+                            blocker,
                             suffix_index,
-                            Some(diagnostic),
-                            metrics.drift_ratio_ppm,
-                        ))
+                            SuffixRefusal {
+                                exclusion,
+                                rejection: Some(diagnostic),
+                                drift_ratio_ppm: metrics.drift_ratio_ppm,
+                            },
+                            mode,
+                        )
                     }
                 }
             }
             Err(_) if matches!(self.output, StationarityWorkOutput::Structured(_)) => {
-                self.advance_structured(observations, blocker, suffix_index, None)
+                self.advance_structured(observations, blocker, suffix_index, None, None)
             }
             Err(StationarityExclusion::Arithmetic)
                 if matches!(
@@ -1028,12 +1057,17 @@ impl StationarityWork {
                 Err(VelocityMeasurementError::ArithmeticOverflow)
             }
             // The metrics themselves failed, so slope_q and span_x2_us never existed.
-            Err(exclusion) => Ok(self.finish_on_exclusion(
-                exclusion,
+            Err(exclusion) => self.finish_on_exclusion(
+                observations,
+                blocker,
                 suffix_index,
-                None,
-                NO_REPORTABLE_DRIFT_RATIO_PPM,
-            )),
+                SuffixRefusal {
+                    exclusion,
+                    rejection: None,
+                    drift_ratio_ppm: NO_REPORTABLE_DRIFT_RATIO_PPM,
+                },
+                mode,
+            ),
         }
     }
 
@@ -1044,29 +1078,49 @@ impl StationarityWork {
     /// regression. It is used only when nothing was selected: an already-selected
     /// suffix reports its own ratio, because a later failing candidate must not
     /// overwrite the ratio of the suffix that actually won.
-    fn finish_on_exclusion(
+    ///
+    /// A rejection with nothing selected advances to the next declared suffix
+    /// rather than ending the walk: the shortest window is the noisiest, and a
+    /// longer one is often stationary. Only an exhausted walk excludes.
+    fn finish_on_exclusion<const LEVELS: usize, S>(
         &mut self,
-        exclusion: StationarityExclusion,
+        observations: &S,
+        blocker: &mut DyadicBlocker<LEVELS>,
         suffix_index: u8,
-        rejection: Option<SuffixDiagnostic>,
-        drift_ratio_ppm: u32,
-    ) -> StationarityWorkPoll {
+        refusal: SuffixRefusal,
+        mode: StationarityWorkMode,
+    ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
+    where
+        S: VelocityObservationSource + ?Sized,
+    {
+        let SuffixRefusal {
+            exclusion,
+            rejection,
+            drift_ratio_ppm,
+        } = refusal;
         if let StationarityWorkOutput::Selected(mut usable) = self.output {
             usable.tested_suffixes = suffix_index.saturating_add(1);
             self.output = StationarityWorkOutput::Selected(usable);
             self.stage = StationarityWorkStage::Done;
-            return StationarityWorkPoll::Complete {
+            return Ok(StationarityWorkPoll::Complete {
                 result: StationarityResult::Usable(usable),
                 rejection: None,
                 drift_ratio_ppm: usable.drift_ratio_ppm,
-            };
+            });
+        }
+        let next_index = suffix_index.saturating_add(1);
+        if let Some(&suffix_len) = VELOCITY_SUFFIX_LENGTHS.get(usize::from(next_index))
+            && usize::from(suffix_len) <= observations.observation_len()
+        {
+            self.start_suffix(observations, blocker, next_index, suffix_len, mode)?;
+            return Ok(StationarityWorkPoll::Pending);
         }
         self.stage = StationarityWorkStage::Done;
-        StationarityWorkPoll::Complete {
+        Ok(StationarityWorkPoll::Complete {
             result: StationarityResult::Excluded(exclusion),
             rejection,
             drift_ratio_ppm,
-        }
+        })
     }
 
     fn advance_or_complete<const LEVELS: usize, S>(
@@ -1105,6 +1159,7 @@ impl StationarityWork {
         blocker: &mut DyadicBlocker<LEVELS>,
         suffix_index: u8,
         diagnostic: Option<SuffixDiagnostic>,
+        passing: Option<StationarySuffix>,
     ) -> Result<StationarityWorkPoll, VelocityMeasurementError>
     where
         S: VelocityObservationSource + ?Sized,
@@ -1114,6 +1169,10 @@ impl StationarityWork {
         };
         if let Some(diagnostic) = diagnostic {
             accumulator.observe(suffix_index, diagnostic);
+        }
+        // Visited shortest first, so a later pass supersedes an earlier one.
+        if passing.is_some() {
+            accumulator.selected = passing;
         }
         self.output = StationarityWorkOutput::Structured(accumulator);
         let next_index = suffix_index.saturating_add(1);
@@ -1130,6 +1189,16 @@ impl StationarityWork {
             return Ok(StationarityWorkPoll::Pending);
         }
         self.stage = StationarityWorkStage::Done;
+        // The accumulator stays in `output`, so the rejected window is still
+        // reported as structured evidence alongside a usable verdict.
+        if let Some(mut selected) = accumulator.selected {
+            selected.tested_suffixes = next_index;
+            return Ok(StationarityWorkPoll::Complete {
+                result: StationarityResult::Usable(selected),
+                rejection: None,
+                drift_ratio_ppm: selected.drift_ratio_ppm,
+            });
+        }
         let rejection = accumulator.binding.reconstruct(
             accumulator.binding_slope_margin_q,
             accumulator.binding_lag_one_margin_q,
@@ -1512,6 +1581,8 @@ where
 {
     let mut selected: Option<StationarySuffix> = None;
     let mut tested_suffixes = 0u8;
+    // Reported when the walk runs out of windows without selecting one.
+    let mut last_exclusion = StationarityExclusion::TooFewDecorrelatedBlocks;
 
     for suffix_len in VELOCITY_SUFFIX_LENGTHS {
         let suffix_len = usize::from(suffix_len);
@@ -1536,12 +1607,12 @@ where
                 usable.tested_suffixes = tested_suffixes;
                 return Ok(StationarityResult::Usable(usable));
             }
-            let exclusion = if blocker.has_two_doubling_plateau() {
+            last_exclusion = if blocker.has_two_doubling_plateau() {
                 StationarityExclusion::TooFewDecorrelatedBlocks
             } else {
                 StationarityExclusion::NoBlockingPlateau
             };
-            return Ok(StationarityResult::Excluded(exclusion));
+            continue;
         };
         let Some(block_observations) = 1usize.checked_shl(u32::from(selection.level)) else {
             return Ok(StationarityResult::Excluded(
@@ -1567,7 +1638,8 @@ where
                     usable.tested_suffixes = tested_suffixes;
                     return Ok(StationarityResult::Usable(usable));
                 }
-                return Ok(StationarityResult::Excluded(exclusion));
+                last_exclusion = exclusion;
+                continue;
             }
         };
         selected = Some(StationarySuffix {
@@ -1586,7 +1658,7 @@ where
     }
 
     Ok(selected.map_or(
-        StationarityResult::Excluded(StationarityExclusion::TooFewDecorrelatedBlocks),
+        StationarityResult::Excluded(last_exclusion),
         StationarityResult::Usable,
     ))
 }
