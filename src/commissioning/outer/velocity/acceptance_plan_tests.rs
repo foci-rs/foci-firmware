@@ -4,20 +4,28 @@ use super::acceptance_plan::{
     decode_schedule_order_code, derive_acceptance_targets, plan_acceptance_matrix,
     schedule_order_code,
 };
+use super::band_confirmation::{
+    BandConfirmationPlan, ConfirmationDirectionalInput, DiscoveryObservationAtom,
+    evaluate_band_confirmation, plan_band_confirmation,
+};
 use super::combined_plan::select_proportional_response;
 use super::integral_plan::{
-    AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
-    plan_combined_velocity_integral_response,
+    AcceptanceSource, AcquisitionContext, ConfirmedAcquisitionDigest, IntegralSlotOrder,
+    VelocityIntegralAcquisitionKind, bind_breakaway_stage_c_authority,
+    plan_combined_velocity_integral_response, plan_retained_breakaway_velocity_integral_response,
 };
 use super::integral_reporting::plan_recovery_flags;
 use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
 use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::reproduction::BUILD_FEATURES;
-use super::sweep_consensus::DirectionalConsensusClass;
-use super::sweep_evidence::CompactDirectionalRungReport;
+use super::sweep_consensus::{
+    CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+};
+use super::sweep_evidence::{CompactDirectionalRungReport, VelocityObservationClass};
 use super::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, plan_combined_velocity_sweep,
 };
+use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::OuterMotionBudget;
 use foci_tmc4671::pid::PidPGain;
 
@@ -110,6 +118,207 @@ fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
         token: None,
         progress: AcceptanceMatrixProgress::ReadyAscending,
     }
+}
+
+// --- Breakaway matrix-authority fixtures ------------------------------------
+//
+// A schema-16 breakaway plan can only be minted through the real confirmation
+// gate (`ConfirmedAcquisitionDigest`'s inner field is private outside
+// `integral_plan.rs`), so these fixtures walk the same
+// discovery-confirmation-token path `breakaway_campaign.rs` does, rather than
+// fabricating a plan. `breakaway_request` freezes its own velocity (6_666
+// mrev/s, distinct from `request()`'s 4_394) because gain 512 is only known
+// transition-capable under that target.
+
+fn breakaway_request() -> VelocitySweepRequest {
+    VelocitySweepRequest {
+        requested_velocity_mrev_s: 6_666,
+        machine_velocity_ceiling_mrev_s: 10_000,
+        requested_velocity_source: RequestedVelocitySource::Defaulted,
+        max_stroke_travel_mrev: 2_500,
+        settle_travel_reserve_mrev: 250,
+        negative_position_headroom_mrev: 7_025,
+        positive_position_headroom_mrev: 7_025,
+        max_duration_ms: 3_000,
+    }
+}
+
+fn breakaway_motion_budget() -> OuterMotionBudget {
+    let request = breakaway_request();
+    OuterMotionBudget {
+        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: request.requested_velocity_source,
+        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+        max_duration_ms: request.max_duration_ms,
+    }
+}
+
+fn full_directional_consensus() -> DirectionalConsensus {
+    DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    }
+}
+
+/// A held-out family-eight block that `evaluate_band_confirmation` accepts:
+/// both directions fully collected, well inside the 70-80% response band.
+fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, ConfirmationDirectionalInput)
+{
+    let mean_rate_q: i64 = 750_000;
+    let variance_of_mean_q2: u128 = 58_752_225;
+    let target_rate_q: i64 = 1_000_000;
+    let forward = ConfirmationDirectionalInput {
+        consensus: full_directional_consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: full_directional_consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    (forward, reverse)
+}
+
+fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
+    plan_band_confirmation(0x1111_2222_3333_4444, candidate_p).unwrap()
+}
+
+/// Mint the confirmation token through the real gate, exactly as a live
+/// campaign would, rather than fabricating the digest.
+fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
+    let (forward, reverse) = accepted_confirmation_evidence();
+    let acceptance =
+        evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse).unwrap();
+    bind_breakaway_stage_c_authority(
+        confirmation_plan.plan_digest,
+        confirmation_plan,
+        Ok(acceptance),
+    )
+    .unwrap()
+}
+
+fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]; 2] {
+    let (forward, reverse) = accepted_confirmation_evidence();
+    evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse)
+        .unwrap()
+        .held_out_response_intervals_q
+}
+
+/// One genuine schema-16 breakaway plan, built through the real
+/// discovery-confirmation-token path (see the module doc above).
+fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
+    let stage_b = plan_combined_velocity_sweep(
+        breakaway_request(),
+        COUNTS_PER_REV,
+        TORQUE_LIMIT,
+        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+    )
+    .unwrap();
+    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    context.channel = 0;
+    context.plan_time_pwm_hz = PWM_HZ;
+    context.plan_time_encoder_counts_per_rev = COUNTS_PER_REV;
+
+    let confirmation_plan = breakaway_confirmation_plan(PidPGain::new(512).unwrap());
+    let token = breakaway_token_for(confirmation_plan);
+    plan_retained_breakaway_velocity_integral_response(
+        token,
+        confirmation_plan.candidate_p.raw(),
+        context,
+        breakaway_intervals_for(confirmation_plan),
+        breakaway_motion_budget(),
+        PWM_HZ,
+        COUNTS_PER_REV,
+    )
+    .expect("the campaign's own Stage-C plan")
+}
+
+fn breakaway_point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
+    AcceptancePoint {
+        identity: StageCPlanIdentity {
+            channel: 0,
+            build_features: BUILD_FEATURES,
+            schema_revision: plan.schema_revision,
+            plan_digest: plan.digest(),
+        },
+        selected_p: plan.final_p,
+        selected_i: plan.positive_rungs()[0],
+        target_velocity_rpm: plan.target_velocity_rpm,
+        selected_response_intervals_q: plan.authority.directional_pooled_intervals,
+        qualifier_bits: 0x0123,
+        token: None,
+        progress: AcceptanceMatrixProgress::ReadyAscending,
+    }
+}
+
+/// The relaxed identity gate must admit a genuine breakaway-schema point on
+/// its own authority (well-ordered, correctly signed intervals; in-range
+/// `selected_i`), not just a combined one.
+#[test]
+fn matrix_accepts_a_genuine_breakaway_authority_point() {
+    let current = breakaway_plan();
+    assert_eq!(
+        current.schema_revision,
+        super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+    );
+    let accepted = plan_acceptance_matrix(
+        breakaway_point(current),
+        breakaway_request(),
+        AcceptanceMatrixOrder::Ascending,
+        IntegralSlotOrder::ForwardFirst,
+        current,
+    )
+    .expect("a genuine breakaway point carries matrix acceptance authority");
+    assert!(accepted.recovery_lower_rate_q.iter().all(|&rate| rate > 0));
+    assert_eq!(
+        accepted.acceptance_identity.schema_revision,
+        super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+    );
+}
+
+/// A genuine breakaway point is otherwise identical to one the gate accepts
+/// (see `matrix_accepts_a_genuine_breakaway_authority_point`); mutating only
+/// `selected_i` outside the retained ladder must isolate the rejection to the
+/// rung-membership check, not the new interval-authority check alongside it.
+#[test]
+fn matrix_rejects_authority_point_with_selected_i_out_of_range() {
+    let current = breakaway_plan();
+    assert!(
+        !current.positive_rungs().contains(&u16::MAX),
+        "the ladder never contains u16::MAX"
+    );
+    let mut invalid = breakaway_point(current);
+    invalid.selected_i = u16::MAX;
+
+    assert_eq!(
+        plan_acceptance_matrix(
+            invalid,
+            breakaway_request(),
+            AcceptanceMatrixOrder::Ascending,
+            IntegralSlotOrder::ForwardFirst,
+            current,
+        ),
+        Err(AcceptanceMatrixPlanError::IdentityMismatch)
+    );
 }
 
 #[test]
@@ -301,6 +510,9 @@ fn matrix_plan_rejects_wrong_sided_recovery_authority() {
     ] {
         let mut invalid = point(current);
         invalid.selected_response_intervals_q = intervals;
+        // The authority-consistency gate now catches a wrong-sided (or
+        // zero-boundary) interval before the recovery-geometry computation
+        // ever runs, so this is an identity rejection, not an arithmetic one.
         assert_eq!(
             plan_acceptance_matrix(
                 invalid,
@@ -309,7 +521,7 @@ fn matrix_plan_rejects_wrong_sided_recovery_authority() {
                 IntegralSlotOrder::ForwardFirst,
                 current,
             ),
-            Err(AcceptanceMatrixPlanError::Arithmetic)
+            Err(AcceptanceMatrixPlanError::IdentityMismatch)
         );
     }
 }

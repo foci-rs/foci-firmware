@@ -2,16 +2,20 @@
 
 use foci_tmc4671::pid::PidPGain;
 
+use crate::commission_dispatch::stage_c::StageCPreflightConfig;
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::acceptance_plan::{
     AcceptanceMatrixOrder, AcceptanceMatrixPlan, AcceptanceMatrixPlanError, plan_acceptance_matrix,
 };
-use crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse;
+use crate::commissioning::outer::velocity::combined_plan::{
+    BREAKAWAY_STAGE_C_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedSelectedResponse,
+};
 use crate::commissioning::outer::velocity::integral_plan::{
-    VelocityIntegralPlan, VelocityIntegralPlanError, plan_combined_velocity_integral_response,
+    AcquisitionContext, VelocityIntegralPlan, VelocityIntegralPlanError,
+    plan_combined_velocity_integral_response, plan_retained_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptanceMatrixProgress, StageCCandidateSlot,
+    AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepRequest, plan_combined_velocity_sweep,
@@ -140,11 +144,101 @@ pub fn reconstruct_combined_plan(
     Ok(current)
 }
 
+/// Reconstruct the breakaway plan whose confirmed token installed the retained point.
+///
+/// Breakaway carries no retained combined-selected-response plan, and its
+/// I-ladder is deterministic (PWM frequency plus fixed constants), so the
+/// plan is rebuilt directly from the point's carried `token`, `selected_p`,
+/// and `selected_response_intervals_q` via
+/// [`plan_retained_breakaway_velocity_integral_response`] -- the same builder
+/// the Stage-C resume path already uses -- rather than from any retained full
+/// plan. `point.token` is `Some` only for a genuine breakaway acceptance
+/// point (see [`AcceptancePoint::token`]), so a point carrying none is
+/// refused before any reconstruction is attempted. Parallel to
+/// [`reconstruct_combined_plan`]: same inputs, same digest verification,
+/// same rejection on any divergence.
+pub fn reconstruct_breakaway_plan(
+    point: AcceptancePoint,
+    request: VelocitySweepRequest,
+    encoder_counts_per_rev: u32,
+    torque_limit: u16,
+    limit_evidence_capability: u32,
+    pwm_hz: u32,
+) -> Result<VelocityIntegralPlan, AcceptanceMatrixPreflightRejection> {
+    let token = point
+        .token
+        .ok_or(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)?;
+    // Breakaway has no Stage-B phase of its own; the campaign that produced
+    // this point derived its physical acquisition context (planned velocity,
+    // target RPM, torque limits, limit-evidence capability) from exactly this
+    // same `plan_combined_velocity_sweep` reconstruction, so this reproduces
+    // it identically. The plan-time physical context guard inside the
+    // breakaway builder compares against the live `pwm_hz`/
+    // `encoder_counts_per_rev` passed below; there is no separately retained
+    // plan-time value here, so any live drift is instead caught by the
+    // digest check at the end of this function.
+    let stage_b = plan_combined_velocity_sweep(
+        request,
+        encoder_counts_per_rev,
+        torque_limit,
+        limit_evidence_capability,
+    )
+    .map_err(|_| AcceptanceMatrixPreflightRejection::InvalidPlan)?;
+    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    context.channel = point.identity.channel;
+    context.plan_time_pwm_hz = pwm_hz;
+    context.plan_time_encoder_counts_per_rev = encoder_counts_per_rev;
+    let motion_budget = OuterMotionBudget {
+        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: request.requested_velocity_source,
+        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+        max_duration_ms: request.max_duration_ms,
+    };
+    let current = plan_retained_breakaway_velocity_integral_response(
+        token,
+        point.selected_p,
+        context,
+        point.selected_response_intervals_q,
+        motion_budget,
+        pwm_hz,
+        encoder_counts_per_rev,
+    )
+    .map_err(|error| match error {
+        VelocityIntegralPlanError::Arithmetic
+        | VelocityIntegralPlanError::InvalidRequest
+        | VelocityIntegralPlanError::ConfidenceFamilyTooLarge
+        | VelocityIntegralPlanError::InsufficientStructuralSpan => {
+            AcceptanceMatrixPreflightRejection::InvalidPlan
+        }
+        _ => AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch,
+    })?;
+    if current.digest() != point.identity.plan_digest
+        || current.schema_revision != BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        || current.final_p != point.selected_p
+        || current.target_velocity_rpm != point.target_velocity_rpm
+    {
+        return Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch);
+    }
+    Ok(current)
+}
+
 /// Validate a retained point and derive one immutable matrix without mutating retention.
+///
+/// Reconstructs the plan the retained point identifies before checking it:
+/// combined points reproduce theirs from the request via
+/// [`reconstruct_combined_plan`]; breakaway points rebuild theirs
+/// deterministically from the carried confirmation token via
+/// [`reconstruct_breakaway_plan`]. Either way, no full plan is retained --
+/// only the compact [`AcceptancePoint`] the caller reads from
+/// `stage_c_candidate`.
 pub fn preflight_acceptance_matrix(
     action: AutotuneAction,
     request: VelocitySweepRequest,
-    current_config: VelocityIntegralPlan,
+    config: &StageCPreflightConfig,
     run_sequence: u32,
     stage_c_candidate: &StageCCandidateSlot,
 ) -> Result<AcceptanceMatrixPreflight, AcceptanceMatrixPreflightRejection> {
@@ -164,6 +258,25 @@ pub fn preflight_acceptance_matrix(
     if point.progress != expected_progress {
         return Err(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch);
     }
+    let current_config = match point.identity.schema_revision {
+        COMBINED_STAGE_C_SCHEMA_REVISION => reconstruct_combined_plan(
+            point,
+            request,
+            config.encoder_counts_per_rev,
+            config.torque_limit,
+            config.limit_evidence_capability,
+            config.pwm_hz,
+        )?,
+        BREAKAWAY_STAGE_C_SCHEMA_REVISION => reconstruct_breakaway_plan(
+            point,
+            request,
+            config.encoder_counts_per_rev,
+            config.torque_limit,
+            config.limit_evidence_capability,
+            config.pwm_hz,
+        )?,
+        _ => return Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch),
+    };
     let plan = plan_acceptance_matrix(point, request, order, slot_order, current_config).map_err(
         |error| match error {
             AcceptanceMatrixPlanError::IdentityMismatch => {

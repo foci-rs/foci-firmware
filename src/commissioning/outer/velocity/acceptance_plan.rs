@@ -287,13 +287,31 @@ pub fn plan_acceptance_matrix(
     slot_order: IntegralSlotOrder,
     current_config: VelocityIntegralPlan,
 ) -> Result<AcceptanceMatrixPlan, AcceptanceMatrixPlanError> {
+    // Every retained authority family (combined and breakaway alike) must carry
+    // matrix acceptance authority: well-ordered, correctly signed response
+    // intervals per direction, not merely a nonempty pair. This is the same
+    // `commanded_side_lower_rate_q` call the recovery geometry below performs,
+    // so the gate and the computation can never disagree about what "finite"
+    // means here.
+    let recovery_authority_consistent = commanded_side_lower_rate_q(
+        VelocityDirection::Forward,
+        i64::from(point.selected_response_intervals_q[0][0]),
+        i64::from(point.selected_response_intervals_q[0][1]),
+    )
+    .is_some()
+        && commanded_side_lower_rate_q(
+            VelocityDirection::Reverse,
+            i64::from(point.selected_response_intervals_q[1][0]),
+            i64::from(point.selected_response_intervals_q[1][1]),
+        )
+        .is_some();
     if point.identity.build_features != BUILD_FEATURES
         || point.identity.schema_revision != current_config.schema_revision
         || point.identity.plan_digest != current_config.digest()
         || point.selected_p != current_config.final_p
         || point.target_velocity_rpm != current_config.target_velocity_rpm
         || request != current_config.motion_request
-        || current_config.combined_selected_response.is_none()
+        || !recovery_authority_consistent
         || !current_config.positive_rungs().contains(&point.selected_i)
     {
         return Err(AcceptanceMatrixPlanError::IdentityMismatch);

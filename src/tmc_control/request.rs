@@ -880,32 +880,22 @@ where
                 | crate::tmc::AutotuneAction::MatrixDescending
                 | crate::tmc::AutotuneAction::MatrixAscendingMirrored
                 | crate::tmc::AutotuneAction::MatrixDescendingMirrored) => {
-                    let result = stage_c_candidate
-                        .acceptance_point()
-                        .ok_or(
-                            crate::commission_dispatch::acceptance::
-                                AcceptanceMatrixPreflightRejection::MissingAcceptancePoint,
-                        )
-                        .and_then(|point| {
-                            crate::commission_dispatch::acceptance::reconstruct_combined_plan(
-                                point,
-                                request,
-                                encoder_counts_per_rev,
-                                current_limit.raw(),
-                                board.velocity_limit_evidence_capability(),
-                                board.pwm_freq_hz(),
-                            )
-                        })
-                        .and_then(|current| {
-                            crate::commission_dispatch::acceptance::
-                                preflight_acceptance_matrix(
-                                    action,
-                                    request,
-                                    current,
-                                    run_sequence,
-                                    stage_c_candidate,
-                                )
-                        });
+                    let matrix_config =
+                        crate::commission_dispatch::stage_c::StageCPreflightConfig {
+                            encoder_counts_per_rev,
+                            torque_limit: current_limit.raw(),
+                            limit_evidence_capability: board.velocity_limit_evidence_capability(),
+                            channel: board.channel(),
+                            pwm_hz: board.pwm_freq_hz(),
+                        };
+                    let result =
+                        crate::commission_dispatch::acceptance::preflight_acceptance_matrix(
+                            action,
+                            request,
+                            &matrix_config,
+                            run_sequence,
+                            stage_c_candidate,
+                        );
                     let preflight = match result {
                         Ok(preflight) => preflight,
                         Err(rejection) => {
