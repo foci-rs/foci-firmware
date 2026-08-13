@@ -194,6 +194,7 @@ async fn combined_target_reached_installs_an_acceptance_point_after_restoration(
     let mut stage_c_terminal = terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0));
     stage_c_terminal.run_sequence = 8;
     stage_c_terminal.plan_digest = stage_c_plan.digest();
+    stage_c_terminal.combined_workflow = true;
     stage_c_terminal.final_p = 1_024;
     stage_c_terminal.rest_boundary_rung_plus_one = 12;
     let action = runtime
@@ -436,6 +437,7 @@ fn combined_statuses_install_only_a_sufficient_target_reaching_point() {
     let execution = plan.execution_plan();
     let mut reached = terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0));
     reached.plan_digest = plan.digest();
+    reached.combined_workflow = plan.combined_selected_response.is_some();
     reached.final_p = plan.final_p;
     reached.rest_boundary_rung_plus_one = 12;
 
@@ -531,6 +533,7 @@ fn terminal(
         digest: 0x1234_5678_9abc_def0,
         outcome,
         cause: 0,
+        combined_workflow: plan.combined_selected_response.is_some(),
         final_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,

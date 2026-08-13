@@ -490,7 +490,7 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 104);
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
-        632
+        640
     );
     assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 656);
     assert_eq!(

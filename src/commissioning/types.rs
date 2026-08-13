@@ -1024,8 +1024,17 @@ pub struct VelocityIntegralTerminal {
     pub outcome: VelocityIntegralOutcome,
     /// Dedicated Stage-C phase-local cause.
     pub cause: u8,
-    /// Fixed proportional gain for the combined response curve, or zero for
-    /// historical Stage-C terminals.
+    /// Whether this terminal came from a combined P-then-I workflow.
+    ///
+    /// Explicit discriminator. Replaces the historical `final_p != 0` proxy so a
+    /// breakaway terminal may carry a non-zero `final_p` without being classified
+    /// combined.
+    pub combined_workflow: bool,
+    /// Fixed Stage-C proportional gain carried on the terminal.
+    ///
+    /// Carried verbatim from the plan for every Stage-C workflow, combined or
+    /// not; see `combined_workflow` for the explicit classification. Not
+    /// zeroed for non-combined (e.g. breakaway) terminals.
     pub final_p: u16,
     /// Final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: bool,

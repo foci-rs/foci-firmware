@@ -6301,6 +6301,7 @@ mod tests {
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
+            combined_workflow: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
@@ -6350,6 +6351,7 @@ mod tests {
         assert_eq!(sink.integral_rest_boundary, Some([5, 6]));
 
         let mut combined_terminal = terminal;
+        combined_terminal.combined_workflow = true;
         combined_terminal.final_p = 1_448;
         combined_terminal.rest_boundary_rung_plus_one = 2;
         combined_terminal.rest_boundary_slot_plus_one = 0;
@@ -6439,6 +6441,7 @@ mod tests {
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
+            combined_workflow: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,

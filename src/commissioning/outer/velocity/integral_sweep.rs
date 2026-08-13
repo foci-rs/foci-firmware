@@ -947,7 +947,7 @@ fn direction_for_slot(
     }
 }
 
-fn terminal_from_data(
+pub(super) fn terminal_from_data(
     data: &VelocityIntegralData,
     evidence: super::integral_evidence::IntegralRunEvidence,
     outcome: VelocityIntegralOutcome,
@@ -961,11 +961,8 @@ fn terminal_from_data(
         digest: data.integrity.digest(),
         outcome,
         cause,
-        final_p: if data.plan.combined_workflow {
-            data.plan.final_p
-        } else {
-            0
-        },
+        combined_workflow: data.plan.combined_workflow,
+        final_p: data.plan.final_p,
         recovery_unavailable: data.recovery_unavailable,
         recovered_with_current_headroom: data.recovered_with_current_headroom,
         recovery_quantization_exposed: data.plan.recovery_quantization_exposed,

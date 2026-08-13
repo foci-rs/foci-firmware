@@ -3371,6 +3371,7 @@ mod tests {
             digest: 0x0123_4567_89ab_cdef,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
+            combined_workflow: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,

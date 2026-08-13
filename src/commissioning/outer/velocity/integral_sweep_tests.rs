@@ -12,7 +12,7 @@ use super::integral_sweep::{
     opening_recovery_lower_rate_q, positive_directional_floors_exist,
     record_integral_observation_rest_selection, record_integral_recovery_rest,
     record_integral_recovery_rest_selection, record_integral_target_if_reached,
-    step_velocity_integral_with_trace, store_matrix_rung_mean,
+    step_velocity_integral_with_trace, store_matrix_rung_mean, terminal_from_data,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -34,7 +34,7 @@ use crate::commissioning::outer::state::{
 use crate::commissioning::outer::velocity::acceptance_evidence::AcceptanceAmplitudeAvailability;
 use crate::commissioning::outer::velocity::combined_plan::CombinedTargetStatus;
 use crate::commissioning::outer::velocity::integral_evidence::{
-    ExactRateInterval, IntegralRungKind,
+    ExactRateInterval, IntegralRunEvidence, IntegralRungKind,
 };
 use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
@@ -91,6 +91,61 @@ fn plan() -> VelocityIntegralExecutionPlan {
         recovery_quantization_exposed: true,
         probe_constrained_test_point: false,
     }
+}
+
+fn default_run_evidence() -> IntegralRunEvidence {
+    IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2])
+}
+
+fn non_combined_integral_data_with_final_p(final_p: u16) -> VelocityIntegralData {
+    let mut execution_plan = plan();
+    execution_plan.combined_workflow = false;
+    execution_plan.final_p = final_p;
+    VelocityIntegralData::new(7, execution_plan)
+}
+
+fn combined_integral_data() -> VelocityIntegralData {
+    let mut execution_plan = plan();
+    execution_plan.combined_workflow = true;
+    VelocityIntegralData::new(7, execution_plan)
+}
+
+#[test]
+fn nonzero_final_p_does_not_imply_combined_when_plan_is_not_combined() {
+    // A non-combined plan that nonetheless carries a non-zero final_p.
+    let data = non_combined_integral_data_with_final_p(1_024);
+    let StepResult::VelocityIntegralTerminal(terminal) = terminal_from_data(
+        &data,
+        default_run_evidence(),
+        VelocityIntegralOutcome::Complete,
+        0,
+        None,
+    ) else {
+        panic!("terminal_from_data must produce a VelocityIntegralTerminal");
+    };
+    assert_eq!(terminal.final_p, 1_024);
+    assert!(!terminal.combined_workflow);
+    assert!(!super::integral_reporting::terminal_combined_workflow(
+        &terminal
+    ));
+}
+
+#[test]
+fn combined_plan_terminal_is_flagged_combined() {
+    let data = combined_integral_data();
+    let StepResult::VelocityIntegralTerminal(terminal) = terminal_from_data(
+        &data,
+        default_run_evidence(),
+        VelocityIntegralOutcome::Complete,
+        0,
+        None,
+    ) else {
+        panic!("terminal_from_data must produce a VelocityIntegralTerminal");
+    };
+    assert!(terminal.combined_workflow);
+    assert!(super::integral_reporting::terminal_combined_workflow(
+        &terminal
+    ));
 }
 
 #[test]

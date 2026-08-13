@@ -35,7 +35,7 @@ pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
 pub(crate) const TERMINAL_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 3;
 
 pub(crate) const fn terminal_combined_workflow(report: &VelocityIntegralTerminal) -> bool {
-    report.final_p != 0
+    report.combined_workflow
 }
 
 pub(crate) const fn terminal_target_terminus(report: &VelocityIntegralTerminal) -> Option<u8> {
@@ -1189,6 +1189,7 @@ mod tests {
             digest: 0xfedc_ba98_7654_3210,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
+            combined_workflow: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
@@ -1244,6 +1245,7 @@ mod tests {
             "schema-4 terminal bytes remain unchanged"
         );
 
+        terminal.combined_workflow = true;
         terminal.final_p = 1_448;
         terminal.rest_boundary_rung_plus_one = 2;
         terminal.rest_boundary_slot_plus_one = 0;
@@ -1263,6 +1265,7 @@ mod tests {
             digest: 0,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 8,
+            combined_workflow: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: true,
@@ -1295,6 +1298,7 @@ mod tests {
                 | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
         );
         assert_eq!(terminal_recovery_flags(&terminal) & 0xf0, 0);
+        terminal.combined_workflow = true;
         terminal.final_p = 1_448;
         terminal.rest_boundary_rung_plus_one = 2;
         assert_eq!(
