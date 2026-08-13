@@ -48,7 +48,7 @@ use super::integral_evidence::{
     classify_integral_observation,
 };
 use super::integral_plan::{
-    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
+    AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
     VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, largest_i_for_tau,
     native_velocity_i_at, response_horizon,
 };
@@ -247,7 +247,7 @@ pub(super) fn record_integral_target_if_reached(
     data: &mut VelocityIntegralData,
     intervals: [ExactRateInterval; 2],
 ) -> Result<bool, CommissionError> {
-    if !data.plan.combined_workflow {
+    if !data.plan.records_target_terminus() {
         return Ok(false);
     }
     if data.target_terminus.is_some() {
@@ -962,6 +962,7 @@ pub(super) fn terminal_from_data(
         outcome,
         cause,
         combined_workflow: data.plan.combined_workflow,
+        breakaway_acceptance: data.plan.acceptance_source == AcceptanceSource::Breakaway,
         final_p: data.plan.final_p,
         recovery_unavailable: data.recovery_unavailable,
         recovered_with_current_headroom: data.recovered_with_current_headroom,

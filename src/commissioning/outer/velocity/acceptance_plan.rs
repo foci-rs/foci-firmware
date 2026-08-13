@@ -2,8 +2,9 @@
 
 use super::current_guard::VelocityLimitEvidenceCapability;
 use super::integral_plan::{
-    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, IntegralSlotOrder, STAGE_C_OBSERVATIONS_PER_RUNG,
-    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
+    AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, IntegralSlotOrder,
+    STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan,
+    VelocityIntegralPlan,
 };
 use super::integral_reproduction::{AcceptancePoint, StageCPlanIdentity};
 use super::recovery::commanded_side_lower_rate_q;
@@ -237,6 +238,13 @@ impl AcceptanceMatrixPlan {
                     VelocityIntegralAcquisitionKind::AcceptanceDescending
                 }
             },
+            // The fixed-I acceptance matrix tracks amplitude sufficiency, not a
+            // combined/breakaway target terminus; `acquisition_kind` already
+            // distinguishes it from every `ResponseLadder` plan, so any
+            // non-terminus-recording source is correct here. `ReproducedStageB`
+            // is reused rather than adding a fourth variant for a plan family
+            // `record_integral_target_if_reached` never observes.
+            acceptance_source: AcceptanceSource::ReproducedStageB,
             matrix_targets_rpm: self.target_rpm,
             selected_response_intervals_q: [
                 [identity_low as i32, identity_high as i32],

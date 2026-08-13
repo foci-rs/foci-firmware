@@ -6,7 +6,8 @@ use super::acceptance_plan::{
 };
 use super::combined_plan::select_proportional_response;
 use super::integral_plan::{
-    IntegralSlotOrder, VelocityIntegralAcquisitionKind, plan_combined_velocity_integral_response,
+    AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
+    plan_combined_velocity_integral_response,
 };
 use super::integral_reporting::plan_recovery_flags;
 use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
@@ -233,6 +234,13 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
         execution.acquisition_kind,
         VelocityIntegralAcquisitionKind::AcceptanceAscending
     );
+    // The fixed-I acceptance matrix never records a target terminus; it is
+    // distinguished from a response ladder by `acquisition_kind` alone.
+    assert_eq!(
+        execution.acceptance_source,
+        AcceptanceSource::ReproducedStageB
+    );
+    assert!(!execution.records_target_terminus());
     assert_eq!(execution.i_start, 1_024);
     assert_eq!(execution.matrix_targets_rpm, [16, 33, 66, 132, 263]);
     assert_eq!(execution.positive_rung_count, 5);
@@ -250,7 +258,7 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
             [i32::from(ascending.qualifier_bits), 0],
         ]
     );
-    assert_eq!(core::mem::size_of_val(&execution), 112);
+    assert_eq!(core::mem::size_of_val(&execution), 120);
 }
 
 #[test]

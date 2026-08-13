@@ -1,6 +1,8 @@
 use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::integral_plan::IntegralSlotOrder;
-use super::integral_plan::{INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan};
+use super::integral_plan::{
+    AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan,
+};
 use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
@@ -85,6 +87,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
         combined_workflow: false,
         acquisition_kind: super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
+        acceptance_source: super::integral_plan::AcceptanceSource::ReproducedStageB,
         matrix_targets_rpm: [0; 5],
         selected_response_intervals_q: [[0; 2]; 2],
         recovery_lower_rate_q: [13_217_792, 12_827_648],
@@ -107,6 +110,7 @@ fn non_combined_integral_data_with_final_p(final_p: u16) -> VelocityIntegralData
 fn combined_integral_data() -> VelocityIntegralData {
     let mut execution_plan = plan();
     execution_plan.combined_workflow = true;
+    execution_plan.acceptance_source = AcceptanceSource::Combined;
     VelocityIntegralData::new(7, execution_plan)
 }
 
@@ -152,6 +156,7 @@ fn combined_plan_terminal_is_flagged_combined() {
 fn combined_target_uses_the_first_two_direction_lower_bound_crossing() {
     let mut plan = plan();
     plan.combined_workflow = true;
+    plan.acceptance_source = AcceptanceSource::Combined;
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
@@ -197,10 +202,92 @@ fn combined_target_uses_the_first_two_direction_lower_bound_crossing() {
     assert_eq!(data.target_terminus, Some(3));
 }
 
+/// A target-reaching breakaway run records a terminus exactly like a
+/// combined run does, even though it carries no `combined_workflow` bit --
+/// `records_target_terminus` is keyed on `acceptance_source`, not on that
+/// flag.
+#[test]
+fn breakaway_records_target_terminus_when_target_reached() {
+    let mut plan = plan();
+    plan.acceptance_source = AcceptanceSource::Breakaway;
+    plan.target_velocity_rpm = 264;
+    plan.encoder_counts_per_rev = 4_000;
+    plan.positive_rung_count = 13;
+    let mut data = VelocityIntegralData::new(1, plan);
+    data.rung_index = 4;
+
+    let reached = record_integral_target_if_reached(
+        &mut data,
+        [
+            ExactRateInterval::new(-100_000, 340_000).unwrap(),
+            ExactRateInterval::new(-340_000, 100_000).unwrap(),
+        ],
+    )
+    .expect("valid intervals");
+
+    assert!(reached);
+    assert_eq!(data.target_terminus, Some(3));
+}
+
+/// A breakaway run that completes on sufficiency without a deficit crossing
+/// the target leaves `target_terminus` at `None`; the recorder must not
+/// manufacture a terminus it never observed.
+#[test]
+fn breakaway_leaves_terminus_none_on_sufficiency_without_target() {
+    let mut plan = plan();
+    plan.acceptance_source = AcceptanceSource::Breakaway;
+    plan.target_velocity_rpm = 264;
+    plan.encoder_counts_per_rev = 4_000;
+    plan.positive_rung_count = 13;
+    let mut data = VelocityIntegralData::new(1, plan);
+    data.rung_index = 3;
+
+    let reached = record_integral_target_if_reached(
+        &mut data,
+        [
+            ExactRateInterval::new(300_000, 400_000).unwrap(),
+            ExactRateInterval::new(-400_000, -300_000).unwrap(),
+        ],
+    )
+    .expect("valid intervals");
+
+    assert!(!reached);
+    assert_eq!(data.target_terminus, None);
+}
+
+/// The discriminator, not just the deficit math, gates terminus recording: a
+/// reproduced Stage-B response ladder must record no terminus even when
+/// handed intervals that would otherwise cross the target, proving this
+/// guards against over-admitting through the shared `ResponseLadder`
+/// acquisition kind.
+#[test]
+fn reproduced_stage_b_ladder_does_not_record_a_terminus() {
+    let mut plan = plan();
+    assert_eq!(plan.acceptance_source, AcceptanceSource::ReproducedStageB);
+    plan.target_velocity_rpm = 264;
+    plan.encoder_counts_per_rev = 4_000;
+    plan.positive_rung_count = 13;
+    let mut data = VelocityIntegralData::new(1, plan);
+    data.rung_index = 4;
+
+    let reached = record_integral_target_if_reached(
+        &mut data,
+        [
+            ExactRateInterval::new(-100_000, 340_000).unwrap(),
+            ExactRateInterval::new(-340_000, 100_000).unwrap(),
+        ],
+    )
+    .expect("valid intervals");
+
+    assert!(!reached);
+    assert_eq!(data.target_terminus, None);
+}
+
 #[test]
 fn combined_target_status_distinguishes_sparse_current_and_cap_termini() {
     let mut plan = plan();
     plan.combined_workflow = true;
+    plan.acceptance_source = AcceptanceSource::Combined;
     plan.positive_rung_count = 13;
     let mut data = VelocityIntegralData::new(1, plan);
 
@@ -304,6 +391,7 @@ fn response_and_matrix_plans_expose_distinct_exact_schedules() {
 
     let mut combined = response;
     combined.combined_workflow = true;
+    combined.acceptance_source = AcceptanceSource::Combined;
     assert_eq!(
         integral_recovery_rest_schedule(combined),
         RecoveryRestSchedule::Stabilized
@@ -385,6 +473,7 @@ fn completed_recovery_report() -> RungOriginRecoveryReport {
 fn live_stage_c_schedule_records_one_selector_per_observation() {
     let mut live_plan = plan();
     live_plan.combined_workflow = true;
+    live_plan.acceptance_source = AcceptanceSource::Combined;
     live_plan.positive_rung_count = 13;
     live_plan.recovery_slot_count = 15;
     let mut data = VelocityIntegralData::new(31, live_plan);
@@ -494,6 +583,7 @@ fn live_matrix_schedule_records_one_selector_per_completed_rest_decision() {
 fn stage_c_and_matrix_place_rest_diagnostics_immediately_before_recovery() {
     let mut stage_c_plan = plan();
     stage_c_plan.combined_workflow = true;
+    stage_c_plan.acceptance_source = AcceptanceSource::Combined;
     let mut stage_c = VelocityIntegralData::new(17, stage_c_plan);
     let before = stage_c.integrity.digest();
     let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(selection)) =
@@ -878,6 +968,7 @@ fn both_matrix_orders_end_an_observation_rest_rejection_with_cause_53() {
 fn combined_schedule_executes_the_exact_cap_instead_of_the_next_octave() {
     let mut plan = plan();
     plan.combined_workflow = true;
+    plan.acceptance_source = AcceptanceSource::Combined;
     plan.positive_rung_count = 13;
     plan.family_size = 60;
     plan.recovery_slot_count = 15;
@@ -1245,6 +1336,7 @@ fn combined_target_stops_positive_motion_without_manufacturing_sufficiency() {
         unreachable!()
     };
     data.plan.combined_workflow = true;
+    data.plan.acceptance_source = AcceptanceSource::Combined;
     data.rung_index = 2;
     data.eligible_masks = [0b11; 2];
     data.target_terminus = Some(1);
@@ -1291,6 +1383,7 @@ fn combined_current_boundary_below_the_floor_still_routes_to_the_bookend() {
         unreachable!()
     };
     data.plan.combined_workflow = true;
+    data.plan.acceptance_source = AcceptanceSource::Combined;
     data.rung_index = 2;
     data.eligible_masks = [0b11; 2];
     data.current_terminus = Some(1);
@@ -1760,6 +1853,7 @@ fn combined_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
             unreachable!()
         };
         data.plan.combined_workflow = true;
+        data.plan.acceptance_source = AcceptanceSource::Combined;
         data.rung_index = if closing_bookend {
             data.plan.positive_rung_count + 1
         } else {
@@ -1812,6 +1906,7 @@ fn combined_positive_i_unconfirmed_rest_uses_dedicated_cause() {
         unreachable!()
     };
     data.plan.combined_workflow = true;
+    data.plan.acceptance_source = AcceptanceSource::Combined;
     data.rung_index = 3;
     data.current_observer = VelocityCurrentObserver::new(
         current_limit(u32::from(data.plan.usable_torque_limit)),
@@ -2015,6 +2110,7 @@ fn sufficient_combined_curve_emits_complete_without_retention() {
         unreachable!()
     };
     data.plan.combined_workflow = true;
+    data.plan.acceptance_source = AcceptanceSource::Combined;
     seed_sufficient_curve(data, &mut workspace);
     data.bookend_available_mask = 3;
     for (index, value) in [100_i32, 200, -200, -100].into_iter().enumerate() {
@@ -2481,6 +2577,7 @@ fn combined_opening_anchor_uses_the_declared_operational_clamp() {
         unreachable!()
     };
     data.plan.combined_workflow = true;
+    data.plan.acceptance_source = AcceptanceSource::Combined;
     data.plan.usable_torque_limit = data.plan.hard_torque_limit;
     let mut backend = MockBackend::new();
     backend.current_limit_value = current_limit(2_816);

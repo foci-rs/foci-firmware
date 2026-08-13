@@ -2144,9 +2144,11 @@ mod tests {
         {
             assert_eq!(size_of::<TraceRunState>(), 12);
             assert_eq!(size_of::<TraceSummarySeqs>(), 16);
+            // 2_944 -> 2_960: adds the `AcceptanceSource`
+            // discriminator to the embedded execution plan.
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_944
+                2_960
             );
             assert!(
                 size_of::<
@@ -3372,6 +3374,7 @@ mod tests {
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
             combined_workflow: false,
+            breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,

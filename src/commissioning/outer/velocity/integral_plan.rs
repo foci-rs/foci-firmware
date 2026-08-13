@@ -543,6 +543,14 @@ impl VelocityIntegralPlan {
             limit_evidence_capability: self.limit_evidence_capability,
             combined_workflow: self.combined_selected_response.is_some(),
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
+            acceptance_source: if self.combined_selected_response.is_some() {
+                AcceptanceSource::Combined
+            } else {
+                match self.authority.acquisition {
+                    StageCAcquisition::ConfirmedBreakaway(_) => AcceptanceSource::Breakaway,
+                    StageCAcquisition::ReproducedStageB(_) => AcceptanceSource::ReproducedStageB,
+                }
+            },
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q,
             recovery_lower_rate_q: [0; 2],
@@ -648,6 +656,26 @@ pub enum VelocityIntegralAcquisitionKind {
     AcceptanceDescending = 2,
 }
 
+/// Which acquisition authorized one Stage-C execution plan.
+///
+/// `acquisition_kind == ResponseLadder` alone cannot distinguish these: a live
+/// combined workflow, an accepted breakaway confirmation, and a plain
+/// reproduced Stage-B response ladder all report that same acquisition kind.
+/// This discriminator isolates breakaway so
+/// [`VelocityIntegralExecutionPlan::records_target_terminus`] can admit it
+/// without over-admitting a reproduced Stage-B ladder, which carries no
+/// target evidence at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum AcceptanceSource {
+    /// Live response-selected combined P-then-I workflow.
+    Combined = 0,
+    /// Accepted breakaway-campaign confirmation.
+    Breakaway = 1,
+    /// Reproduced Stage-B response ladder; carries no target evidence.
+    ReproducedStageB = 2,
+}
+
 /// Compact immutable Stage-C state retained after plan emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralExecutionPlan {
@@ -695,6 +723,11 @@ pub struct VelocityIntegralExecutionPlan {
     pub combined_workflow: bool,
     /// Response-ladder or fixed-I acceptance acquisition.
     pub acquisition_kind: VelocityIntegralAcquisitionKind,
+    /// Which acquisition category authorized this plan.
+    ///
+    /// Isolates breakaway from combined and reproduced Stage-B within
+    /// `acquisition_kind == ResponseLadder`; see [`Self::records_target_terminus`].
+    pub acceptance_source: AcceptanceSource,
     /// Exact fixed targets for a matrix acquisition; zero for response ladders.
     pub matrix_targets_rpm: [i16; 5],
     /// Selected Stage-B intervals or exact matrix identity/qualifier storage.
@@ -709,8 +742,23 @@ pub struct VelocityIntegralExecutionPlan {
     pub slot_order: IntegralSlotOrder,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 112);
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 112);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 120);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 120);
+
+impl VelocityIntegralExecutionPlan {
+    /// Whether a target-reaching run on this plan records a target terminus.
+    ///
+    /// True only for a live combined workflow or an accepted breakaway
+    /// confirmation. A reproduced Stage-B response ladder must not record a
+    /// terminus even though it shares `acquisition_kind ==
+    /// VelocityIntegralAcquisitionKind::ResponseLadder` with both.
+    pub const fn records_target_terminus(&self) -> bool {
+        matches!(
+            self.acceptance_source,
+            AcceptanceSource::Combined | AcceptanceSource::Breakaway
+        )
+    }
+}
 
 /// Exact identity retained when Stage C has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

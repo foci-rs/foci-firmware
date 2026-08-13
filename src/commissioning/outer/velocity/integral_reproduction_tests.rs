@@ -486,8 +486,13 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // with no heap. A failure here is a prompt to justify the growth, not to
     // update the number reflexively.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 232);
-    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 112);
+    // 112 -> 120: adds the `AcceptanceSource` discriminator
+    // (1 byte, padded to 8) so Stage C can isolate a breakaway acceptance run
+    // from a plain reproduced Stage-B response ladder.
+    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 120);
     assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 104);
+    // Unchanged at 640: the new `breakaway_acceptance` bool fits
+    // the padding the `combined_workflow` bool already left behind.
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
         640

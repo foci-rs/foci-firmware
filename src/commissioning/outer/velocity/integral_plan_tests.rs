@@ -11,15 +11,16 @@ use super::breakaway_plan::{
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use super::integral_plan::StageCAcquisition;
 use super::integral_plan::{
-    AcquisitionContext, BreakawayAuthorityBindingError, CommissioningWorkflowPlan,
-    ConfirmedAcquisitionDigest, IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION,
-    STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG,
-    StageCAuthority, StageCPlanShape, VelocityIntegralPlanError, bind_breakaway_stage_c_authority,
-    breakaway_confirmation_slots_us, breakaway_discovery_slots_us, breakaway_probe_slots_us,
-    breakaway_workflow_envelope_ms, breakaway_workflow_envelope_us, build_integral_ladder,
-    confidence_family_size, integral_workflow_maximum_ms,
-    plan_breakaway_velocity_integral_response, plan_velocity_integral_response,
-    recovery_quantization_exposed, response_horizon, velocity_i_tau_us,
+    AcceptanceSource, AcquisitionContext, BreakawayAuthorityBindingError,
+    CommissioningWorkflowPlan, ConfirmedAcquisitionDigest, IntegralSlotOrder,
+    STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I,
+    STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape, VelocityIntegralPlanError,
+    bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
+    breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
+    breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
+    integral_workflow_maximum_ms, plan_breakaway_velocity_integral_response,
+    plan_velocity_integral_response, recovery_quantization_exposed, response_horizon,
+    velocity_i_tau_us,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -1316,6 +1317,49 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
         plan.positive_rungs(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
     );
+}
+
+/// `acquisition_kind == ResponseLadder` alone cannot isolate breakaway: a
+/// live combined workflow, an accepted breakaway confirmation, and a plain
+/// reproduced Stage-B response ladder all report that same kind. The
+/// `acceptance_source` discriminator, resolved from the Stage-C authority,
+/// is what `records_target_terminus` keys on instead -- and it must not
+/// over-admit a reproduced Stage-B ladder, which carries no target evidence.
+#[test]
+fn execution_plan_reports_acceptance_source_from_authority() {
+    let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
+    let token = breakaway_token_for(confirmation_plan);
+    let breakaway = plan_breakaway_velocity_integral_response(
+        token,
+        confirmation_plan,
+        breakaway_acquisition_context(),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .expect("the campaign's own Stage-C plan")
+    .execution_plan();
+    assert_eq!(breakaway.acceptance_source, AcceptanceSource::Breakaway);
+    assert!(breakaway.records_target_terminus());
+
+    let stage_b = stage_b_plan();
+    let mut reproduced_authority = authority();
+    reproduced_authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
+    let reproduced = plan_velocity_integral_response(
+        reproduced_authority,
+        stage_b.execution_plan(stage_b.digest()),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .expect("reproduced Stage-B plan")
+    .execution_plan();
+    assert_eq!(
+        reproduced.acceptance_source,
+        AcceptanceSource::ReproducedStageB
+    );
+    // Must NOT over-admit a plain response ladder.
+    assert!(!reproduced.records_target_terminus());
 }
 
 /// No reselection, no fallback: the constructor takes exactly one candidate

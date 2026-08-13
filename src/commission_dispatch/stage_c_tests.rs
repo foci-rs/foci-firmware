@@ -534,6 +534,7 @@ fn terminal(
         outcome,
         cause: 0,
         combined_workflow: plan.combined_selected_response.is_some(),
+        breakaway_acceptance: false,
         final_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,

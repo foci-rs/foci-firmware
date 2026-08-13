@@ -1030,6 +1030,15 @@ pub struct VelocityIntegralTerminal {
     /// breakaway terminal may carry a non-zero `final_p` without being classified
     /// combined.
     pub combined_workflow: bool,
+    /// Whether this terminal came from a breakaway-campaign acceptance run.
+    ///
+    /// Terminus-independent: a breakaway `Complete` that finished on
+    /// sufficiency without reaching target is still a breakaway acceptance
+    /// terminal. Firmware-internal only; not on the host wire. Lets
+    /// `terminal_target_terminus`/`terminal_target_status` distinguish
+    /// "breakaway with no terminus recorded" from "not an acceptance
+    /// terminal at all".
+    pub breakaway_acceptance: bool,
     /// Fixed Stage-C proportional gain carried on the terminal.
     ///
     /// Carried verbatim from the plan for every Stage-C workflow, combined or

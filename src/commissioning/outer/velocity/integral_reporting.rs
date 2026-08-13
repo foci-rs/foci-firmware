@@ -38,8 +38,19 @@ pub(crate) const fn terminal_combined_workflow(report: &VelocityIntegralTerminal
     report.combined_workflow
 }
 
+/// Whether this terminal's firmware-internal target derivations may return
+/// `Some(..)`.
+///
+/// Wider than [`terminal_combined_workflow`]: a breakaway acceptance terminal
+/// also carries a target derivation, even though it sets no
+/// `TERMINAL_COMBINED_WORKFLOW` wire bit (see [`terminal_recovery_flags`],
+/// which stays gated on `combined_workflow` alone).
+const fn terminal_carries_target(report: &VelocityIntegralTerminal) -> bool {
+    report.combined_workflow || report.breakaway_acceptance
+}
+
 pub(crate) const fn terminal_target_terminus(report: &VelocityIntegralTerminal) -> Option<u8> {
-    if terminal_combined_workflow(report)
+    if terminal_carries_target(report)
         && report.rest_boundary_slot_plus_one == 0
         && report.rest_boundary_rung_plus_one != 0
     {
@@ -52,7 +63,7 @@ pub(crate) const fn terminal_target_terminus(report: &VelocityIntegralTerminal) 
 pub(crate) fn terminal_target_status(
     report: &VelocityIntegralTerminal,
 ) -> Option<CombinedTargetStatus> {
-    if !terminal_combined_workflow(report) {
+    if !terminal_carries_target(report) {
         None
     } else if terminal_target_terminus(report).is_some() {
         Some(
@@ -1033,6 +1044,7 @@ mod tests {
             combined_workflow: false,
             acquisition_kind:
                 super::super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
+            acceptance_source: super::super::integral_plan::AcceptanceSource::ReproducedStageB,
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
             recovery_lower_rate_q: [0; 2],
@@ -1190,6 +1202,7 @@ mod tests {
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
             combined_workflow: false,
+            breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
@@ -1266,6 +1279,7 @@ mod tests {
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 8,
             combined_workflow: false,
+            breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: true,
@@ -1308,6 +1322,60 @@ mod tests {
                 | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
                 | TERMINAL_COMBINED_WORKFLOW
                 | (2 << TERMINAL_COMBINED_TARGET_SHIFT)
+        );
+    }
+
+    /// A breakaway acceptance terminal's firmware-internal target derivations
+    /// admit it exactly like a combined terminal would -- the installer
+    /// (Task 4) reads these -- but the wire `recovery_flags` stay
+    /// combined-only: no `TERMINAL_COMBINED_WORKFLOW` bit and no packed
+    /// target-status bits, because `terminal_recovery_flags` is keyed on
+    /// `combined_workflow` alone, unchanged by this admission.
+    #[test]
+    fn breakaway_acceptance_terminal_exposes_target_status_and_terminus() {
+        let mut terminal = VelocityIntegralTerminal {
+            run_sequence: 7,
+            evidence_sequence: 9,
+            plan_digest: 0,
+            digest: 0,
+            outcome: VelocityIntegralOutcome::Complete,
+            cause: 0,
+            combined_workflow: false,
+            breakaway_acceptance: true,
+            final_p: 512,
+            recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
+            rest_boundary_rung_plus_one: 3,
+            rest_boundary_slot_plus_one: 0,
+            evidence: super::super::integral_evidence::IntegralRunEvidence::new(
+                [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
+            ),
+            expected_observations: 112,
+            emitted_observations: 112,
+            expected_rungs: 14,
+            emitted_rungs: 14,
+            run_started_us: 0,
+            run_completed_us: 1,
+            safety_fault: None,
+        };
+        terminal.evidence.eligible_masks = [0b111, 0b111];
+
+        assert_eq!(
+            terminal_target_status(&terminal),
+            Some(CombinedTargetStatus::TargetReached)
+        );
+        assert_eq!(terminal_target_terminus(&terminal), Some(2));
+        // The wire recovery_flags stay combined-only: neither the combined
+        // bit nor the packed target-status bits are set for breakaway.
+        assert_eq!(
+            terminal_recovery_flags(&terminal) & TERMINAL_COMBINED_WORKFLOW,
+            0
+        );
+        assert_eq!(
+            terminal_recovery_flags(&terminal) & (0b111 << TERMINAL_COMBINED_TARGET_SHIFT),
+            0
         );
     }
 
