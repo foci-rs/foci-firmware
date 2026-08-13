@@ -284,12 +284,17 @@ impl StageCAuthority {
     /// acquisition digest.
     ///
     /// The breakaway campaign has no reproduced Stage-B directional evidence,
-    /// so every directional field is the same empty/zero value
+    /// so every membership/validity field is the same empty/zero value
     /// [`plan_combined_velocity_integral_response`] already uses for its
-    /// nonretained, same-command authority. The only way to obtain a
-    /// [`ConfirmedAcquisitionDigest`] is a successful call to
-    /// [`bind_breakaway_stage_c_authority`], so this constructor makes "Stage
-    /// C authorized by anything other than an accepted confirmation"
+    /// nonretained, same-command authority. `directional_pooled_intervals` is
+    /// the one exception: it carries `held_out_response_intervals_q`, the
+    /// held-out confirmation block's own pooled response interval, already in
+    /// the same signed settled-rate-Q domain this field carries on the other
+    /// paths (see [`super::band_confirmation::BandConfirmationAcceptance`]'s
+    /// field doc), not a reproduced Stage-B value.
+    /// The only way to obtain a [`ConfirmedAcquisitionDigest`] is a successful
+    /// call to [`bind_breakaway_stage_c_authority`], so this constructor makes
+    /// "Stage C authorized by anything other than an accepted confirmation"
     /// unrepresentable for every breakaway authority built this way.
     ///
     /// `StageCAuthority` is a `pub struct` with `pub` fields, so a `u64` CAN be
@@ -308,6 +313,7 @@ impl StageCAuthority {
     pub(crate) const fn new_breakaway(
         channel: u8,
         confirmed_digest: ConfirmedAcquisitionDigest,
+        held_out_response_intervals_q: [[i32; 2]; 2],
     ) -> Self {
         Self {
             channel,
@@ -317,7 +323,7 @@ impl StageCAuthority {
             joint_membership: 0,
             directional_validity: [StageBDirectionalValidity::NoRegion; 2],
             reduced_margin: false,
-            directional_pooled_intervals: [[0; 2]; 2],
+            directional_pooled_intervals: held_out_response_intervals_q,
         }
     }
 }
@@ -1443,12 +1449,17 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// The only authority input is `token`, a [`ConfirmedAcquisitionDigest`]. That
 /// token can be minted solely by [`bind_breakaway_stage_c_authority`] from a
 /// genuine `Ok(`[`BandConfirmationAcceptance`]`)` -- itself unforgeable (its
-/// field is private) -- so this gate cannot be reached for an arbitrary gain
-/// without a real all-eight held-out pass. The gate builds the
+/// `candidate_p` field is private) -- so this gate cannot be reached for an
+/// arbitrary gain without a real all-eight held-out pass. The gate builds the
 /// [`StageCAuthority`] INTERNALLY via [`StageCAuthority::new_breakaway`]; it
 /// never accepts a pre-built `StageCAuthority`, closing the bypass where a
 /// caller forged one by struct literal (its fields are `pub`) and paired it
 /// with a self-consistent but fabricated `BandConfirmationPlan`.
+/// `held_out_response_intervals_q` is not an authority input -- it gates
+/// nothing here and carries only the same accepted block's pooled response
+/// interval through to `StageCAuthority::directional_pooled_intervals`, for
+/// the acceptance-point recovery authority downstream planning reads from the
+/// resulting plan.
 ///
 /// It additionally: (a) re-validates the fixed confirmation contract through
 /// the single canonical [`super::band_confirmation::validate_fixed_contract`]
@@ -1478,6 +1489,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
     confirmation_plan: BandConfirmationPlan,
     context: AcquisitionContext,
+    held_out_response_intervals_q: [[i32; 2]; 2],
     motion_budget: OuterMotionBudget,
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
@@ -1503,7 +1515,8 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     // Build the authority INTERNALLY from the token. The gate never accepts a
     // pre-built `StageCAuthority`, so a caller cannot forge one (its fields are
     // `pub`) and pass it in to bypass confirmation.
-    let authority = StageCAuthority::new_breakaway(context.channel, token);
+    let authority =
+        StageCAuthority::new_breakaway(context.channel, token, held_out_response_intervals_q);
     let fixed_p = confirmation_plan.candidate_p.raw();
     if !transition_capable_stage_c_gain(
         fixed_p,
@@ -1554,11 +1567,23 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 /// identity. That comparison is what proves the request reproduces the retained
 /// plan, and it replaces the Stage-B digest check the reproduced-Stage-B path
 /// uses, which has no meaning here.
+///
+/// `held_out_response_intervals_q` must be the exact value
+/// [`StageCAuthority::directional_pooled_intervals`] carried on the plan being
+/// resumed -- callers read it back from the retained
+/// [`super::integral_reproduction::StageCAuthoritySummary`], which
+/// `StageCAuthoritySummary::from_plan` captured from the original accepted
+/// plan. `plan.digest()` folds this field in, so any other value -- including
+/// the unavailable-value zero this parameter's predecessor hardcoded --
+/// rebuilds a plan whose digest can never match the retained identity, and
+/// the resume is refused as a mismatch even though nothing about the request
+/// actually changed.
 #[allow(dead_code)]
 pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
     final_p: u16,
     context: AcquisitionContext,
+    held_out_response_intervals_q: [[i32; 2]; 2],
     motion_budget: OuterMotionBudget,
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
@@ -1568,7 +1593,8 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     {
         return Err(VelocityIntegralPlanError::PhysicalContextMismatch);
     }
-    let authority = StageCAuthority::new_breakaway(context.channel, token);
+    let authority =
+        StageCAuthority::new_breakaway(context.channel, token, held_out_response_intervals_q);
     if !transition_capable_stage_c_gain(
         final_p,
         context.target_velocity_rpm,

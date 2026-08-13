@@ -238,6 +238,7 @@ fn preflight_retained_breakaway(
         token,
         authority.final_p,
         context,
+        authority.directional_pooled_intervals,
         motion_budget,
         config.pwm_hz,
         config.encoder_counts_per_rev,

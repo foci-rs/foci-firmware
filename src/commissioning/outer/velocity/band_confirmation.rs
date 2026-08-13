@@ -562,13 +562,13 @@ pub struct TargetBandConfirmationInconclusive(pub BandConfirmationFailureCause);
 
 /// Held-out confirmation success: the only value that may authorize Stage C.
 ///
-/// This is an unforgeable capability. Its single field is **private** and this
-/// module exposes no public constructor, no `Default`, and no `From`: the only
-/// code that may build a `BandConfirmationAcceptance` is
+/// This is an unforgeable capability. Its `candidate_p` field is **private**
+/// and this module exposes no public constructor, no `Default`, and no
+/// `From`: the only code that may build a `BandConfirmationAcceptance` is
 /// [`evaluate_band_confirmation`] in this module, on the path where all eight
 /// fresh intervals passed. A module outside `band_confirmation` therefore
-/// cannot write `BandConfirmationAcceptance { candidate_p }` or otherwise mint
-/// one, so an `Ok(acceptance)` handed to
+/// cannot write `BandConfirmationAcceptance { candidate_p, .. }` or otherwise
+/// mint one, so an `Ok(acceptance)` handed to
 /// [`super::integral_plan::bind_breakaway_stage_c_authority`] can only have
 /// come from a genuine all-eight-contained held-out pass -- it can never be
 /// synthesized to bypass the confirmation gate. Read the confirmed gain with
@@ -578,6 +578,38 @@ pub struct BandConfirmationAcceptance {
     /// Confirmed proportional gain. Private so no sibling module can construct
     /// an acceptance; see the type's own documentation.
     candidate_p: PidPGain,
+    /// Per-direction held-out response interval, forward then reverse, in
+    /// the SAME signed settled-rate-Q domain `directional_pooled_intervals`
+    /// already carries on the reproduced-Stage-B and combined Stage-C paths
+    /// (see [`super::combined_plan::CombinedSelectedResponse::response_intervals_q`]
+    /// and [`super::reproduction::StageBCandidateSummary::forward_interval`]/
+    /// `reverse_interval`): forward's `[low_q, high_q]` is a strictly
+    /// positive commanded-magnitude bound (`low_q > 0`); reverse's is
+    /// strictly negative (`high_q < 0`), formed as `[-high_magnitude_q,
+    /// -low_magnitude_q]` so `low_q <= high_q` still holds. This is what
+    /// [`super::recovery::commanded_side_lower_rate_q`] requires of both
+    /// directions, and what the acceptance-matrix installer downstream
+    /// ultimately reads this value as.
+    ///
+    /// Derived from the same per-atom commanded-side magnitude and
+    /// `half_width_fraction` [`evaluate_band_confirmation`]'s containment
+    /// loop already computes for the percent gate -- applied to the atom's
+    /// signed `mean_rate_q` magnitude instead of its percent-of-target, then
+    /// pooled per direction (`low` = minimum accepted-atom magnitude bound,
+    /// `high` = maximum) exactly the way `rung_response_bounds_percent`
+    /// above pools a rung's included atoms into one interval. NOT a
+    /// percent-domain value: the 70-80% band gate stays in percent (that
+    /// math is unchanged), only the retained, returned interval is in the
+    /// rate domain.
+    ///
+    /// `pub(crate)`, not private: unlike `candidate_p`, this field carries no
+    /// unforgeability requirement of its own (the struct as a whole is still
+    /// unforgeable because `candidate_p` stays private), and both
+    /// [`super::integral_plan::StageCAuthority::new_breakaway`]'s test and the
+    /// breakaway campaign need to read it directly from a sibling,
+    /// non-descendant module, so a `candidate_p`-style
+    /// private-field-plus-accessor pair would only add ceremony here.
+    pub(crate) held_out_response_intervals_q: [[i32; 2]; 2],
 }
 
 impl BandConfirmationAcceptance {
@@ -644,36 +676,68 @@ pub fn evaluate_band_confirmation(
 
     let mut excessive_uncertainty = false;
     let mut response_location = false;
-    for atom in forward
-        .observations
-        .iter()
-        .chain(reverse.observations.iter())
-    {
-        let Some(atom) = atom else {
-            return Err(TargetBandConfirmationInconclusive(
-                BandConfirmationFailureCause::LossOfConsensus,
-            ));
-        };
-        let statistic = match observation_statistic(*atom) {
-            Ok(statistic) => statistic,
-            Err(_) => {
-                // A zero, wrong-sign, or otherwise malformed mean is not a
-                // representable response: the response location is the
-                // problem, not the uncertainty around it.
-                response_location = true;
-                continue;
+    // Per-direction pooled `(low_magnitude_q, high_magnitude_q)`, forward at
+    // index 0 and reverse at index 1: the same `half_width_fraction` envelope
+    // the percent containment check below uses, applied to the atom's
+    // *commanded-side magnitude* (`|mean_rate_q|`) instead of its
+    // percent-of-target, then widened by `min`/`max` exactly the way
+    // `rung_response_bounds_percent` above pools a rung's included atoms into
+    // one interval. Always a positive magnitude regardless of direction --
+    // [`commanded_side_mean_rate_q`] already normalizes reverse's negative
+    // mean to its magnitude -- so the sign each direction actually needs
+    // (forward positive, reverse negative) is applied once, after pooling,
+    // below. `None` until this direction's first atom contributes; `Some` by
+    // the time the acceptance path reads it, for the same reason
+    // `BandConfirmationAcceptance::held_out_response_intervals_q`'s field doc
+    // gives: every atom in `[forward, reverse]` is visited, and any atom that
+    // fails to contribute a bound (missing, or a statistic error) sets
+    // `response_location` and this function returns `Err` before ever
+    // constructing `Ok`.
+    let mut pooled_magnitude_q: [Option<(f32, f32)>; 2] = [None, None];
+    for (direction_index, directional) in [forward, reverse].iter().enumerate() {
+        for atom in directional.observations.iter() {
+            let Some(atom) = atom else {
+                return Err(TargetBandConfirmationInconclusive(
+                    BandConfirmationFailureCause::LossOfConsensus,
+                ));
+            };
+            let statistic = match observation_statistic(*atom) {
+                Ok(statistic) => statistic,
+                Err(_) => {
+                    // A zero, wrong-sign, or otherwise malformed mean is not a
+                    // representable response: the response location is the
+                    // problem, not the uncertainty around it.
+                    response_location = true;
+                    continue;
+                }
+            };
+            let half_width_fraction = multiplier * statistic.relative_standard_error;
+            if half_width_fraction > MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION {
+                excessive_uncertainty = true;
             }
-        };
-        let half_width_fraction = multiplier * statistic.relative_standard_error;
-        if half_width_fraction > MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION {
-            excessive_uncertainty = true;
-        }
-        let low = round_outward_lower(statistic.response_percent * (1.0 - half_width_fraction));
-        let high = round_outward_upper(statistic.response_percent * (1.0 + half_width_fraction));
-        if low < f32::from(CONFIRMATION_BAND_LOWER_PERCENT)
-            || high > f32::from(CONFIRMATION_BAND_UPPER_PERCENT)
-        {
-            response_location = true;
+            let low = round_outward_lower(statistic.response_percent * (1.0 - half_width_fraction));
+            let high =
+                round_outward_upper(statistic.response_percent * (1.0 + half_width_fraction));
+            if low < f32::from(CONFIRMATION_BAND_LOWER_PERCENT)
+                || high > f32::from(CONFIRMATION_BAND_UPPER_PERCENT)
+            {
+                response_location = true;
+            }
+            // `observation_statistic` above already proved this atom's mean
+            // representable under the same direction/mean-rate rule, so this
+            // is guaranteed `Some`.
+            let commanded_magnitude_q = commanded_side_mean_rate_q(atom.direction, atom.mean_rate_q)
+                .expect("observation_statistic already proved this atom's mean is representable")
+                as f32;
+            let magnitude_low = commanded_magnitude_q * (1.0 - half_width_fraction);
+            let magnitude_high = commanded_magnitude_q * (1.0 + half_width_fraction);
+            pooled_magnitude_q[direction_index] = Some(match pooled_magnitude_q[direction_index] {
+                None => (magnitude_low, magnitude_high),
+                Some((pooled_low, pooled_high)) => (
+                    pooled_low.min(magnitude_low),
+                    pooled_high.max(magnitude_high),
+                ),
+            });
         }
     }
 
@@ -688,7 +752,25 @@ pub fn evaluate_band_confirmation(
         ));
     }
 
-    Ok(BandConfirmationAcceptance { candidate_p })
+    let held_out_response_intervals_q: [[i32; 2]; 2] = core::array::from_fn(|direction_index| {
+        let (magnitude_low, magnitude_high) = pooled_magnitude_q[direction_index]
+            .expect("every atom in both directions contributed a bound on the accepted path above");
+        let low_magnitude_q = libm::roundf(magnitude_low) as i32;
+        let high_magnitude_q = libm::roundf(magnitude_high) as i32;
+        if direction_index == 0 {
+            // Forward: positive commanded magnitude, low_q > 0.
+            [low_magnitude_q, high_magnitude_q]
+        } else {
+            // Reverse: negate and swap so low_q <= high_q still holds, with
+            // high_q < 0 -- the sign `commanded_side_lower_rate_q` requires.
+            [-high_magnitude_q, -low_magnitude_q]
+        }
+    });
+
+    Ok(BandConfirmationAcceptance {
+        candidate_p,
+        held_out_response_intervals_q,
+    })
 }
 
 /// Immutable, pre-motion plan for the held-out family-eight confirmation block.

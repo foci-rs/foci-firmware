@@ -4386,6 +4386,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
         token,
         plan,
         context,
+        acceptance.held_out_response_intervals_q,
         safety.budget,
         backend.tmc_config().pwm_freq_hz(),
         safety.counts_per_rev(),

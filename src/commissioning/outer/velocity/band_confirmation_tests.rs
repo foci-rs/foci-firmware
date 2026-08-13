@@ -6,18 +6,19 @@
 //! production formulas compute the same relative SE, not a hand-rounded
 //! approximation of it.
 
+use super::super::recovery::commanded_side_lower_rate_q;
 use super::super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
 };
 use super::super::sweep_evidence::{VelocityObservationClass, direction_report_code};
 use super::super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 use super::{
-    BandConfirmationAcceptance, BandConfirmationContractError, BandConfirmationFailureCause,
-    BandConfirmationPlan, BandConfirmationPlanError,
-    CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED, CONFIRMATION_CAPTURE_PROFILE_EXISTING,
-    CONFIRMATION_FAMILY_SIZE, CONFIRMATION_OBSERVATIONS_PER_DIRECTION, CONFIRMATION_SLOT_ORDER,
-    ConfirmationDirectionalInput, DiscoveryObservationAtom, DiscoveryRungNominationBounds,
-    DiscoveryRungNominationInput, NOMINATION_SCREEN_C_SIGMA, TargetBandConfirmationInconclusive,
+    BandConfirmationContractError, BandConfirmationFailureCause, BandConfirmationPlan,
+    BandConfirmationPlanError, CONFIRMATION_ACCEPTANCE_RULE_ALL_EIGHT_CONTAINED,
+    CONFIRMATION_CAPTURE_PROFILE_EXISTING, CONFIRMATION_FAMILY_SIZE,
+    CONFIRMATION_OBSERVATIONS_PER_DIRECTION, CONFIRMATION_SLOT_ORDER, ConfirmationDirectionalInput,
+    DiscoveryObservationAtom, DiscoveryRungNominationBounds, DiscoveryRungNominationInput,
+    NOMINATION_SCREEN_C_SIGMA, TargetBandConfirmationInconclusive,
     TargetBandUnconfirmableFromDiscovery, commanded_side_mean_rate_q, evaluate_band_confirmation,
     nominate_confirmation_candidate, nominate_confirmation_candidate_from_bounds,
     observation_statistic, plan_band_confirmation, rung_confirmable_margin_percent,
@@ -714,11 +715,102 @@ fn confirmation_evaluation_carries_no_hidden_state_across_independent_calls() {
         TARGET,
     );
     let second = evaluate_band_confirmation(gain(724), passing_forward, passing_reverse);
+    let accepted =
+        second.expect("rung-18-class evidence confirms within the 70-80% band, as above");
+    assert_eq!(accepted.candidate_p(), gain(724));
+    // Forward and reverse share the same commanded magnitude (750,000) and
+    // variance, so both directions pool to the identical MAGNITUDE bound;
+    // recompute it through the real production math (not a transcribed
+    // literal) so this assertion cannot silently drift from
+    // `evaluate_band_confirmation`'s own math. The two directions are NOT
+    // asserted identical here: forward is the positive magnitude, reverse is
+    // its negation, exactly the signed convention
+    // `commanded_side_lower_rate_q` requires below. A test asserting the same
+    // positive pair for both directions would pass even if the sign flip
+    // were missing entirely -- that was the actual shape of the bug this
+    // test caught in review.
+    let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE)
+        .expect("confirmation family size 8 is within the audited multiplier table");
+    let relative_se = 7_665.0_f32 / 750_000.0;
+    let half_width_fraction = multiplier * relative_se;
+    let magnitude_low = libm::roundf(750_000.0 * (1.0 - half_width_fraction)) as i32;
+    let magnitude_high = libm::roundf(750_000.0 * (1.0 + half_width_fraction)) as i32;
     assert_eq!(
-        second,
-        Ok(BandConfirmationAcceptance {
-            candidate_p: gain(724)
-        })
+        accepted.held_out_response_intervals_q,
+        [
+            [magnitude_low, magnitude_high],
+            [-magnitude_high, -magnitude_low]
+        ]
+    );
+
+    // The actual downstream contract: `recovery::commanded_side_lower_rate_q`
+    // is what the acceptance-matrix installer calls on this exact field, and
+    // it requires forward's low strictly positive, reverse's high strictly
+    // negative. Assert both directions satisfy it -- not just that the
+    // interval is well-ordered, which a same-signed-for-both bug would also
+    // satisfy.
+    let [forward_interval, reverse_interval] = accepted.held_out_response_intervals_q;
+    assert!(
+        commanded_side_lower_rate_q(
+            VelocityDirection::Forward,
+            i64::from(forward_interval[0]),
+            i64::from(forward_interval[1]),
+        )
+        .is_some(),
+        "forward interval {forward_interval:?} must satisfy commanded_side_lower_rate_q"
+    );
+    assert!(
+        commanded_side_lower_rate_q(
+            VelocityDirection::Reverse,
+            i64::from(reverse_interval[0]),
+            i64::from(reverse_interval[1]),
+        )
+        .is_some(),
+        "reverse interval {reverse_interval:?} must satisfy commanded_side_lower_rate_q"
+    );
+}
+
+#[test]
+fn confirmation_acceptance_retains_held_out_response_intervals() {
+    let forward = confirmation_input(
+        VelocityDirection::Forward,
+        RUNG18_MEAN,
+        RUNG18_VARIANCE,
+        TARGET,
+    );
+    let reverse = confirmation_input(
+        VelocityDirection::Reverse,
+        -RUNG18_MEAN,
+        RUNG18_VARIANCE,
+        TARGET,
+    );
+    let acceptance = evaluate_band_confirmation(gain(724), forward, reverse)
+        .expect("rung-18-class evidence confirms within the 70-80% band");
+    // Both directions carry a well-ordered, non-empty interval.
+    for [low, high] in acceptance.held_out_response_intervals_q {
+        assert!(low <= high);
+    }
+    assert_ne!(acceptance.held_out_response_intervals_q, [[0, 0], [0, 0]]);
+    // Well-ordered and non-zero is not enough on its own: the retained
+    // interval must also carry the signed rate-domain convention
+    // `commanded_side_lower_rate_q` requires (forward strictly positive,
+    // reverse strictly negative), not just an unsigned magnitude.
+    let [forward_interval, reverse_interval] = acceptance.held_out_response_intervals_q;
+    assert!(
+        commanded_side_lower_rate_q(
+            VelocityDirection::Forward,
+            i64::from(forward_interval[0]),
+            i64::from(forward_interval[1]),
+        )
+        .is_some()
+    );
+    assert!(
+        commanded_side_lower_rate_q(
+            VelocityDirection::Reverse,
+            i64::from(reverse_interval[0]),
+            i64::from(reverse_interval[1]),
+        )
+        .is_some()
     );
 }
 
@@ -774,18 +866,22 @@ fn confirmation_plan_rejects_zero_candidate_gain() {
 
 // --- validate_fixed_contract: every fixed field is checked -------------------
 
-// `BandConfirmationAcceptance`'s single field is private to `band_confirmation`.
-// A sibling module -- any of the other `*_tests.rs` files declared in `mod.rs`,
-// which are NOT descendants of `band_confirmation` -- cannot write
-// `BandConfirmationAcceptance { candidate_p }` or `Ok(BandConfirmationAcceptance
-// { .. })`, so it cannot forge an acceptance to hand to
-// `bind_breakaway_stage_c_authority`. The only route to a value of this type is
-// a genuine all-eight-contained pass through `evaluate_band_confirmation` in
-// this module, exactly the `ConfirmedAcquisitionDigest` precedent in
-// `integral_plan.rs`. This file *is* a descendant of `band_confirmation` (it is
-// wired as `#[path = "band_confirmation_tests.rs"] mod tests;` inside
-// `band_confirmation.rs`), so it may construct the struct directly above -- that
-// intra-module access is the point of the privacy boundary, not a hole in it.
+// `BandConfirmationAcceptance`'s `candidate_p` field is private to
+// `band_confirmation`. A sibling module -- any of the other `*_tests.rs`
+// files declared in `mod.rs`, which are NOT descendants of `band_confirmation`
+// -- cannot write `BandConfirmationAcceptance { candidate_p, .. }` or
+// `Ok(BandConfirmationAcceptance { .. })`, so it cannot forge an acceptance to
+// hand to `bind_breakaway_stage_c_authority`. The only route to a value of
+// this type is a genuine all-eight-contained pass through
+// `evaluate_band_confirmation` in this module, exactly the
+// `ConfirmedAcquisitionDigest` precedent in `integral_plan.rs`. This file
+// *is* a descendant of `band_confirmation` (it is wired as
+// `#[path = "band_confirmation_tests.rs"] mod tests;` inside
+// `band_confirmation.rs`), so it may read `candidate_p` and
+// `held_out_response_intervals_q` directly (see
+// `confirmation_evaluation_carries_no_hidden_state_across_independent_calls`
+// above) -- that intra-module access is the point of the privacy boundary,
+// not a hole in it.
 
 /// Recompute a confirmation plan's digest as if it had been taken over a
 /// different eight-slot schedule, replicating [`BandConfirmationPlan::digest`]'s
