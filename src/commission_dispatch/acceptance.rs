@@ -355,6 +355,7 @@ pub(crate) fn test_acceptance_point(
         target_velocity_rpm: plan.target_velocity_rpm,
         selected_response_intervals_q: plan.execution_plan().selected_response_intervals_q,
         qualifier_bits: 0,
+        token: None,
         progress,
     }
 }

@@ -182,6 +182,11 @@ pub struct AcceptancePoint {
     pub selected_response_intervals_q: [[i32; 2]; 2],
     /// Packed operating-point, model-validity, and evidence-quality qualifiers.
     pub qualifier_bits: u16,
+    /// Unforgeable breakaway confirmation token, `Some` only for a breakaway
+    /// point. A combined point reconstructs its plan from the request and needs
+    /// no token; a breakaway plan cannot be reconstructed from the request, so
+    /// the matrix preflight rebuilds it deterministically from this token.
+    pub token: Option<super::integral_plan::ConfirmedAcquisitionDigest>,
     /// Next allowed matrix acquisition.
     pub progress: AcceptanceMatrixProgress,
 }

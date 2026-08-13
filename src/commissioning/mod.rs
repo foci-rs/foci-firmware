@@ -756,6 +756,28 @@ impl CommissioningEngine {
         data.plan.combined_workflow.then_some(data.plan)
     }
 
+    /// Return the live breakaway execution plan used by terminal retention.
+    ///
+    /// `Some` only for a breakaway acceptance run, so a `Some` return is itself
+    /// the "run is breakaway" discriminator the install site needs; a combined
+    /// or reproduced-Stage-B run returns `None`.
+    #[cfg(feature = "trace-velocity-sweep")]
+    pub(crate) fn breakaway_stage_c_execution_plan(
+        &self,
+    ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
+    {
+        use crate::commissioning::outer::velocity::integral_plan::AcceptanceSource;
+
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocityIntegral { data, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        (data.plan.acceptance_source == AcceptanceSource::Breakaway).then_some(data.plan)
+    }
+
     #[cfg(all(test, feature = "trace-velocity-sweep"))]
     pub(crate) fn set_combined_stage_b_response_for_test(
         &mut self,

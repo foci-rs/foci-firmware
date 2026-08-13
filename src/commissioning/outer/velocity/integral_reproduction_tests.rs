@@ -94,6 +94,7 @@ fn acceptance_point(channel: u8, progress: AcceptanceMatrixProgress) -> Acceptan
         target_velocity_rpm: 263,
         selected_response_intervals_q: [[13_300_000, 13_500_000], [-13_500_000, -13_300_000]],
         qualifier_bits: 0x0123,
+        token: None,
         progress,
     }
 }

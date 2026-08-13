@@ -1473,6 +1473,12 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
             _ => unreachable!("combined velocity-integral terminal was not terminal"),
         };
     }
+    // Captured before disarm can tear the phase down. `Some` only for a
+    // breakaway run, so it doubles as the `acceptance_source == Breakaway`
+    // discriminator; the authority the promotion held arrives on `dispatch`.
+    let breakaway_execution_plan = engine
+        .as_ref()
+        .and_then(CommissioningEngine::breakaway_stage_c_execution_plan);
     let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
     if !disarm_velocity_workflow(engine, backend, state).await {
         retention.stage_c.observe_fault();
@@ -1482,6 +1488,40 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         dispatch.terminal.safety_fault = None;
         dispatch.reproduction = None;
         dispatch.authority = None;
+    } else if dispatch.terminal.outcome
+        == crate::commissioning::types::VelocityIntegralOutcome::Complete
+    {
+        // A promoted breakaway `Complete` (never a first `CompleteCandidate`,
+        // which is promoted only on the reproduced second run) installs the
+        // token-carrying acceptance point. The token rides inside the point, so
+        // it is cleared automatically with the point -- no separate retention.
+        if let (Some(execution_plan), Some(authority)) =
+            (breakaway_execution_plan, dispatch.authority)
+        {
+            match stage_c::breakaway_acceptance_point(
+                channel,
+                &authority,
+                execution_plan,
+                &dispatch.terminal,
+            ) {
+                Ok(stage_c::AcceptanceInstall::Installed(point)) => {
+                    retention.stage_c.install_acceptance_point(point);
+                }
+                Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
+                    dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS;
+                }
+                Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {}
+                Err(()) => {
+                    retention.stage_c.observe_fault();
+                    dispatch.terminal.outcome =
+                        crate::commissioning::types::VelocityIntegralOutcome::Fault;
+                    dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+                    dispatch.terminal.safety_fault = None;
+                    dispatch.reproduction = None;
+                    dispatch.authority = None;
+                }
+            }
+        }
     }
     engine
         .as_mut()

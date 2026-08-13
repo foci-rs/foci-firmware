@@ -477,6 +477,255 @@ fn combined_statuses_install_only_a_sufficient_target_reaching_point() {
     );
 }
 
+/// Mint one genuine breakaway Stage-C plan through the real confirmation gate.
+///
+/// The `ConfirmedAcquisitionDigest` token cannot be fabricated, so this walks
+/// the same `plan_band_confirmation` -> `evaluate_band_confirmation` ->
+/// `bind_breakaway_stage_c_authority` chain a live campaign uses (mirrors the
+/// `integral_plan_tests` fixtures), then plans the campaign's own Stage-C plan.
+fn breakaway_stage_c_plan()
+-> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::commissioning::outer::velocity::band_confirmation::{
+        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+        plan_band_confirmation,
+    };
+    use crate::commissioning::outer::velocity::integral_plan::{
+        AcquisitionContext, bind_breakaway_stage_c_authority,
+        plan_breakaway_velocity_integral_response,
+    };
+    use crate::commissioning::outer::velocity::sweep_consensus::{
+        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+    };
+    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+    use foci_tmc4671::pid::PidPGain;
+
+    let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+        .expect("valid confirmation plan");
+
+    let consensus = || DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let mean_rate_q: i64 = 750_000;
+    let variance_of_mean_q2: u128 = 58_752_225;
+    let target_rate_q: i64 = 1_000_000;
+    let forward = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let acceptance =
+        evaluate_band_confirmation(candidate_p, forward, reverse).expect("accepted confirmation");
+    let intervals = acceptance.held_out_response_intervals_q;
+    let token = bind_breakaway_stage_c_authority(
+        confirmation_plan.plan_digest,
+        confirmation_plan,
+        Ok(acceptance),
+    )
+    .expect("bound breakaway authority");
+
+    let stage_b = stage_b_plan();
+    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    context.plan_time_pwm_hz = PWM_HZ;
+    context.plan_time_encoder_counts_per_rev = COUNTS_PER_REV;
+
+    let request = request();
+    plan_breakaway_velocity_integral_response(
+        token,
+        confirmation_plan,
+        context,
+        intervals,
+        OuterMotionBudget {
+            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: request.requested_velocity_source,
+            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+            max_duration_ms: request.max_duration_ms,
+        },
+        PWM_HZ,
+        COUNTS_PER_REV,
+    )
+    .expect("valid breakaway Stage-C plan")
+}
+
+/// The retained breakaway authority summary, as `apply_stage_c_terminal` holds
+/// it at the reproduced-`Complete` promotion (`acquisition ==
+/// ConfirmedBreakaway`, held-out intervals, campaign `final_p`/target).
+fn breakaway_authority_summary(
+    plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+) -> StageCAuthoritySummary {
+    StageCAuthoritySummary::from_plan(
+        CHANNEL,
+        BUILD_FEATURES,
+        plan.schema_revision,
+        plan.authority.acquisition,
+        plan.execution_plan(),
+        plan.authority,
+    )
+}
+
+/// One breakaway Stage-C terminal (`breakaway_acceptance` set, no combined bit).
+fn breakaway_terminal(
+    plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+    authority: &StageCAuthoritySummary,
+    outcome: VelocityIntegralOutcome,
+    evidence: IntegralRunEvidence,
+) -> VelocityIntegralTerminal {
+    VelocityIntegralTerminal {
+        run_sequence: 9,
+        evidence_sequence: 57,
+        plan_digest: plan.digest(),
+        digest: 0x1234_5678_9abc_def0,
+        outcome,
+        cause: 0,
+        combined_workflow: false,
+        breakaway_acceptance: true,
+        final_p: authority.final_p,
+        recovery_unavailable: false,
+        recovered_with_current_headroom: false,
+        recovery_quantization_exposed: plan.recovery_quantization_exposed,
+        probe_constrained_test_point: plan.probe_constrained_test_point,
+        rest_boundary_rung_plus_one: 0,
+        rest_boundary_slot_plus_one: 0,
+        evidence,
+        expected_observations: plan.expected_observations,
+        emitted_observations: plan.expected_observations,
+        expected_rungs: u16::from(plan.total_rung_count),
+        emitted_rungs: u16::from(plan.total_rung_count),
+        run_started_us: 1_000,
+        run_completed_us: 2_000,
+        safety_fault: None,
+    }
+}
+
+#[test]
+fn breakaway_reproduced_complete_installs_token_carrying_point() {
+    use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
+    use crate::commissioning::outer::velocity::integral_i_at;
+
+    let plan = breakaway_stage_c_plan();
+    let authority = breakaway_authority_summary(&plan);
+    let execution = plan.execution_plan();
+    let mut terminal = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::Complete,
+        sufficient_evidence(0),
+    );
+    // terminus == 2 (rest boundary at rung index 2, slot cleared).
+    terminal.rest_boundary_rung_plus_one = 3;
+
+    let installed =
+        match super::stage_c::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
+            .expect("no fault")
+        {
+            super::stage_c::AcceptanceInstall::Installed(point) => point,
+            other => panic!("expected install, got {other:?}"),
+        };
+    assert_eq!(
+        installed.identity.schema_revision,
+        BREAKAWAY_STAGE_C_SCHEMA_REVISION
+    );
+    assert_eq!(installed.identity.plan_digest, terminal.plan_digest);
+    assert_eq!(installed.selected_p, authority.final_p);
+    assert_eq!(
+        installed.selected_response_intervals_q,
+        authority.directional_pooled_intervals
+    );
+    // Exact, not tautological: selected_i is the ladder value at terminus + 1.
+    assert_eq!(
+        installed.selected_i,
+        integral_i_at(execution, 3).expect("in range")
+    );
+    // The token is carried so the matrix preflight can reconstruct the plan.
+    assert_eq!(installed.token, authority.acquisition.confirmed_breakaway());
+    assert!(installed.token.is_some());
+}
+
+#[test]
+fn breakaway_complete_without_terminus_reports_missing_terminus() {
+    let plan = breakaway_stage_c_plan();
+    let authority = breakaway_authority_summary(&plan);
+    let execution = plan.execution_plan();
+    // Sufficiency only: no rest boundary, so no target terminus.
+    let terminal = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::Complete,
+        sufficient_evidence(0),
+    );
+    assert!(matches!(
+        super::stage_c::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
+            .expect("no fault"),
+        super::stage_c::AcceptanceInstall::MissingTargetTerminus
+    ));
+}
+
+#[test]
+fn breakaway_non_complete_terminal_is_not_an_acceptance_terminal() {
+    let plan = breakaway_stage_c_plan();
+    let authority = breakaway_authority_summary(&plan);
+    let execution = plan.execution_plan();
+    let mut terminal = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::Inconclusive,
+        sufficient_evidence(0),
+    );
+    terminal.rest_boundary_rung_plus_one = 3;
+    assert!(matches!(
+        super::stage_c::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
+            .expect("no fault"),
+        super::stage_c::AcceptanceInstall::NotAcceptanceTerminal
+    ));
+}
+
+#[test]
+fn combined_acceptance_point_carries_no_token_and_is_otherwise_unchanged() {
+    use crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION;
+
+    let plan = combined_stage_c_plan();
+    let execution = plan.execution_plan();
+    let mut reached = terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0));
+    reached.plan_digest = plan.digest();
+    reached.combined_workflow = plan.combined_selected_response.is_some();
+    reached.final_p = plan.final_p;
+    reached.rest_boundary_rung_plus_one = 12;
+
+    let point = super::stage_c::combined_acceptance_point(CHANNEL, execution, &reached)
+        .unwrap()
+        .expect("TargetReached must produce a point");
+    assert_eq!(
+        point.identity.schema_revision,
+        COMBINED_STAGE_C_SCHEMA_REVISION
+    );
+    assert_eq!(point.token, None);
+}
+
 fn retained_authority() -> StageCAuthoritySummary {
     let plan = stage_c_plan();
     StageCAuthoritySummary::from_plan(

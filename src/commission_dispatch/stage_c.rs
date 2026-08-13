@@ -34,6 +34,13 @@ pub const STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT: u8 = 11;
 /// retention is RAM-only. Sharing a cause with a rejection would tell the
 /// operator to inspect a mismatch that does not exist.
 pub const STAGE_C_CAUSE_NO_RETAINED_AUTHORITY: u8 = 12;
+/// A breakaway acceptance `Complete` recorded no target terminus.
+///
+/// Distinct from an evidence-integrity fault: the run was well formed and simply
+/// did not reach a target terminus, so no acceptance point is installed. Sharing
+/// a cause with a fault would tell the operator to inspect an integrity breach
+/// that did not occur.
+pub const STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS: u8 = 13;
 
 const ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED: u16 = 1 << 7;
 const ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT: u16 = 1 << 8;
@@ -176,6 +183,105 @@ pub(crate) fn combined_acceptance_point(
         target_velocity_rpm: plan.target_velocity_rpm,
         selected_response_intervals_q: plan.selected_response_intervals_q,
         qualifier_bits,
+        token: None,
+        progress: AcceptanceMatrixProgress::ReadyAscending,
+    }))
+}
+
+/// Typed outcome of the breakaway acceptance-point installer.
+///
+/// The no-terminus refusal is a distinct variant, not folded into an ordinary
+/// non-install, so the caller can attach a dedicated cause instead of silently
+/// dropping a breakaway `Complete` that carried no target terminus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum AcceptanceInstall {
+    /// A reproduced breakaway target run yielded one installable point.
+    Installed(AcceptancePoint),
+    /// The terminal is not a breakaway acceptance terminal (no install).
+    NotAcceptanceTerminal,
+    /// A breakaway acceptance `Complete` that recorded no target terminus.
+    MissingTargetTerminus,
+}
+
+/// Derive one token-carrying matrix handoff from a reproduced breakaway `Complete`.
+///
+/// Kept separate from [`combined_acceptance_point`]: a combined point sources
+/// its intervals from the execution plan and reconstructs from the request,
+/// whereas a breakaway point sources the token and signed recovery intervals
+/// from the run's breakaway authority and cannot be reconstructed from the
+/// request. The token is extracted from `authority.acquisition` via
+/// [`crate::commissioning::outer::velocity::integral_plan::StageCAcquisition::confirmed_breakaway`],
+/// never constructed, so the confirmation's unforgeability is preserved.
+///
+/// `Err(())` is an evidence-integrity fault: a breakaway acceptance `Complete`
+/// whose recorded target status, plan digest, gain, or ladder index does not
+/// hold together.
+pub(crate) fn breakaway_acceptance_point(
+    channel: u8,
+    authority: &StageCAuthoritySummary,
+    plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan,
+    terminal: &VelocityIntegralTerminal,
+) -> Result<AcceptanceInstall, ()> {
+    use crate::commissioning::outer::velocity::combined_plan::{
+        BREAKAWAY_STAGE_C_SCHEMA_REVISION, CombinedTargetStatus,
+    };
+    use crate::commissioning::outer::velocity::integral_reporting::{
+        terminal_target_status, terminal_target_terminus,
+    };
+    use crate::commissioning::outer::velocity::{
+        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG, integral_i_at,
+    };
+
+    // (1) Not a breakaway acceptance terminal: nothing to install. The
+    // terminus-independent `breakaway_acceptance` flag is what keeps a
+    // no-terminus breakaway `Complete` from being dismissed here, so it can
+    // reach the distinct missing-terminus branch below.
+    if !terminal.breakaway_acceptance {
+        return Ok(AcceptanceInstall::NotAcceptanceTerminal);
+    }
+    // (2) Defensive: the caller invokes only on a promoted `Complete`.
+    if terminal.outcome != VelocityIntegralOutcome::Complete {
+        return Ok(AcceptanceInstall::NotAcceptanceTerminal);
+    }
+    // (3) A breakaway `Complete` that recorded no target terminus is a distinct
+    // refusal, not a fabricated point.
+    let Some(positive_index) = terminal_target_terminus(terminal) else {
+        return Ok(AcceptanceInstall::MissingTargetTerminus);
+    };
+    // (4) A recorded terminus must be a genuinely target-reaching run whose
+    // identity matches the authority the promotion held.
+    if terminal_target_status(terminal) != Some(CombinedTargetStatus::TargetReached) {
+        return Err(());
+    }
+    if terminal.plan_digest != plan.plan_digest || terminal.final_p != authority.final_p {
+        return Err(());
+    }
+    let selected_i = integral_i_at(plan, positive_index.checked_add(1).ok_or(())?).ok_or(())?;
+    // Extracted, never constructed: preserves confirmation unforgeability.
+    let token = authority.acquisition.confirmed_breakaway();
+    let mut qualifier_bits = 0;
+    if terminal.recovery_quantization_exposed {
+        qualifier_bits |= ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED;
+    }
+    if terminal.probe_constrained_test_point {
+        qualifier_bits |= ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT;
+    }
+    if plan.limit_evidence_capability as u32 == VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG {
+        qualifier_bits |= ACCEPTANCE_QUALIFIER_LATCHED_LIMIT_EVIDENCE;
+    }
+    Ok(AcceptanceInstall::Installed(AcceptancePoint {
+        identity: StageCPlanIdentity {
+            channel,
+            build_features: BUILD_FEATURES,
+            schema_revision: BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+            plan_digest: terminal.plan_digest,
+        },
+        selected_p: authority.final_p,
+        selected_i,
+        target_velocity_rpm: authority.target_velocity_rpm,
+        selected_response_intervals_q: authority.directional_pooled_intervals,
+        qualifier_bits,
+        token,
         progress: AcceptanceMatrixProgress::ReadyAscending,
     }))
 }
