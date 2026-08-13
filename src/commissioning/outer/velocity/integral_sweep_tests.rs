@@ -2146,6 +2146,70 @@ fn breakaway_rest_boundary_sufficiency_records_target_terminus() {
     assert_eq!(data.target_terminus, Some(3));
 }
 
+/// Symmetric guard to `breakaway_rest_boundary_sufficiency_records_target_terminus`:
+/// the SAME rest-boundary sufficiency closure, driven through the real state
+/// machine, must NOT manufacture a terminus when the directions reach eligible
+/// consensus but the deficit stays above the reach threshold. The recorder-level
+/// no-target case cannot catch a spurious record injected by the diverted path.
+#[test]
+fn breakaway_rest_boundary_sufficiency_leaves_terminus_none_without_target() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    data.plan.acceptance_source = AcceptanceSource::Breakaway;
+    data.plan.target_velocity_rpm = 264;
+    data.plan.encoder_counts_per_rev = 4_000;
+    seed_sufficient_curve(data, &mut workspace);
+    seed_boundary(data, 4, 3);
+    // Both directions reach eligible consensus, but the deficit stays well above
+    // the reach threshold, so the closure must leave the terminus unset.
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = core::array::from_fn(|slot| {
+        if slot.is_multiple_of(2) {
+            ExactRateInterval::new(300_000, 400_000).unwrap()
+        } else {
+            ExactRateInterval::new(-400_000, -300_000).unwrap()
+        }
+    });
+    for _ in 0..256 {
+        data.observations.push(0, 1_000).unwrap();
+    }
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    reset_scored_rest(data);
+    *state = VelocityIntegralState::AnalyzePositiveIRestCleanup {
+        analysis_deadline_us: 236_000,
+    };
+    let mut backend = MockBackend::new();
+
+    while !matches!(
+        phase,
+        OuterPhase::VelocityIntegral {
+            state: VelocityIntegralState::RecoverRung(_),
+            ..
+        }
+    ) {
+        assert!(matches!(
+            step(&mut phase, &mut workspace, &mut backend),
+            StepResult::ReadyNow | StepResult::VelocityIntegralEvent(_)
+        ));
+    }
+
+    let OuterPhase::VelocityIntegral { data, .. } = &phase else {
+        unreachable!()
+    };
+    assert!(data.positive_i_rest_boundary_after_sufficiency);
+    assert_eq!(data.target_terminus, None);
+}
+
 #[test]
 fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
     let mut phase = phase();
