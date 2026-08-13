@@ -486,6 +486,73 @@ mod tests {
         }
     }
 
+    /// One matrix plan carrying a breakaway acceptance identity instead of a
+    /// combined one, otherwise identical to [`plan`].
+    fn breakaway_plan() -> AcceptanceMatrixPlan {
+        AcceptanceMatrixPlan {
+            acceptance_identity: StageCPlanIdentity {
+                schema_revision:
+                    crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+                ..plan().acceptance_identity
+            },
+            ..plan()
+        }
+    }
+
+    /// Byte offset of `acceptance_identity.schema_revision` in the encoded
+    /// matrix-plan core record (`records[0]` returned by
+    /// `encode_acceptance_plan`).
+    ///
+    /// Counted from the fixed prefix `encode_acceptance_plan` pushes ahead of
+    /// the field: tag(1) + run_sequence(4) + evidence_sequence(2) +
+    /// plan_digest(8) + subtype(1) + plan.schema_revision(2) +
+    /// acceptance_identity.channel(1) + acceptance_identity.build_features(2)
+    /// + BUILD_IDENTITY(4) = 25.
+    const ACCEPTANCE_IDENTITY_SCHEMA_REVISION_OFFSET: usize = 25;
+
+    /// Read a little-endian `u16` out of an encoded record at a fixed offset.
+    fn read_u16_at(bytes: &[u8], offset: usize) -> u16 {
+        u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
+    }
+
+    /// A breakaway-derived matrix run must disclose the breakaway Stage-C
+    /// schema (16), not the outer matrix schema and not the combined
+    /// constant, so the wire reply lets the host tell the two acceptance
+    /// families apart.
+    #[test]
+    fn acceptance_plan_discloses_breakaway_identity_schema() {
+        let plan = breakaway_plan();
+
+        let records = super::encode_acceptance_plan(7, plan);
+
+        let disclosed = read_u16_at(
+            records[0].as_bytes(),
+            ACCEPTANCE_IDENTITY_SCHEMA_REVISION_OFFSET,
+        );
+        assert_eq!(
+            disclosed,
+            crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        );
+    }
+
+    /// Same lock for the combined family: the disclosure must keep reading
+    /// the point's own identity, not silently regress to a hard-coded value.
+    #[test]
+    fn acceptance_plan_discloses_combined_identity_schema() {
+        let plan = plan();
+
+        let records = super::encode_acceptance_plan(7, plan);
+
+        let disclosed = read_u16_at(
+            records[0].as_bytes(),
+            ACCEPTANCE_IDENTITY_SCHEMA_REVISION_OFFSET,
+        );
+        assert_eq!(
+            disclosed,
+            crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+        );
+    }
+
     #[test]
     fn plan_records_preserve_all_fragments_with_one_digest() {
         let plan = plan();
