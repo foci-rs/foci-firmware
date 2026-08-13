@@ -278,6 +278,28 @@ pub(super) fn record_integral_target_if_reached(
     }
 }
 
+/// Record the breakaway target terminus on a closure that bypasses
+/// `retain_rung`.
+///
+/// The terminus recorder is otherwise wired only into `retain_rung`, reachable
+/// only from `AnalyzeRung`. Breakaway's peak rung drives the native integral to
+/// its cap, never settles, and closes through the positive-I-rest-boundary or
+/// current-headroom diversion instead -- neither reaches `retain_rung`, so the
+/// terminus for the target-reaching rung would never install. This mirrors the
+/// positive-rung branch of `retain_rung`: it reconstructs both directional
+/// deficit consensuses from the retained per-slot evidence and records the
+/// terminus when the deficit reaches the target. It is a no-op unless the plan
+/// records a terminus and both directions reach an eligible consensus, so it is
+/// safe on a diversion that consumed a partially swept rung.
+fn record_diverted_target_terminus(data: &mut VelocityIntegralData) -> Result<(), CommissionError> {
+    let forward = analyze_rung(data, VelocityDirection::Forward)?;
+    let reverse = analyze_rung(data, VelocityDirection::Reverse)?;
+    if let [Some(forward), Some(reverse)] = [forward.interval, reverse.interval] {
+        record_integral_target_if_reached(data, [forward, reverse])?;
+    }
+    Ok(())
+}
+
 pub(super) fn integral_recovery_current_contact_policy(
     data: &VelocityIntegralData,
 ) -> RecoveryCurrentContactPolicy {
@@ -2053,6 +2075,15 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 ) && (positive_directional_floors_exist(data)
                     || data.plan.combined_workflow)
                 {
+                    if !data.plan.combined_workflow {
+                        // Breakaway current-headroom exit is the sibling
+                        // `retain_rung` bypass; record the target terminus
+                        // before the current terminus consumes the rung. The
+                        // combined path still records via `retain_rung`.
+                        if let Err(error) = record_diverted_target_terminus(data) {
+                            return fail_integral(phase, backend, error).await;
+                        }
+                    }
                     data.current_terminus = data.rung_index.checked_sub(1);
                     match plan_integral_recovery(data, workspace, safety) {
                         Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
@@ -2296,6 +2327,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.positive_i_rest_boundary_after_sufficiency =
                 positive_directional_floors_exist(data);
+            if data.positive_i_rest_boundary_after_sufficiency {
+                // This is the breakaway peak-rung closure that never reaches
+                // `retain_rung`; record the target terminus here so a
+                // target-reaching, non-settling rung still installs it.
+                if let Err(error) = record_diverted_target_terminus(data) {
+                    return fail_integral(phase, backend, error).await;
+                }
+            }
             if data.positive_i_rest_boundary_after_sufficiency || data.plan.combined_workflow {
                 match plan_integral_recovery(data, workspace, safety) {
                     Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
