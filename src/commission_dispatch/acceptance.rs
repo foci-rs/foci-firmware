@@ -1,5 +1,6 @@
 //! Firmware-owned admission and retained lifecycle for velocity confidence matrices.
 
+use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidPGain;
 
 use crate::commission_dispatch::stage_c::StageCPreflightConfig;
@@ -10,6 +11,7 @@ use crate::commissioning::outer::velocity::acceptance_plan::{
 use crate::commissioning::outer::velocity::combined_plan::{
     BREAKAWAY_STAGE_C_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedSelectedResponse,
 };
+use crate::commissioning::outer::velocity::current_guard::derive_probe_limit;
 use crate::commissioning::outer::velocity::integral_plan::{
     AcquisitionContext, VelocityIntegralPlan, VelocityIntegralPlanError,
     plan_combined_velocity_integral_response, plan_retained_breakaway_velocity_integral_response,
@@ -169,14 +171,15 @@ pub fn reconstruct_breakaway_plan(
         .token
         .ok_or(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)?;
     // Breakaway has no Stage-B phase of its own; the campaign that produced
-    // this point derived its physical acquisition context (planned velocity,
-    // target RPM, torque limits, limit-evidence capability) from exactly this
-    // same `plan_combined_velocity_sweep` reconstruction, so this reproduces
-    // it identically. The plan-time physical context guard inside the
-    // breakaway builder compares against the live `pwm_hz`/
-    // `encoder_counts_per_rev` passed below; there is no separately retained
-    // plan-time value here, so any live drift is instead caught by the
-    // digest check at the end of this function.
+    // this point derived its planned velocity, target RPM, hard torque limit,
+    // and limit-evidence capability from exactly this same
+    // `plan_combined_velocity_sweep` reconstruction
+    // (`breakaway_campaign::plan_breakaway_campaign_command`), so this
+    // reproduces those fields identically. The plan-time physical context
+    // guard inside the breakaway builder compares against the live
+    // `pwm_hz`/`encoder_counts_per_rev` passed below; there is no separately
+    // retained plan-time value here, so any live drift is instead caught by
+    // the digest check at the end of this function.
     let stage_b = plan_combined_velocity_sweep(
         request,
         encoder_counts_per_rev,
@@ -188,6 +191,23 @@ pub fn reconstruct_breakaway_plan(
     context.channel = point.identity.channel;
     context.plan_time_pwm_hz = pwm_hz;
     context.plan_time_encoder_counts_per_rev = encoder_counts_per_rev;
+    // `usable_torque_limit` is the one field the combined sweep gets wrong for
+    // this path: `plan_combined_velocity_sweep` plans with
+    // `use_operational_limit = true` and so stamps the UNSCALED hard limit.
+    // The campaign never uses that value for its gain span -- it derives
+    // `usable_torque_limit` from `current_gain_span`, which applies the
+    // deterministic nine-tenths probe headroom via `derive_probe_limit`
+    // (`sweep_plan::current_gain_span` -> `current_guard::derive_probe_limit`).
+    // That headroom depends only on `hard_torque_limit`, not on the target
+    // velocity or any live measurement, so it reproduces exactly here.
+    // `VelocityIntegralPlan::digest()` hashes `usable_torque_limit`, so
+    // leaving the combined sweep's stamped value in place would make a
+    // genuine breakaway point's digest never match.
+    let operational_limit = PidTorqueFluxLimit::new(u32::from(torque_limit))
+        .map_err(|_| AcceptanceMatrixPreflightRejection::InvalidPlan)?;
+    context.usable_torque_limit = derive_probe_limit(operational_limit)
+        .map_err(|_| AcceptanceMatrixPreflightRejection::InvalidPlan)?
+        .raw();
     let motion_budget = OuterMotionBudget {
         requested_velocity_mrev_s: request.requested_velocity_mrev_s,
         machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,

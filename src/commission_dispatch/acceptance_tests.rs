@@ -18,7 +18,7 @@ use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
     AcquisitionContext, CommissioningWorkflowPlan, ConfirmedAcquisitionDigest, StageCPlanShape,
     VelocityIntegralPlan, bind_breakaway_stage_c_authority,
-    plan_combined_velocity_integral_response, plan_retained_breakaway_velocity_integral_response,
+    plan_breakaway_velocity_integral_response, plan_combined_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot, StageCPlanIdentity,
@@ -32,7 +32,7 @@ use crate::commissioning::outer::velocity::sweep_evidence::{
     CompactDirectionalRungReport, VelocityObservationClass,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
-    RequestedVelocitySource, VelocitySweepRequest, plan_combined_velocity_sweep,
+    RequestedVelocitySource, VelocitySweepRequest, current_gain_span, plan_combined_velocity_sweep,
 };
 use crate::commissioning::types::{
     AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
@@ -231,8 +231,15 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 }
 
 /// One genuine schema-16 breakaway plan, built through the real
-/// discovery-confirmation-token path (see the module doc above), plus the
+/// discovery-confirmation-token path (see the module doc above) via the
+/// CAMPAIGN builder (`plan_breakaway_velocity_integral_response`), plus the
 /// token that authorizes it.
+///
+/// Deliberately independent of `reconstruct_breakaway_plan`'s own logic: this
+/// fixture derives `usable_torque_limit` via `current_gain_span` the same way
+/// `BreakawayCampaign::new` does, not via any helper `reconstruct_breakaway_plan`
+/// shares, so a digest match against this fixture is a genuine check against
+/// production rather than the reconstruction checking itself.
 fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDigest) {
     let request = breakaway_request();
     let stage_b = plan_combined_velocity_sweep(
@@ -242,10 +249,14 @@ fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDige
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
-    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    let execution_plan = stage_b.execution_plan(stage_b.digest());
+    let mut context = AcquisitionContext::from(execution_plan);
     context.channel = CHANNEL;
     context.plan_time_pwm_hz = PWM_HZ;
     context.plan_time_encoder_counts_per_rev = COUNTS_PER_REV;
+    let (_, _, usable_torque_limit, _) =
+        current_gain_span(execution_plan.target_velocity_rpm, TORQUE_LIMIT).unwrap();
+    context.usable_torque_limit = usable_torque_limit;
 
     let confirmation_plan = breakaway_confirmation_plan(PidPGain::new(512).unwrap());
     let token = breakaway_token_for(confirmation_plan);
@@ -259,9 +270,9 @@ fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDige
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
     };
-    let plan = plan_retained_breakaway_velocity_integral_response(
+    let plan = plan_breakaway_velocity_integral_response(
         token,
-        confirmation_plan.candidate_p.raw(),
+        confirmation_plan,
         context,
         breakaway_intervals_for(confirmation_plan),
         motion_budget,
