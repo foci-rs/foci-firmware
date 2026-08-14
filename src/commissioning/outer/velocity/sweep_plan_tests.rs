@@ -1,7 +1,5 @@
 use super::super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
-use super::super::combined_plan::{
-    COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION,
-};
+use super::super::combined_plan::{STAGE_B_PLAN_SCHEMA_REVISION, STAGE_C_PLAN_SCHEMA_REVISION};
 use super::{
     CEILING_BINDING_CURRENT_LIMIT, CEILING_BINDING_REPRESENTABILITY_CLAMP, CLAMP_ENVELOPE,
     CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM, EFFECTIVE_CEILING_ENCODER,
@@ -11,7 +9,7 @@ use super::{
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     SWEEP_SLOT_COUNT, StrokeGeometry, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
     build_gain_ladder, cap_safe_target_rpm, current_gain_span, envelope_cap, gain_at,
-    plan_combined_velocity_sweep, plan_historical_combined_velocity_sweep, plan_velocity_sweep,
+    plan_historical_combined_velocity_sweep, plan_stage_b_velocity_sweep, plan_velocity_sweep,
     representability_ceilings, travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
@@ -75,7 +73,7 @@ fn combined_plan_uses_operational_current_authority_and_new_schemas() {
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
-    let combined = plan_combined_velocity_sweep(
+    let combined = plan_stage_b_velocity_sweep(
         live_recovery_request(),
         4_000,
         2_816,
@@ -87,9 +85,9 @@ fn combined_plan_uses_operational_current_authority_and_new_schemas() {
     assert_eq!(historical.target_velocity_rpm.raw(), 264);
     assert_eq!(historical.usable_torque_limit, 2_534);
     assert_eq!(historical.p_top.raw(), 2_457);
-    assert_eq!(combined.schema_revision, COMBINED_STAGE_B_SCHEMA_REVISION);
-    assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 14);
-    assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 13);
+    assert_eq!(combined.schema_revision, STAGE_B_PLAN_SCHEMA_REVISION);
+    assert_eq!(STAGE_B_PLAN_SCHEMA_REVISION, 14);
+    assert_eq!(STAGE_C_PLAN_SCHEMA_REVISION, 13);
     assert_eq!(combined.recovery_nominal_slot_us, 2_316_958);
     assert_eq!(combined.nominal_workflow_ms, 282_923);
     assert_eq!(combined.target_velocity_rpm.raw(), 263);
@@ -98,13 +96,13 @@ fn combined_plan_uses_operational_current_authority_and_new_schemas() {
     assert!(combined.digest() != historical.digest());
     assert_eq!(
         combined.execution_plan(combined.digest()).schema_revision,
-        COMBINED_STAGE_B_SCHEMA_REVISION
+        STAGE_B_PLAN_SCHEMA_REVISION
     );
 }
 
 #[test]
 fn combined_target_execution_stays_inside_the_declared_travel_cap() {
-    let plan = plan_combined_velocity_sweep(
+    let plan = plan_stage_b_velocity_sweep(
         live_recovery_request(),
         4_000,
         2_816,

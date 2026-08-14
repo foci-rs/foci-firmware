@@ -27,7 +27,7 @@ use crate::commissioning::outer::velocity::sweep_consensus::{
 };
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::velocity::sweep_plan::{
-    RequestedVelocitySource, VelocitySweepRequest, current_gain_span, plan_combined_velocity_sweep,
+    RequestedVelocitySource, VelocitySweepRequest, current_gain_span, plan_stage_b_velocity_sweep,
 };
 use crate::commissioning::types::{
     AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
@@ -150,7 +150,7 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 /// production rather than the reconstruction checking itself.
 fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDigest) {
     let request = breakaway_request();
-    let stage_b = plan_combined_velocity_sweep(
+    let stage_b = plan_stage_b_velocity_sweep(
         request,
         COUNTS_PER_REV,
         TORQUE_LIMIT,

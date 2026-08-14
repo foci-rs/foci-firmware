@@ -2067,7 +2067,7 @@ mod tests {
             positive_position_headroom_mrev: 7_025,
             max_duration_ms: 3_000,
         };
-        let plan = super::super::sweep_plan::plan_combined_velocity_sweep(
+        let plan = super::super::sweep_plan::plan_stage_b_velocity_sweep(
             request,
             4_000,
             2_816,

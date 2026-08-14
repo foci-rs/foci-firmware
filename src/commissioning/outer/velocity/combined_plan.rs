@@ -12,19 +12,19 @@ use super::sweep_consensus::DirectionalConsensusClass;
 use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTLE_US};
 
-/// Live Stage-B schema for the combined P-then-I experiment.
-pub const COMBINED_STAGE_B_SCHEMA_REVISION: u16 = 14;
-/// First combined Stage-B schema with cap-safe target quantization.
+/// Live Stage-B schema for the shared Stage-B velocity sweep planner.
+pub const STAGE_B_PLAN_SCHEMA_REVISION: u16 = 14;
+/// First Stage-B schema with cap-safe target quantization.
 pub const FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION: u16 = 10;
-/// Live Stage-C schema for the combined P-then-I experiment.
-pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 13;
+/// Live Stage-C schema for the shared Stage-C continuation planner.
+pub const STAGE_C_PLAN_SCHEMA_REVISION: u16 = 13;
 /// Live Stage-B schema for the breakaway-seeded campaign.
 ///
 /// The breakaway probe, additive discovery, and held-out confirmation plans
 /// replace the combined proportional sweep entirely; there is no Stage-B
 /// sweep plan under this schema. See
 /// `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md`. Historical
-/// schemas 8 through [`COMBINED_STAGE_B_SCHEMA_REVISION`] keep their exact
+/// schemas 8 through [`STAGE_B_PLAN_SCHEMA_REVISION`] keep their exact
 /// digest and behavior; this schema is additive.
 pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
 /// Live Stage-C schema for the breakaway-seeded campaign.
@@ -33,7 +33,7 @@ pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
 /// Stage-B sweep digest -- see
 /// [`super::integral_plan::bind_breakaway_stage_c_authority`]. Historical
-/// schemas up to and including [`COMBINED_STAGE_C_SCHEMA_REVISION`] keep
+/// schemas up to and including [`STAGE_C_PLAN_SCHEMA_REVISION`] keep
 /// their exact digest and behavior; this schema is additive.
 pub const BREAKAWAY_STAGE_C_SCHEMA_REVISION: u16 = 16;
 
@@ -188,7 +188,7 @@ pub fn build_combined_integral_ladder(
 }
 
 /// Derive the exact combined duration without summing rounded phase reports.
-pub fn combined_workflow_geometry(
+pub fn stage_c_continuation_geometry(
     stage_b: VelocitySweepPlan,
     pwm_hz: u32,
 ) -> Result<CombinedWorkflowGeometry, VelocityIntegralPlanError> {

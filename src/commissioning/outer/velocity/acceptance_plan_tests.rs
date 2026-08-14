@@ -21,7 +21,7 @@ use super::sweep_consensus::{
 };
 use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
-    RequestedVelocitySource, VelocitySweepRequest, plan_combined_velocity_sweep,
+    RequestedVelocitySource, VelocitySweepRequest, plan_stage_b_velocity_sweep,
 };
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::OuterMotionBudget;
@@ -136,7 +136,7 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 /// One genuine schema-16 breakaway plan, built through the real
 /// discovery-confirmation-token path (see the module doc above).
 fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
-    let stage_b = plan_combined_velocity_sweep(
+    let stage_b = plan_stage_b_velocity_sweep(
         breakaway_request(),
         COUNTS_PER_REV,
         TORQUE_LIMIT,
@@ -276,7 +276,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
     assert_eq!(ascending.maximum_workflow_ms, 66_456);
     assert_eq!(
         (
-            super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
+            super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION,
             super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
             ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         ),

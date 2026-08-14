@@ -163,25 +163,24 @@ pub enum AcceptanceMatrixProgress {
     Closed = 2,
 }
 
-/// Compact RAM-only handoff from one target-reaching combined run.
+/// Compact RAM-only handoff from one target-reaching breakaway run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AcceptancePoint {
-    /// Exact combined Stage-C identity that established the point.
+    /// Exact breakaway Stage-C identity that established the point.
     pub identity: StageCPlanIdentity,
     /// Firmware-selected proportional gain.
     pub selected_p: u16,
     /// First raw Q4.12 integral gain whose response reached the target.
     pub selected_i: u16,
-    /// Exact signed TMC mechanical-RPM target used by the combined run.
+    /// Exact signed TMC mechanical-RPM target used by the breakaway run.
     pub target_velocity_rpm: i32,
     /// Exact compact response intervals needed to reconstruct the accepted plan identity.
     pub selected_response_intervals_q: [[i32; 2]; 2],
     /// Packed operating-point, model-validity, and evidence-quality qualifiers.
     pub qualifier_bits: u16,
-    /// Unforgeable breakaway confirmation token, `Some` only for a breakaway
-    /// point. A combined point reconstructs its plan from the request and needs
-    /// no token; a breakaway plan cannot be reconstructed from the request, so
-    /// the matrix preflight rebuilds it deterministically from this token.
+    /// Unforgeable breakaway confirmation token that authorized this point.
+    /// A breakaway plan cannot be reconstructed from the request alone, so the
+    /// matrix preflight rebuilds it deterministically from this token.
     pub token: Option<super::integral_plan::ConfirmedAcquisitionDigest>,
     /// Next allowed matrix acquisition.
     pub progress: AcceptanceMatrixProgress,
@@ -196,7 +195,7 @@ pub enum StageCSlotState {
     AuthorityOnly,
     /// Authority and one sufficient Stage-C curve await reproduction.
     Candidate,
-    /// One target-reaching combined point awaits its fixed matrix sequence.
+    /// One target-reaching breakaway point awaits its fixed matrix sequence.
     AcceptancePoint,
 }
 
@@ -314,7 +313,7 @@ impl StageCCandidateSlot {
         }
     }
 
-    /// Return the accepted combined operating point, if present.
+    /// Return the accepted breakaway operating point, if present.
     pub const fn acceptance_point(&self) -> Option<AcceptancePoint> {
         match self.retained {
             RetainedStageC::AcceptancePoint(point) => Some(point),
@@ -329,7 +328,7 @@ impl StageCCandidateSlot {
         self.retained = RetainedStageC::AuthorityOnly(authority);
     }
 
-    /// Install one target-reaching combined operating point.
+    /// Install one target-reaching breakaway operating point.
     pub fn install_acceptance_point(&mut self, point: AcceptancePoint) {
         self.retained = RetainedStageC::AcceptancePoint(point);
     }

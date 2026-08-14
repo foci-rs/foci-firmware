@@ -324,7 +324,7 @@ impl VelocitySweepPlan {
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
         hash_value!(self.recovery_origin_band_counts);
-        if self.schema_revision == super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION {
+        if self.schema_revision == super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION {
             hash_value!(STABILIZED_RECOVERY_SCHEDULE_CODE);
         }
         hash_value!(self.recovery_nominal_slot_us);
@@ -448,8 +448,8 @@ pub fn plan_velocity_sweep(
     )
 }
 
-/// Construct the nonretained combined-flow P search under operational authority.
-pub fn plan_combined_velocity_sweep(
+/// Construct the nonretained generic Stage-B P search under operational authority.
+pub fn plan_stage_b_velocity_sweep(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
     torque_flux_limit: u16,
@@ -460,7 +460,7 @@ pub fn plan_combined_velocity_sweep(
         encoder_counts_per_rev,
         torque_flux_limit,
         limit_evidence_capability,
-        super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
+        super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION,
         true,
     )
 }
@@ -543,7 +543,7 @@ fn plan_velocity_sweep_with_limit(
     }
 
     let cap_safe_schemas = super::combined_plan::FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION
-        ..=super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION;
+        ..=super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION;
     let target_velocity_rpm = if cap_safe_schemas.contains(&schema_revision) {
         let raw = cap_safe_target_rpm(planned_velocity_mrev_s)?;
         let executed_mrev_numerator = u64::try_from(raw)
@@ -606,7 +606,7 @@ fn plan_velocity_sweep_with_limit(
         .and_then(|value| value.checked_mul(primitive_us))
         .ok_or(VelocityPlanError::Arithmetic)?;
     let recovery_nominal_slot_us =
-        if schema_revision == super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION {
+        if schema_revision == super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION {
             recovery
                 .nominal_slot_us
                 .checked_add(RECOVERY_STABILIZATION_US)

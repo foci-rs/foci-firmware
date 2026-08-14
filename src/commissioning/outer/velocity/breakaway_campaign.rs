@@ -103,7 +103,7 @@ use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchError, ProbeStrokeRole, UpwardBreakawayCursor,
     UpwardProbeStep,
 };
-use super::combined_plan::combined_workflow_geometry;
+use super::combined_plan::stage_c_continuation_geometry;
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
     VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, begin_velocity_current_primitive,
@@ -138,7 +138,7 @@ use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, SETTLE_ANALYSIS_BUDGET_US,
     VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
-    plan_combined_velocity_sweep,
+    plan_stage_b_velocity_sweep,
 };
 
 /// Outer velocity ramp mode. Matches the wire encoding
@@ -3745,9 +3745,9 @@ impl BreakawayCampaign {
 /// from the same host sweep request the combined workflow admits.
 ///
 /// This is pure command admission: it commands no motion and touches no backend.
-/// It reuses [`plan_combined_velocity_sweep`] to derive the shared target
+/// It reuses [`plan_stage_b_velocity_sweep`] to derive the shared target
 /// velocity, planned amplitude, and per-slot recovery reservations, and
-/// [`combined_workflow_geometry`] for the worst-case Stage-C continuation, then
+/// [`stage_c_continuation_geometry`] for the worst-case Stage-C continuation, then
 /// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
 /// (392 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
 /// returned [`CommissioningWorkflowPlan`] carries the exact envelope the
@@ -3763,14 +3763,14 @@ pub(crate) fn plan_breakaway_campaign_command(
     channel: u8,
     run_sequence: u32,
 ) -> Result<(BreakawayCampaign, CommissioningWorkflowPlan), CommissionError> {
-    let plan = plan_combined_velocity_sweep(
+    let plan = plan_stage_b_velocity_sweep(
         request,
         encoder_counts_per_rev,
         hard_torque_limit,
         limit_evidence_capability,
     )
     .map_err(|_| CommissionError::CampaignPlanInvalid)?;
-    let geometry = combined_workflow_geometry(plan, pwm_hz)
+    let geometry = stage_c_continuation_geometry(plan, pwm_hz)
         .map_err(|_| CommissionError::CampaignPlanInvalid)?;
     let stage_c_nominal_us = u64::from(geometry.i_nominal_ms)
         .checked_mul(1_000)
