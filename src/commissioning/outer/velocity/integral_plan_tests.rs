@@ -1092,15 +1092,17 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
 // --- Legacy replay compatibility ---------------------------------------------
 
 /// Pins `plan_velocity_integral_response`'s exact digest. An earlier change altered this
-/// value deliberately in two ways: `build_features` (u16) replaced
-/// `build_revision` (u32) in the digest input, and the selected-response block
-/// now gates on `combined_selected_response.is_some()` instead of the schema
-/// number, so a standalone plan hashes the `is_some = 0` byte it previously
-/// skipped. Replay of older captures stays intact because the host
-/// recomputes their digest from what each capture recorded (its `build_revision`
-/// and the old schema-gated rule), not from the current firmware. Any *other*
-/// change to this literal means a refactor silently altered the digest and broke
-/// in-boot authority retention; do not update it to make a test pass.
+/// value deliberately: `build_features` (u16) replaced `build_revision` (u32)
+/// in the digest input. A later change altered it again: `combined_selected_response`
+/// -- and the selected-response digest block it gated, dead-when-true since
+/// only the retired live combined P-then-I workflow ever populated it -- is
+/// removed from `VelocityIntegralPlan` entirely, so a standalone plan no
+/// longer hashes the `is_some = 0` byte it previously always contributed.
+/// Replay of older captures stays intact because the host recomputes
+/// their digest from what each capture recorded, not from the current
+/// firmware. Any *other* change to this literal means a refactor silently
+/// altered the digest and broke in-boot authority retention; do not update it
+/// to make a test pass.
 #[test]
 fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
     let stage_b = stage_b_plan();
@@ -1115,7 +1117,7 @@ fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
     )
     .unwrap();
 
-    assert_eq!(plan.digest(), 13_608_396_835_480_267_211);
+    assert_eq!(plan.digest(), 17_224_852_008_600_423_789);
 }
 
 // --- Breakaway Stage-C constructor -------------------------------------------
@@ -1353,7 +1355,6 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
     );
     assert_eq!(plan.authority.stage_b_joint_membership, 0);
     assert_eq!(plan.authority.joint_membership, 0);
-    assert!(plan.combined_selected_response.is_none());
     assert!(!plan.probe_constrained_test_point);
     // The existing non-combined ladder, not the exact-cap combined shape:
     // `append_exact_cap: false` per the normative decision.

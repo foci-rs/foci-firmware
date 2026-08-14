@@ -10,10 +10,7 @@ use super::band_confirmation::{
 };
 use super::breakaway_plan::PROBE_MAX_OBSERVATIONS;
 use super::current_guard::VelocityLimitEvidenceCapability;
-use super::recovery::{
-    RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
-    plan_rung_origin_recovery,
-};
+use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
 use super::reproduction::{BUILD_FEATURES, StageBDirectionalValidity};
 use super::sweep_plan::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US,
@@ -340,8 +337,6 @@ pub struct VelocityIntegralPlan {
     pub schema_revision: u16,
     /// Reproduced Stage-B authority.
     pub authority: StageCAuthority,
-    /// Live response-selected origin for a nonretained combined workflow.
-    pub combined_selected_response: Option<super::combined_plan::CombinedSelectedResponse>,
     /// Fixed proportional gain.
     pub final_p: u16,
     /// Frozen encoder-domain amplitude.
@@ -430,17 +425,6 @@ impl VelocityIntegralPlan {
             hash_value!(interval[0]);
             hash_value!(interval[1]);
         }
-        // Content, not the schema number, gates the selected-response block: the
-        // firmware is a single-path writer and digests exactly what its plan
-        // carries, so the digest no longer depends on FIRST_COMBINED.
-        hash_value!(u8::from(self.combined_selected_response.is_some()));
-        if let Some(selected) = self.combined_selected_response {
-            hash_value!(selected.p.raw());
-            for interval in selected.response_intervals_q() {
-                hash_value!(interval[0]);
-                hash_value!(interval[1]);
-            }
-        }
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.target_velocity_rpm);
         hash_value!(self.pwm_hz);
@@ -455,12 +439,6 @@ impl VelocityIntegralPlan {
         hash_value!(self.moving_stroke_us);
         hash_value!(self.zero_settle_us);
         hash_value!(self.analysis_budget_us);
-        // `is_some()` already implies the combined workflow (only combined plans
-        // ever carry a selected response), so the schema equality is redundant.
-        if self.combined_selected_response.is_some() {
-            hash_value!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
-            hash_value!(STABILIZED_RECOVERY_SCHEDULE_CODE);
-        }
         hash_value!(self.nominal_workflow_ms);
         hash_value!(self.maximum_workflow_ms);
         hash_value!(self.recovery_origin_band_counts);
@@ -491,17 +469,7 @@ impl VelocityIntegralPlan {
 
     /// Compact the report plan into phase-local execution state.
     pub fn execution_plan(self) -> VelocityIntegralExecutionPlan {
-        let selected_response_intervals_q = self
-            .combined_selected_response
-            .map(|selected| {
-                selected.response_intervals_q().map(|interval| {
-                    interval.map(|endpoint| {
-                        i32::try_from(endpoint)
-                            .expect("validated combined response interval remains in i32")
-                    })
-                })
-            })
-            .unwrap_or([[0; 2]; 2]);
+        let selected_response_intervals_q = [[0; 2]; 2];
         VelocityIntegralExecutionPlan {
             slot_order: self.slot_order,
             plan_digest: self.digest(),
@@ -524,15 +492,10 @@ impl VelocityIntegralPlan {
             hard_torque_limit: self.hard_torque_limit,
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
-            combined_workflow: self.combined_selected_response.is_some(),
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
-            acceptance_source: if self.combined_selected_response.is_some() {
-                AcceptanceSource::Combined
-            } else {
-                match self.authority.acquisition {
-                    StageCAcquisition::ConfirmedBreakaway(_) => AcceptanceSource::Breakaway,
-                    StageCAcquisition::ReproducedStageB(_) => AcceptanceSource::ReproducedStageB,
-                }
+            acceptance_source: match self.authority.acquisition {
+                StageCAcquisition::ConfirmedBreakaway(_) => AcceptanceSource::Breakaway,
+                StageCAcquisition::ReproducedStageB(_) => AcceptanceSource::ReproducedStageB,
             },
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q,
@@ -641,18 +604,18 @@ pub enum VelocityIntegralAcquisitionKind {
 
 /// Which acquisition authorized one Stage-C execution plan.
 ///
-/// `acquisition_kind == ResponseLadder` alone cannot distinguish these: a live
-/// combined workflow, an accepted breakaway confirmation, and a plain
-/// reproduced Stage-B response ladder all report that same acquisition kind.
-/// This discriminator isolates breakaway so
-/// [`VelocityIntegralExecutionPlan::records_target_terminus`] can admit it
-/// without over-admitting a reproduced Stage-B ladder, which carries no
-/// target evidence at all.
+/// `acquisition_kind == ResponseLadder` alone cannot distinguish these: an
+/// accepted breakaway confirmation and a plain reproduced Stage-B response
+/// ladder both report that same acquisition kind. This discriminator isolates
+/// breakaway so [`VelocityIntegralExecutionPlan::records_target_terminus`]
+/// can admit it without over-admitting a reproduced Stage-B ladder, which
+/// carries no target evidence at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum AcceptanceSource {
-    /// Live response-selected combined P-then-I workflow.
-    Combined = 0,
+    // Discriminant 0 belonged to a since-retired live combined P-then-I
+    // workflow; it is left unassigned rather than renumbering the variants
+    // below it.
     /// Accepted breakaway-campaign confirmation.
     Breakaway = 1,
     /// Reproduced Stage-B response ladder; carries no target evidence.
@@ -702,14 +665,12 @@ pub struct VelocityIntegralExecutionPlan {
     pub usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// This execution continues directly from a live schema-9 response selection.
-    pub combined_workflow: bool,
     /// Response-ladder or fixed-I acceptance acquisition.
     pub acquisition_kind: VelocityIntegralAcquisitionKind,
     /// Which acquisition category authorized this plan.
     ///
-    /// Isolates breakaway from combined and reproduced Stage-B within
-    /// `acquisition_kind == ResponseLadder`; see [`Self::records_target_terminus`].
+    /// Isolates breakaway from reproduced Stage-B within `acquisition_kind ==
+    /// ResponseLadder`; see [`Self::records_target_terminus`].
     pub acceptance_source: AcceptanceSource,
     /// Exact fixed targets for a matrix acquisition; zero for response ladders.
     pub matrix_targets_rpm: [i16; 5],
@@ -725,21 +686,17 @@ pub struct VelocityIntegralExecutionPlan {
     pub slot_order: IntegralSlotOrder,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 120);
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 120);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 112);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 112);
 
 impl VelocityIntegralExecutionPlan {
     /// Whether a target-reaching run on this plan records a target terminus.
     ///
-    /// True only for a live combined workflow or an accepted breakaway
-    /// confirmation. A reproduced Stage-B response ladder must not record a
-    /// terminus even though it shares `acquisition_kind ==
-    /// VelocityIntegralAcquisitionKind::ResponseLadder` with both.
+    /// True only for an accepted breakaway confirmation. A reproduced Stage-B
+    /// response ladder must not record a terminus even though it shares
+    /// `acquisition_kind == VelocityIntegralAcquisitionKind::ResponseLadder`.
     pub const fn records_target_terminus(&self) -> bool {
-        matches!(
-            self.acceptance_source,
-            AcceptanceSource::Combined | AcceptanceSource::Breakaway
-        )
+        matches!(self.acceptance_source, AcceptanceSource::Breakaway)
     }
 }
 
@@ -1233,7 +1190,6 @@ pub(crate) fn plan_velocity_integral_response(
     plan_velocity_integral_response_from_source(
         IntegralPlanSource {
             authority,
-            combined_selected_response: None,
             final_p: selection.final_p,
             schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
             append_exact_cap: false,
@@ -1460,7 +1416,6 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     plan_velocity_integral_response_from_source(
         IntegralPlanSource {
             authority,
-            combined_selected_response: None,
             final_p: fixed_p,
             schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
             append_exact_cap: false,
@@ -1533,7 +1488,6 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     plan_velocity_integral_response_from_source(
         IntegralPlanSource {
             authority,
-            combined_selected_response: None,
             final_p,
             schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
             append_exact_cap: false,
@@ -1549,7 +1503,6 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
 #[derive(Debug, Clone, Copy)]
 struct IntegralPlanSource {
     authority: StageCAuthority,
-    combined_selected_response: Option<super::combined_plan::CombinedSelectedResponse>,
     final_p: u16,
     schema_revision: u16,
     append_exact_cap: bool,
@@ -1563,15 +1516,6 @@ fn plan_velocity_integral_response_from_source(
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
 ) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
-    if source.combined_selected_response.is_some_and(|selected| {
-        selected
-            .response_intervals_q()
-            .into_iter()
-            .flatten()
-            .any(|endpoint| i32::try_from(endpoint).is_err())
-    }) {
-        return Err(VelocityIntegralPlanError::Arithmetic);
-    }
     let motion_request = VelocitySweepRequest {
         requested_velocity_mrev_s: motion_budget.requested_velocity_mrev_s,
         machine_velocity_ceiling_mrev_s: motion_budget.machine_velocity_ceiling_mrev_s,
@@ -1632,27 +1576,8 @@ fn plan_velocity_integral_response_from_source(
     let workflow_us = u32::from(expected_observations)
         .checked_mul(primitive_us)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-    let slot_transition_us = if source.schema_revision
-        == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
-        && source.combined_selected_response.is_some()
-    {
-        u32::from(expected_observations)
-            .checked_mul(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US)
-            .ok_or(VelocityIntegralPlanError::Arithmetic)?
-    } else {
-        0
-    };
-    let recovery_nominal_slot_us = if source.schema_revision
-        == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
-        && source.combined_selected_response.is_some()
-    {
-        recovery
-            .nominal_slot_us
-            .checked_add(RECOVERY_STABILIZATION_US)
-            .ok_or(VelocityIntegralPlanError::Arithmetic)?
-    } else {
-        recovery.nominal_slot_us
-    };
+    let slot_transition_us = 0;
+    let recovery_nominal_slot_us = recovery.nominal_slot_us;
     let nominal_workflow_us = workflow_us
         .checked_add(
             u32::from(total_rung_count)
@@ -1688,7 +1613,6 @@ fn plan_velocity_integral_response_from_source(
         build_features: BUILD_FEATURES,
         schema_revision: source.schema_revision,
         authority: source.authority,
-        combined_selected_response: source.combined_selected_response,
         final_p: source.final_p,
         planned_velocity_mrev_s: context.planned_velocity_mrev_s,
         target_velocity_rpm: context.target_velocity_rpm,

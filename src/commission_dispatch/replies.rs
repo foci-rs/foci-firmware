@@ -1133,15 +1133,7 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         usable_torque_limit: plan.usable_torque_limit,
     });
     for direction in 0..2 {
-        let pooled_interval = plan.combined_selected_response.map_or(
-            plan.authority.directional_pooled_intervals[direction],
-            |selected| {
-                selected.response_intervals_q()[direction].map(|endpoint| {
-                    i32::try_from(endpoint)
-                        .expect("validated combined response interval remains in i32")
-                })
-            },
-        );
+        let pooled_interval = plan.authority.directional_pooled_intervals[direction];
         sink.foci_velocity_integral_plan_authority(FociVelocityIntegralPlanAuthority {
             oid,
             run_sequence,
@@ -3287,7 +3279,6 @@ mod tests {
     struct RecordingSink {
         events: Vec<Event>,
         integral_rest_boundary: Option<[u8; 2]>,
-        integral_target: Option<[u8; 2]>,
         integral_plan_joint_memberships: [u32; 2],
         integral_plan_intervals: [[i32; 2]; 2],
     }
@@ -4058,16 +4049,6 @@ mod tests {
                     report.rest_boundary_rung_plus_one,
                     report.rest_boundary_slot_plus_one,
                 ]);
-                if report.recovery_flags
-                    & crate::commissioning::outer::velocity::combined_plan::TERMINAL_COMBINED_WORKFLOW
-                    != 0
-                {
-                    let encoded = (report.recovery_flags
-                        >> crate::commissioning::outer::velocity::combined_plan::TERMINAL_COMBINED_TARGET_SHIFT)
-                        & 0x07;
-                    self.integral_target = (encoded != 0)
-                        .then_some([encoded - 1, report.rest_boundary_rung_plus_one]);
-                }
             }
             self.events.push(Event::IntegralTerminal(report.fragment));
         }
@@ -6206,7 +6187,6 @@ mod tests {
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
-            combined_workflow: false,
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -6255,31 +6235,6 @@ mod tests {
                 .any(|event| matches!(event, Event::Tune { .. }))
         );
         assert_eq!(sink.integral_rest_boundary, Some([5, 6]));
-
-        let mut combined_terminal = terminal;
-        combined_terminal.combined_workflow = true;
-        combined_terminal.final_p = 1_448;
-        combined_terminal.rest_boundary_rung_plus_one = 2;
-        combined_terminal.rest_boundary_slot_plus_one = 0;
-        let mut combined_sink = RecordingSink::default();
-        emit_terminal_reply(
-            &mut combined_sink,
-            ReplyPayload::VelocityIntegralTerminal {
-                oid: 3,
-                terminal: combined_terminal,
-                reproduction: None,
-                authority: None,
-            },
-        );
-        assert_eq!(combined_sink.integral_target, Some([1, 2]));
-        assert_eq!(
-            &combined_sink.events[combined_sink.events.len() - 3..],
-            &[
-                Event::IntegralTerminal(0),
-                Event::IntegralTerminal(1),
-                Event::IntegralTerminal(2),
-            ]
-        );
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
@@ -6347,7 +6302,6 @@ mod tests {
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 7,
-            combined_workflow: false,
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,

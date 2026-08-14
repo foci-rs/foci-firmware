@@ -7,14 +7,13 @@ use super::integral_sweep::{
     INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
     acceptance_amplitude_report, acceptance_terminal, advance_integral_cursor, analyze_rung,
-    apply_integral_current_headroom, combined_slot_transition_us, combined_target_status,
-    integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
-    integral_recovery_rest_schedule, integral_rung_count, integral_rung_kind,
-    integral_slot_direction, integral_target_rpm_at, matrix_rung_mean,
-    opening_recovery_lower_rate_q, positive_directional_floors_exist,
+    apply_integral_current_headroom, combined_slot_transition_us, integral_fault_terminal,
+    integral_i_at, integral_recovery_current_contact_policy, integral_recovery_rest_schedule,
+    integral_rung_count, integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
+    matrix_rung_mean, opening_recovery_lower_rate_q, positive_directional_floors_exist,
     record_integral_observation_rest_selection, record_integral_recovery_rest,
     record_integral_recovery_rest_selection, record_integral_target_if_reached,
-    step_velocity_integral_with_trace, store_matrix_rung_mean, terminal_from_data,
+    step_velocity_integral_with_trace, store_matrix_rung_mean,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -34,9 +33,8 @@ use crate::commissioning::outer::state::{
     PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
 };
 use crate::commissioning::outer::velocity::acceptance_evidence::AcceptanceAmplitudeAvailability;
-use crate::commissioning::outer::velocity::combined_plan::CombinedTargetStatus;
 use crate::commissioning::outer::velocity::integral_evidence::{
-    ExactRateInterval, IntegralRunEvidence, IntegralRungKind,
+    ExactRateInterval, IntegralRungKind,
 };
 use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
@@ -85,7 +83,6 @@ fn plan() -> VelocityIntegralExecutionPlan {
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
-        combined_workflow: false,
         acquisition_kind: super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
         acceptance_source: super::integral_plan::AcceptanceSource::ReproducedStageB,
         matrix_targets_rpm: [0; 5],
@@ -96,67 +93,10 @@ fn plan() -> VelocityIntegralExecutionPlan {
     }
 }
 
-fn default_run_evidence() -> IntegralRunEvidence {
-    IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2])
-}
-
-fn non_combined_integral_data_with_final_p(final_p: u16) -> VelocityIntegralData {
-    let mut execution_plan = plan();
-    execution_plan.combined_workflow = false;
-    execution_plan.final_p = final_p;
-    VelocityIntegralData::new(7, execution_plan)
-}
-
-fn combined_integral_data() -> VelocityIntegralData {
-    let mut execution_plan = plan();
-    execution_plan.combined_workflow = true;
-    execution_plan.acceptance_source = AcceptanceSource::Combined;
-    VelocityIntegralData::new(7, execution_plan)
-}
-
 #[test]
-fn nonzero_final_p_does_not_imply_combined_when_plan_is_not_combined() {
-    // A non-combined plan that nonetheless carries a non-zero final_p.
-    let data = non_combined_integral_data_with_final_p(1_024);
-    let StepResult::VelocityIntegralTerminal(terminal) = terminal_from_data(
-        &data,
-        default_run_evidence(),
-        VelocityIntegralOutcome::Complete,
-        0,
-        None,
-    ) else {
-        panic!("terminal_from_data must produce a VelocityIntegralTerminal");
-    };
-    assert_eq!(terminal.final_p, 1_024);
-    assert!(!terminal.combined_workflow);
-    assert!(!super::integral_reporting::terminal_combined_workflow(
-        &terminal
-    ));
-}
-
-#[test]
-fn combined_plan_terminal_is_flagged_combined() {
-    let data = combined_integral_data();
-    let StepResult::VelocityIntegralTerminal(terminal) = terminal_from_data(
-        &data,
-        default_run_evidence(),
-        VelocityIntegralOutcome::Complete,
-        0,
-        None,
-    ) else {
-        panic!("terminal_from_data must produce a VelocityIntegralTerminal");
-    };
-    assert!(terminal.combined_workflow);
-    assert!(super::integral_reporting::terminal_combined_workflow(
-        &terminal
-    ));
-}
-
-#[test]
-fn combined_target_uses_the_first_two_direction_lower_bound_crossing() {
+fn breakaway_target_terminus_stays_sticky_once_recorded() {
     let mut plan = plan();
-    plan.combined_workflow = true;
-    plan.acceptance_source = AcceptanceSource::Combined;
+    plan.acceptance_source = AcceptanceSource::Breakaway;
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
@@ -202,10 +142,8 @@ fn combined_target_uses_the_first_two_direction_lower_bound_crossing() {
     assert_eq!(data.target_terminus, Some(3));
 }
 
-/// A target-reaching breakaway run records a terminus exactly like a
-/// combined run does, even though it carries no `combined_workflow` bit --
-/// `records_target_terminus` is keyed on `acceptance_source`, not on that
-/// flag.
+/// A target-reaching breakaway run records a terminus; `records_target_terminus`
+/// is keyed on `acceptance_source`.
 #[test]
 fn breakaway_records_target_terminus_when_target_reached() {
     let mut plan = plan();
@@ -284,42 +222,6 @@ fn reproduced_stage_b_ladder_does_not_record_a_terminus() {
 }
 
 #[test]
-fn combined_target_status_distinguishes_sparse_current_and_cap_termini() {
-    let mut plan = plan();
-    plan.combined_workflow = true;
-    plan.acceptance_source = AcceptanceSource::Combined;
-    plan.positive_rung_count = 13;
-    let mut data = VelocityIntegralData::new(1, plan);
-
-    data.target_terminus = Some(1);
-    data.eligible_masks = [0b11; 2];
-    assert_eq!(
-        combined_target_status(&data),
-        Some(CombinedTargetStatus::TargetReachedSparse)
-    );
-
-    data.eligible_masks = [0b111; 2];
-    assert_eq!(
-        combined_target_status(&data),
-        Some(CombinedTargetStatus::TargetReached)
-    );
-
-    data.target_terminus = None;
-    data.current_terminus = Some(6);
-    assert_eq!(
-        combined_target_status(&data),
-        Some(CombinedTargetStatus::CurrentHeadroom)
-    );
-
-    data.current_terminus = None;
-    data.rung_index = 14;
-    assert_eq!(
-        combined_target_status(&data),
-        Some(CombinedTargetStatus::TargetNotReachedAtCap)
-    );
-}
-
-#[test]
 fn schedule_has_two_anchors_and_the_exact_positive_i_ladder() {
     let mut plan = plan();
     plan.positive_rung_count = 12;
@@ -389,12 +291,9 @@ fn response_and_matrix_plans_expose_distinct_exact_schedules() {
     assert_eq!(integral_i_at(descending, 5), None);
     assert_eq!(integral_target_rpm_at(descending, 5), None);
 
-    let mut combined = response;
-    combined.combined_workflow = true;
-    combined.acceptance_source = AcceptanceSource::Combined;
     assert_eq!(
-        integral_recovery_rest_schedule(combined),
-        RecoveryRestSchedule::Stabilized
+        integral_recovery_rest_schedule(response),
+        RecoveryRestSchedule::ImmediateScored
     );
 }
 
@@ -472,8 +371,6 @@ fn completed_recovery_report() -> RungOriginRecoveryReport {
 #[test]
 fn live_stage_c_schedule_records_one_selector_per_observation() {
     let mut live_plan = plan();
-    live_plan.combined_workflow = true;
-    live_plan.acceptance_source = AcceptanceSource::Combined;
     live_plan.positive_rung_count = 13;
     live_plan.recovery_slot_count = 15;
     let mut data = VelocityIntegralData::new(31, live_plan);
@@ -581,9 +478,7 @@ fn live_matrix_schedule_records_one_selector_per_completed_rest_decision() {
 
 #[test]
 fn stage_c_and_matrix_place_rest_diagnostics_immediately_before_recovery() {
-    let mut stage_c_plan = plan();
-    stage_c_plan.combined_workflow = true;
-    stage_c_plan.acceptance_source = AcceptanceSource::Combined;
+    let stage_c_plan = plan();
     let mut stage_c = VelocityIntegralData::new(17, stage_c_plan);
     let before = stage_c.integrity.digest();
     let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(selection)) =
@@ -965,24 +860,6 @@ fn both_matrix_orders_end_an_observation_rest_rejection_with_cause_53() {
 }
 
 #[test]
-fn combined_schedule_executes_the_exact_cap_instead_of_the_next_octave() {
-    let mut plan = plan();
-    plan.combined_workflow = true;
-    plan.acceptance_source = AcceptanceSource::Combined;
-    plan.positive_rung_count = 13;
-    plan.family_size = 60;
-    plan.recovery_slot_count = 15;
-    let emitted: [u16; 15] = core::array::from_fn(|index| {
-        integral_i_at(plan, index as u8).expect("declared combined rung must exist")
-    });
-    assert_eq!(
-        emitted,
-        [0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 1_310, 0]
-    );
-    assert_eq!(integral_i_at(plan, 15), None);
-}
-
-#[test]
 fn every_rung_uses_the_fixed_frfrfrfr_slot_order() {
     assert_eq!(INTEGRAL_SLOT_COUNT, 8);
     assert_eq!(
@@ -1323,103 +1200,6 @@ fn post_sufficiency_current_terminus_restores_origin_before_bookend() {
         unreachable!()
     };
     assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
-    assert!(matches!(
-        state,
-        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
-    ));
-}
-
-#[test]
-fn combined_target_stops_positive_motion_without_manufacturing_sufficiency() {
-    let mut phase = phase();
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.plan.combined_workflow = true;
-    data.plan.acceptance_source = AcceptanceSource::Combined;
-    data.rung_index = 2;
-    data.eligible_masks = [0b11; 2];
-    data.target_terminus = Some(1);
-    *state = VelocityIntegralState::FinalizeRecovery(RungOriginRecoveryReport {
-        stage: RecoveryStage::Integral,
-        rung_index: 2,
-        p_raw: 1_448,
-        planned_velocity_mrev_s: 2_929,
-        start_offset_counts: 1_500,
-        closest_offset_counts: 900,
-        final_offset_counts: 900,
-        origin_band_counts: 1_000,
-        lower_rate_q: ExactU64Parts::from_u64(10_000_000),
-        moving_duration_us: 100_000,
-        settle_duration_us: 500_000,
-        total_duration_us: 600_000,
-        peak_torque_target_abs: 1_000,
-        binding_source: RecoveryBindingSource::SettledRate,
-        outcome: RungOriginRecoveryOutcome::Recovered,
-    });
-    let mut workspace = TransientBuffer::new();
-    let mut backend = MockBackend::new();
-
-    assert!(matches!(
-        step(&mut phase, &mut workspace, &mut backend),
-        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
-    ));
-    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
-        unreachable!()
-    };
-    assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
-    assert_eq!(data.eligible_masks, [0b11; 2]);
-    assert_eq!(data.target_terminus, Some(1));
-    assert!(matches!(
-        state,
-        VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
-    ));
-}
-
-#[test]
-fn combined_current_boundary_below_the_floor_still_routes_to_the_bookend() {
-    let mut phase = phase();
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.plan.combined_workflow = true;
-    data.plan.acceptance_source = AcceptanceSource::Combined;
-    data.rung_index = 2;
-    data.eligible_masks = [0b11; 2];
-    data.current_terminus = Some(1);
-    assert_eq!(
-        integral_recovery_current_contact_policy(data),
-        RecoveryCurrentContactPolicy::ProvePassiveSettle
-    );
-    *state = VelocityIntegralState::FinalizeRecovery(RungOriginRecoveryReport {
-        stage: RecoveryStage::Integral,
-        rung_index: 2,
-        p_raw: 1_448,
-        planned_velocity_mrev_s: 2_929,
-        start_offset_counts: 1_500,
-        closest_offset_counts: 900,
-        final_offset_counts: 900,
-        origin_band_counts: 1_000,
-        lower_rate_q: ExactU64Parts::from_u64(10_000_000),
-        moving_duration_us: 100_000,
-        settle_duration_us: 500_000,
-        total_duration_us: 600_000,
-        peak_torque_target_abs: 1_000,
-        binding_source: RecoveryBindingSource::SettledRate,
-        outcome: RungOriginRecoveryOutcome::Recovered,
-    });
-    let mut workspace = TransientBuffer::new();
-    let mut backend = MockBackend::new();
-
-    assert!(matches!(
-        step(&mut phase, &mut workspace, &mut backend),
-        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
-    ));
-    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
-        unreachable!()
-    };
-    assert_eq!(data.rung_index, data.plan.positive_rung_count + 1);
-    assert_eq!(data.eligible_masks, [0b11; 2]);
     assert!(matches!(
         state,
         VelocityIntegralState::PrepareMovingSlot { reset_rung: true }
@@ -1845,15 +1625,13 @@ fn completed_i_zero_cleanup_rejection_is_inconclusive_rest() {
 }
 
 #[test]
-fn combined_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
+fn stage_c_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
     for closing_bookend in [false, true] {
         let mut phase = phase();
         let mut workspace = TransientBuffer::new();
         let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
             unreachable!()
         };
-        data.plan.combined_workflow = true;
-        data.plan.acceptance_source = AcceptanceSource::Combined;
         data.rung_index = if closing_bookend {
             data.plan.positive_rung_count + 1
         } else {
@@ -1896,57 +1674,6 @@ fn combined_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
             CommissionError::VelocityRestNotConfirmed.status_code()
         );
     }
-}
-
-#[test]
-fn combined_positive_i_unconfirmed_rest_uses_dedicated_cause() {
-    let mut phase = phase();
-    let mut workspace = TransientBuffer::new();
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.plan.combined_workflow = true;
-    data.plan.acceptance_source = AcceptanceSource::Combined;
-    data.rung_index = 3;
-    data.current_observer = VelocityCurrentObserver::new(
-        current_limit(u32::from(data.plan.usable_torque_limit)),
-        VelocityLimitEvidenceCapability::BestEffortPolling,
-    );
-    data.settle_min_displacement_counts = 0;
-    data.settle_max_displacement_counts = 2;
-    for _ in 0..256 {
-        data.observations.push(1, 1_000).unwrap();
-    }
-    reset_scored_rest(data);
-    *state = VelocityIntegralState::AnalyzeSettle {
-        analysis_deadline_us: 236_000,
-    };
-    let mut backend = MockBackend::new();
-
-    let mut diagnostic = None;
-    let terminal = loop {
-        match step(&mut phase, &mut workspace, &mut backend) {
-            StepResult::ReadyNow => {}
-            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(event)) => {
-                diagnostic = Some(event);
-            }
-            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Current(_)) => {}
-            StepResult::VelocityIntegralTerminal(terminal) => break terminal,
-            other => panic!("unexpected combined positive-I rest result: {other:?}"),
-        }
-    };
-
-    let diagnostic = diagnostic.expect("completed positive-I rest must emit Event 151");
-    assert_eq!(
-        diagnostic.owner,
-        RestSelectionOwner::StageCPositiveObservation
-    );
-    assert_eq!(diagnostic.rung_index, 3);
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-    assert_eq!(
-        terminal.cause,
-        CommissionError::VelocityRestNotConfirmed.status_code()
-    );
 }
 
 #[test]
@@ -2234,32 +1961,6 @@ fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
     assert_eq!(terminal.cause, 10);
-}
-
-#[test]
-fn sufficient_combined_curve_emits_complete_without_retention() {
-    let mut phase = phase();
-    let mut workspace = TransientBuffer::new();
-    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
-        unreachable!()
-    };
-    data.plan.combined_workflow = true;
-    data.plan.acceptance_source = AcceptanceSource::Combined;
-    seed_sufficient_curve(data, &mut workspace);
-    data.bookend_available_mask = 3;
-    for (index, value) in [100_i32, 200, -200, -100].into_iter().enumerate() {
-        assert!(workspace.write_workspace_word(124 + index, value as u32));
-    }
-    *state = VelocityIntegralState::Terminal;
-    let mut backend = MockBackend::new();
-
-    let StepResult::VelocityIntegralTerminal(terminal) =
-        step(&mut phase, &mut workspace, &mut backend)
-    else {
-        panic!("a sufficient combined curve must terminate directly");
-    };
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
-    assert_eq!(terminal.cause, 0);
 }
 
 fn phase() -> OuterPhase {
@@ -2704,14 +2405,12 @@ fn excessive_slot_transition_time_emits_an_observation_gap_fault() {
 }
 
 #[test]
-fn combined_opening_anchor_uses_the_declared_operational_clamp() {
+fn opening_anchor_uses_the_declared_operational_clamp() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { data, .. } = &mut phase else {
         unreachable!()
     };
-    data.plan.combined_workflow = true;
-    data.plan.acceptance_source = AcceptanceSource::Combined;
     data.plan.usable_torque_limit = data.plan.hard_torque_limit;
     let mut backend = MockBackend::new();
     backend.current_limit_value = current_limit(2_816);

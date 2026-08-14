@@ -486,14 +486,17 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // Exact sizes, so retained Stage-C state cannot grow unnoticed on a target
     // with no heap. A failure here is a prompt to justify the growth, not to
     // update the number reflexively.
-    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 232);
-    // 112 -> 120: adds the `AcceptanceSource` discriminator
-    // (1 byte, padded to 8) so Stage C can isolate a breakaway acceptance run
-    // from a plain reproduced Stage-B response ladder.
-    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 120);
+    // 232 -> 216: removes the `combined_selected_response`
+    // field entirely (only the retired live combined P-then-I workflow ever
+    // populated it).
+    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 216);
+    // 120 -> 112: removes the `combined_workflow` bool (only
+    // the retired live combined P-then-I workflow ever set it); the
+    // `AcceptanceSource` discriminator added earlier stays.
+    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 112);
     assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 104);
-    // Unchanged at 640: the new `breakaway_acceptance` bool fits
-    // the padding the `combined_workflow` bool already left behind.
+    // Removes the `combined_workflow` bool entirely (only the
+    // retired live combined P-then-I workflow ever set it).
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
         640

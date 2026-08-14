@@ -2031,11 +2031,13 @@ mod tests {
         {
             assert_eq!(size_of::<TraceRunState>(), 12);
             assert_eq!(size_of::<TraceSummarySeqs>(), 16);
-            // 2_944 -> 2_960: adds the `AcceptanceSource`
-            // discriminator to the embedded execution plan.
+            // 2_960 -> 2_944: removes the `combined_workflow`
+            // bool from the embedded execution plan (only the retired live
+            // combined P-then-I workflow ever set it); the `AcceptanceSource`
+            // discriminator added earlier stays.
             assert_eq!(
                 size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_960
+                2_944
             );
             assert!(
                 size_of::<
@@ -2084,7 +2086,9 @@ mod tests {
             // outweigh the classic VelocitySweep variant. Exact, so retained
             // engine state cannot grow unnoticed; the audited F407 ceiling is
             // the `<= 6_144` bound below.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_760);
+            // 5_760 -> 5_744: removes the `combined_workflow`
+            // bool from the embedded Stage-C execution plan.
+            assert_eq!(size_of::<CommissioningEngine>(), 5_744);
         }
         assert!(size_of::<CommissioningEngine>() <= 5_776);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
@@ -3219,7 +3223,6 @@ mod tests {
             digest: 0x0123_4567_89ab_cdef,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
-            combined_workflow: false,
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,

@@ -101,11 +101,7 @@ impl StageCAuthoritySummary {
             joint_membership: authority.joint_membership,
             directional_validity: authority.directional_validity,
             reduced_margin: authority.reduced_margin,
-            directional_pooled_intervals: if plan.combined_workflow {
-                plan.selected_response_intervals_q
-            } else {
-                authority.directional_pooled_intervals
-            },
+            directional_pooled_intervals: authority.directional_pooled_intervals,
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
             target_velocity_rpm: plan.target_velocity_rpm,
             pwm_hz: plan.pwm_hz,

@@ -12,9 +12,7 @@ use crate::commissioning::types::{
 };
 
 use super::super::state::PositiveIRestBoundary;
-use super::combined_plan::{
-    CombinedTargetStatus, TERMINAL_COMBINED_TARGET_SHIFT, TERMINAL_COMBINED_WORKFLOW,
-};
+use super::combined_plan::CombinedTargetStatus;
 use super::integral_evidence::{IntegralObservationClass, IntegralRungClass, IntegralRungKind};
 use super::integral_plan::VelocityIntegralAcquisitionKind;
 use super::integral_plan::{VelocityIntegralExecutionPlan, VelocityIntegralPlan};
@@ -34,19 +32,14 @@ pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
 pub(crate) const TERMINAL_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 3;
 
-pub(crate) const fn terminal_combined_workflow(report: &VelocityIntegralTerminal) -> bool {
-    report.combined_workflow
-}
-
 /// Whether this terminal's firmware-internal target derivations may return
 /// `Some(..)`.
 ///
-/// Wider than [`terminal_combined_workflow`]: a breakaway acceptance terminal
-/// also carries a target derivation, even though it sets no
-/// `TERMINAL_COMBINED_WORKFLOW` wire bit (see [`terminal_recovery_flags`],
-/// which stays gated on `combined_workflow` alone).
+/// True only for a breakaway acceptance terminal, which sets no wire
+/// `recovery_flags` bit of its own -- see [`terminal_recovery_flags`], which
+/// never packs a target-status field.
 const fn terminal_carries_target(report: &VelocityIntegralTerminal) -> bool {
-    report.combined_workflow || report.breakaway_acceptance
+    report.breakaway_acceptance
 }
 
 pub(crate) const fn terminal_target_terminus(report: &VelocityIntegralTerminal) -> Option<u8> {
@@ -102,18 +95,15 @@ pub(crate) const fn plan_recovery_flags(plan: &VelocityIntegralPlan) -> u8 {
 }
 
 pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
-    let mut flags = (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
+    // The `TERMINAL_COMBINED_WORKFLOW` bit and the packed target-status field
+    // it gated were set only by the now-retired live combined P-then-I
+    // workflow; breakaway never set them, so removing that
+    // dead branch does not change the wire `recovery_flags` byte.
+    (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
         | (u8::from(report.recovered_with_current_headroom)
             * TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM)
         | (u8::from(report.recovery_quantization_exposed) * TERMINAL_RECOVERY_QUANTIZATION_EXPOSED)
-        | (u8::from(report.probe_constrained_test_point) * TERMINAL_PROBE_CONSTRAINED_TEST_POINT);
-    if terminal_combined_workflow(report) {
-        flags |= TERMINAL_COMBINED_WORKFLOW;
-        if let Some(status) = terminal_target_status(report) {
-            flags |= ((status as u8) + 1) << TERMINAL_COMBINED_TARGET_SHIFT;
-        }
-    }
-    flags
+        | (u8::from(report.probe_constrained_test_point) * TERMINAL_PROBE_CONSTRAINED_TEST_POINT)
 }
 
 /// Fixed-memory sequencing and digest state for one Stage-C run.
@@ -300,19 +290,6 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(plan.hard_torque_limit);
     core.push_u16(plan.usable_torque_limit);
     core.push_u8(plan.limit_evidence_capability as u8);
-    if let Some(selected) = plan.combined_selected_response {
-        core.push_u8(1);
-        for interval in selected.response_intervals_q() {
-            core.push_i32(
-                i32::try_from(interval[0])
-                    .expect("validated combined response interval remains in i32"),
-            );
-            core.push_i32(
-                i32::try_from(interval[1])
-                    .expect("validated combined response interval remains in i32"),
-            );
-        }
-    }
 
     let mut schedule = VelocitySweepCanonicalRecord::new();
     schedule.push_u8(0);
@@ -327,11 +304,6 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     schedule.push_u32(plan.moving_stroke_us);
     schedule.push_u32(plan.zero_settle_us);
     schedule.push_u32(plan.analysis_budget_us);
-    if plan.schema_revision == super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
-        && plan.combined_selected_response.is_some()
-    {
-        schedule.push_u32(super::integral_plan::INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
-    }
     schedule.push_u32(plan.nominal_workflow_ms);
     schedule.push_u32(plan.maximum_workflow_ms);
     schedule.push_u32(plan.motion_request.requested_velocity_mrev_s);
@@ -389,12 +361,6 @@ pub(crate) fn encode_velocity_integral_terminal(
     record.push_u8(report.evidence.current_terminus.map_or(0, |rung| rung + 1));
     push_u64(&mut record, report.run_started_us);
     push_u64(&mut record, report.run_completed_us);
-    if terminal_combined_workflow(report) {
-        record.push_u8(1);
-        record.push_u16(report.final_p);
-        record.push_u8(terminal_target_status(report).map_or(u8::MAX, |status| status as u8));
-        record.push_u8(terminal_target_terminus(report).map_or(0, |rung| rung + 1));
-    }
     record
 }
 
@@ -464,22 +430,18 @@ fn encode_velocity_integral_plan_marker(
     record.push_u8(plan.recovery_slot_count);
     record.push_u16(plan.hard_torque_limit);
     record.push_u16(plan.usable_torque_limit);
-    if plan.combined_workflow
-        || matches!(
-            plan.acquisition_kind,
-            VelocityIntegralAcquisitionKind::AcceptanceAscending
-                | VelocityIntegralAcquisitionKind::AcceptanceDescending
-        )
-    {
+    if matches!(
+        plan.acquisition_kind,
+        VelocityIntegralAcquisitionKind::AcceptanceAscending
+            | VelocityIntegralAcquisitionKind::AcceptanceDescending
+    ) {
         record.push_u8(1);
         for interval in plan.selected_response_intervals_q {
             record.push_i32(interval[0]);
             record.push_i32(interval[1]);
         }
-        if !plan.combined_workflow {
-            for lower_rate_q in plan.recovery_lower_rate_q {
-                push_u64(&mut record, lower_rate_q);
-            }
+        for lower_rate_q in plan.recovery_lower_rate_q {
+            push_u64(&mut record, lower_rate_q);
         }
     }
     record
@@ -936,7 +898,6 @@ mod tests {
                     [-19_000_000, -18_000_000],
                 ],
             },
-            combined_selected_response: None,
             final_p: 1_448,
             planned_velocity_mrev_s: 4_394,
             target_velocity_rpm: 264,
@@ -1041,7 +1002,6 @@ mod tests {
             usable_torque_limit: 2_534,
             limit_evidence_capability:
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
-            combined_workflow: false,
             acquisition_kind:
                 super::super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: super::super::integral_plan::AcceptanceSource::ReproducedStageB,
@@ -1201,7 +1161,6 @@ mod tests {
             digest: 0xfedc_ba98_7654_3210,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
-            combined_workflow: false,
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -1257,28 +1216,17 @@ mod tests {
             ],
             "schema-4 terminal bytes remain unchanged"
         );
-
-        terminal.combined_workflow = true;
-        terminal.final_p = 1_448;
-        terminal.rest_boundary_rung_plus_one = 2;
-        terminal.rest_boundary_slot_plus_one = 0;
-        let combined = encode_velocity_integral_terminal(&terminal);
-        assert_eq!(
-            &combined.as_bytes()[record.as_bytes().len()..],
-            &[1, 0xa8, 0x05, 1, 2]
-        );
     }
 
     #[test]
     fn stage_c_terminal_flags_are_packed_once() {
-        let mut terminal = VelocityIntegralTerminal {
+        let terminal = VelocityIntegralTerminal {
             run_sequence: 7,
             evidence_sequence: 9,
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Inconclusive,
             cause: 8,
-            combined_workflow: false,
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -1312,25 +1260,12 @@ mod tests {
                 | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
         );
         assert_eq!(terminal_recovery_flags(&terminal) & 0xf0, 0);
-        terminal.combined_workflow = true;
-        terminal.final_p = 1_448;
-        terminal.rest_boundary_rung_plus_one = 2;
-        assert_eq!(
-            terminal_recovery_flags(&terminal),
-            TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM
-                | TERMINAL_RECOVERY_QUANTIZATION_EXPOSED
-                | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
-                | TERMINAL_COMBINED_WORKFLOW
-                | (2 << TERMINAL_COMBINED_TARGET_SHIFT)
-        );
     }
 
     /// A breakaway acceptance terminal's firmware-internal target derivations
-    /// admit it exactly like a combined terminal would -- the installer
-    /// (Task 4) reads these -- but the wire `recovery_flags` stay
-    /// combined-only: no `TERMINAL_COMBINED_WORKFLOW` bit and no packed
-    /// target-status bits, because `terminal_recovery_flags` is keyed on
-    /// `combined_workflow` alone, unchanged by this admission.
+    /// let the installer (Task 4) read them, but `terminal_recovery_flags`
+    /// packs no target-status field for any terminal -- that packed field
+    /// belonged only to the retired live combined P-then-I workflow.
     #[test]
     fn breakaway_acceptance_terminal_exposes_target_status_and_terminus() {
         let mut terminal = VelocityIntegralTerminal {
@@ -1340,7 +1275,6 @@ mod tests {
             digest: 0,
             outcome: VelocityIntegralOutcome::Complete,
             cause: 0,
-            combined_workflow: false,
             breakaway_acceptance: true,
             final_p: 512,
             recovery_unavailable: false,
@@ -1367,16 +1301,6 @@ mod tests {
             Some(CombinedTargetStatus::TargetReached)
         );
         assert_eq!(terminal_target_terminus(&terminal), Some(2));
-        // The wire recovery_flags stay combined-only: neither the combined
-        // bit nor the packed target-status bits are set for breakaway.
-        assert_eq!(
-            terminal_recovery_flags(&terminal) & TERMINAL_COMBINED_WORKFLOW,
-            0
-        );
-        assert_eq!(
-            terminal_recovery_flags(&terminal) & (0b111 << TERMINAL_COMBINED_TARGET_SHIFT),
-            0
-        );
     }
 
     #[test]

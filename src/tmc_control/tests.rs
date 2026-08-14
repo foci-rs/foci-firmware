@@ -206,8 +206,10 @@ fn stage_b_candidate_retention_does_not_grow_channel_runtime() {
     // The trace-gated runtime embeds the `CommissioningEngine`, so it tracks
     // that engine's size plus the runtime's own fixed overhead. The two
     // baselines differ because the breakaway campaign is trace-gated.
+    // 5_872 -> 5_856: removes the `combined_workflow` bool
+    // from the embedded Stage-C execution plan.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_872);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_856);
     #[cfg(not(feature = "trace"))]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_920);
 }

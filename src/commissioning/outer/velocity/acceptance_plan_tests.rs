@@ -316,7 +316,7 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
     .unwrap();
     historical.schema_revision = 3;
 
-    assert_eq!(historical.digest(), 0x3a09_7239_5679_c4c7);
+    assert_eq!(historical.digest(), 0x04be_03e4_b2d5_05d5);
 }
 
 #[test]
@@ -378,7 +378,7 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
             [i32::from(ascending.qualifier_bits), 0],
         ]
     );
-    assert_eq!(core::mem::size_of_val(&execution), 120);
+    assert_eq!(core::mem::size_of_val(&execution), 112);
 }
 
 #[test]

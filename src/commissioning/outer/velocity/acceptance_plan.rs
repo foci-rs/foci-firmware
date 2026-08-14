@@ -229,7 +229,6 @@ impl AcceptanceMatrixPlan {
                 }
                 _ => VelocityLimitEvidenceCapability::LatchedFlag,
             },
-            combined_workflow: false,
             acquisition_kind: match self.order {
                 AcceptanceMatrixOrder::Ascending => {
                     VelocityIntegralAcquisitionKind::AcceptanceAscending
@@ -239,10 +238,10 @@ impl AcceptanceMatrixPlan {
                 }
             },
             // The fixed-I acceptance matrix tracks amplitude sufficiency, not a
-            // combined/breakaway target terminus; `acquisition_kind` already
+            // breakaway target terminus; `acquisition_kind` already
             // distinguishes it from every `ResponseLadder` plan, so any
             // non-terminus-recording source is correct here. `ReproducedStageB`
-            // is reused rather than adding a fourth variant for a plan family
+            // is reused rather than adding another variant for a plan family
             // `record_integral_target_if_reached` never observes.
             acceptance_source: AcceptanceSource::ReproducedStageB,
             matrix_targets_rpm: self.target_rpm,

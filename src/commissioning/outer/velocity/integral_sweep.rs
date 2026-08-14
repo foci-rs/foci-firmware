@@ -49,8 +49,7 @@ use super::integral_evidence::{
 };
 use super::integral_plan::{
     AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
-    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, largest_i_for_tau,
-    native_velocity_i_at, response_horizon,
+    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, native_velocity_i_at,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -116,16 +115,7 @@ pub(crate) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8)
         Some(0)
     } else {
         let positive_index = rung_index - 1;
-        if plan.combined_workflow && positive_index + 1 == plan.positive_rung_count {
-            largest_i_for_tau(
-                plan.pwm_hz,
-                MIN_SETTLE_CAPTURE_US / 2,
-                crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
-            )
-            .ok()
-        } else {
-            native_velocity_i_at(positive_index)
-        }
+        native_velocity_i_at(positive_index)
     }
 }
 
@@ -220,29 +210,6 @@ pub(super) fn positive_directional_floors_exist(data: &VelocityIntegralData) -> 
         .all(|mask| mask.count_ones() >= 3)
 }
 
-#[cfg(test)]
-pub(super) fn combined_target_status(
-    data: &VelocityIntegralData,
-) -> Option<super::combined_plan::CombinedTargetStatus> {
-    if !data.plan.combined_workflow {
-        None
-    } else if data.target_terminus.is_some() {
-        Some(if positive_directional_floors_exist(data) {
-            super::combined_plan::CombinedTargetStatus::TargetReached
-        } else {
-            super::combined_plan::CombinedTargetStatus::TargetReachedSparse
-        })
-    } else if data.current_terminus.is_some() {
-        Some(super::combined_plan::CombinedTargetStatus::CurrentHeadroom)
-    } else if data.positive_i_rest_boundary.is_some()
-        || data.rung_index < data.plan.positive_rung_count.saturating_add(1)
-    {
-        None
-    } else {
-        Some(super::combined_plan::CombinedTargetStatus::TargetNotReachedAtCap)
-    }
-}
-
 pub(super) fn record_integral_target_if_reached(
     data: &mut VelocityIntegralData,
     intervals: [ExactRateInterval; 2],
@@ -306,15 +273,11 @@ pub(super) fn integral_recovery_current_contact_policy(
     let closes_positive_ladder = data.rung_index == data.plan.positive_rung_count
         || data.current_terminus.is_some()
         || data.positive_i_rest_boundary_after_sufficiency;
-    let combined_ladder_terminus = data.plan.combined_workflow
-        && (data.target_terminus.is_some()
-            || data.current_terminus.is_some()
-            || data.positive_i_rest_boundary.is_some());
     if matches!(
         integral_rung_kind(data.plan, data.rung_index),
         IntegralRungKind::Positive
-    ) && ((positive_directional_floors_exist(data) && closes_positive_ladder)
-        || combined_ladder_terminus)
+    ) && positive_directional_floors_exist(data)
+        && closes_positive_ladder
     {
         RecoveryCurrentContactPolicy::ProvePassiveSettle
     } else {
@@ -799,7 +762,7 @@ fn plan_integral_recovery(
 pub(super) fn integral_recovery_rest_schedule(
     plan: VelocityIntegralExecutionPlan,
 ) -> RecoveryRestSchedule {
-    if plan.combined_workflow || is_acceptance_matrix(plan) {
+    if is_acceptance_matrix(plan) {
         RecoveryRestSchedule::Stabilized
     } else {
         RecoveryRestSchedule::ImmediateScored
@@ -983,7 +946,6 @@ pub(super) fn terminal_from_data(
         digest: data.integrity.digest(),
         outcome,
         cause,
-        combined_workflow: data.plan.combined_workflow,
         breakaway_acceptance: data.plan.acceptance_source == AcceptanceSource::Breakaway,
         final_p: data.plan.final_p,
         recovery_unavailable: data.recovery_unavailable,
@@ -1191,11 +1153,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
         }) => terminal_from_data(
             data,
             evidence,
-            if data.plan.combined_workflow {
-                VelocityIntegralOutcome::Complete
-            } else {
-                VelocityIntegralOutcome::CompleteCandidate
-            },
+            VelocityIntegralOutcome::CompleteCandidate,
             if data.positive_i_rest_boundary_after_sufficiency {
                 INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY
             } else if current_terminus.is_some() {
@@ -1999,7 +1957,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.observations.clear();
             if !settle_result.confirmed_rest
                 && !data.observation_current_headroom
-                && !data.plan.combined_workflow
                 && matches!(
                     integral_rung_kind(data.plan, data.rung_index),
                     IntegralRungKind::Positive
@@ -2072,17 +2029,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 } else if matches!(
                     integral_rung_kind(data.plan, data.rung_index),
                     IntegralRungKind::Positive
-                ) && (positive_directional_floors_exist(data)
-                    || data.plan.combined_workflow)
+                ) && positive_directional_floors_exist(data)
                 {
-                    if !data.plan.combined_workflow {
-                        // Breakaway current-headroom exit is the sibling
-                        // `retain_rung` bypass; record the target terminus
-                        // before the current terminus consumes the rung. The
-                        // combined path still records via `retain_rung`.
-                        if let Err(error) = record_diverted_target_terminus(data) {
-                            return fail_integral(phase, backend, error).await;
-                        }
+                    // Breakaway current-headroom exit is the sibling
+                    // `retain_rung` bypass; record the target terminus before
+                    // the current terminus consumes the rung.
+                    if let Err(error) = record_diverted_target_terminus(data) {
+                        return fail_integral(phase, backend, error).await;
                     }
                     data.current_terminus = data.rung_index.checked_sub(1);
                     match plan_integral_recovery(data, workspace, safety) {
@@ -2335,7 +2288,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     return fail_integral(phase, backend, error).await;
                 }
             }
-            if data.positive_i_rest_boundary_after_sufficiency || data.plan.combined_workflow {
+            if data.positive_i_rest_boundary_after_sufficiency {
                 match plan_integral_recovery(data, workspace, safety) {
                     Ok(recovery) => *state = VelocityIntegralState::RecoverRung(recovery),
                     Err(error) => return fail_integral(phase, backend, error).await,
@@ -2392,20 +2345,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.emitted_rungs = data.emitted_rungs.saturating_add(1);
             let i_raw = integral_i_at(data.plan, data.rung_index).unwrap_or(0);
-            let (tau_us, horizon_class) = if data.plan.combined_workflow {
-                match response_horizon(i_raw, data.plan.pwm_hz, data.plan.moving_stroke_us) {
-                    Some(value) => value,
-                    None => {
-                        return fail_integral(phase, backend, CommissionError::InvalidSchedule)
-                            .await;
-                    }
-                }
-            } else {
-                (
-                    0,
-                    crate::commissioning::types::ResponseHorizonClass::NotApplicable,
-                )
-            };
+            let (tau_us, horizon_class) = (
+                0,
+                crate::commissioning::types::ResponseHorizonClass::NotApplicable,
+            );
             let report = VelocityIntegralRungReport {
                 run_sequence: data.integrity.run_sequence(),
                 evidence_sequence: data.integrity.next_evidence_sequence(),
@@ -2413,11 +2356,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 rung_index: data.rung_index,
                 i_raw,
                 tau_us,
-                moving_horizon_us: if data.plan.combined_workflow {
-                    data.plan.moving_stroke_us
-                } else {
-                    0
-                },
+                moving_horizon_us: 0,
                 horizon_class,
                 directions,
             };
@@ -2533,14 +2472,6 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     }
                     IntegralRungKind::Positive
                         if data.positive_i_rest_boundary_after_sufficiency =>
-                    {
-                        data.rung_index = data.plan.positive_rung_count.saturating_add(1);
-                        *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
-                    }
-                    IntegralRungKind::Positive
-                        if data.plan.combined_workflow
-                            && (data.target_terminus.is_some()
-                                || data.positive_i_rest_boundary.is_some()) =>
                     {
                         data.rung_index = data.plan.positive_rung_count.saturating_add(1);
                         *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
