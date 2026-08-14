@@ -56,8 +56,12 @@ pub const fn decode_schedule_order_code(
     };
     let slot_order = match code >> 4 {
         0 => IntegralSlotOrder::ForwardFirst,
-        1 => IntegralSlotOrder::ReverseFirst,
-        2 => IntegralSlotOrder::PairedOutAndBack,
+        // 1 and 2 were `ReverseFirst`/`PairedOutAndBack`. Their only producers
+        // (the live combined P-then-I workflow and the mirrored-matrix
+        // actions) were removed, and with them the variants themselves,
+        // so a wire byte carrying either nibble can no
+        // longer name a live order. Reject it as decode failure rather than
+        // reintroducing removed variants.
         _ => return None,
     };
     Some((order, slot_order))

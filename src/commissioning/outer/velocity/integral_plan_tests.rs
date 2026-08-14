@@ -581,10 +581,7 @@ const SLOT_COUNT: u8 = STAGE_C_OBSERVATIONS_PER_RUNG as u8;
 /// silently wrong rather than failing. This pins them together.
 #[test]
 fn slot_and_direction_mappings_are_mutual_inverses() {
-    for order in [
-        IntegralSlotOrder::ForwardFirst,
-        IntegralSlotOrder::ReverseFirst,
-    ] {
+    for order in IntegralSlotOrder::ALL {
         for slot in 0..SLOT_COUNT {
             let direction = order.direction_index(slot);
             let observation = order.observation_index(slot);
@@ -625,10 +622,7 @@ fn slot_and_direction_mappings_are_mutual_inverses() {
 /// Every slot must be used exactly once, so no observation is dropped or doubled.
 #[test]
 fn each_slot_order_is_a_permutation_of_all_slots() {
-    for order in [
-        IntegralSlotOrder::ForwardFirst,
-        IntegralSlotOrder::ReverseFirst,
-    ] {
+    for order in IntegralSlotOrder::ALL {
         let mut seen = [false; SLOT_COUNT as usize];
         for observation in 0..4 {
             for direction in 0..2 {
@@ -656,68 +650,6 @@ fn forward_first_preserves_the_historical_parity_mapping() {
             if slot.is_multiple_of(2) { 1 } else { -1 }
         );
     }
-}
-
-/// Mirroring swaps which end of the span each direction's tail lands on.
-#[test]
-fn reverse_first_inverts_every_slot_direction() {
-    let forward_first = IntegralSlotOrder::ForwardFirst;
-    let reverse_first = IntegralSlotOrder::ReverseFirst;
-    for slot in 0..SLOT_COUNT {
-        assert_ne!(
-            forward_first.direction_index(slot),
-            reverse_first.direction_index(slot)
-        );
-        assert_eq!(
-            forward_first.signed_direction(slot),
-            -reverse_first.signed_direction(slot)
-        );
-        // The observation an ordinal belongs to does not move; only its direction.
-        assert_eq!(
-            forward_first.observation_index(slot),
-            reverse_first.observation_index(slot)
-        );
-    }
-}
-
-/// The paired order runs F,R,R,F,F,R,R,F so each direction takes both roles.
-///
-/// Under strict alternation a stroke's direction, whether it travels away from or
-/// back to the origin, and the direction of the stroke before it are all locked
-/// together. Pairing inverts the outbound/preceded-by relation relative to the
-/// alternating orders, which is what separates them.
-#[test]
-fn paired_order_gives_each_direction_both_outbound_and_inbound_roles() {
-    let order = IntegralSlotOrder::PairedOutAndBack;
-    let expected = [0_usize, 1, 1, 0, 0, 1, 1, 0];
-    for slot in 0..SLOT_COUNT {
-        assert_eq!(
-            order.direction_index(slot),
-            expected[usize::from(slot)],
-            "slot {slot}"
-        );
-    }
-
-    // Even slots leave the origin, odd slots return to it, in every order. Under
-    // the alternating orders an outbound stroke always follows an
-    // opposite-direction stroke; under pairing it follows a same-direction one.
-    for slot in (0..SLOT_COUNT).step_by(2) {
-        let previous = if slot == 0 { SLOT_COUNT - 1 } else { slot - 1 };
-        assert_eq!(
-            order.direction_index(slot),
-            order.direction_index(previous),
-            "paired outbound slot {slot} must follow its own direction"
-        );
-        assert_ne!(
-            IntegralSlotOrder::ForwardFirst.direction_index(slot),
-            IntegralSlotOrder::ForwardFirst.direction_index(previous),
-            "alternating outbound slot {slot} must follow the opposite direction"
-        );
-    }
-
-    // Both excursion ends are used, so absolute position varies within a role.
-    assert_eq!(order.direction_index(0), 0, "slot 0 leaves toward forward");
-    assert_eq!(order.direction_index(2), 1, "slot 2 leaves toward reverse");
 }
 
 // --- StageCPlanShape::BreakawaySeededPThenI ---------------------------------

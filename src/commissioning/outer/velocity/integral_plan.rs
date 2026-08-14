@@ -532,38 +532,30 @@ impl VelocityIntegralPlan {
 #[repr(u8)]
 pub enum IntegralSlotOrder {
     /// Even slots travel forward. The historical order.
-    ForwardFirst = 0,
-    /// Even slots travel reverse, swapping which end each direction's tail reaches.
-    ReverseFirst = 1,
-    /// Paired F,R,R,F,F,R,R,F so each direction takes both schedule roles.
     ///
-    /// Both alternating orders lock three things together: a stroke's direction,
-    /// whether it leaves the origin or returns to it, and the direction of the
-    /// stroke before it. Pairing inverts the outbound/preceded-by relation while
-    /// leaving outbound/inbound on the same slots, and uses both excursion ends,
-    /// which is what separates those causes. Excursions stay within one stroke of
-    /// the origin in each direction, so it costs no more travel than the
-    /// alternating orders on a centred axis.
-    PairedOutAndBack = 2,
+    /// `ReverseFirst` and `PairedOutAndBack`, the two mirrored orders this type
+    /// once offered, were producible only by the live combined P-then-I
+    /// workflow and the mirrored-matrix actions. Both were removed, and
+    /// with them every surviving live producer of this type
+    /// -- `AutotuneAction::slot_order`, `AutotuneAction::matrix_slot_order`,
+    /// and the sole `VelocityIntegralPlan` constructor -- became unconditional
+    /// `ForwardFirst`. The variants were removed in T9. The type stays an enum
+    /// rather than collapsing to a unit so the wire contract (`report_code`)
+    /// and foci-trace's independent decode copies keep the same shape.
+    ForwardFirst = 0,
 }
 
 impl IntegralSlotOrder {
     /// Every declared order, so a new variant cannot be added untested.
-    pub const ALL: [Self; 3] = [
-        Self::ForwardFirst,
-        Self::ReverseFirst,
-        Self::PairedOutAndBack,
-    ];
+    pub const ALL: [Self; 1] = [Self::ForwardFirst];
 
     /// Parity offset applied to one same-direction observation ordinal.
     ///
-    /// The three orders differ only here: the alternating orders apply a fixed
-    /// offset and the paired order alternates it with the ordinal.
+    /// Forward-first is the only surviving order and applies no offset.
     const fn parity_twist(self, ordinal: usize) -> usize {
+        let _ = ordinal;
         match self {
             Self::ForwardFirst => 0,
-            Self::ReverseFirst => 1,
-            Self::PairedOutAndBack => ordinal & 1,
         }
     }
 

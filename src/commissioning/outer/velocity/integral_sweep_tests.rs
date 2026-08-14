@@ -2609,37 +2609,36 @@ fn matrix_safety_fault_uses_the_matrix_terminal() {
 /// produced eligible masks of 0x0/0x0 on hardware while the raw evidence was fine.
 #[test]
 fn rung_aggregation_follows_the_declared_slot_order() {
-    for (slot_order, forward_sign) in [
-        (IntegralSlotOrder::ForwardFirst, 1_i64),
-        (IntegralSlotOrder::ReverseFirst, -1_i64),
-    ] {
-        let mut plan = plan();
-        plan.slot_order = slot_order;
-        let mut data = VelocityIntegralData::new(1, plan);
-        data.rung_classes = [VelocityObservationClass::Eligible; 8];
-        // Sign each slot by the direction that slot actually travels, so reading
-        // the wrong slots yields the wrong sign rather than merely wrong values.
-        data.rung_intervals = core::array::from_fn(|slot| {
-            let travels_forward = slot_order.direction_index(slot as u8) == 0;
-            if travels_forward {
-                ExactRateInterval::new(100, 110).unwrap()
-            } else {
-                ExactRateInterval::new(-110, -100).unwrap()
-            }
-        });
+    // `ReverseFirst`, the mirrored order this loop used to also exercise, was
+    // removed along with its only producers. Forward-first
+    // is the only order left, but the aggregation must still read it from
+    // `plan.slot_order` rather than assuming it, so this still exercises the
+    // real declared-order path rather than a hardcoded one.
+    let slot_order = IntegralSlotOrder::ForwardFirst;
+    let mut plan = plan();
+    plan.slot_order = slot_order;
+    let mut data = VelocityIntegralData::new(1, plan);
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    // Sign each slot by the direction that slot actually travels, so reading
+    // the wrong slots yields the wrong sign rather than merely wrong values.
+    data.rung_intervals = core::array::from_fn(|slot| {
+        let travels_forward = slot_order.direction_index(slot as u8) == 0;
+        if travels_forward {
+            ExactRateInterval::new(100, 110).unwrap()
+        } else {
+            ExactRateInterval::new(-110, -100).unwrap()
+        }
+    });
 
-        let forward = analyze_rung(&data, VelocityDirection::Forward).unwrap();
-        let reverse = analyze_rung(&data, VelocityDirection::Reverse).unwrap();
+    let forward = analyze_rung(&data, VelocityDirection::Forward).unwrap();
+    let reverse = analyze_rung(&data, VelocityDirection::Reverse).unwrap();
 
-        let _ = forward_sign;
-        // Forward evidence must be positive and reverse negative under both orders.
-        assert!(
-            forward.interval.unwrap().low_q > 0,
-            "{slot_order:?} forward read a reverse slot"
-        );
-        assert!(
-            reverse.interval.unwrap().high_q < 0,
-            "{slot_order:?} reverse read a forward slot"
-        );
-    }
+    assert!(
+        forward.interval.unwrap().low_q > 0,
+        "{slot_order:?} forward read a reverse slot"
+    );
+    assert!(
+        reverse.interval.unwrap().high_q < 0,
+        "{slot_order:?} reverse read a forward slot"
+    );
 }

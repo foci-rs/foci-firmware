@@ -496,101 +496,24 @@ fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
         }
     }
     assert_eq!(
-        schedule_order_code(
-            AcceptanceMatrixOrder::Ascending,
-            IntegralSlotOrder::ReverseFirst
-        ),
-        0x11
-    );
-    assert_eq!(
-        schedule_order_code(
-            AcceptanceMatrixOrder::Descending,
-            IntegralSlotOrder::ReverseFirst
-        ),
-        0x12
-    );
-    assert_eq!(
         decode_schedule_order_code(0),
         None,
         "order zero is not valid"
     );
     assert_eq!(decode_schedule_order_code(0x23), None, "unknown slot order");
-}
-
-/// Two runs differing only in slot order must not share a plan identity.
-///
-/// The digest is the audit identity. If it ignored slot order, the mirrored and
-/// unmirrored captures would be indistinguishable, which is the entire point of
-/// recording the order.
-#[test]
-fn slot_order_separates_the_matrix_plan_digest() {
-    let current = breakaway_plan();
-    let forward_first = plan_acceptance_matrix(
-        breakaway_point(current),
-        breakaway_request(),
-        AcceptanceMatrixOrder::Ascending,
-        IntegralSlotOrder::ForwardFirst,
-        current,
-    )
-    .unwrap();
-    let reverse_first = plan_acceptance_matrix(
-        breakaway_point(current),
-        breakaway_request(),
-        AcceptanceMatrixOrder::Ascending,
-        IntegralSlotOrder::ReverseFirst,
-        current,
-    )
-    .unwrap();
-
-    assert_eq!(forward_first.slot_order, IntegralSlotOrder::ForwardFirst);
-    assert_eq!(reverse_first.slot_order, IntegralSlotOrder::ReverseFirst);
-    assert_ne!(forward_first.digest(), reverse_first.digest());
-    // Everything else is identical, so the digest change is attributable.
-    assert_eq!(forward_first.target_rpm, reverse_first.target_rpm);
-    assert_eq!(forward_first.order, reverse_first.order);
-    // The order the engine executes must follow the plan.
+    // 0x11 and 0x22 were the wire encodings for `ReverseFirst` and
+    // `PairedOutAndBack`. Their only producers were removed and the
+    // variants themselves followed, so a byte naming either
+    // high nibble must now decode as a failure rather than a removed variant.
     assert_eq!(
-        forward_first.execution_plan().slot_order,
-        IntegralSlotOrder::ForwardFirst
+        decode_schedule_order_code(0x11),
+        None,
+        "reverse-first is no longer a valid slot order"
     );
     assert_eq!(
-        reverse_first.execution_plan().slot_order,
-        IntegralSlotOrder::ReverseFirst
-    );
-}
-
-/// A mirrored Stage-C run must be requestable and must record that it was one.
-///
-/// Stage C carries the same forward/reverse tail-position confound as the matrix
-/// but is not lifecycle-limited, so it is where the mirrored order is measured.
-#[test]
-fn mirrored_stage_c_plans_are_distinguishable_without_a_schema_change() {
-    let forward_first = breakaway_plan();
-    let mut reverse_first = forward_first;
-    reverse_first.slot_order = IntegralSlotOrder::ReverseFirst;
-
-    assert_eq!(forward_first.slot_order, IntegralSlotOrder::ForwardFirst);
-    assert_ne!(
-        forward_first.digest(),
-        reverse_first.digest(),
-        "slot order must separate the plan identity"
-    );
-    assert_eq!(
-        forward_first.execution_plan().slot_order,
-        IntegralSlotOrder::ForwardFirst
-    );
-    assert_eq!(
-        reverse_first.execution_plan().slot_order,
-        IntegralSlotOrder::ReverseFirst
-    );
-    // The plan flags byte reports it, so the capture self-describes without
-    // growing the record or bumping the Stage-C schema.
-    assert_eq!(plan_recovery_flags(&forward_first) & 0b100, 0);
-    assert_eq!(plan_recovery_flags(&reverse_first) & 0b100, 0b100);
-    // Bits 0 and 1 keep their established meaning.
-    assert_eq!(
-        plan_recovery_flags(&forward_first) & 0b011,
-        plan_recovery_flags(&reverse_first) & 0b011
+        decode_schedule_order_code(0x22),
+        None,
+        "paired-out-and-back is no longer a valid slot order"
     );
 }
 
@@ -613,41 +536,18 @@ fn forward_first_leaves_the_stage_c_plan_digest_untouched() {
     );
 }
 
-/// The Stage-C plan flags carry the slot order as a two-bit field.
+/// The Stage-C plan flags reserve bits 2 and 3 for the slot order.
 ///
-/// One bit only distinguished alternating from mirrored. A third order needs two,
-/// and bits 2 and 3 were both free, so forward-first stays all-zero and the
-/// mirrored encoding is unchanged.
+/// `ReverseFirst` and `PairedOutAndBack` used to occupy those bits (now
+/// removed); forward-first stays all-zero there and must not
+/// disturb the older, still-live bits.
 #[test]
-fn plan_flags_carry_every_slot_order_without_disturbing_the_older_bits() {
-    let mut plan = breakaway_plan();
+fn plan_flags_leave_the_reserved_slot_order_bits_zero() {
+    let plan = breakaway_plan();
     let older_bits = plan_recovery_flags(&plan) & 0b011;
 
-    for (slot_order, expected) in [
-        (IntegralSlotOrder::ForwardFirst, 0b0000),
-        (IntegralSlotOrder::ReverseFirst, 0b0100),
-        (IntegralSlotOrder::PairedOutAndBack, 0b1000),
-    ] {
-        plan.slot_order = slot_order;
-        let flags = plan_recovery_flags(&plan);
-        assert_eq!(flags & 0b1100, expected, "{slot_order:?}");
-        assert_eq!(
-            flags & 0b011,
-            older_bits,
-            "{slot_order:?} disturbed older bits"
-        );
-    }
-}
-
-/// Every order must give the plan a distinct identity.
-#[test]
-fn every_slot_order_separates_the_stage_c_plan_digest() {
-    let mut digests = heapless::Vec::<u64, 3>::new();
-    for slot_order in IntegralSlotOrder::ALL {
-        let mut plan = breakaway_plan();
-        plan.slot_order = slot_order;
-        let digest = plan.digest();
-        assert!(!digests.contains(&digest), "{slot_order:?} reused a digest");
-        digests.push(digest).unwrap();
-    }
+    assert_eq!(plan.slot_order, IntegralSlotOrder::ForwardFirst);
+    let flags = plan_recovery_flags(&plan);
+    assert_eq!(flags & 0b1100, 0, "forward-first must leave bits 2-3 zero");
+    assert_eq!(flags & 0b011, older_bits, "older bits must be undisturbed");
 }
