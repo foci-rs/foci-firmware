@@ -5145,10 +5145,9 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
 /// then translate its terminal into the engine's [`StepResult`].
 ///
 /// On an accepted, admitted confirmation this performs the Confirmed -> Stage C
-/// hand-off in place, mirroring
-/// [`crate::commissioning::CommissioningEngine::begin_stage_c_continuation_with_plan`]:
-/// it replaces the [`OuterPhase::BreakawayCampaign`] with the existing
-/// [`OuterPhase::VelocityIntegral`] variant carrying the exact Stage-C plan, so
+/// hand-off in place: it replaces the [`OuterPhase::BreakawayCampaign`] with the
+/// existing [`OuterPhase::VelocityIntegral`] variant carrying the exact Stage-C
+/// plan, so
 /// Stage-C execution state lives in that variant, off the campaign variant's
 /// retained budget. Every non-accept campaign terminal -- including an accept
 /// the 6a constructor refused WITHOUT motion -- fails the outer phase and never
