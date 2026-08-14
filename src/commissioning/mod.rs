@@ -262,6 +262,28 @@ pub struct CommissioningEngine {
     trace_summary_seqs: TraceSummarySeqs,
 }
 
+/// Phase-independent assembly shared by every outer constructor.
+///
+/// Derives the outer safety envelope from the motion budget and carries the
+/// engine fields that do not depend on the chosen [`OuterPhase`], so each
+/// entry point can build its own phase directly instead of constructing a
+/// carrier phase and replacing it in place.
+struct OuterScaffold {
+    oid: u8,
+    tmc_state: &'static TmcChannelState,
+    profile: CommissionProfile,
+    mode: OperatingMode,
+    inner_lambda_us: u32,
+    theta_e_us: u32,
+    current_ringing: bool,
+    current_bandwidth_hz: u32,
+    inner_warning_flags: u8,
+    entry_snapshot: EntrySnapshot,
+    trace_engine_seq: u32,
+    /// Independent outer safety envelope derived from the motion budget.
+    safety: OuterSafetyLimits,
+}
+
 impl CommissioningEngine {
     /// Create an engine for calibration (re-enable path).
     ///
@@ -479,17 +501,18 @@ impl CommissioningEngine {
         Self::new_outer_for_tmc_with_trace_seq(oid, tmc_state, params, entry_snapshot, 0)
     }
 
-    /// Create an outer commissioning engine bound to a TMC channel state and trace sequence.
-    pub fn new_outer_for_tmc_with_trace_seq(
+    /// Derive the outer safety envelope and phase-independent engine fields.
+    ///
+    /// The safety limits start with placeholder values; the entry phase's
+    /// `Setup` sub-state reads the actual encoder position and current limit
+    /// from the backend on the first `step()`.
+    fn outer_scaffold(
         oid: u8,
         tmc_state: &'static TmcChannelState,
         params: OuterTuneParams,
         entry_snapshot: EntrySnapshot,
         trace_engine_seq: u32,
-    ) -> Self {
-        // Safety limits and data are initialized with placeholder values.
-        // The MechanicalIdState::Setup sub-state reads the actual encoder
-        // position and current limit from the backend on the first step().
+    ) -> OuterScaffold {
         let OuterTuneParams {
             profile,
             mode,
@@ -519,18 +542,38 @@ impl CommissioningEngine {
             max_duration_ms,
         };
         let safety = OuterSafetyLimits::new(0, budget);
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        let phase = OuterPhase::MechanicalId {
-            state: MechanicalIdState::Setup,
-            data: MechanicalIdData::new(0),
+        OuterScaffold {
+            oid,
+            tmc_state,
+            profile,
+            mode,
+            inner_lambda_us,
+            theta_e_us,
+            current_ringing,
+            current_bandwidth_hz,
+            inner_warning_flags,
+            entry_snapshot,
+            trace_engine_seq,
             safety,
-        };
-        #[cfg(feature = "trace-velocity-sweep")]
-        let phase = OuterPhase::VelocitySweep {
-            state: VelocitySweepState::Setup,
-            data: VelocitySweepData::new(trace_engine_seq),
-            safety,
-        };
+        }
+    }
+
+    /// Finish an outer engine from a scaffold and its chosen entry phase.
+    fn assemble_outer(scaffold: OuterScaffold, phase: OuterPhase) -> Self {
+        let OuterScaffold {
+            oid,
+            tmc_state,
+            profile,
+            mode,
+            inner_lambda_us,
+            theta_e_us,
+            current_ringing,
+            current_bandwidth_hz,
+            inner_warning_flags,
+            entry_snapshot,
+            trace_engine_seq,
+            safety: _,
+        } = scaffold;
         Self {
             oid,
             tmc_state,
@@ -553,15 +596,40 @@ impl CommissioningEngine {
         }
     }
 
+    /// Create an outer commissioning engine bound to a TMC channel state and trace sequence.
+    pub fn new_outer_for_tmc_with_trace_seq(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+        trace_engine_seq: u32,
+    ) -> Self {
+        let scaffold =
+            Self::outer_scaffold(oid, tmc_state, params, entry_snapshot, trace_engine_seq);
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        let phase = OuterPhase::MechanicalId {
+            state: MechanicalIdState::Setup,
+            data: MechanicalIdData::new(0),
+            safety: scaffold.safety,
+        };
+        #[cfg(feature = "trace-velocity-sweep")]
+        let phase = OuterPhase::VelocitySweep {
+            state: VelocitySweepState::Setup,
+            data: VelocitySweepData::new(trace_engine_seq),
+            safety: scaffold.safety,
+        };
+        Self::assemble_outer(scaffold, phase)
+    }
+
     /// Create a breakaway-campaign engine from an admitted, pre-planned campaign.
     ///
     /// The campaign is built and its command-level workflow envelope reserved by
     /// [`crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command`]
-    /// before this call, so construction here is pure state assembly: it enters
-    /// the base outer engine, then replaces its `VelocitySweep` entry phase with
-    /// [`OuterPhase::BreakawayCampaign`], reusing the outer safety envelope the
-    /// base constructor derived. No motion is commanded; the probe's first stroke
-    /// is only reachable through the engine step loop.
+    /// before this call, so construction here is pure state assembly: it derives
+    /// the outer safety envelope from the motion budget, configures it for the
+    /// campaign's encoder domain and velocity ceiling, and builds
+    /// [`OuterPhase::BreakawayCampaign`] directly. No motion is commanded; the
+    /// probe's first stroke is only reachable through the engine step loop.
     ///
     /// # Errors
     ///
@@ -577,35 +645,25 @@ impl CommissioningEngine {
         campaign: crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign,
     ) -> Result<Self, CommissionError> {
         let run_sequence = campaign.run_sequence();
-        let mut engine = Self::new_outer_for_tmc_with_trace_seq(
-            oid,
-            tmc_state,
-            params,
-            entry_snapshot,
-            run_sequence,
-        );
-        let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
-            unreachable!("outer constructor must produce an outer engine")
-        };
-        let old_phase =
-            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
-        let OuterPhase::VelocitySweep { mut safety, .. } = old_phase else {
-            unreachable!("trace outer constructor must enter Stage B")
-        };
-        safety
+        let mut scaffold =
+            Self::outer_scaffold(oid, tmc_state, params, entry_snapshot, run_sequence);
+        scaffold
+            .safety
             .configure_velocity_sweep_encoder_resolution(campaign.encoder_counts_per_rev())
             .map_err(|_| CommissionError::EncoderFault)?;
-        safety.configure_velocity_envelope_with_settle_ceiling(
-            campaign.planned_velocity_mrev_s(),
-            campaign.effective_ceiling_mrev_s(),
-        )?;
-        *phase = OuterPhase::BreakawayCampaign {
+        scaffold
+            .safety
+            .configure_velocity_envelope_with_settle_ceiling(
+                campaign.planned_velocity_mrev_s(),
+                campaign.effective_ceiling_mrev_s(),
+            )?;
+        let phase = OuterPhase::BreakawayCampaign {
             campaign,
             workspace:
                 crate::commissioning::outer::velocity::breakaway_campaign::BreakawayProbeWorkspace::new(),
-            safety,
+            safety: scaffold.safety,
         };
-        Ok(engine)
+        Ok(Self::assemble_outer(scaffold, phase))
     }
 
     /// Return the live breakaway execution plan used by terminal retention.
@@ -639,30 +697,22 @@ impl CommissioningEngine {
         entry_snapshot: EntrySnapshot,
         preflight: crate::commission_dispatch::stage_c::StageCPreflight,
     ) -> Self {
-        let mut engine = Self::new_outer_for_tmc_with_trace_seq(
+        let scaffold = Self::outer_scaffold(
             oid,
             tmc_state,
             params,
             entry_snapshot,
             preflight.run_sequence,
         );
-        let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
-            unreachable!("outer constructor must produce an outer engine")
-        };
-        let old_phase =
-            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
-        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
-            unreachable!("trace outer constructor must enter Stage B")
-        };
-        *phase = OuterPhase::VelocityIntegral {
+        let phase = OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
             data: VelocityIntegralData::new(
                 preflight.run_sequence,
                 preflight.plan.execution_plan(),
             ),
-            safety,
+            safety: scaffold.safety,
         };
-        engine
+        Self::assemble_outer(scaffold, phase)
     }
 
     /// Create one direct fixed-I matrix engine from an exact disclosed plan.
@@ -674,30 +724,22 @@ impl CommissioningEngine {
         entry_snapshot: EntrySnapshot,
         preflight: crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight,
     ) -> Self {
-        let mut engine = Self::new_outer_for_tmc_with_trace_seq(
+        let scaffold = Self::outer_scaffold(
             oid,
             tmc_state,
             params,
             entry_snapshot,
             preflight.run_sequence,
         );
-        let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
-            unreachable!("outer constructor must produce an outer engine")
-        };
-        let old_phase =
-            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
-        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
-            unreachable!("trace outer constructor must enter Stage B")
-        };
-        *phase = OuterPhase::VelocityIntegral {
+        let phase = OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
             data: VelocityIntegralData::new(
                 preflight.run_sequence,
                 preflight.plan.execution_plan(),
             ),
-            safety,
+            safety: scaffold.safety,
         };
-        engine
+        Self::assemble_outer(scaffold, phase)
     }
 
     /// Return the order of the active fixed-I acceptance matrix.
