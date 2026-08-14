@@ -405,19 +405,6 @@ impl CollectedRungEvidence {
         Ok(())
     }
 
-    // Production callers lived in the removed velocity-sweep stepper;
-    // retained (still exercised by this module's tests) pending the deferred
-    // sibling dead-code cleanup.
-    #[cfg(any(test, feature = "trace-velocity-sweep"))]
-    #[allow(dead_code)]
-    pub(crate) fn structured_recovery_rate(
-        &self,
-        direction: VelocityDirection,
-    ) -> Option<CompactSignedRate> {
-        let rate = self.structured_recovery_rates[direction_index(direction)];
-        (rate.decode() > 0).then_some(rate)
-    }
-
     fn retain_compact_structured_rate(
         &mut self,
         direction: VelocityDirection,
@@ -820,60 +807,6 @@ pub fn analyze_directional_rung(
         target_rpm,
         counts_per_rev,
     )
-}
-
-/// Derive the smallest commanded-side rate guaranteed by any intrinsically eligible observation.
-///
-/// Production callers lived in the removed velocity-sweep stepper;
-/// retained (still exercised by this module's tests) pending the deferred
-/// sibling dead-code cleanup.
-#[cfg(any(test, feature = "trace-velocity-sweep"))]
-#[allow(dead_code)]
-pub(crate) fn directional_recovery_lower_rate_q(
-    set: DirectionalObservationSet,
-    direction: VelocityDirection,
-    p: PidPGain,
-    target_rpm: i32,
-    counts_per_rev: u32,
-) -> Result<Option<CompactSignedRate>, VelocityEvidenceError> {
-    if p == PidPGain::ZERO || target_rpm <= 0 || counts_per_rev == 0 {
-        return Err(VelocityEvidenceError::Arithmetic);
-    }
-    let signed_target_rpm = match direction {
-        VelocityDirection::Forward => target_rpm,
-        VelocityDirection::Reverse => -target_rpm,
-    };
-    let mut lower_rate_q: Option<u64> = None;
-    for observation in 0..CONSENSUS_OBSERVATIONS_PER_DIRECTION {
-        if set.classification(observation) != Some(VelocityObservationClass::Eligible) {
-            continue;
-        }
-        let interval = set
-            .disturbance_interval(observation)
-            .ok_or(VelocityEvidenceError::InvalidConsensus)?;
-        let bounds = rate_bounds_from_disturbance_cell(
-            signed_target_rpm,
-            counts_per_rev,
-            p.raw(),
-            [interval.low().raw(), interval.high().raw()],
-        )?;
-        let commanded_side = match direction {
-            VelocityDirection::Forward if bounds[0] > 0 => {
-                u64::try_from(bounds[0]).map_err(|_| VelocityEvidenceError::Arithmetic)?
-            }
-            VelocityDirection::Reverse if bounds[1] < 0 => bounds[1].unsigned_abs(),
-            VelocityDirection::Forward | VelocityDirection::Reverse => continue,
-        };
-        lower_rate_q = Some(lower_rate_q.map_or(commanded_side, |rate| rate.min(commanded_side)));
-    }
-    let Some(lower_rate_q) = lower_rate_q else {
-        return Ok(None);
-    };
-    let compact = CompactSignedRate::encode(
-        i64::try_from(lower_rate_q).map_err(|_| VelocityEvidenceError::Arithmetic)?,
-        BoundRounding::TowardNegativeInfinity,
-    );
-    Ok((compact.decode() > 0).then_some(compact))
 }
 
 /// Derive one direction after the opposite direction has already been folded.
@@ -1488,8 +1421,7 @@ mod tests {
     use super::{
         CollectedRungEvidence, CompactSignedRate, VelocityEvidenceError, VelocityObservationClass,
         VelocityObservationInput, VelocityRungClass, classify_velocity_observation,
-        directional_recovery_lower_rate_q, disturbance_point_cell,
-        observation_class_from_report_code, observation_class_report_code,
+        disturbance_point_cell, observation_class_from_report_code, observation_class_report_code,
         rate_bounds_from_disturbance_cell, reproduce_velocity_rung,
     };
     use crate::autotune::velocity_measurement::{
@@ -1605,62 +1537,6 @@ mod tests {
     }
 
     #[test]
-    fn structured_recovery_rate_is_directional_and_conservative() {
-        let mut collected = CollectedRungEvidence::new();
-        collected
-            .retain_with_structured(
-                0,
-                stationarity_excluded(VelocityDirection::Forward),
-                Some(structured([9_174_700, 9_400_298])),
-            )
-            .unwrap();
-        collected
-            .retain_with_structured(
-                1,
-                stationarity_excluded(VelocityDirection::Reverse),
-                Some(structured([-9_500_000, -9_100_000])),
-            )
-            .unwrap();
-        collected
-            .retain_with_structured(
-                2,
-                stationarity_excluded(VelocityDirection::Forward),
-                Some(structured([9_300_000, 9_500_000])),
-            )
-            .unwrap();
-
-        assert_eq!(
-            collected
-                .structured_recovery_rate(VelocityDirection::Forward)
-                .unwrap()
-                .decode(),
-            9_174_528
-        );
-        assert_eq!(
-            collected
-                .structured_recovery_rate(VelocityDirection::Reverse)
-                .unwrap()
-                .decode(),
-            9_099_776
-        );
-
-        let mut unusable = CollectedRungEvidence::new();
-        for (slot, interval_q) in [(0, [-1, 10]), (2, [0, 0]), (4, [10, 9])] {
-            unusable
-                .retain_with_structured(
-                    slot,
-                    stationarity_excluded(VelocityDirection::Forward),
-                    Some(structured(interval_q)),
-                )
-                .unwrap();
-        }
-        assert_eq!(
-            unusable.structured_recovery_rate(VelocityDirection::Forward),
-            None
-        );
-    }
-
-    #[test]
     fn structured_recovery_rate_cannot_change_observation_evidence() {
         let summary = stationarity_excluded(VelocityDirection::Forward);
         let boundary = structured([9_174_700, 9_400_298]);
@@ -1768,79 +1644,6 @@ mod tests {
         assert_eq!(
             classify_velocity_observation(clip).classification,
             VelocityObservationClass::HardClipFault
-        );
-    }
-
-    #[test]
-    fn sweep_recovery_rate_uses_intrinsic_observations_before_consensus() {
-        let p = PidPGain::new(350).unwrap();
-        let mut collected = CollectedRungEvidence::new();
-        for (observation, bounds) in [[90, 110], [190, 210], [290, 310], [390, 410]]
-            .into_iter()
-            .enumerate()
-        {
-            let mut value = input(VelocityDirection::Forward);
-            value.p = p;
-            value.disturbance = Some((
-                EquivalentTorqueTargetQ16::from_raw((bounds[0] + bounds[1]) / 2),
-                interval(bounds[0], bounds[1]),
-            ));
-            collected
-                .retain(
-                    u8::try_from(observation * 2).unwrap(),
-                    classify_velocity_observation(value),
-                )
-                .unwrap();
-        }
-
-        let rate = directional_recovery_lower_rate_q(
-            collected.directional_set(VelocityDirection::Forward),
-            VelocityDirection::Forward,
-            p,
-            176,
-            4_000,
-        )
-        .unwrap()
-        .unwrap();
-        let expected =
-            rate_bounds_from_disturbance_cell(176, 4_000, p.raw(), [390, 410]).unwrap()[0];
-
-        assert!(expected > 0);
-        assert!(rate.decode() > 0);
-        assert!(rate.decode() <= expected);
-    }
-
-    #[test]
-    fn sweep_recovery_rate_rejects_non_authoritative_observation_classes() {
-        let p = PidPGain::new(350).unwrap();
-        let mut collected = CollectedRungEvidence::new();
-        for (observation, class) in [
-            VelocityObservationClass::Inert,
-            VelocityObservationClass::DeficitUnresolved,
-            VelocityObservationClass::StationarityExcluded(
-                StationarityExclusion::StructuredResidual,
-            ),
-            VelocityObservationClass::CurrentHeadroom,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut summary = classify_velocity_observation(input(VelocityDirection::Reverse));
-            summary.classification = class;
-            collected
-                .retain(u8::try_from(observation * 2 + 1).unwrap(), summary)
-                .unwrap();
-        }
-
-        assert_eq!(
-            directional_recovery_lower_rate_q(
-                collected.directional_set(VelocityDirection::Reverse),
-                VelocityDirection::Reverse,
-                p,
-                176,
-                4_000,
-            ),
-            Ok(None)
         );
     }
 

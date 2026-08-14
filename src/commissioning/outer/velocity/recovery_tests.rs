@@ -2,14 +2,13 @@ use super::current_guard::{
     VelocityCurrentContact, VelocityCurrentObserver, VelocityCurrentZeroPhase,
     VelocityLimitEvidenceCapability,
 };
-use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRateAuthority,
-    RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
-    RungOriginRecoveryPlanError, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
-    RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
-    recovery_moving_target_counts, recovery_return_distance_counts, recovery_runtime_us,
-    recovery_runtime_us_with_schedule, step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestSchedule, RecoveryStage,
+    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryPlanError,
+    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
+    commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_moving_target_counts,
+    recovery_return_distance_counts, recovery_runtime_us, recovery_runtime_us_with_schedule,
+    step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -369,32 +368,6 @@ impl RecoveryFixture {
         }
     }
 
-    fn finish_short_recovery(&mut self) -> super::recovery::RungOriginRecoveryReport {
-        self.command_motion();
-        let handover_us = self.arrive_at_moving_target(1_040);
-        let first = handover_us / 1_000 + 1;
-        assert!(matches!(self.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
-        for sample in first..=first + 499 {
-            let result = self.sample(sample * 1_000, moving_arrival_counts());
-            if sample < first + 499 {
-                assert!(matches!(result, RungOriginRecoveryStep::At(_)));
-            } else {
-                assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
-            }
-        }
-        let mut selection_count = 0;
-        let report = loop {
-            match self.step() {
-                RungOriginRecoveryStep::ReadyNow => {}
-                RungOriginRecoveryStep::RestSelection { .. } => selection_count += 1,
-                RungOriginRecoveryStep::Finished(report) => break report,
-                other => panic!("fixed rest should recover: {other:?}"),
-            }
-        };
-        assert_eq!(selection_count, 1);
-        report
-    }
-
     /// Drive to a terminal step, counting the recovery-owned diagnostics
     /// (`RestSelection`, `RestAnalysis`) returned along the way.
     ///
@@ -627,100 +600,11 @@ fn selected_recovery_reports_completed_unconfirmed_rest_without_a_fault() {
     assert_eq!(fixture.step(), RungOriginRecoveryStep::RestUnconfirmed);
 }
 
-fn authority_rate(rate_q: i64) -> CompactSignedRate {
-    CompactSignedRate::encode(rate_q, BoundRounding::TowardNegativeInfinity)
-}
-
 fn operational_current_observer() -> VelocityCurrentObserver {
     VelocityCurrentObserver::new(
         PidTorqueFluxLimit::new(2_816).unwrap(),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     )
-}
-
-#[test]
-fn recovery_authority_chooses_the_smallest_commanded_side_rate() {
-    let selected = RecoveryRateAuthority::select(
-        Some(RecoveryRateAuthority::settled(authority_rate(9_200_000))),
-        Some(RecoveryRateAuthority::structured(authority_rate(9_174_700))),
-    );
-
-    assert_eq!(selected.lower_rate_q(), Some(9_174_528));
-    assert_eq!(selected.source, RecoveryBindingSource::StructuredSuffix);
-}
-
-#[test]
-fn equal_recovery_rates_prefer_intrinsically_eligible_authority() {
-    let selected = RecoveryRateAuthority::select(
-        Some(RecoveryRateAuthority::settled(authority_rate(9_174_700))),
-        Some(RecoveryRateAuthority::structured(authority_rate(9_174_700))),
-    );
-
-    assert_eq!(selected.lower_rate_q(), Some(9_174_528));
-    assert_eq!(selected.source, RecoveryBindingSource::SettledRate);
-}
-
-#[test]
-fn recovery_runtime_reports_the_selected_success_source() {
-    let lower_rate_q = u64::try_from(authority_rate(14_000_000).decode()).unwrap();
-    let settled = RecoveryFixture::new_with_source(
-        1_040,
-        Some(lower_rate_q),
-        RecoveryBindingSource::SettledRate,
-    )
-    .finish_short_recovery();
-    let structured = RecoveryFixture::new_with_source(
-        1_040,
-        Some(lower_rate_q),
-        RecoveryBindingSource::StructuredSuffix,
-    )
-    .finish_short_recovery();
-
-    assert_eq!(settled.binding_source, RecoveryBindingSource::SettledRate);
-    assert_eq!(
-        structured.binding_source,
-        RecoveryBindingSource::StructuredSuffix
-    );
-}
-
-#[test]
-fn recovery_authority_never_changes_the_constant_motion_command() {
-    let lower_rate_q = u64::try_from(authority_rate(14_000_000).decode()).unwrap();
-    let mut settled = RecoveryFixture::new_with_source(
-        8_458,
-        Some(lower_rate_q),
-        RecoveryBindingSource::SettledRate,
-    );
-    let mut structured = RecoveryFixture::new_with_source(
-        8_458,
-        Some(lower_rate_q),
-        RecoveryBindingSource::StructuredSuffix,
-    );
-
-    settled.command_motion();
-    structured.command_motion();
-
-    assert_eq!(
-        settled.backend.registers.get(&PID_VELOCITY_TARGET.addr()),
-        structured
-            .backend
-            .registers
-            .get(&PID_VELOCITY_TARGET.addr())
-    );
-    assert_eq!(
-        settled
-            .backend
-            .registers
-            .get(&PID_VELOCITY_P_VELOCITY_I.addr()),
-        structured
-            .backend
-            .registers
-            .get(&PID_VELOCITY_P_VELOCITY_I.addr())
-    );
-    assert_eq!(
-        settled.backend.pid_velocity_error_sum_clears,
-        structured.backend.pid_velocity_error_sum_clears
-    );
 }
 
 #[test]
@@ -730,7 +614,6 @@ fn recovery_binding_source_codes_are_unique_and_stable() {
     assert_eq!(RecoveryBindingSource::MissingRate as u8, 2);
     assert_eq!(RecoveryBindingSource::Deadline as u8, 3);
     assert_eq!(RecoveryBindingSource::LocalTravel as u8, 4);
-    assert_eq!(RecoveryBindingSource::StructuredSuffix as u8, 5);
     assert_eq!(RecoveryBindingSource::CurrentHeadroom as u8, 6);
     assert_eq!(RungOriginRecoveryOutcome::RecoveryCurrentHeadroom as u8, 4);
 }

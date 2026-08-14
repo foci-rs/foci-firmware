@@ -28,8 +28,6 @@ use foci_tmc4671::pid::PidPGain;
 
 #[cfg(feature = "trace-velocity-sweep")]
 use super::current_guard::VelocityCurrentObserver;
-#[cfg(feature = "trace-velocity-sweep")]
-use super::operating_region::CompactSignedRate;
 use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 
 const MREV_PER_REV: u128 = 1_000;
@@ -99,76 +97,8 @@ pub(crate) enum RecoveryBindingSource {
     MissingRate = 2,
     Deadline = 3,
     LocalTravel = 4,
-    // Constructed only by the removed velocity-sweep evidence path
-    // (`RecoveryRateAuthority::structured`). Retained pending the deferred
-    // sibling dead-code cleanup; still matched by shared reporting/tests.
-    #[allow(dead_code)]
-    StructuredSuffix = 5,
     CurrentHeadroom = 6,
 }
-
-/// Compact rate bound and the evidence source that authorized its use.
-///
-/// No longer constructed after the velocity-sweep evidence state was
-/// removed; retained (used by `recovery_tests`) pending the deferred sibling
-/// dead-code cleanup.
-#[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[allow(dead_code)]
-pub(crate) struct RecoveryRateAuthority {
-    mantissa: i16,
-    shift: u8,
-    pub(crate) source: RecoveryBindingSource,
-}
-
-#[cfg(feature = "trace-velocity-sweep")]
-#[allow(dead_code)]
-impl RecoveryRateAuthority {
-    pub(crate) const NONE: Self = Self {
-        mantissa: 0,
-        shift: 0,
-        source: RecoveryBindingSource::MissingRate,
-    };
-
-    pub(crate) const fn settled(lower_rate: CompactSignedRate) -> Self {
-        Self {
-            mantissa: lower_rate.mantissa,
-            shift: lower_rate.shift,
-            source: RecoveryBindingSource::SettledRate,
-        }
-    }
-
-    pub(crate) const fn structured(lower_rate: CompactSignedRate) -> Self {
-        Self {
-            mantissa: lower_rate.mantissa,
-            shift: lower_rate.shift,
-            source: RecoveryBindingSource::StructuredSuffix,
-        }
-    }
-
-    pub(crate) fn lower_rate_q(self) -> Option<u64> {
-        u64::try_from(self.decoded_rate())
-            .ok()
-            .filter(|rate| *rate != 0)
-    }
-
-    pub(crate) fn select(ordinary: Option<Self>, structured: Option<Self>) -> Self {
-        match (ordinary, structured) {
-            (Some(left), Some(right)) if right.decoded_rate() < left.decoded_rate() => right,
-            (Some(left), Some(_)) => left,
-            (Some(left), None) => left,
-            (None, Some(right)) => right,
-            (None, None) => Self::NONE,
-        }
-    }
-
-    const fn decoded_rate(self) -> i64 {
-        (self.mantissa as i64) << self.shift
-    }
-}
-
-#[cfg(feature = "trace-velocity-sweep")]
-const _: () = assert!(core::mem::size_of::<RecoveryRateAuthority>() <= 4);
 
 /// Complete stage-neutral summary of one recovery slot.
 #[cfg(feature = "trace-velocity-sweep")]
@@ -412,10 +342,7 @@ impl RungOriginRecoveryRuntime {
             return Err(CommissionError::InvalidSchedule);
         }
         let lower_rate_q = match (config.lower_rate_q, config.authority_source) {
-            (
-                Some(rate),
-                RecoveryBindingSource::SettledRate | RecoveryBindingSource::StructuredSuffix,
-            ) if rate != 0 => Some(rate),
+            (Some(rate), RecoveryBindingSource::SettledRate) if rate != 0 => Some(rate),
             (None, RecoveryBindingSource::MissingRate) => None,
             _ => return Err(CommissionError::InvalidSchedule),
         };

@@ -266,33 +266,6 @@ impl VelocitySweepExecutionPlan {
             rung_index,
         )
     }
-
-    /// Whether the final predeclared rung is bounded by usable current headroom.
-    ///
-    /// The sole caller lived in the removed velocity-sweep stepper;
-    /// retained pending the deferred sibling dead-code cleanup.
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[allow(dead_code)]
-    pub(crate) fn structural_current_bound(
-        self,
-        rung_index: u8,
-    ) -> Result<bool, VelocityPlanError> {
-        if rung_index
-            .checked_add(1)
-            .is_none_or(|next| next != self.rung_count)
-        {
-            return Ok(false);
-        }
-        let target = self.target_velocity_rpm.raw().unsigned_abs();
-        if target == 0 || self.usable_torque_limit == 0 {
-            return Err(VelocityPlanError::InvalidRequest);
-        }
-        let unbounded_current_p_top = VELOCITY_P_DIVISOR
-            .checked_mul(u32::from(self.usable_torque_limit))
-            .ok_or(VelocityPlanError::Arithmetic)?
-            / target;
-        Ok(unbounded_current_p_top <= u32::from(PidPGain::MAX.raw()))
-    }
 }
 
 const _: () = assert!(core::mem::size_of::<VelocitySweepExecutionPlan>() == 32);
