@@ -618,7 +618,13 @@ impl VelocitySweepData {
         }
     }
 
-    /// Construct sweep state from the single plan accepted at command admission.
+    /// Construct sweep state from an admitted plan.
+    ///
+    /// Test-only: the sole production caller (the Stage-B-preflight engine
+    /// constructor) had no reachable route once the combined workflow was
+    /// removed and was deleted with it. Kept for `sweep.rs` unit tests that
+    /// want to seed `VelocitySweepData` from a real plan.
+    #[cfg(test)]
     pub(crate) fn new_with_plan(
         run_sequence: u32,
         plan: crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan,

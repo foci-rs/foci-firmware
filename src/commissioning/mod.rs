@@ -553,32 +553,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Create the trace-gated Stage B engine from the sole pre-motion plan.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub fn new_outer_for_tmc_with_stage_b_preflight(
-        oid: u8,
-        tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
-        preflight: crate::commission_dispatch::stage_b::StageBPreflight,
-    ) -> Self {
-        let mut engine = Self::new_outer_for_tmc_with_trace_seq(
-            oid,
-            tmc_state,
-            params,
-            entry_snapshot,
-            preflight.run_sequence,
-        );
-        let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
-            unreachable!("outer constructor must produce an outer engine")
-        };
-        let OuterPhase::VelocitySweep { data, .. } = phase else {
-            unreachable!("trace Stage B constructor must enter the velocity sweep")
-        };
-        *data = VelocitySweepData::new_with_plan(preflight.run_sequence, preflight.plan);
-        engine
-    }
-
     /// Create a breakaway-campaign engine from an admitted, pre-planned campaign.
     ///
     /// The campaign is built and its command-level workflow envelope reserved by
@@ -2640,47 +2614,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[fixture_test]
-    fn stage_b_constructor_seeds_the_admitted_plan_once() {
-        use crate::commission_dispatch::stage_b::preflight_stage_b_request;
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-        use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
-
-        let params = sample_outer_params();
-        let request = VelocitySweepRequest {
-            requested_velocity_mrev_s: params.requested_velocity_mrev_s,
-            machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
-            requested_velocity_source: params.requested_velocity_source,
-            max_stroke_travel_mrev: params.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: params.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: params.positive_position_headroom_mrev,
-            max_duration_ms: params.max_duration_ms,
-        };
-        let mut slot = StageBCandidateSlot::new();
-        let preflight = preflight_stage_b_request(request, 4_000, 2_816, 0, 0, 42, &mut slot)
-            .expect("valid Stage B preflight");
-        let expected_digest = preflight.identity.plan_digest;
-        let engine = CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
-            0,
-            tmc_state(),
-            params,
-            sample_entry_snapshot(),
-            preflight,
-        );
-
-        let EngineMode::Outer {
-            phase: OuterPhase::VelocitySweep { data, .. },
-            ..
-        } = engine.engine_mode
-        else {
-            panic!("Stage B preflight must construct the velocity sweep")
-        };
-        assert_eq!(data.plan.plan_digest, expected_digest);
-        assert_eq!(data.integrity.next_evidence_sequence(), 1);
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
