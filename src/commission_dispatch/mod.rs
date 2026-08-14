@@ -334,23 +334,6 @@ pub enum ReplyPayload {
         #[cfg(feature = "trace-velocity-sweep")]
         reproduction: Option<stage_b::StageBReproductionReport>,
     },
-    /// Causal Stage-B Complete followed by the exact Stage-C continuation plan.
-    #[cfg(feature = "trace-velocity-sweep")]
-    VelocityIntegralContinuation {
-        oid: u8,
-        run_sequence: u32,
-        stage_b_terminal: VelocitySweepTerminal,
-        stage_b_reproduction: Option<stage_b::StageBReproductionReport>,
-        stage_c_plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
-    },
-    /// Causal Stage-B Complete followed by a zero-motion Stage-C failure.
-    #[cfg(feature = "trace-velocity-sweep")]
-    VelocityIntegralAdmissionFailure {
-        oid: u8,
-        stage_b_terminal: VelocitySweepTerminal,
-        stage_b_reproduction: Option<stage_b::StageBReproductionReport>,
-        stage_c_terminal: crate::commissioning::types::VelocityIntegralTerminal,
-    },
     /// Complete exact Stage-C plan emitted before direct-resume motion.
     #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralPlan {

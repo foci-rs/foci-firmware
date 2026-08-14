@@ -2457,35 +2457,6 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             emit_commissioning_workflow_plan(sink, oid, plan);
         }
         #[cfg(feature = "trace-velocity-sweep")]
-        ReplyPayload::VelocityIntegralContinuation {
-            oid,
-            run_sequence,
-            stage_b_terminal,
-            stage_b_reproduction,
-            stage_c_plan,
-        } => {
-            if let Some(report) = stage_b_reproduction {
-                emit_velocity_stage_b_reproduction(sink, oid, report);
-            }
-            emit_velocity_sweep_terminal_fragments(sink, oid, stage_b_terminal);
-            emit_velocity_integral_plan(sink, oid, run_sequence, stage_c_plan);
-        }
-        #[cfg(feature = "trace-velocity-sweep")]
-        ReplyPayload::VelocityIntegralAdmissionFailure {
-            oid,
-            stage_b_terminal,
-            stage_b_reproduction,
-            stage_c_terminal,
-        } => {
-            if let Some(report) = stage_b_reproduction {
-                emit_velocity_stage_b_reproduction(sink, oid, report);
-            }
-            emit_velocity_sweep_terminal_fragments(sink, oid, stage_b_terminal);
-            // Stage B ran and reports its own evidence above. Stage C did not:
-            // it was refused at admission, so only its terminal exists.
-            emit_velocity_integral_terminal_fragments(sink, oid, stage_c_terminal);
-        }
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::VelocityIntegralPlan {
             oid,
             run_sequence,
@@ -6059,38 +6030,6 @@ mod tests {
         .unwrap()
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
-    fn stage_b_terminal_fixture() -> VelocitySweepTerminal {
-        use crate::commissioning::types::VelocitySweepOutcome;
-
-        VelocitySweepTerminal {
-            run_sequence: 17,
-            evidence_sequence: 23,
-            plan_digest: 0x1111_2222_3333_4444,
-            outcome: VelocitySweepOutcome::Complete,
-            cause: 0,
-            recovery_unavailable: false,
-            model_direction_mask: 3,
-            selected_memberships: [0x0038_0000; 3],
-            nominated_p: 1_448,
-            selected_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
-            selected_common_intervals: [[17_250_000, 17_750_000], [-18_750_000, -18_250_000]],
-            p_start: 2,
-            p_top: 32_767,
-            rung_count: 23,
-            coverage_mask: 3,
-            directional_region_counts: [2; 2],
-            directional_fragment_counts: [1; 2],
-            expected_observations: 184,
-            emitted_observations: 184,
-            expected_rungs: 23,
-            emitted_rungs: 23,
-            digest: 0x5555_6666_7777_8888,
-            run_started_us: 1_000,
-            run_completed_us: 2_000,
-            safety_fault: None,
-        }
-    }
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
@@ -6109,63 +6048,6 @@ mod tests {
         }
         assert!(!source.contains(concat!("fn foci_", "combined_")));
         assert!(!source.contains(concat!("fn foci_velocity_", "combined_")));
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn velocity_integral_reply_continuation_is_causal_and_plan_is_complete() {
-        let mut sink = RecordingSink::default();
-        let plan = velocity_integral_plan_fixture();
-
-        emit_terminal_reply(
-            &mut sink,
-            ReplyPayload::VelocityIntegralContinuation {
-                oid: 3,
-                run_sequence: 18,
-                stage_b_terminal: stage_b_terminal_fixture(),
-                stage_b_reproduction: None,
-                stage_c_plan: plan,
-            },
-        );
-
-        assert_eq!(
-            &sink.events[..4],
-            &[
-                Event::StageBTerminal {
-                    fragment: 0,
-                    evidence_sequence: 23,
-                },
-                Event::StageBTerminal {
-                    fragment: 1,
-                    evidence_sequence: 23,
-                },
-                Event::StageBTerminal {
-                    fragment: 2,
-                    evidence_sequence: 23,
-                },
-                Event::StageBTerminal {
-                    fragment: 3,
-                    evidence_sequence: 23,
-                },
-            ]
-        );
-        assert_eq!(sink.integral_plan_joint_memberships, [0x0004_0000; 2]);
-        assert_eq!(
-            &sink.events[4..11],
-            &[
-                Event::IntegralPlan(0),
-                Event::IntegralPlan(1),
-                Event::IntegralPlan(4),
-                Event::IntegralPlan(5),
-                Event::IntegralPlan(2),
-                Event::IntegralPlan(3),
-                Event::IntegralPlanRecovery,
-            ]
-        );
-        assert_eq!(
-            sink.events.len(),
-            11 + usize::from(plan.positive_rung_count)
-        );
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
