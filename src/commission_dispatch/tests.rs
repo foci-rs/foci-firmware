@@ -95,36 +95,6 @@ fn stage_b_preflight_maps_invalid_plans_without_touching_retention() {
     assert_eq!(slot.candidate(), None);
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
-#[test]
-fn combined_preflight_rejects_legacy_state_without_mutating_it() {
-    use crate::commission_dispatch::stage_b::{
-        StageBPreflightRejection, preflight_combined_stage_b_request,
-    };
-    use crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION;
-
-    let accepted =
-        preflight_combined_stage_b_request(stage_b_request(), 4_000, 2_816, 0, 0, 7, false)
-            .expect("valid combined preflight");
-    assert_eq!(
-        accepted.identity.schema_revision,
-        COMBINED_STAGE_B_SCHEMA_REVISION
-    );
-    assert_eq!(accepted.plan.usable_torque_limit, 2_816);
-
-    assert_eq!(
-        preflight_combined_stage_b_request(stage_b_request(), 4_000, 2_816, 0, 0, 8, true),
-        Err(StageBPreflightRejection::RejectedLegacyState {
-            requested: crate::commissioning::outer::velocity::reproduction::StageBPlanIdentity {
-                channel: 0,
-                build_features: accepted.identity.build_features,
-                schema_revision: COMBINED_STAGE_B_SCHEMA_REVISION,
-                plan_digest: accepted.plan.digest(),
-            },
-        })
-    );
-}
-
 fn dispatch_state<'a>(
     calibrated: &'a mut bool,
     motor_enabled: &'a mut bool,

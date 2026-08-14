@@ -135,59 +135,6 @@ pub struct StageCTerminalDispatch {
     pub authority: Option<StageCAuthoritySummary>,
 }
 
-/// Derive one executable matrix handoff from a safe combined terminal.
-pub(crate) fn combined_acceptance_point(
-    channel: u8,
-    plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan,
-    terminal: &VelocityIntegralTerminal,
-) -> Result<Option<AcceptancePoint>, ()> {
-    use crate::commissioning::outer::velocity::combined_plan::{
-        COMBINED_STAGE_C_SCHEMA_REVISION, CombinedTargetStatus,
-    };
-    use crate::commissioning::outer::velocity::integral_reporting::{
-        terminal_target_status, terminal_target_terminus,
-    };
-    use crate::commissioning::outer::velocity::{
-        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG, integral_i_at,
-    };
-
-    if terminal.outcome != VelocityIntegralOutcome::Complete
-        || terminal_target_status(terminal) != Some(CombinedTargetStatus::TargetReached)
-    {
-        return Ok(None);
-    }
-    if terminal.plan_digest != plan.plan_digest || terminal.final_p != plan.final_p {
-        return Err(());
-    }
-    let positive_index = terminal_target_terminus(terminal).ok_or(())?;
-    let selected_i = integral_i_at(plan, positive_index.checked_add(1).ok_or(())?).ok_or(())?;
-    let mut qualifier_bits = 0;
-    if terminal.recovery_quantization_exposed {
-        qualifier_bits |= ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED;
-    }
-    if terminal.probe_constrained_test_point {
-        qualifier_bits |= ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT;
-    }
-    if plan.limit_evidence_capability as u32 == VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG {
-        qualifier_bits |= ACCEPTANCE_QUALIFIER_LATCHED_LIMIT_EVIDENCE;
-    }
-    Ok(Some(AcceptancePoint {
-        identity: StageCPlanIdentity {
-            channel,
-            build_features: BUILD_FEATURES,
-            schema_revision: COMBINED_STAGE_C_SCHEMA_REVISION,
-            plan_digest: plan.plan_digest,
-        },
-        selected_p: plan.final_p,
-        selected_i,
-        target_velocity_rpm: plan.target_velocity_rpm,
-        selected_response_intervals_q: plan.selected_response_intervals_q,
-        qualifier_bits,
-        token: None,
-        progress: AcceptanceMatrixProgress::ReadyAscending,
-    }))
-}
-
 /// Typed outcome of the breakaway acceptance-point installer.
 ///
 /// The no-terminus refusal is a distinct variant, not folded into an ordinary
@@ -205,11 +152,9 @@ pub enum AcceptanceInstall {
 
 /// Derive one token-carrying matrix handoff from a reproduced breakaway `Complete`.
 ///
-/// Kept separate from [`combined_acceptance_point`]: a combined point sources
-/// its intervals from the execution plan and reconstructs from the request,
-/// whereas a breakaway point sources the token and signed recovery intervals
-/// from the run's breakaway authority and cannot be reconstructed from the
-/// request. The token is extracted from `authority.acquisition` via
+/// A breakaway point sources the token and signed recovery intervals from the
+/// run's breakaway authority; it cannot be reconstructed from the request
+/// alone. The token is extracted from `authority.acquisition` via
 /// [`crate::commissioning::outer::velocity::integral_plan::StageCAcquisition::confirmed_breakaway`],
 /// never constructed, so the confirmation's unforgeability is preserved.
 ///

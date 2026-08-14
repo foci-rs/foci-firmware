@@ -29,8 +29,7 @@ use crate::commissioning::outer::{
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::{
-    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepEvidenceState,
-    VelocitySweepState,
+    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepState,
 };
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
@@ -261,11 +260,6 @@ pub struct CommissioningEngine {
     diagnostics: crate::selftest::CommissionDiagnostics,
     trace_run: TraceRunState,
     trace_summary_seqs: TraceSummarySeqs,
-    /// Requested observation slot order, applied when Stage C is planned.
-    ///
-    /// Only the trace-gated Stage-C continuation reads this.
-    #[cfg_attr(not(feature = "trace-velocity-sweep"), allow(dead_code))]
-    requested_slot_order: crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder,
 }
 
 impl CommissioningEngine {
@@ -344,8 +338,6 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
-            requested_slot_order:
-                crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         }
     }
 
@@ -393,8 +385,6 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
-            requested_slot_order:
-                crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         }
     }
 
@@ -452,8 +442,6 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
-            requested_slot_order:
-                crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         }
     }
 
@@ -513,7 +501,7 @@ impl CommissioningEngine {
             requested_velocity_mrev_s,
             machine_velocity_ceiling_mrev_s,
             requested_velocity_source,
-            slot_order: requested_slot_order,
+            slot_order: _,
             max_stroke_travel_mrev,
             settle_travel_reserve_mrev,
             negative_position_headroom_mrev,
@@ -562,7 +550,6 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
-            requested_slot_order,
         }
     }
 
@@ -675,87 +662,6 @@ impl CommissioningEngine {
         plan_velocity_integral_response(authority, stage_b_plan, budget, pwm_hz, counts_per_rev)
     }
 
-    /// Derive Stage C directly from the response selected in the live combined sweep.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn plan_combined_stage_c_continuation(
-        &self,
-        pwm_hz: u32,
-    ) -> Result<
-        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
-        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError,
-    > {
-        use crate::commissioning::outer::velocity::integral_plan::{
-            VelocityIntegralPlanError, plan_combined_velocity_integral_response,
-        };
-
-        let EngineMode::Outer { phase, .. } = &self.engine_mode else {
-            return Err(VelocityIntegralPlanError::MissingStageBPlan);
-        };
-        let OuterPhase::VelocitySweep { data, safety, .. } = phase else {
-            return Err(VelocityIntegralPlanError::MissingStageBPlan);
-        };
-        let VelocitySweepEvidenceState::ResponseSelected(selected) = data.evidence else {
-            return Err(VelocityIntegralPlanError::MissingAuthority);
-        };
-        let slot_order = self.requested_slot_order;
-        let counts_per_rev = self
-            .tmc_state
-            .encoder_counts_per_rev()
-            .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
-        plan_combined_velocity_integral_response(
-            selected,
-            data.plan,
-            safety.budget,
-            pwm_hz,
-            counts_per_rev,
-        )
-        .map(|mut plan| {
-            plan.slot_order = slot_order;
-            plan
-        })
-    }
-
-    /// Whether the active terminal belongs to the nonretained combined Stage-B schema.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn is_combined_stage_b(&self) -> bool {
-        matches!(
-            &self.engine_mode,
-            EngineMode::Outer {
-                phase: OuterPhase::VelocitySweep { data, .. },
-                ..
-            } if data.plan.schema_revision
-                == crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION
-        )
-    }
-
-    /// Whether the active terminal belongs to the nonretained combined Stage-C schema.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn is_combined_stage_c(&self) -> bool {
-        matches!(
-            &self.engine_mode,
-            EngineMode::Outer {
-                phase: OuterPhase::VelocityIntegral { data, .. },
-                ..
-            } if data.plan.combined_workflow
-        )
-    }
-
-    /// Return the exact live combined execution plan used by terminal retention.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn combined_stage_c_execution_plan(
-        &self,
-    ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
-    {
-        let EngineMode::Outer {
-            phase: OuterPhase::VelocityIntegral { data, .. },
-            ..
-        } = &self.engine_mode
-        else {
-            return None;
-        };
-        data.plan.combined_workflow.then_some(data.plan)
-    }
-
     /// Return the live breakaway execution plan used by terminal retention.
     ///
     /// `Some` only for a breakaway acceptance run, so a `Some` return is itself
@@ -776,21 +682,6 @@ impl CommissioningEngine {
             return None;
         };
         (data.plan.acceptance_source == AcceptanceSource::Breakaway).then_some(data.plan)
-    }
-
-    #[cfg(all(test, feature = "trace-velocity-sweep"))]
-    pub(crate) fn set_combined_stage_b_response_for_test(
-        &mut self,
-        selected: crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse,
-    ) {
-        let EngineMode::Outer {
-            phase: OuterPhase::VelocitySweep { data, .. },
-            ..
-        } = &mut self.engine_mode
-        else {
-            panic!("combined Stage-B test helper requires a velocity sweep");
-        };
-        data.evidence = VelocitySweepEvidenceState::ResponseSelected(selected);
     }
 
     /// Transition a live reproduced Stage-B engine into a prederived Stage-C plan.
