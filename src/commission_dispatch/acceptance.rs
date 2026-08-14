@@ -1,20 +1,17 @@
 //! Firmware-owned admission and retained lifecycle for velocity confidence matrices.
 
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-use foci_tmc4671::pid::PidPGain;
 
 use crate::commission_dispatch::stage_c::StageCPreflightConfig;
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::acceptance_plan::{
     AcceptanceMatrixOrder, AcceptanceMatrixPlan, AcceptanceMatrixPlanError, plan_acceptance_matrix,
 };
-use crate::commissioning::outer::velocity::combined_plan::{
-    BREAKAWAY_STAGE_C_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedSelectedResponse,
-};
+use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use crate::commissioning::outer::velocity::current_guard::derive_probe_limit;
 use crate::commissioning::outer::velocity::integral_plan::{
     AcquisitionContext, VelocityIntegralPlan, VelocityIntegralPlanError,
-    plan_combined_velocity_integral_response, plan_retained_breakaway_velocity_integral_response,
+    plan_retained_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot,
@@ -74,63 +71,6 @@ pub enum AcceptanceMatrixPreflightRejection {
     InvalidPlan,
 }
 
-/// Reconstruct the combined plan whose terminal installed the retained point.
-pub fn reconstruct_combined_plan(
-    point: crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint,
-    request: VelocitySweepRequest,
-    encoder_counts_per_rev: u32,
-    torque_limit: u16,
-    limit_evidence_capability: u32,
-    pwm_hz: u32,
-) -> Result<VelocityIntegralPlan, AcceptanceMatrixPreflightRejection> {
-    let stage_b = plan_combined_velocity_sweep(
-        request,
-        encoder_counts_per_rev,
-        torque_limit,
-        limit_evidence_capability,
-    )
-    .map_err(|_| AcceptanceMatrixPreflightRejection::InvalidPlan)?;
-    let p = PidPGain::new(point.selected_p)
-        .map_err(|_| AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)?;
-    let selected =
-        CombinedSelectedResponse::from_retained_intervals(p, point.selected_response_intervals_q)
-            .map_err(|_| AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)?;
-    let motion_budget = OuterMotionBudget {
-        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-        requested_velocity_source: request.requested_velocity_source,
-        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-        max_duration_ms: request.max_duration_ms,
-    };
-    let current = plan_combined_velocity_integral_response(
-        selected,
-        stage_b.execution_plan(stage_b.digest()),
-        motion_budget,
-        pwm_hz,
-        encoder_counts_per_rev,
-    )
-    .map_err(|error| match error {
-        VelocityIntegralPlanError::Arithmetic
-        | VelocityIntegralPlanError::InvalidRequest
-        | VelocityIntegralPlanError::ConfidenceFamilyTooLarge
-        | VelocityIntegralPlanError::InsufficientStructuralSpan => {
-            AcceptanceMatrixPreflightRejection::InvalidPlan
-        }
-        _ => AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch,
-    })?;
-    if current.digest() != point.identity.plan_digest
-        || current.schema_revision != point.identity.schema_revision
-        || current.final_p != point.selected_p
-        || current.target_velocity_rpm != point.target_velocity_rpm
-    {
-        return Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch);
-    }
-    Ok(current)
-}
-
 /// Reconstruct the breakaway plan whose confirmed token installed the retained point.
 ///
 /// Breakaway carries no retained combined-selected-response plan, and its
@@ -141,9 +81,9 @@ pub fn reconstruct_combined_plan(
 /// the Stage-C resume path already uses -- rather than from any retained full
 /// plan. `point.token` is `Some` only for a genuine breakaway acceptance
 /// point (see [`AcceptancePoint::token`]), so a point carrying none is
-/// refused before any reconstruction is attempted. Parallel to
-/// [`reconstruct_combined_plan`]: same inputs, same digest verification,
-/// same rejection on any divergence.
+/// refused before any reconstruction is attempted. Digest, schema, final P,
+/// and target velocity are all re-checked against the retained identity
+/// before the reconstruction is trusted, with any divergence rejected.
 pub fn reconstruct_breakaway_plan(
     point: AcceptancePoint,
     request: VelocitySweepRequest,
@@ -234,12 +174,10 @@ pub fn reconstruct_breakaway_plan(
 /// Validate a retained point and derive one immutable matrix without mutating retention.
 ///
 /// Reconstructs the plan the retained point identifies before checking it:
-/// combined points reproduce theirs from the request via
-/// [`reconstruct_combined_plan`]; breakaway points rebuild theirs
-/// deterministically from the carried confirmation token via
-/// [`reconstruct_breakaway_plan`]. Either way, no full plan is retained --
-/// only the compact [`AcceptancePoint`] the caller reads from
-/// `stage_c_candidate`.
+/// breakaway points rebuild theirs deterministically from the carried
+/// confirmation token via [`reconstruct_breakaway_plan`]; every other
+/// identity is rejected. No full plan is retained -- only the compact
+/// [`AcceptancePoint`] the caller reads from `stage_c_candidate`.
 pub fn preflight_acceptance_matrix(
     action: AutotuneAction,
     request: VelocitySweepRequest,
@@ -263,24 +201,17 @@ pub fn preflight_acceptance_matrix(
     if point.progress != expected_progress {
         return Err(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch);
     }
-    let current_config = match point.identity.schema_revision {
-        COMBINED_STAGE_C_SCHEMA_REVISION => reconstruct_combined_plan(
+    let current_config = if point.identity.schema_revision == BREAKAWAY_STAGE_C_SCHEMA_REVISION {
+        reconstruct_breakaway_plan(
             point,
             request,
             config.encoder_counts_per_rev,
             config.torque_limit,
             config.limit_evidence_capability,
             config.pwm_hz,
-        )?,
-        BREAKAWAY_STAGE_C_SCHEMA_REVISION => reconstruct_breakaway_plan(
-            point,
-            request,
-            config.encoder_counts_per_rev,
-            config.torque_limit,
-            config.limit_evidence_capability,
-            config.pwm_hz,
-        )?,
-        _ => return Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch),
+        )?
+    } else {
+        return Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch);
     };
     let plan = plan_acceptance_matrix(point, request, order, slot_order, current_config).map_err(
         |error| match error {
@@ -399,67 +330,104 @@ pub(crate) fn test_acceptance_point(
     request: VelocitySweepRequest,
     progress: AcceptanceMatrixProgress,
 ) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
-    use crate::commissioning::outer::velocity::combined_plan::select_proportional_response;
-    use crate::commissioning::outer::velocity::operating_region::{
-        BoundRounding, CompactSignedRate,
+    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::commissioning::outer::velocity::band_confirmation::{
+        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+        plan_band_confirmation,
     };
+    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
     use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
-    use crate::commissioning::outer::velocity::sweep_consensus::DirectionalConsensusClass;
-    use crate::commissioning::outer::velocity::sweep_evidence::CompactDirectionalRungReport;
-
-    let report = |low_q, high_q| CompactDirectionalRungReport {
-        p: PidPGain::new(1_024).unwrap(),
-        classification: DirectionalConsensusClass::EligibleConsensus,
-        components: [[0; 2]; 2],
-        pooled: None,
-        settled_rate_bounds_q: [
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-        ],
-        collected_mask: 0b1111,
-        eligible_mask: 0b1111,
-        included_mask: 0b1111,
-        operable_count: 4,
-        flags: 0,
+    use crate::commissioning::outer::velocity::sweep_consensus::{
+        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
     };
+    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+    use foci_tmc4671::pid::PidPGain;
+
+    const ENCODER_COUNTS_PER_REV: u32 = 4_000;
+    const TORQUE_LIMIT: u16 = 2_816;
+    const PWM_HZ: u32 = 25_000;
+
     let stage_b = plan_combined_velocity_sweep(
         request,
-        4_000,
-        2_816,
+        ENCODER_COUNTS_PER_REV,
+        TORQUE_LIMIT,
         crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
-    let target_rpm = stage_b.target_velocity_rpm.raw();
-    let target_rate_q = i64::from(target_rpm) * 4_000 * 1_000 / 60;
-    let response_low = target_rate_q * 75 / 100;
-    let response_high = target_rate_q * 76 / 100;
-    let selected = select_proportional_response(
-        report(response_low, response_high),
-        report(-response_high, -response_low),
-        target_rpm,
-        4_000,
+    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    context.channel = 0;
+    context.plan_time_pwm_hz = PWM_HZ;
+    context.plan_time_encoder_counts_per_rev = ENCODER_COUNTS_PER_REV;
+    // Mirrors `reconstruct_breakaway_plan`'s own derivation exactly: the
+    // deterministic nine-tenths probe headroom depends only on the hard
+    // torque limit, not on the target velocity or any live measurement.
+    let operational_limit = PidTorqueFluxLimit::new(u32::from(TORQUE_LIMIT)).unwrap();
+    context.usable_torque_limit = derive_probe_limit(operational_limit).unwrap().raw();
+
+    let confirmation_plan =
+        plan_band_confirmation(0x1111_2222_3333_4444, PidPGain::new(512).unwrap()).unwrap();
+    let consensus = DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let mean_rate_q: i64 = 750_000;
+    let variance_of_mean_q2: u128 = 58_752_225;
+    let target_rate_q: i64 = 1_000_000;
+    let forward = ConfirmationDirectionalInput {
+        consensus,
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus,
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let acceptance =
+        evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse).unwrap();
+    let held_out_response_intervals_q = acceptance.held_out_response_intervals_q;
+    let token = bind_breakaway_stage_c_authority(
+        confirmation_plan.plan_digest,
+        confirmation_plan,
+        Ok(acceptance),
     )
-    .unwrap()
     .unwrap();
-    let plan = plan_combined_velocity_integral_response(
-        selected,
-        stage_b.execution_plan(stage_b.digest()),
-        OuterMotionBudget {
-            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-            requested_velocity_source: request.requested_velocity_source,
-            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-            max_duration_ms: request.max_duration_ms,
-        },
-        25_000,
-        4_000,
+
+    let motion_budget = OuterMotionBudget {
+        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+        requested_velocity_source: request.requested_velocity_source,
+        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+        max_duration_ms: request.max_duration_ms,
+    };
+    let plan = plan_retained_breakaway_velocity_integral_response(
+        token,
+        confirmation_plan.candidate_p.raw(),
+        context,
+        held_out_response_intervals_q,
+        motion_budget,
+        PWM_HZ,
+        ENCODER_COUNTS_PER_REV,
     )
     .unwrap();
+
     crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
         identity:
             crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity {
@@ -469,11 +437,11 @@ pub(crate) fn test_acceptance_point(
                 plan_digest: plan.digest(),
             },
         selected_p: plan.final_p,
-        selected_i: 1_024,
+        selected_i: plan.positive_rungs()[0],
         target_velocity_rpm: plan.target_velocity_rpm,
-        selected_response_intervals_q: plan.execution_plan().selected_response_intervals_q,
+        selected_response_intervals_q: plan.authority.directional_pooled_intervals,
         qualifier_bits: 0,
-        token: None,
+        token: Some(token),
         progress,
     }
 }

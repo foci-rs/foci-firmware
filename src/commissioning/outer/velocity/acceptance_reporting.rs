@@ -445,7 +445,7 @@ mod tests {
                 channel: 0,
                 build_features: 0x1234,
                 schema_revision:
-                    crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
+                    crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
                 plan_digest: 0x1111_2222_3333_4444,
             },
             order: AcceptanceMatrixOrder::Ascending,
@@ -486,19 +486,6 @@ mod tests {
         }
     }
 
-    /// One matrix plan carrying a breakaway acceptance identity instead of a
-    /// combined one, otherwise identical to [`plan`].
-    fn breakaway_plan() -> AcceptanceMatrixPlan {
-        AcceptanceMatrixPlan {
-            acceptance_identity: StageCPlanIdentity {
-                schema_revision:
-                    crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
-                ..plan().acceptance_identity
-            },
-            ..plan()
-        }
-    }
-
     /// Byte offset of `acceptance_identity.schema_revision` in the encoded
     /// matrix-plan core record (`records[0]` returned by
     /// `encode_acceptance_plan`).
@@ -521,24 +508,6 @@ mod tests {
     /// families apart.
     #[test]
     fn acceptance_plan_discloses_breakaway_identity_schema() {
-        let plan = breakaway_plan();
-
-        let records = super::encode_acceptance_plan(7, plan);
-
-        let disclosed = read_u16_at(
-            records[0].as_bytes(),
-            ACCEPTANCE_IDENTITY_SCHEMA_REVISION_OFFSET,
-        );
-        assert_eq!(
-            disclosed,
-            crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
-        );
-    }
-
-    /// Same lock for the combined family: the disclosure must keep reading
-    /// the point's own identity, not silently regress to a hard-coded value.
-    #[test]
-    fn acceptance_plan_discloses_combined_identity_schema() {
         let plan = plan();
 
         let records = super::encode_acceptance_plan(7, plan);
@@ -549,7 +518,7 @@ mod tests {
         );
         assert_eq!(
             disclosed,
-            crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION
+            crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
         );
     }
 

@@ -328,10 +328,10 @@ fn live_matrix_geometry_and_orders_are_exact() {
     assert_eq!(AcceptanceMatrixOrder::Descending as u8, 2);
     assert_eq!(ACCEPTANCE_MATRIX_AMPLITUDES, 5);
     assert_eq!(ACCEPTANCE_MATRIX_CAPTURE_ALLOWANCE_S, 110);
-    let current = combined_plan();
+    let current = breakaway_plan();
     let ascending = plan_acceptance_matrix(
-        point(current),
-        request(),
+        breakaway_point(current),
+        breakaway_request(),
         AcceptanceMatrixOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
@@ -361,23 +361,23 @@ fn live_matrix_geometry_and_orders_are_exact() {
     assert_eq!(ascending.expected_observations, 40);
     assert_eq!(ascending.family_size, 20);
     assert_eq!(ascending.recovery_slot_count, 5);
-    assert_eq!(ascending.recovery_lower_rate_q, [13_217_792, 12_827_648]);
-    assert_eq!(ascending.nominal_workflow_ms, 63_041);
+    assert_eq!(ascending.recovery_lower_rate_q, [725_648, 725_648]);
+    assert_eq!(ascending.nominal_workflow_ms, 60_541);
     assert_eq!(ascending.maximum_workflow_ms, 66_456);
     assert_eq!(
         (
             super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
-            super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
+            super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
             ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         ),
-        (14, 13, 6)
+        (14, 16, 6)
     );
     assert_eq!([160 + 23, 120 + 15, 40 + 5], [183, 135, 45]);
     assert_eq!((183 + 135 + 45) * 78, 28_314);
 
     let descending = plan_acceptance_matrix(
-        point(current),
-        request(),
+        breakaway_point(current),
+        breakaway_request(),
         AcceptanceMatrixOrder::Descending,
         IntegralSlotOrder::ForwardFirst,
         current,
@@ -690,14 +690,14 @@ fn mirrored_combined_plans_are_distinguishable_without_a_schema_change() {
 /// would have cascaded into the host cross-check for a diagnostic-only field.
 #[test]
 fn forward_first_leaves_the_stage_c_plan_digest_untouched() {
-    let plan = combined_plan();
+    let plan = breakaway_plan();
     let mut explicit = plan;
     explicit.slot_order = IntegralSlotOrder::ForwardFirst;
 
     assert_eq!(plan.digest(), explicit.digest());
     assert_eq!(
         plan.schema_revision,
-        super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
+        super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
         "the schema must not move for a mirrored run"
     );
 }

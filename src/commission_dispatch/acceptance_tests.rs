@@ -1,6 +1,6 @@
 use super::acceptance::{
     AcceptanceMatrixPreflightRejection, AutotuneAction, apply_acceptance_matrix_terminal,
-    preflight_acceptance_matrix, reconstruct_breakaway_plan, reconstruct_combined_plan,
+    preflight_acceptance_matrix, reconstruct_breakaway_plan,
 };
 use super::stage_c::StageCPreflightConfig;
 use crate::autotune::velocity_measurement::VelocityDirection;
@@ -11,26 +11,21 @@ use crate::commissioning::outer::velocity::band_confirmation::{
     BandConfirmationPlan, ConfirmationDirectionalInput, DiscoveryObservationAtom,
     evaluate_band_confirmation, plan_band_confirmation,
 };
-use crate::commissioning::outer::velocity::combined_plan::{
-    BREAKAWAY_STAGE_C_SCHEMA_REVISION, CombinedSelectedResponse, select_proportional_response,
-};
+use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
     AcquisitionContext, CommissioningWorkflowPlan, ConfirmedAcquisitionDigest, StageCPlanShape,
     VelocityIntegralPlan, bind_breakaway_stage_c_authority,
-    plan_breakaway_velocity_integral_response, plan_combined_velocity_integral_response,
+    plan_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot, StageCPlanIdentity,
 };
-use crate::commissioning::outer::velocity::operating_region::{BoundRounding, CompactSignedRate};
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
 };
-use crate::commissioning::outer::velocity::sweep_evidence::{
-    CompactDirectionalRungReport, VelocityObservationClass,
-};
+use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::velocity::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, current_gain_span, plan_combined_velocity_sweep,
 };
@@ -51,93 +46,6 @@ fn matrix_config() -> StageCPreflightConfig {
         limit_evidence_capability: VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
         channel: CHANNEL,
         pwm_hz: PWM_HZ,
-    }
-}
-
-fn request() -> VelocitySweepRequest {
-    VelocitySweepRequest {
-        requested_velocity_mrev_s: 4_394,
-        machine_velocity_ceiling_mrev_s: 10_000,
-        requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 2_500,
-        settle_travel_reserve_mrev: 250,
-        negative_position_headroom_mrev: 7_025,
-        positive_position_headroom_mrev: 7_025,
-        max_duration_ms: 3_000,
-    }
-}
-
-fn selected_response() -> CombinedSelectedResponse {
-    let report = |low_q, high_q| CompactDirectionalRungReport {
-        p: PidPGain::new(1_024).unwrap(),
-        classification: DirectionalConsensusClass::EligibleConsensus,
-        components: [[0; 2]; 2],
-        pooled: None,
-        settled_rate_bounds_q: [
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-        ],
-        collected_mask: 0b1111,
-        eligible_mask: 0b1111,
-        included_mask: 0b1111,
-        operable_count: 4,
-        flags: 0,
-    };
-    select_proportional_response(
-        report(13_300_000, 13_500_000),
-        report(-13_500_000, -13_300_000),
-        263,
-        COUNTS_PER_REV,
-    )
-    .unwrap()
-    .unwrap()
-}
-
-fn combined_plan() -> VelocityIntegralPlan {
-    let request = request();
-    let stage_b = plan_combined_velocity_sweep(
-        request,
-        COUNTS_PER_REV,
-        TORQUE_LIMIT,
-        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-    plan_combined_velocity_integral_response(
-        selected_response(),
-        stage_b.execution_plan(stage_b.digest()),
-        OuterMotionBudget {
-            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-            requested_velocity_source: request.requested_velocity_source,
-            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-            max_duration_ms: request.max_duration_ms,
-        },
-        PWM_HZ,
-        COUNTS_PER_REV,
-    )
-    .unwrap()
-}
-
-fn point(plan: VelocityIntegralPlan, progress: AcceptanceMatrixProgress) -> AcceptancePoint {
-    AcceptancePoint {
-        identity: StageCPlanIdentity {
-            channel: CHANNEL,
-            build_features: BUILD_FEATURES,
-            schema_revision: plan.schema_revision,
-            plan_digest: plan.digest(),
-        },
-        selected_p: plan.final_p,
-        selected_i: 1_024,
-        target_velocity_rpm: plan.target_velocity_rpm,
-        selected_response_intervals_q: plan.execution_plan().selected_response_intervals_q,
-        qualifier_bits: 0x0123,
-        token: None,
-        progress,
     }
 }
 
@@ -400,7 +308,7 @@ fn terminal(plan_digest: u64, outcome: AcceptanceMatrixOutcome) -> AcceptanceMat
             crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         run_sequence: 9,
         evidence_sequence: 1,
-        acceptance_plan_digest: combined_plan().digest(),
+        acceptance_plan_digest: breakaway_plan_and_token().0.digest(),
         plan_digest,
         digest: 0x1234,
         outcome,
@@ -520,13 +428,13 @@ fn action_codes_and_invalid_values_are_exact() {
 
 #[test]
 fn preflight_requires_matching_point_and_order_without_mutation() {
-    let current = combined_plan();
+    let (current, token) = breakaway_plan_and_token();
     let config = matrix_config();
     let mut empty = StageCCandidateSlot::new();
     assert_eq!(
         preflight_acceptance_matrix(
             AutotuneAction::MatrixAscending,
-            request(),
+            breakaway_request(),
             &config,
             7,
             &empty,
@@ -534,13 +442,13 @@ fn preflight_requires_matching_point_and_order_without_mutation() {
         Err(AcceptanceMatrixPreflightRejection::MissingAcceptancePoint)
     );
 
-    let mut stale = point(current, AcceptanceMatrixProgress::ReadyAscending);
+    let mut stale = breakaway_point(current, token, AcceptanceMatrixProgress::ReadyAscending);
     stale.identity.plan_digest ^= 1;
     empty.install_acceptance_point(stale);
     assert_eq!(
         preflight_acceptance_matrix(
             AutotuneAction::MatrixAscending,
-            request(),
+            breakaway_request(),
             &config,
             7,
             &empty,
@@ -549,12 +457,13 @@ fn preflight_requires_matching_point_and_order_without_mutation() {
     );
     assert_eq!(empty.acceptance_point(), Some(stale));
 
-    let ready_descending = point(current, AcceptanceMatrixProgress::ReadyDescending);
+    let ready_descending =
+        breakaway_point(current, token, AcceptanceMatrixProgress::ReadyDescending);
     empty.install_acceptance_point(ready_descending);
     assert_eq!(
         preflight_acceptance_matrix(
             AutotuneAction::MatrixAscending,
-            request(),
+            breakaway_request(),
             &config,
             7,
             &empty,
@@ -566,13 +475,17 @@ fn preflight_requires_matching_point_and_order_without_mutation() {
 
 #[test]
 fn preflight_admits_only_the_expected_matrix_direction() {
-    let current = combined_plan();
+    let (current, token) = breakaway_plan_and_token();
     let config = matrix_config();
     let mut slot = StageCCandidateSlot::new();
-    slot.install_acceptance_point(point(current, AcceptanceMatrixProgress::ReadyAscending));
+    slot.install_acceptance_point(breakaway_point(
+        current,
+        token,
+        AcceptanceMatrixProgress::ReadyAscending,
+    ));
     let ascending = preflight_acceptance_matrix(
         AutotuneAction::MatrixAscending,
-        request(),
+        breakaway_request(),
         &config,
         7,
         &slot,
@@ -583,7 +496,7 @@ fn preflight_admits_only_the_expected_matrix_direction() {
     slot.advance_matrix_progress();
     let descending = preflight_acceptance_matrix(
         AutotuneAction::MatrixDescending,
-        request(),
+        breakaway_request(),
         &config,
         8,
         &slot,
@@ -593,47 +506,18 @@ fn preflight_admits_only_the_expected_matrix_direction() {
 }
 
 #[test]
-fn retained_response_reconstructs_the_exact_combined_identity() {
-    let current = combined_plan();
-    let retained = point(current, AcceptanceMatrixProgress::ReadyAscending);
-    assert_eq!(
-        reconstruct_combined_plan(
-            retained,
-            request(),
-            COUNTS_PER_REV,
-            TORQUE_LIMIT,
-            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-            PWM_HZ,
-        )
-        .unwrap()
-        .digest(),
-        retained.identity.plan_digest
-    );
-
-    let mut changed = request();
-    changed.max_duration_ms += 1;
-    assert_eq!(
-        reconstruct_combined_plan(
-            retained,
-            changed,
-            COUNTS_PER_REV,
-            TORQUE_LIMIT,
-            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-            PWM_HZ,
-        ),
-        Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)
-    );
-}
-
-#[test]
 fn safe_terminals_advance_or_close_and_fault_clears() {
-    let current = combined_plan();
+    let (current, token) = breakaway_plan_and_token();
     let config = matrix_config();
     let mut slot = StageCCandidateSlot::new();
-    slot.install_acceptance_point(point(current, AcceptanceMatrixProgress::ReadyAscending));
+    slot.install_acceptance_point(breakaway_point(
+        current,
+        token,
+        AcceptanceMatrixProgress::ReadyAscending,
+    ));
     let ascending = preflight_acceptance_matrix(
         AutotuneAction::MatrixAscending,
-        request(),
+        breakaway_request(),
         &config,
         7,
         &slot,
@@ -652,7 +536,7 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
 
     let descending = preflight_acceptance_matrix(
         AutotuneAction::MatrixDescending,
-        request(),
+        breakaway_request(),
         &config,
         8,
         &slot,
@@ -672,7 +556,11 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
         AcceptanceMatrixProgress::Closed
     );
 
-    slot.install_acceptance_point(point(current, AcceptanceMatrixProgress::ReadyAscending));
+    slot.install_acceptance_point(breakaway_point(
+        current,
+        token,
+        AcceptanceMatrixProgress::ReadyAscending,
+    ));
     apply_acceptance_matrix_terminal(
         terminal(ascending.plan.digest(), AcceptanceMatrixOutcome::Fault),
         AcceptanceMatrixOrder::Ascending,
@@ -684,7 +572,7 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
 
 #[test]
 fn rest_unconfirmed_preserves_the_exact_point_and_matrix_order() {
-    let current = combined_plan();
+    let (current, token) = breakaway_plan_and_token();
     let config = matrix_config();
 
     for (action, order, progress) in [
@@ -700,9 +588,10 @@ fn rest_unconfirmed_preserves_the_exact_point_and_matrix_order() {
         ),
     ] {
         let mut slot = StageCCandidateSlot::new();
-        slot.install_acceptance_point(point(current, progress));
+        slot.install_acceptance_point(breakaway_point(current, token, progress));
         let before = slot.acceptance_point().unwrap();
-        let preflight = preflight_acceptance_matrix(action, request(), &config, 9, &slot).unwrap();
+        let preflight =
+            preflight_acceptance_matrix(action, breakaway_request(), &config, 9, &slot).unwrap();
 
         let terminal = apply_acceptance_matrix_terminal(
             rest_unconfirmed_terminal(preflight.plan.digest()),
@@ -718,7 +607,7 @@ fn rest_unconfirmed_preserves_the_exact_point_and_matrix_order() {
         );
         assert_eq!(slot.acceptance_point(), Some(before));
         assert!(
-            preflight_acceptance_matrix(action, request(), &config, 10, &slot).is_ok(),
+            preflight_acceptance_matrix(action, breakaway_request(), &config, 10, &slot).is_ok(),
             "the same matrix order must remain admissible after a rest rejection"
         );
     }
