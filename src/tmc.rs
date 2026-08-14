@@ -25,7 +25,7 @@ impl TmcRequest {
     pub const fn new(channel: u8, kind: TmcRequestKind) -> Self {
         Self {
             channel,
-            autotune_action: AutotuneAction::Combined,
+            autotune_action: AutotuneAction::BreakawaySeeded,
             kind,
         }
     }
@@ -622,7 +622,7 @@ pub fn tmc_tune(
     tmc_tune_with_action(
         channel,
         oid,
-        AutotuneAction::Combined,
+        AutotuneAction::BreakawaySeeded,
         profile,
         mode,
         inner_lambda_us,
@@ -1525,6 +1525,12 @@ mod tests {
             tmc_set_current(0, 500),
             TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 500 })
         );
+    }
+
+    #[test]
+    fn default_request_uses_breakaway_seeded_action() {
+        let req = TmcRequest::new(0, TmcRequestKind::SetEncoderDir { invert: true });
+        assert_eq!(req.autotune_action, AutotuneAction::BreakawaySeeded);
     }
 
     #[test]

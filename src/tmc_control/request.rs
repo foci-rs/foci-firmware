@@ -2665,7 +2665,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stage_b(
-            tune_request(),
+            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut slot,
@@ -3133,7 +3133,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
-            tune_request(),
+            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut stage_b,
@@ -3229,7 +3229,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
-            tune_request(),
+            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut stage_b,
@@ -3289,7 +3289,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
-            tune_request(),
+            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut stage_b,
@@ -3417,7 +3417,7 @@ mod tests {
         };
         slot.observe_sufficient(retained);
 
-        let mut changed = tune_request();
+        let mut changed = tune_request_with_action(crate::tmc::AutotuneAction::Combined);
         let TmcRequestKind::Tune {
             ref mut max_stroke_travel_mrev,
             ..
