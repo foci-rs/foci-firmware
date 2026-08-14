@@ -1737,8 +1737,6 @@ pub enum StepResult {
     PhaseChanged(PhaseId),
     /// Streamed velocity-sweep evidence became available.
     VelocitySweepEvent(VelocitySweepEvent),
-    /// The report-only velocity sweep reached a terminal result.
-    VelocitySweepTerminal(VelocitySweepTerminal),
     /// Streamed Stage-C velocity-integral evidence became available.
     VelocityIntegralEvent(VelocityIntegralEvent),
     /// The report-only Stage-C response sweep reached a terminal result.

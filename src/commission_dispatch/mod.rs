@@ -543,14 +543,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocitySweepTerminal(_) => {
-            // The engine never steps in `OuterPhase::VelocitySweep`, so
-            // it never yields `StepResult::VelocitySweepTerminal`. The four trace
-            // constructors `mem::replace` the base VelocitySweep phase before the
-            // first `step()`, and the non-trace build cfg-gates the phase out. The
-            // variant stays for match-exhaustiveness.
-            unreachable!("engine never produces StepResult::VelocitySweepTerminal")
-        }
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::VelocityIntegralEvent(event) => {
             let engine_ref = engine
@@ -1453,14 +1445,6 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 pwm_maxcnt,
             )
             .await
-        }
-        StepResult::VelocitySweepTerminal(_) => {
-            // Unreachable. The engine never steps in
-            // `OuterPhase::VelocitySweep`, so it never yields this terminal --
-            // the four trace constructors `mem::replace` the base VelocitySweep
-            // phase before the first `step()`, and the non-trace build cfg-gates
-            // the phase out. The variant stays for match-exhaustiveness.
-            unreachable!("engine never produces StepResult::VelocitySweepTerminal")
         }
         StepResult::VelocityIntegralTerminal(_) => {
             unreachable!("Stage-C terminals use their stage-owned dispatcher")

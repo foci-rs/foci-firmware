@@ -3,7 +3,7 @@
 use crate::autotune::{CommissionError, PhaseId};
 use crate::commissioning::types::{
     AcceptanceMatrixTerminal, AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult,
-    VelocityIntegralEvent, VelocityIntegralTerminal, VelocitySweepEvent, VelocitySweepTerminal,
+    VelocityIntegralEvent, VelocityIntegralTerminal, VelocitySweepEvent,
 };
 
 /// Nonterminal commissioning evidence emitted independently of scheduling.
@@ -84,8 +84,6 @@ pub enum CommissionTerminal {
     SelftestDone,
     /// Stage 1 commissioning completed.
     CommissionDone(CommissionResult),
-    /// Report-only velocity sweep completed, remained inconclusive, or faulted.
-    VelocitySweep(VelocitySweepTerminal),
     /// Report-only Stage-C response sweep completed, remained inconclusive, or faulted.
     VelocityIntegral(VelocityIntegralTerminal),
     /// One fixed-I velocity confidence matrix completed, remained inconclusive, or faulted.
@@ -101,12 +99,6 @@ impl CommissionTerminal {
             Self::CalibrateDone(result) => StepResult::CalibrateDone(result),
             Self::SelftestDone => StepResult::SelftestDone,
             Self::CommissionDone(result) => StepResult::CommissionDone(result),
-            // Unreachable. `CommissionTerminal::VelocitySweep` is built
-            // only from `StepResult::VelocitySweepTerminal`, which the engine
-            // never produces. The variant stays for match-exhaustiveness.
-            Self::VelocitySweep(_) => {
-                unreachable!("engine never produces CommissionTerminal::VelocitySweep")
-            }
             Self::VelocityIntegral(result) => StepResult::VelocityIntegralTerminal(result),
             Self::AcceptanceMatrix(result) => StepResult::AcceptanceMatrixTerminal(result),
         }
@@ -208,12 +200,6 @@ pub fn adapt_step_result(
             Ok(CommissionPoll::ReadyNow {
                 event: Some(CommissionEvent::VelocitySweep { oid, event }),
             })
-        }
-        // Unreachable. The engine never steps in
-        // `OuterPhase::VelocitySweep`, so it never yields this terminal. The
-        // variant stays for match-exhaustiveness.
-        StepResult::VelocitySweepTerminal(_) => {
-            unreachable!("engine never produces StepResult::VelocitySweepTerminal")
         }
         StepResult::VelocityIntegralEvent(event) => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;

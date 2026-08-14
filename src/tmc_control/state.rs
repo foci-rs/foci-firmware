@@ -572,13 +572,6 @@ impl TmcControlRuntime {
         );
         #[cfg(feature = "trace-velocity-sweep")]
         let outcome = match result {
-            // Unreachable. The engine never produces
-            // `CommissionTerminal::VelocitySweep` (its only source,
-            // `StepResult::VelocitySweepTerminal`, is never stepped). The variant
-            // stays for match-exhaustiveness.
-            CommissionTerminal::VelocitySweep(_) => {
-                unreachable!("engine never produces CommissionTerminal::VelocitySweep")
-            }
             CommissionTerminal::VelocityIntegral(terminal) => {
                 crate::commission_dispatch::drive_velocity_integral_terminal_with_stages(
                     terminal,
