@@ -94,3 +94,29 @@ pub(crate) use validate::{
     VELOCITY_VALIDATE_CHATTER_WINDOW, VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
     VELOCITY_VALIDATE_SETTLE_US, step_velocity_validate, step_velocity_validate_with_trace,
 };
+
+/// Zero the TMC4671 velocity-loop integral accumulator.
+///
+/// Writes `PID_ERROR_PID_VELOCITY_ERROR_SUM = 0` so a fresh velocity command
+/// starts from a clean integrator. Shared by the breakaway campaign, the
+/// Stage-C integral sweep, and origin recovery; self-contained with no
+/// dependency on any commissioning phase state.
+///
+/// # Errors
+///
+/// Returns [`CommissionError::Spi`] when the register write fails.
+#[cfg(feature = "trace-velocity-sweep")]
+pub(crate) async fn clear_velocity_integrator<B>(
+    backend: &mut B,
+) -> Result<(), crate::autotune::CommissionError>
+where
+    B: crate::commissioning::backend::CommissioningBackend,
+{
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| crate::autotune::CommissionError::Spi)
+}

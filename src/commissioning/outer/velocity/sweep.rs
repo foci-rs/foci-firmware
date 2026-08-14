@@ -19,8 +19,8 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, CONFIG_VELOCITY_METER_PPTM_MIN_POS_DEV, INTERIM_ACTUAL_VELOCITY_PPTM,
-    MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_TARGET,
-    PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I,
+    PID_VELOCITY_TARGET,
 };
 
 use super::current_guard::{
@@ -575,18 +575,6 @@ fn sweep_evidence_terminal(
     }
 }
 
-pub(super) async fn clear_velocity_integrator<B: CommissioningBackend>(
-    backend: &mut B,
-) -> Result<(), CommissionError> {
-    crate::commissioning::helpers::write_sub_register_checked(
-        backend,
-        PID_ERROR_PID_VELOCITY_ERROR_SUM,
-        0,
-    )
-    .await
-    .map_err(|_| CommissionError::Spi)
-}
-
 /// Advance the trace-gated velocity sweep by one cooperative state-machine step.
 pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
@@ -737,7 +725,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::ClearSignedIntegrator => {
-            if clear_velocity_integrator(backend).await.is_err() {
+            if super::clear_velocity_integrator(backend).await.is_err() {
                 return fail_sweep(phase, backend, CommissionError::Spi).await;
             }
             *state = VelocitySweepState::CommandTarget;
@@ -977,7 +965,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocitySweepState::ClearSettleIntegrator { settle_started_us } => {
-            if clear_velocity_integrator(backend).await.is_err() {
+            if super::clear_velocity_integrator(backend).await.is_err() {
                 return fail_sweep(phase, backend, CommissionError::Spi).await;
             }
             let now_us = backend.elapsed_us();

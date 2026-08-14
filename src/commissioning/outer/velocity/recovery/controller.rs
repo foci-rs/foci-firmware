@@ -8,12 +8,12 @@ use crate::diagnostic::BreakawayCheckpoint;
 use foci_tmc4671::pid::{PidGainPair, PidIGain};
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
+use super::super::clear_velocity_integrator;
 use super::super::current_guard::{
     VelocityCurrentContact, VelocityCurrentGuardError, VelocityCurrentZeroPhase,
     finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
     read_velocity_pid_input_abs, read_velocity_pid_output_abs, restart_velocity_current_primitive,
 };
-use super::super::sweep::clear_velocity_integrator;
 use super::super::sweep_analysis::{
     ScoredRestPoll, bounded_rest_displacement, poll_scored_rest_confirmation,
 };

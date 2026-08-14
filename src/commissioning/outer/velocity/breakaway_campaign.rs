@@ -103,6 +103,7 @@ use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchError, ProbeStrokeRole, UpwardBreakawayCursor,
     UpwardProbeStep,
 };
+use super::clear_velocity_integrator;
 use super::combined_plan::stage_c_continuation_geometry;
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
@@ -121,7 +122,6 @@ use super::recovery::{
     RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
     plan_rung_origin_recovery, step_rung_origin_recovery,
 };
-use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
     ScoredRestPoll, VelocityObservationInputRequest, assemble_probe_observation_input,
     assemble_velocity_observation_input, bounded_rest_displacement, direction_sign,

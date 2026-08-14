@@ -35,6 +35,7 @@ use super::acceptance_evidence::{
     AcceptanceDirectionInput, AcceptanceRunMasks, acceptance_run_sufficient,
     classify_acceptance_amplitude,
 };
+use super::clear_velocity_integrator;
 use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
@@ -57,7 +58,6 @@ use super::recovery::{
     RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
     plan_rung_origin_recovery, step_rung_origin_recovery,
 };
-use super::sweep::clear_velocity_integrator;
 use super::sweep_analysis::{
     ScoredRestPoll, bounded_rest_displacement, deficit_interval_q, poll_scored_rest_confirmation,
     poll_stationarity,
