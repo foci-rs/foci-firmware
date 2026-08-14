@@ -1313,60 +1313,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
     }
 }
 
-/// Dispatch one result while applying the board-owned Stage B candidate lifecycle.
-#[cfg(feature = "trace-velocity-sweep")]
-pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
-    result: StepResult,
-    engine: &mut Option<CommissioningEngine>,
-    backend: &mut B,
-    state: &mut DispatchState<'_>,
-    pwm_maxcnt: u16,
-    channel: u8,
-    stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
-) -> CommissionOutcome {
-    let terminal = match result {
-        StepResult::VelocitySweepTerminal(terminal) => terminal,
-        other => {
-            emit_outer_safety_timing_before_failure(&other, engine, backend);
-            return drive_commission_result(other, engine, backend, state, pwm_maxcnt).await;
-        }
-    };
-    let mut terminal = terminal;
-    if !disarm_velocity_workflow(engine, backend, state).await {
-        terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
-        terminal.cause = crate::autotune::CommissionError::Spi.status_code();
-        terminal.recovery_unavailable = true;
-        terminal.safety_fault = None;
-    }
-    let dispatch = stage_b::apply_stage_b_terminal(terminal, channel, stage_b_candidate);
-    engine
-        .as_mut()
-        .expect("engine slot is None on VelocitySweepTerminal")
-        .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
-    match drive_commission_result(
-        StepResult::VelocitySweepTerminal(dispatch.terminal),
-        engine,
-        backend,
-        state,
-        pwm_maxcnt,
-    )
-    .await
-    {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::VelocitySweepTerminal { oid, terminal, .. },
-            actions,
-        } => CommissionOutcome::Terminal {
-            reply: ReplyPayload::VelocitySweepTerminal {
-                oid,
-                terminal,
-                reproduction: dispatch.reproduction,
-            },
-            actions,
-        },
-        _ => unreachable!("velocity-sweep terminal produced a nonterminal outcome"),
-    }
-}
-
 /// Dispatch one Stage-C terminal while applying its retained-evidence lifecycle.
 #[cfg(feature = "trace-velocity-sweep")]
 pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(

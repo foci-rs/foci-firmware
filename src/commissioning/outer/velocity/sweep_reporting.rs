@@ -7,7 +7,6 @@ use crate::autotune::velocity_measurement::{
 use crate::commissioning::types::{
     RecoveryRestDiagnostic, RestSelectionDiagnostic, RungOriginRecoveryEvidence,
     VelocitySweepEvent, VelocitySweepObservation, VelocitySweepPlanned, VelocitySweepRungReport,
-    VelocitySweepTerminal,
 };
 
 use super::sweep_consensus::consensus_class_report_code;
@@ -609,58 +608,6 @@ fn encode_rung(report: VelocitySweepRungReport) -> VelocitySweepCanonicalRecord 
         }
     }
     assert!(record.as_bytes().len() <= 128);
-    record
-}
-
-/// Encode the detailed terminal in a trace-only canonical record.
-pub(crate) fn encode_velocity_sweep_terminal(
-    report: VelocitySweepTerminal,
-    encoder_counts_per_rev: u32,
-    f_pwm_hz: u32,
-) -> VelocitySweepCanonicalRecord {
-    use crate::commissioning::types::VelocitySweepOutcome;
-
-    let mut record = VelocitySweepCanonicalRecord::new();
-    record.push_u8(8);
-    record.push_u32(report.run_sequence);
-    record.push_u16(report.evidence_sequence);
-    record.push_u32(encoder_counts_per_rev);
-    record.push_u32(f_pwm_hz);
-    record.push_u8(report.model_direction_mask);
-    for membership in report.selected_memberships {
-        record.push_u32(membership);
-    }
-    record.push_u16(report.nominated_p);
-    for interval in report.selected_intervals {
-        record.push_i32(interval[0]);
-        record.push_i32(interval[1]);
-    }
-    record.push_u8(report.coverage_mask);
-    for count in report.directional_region_counts {
-        record.push_u8(count);
-    }
-    for count in report.directional_fragment_counts {
-        record.push_u8(count);
-    }
-    record.push_u16(report.expected_observations);
-    record.push_u16(report.emitted_observations);
-    record.push_u16(report.expected_rungs);
-    record.push_u16(report.emitted_rungs);
-    record.push_u32(report.digest as u32);
-    record.push_u32((report.digest >> 32) as u32);
-    record.push_u8(match report.outcome {
-        VelocitySweepOutcome::CompleteCandidate => 0,
-        VelocitySweepOutcome::Complete => 1,
-        VelocitySweepOutcome::Inconclusive => 2,
-        VelocitySweepOutcome::Fault => 3,
-        VelocitySweepOutcome::RejectedPlanMismatch => 4,
-    });
-    record.push_u8(report.cause);
-    record.push_u8(u8::from(report.recovery_unavailable));
-    record.push_u32(report.run_started_us as u32);
-    record.push_u32((report.run_started_us >> 32) as u32);
-    record.push_u32(report.run_completed_us as u32);
-    record.push_u32((report.run_completed_us >> 32) as u32);
     record
 }
 
