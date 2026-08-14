@@ -471,9 +471,9 @@ impl AutotuneAction {
 
     /// Return the observation slot order this acquisition requests.
     ///
-    /// Both the combined workflow and the matrix execute a fixed forward/reverse
-    /// slot schedule about a common start point, so both carry the same
-    /// tail-position confound and both can be run mirrored.
+    /// Every surviving action executes the same fixed forward/reverse slot
+    /// schedule about a common start point, so each carries the same
+    /// tail-position confound (see `IntegralSlotOrder::ForwardFirst`).
     pub const fn slot_order(
         self,
     ) -> crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder {
@@ -1461,8 +1461,9 @@ mod tests {
             assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
         }
         // Retained authority does not carry the acquisition's slot order, so a
-        // resume reconstructs at the default. Mirrored and paired acquisitions
-        // therefore cannot be resumed faithfully.
+        // resume reconstructs at the default. Every surviving action only ever
+        // selects `ForwardFirst`, so the reconstruction is exact, not merely a
+        // fallback.
         assert_eq!(
             AutotuneAction::StageCResume.slot_order(),
             crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst

@@ -187,7 +187,8 @@ pub fn build_combined_integral_ladder(
     Ok(ladder)
 }
 
-/// Derive the exact combined duration without summing rounded phase reports.
+/// Derive the exact Stage-C continuation duration without summing rounded
+/// phase reports.
 pub fn stage_c_continuation_geometry(
     stage_b: VelocitySweepPlan,
     pwm_hz: u32,
