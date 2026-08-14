@@ -111,36 +111,6 @@ impl CombinedSelectedResponse {
         self.response_bounds_q
             .map(|bounds| bounds.map(CompactSignedRate::decode))
     }
-
-    /// Reconstruct the compact response selected by a retained combined plan.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn from_retained_intervals(
-        p: PidPGain,
-        intervals_q: [[i32; 2]; 2],
-    ) -> Result<Self, CombinedPlanError> {
-        let response_bounds_q = intervals_q.map(|interval| {
-            [
-                CompactSignedRate::encode(
-                    i64::from(interval[0]),
-                    super::operating_region::BoundRounding::TowardNegativeInfinity,
-                ),
-                CompactSignedRate::encode(
-                    i64::from(interval[1]),
-                    super::operating_region::BoundRounding::TowardPositiveInfinity,
-                ),
-            ]
-        });
-        let reconstructed = Self {
-            p,
-            response_bounds_q,
-        };
-        if reconstructed.response_intervals_q()
-            != intervals_q.map(|interval| interval.map(i64::from))
-        {
-            return Err(CombinedPlanError::InvalidInterval);
-        }
-        Ok(reconstructed)
-    }
 }
 
 impl CombinedRateInterval {

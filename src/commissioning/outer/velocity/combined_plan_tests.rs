@@ -1,58 +1,13 @@
 use super::combined_plan::{
     BREAKAWAY_STAGE_B_SCHEMA_REVISION, BREAKAWAY_STAGE_C_SCHEMA_REVISION,
     COMBINED_STAGE_B_SCHEMA_REVISION, COMBINED_STAGE_C_SCHEMA_REVISION, CombinedPlanError,
-    CombinedRateInterval, CombinedTargetStatus, FIRST_COMBINED_STAGE_C_SCHEMA_REVISION,
-    build_combined_integral_ladder, combined_workflow_geometry, integral_deficit_reaches_target,
-    integral_response_reaches_target, proportional_response_in_initial_band,
-    select_proportional_response,
+    CombinedRateInterval, CombinedTargetStatus, build_combined_integral_ladder,
+    integral_deficit_reaches_target, integral_response_reaches_target,
+    proportional_response_in_initial_band,
 };
-use super::integral_plan::StageCAcquisition;
-use super::integral_plan::{
-    CommissioningWorkflowPlan, STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCPlanShape,
-    build_integral_ladder, plan_combined_velocity_integral_response,
-};
-use super::operating_region::{BoundRounding, CompactSignedRate};
-use super::sweep_consensus::DirectionalConsensusClass;
-use super::sweep_evidence::CompactDirectionalRungReport;
-use super::sweep_plan::{
-    MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, RequestedVelocitySource, VelocitySweepRequest,
-    plan_combined_velocity_sweep, plan_historical_combined_velocity_sweep,
-};
-use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
-use foci_tmc4671::pid::PidPGain;
-
-fn response_report(p: u16, low_q: i64, high_q: i64) -> CompactDirectionalRungReport {
-    CompactDirectionalRungReport {
-        p: PidPGain::new(p).unwrap(),
-        classification: DirectionalConsensusClass::EligibleConsensus,
-        components: [[0; 2]; 2],
-        pooled: None,
-        settled_rate_bounds_q: [
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-        ],
-        collected_mask: 0b1111,
-        eligible_mask: 0b1111,
-        included_mask: 0b1111,
-        operable_count: 4,
-        flags: 0,
-    }
-}
-
-fn motion_budget(request: VelocitySweepRequest) -> OuterMotionBudget {
-    OuterMotionBudget {
-        requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-        machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-        requested_velocity_source: request.requested_velocity_source,
-        max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-        settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-        negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-        positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-        max_duration_ms: request.max_duration_ms,
-    }
-}
+use super::integral_plan::{STAGE_C_EVIDENCE_SCHEMA_REVISION, build_integral_ladder};
+use super::sweep_plan::{MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US};
+use crate::commissioning::outer::OUTER_MAX_VELOCITY_I;
 
 #[test]
 fn corrected_y_intervals_select_p1024_without_model_membership() {
@@ -155,7 +110,6 @@ fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(COMBINED_STAGE_B_SCHEMA_REVISION, 14);
     assert_eq!(COMBINED_STAGE_C_SCHEMA_REVISION, 13);
     assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
-    assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
     // The breakaway campaign is additive: it must not renumber or otherwise
     // disturb any historical Stage-B or Stage-C schema revision.
     assert_eq!(BREAKAWAY_STAGE_B_SCHEMA_REVISION, 17);
@@ -190,191 +144,6 @@ fn combined_geometry_appends_the_exact_cap_without_changing_history() {
         combined.rungs.as_slice(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 1_310]
     );
-}
-
-#[test]
-fn combined_workflow_uses_exact_unrounded_phase_durations() {
-    let request = VelocitySweepRequest {
-        requested_velocity_mrev_s: 6_666,
-        machine_velocity_ceiling_mrev_s: 10_000,
-        requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 2_500,
-        settle_travel_reserve_mrev: 250,
-        negative_position_headroom_mrev: 7_025,
-        positive_position_headroom_mrev: 7_025,
-        max_duration_ms: 3_000,
-    };
-    let stage_b = plan_combined_velocity_sweep(
-        request,
-        4_000,
-        2_816,
-        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-    let mut historical_stage_b = stage_b;
-    historical_stage_b.schema_revision = 10;
-    historical_stage_b.recovery_nominal_slot_us = 1_816_958;
-    let historical = combined_workflow_geometry(historical_stage_b, 25_000).unwrap();
-    let geometry = combined_workflow_geometry(stage_b, 25_000).unwrap();
-
-    assert_eq!(historical.combined_nominal_ms, 451_573);
-    assert_eq!(historical.combined_maximum_ms, 496_528);
-    assert_eq!(geometry.positive_i_rungs, 13);
-    assert_eq!(geometry.total_i_rungs, 15);
-    assert_eq!(geometry.i_observations, 120);
-    assert_eq!(geometry.i_family_size, 60);
-    assert_eq!(geometry.i_recovery_slots, 15);
-    assert_eq!(geometry.i_nominal_ms, 187_651);
-    assert_eq!(geometry.i_maximum_ms, 197_896);
-    assert_eq!(geometry.combined_nominal_ms, 470_573);
-    assert_eq!(geometry.combined_maximum_ms, 496_528);
-
-    let workflow = CommissioningWorkflowPlan::new_combined(
-        17,
-        geometry.combined_nominal_ms,
-        geometry.combined_maximum_ms,
-    )
-    .unwrap();
-    assert_eq!(workflow.shape, StageCPlanShape::CombinedPThenI);
-    assert_eq!(workflow.nominal_workflow_ms, 470_573);
-    assert_eq!(workflow.maximum_workflow_ms, 496_528);
-}
-
-#[test]
-fn combined_stage_c_plan_uses_only_the_live_selected_response() {
-    let request = VelocitySweepRequest {
-        requested_velocity_mrev_s: 6_666,
-        machine_velocity_ceiling_mrev_s: 10_000,
-        requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 2_500,
-        settle_travel_reserve_mrev: 250,
-        negative_position_headroom_mrev: 7_025,
-        positive_position_headroom_mrev: 7_025,
-        max_duration_ms: 3_000,
-    };
-    let stage_b = plan_combined_velocity_sweep(
-        request,
-        4_000,
-        2_816,
-        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-    let historical_stage_b = plan_historical_combined_velocity_sweep(
-        request,
-        4_000,
-        2_816,
-        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-    let selected = select_proportional_response(
-        response_report(1_024, 13_359_104, 13_492_224),
-        response_report(1_024, -12_968_960, -12_921_856),
-        264,
-        4_000,
-    )
-    .unwrap()
-    .unwrap();
-
-    let plan = plan_combined_velocity_integral_response(
-        selected,
-        stage_b.execution_plan(stage_b.digest()),
-        motion_budget(request),
-        25_000,
-        4_000,
-    )
-    .unwrap();
-
-    assert_eq!(plan.schema_revision, COMBINED_STAGE_C_SCHEMA_REVISION);
-    assert_eq!(plan.final_p, 1_024);
-    assert_eq!(plan.combined_selected_response, Some(selected));
-    assert_eq!(
-        plan.execution_plan().selected_response_intervals_q,
-        [[13_359_104, 13_492_224], [-12_968_960, -12_921_856]]
-    );
-    #[cfg(feature = "trace-velocity-sweep")]
-    {
-        let trace = super::integral_reporting::encode_velocity_integral_plan_trace(7, plan);
-        for endpoint in [13_359_104_i32, 13_492_224, -12_968_960, -12_921_856] {
-            assert!(
-                trace[0]
-                    .as_bytes()
-                    .windows(4)
-                    .any(|word| word == endpoint.to_le_bytes())
-            );
-        }
-        assert!(trace[1].as_bytes().windows(4).any(|word| {
-            word == super::integral_plan::INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US.to_le_bytes()
-        }));
-    }
-    let mut historical = plan;
-    historical.schema_revision = FIRST_COMBINED_STAGE_C_SCHEMA_REVISION;
-    historical.authority.acquisition =
-        StageCAcquisition::ReproducedStageB(historical_stage_b.digest());
-    historical.target_velocity_rpm = historical_stage_b.target_velocity_rpm.raw();
-    historical.nominal_workflow_ms = 177_751;
-    historical.maximum_workflow_ms = 195_496;
-    historical.recovery_nominal_slot_us = 1_816_958;
-    assert_eq!(historical.digest(), 0x1696_a76c_4d42_83fd);
-    assert_eq!(plan.authority.joint_membership, 0);
-    assert_eq!(
-        plan.positive_rungs(),
-        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 1_310]
-    );
-    assert_eq!(plan.family_size, 60);
-    assert_eq!(plan.total_rung_count, 15);
-    assert_eq!(plan.recovery_nominal_slot_us, 2_316_958);
-    assert_eq!(plan.nominal_workflow_ms, 187_651);
-    assert_eq!(plan.maximum_workflow_ms, 197_896);
-    assert_eq!(plan.digest(), 0x7384_6cd7_1326_ab1e);
-}
-
-fn live_combined_plan() -> super::integral_plan::VelocityIntegralPlan {
-    let request = VelocitySweepRequest {
-        requested_velocity_mrev_s: 6_666,
-        machine_velocity_ceiling_mrev_s: 10_000,
-        requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 2_500,
-        settle_travel_reserve_mrev: 250,
-        negative_position_headroom_mrev: 7_025,
-        positive_position_headroom_mrev: 7_025,
-        max_duration_ms: 3_000,
-    };
-    let stage_b = plan_combined_velocity_sweep(
-        request,
-        4_000,
-        2_816,
-        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-    let selected = select_proportional_response(
-        response_report(1_024, 13_359_104, 13_492_224),
-        response_report(1_024, -12_968_960, -12_921_856),
-        264,
-        4_000,
-    )
-    .unwrap()
-    .unwrap();
-    plan_combined_velocity_integral_response(
-        selected,
-        stage_b.execution_plan(stage_b.digest()),
-        motion_budget(request),
-        25_000,
-        4_000,
-    )
-    .unwrap()
-}
-
-#[test]
-fn digest_gates_the_selected_response_on_content_not_schema() {
-    // Content, not the schema number, decides whether the selected-response
-    // block is digested. Even below the historical FIRST_COMBINED threshold --
-    // which the old `>= FIRST_COMBINED` guard used to suppress the block --
-    // dropping the selected response must change the digest.
-    let mut with_response = live_combined_plan();
-    with_response.schema_revision = 1;
-    let mut without_response = with_response;
-    without_response.combined_selected_response = None;
-    assert_ne!(with_response.digest(), without_response.digest());
 }
 
 #[test]

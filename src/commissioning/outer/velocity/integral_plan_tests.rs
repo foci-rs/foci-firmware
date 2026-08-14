@@ -727,14 +727,15 @@ fn breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes() {
     assert_eq!(StageCPlanShape::StageB as u8, 0);
     assert_eq!(StageCPlanShape::StageBThenStageC as u8, 1);
     assert_eq!(StageCPlanShape::StageCResume as u8, 2);
-    assert_eq!(StageCPlanShape::CombinedPThenI as u8, 3);
+    // Discriminant 3 belonged to a since-retired shape; it is left unassigned
+    // rather than renumbering the shapes below it.
     assert_eq!(StageCPlanShape::AcceptanceMatrixAscending as u8, 4);
     assert_eq!(StageCPlanShape::AcceptanceMatrixDescending as u8, 5);
     assert_eq!(StageCPlanShape::BreakawaySeededPThenI as u8, 6);
 
     // The breakaway shape has its own dedicated constructor, matching the
-    // existing precedent set by `CombinedPThenI` and the acceptance-matrix
-    // shapes: it is not constructible through the generic two-duration `new`.
+    // existing precedent set by the acceptance-matrix shapes: it is not
+    // constructible through the generic two-duration `new`.
     assert_eq!(
         CommissioningWorkflowPlan::new(1, StageCPlanShape::BreakawaySeededPThenI, 1, 1),
         Err(VelocityIntegralPlanError::InvalidRequest)

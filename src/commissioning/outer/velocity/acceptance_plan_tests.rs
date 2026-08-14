@@ -8,20 +8,18 @@ use super::band_confirmation::{
     BandConfirmationPlan, ConfirmationDirectionalInput, DiscoveryObservationAtom,
     evaluate_band_confirmation, plan_band_confirmation,
 };
-use super::combined_plan::select_proportional_response;
 use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, ConfirmedAcquisitionDigest, IntegralSlotOrder,
     VelocityIntegralAcquisitionKind, bind_breakaway_stage_c_authority,
-    plan_combined_velocity_integral_response, plan_retained_breakaway_velocity_integral_response,
+    plan_retained_breakaway_velocity_integral_response,
 };
 use super::integral_reporting::plan_recovery_flags;
 use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
-use super::operating_region::{BoundRounding, CompactSignedRate};
 use super::reproduction::BUILD_FEATURES;
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
 };
-use super::sweep_evidence::{CompactDirectionalRungReport, VelocityObservationClass};
+use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, plan_combined_velocity_sweep,
 };
@@ -33,102 +31,14 @@ const COUNTS_PER_REV: u32 = 4_000;
 const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 
-fn request() -> VelocitySweepRequest {
-    VelocitySweepRequest {
-        requested_velocity_mrev_s: 4_394,
-        machine_velocity_ceiling_mrev_s: 10_000,
-        requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 2_500,
-        settle_travel_reserve_mrev: 250,
-        negative_position_headroom_mrev: 7_025,
-        positive_position_headroom_mrev: 7_025,
-        max_duration_ms: 3_000,
-    }
-}
-
-fn selected_response() -> super::combined_plan::CombinedSelectedResponse {
-    let report = |low_q, high_q| CompactDirectionalRungReport {
-        p: PidPGain::new(1_024).unwrap(),
-        classification: DirectionalConsensusClass::EligibleConsensus,
-        components: [[0; 2]; 2],
-        pooled: None,
-        settled_rate_bounds_q: [
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-            CompactSignedRate::encode(low_q, BoundRounding::TowardNegativeInfinity),
-            CompactSignedRate::encode(high_q, BoundRounding::TowardPositiveInfinity),
-        ],
-        collected_mask: 0b1111,
-        eligible_mask: 0b1111,
-        included_mask: 0b1111,
-        operable_count: 4,
-        flags: 0,
-    };
-    select_proportional_response(
-        report(13_217_792, 13_672_960),
-        report(-13_308_416, -12_827_648),
-        263,
-        COUNTS_PER_REV,
-    )
-    .unwrap()
-    .unwrap()
-}
-
-fn combined_plan() -> super::integral_plan::VelocityIntegralPlan {
-    let request = request();
-    let stage_b = plan_combined_velocity_sweep(
-        request,
-        COUNTS_PER_REV,
-        TORQUE_LIMIT,
-        super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-    plan_combined_velocity_integral_response(
-        selected_response(),
-        stage_b.execution_plan(stage_b.digest()),
-        OuterMotionBudget {
-            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-            requested_velocity_source: request.requested_velocity_source,
-            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-            max_duration_ms: request.max_duration_ms,
-        },
-        PWM_HZ,
-        COUNTS_PER_REV,
-    )
-    .unwrap()
-}
-
-fn point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
-    AcceptancePoint {
-        identity: StageCPlanIdentity {
-            channel: 0,
-            build_features: BUILD_FEATURES,
-            schema_revision: plan.schema_revision,
-            plan_digest: plan.digest(),
-        },
-        selected_p: plan.final_p,
-        selected_i: 1_024,
-        target_velocity_rpm: plan.target_velocity_rpm,
-        selected_response_intervals_q: plan.execution_plan().selected_response_intervals_q,
-        qualifier_bits: 0x0123,
-        token: None,
-        progress: AcceptanceMatrixProgress::ReadyAscending,
-    }
-}
-
 // --- Breakaway matrix-authority fixtures ------------------------------------
 //
 // A schema-16 breakaway plan can only be minted through the real confirmation
 // gate (`ConfirmedAcquisitionDigest`'s inner field is private outside
 // `integral_plan.rs`), so these fixtures walk the same
 // discovery-confirmation-token path `breakaway_campaign.rs` does, rather than
-// fabricating a plan. `breakaway_request` freezes its own velocity (6_666
-// mrev/s, distinct from `request()`'s 4_394) because gain 512 is only known
-// transition-capable under that target.
+// fabricating a plan. `breakaway_request` freezes its velocity at 6_666
+// mrev/s because gain 512 is only known transition-capable under that target.
 
 fn breakaway_request() -> VelocitySweepRequest {
     VelocitySweepRequest {
@@ -395,10 +305,10 @@ fn live_matrix_geometry_and_orders_are_exact() {
 
 #[test]
 fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
-    let current = combined_plan();
+    let current = breakaway_plan();
     let mut historical = plan_acceptance_matrix(
-        point(current),
-        request(),
+        breakaway_point(current),
+        breakaway_request(),
         AcceptanceMatrixOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
@@ -406,7 +316,7 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
     .unwrap();
     historical.schema_revision = 3;
 
-    assert_eq!(historical.digest(), 0x815b_bfa7_0613_55da);
+    assert_eq!(historical.digest(), 0x3a09_7239_5679_c4c7);
 }
 
 #[test]
@@ -429,10 +339,10 @@ fn target_derivation_rounds_half_up_and_rejects_unsupported_geometry() {
 
 #[test]
 fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
-    let current = combined_plan();
+    let current = breakaway_plan();
     let ascending = plan_acceptance_matrix(
-        point(current),
-        request(),
+        breakaway_point(current),
+        breakaway_request(),
         AcceptanceMatrixOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
@@ -451,13 +361,13 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
         AcceptanceSource::ReproducedStageB
     );
     assert!(!execution.records_target_terminus());
-    assert_eq!(execution.i_start, 1_024);
+    assert_eq!(execution.i_start, 1);
     assert_eq!(execution.matrix_targets_rpm, [16, 33, 66, 132, 263]);
     assert_eq!(execution.positive_rung_count, 5);
     assert_eq!(execution.family_size, 20);
     assert_eq!(execution.target_velocity_rpm, 263);
-    assert_eq!(execution.planned_velocity_mrev_s, 4_394);
-    assert_eq!(execution.recovery_lower_rate_q, [13_217_792, 12_827_648]);
+    assert_eq!(execution.planned_velocity_mrev_s, 6_666);
+    assert_eq!(execution.recovery_lower_rate_q, [725_648, 725_648]);
     assert_eq!(
         execution.selected_response_intervals_q,
         [
@@ -473,13 +383,13 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
 
 #[test]
 fn matrix_plan_rejects_identity_and_request_drift() {
-    let current = combined_plan();
-    let mut stale = point(current);
+    let current = breakaway_plan();
+    let mut stale = breakaway_point(current);
     stale.identity.plan_digest ^= 1;
     assert_eq!(
         plan_acceptance_matrix(
             stale,
-            request(),
+            breakaway_request(),
             AcceptanceMatrixOrder::Ascending,
             IntegralSlotOrder::ForwardFirst,
             current
@@ -487,11 +397,11 @@ fn matrix_plan_rejects_identity_and_request_drift() {
         Err(AcceptanceMatrixPlanError::IdentityMismatch)
     );
 
-    let mut changed_request = request();
+    let mut changed_request = breakaway_request();
     changed_request.max_duration_ms += 1;
     assert_eq!(
         plan_acceptance_matrix(
-            point(current),
+            breakaway_point(current),
             changed_request,
             AcceptanceMatrixOrder::Ascending,
             IntegralSlotOrder::ForwardFirst,
@@ -503,12 +413,13 @@ fn matrix_plan_rejects_identity_and_request_drift() {
 
 #[test]
 fn matrix_plan_rejects_wrong_sided_recovery_authority() {
-    let current = combined_plan();
+    let current = breakaway_plan();
+    let genuine = breakaway_point(current).selected_response_intervals_q;
     for intervals in [
-        [[0, 13_672_960], [-13_308_416, -12_827_648]],
-        [[13_217_792, 13_672_960], [-13_308_416, 0]],
+        [[0, genuine[0][1]], genuine[1]],
+        [genuine[0], [genuine[1][0], 0]],
     ] {
-        let mut invalid = point(current);
+        let mut invalid = breakaway_point(current);
         invalid.selected_response_intervals_q = intervals;
         // The authority-consistency gate now catches a wrong-sided (or
         // zero-boundary) interval before the recovery-geometry computation
@@ -516,7 +427,7 @@ fn matrix_plan_rejects_wrong_sided_recovery_authority() {
         assert_eq!(
             plan_acceptance_matrix(
                 invalid,
-                request(),
+                breakaway_request(),
                 AcceptanceMatrixOrder::Ascending,
                 IntegralSlotOrder::ForwardFirst,
                 current,
@@ -528,10 +439,10 @@ fn matrix_plan_rejects_wrong_sided_recovery_authority() {
 
 #[test]
 fn matrix_digest_binds_every_explicit_plan_dimension() {
-    let current = combined_plan();
+    let current = breakaway_plan();
     let base = plan_acceptance_matrix(
-        point(current),
-        request(),
+        breakaway_point(current),
+        breakaway_request(),
         AcceptanceMatrixOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
@@ -613,18 +524,18 @@ fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
 /// recording the order.
 #[test]
 fn slot_order_separates_the_matrix_plan_digest() {
-    let current = combined_plan();
+    let current = breakaway_plan();
     let forward_first = plan_acceptance_matrix(
-        point(current),
-        request(),
+        breakaway_point(current),
+        breakaway_request(),
         AcceptanceMatrixOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
     .unwrap();
     let reverse_first = plan_acceptance_matrix(
-        point(current),
-        request(),
+        breakaway_point(current),
+        breakaway_request(),
         AcceptanceMatrixOrder::Ascending,
         IntegralSlotOrder::ReverseFirst,
         current,
@@ -648,13 +559,13 @@ fn slot_order_separates_the_matrix_plan_digest() {
     );
 }
 
-/// A mirrored combined run must be requestable and must record that it was one.
+/// A mirrored Stage-C run must be requestable and must record that it was one.
 ///
 /// Stage C carries the same forward/reverse tail-position confound as the matrix
 /// but is not lifecycle-limited, so it is where the mirrored order is measured.
 #[test]
-fn mirrored_combined_plans_are_distinguishable_without_a_schema_change() {
-    let forward_first = combined_plan();
+fn mirrored_stage_c_plans_are_distinguishable_without_a_schema_change() {
+    let forward_first = breakaway_plan();
     let mut reverse_first = forward_first;
     reverse_first.slot_order = IntegralSlotOrder::ReverseFirst;
 
@@ -709,7 +620,7 @@ fn forward_first_leaves_the_stage_c_plan_digest_untouched() {
 /// mirrored encoding is unchanged.
 #[test]
 fn plan_flags_carry_every_slot_order_without_disturbing_the_older_bits() {
-    let mut plan = combined_plan();
+    let mut plan = breakaway_plan();
     let older_bits = plan_recovery_flags(&plan) & 0b011;
 
     for (slot_order, expected) in [
@@ -733,7 +644,7 @@ fn plan_flags_carry_every_slot_order_without_disturbing_the_older_bits() {
 fn every_slot_order_separates_the_stage_c_plan_digest() {
     let mut digests = heapless::Vec::<u64, 3>::new();
     for slot_order in IntegralSlotOrder::ALL {
-        let mut plan = combined_plan();
+        let mut plan = breakaway_plan();
         plan.slot_order = slot_order;
         let digest = plan.digest();
         assert!(!digests.contains(&digest), "{slot_order:?} reused a digest");

@@ -3,7 +3,7 @@
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::integral_plan::{
     StageCFailedAdmission, VelocityIntegralPlan, VelocityIntegralPlanError,
-    plan_combined_velocity_integral_response, plan_velocity_integral_response,
+    plan_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCAuthoritySummary, StageCCandidateSlot,
@@ -12,7 +12,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
 };
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::{
-    VelocitySweepRequest, plan_combined_velocity_sweep, plan_velocity_sweep,
+    VelocitySweepRequest, plan_velocity_sweep,
 };
 use crate::commissioning::types::{
     VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
@@ -366,23 +366,12 @@ pub fn preflight_stage_c_request(
             stage_c_candidate,
         );
     }
-    let combined = authority.identity.schema_revision
-        == crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION;
-    let stage_b_plan = if combined {
-        plan_combined_velocity_sweep(
-            request,
-            config.encoder_counts_per_rev,
-            config.torque_limit,
-            config.limit_evidence_capability,
-        )
-    } else {
-        plan_velocity_sweep(
-            request,
-            config.encoder_counts_per_rev,
-            config.torque_limit,
-            config.limit_evidence_capability,
-        )
-    }
+    let stage_b_plan = plan_velocity_sweep(
+        request,
+        config.encoder_counts_per_rev,
+        config.torque_limit,
+        config.limit_evidence_capability,
+    )
     .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
     let stage_b_plan_digest = stage_b_plan.digest();
     // Only a reproduced Stage-B authority names a sweep plan that can be
@@ -396,31 +385,13 @@ pub fn preflight_stage_c_request(
         });
     }
     let stage_b_execution = stage_b_plan.execution_plan(stage_b_plan_digest);
-    let plan_result = if combined {
-        let p = foci_tmc4671::pid::PidPGain::new(authority.final_p)
-            .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
-        let selected =
-            crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse::from_retained_intervals(
-                p,
-                authority.directional_pooled_intervals,
-            )
-            .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
-        plan_combined_velocity_integral_response(
-            selected,
-            stage_b_execution,
-            motion_budget,
-            config.pwm_hz,
-            config.encoder_counts_per_rev,
-        )
-    } else {
-        plan_velocity_integral_response(
-            authority.stage_c_authority(),
-            stage_b_execution,
-            motion_budget,
-            config.pwm_hz,
-            config.encoder_counts_per_rev,
-        )
-    };
+    let plan_result = plan_velocity_integral_response(
+        authority.stage_c_authority(),
+        stage_b_execution,
+        motion_budget,
+        config.pwm_hz,
+        config.encoder_counts_per_rev,
+    );
     let plan = match plan_result {
         Ok(plan) => plan,
         Err(VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure)) => {

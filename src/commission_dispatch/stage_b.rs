@@ -5,7 +5,7 @@ use crate::commissioning::outer::velocity::reproduction::{
     StageBDirectionalValidity, StageBPlanIdentity, StageBReproductionDecision,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
-    VelocitySweepPlan, VelocitySweepRequest, plan_combined_velocity_sweep, plan_velocity_sweep,
+    VelocitySweepPlan, VelocitySweepRequest, plan_velocity_sweep,
 };
 use crate::commissioning::types::{VelocitySweepOutcome, VelocitySweepTerminal};
 
@@ -112,45 +112,6 @@ pub fn preflight_stage_b_request(
         return Err(StageBPreflightRejection::RejectedPlanMismatch {
             retained,
             requested,
-        });
-    }
-    Ok(StageBPreflight {
-        plan,
-        identity,
-        run_sequence,
-    })
-}
-
-/// Construct the nonretained combined Stage-B plan before motor initialization.
-///
-/// A legacy candidate is never cleared or reinterpreted. The operator recovers
-/// from this zero-motion rejection by restarting the MCU.
-pub fn preflight_combined_stage_b_request(
-    request: VelocitySweepRequest,
-    encoder_counts_per_rev: u32,
-    torque_limit: u16,
-    limit_evidence_capability: u32,
-    channel: u8,
-    run_sequence: u32,
-    legacy_retained_state: bool,
-) -> Result<StageBPreflight, StageBPreflightRejection> {
-    let plan = plan_combined_velocity_sweep(
-        request,
-        encoder_counts_per_rev,
-        torque_limit,
-        limit_evidence_capability,
-    )
-    .map_err(|_| StageBPreflightRejection::InvalidPlan)?;
-    let identity = StageBPlanIdentity {
-        channel,
-        build_features: BUILD_FEATURES,
-        schema_revision:
-            crate::commissioning::outer::velocity::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION,
-        plan_digest: plan.digest(),
-    };
-    if legacy_retained_state {
-        return Err(StageBPreflightRejection::RejectedLegacyState {
-            requested: identity,
         });
     }
     Ok(StageBPreflight {

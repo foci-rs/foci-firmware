@@ -46,8 +46,6 @@ pub enum StageCPlanShape {
     StageBThenStageC = 1,
     /// Resume Stage C from retained firmware authority.
     StageCResume = 2,
-    /// Run one nonretained P search followed immediately by its I response.
-    CombinedPThenI = 3,
     /// Run the retained fixed-I acceptance matrix from low to high amplitude.
     AcceptanceMatrixAscending = 4,
     /// Run the retained fixed-I acceptance matrix from high to low amplitude.
@@ -82,8 +80,7 @@ impl CommissioningWorkflowPlan {
             StageCPlanShape::StageB => stage_b_ms != 0 && stage_c_ms == 0,
             StageCPlanShape::StageBThenStageC => stage_b_ms != 0 && stage_c_ms != 0,
             StageCPlanShape::StageCResume => stage_b_ms == 0 && stage_c_ms != 0,
-            StageCPlanShape::CombinedPThenI
-            | StageCPlanShape::AcceptanceMatrixAscending
+            StageCPlanShape::AcceptanceMatrixAscending
             | StageCPlanShape::AcceptanceMatrixDescending
             | StageCPlanShape::BreakawaySeededPThenI => false,
         };
@@ -97,26 +94,6 @@ impl CommissioningWorkflowPlan {
             run_sequence,
             shape,
             nominal_workflow_ms: maximum_workflow_ms,
-            maximum_workflow_ms,
-        })
-    }
-
-    /// Construct one checked combined P-then-I workflow envelope.
-    pub fn new_combined(
-        run_sequence: u32,
-        nominal_workflow_ms: u32,
-        maximum_workflow_ms: u32,
-    ) -> Result<Self, VelocityIntegralPlanError> {
-        if nominal_workflow_ms == 0
-            || maximum_workflow_ms == 0
-            || nominal_workflow_ms > maximum_workflow_ms
-        {
-            return Err(VelocityIntegralPlanError::InvalidRequest);
-        }
-        Ok(Self {
-            run_sequence,
-            shape: StageCPlanShape::CombinedPThenI,
-            nominal_workflow_ms,
             maximum_workflow_ms,
         })
     }
@@ -284,9 +261,9 @@ impl StageCAuthority {
     /// acquisition digest.
     ///
     /// The breakaway campaign has no reproduced Stage-B directional evidence,
-    /// so every membership/validity field is the same empty/zero value
-    /// [`plan_combined_velocity_integral_response`] already uses for its
-    /// nonretained, same-command authority. `directional_pooled_intervals` is
+    /// so every membership/validity field is the same empty/zero value a
+    /// nonretained, same-command authority uses.
+    /// `directional_pooled_intervals` is
     /// the one exception: it carries `held_out_response_intervals_q`, the
     /// held-out confirmation block's own pooled response interval, already in
     /// the same signed settled-rate-Q domain this field carries on the other
@@ -1269,57 +1246,6 @@ pub(crate) fn plan_velocity_integral_response(
     )
 }
 
-/// Construct a nonretained Stage-C plan from the live selected Stage-B response.
-#[cfg(any(test, feature = "trace-velocity-sweep"))]
-pub(crate) fn plan_combined_velocity_integral_response(
-    selected: super::combined_plan::CombinedSelectedResponse,
-    stage_b_plan: VelocitySweepExecutionPlan,
-    motion_budget: OuterMotionBudget,
-    pwm_hz: u32,
-    encoder_counts_per_rev: u32,
-) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
-    if stage_b_plan.schema_revision != super::combined_plan::COMBINED_STAGE_B_SCHEMA_REVISION
-        || stage_b_plan.gain_at(
-            (0..stage_b_plan.rung_count)
-                .find(|index| stage_b_plan.gain_at(*index) == Some(selected.p))
-                .ok_or(VelocityIntegralPlanError::InvalidRequest)?,
-        ) != Some(selected.p)
-        || !transition_capable_stage_c_gain(
-            selected.p.raw(),
-            stage_b_plan.target_velocity_rpm.raw(),
-            encoder_counts_per_rev,
-            pwm_hz,
-            MOVING_STROKE_US,
-            stage_b_plan.usable_torque_limit,
-        )?
-    {
-        return Err(VelocityIntegralPlanError::InvalidRequest);
-    }
-    plan_velocity_integral_response_from_source(
-        IntegralPlanSource {
-            authority: StageCAuthority {
-                channel: 0,
-                acquisition: StageCAcquisition::ReproducedStageB(stage_b_plan.plan_digest),
-                directional_memberships: [0; 2],
-                stage_b_joint_membership: 0,
-                joint_membership: 0,
-                directional_validity: [StageBDirectionalValidity::NoRegion; 2],
-                reduced_margin: false,
-                directional_pooled_intervals: [[0; 2]; 2],
-            },
-            combined_selected_response: Some(selected),
-            final_p: selected.p.raw(),
-            schema_revision: super::combined_plan::COMBINED_STAGE_C_SCHEMA_REVISION,
-            append_exact_cap: true,
-            probe_constrained_test_point: false,
-        },
-        stage_b_plan.into(),
-        motion_budget,
-        pwm_hz,
-        encoder_counts_per_rev,
-    )
-}
-
 /// Validate and return the one token that may authorize Stage C for a
 /// breakaway campaign: proof that `confirmation_plan`'s held-out block
 /// accepted, bound to its digest.
@@ -1370,10 +1296,9 @@ pub(crate) fn bind_breakaway_stage_c_authority(
 /// [`VelocitySweepExecutionPlan`] and read a handful of physical fields off
 /// it, which made a reproduced Stage-B sweep plan look load-bearing to the
 /// tail even though only these fields were ever consulted. The legacy
-/// reproduced-Stage-B caller ([`plan_velocity_integral_response`]) and the
-/// nonretained combined caller ([`plan_combined_velocity_integral_response`])
-/// both still build this from their own `stage_b_plan` via [`From`], so their
-/// output is unchanged. The breakaway campaign
+/// reproduced-Stage-B caller ([`plan_velocity_integral_response`]) still
+/// builds this from its own `stage_b_plan` via [`From`], so its output is
+/// unchanged. The breakaway campaign
 /// ([`plan_breakaway_velocity_integral_response`]) has no Stage-B sweep plan
 /// at all and builds one directly from its own campaign parameters instead of
 /// fabricating a `VelocitySweepExecutionPlan`.
@@ -1393,9 +1318,9 @@ pub(crate) struct AcquisitionContext {
     ///
     /// Consumed only by [`plan_breakaway_velocity_integral_response`], which
     /// builds its [`StageCAuthority`] internally from the confirmation token so
-    /// no forged authority can be passed in. The combined/legacy [`From`] path
-    /// leaves this zero: it builds its own reproduced-Stage-B authority and
-    /// never routes through the breakaway gate.
+    /// no forged authority can be passed in. The legacy [`From`] path leaves
+    /// this zero: it builds its own reproduced-Stage-B authority and never
+    /// routes through the breakaway gate.
     pub(crate) channel: u8,
     /// Plan-time PWM carrier frequency the confirmation evidence was gathered
     /// under, in Hz.
@@ -1403,15 +1328,15 @@ pub(crate) struct AcquisitionContext {
     /// The breakaway gate refuses if this does not match the live PWM frequency
     /// handed to it at Stage-C construction, so confirmation evidence measured
     /// under one physical timebase can never seed a Stage-C plan admitted under
-    /// another. Left zero by the combined/legacy [`From`] path (fail-closed:
-    /// zero never matches a live frequency).
+    /// another. Left zero by the legacy [`From`] path (fail-closed: zero never
+    /// matches a live frequency).
     pub(crate) plan_time_pwm_hz: u32,
     /// Plan-time encoder counts per mechanical revolution the confirmation
     /// evidence was gathered under.
     ///
     /// Cross-checked against the live encoder resolution by the breakaway gate,
-    /// exactly like [`Self::plan_time_pwm_hz`]. Left zero by the
-    /// combined/legacy [`From`] path.
+    /// exactly like [`Self::plan_time_pwm_hz`]. Left zero by the legacy
+    /// [`From`] path.
     pub(crate) plan_time_encoder_counts_per_rev: u32,
 }
 
@@ -1419,8 +1344,8 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
     /// Extract exactly the physical fields the shared Stage-C tail reads.
     ///
     /// The breakaway-only `channel` and `plan_time_*` fields are left zero: the
-    /// reproduced-Stage-B and combined callers build their own authority and
-    /// never invoke the breakaway gate's token/physical-context guards.
+    /// reproduced-Stage-B caller builds its own authority and never invokes
+    /// the breakaway gate's token/physical-context guards.
     fn from(plan: VelocitySweepExecutionPlan) -> Self {
         Self {
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
