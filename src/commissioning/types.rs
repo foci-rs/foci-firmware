@@ -634,34 +634,6 @@ pub struct VelocityPrimitiveCurrentEvidence {
     pub contact: u8,
 }
 
-/// Nonterminal evidence produced by one velocity-sweep engine poll.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum VelocitySweepEvent {
-    /// Immutable plan emitted before motion.
-    Planned(VelocitySweepPlanned),
-    /// One analyzed moving observation.
-    Observation(VelocitySweepObservation),
-    /// One completed four-observation rung.
-    Rung(VelocitySweepRungReport),
-    /// One bounded return to the immutable campaign origin.
-    #[cfg(feature = "trace-velocity-sweep")]
-    Recovery(RungOriginRecoveryEvidence),
-    /// Recovery stabilization lead-in and scored-rest evidence.
-    #[cfg(feature = "trace-velocity-sweep")]
-    RecoveryRest(RecoveryRestDiagnostic),
-    /// Exact per-suffix scored-rest selector evidence.
-    #[cfg(feature = "trace-velocity-sweep")]
-    RestSelection(RestSelectionDiagnostic),
-    /// Current-limit evidence for one completed signed-plus-zero primitive.
-    Current(VelocityPrimitiveCurrentEvidence),
-    /// One directional region or fragment closed by the fold.
-    DirectionalRegion(VelocityDirectionalRegionReport),
-    /// One jointly operable region closed by the fold.
-    JointRegion(VelocityJointRegionReport),
-    /// Sufficient single-run Stage B handoff.
-    Handoff(VelocityStageBHandoffReport),
-}
-
 /// Measurement-stage terminal class; this is not a gain-acceptance verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocitySweepOutcome {
@@ -1623,7 +1595,7 @@ pub struct BreakawayRecoveryOriginMismatch {
 
 /// One breakaway-campaign evidence record ready for wire emission.
 ///
-/// Mirrors [`VelocitySweepEvent`]: the campaign driver
+/// The campaign driver
 /// (`breakaway_campaign::step_breakaway_campaign_with_trace`) returns one of
 /// these per streamed tick, and `commission_dispatch::replies` fans it out to
 /// the Task-7 `emit_breakaway_*` wire bridges. The discovery and confirmation
@@ -1735,8 +1707,6 @@ pub enum StepResult {
     At(u64),
     /// A phase transition occurred. Report to host.
     PhaseChanged(PhaseId),
-    /// Streamed velocity-sweep evidence became available.
-    VelocitySweepEvent(VelocitySweepEvent),
     /// Streamed Stage-C velocity-integral evidence became available.
     VelocityIntegralEvent(VelocityIntegralEvent),
     /// The report-only Stage-C response sweep reached a terminal result.

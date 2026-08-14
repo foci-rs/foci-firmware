@@ -36,9 +36,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED, EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN, EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
-    EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED, EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION,
-    EVENT_COMMISSION_VELOCITY_SWEEP_PLAN, EVENT_COMMISSION_VELOCITY_SWEEP_RUNG, TraceEventLevel,
-    u32_arg,
+    TraceEventLevel, u32_arg,
 };
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::trace::events::{
@@ -1263,85 +1261,6 @@ impl CommissioningEngine {
                 self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
                 self.emit_trace_phase_start(backend, *phase);
             }
-            StepResult::VelocitySweepEvent(event) => {
-                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
-                backend.record_velocity_sweep_trace_record(
-                    crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event(
-                        *event,
-                    ),
-                );
-                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
-                if let crate::commissioning::types::VelocitySweepEvent::Observation(report) = event
-                    && let Some(record) = crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_structured_boundary(*report)
-                {
-                    backend.record_velocity_sweep_trace_record(record);
-                }
-                let (event_id, sequence) = match event {
-                    crate::commissioning::types::VelocitySweepEvent::Planned(report) => (
-                        EVENT_COMMISSION_VELOCITY_SWEEP_PLAN,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::VelocitySweepEvent::Observation(report) => (
-                        EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::VelocitySweepEvent::Rung(report) => (
-                        EVENT_COMMISSION_VELOCITY_SWEEP_RUNG,
-                        report.evidence_sequence,
-                    ),
-                    #[cfg(feature = "trace-velocity-sweep")]
-                    crate::commissioning::types::VelocitySweepEvent::Recovery(report) => (
-                        EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
-                        report.evidence_sequence,
-                    ),
-                    #[cfg(feature = "trace-velocity-sweep")]
-                    crate::commissioning::types::VelocitySweepEvent::RecoveryRest(report) => (
-                        EVENT_COMMISSION_SELECTED_RECOVERY_REST,
-                        report.evidence_sequence,
-                    ),
-                    #[cfg(feature = "trace-velocity-sweep")]
-                    crate::commissioning::types::VelocitySweepEvent::RestSelection(report) => (
-                        EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::VelocitySweepEvent::Current(report) => (
-                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::VelocitySweepEvent::DirectionalRegion(report) => (
-                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::VelocitySweepEvent::JointRegion(report) => (
-                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
-                        report.evidence_sequence,
-                    ),
-                    crate::commissioning::types::VelocitySweepEvent::Handoff(report) => (
-                        EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
-                        report.evidence_sequence,
-                    ),
-                };
-                backend.record_commission_trace_event(CommissionTraceEvent {
-                    level: TraceEventLevel::Info,
-                    event_id,
-                    engine_kind: EngineKind::OuterTune,
-                    payload: [i32::from(sequence), 0],
-                    payload_count: 1,
-                });
-                if matches!(
-                    event,
-                    crate::commissioning::types::VelocitySweepEvent::Observation(report)
-                        if report.structured_boundary.is_some()
-                ) {
-                    backend.record_commission_trace_event(CommissionTraceEvent {
-                        level: TraceEventLevel::Info,
-                        event_id: EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED,
-                        engine_kind: EngineKind::OuterTune,
-                        payload: [i32::from(sequence), 0],
-                        payload_count: 1,
-                    });
-                }
-            }
             StepResult::VelocityIntegralEvent(event) => {
                 #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
                 backend.record_velocity_sweep_trace_record(
@@ -1497,9 +1416,9 @@ impl CommissioningEngine {
     /// stream: the dedicated bulk USB interface `foci-trace` captures,
     /// physically separate from the Klipper command-reply connection
     /// `commission_dispatch::replies::emit_breakaway_campaign_event` feeds
-    /// with the same evidence. Mirrors the `VelocitySweepEvent`/
-    /// `AcceptanceMatrixEvent` arms above: one canonical-record push per
-    /// wire record, one lightweight `CommissionTraceEvent` marker per tick.
+    /// with the same evidence. Mirrors the `AcceptanceMatrixEvent` arm above:
+    /// one canonical-record push per wire record, one lightweight
+    /// `CommissionTraceEvent` marker per tick.
     /// A batch variant (every in-band rung's margin, every resolved ladder
     /// rung, every held-out stroke) fans out to one canonical-record push per
     /// item, exactly as `emit_breakaway_campaign_event` fans out on the
@@ -1924,10 +1843,6 @@ mod tests {
                     crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime,
                 >(),
                 352
-            );
-            assert_eq!(
-                size_of::<crate::commissioning::types::VelocitySweepEvent>(),
-                320
             );
             // 224 before observations carried the rejection diagnostic, 256 before
             // that diagnostic also carried the slope and its half-width, 272 before
@@ -2841,52 +2756,6 @@ mod tests {
             TraceEventLevel::Info,
             [crate::autotune::PhaseId::CoilCheck.to_u8() as i32, 1],
         );
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn rest_selection_uses_trace_event_151_and_exact_canonical_record() {
-        use crate::autotune::velocity_measurement::{RestSelectionDisposition, RestStructuralCode};
-        use crate::commissioning::outer::velocity::recovery::RecoveryStage;
-        use crate::commissioning::types::{
-            RestSelectionDiagnostic, RestSelectionOwner, VelocitySweepEvent,
-        };
-
-        let report = RestSelectionDiagnostic {
-            intervals_q: [[0, 0]; 3],
-            plan_digest: 11,
-            run_sequence: 7,
-            evidence_sequence: 2,
-            selected_suffix_len: 256,
-            structural_codes: [RestStructuralCode::Usable; 3],
-            interval_present_mask: 0b111,
-            usable_mask: 0b111,
-            zero_compatible_mask: 0b111,
-            selected_mask: 0b100,
-            stage: RecoveryStage::Proportional,
-            owner: RestSelectionOwner::StageBObservation,
-            rung_index: 1,
-            direction: 0,
-            slot: 3,
-            disposition: RestSelectionDisposition::StatisticalAcceptance,
-        };
-        let mut engine =
-            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot());
-        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
-
-        engine.emit_trace_after_step(
-            &mut backend,
-            &StepResult::VelocitySweepEvent(VelocitySweepEvent::RestSelection(report)),
-        );
-
-        assert_eq!(backend.velocity_sweep_trace_records.len(), 1);
-        assert_eq!(backend.velocity_sweep_trace_records[0].as_bytes().len(), 78);
-        assert_eq!(backend.trace_events.len(), 1);
-        assert_eq!(
-            backend.trace_events[0].event_id,
-            crate::trace::events::EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC
-        );
-        assert_eq!(backend.trace_events[0].payload[0], 2);
     }
 
     #[test]

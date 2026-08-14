@@ -79,6 +79,7 @@ pub fn extend_velocity_sweep_digest(mut digest: u64, record: &VelocitySweepCanon
 }
 
 /// Encode an unsigned value as an outward-rounded mantissa and right shift.
+#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn upper_bound_u128(value: u128) -> (u32, u8) {
     for shift in 0..=127u8 {
         let divisor = 1u128 << shift;
@@ -91,6 +92,7 @@ pub(crate) fn upper_bound_u128(value: u128) -> (u32, u8) {
 }
 
 /// Encode a signed value as an outward-rounded mantissa and right shift.
+#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn upper_bound_i64(value: i64) -> (i32, u8) {
     let magnitude = i128::from(value).unsigned_abs();
     for shift in 0..=63u8 {
@@ -104,6 +106,7 @@ pub(crate) fn upper_bound_i64(value: i64) -> (i32, u8) {
 }
 
 /// Encode settled-rate evidence with one common outward-rounded right shift.
+#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn encode_rate_values(values: [i64; 5]) -> ([i32; 5], u8) {
     for shift in 0..=63u8 {
         let divisor = 1i128 << shift;

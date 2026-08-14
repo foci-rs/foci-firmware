@@ -21,15 +21,6 @@ pub struct StageBPreflight {
     pub run_sequence: u32,
 }
 
-impl StageBPreflight {
-    /// Return the plan evidence that must be emitted before engine construction.
-    pub fn planned_event(self) -> crate::commissioning::types::VelocitySweepEvent {
-        crate::commissioning::types::VelocitySweepEvent::Planned(
-            self.plan.report(self.run_sequence, 0),
-        )
-    }
-}
-
 /// Fail-closed reason a Stage B command was rejected before actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StageBPreflightRejection {

@@ -3,7 +3,7 @@
 use crate::autotune::{CommissionError, PhaseId};
 use crate::commissioning::types::{
     AcceptanceMatrixTerminal, AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult,
-    VelocityIntegralEvent, VelocityIntegralTerminal, VelocitySweepEvent,
+    VelocityIntegralEvent, VelocityIntegralTerminal,
 };
 
 /// Nonterminal commissioning evidence emitted independently of scheduling.
@@ -19,13 +19,6 @@ pub enum CommissionEvent {
         phase_id: PhaseId,
         /// Engine kind used to route the progress reply.
         engine_kind: EngineKind,
-    },
-    /// Streamed report-only velocity-sweep evidence.
-    VelocitySweep {
-        /// Object id of the commissioning channel.
-        oid: u8,
-        /// Transport-neutral evidence group.
-        event: VelocitySweepEvent,
     },
     /// Streamed report-only Stage-C velocity-integral evidence.
     VelocityIntegral {
@@ -193,12 +186,6 @@ pub fn adapt_step_result(
                     phase_id,
                     engine_kind,
                 }),
-            })
-        }
-        StepResult::VelocitySweepEvent(event) => {
-            let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
-            Ok(CommissionPoll::ReadyNow {
-                event: Some(CommissionEvent::VelocitySweep { oid, event }),
             })
         }
         StepResult::VelocityIntegralEvent(event) => {
@@ -425,96 +412,6 @@ mod tests {
                     engine_kind: EngineKind::Commission,
                 })
             }
-        ));
-    }
-
-    #[test]
-    fn velocity_sweep_event_maps_to_ready_now_without_phase_context() {
-        let event =
-            VelocitySweepEvent::Planned(crate::commissioning::types::VelocitySweepPlanned {
-                plan_digest: 0,
-                run_sequence: 1,
-                evidence_sequence: 0,
-                requested_velocity_mrev_s: 2,
-                requested_velocity_source: 1,
-                planned_velocity_mrev_s: 3,
-                effective_ceiling_mrev_s: 4,
-                clamp_flags: 5,
-                effective_ceiling_source: 6,
-                target_velocity_rpm: 7,
-                p_start: 8,
-                p_top: 9,
-                rung_count: 10,
-                observations_per_direction: 2,
-                moving_stroke_us: 256_000,
-                zero_settle_us: 200_000,
-                nominal_workflow_ms: 11,
-                maximum_workflow_ms: 12,
-                recovery_origin_band_counts: 19,
-                recovery_nominal_slot_us: 20,
-                recovery_maximum_slot_us: 21,
-                recovery_slot_count: 22,
-                max_stroke_travel_mrev: 13,
-                settle_travel_reserve_mrev: 14,
-                negative_position_headroom_mrev: 15,
-                positive_position_headroom_mrev: 16,
-                hard_torque_limit: 17,
-                usable_torque_limit: 18,
-            });
-
-        assert!(matches!(
-            adapt_step_result(
-                StepResult::VelocitySweepEvent(event),
-                42_000,
-                Some((7, EngineKind::OuterTune)),
-            )
-            .unwrap(),
-            CommissionPoll::ReadyNow {
-                event: Some(CommissionEvent::VelocitySweep {
-                    oid: 7,
-                    event: VelocitySweepEvent::Planned(_),
-                })
-            }
-        ));
-    }
-
-    #[test]
-    fn velocity_sweep_event_rejects_missing_endpoint_context() {
-        let event =
-            VelocitySweepEvent::Planned(crate::commissioning::types::VelocitySweepPlanned {
-                plan_digest: 0,
-                run_sequence: 1,
-                evidence_sequence: 0,
-                requested_velocity_mrev_s: 2,
-                requested_velocity_source: 1,
-                planned_velocity_mrev_s: 3,
-                effective_ceiling_mrev_s: 4,
-                clamp_flags: 5,
-                effective_ceiling_source: 6,
-                target_velocity_rpm: 7,
-                p_start: 8,
-                p_top: 9,
-                rung_count: 10,
-                observations_per_direction: 2,
-                moving_stroke_us: 256_000,
-                zero_settle_us: 200_000,
-                nominal_workflow_ms: 11,
-                maximum_workflow_ms: 12,
-                recovery_origin_band_counts: 19,
-                recovery_nominal_slot_us: 20,
-                recovery_maximum_slot_us: 21,
-                recovery_slot_count: 22,
-                max_stroke_travel_mrev: 13,
-                settle_travel_reserve_mrev: 14,
-                negative_position_headroom_mrev: 15,
-                positive_position_headroom_mrev: 16,
-                hard_torque_limit: 17,
-                usable_torque_limit: 18,
-            });
-
-        assert!(matches!(
-            adapt_step_result(StepResult::VelocitySweepEvent(event), 42_000, None),
-            Err(CommissionError::InvalidSchedule)
         ));
     }
 

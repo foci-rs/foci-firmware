@@ -24,24 +24,6 @@ pub const DIRECTIONAL_RUNG_FLAG_OPERABLE: u8 = 1 << 0;
 /// Directional report flag indicating the exceptional initial lead-in observation.
 pub const DIRECTIONAL_RUNG_FLAG_INITIAL_LEAD_IN: u8 = 1 << 1;
 
-/// Normalize four directional rate bounds to the exact shared wire scale.
-pub(crate) fn common_rate_mantissas(rates: [CompactSignedRate; 4]) -> ([i32; 4], u8) {
-    let shift = rates.iter().map(|rate| rate.shift).max().unwrap_or(0);
-    let divisor = 1_i64 << shift;
-    let mantissas = core::array::from_fn(|index| {
-        let value = rates[index].decode();
-        let quotient = value / divisor;
-        let remainder = value % divisor;
-        let outward = match index {
-            0 | 2 if value < 0 && remainder != 0 => quotient - 1,
-            1 | 3 if value > 0 && remainder != 0 => quotient + 1,
-            _ => quotient,
-        };
-        i32::try_from(outward).expect("compact rate fits common wire mantissa")
-    });
-    (mantissas, shift)
-}
-
 /// Stable report code for one directional-region kind.
 pub const fn directional_region_kind_code(
     kind: super::operating_region::DirectionalRegionKind,

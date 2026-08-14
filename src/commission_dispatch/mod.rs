@@ -28,9 +28,7 @@ pub(crate) mod test_support;
 mod tests;
 
 pub use post_actions::{StepperTaskDirective, apply_stepper_post_action_state};
-pub use replies::{
-    CommissionReplySink, emit_phase_reply, emit_terminal_reply, emit_velocity_sweep_event,
-};
+pub use replies::{CommissionReplySink, emit_phase_reply, emit_terminal_reply};
 #[cfg(feature = "trace-velocity-sweep")]
 pub use stage_b::{StageBPreflight, StageBPreflightRejection, preflight_stage_b_request};
 
@@ -41,7 +39,7 @@ use crate::commissioning::{
     CommissioningEngine,
     types::{
         AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult,
-        OuterSafetyFault, StepResult, VelocitySweepEvent, VelocitySweepTerminal,
+        OuterSafetyFault, StepResult, VelocitySweepTerminal,
     },
 };
 use crate::pid::{InnerLoopGains, OuterLoopGains};
@@ -325,8 +323,6 @@ pub enum ReplyPayload {
         diagnostics: crate::selftest::CommissionDiagnostics,
         done_status: u8,
     },
-    /// One streamed velocity-sweep plan, observation, or rung report.
-    VelocitySweepEvent { oid: u8, event: VelocitySweepEvent },
     /// Dedicated detailed report-only Stage B terminal.
     VelocitySweepTerminal {
         oid: u8,
@@ -530,17 +526,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 oid: engine_ref.oid(),
                 phase_id,
                 engine_kind: engine_ref.kind(),
-            }
-        }
-        StepResult::VelocitySweepEvent(event) => {
-            let engine_ref = engine
-                .as_ref()
-                .expect("engine slot is None on VelocitySweepEvent");
-            CommissionOutcome::Evidence {
-                reply: ReplyPayload::VelocitySweepEvent {
-                    oid: engine_ref.oid(),
-                    event,
-                },
             }
         }
         #[cfg(feature = "trace-velocity-sweep")]
