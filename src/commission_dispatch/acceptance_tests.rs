@@ -428,28 +428,25 @@ fn rest_unconfirmed_terminal(plan_digest: u64) -> AcceptanceMatrixTerminal {
 
 #[test]
 fn action_codes_and_invalid_values_are_exact() {
-    assert_eq!(AutotuneAction::Combined as u8, 0);
     assert_eq!(AutotuneAction::MatrixAscending as u8, 1);
     assert_eq!(AutotuneAction::MatrixDescending as u8, 2);
-    assert_eq!(AutotuneAction::MatrixAscendingMirrored as u8, 3);
-    assert_eq!(AutotuneAction::MatrixDescendingMirrored as u8, 4);
-    assert_eq!(AutotuneAction::CombinedMirrored as u8, 5);
-    assert_eq!(AutotuneAction::from_u8(0), Some(AutotuneAction::Combined));
-    assert_eq!(
-        AutotuneAction::from_u8(5),
-        Some(AutotuneAction::CombinedMirrored)
-    );
-    assert_eq!(AutotuneAction::CombinedPaired as u8, 6);
-    assert_eq!(
-        AutotuneAction::from_u8(6),
-        Some(AutotuneAction::CombinedPaired)
-    );
     assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
+    assert_eq!(AutotuneAction::StageCResume as u8, 8);
+    for byte in [0u8, 3, 4, 5, 6] {
+        assert_eq!(AutotuneAction::from_u8(byte), None);
+    }
+    assert_eq!(
+        AutotuneAction::from_u8(1),
+        Some(AutotuneAction::MatrixAscending)
+    );
+    assert_eq!(
+        AutotuneAction::from_u8(2),
+        Some(AutotuneAction::MatrixDescending)
+    );
     assert_eq!(
         AutotuneAction::from_u8(7),
         Some(AutotuneAction::BreakawaySeeded)
     );
-    assert_eq!(AutotuneAction::StageCResume as u8, 8);
     assert_eq!(
         AutotuneAction::from_u8(8),
         Some(AutotuneAction::StageCResume)
@@ -464,9 +461,8 @@ fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::BreakawaySeeded.matrix_order(), None);
     assert_eq!(AutotuneAction::BreakawaySeeded.matrix_slot_order(), None);
 
-    // Slot order is defined for every acquisition, including combined runs.
+    // Slot order is defined for every surviving acquisition.
     for (action, slot_order) in [
-        (AutotuneAction::Combined, IntegralSlotOrder::ForwardFirst),
         (
             AutotuneAction::MatrixAscending,
             IntegralSlotOrder::ForwardFirst,
@@ -475,24 +471,9 @@ fn action_codes_and_invalid_values_are_exact() {
             AutotuneAction::MatrixDescending,
             IntegralSlotOrder::ForwardFirst,
         ),
-        (
-            AutotuneAction::CombinedMirrored,
-            IntegralSlotOrder::ReverseFirst,
-        ),
-        (
-            AutotuneAction::MatrixAscendingMirrored,
-            IntegralSlotOrder::ReverseFirst,
-        ),
-        (
-            AutotuneAction::MatrixDescendingMirrored,
-            IntegralSlotOrder::ReverseFirst,
-        ),
     ] {
         assert_eq!(action.slot_order(), slot_order, "{action:?}");
     }
-    // A mirrored combined run is not a matrix acquisition.
-    assert_eq!(AutotuneAction::CombinedMirrored.matrix_order(), None);
-    assert_eq!(AutotuneAction::CombinedMirrored.matrix_slot_order(), None);
 
     // Amplitude order and slot order are independent dimensions of one action.
     for (action, order, slot_order) in [
@@ -506,16 +487,6 @@ fn action_codes_and_invalid_values_are_exact() {
             AcceptanceMatrixOrder::Descending,
             IntegralSlotOrder::ForwardFirst,
         ),
-        (
-            AutotuneAction::MatrixAscendingMirrored,
-            AcceptanceMatrixOrder::Ascending,
-            IntegralSlotOrder::ReverseFirst,
-        ),
-        (
-            AutotuneAction::MatrixDescendingMirrored,
-            AcceptanceMatrixOrder::Descending,
-            IntegralSlotOrder::ReverseFirst,
-        ),
     ] {
         assert_eq!(action.matrix_order(), Some(order), "{action:?} order");
         assert_eq!(
@@ -524,10 +495,8 @@ fn action_codes_and_invalid_values_are_exact() {
             "{action:?} slot order"
         );
     }
-    assert_eq!(AutotuneAction::Combined.matrix_order(), None);
-    assert_eq!(AutotuneAction::Combined.matrix_slot_order(), None);
-    assert_eq!(AutotuneAction::CombinedPaired.matrix_order(), None);
-    assert_eq!(AutotuneAction::CombinedPaired.matrix_slot_order(), None);
+    assert_eq!(AutotuneAction::StageCResume.matrix_order(), None);
+    assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
     let ascending = CommissioningWorkflowPlan::new_acceptance_matrix(
         1,
         AcceptanceMatrixOrder::Ascending,

@@ -40,7 +40,6 @@ pub enum TmcPreRequestDisposition {
 #[cfg(feature = "trace-velocity-sweep")]
 #[allow(clippy::large_enum_variant)]
 enum TuneRoute {
-    Combined(crate::commission_dispatch::stage_b::StageBPreflight),
     Acceptance(crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight),
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
     StageCResume(crate::commission_dispatch::stage_c::StageCPreflight),
@@ -805,81 +804,8 @@ where
             };
             #[cfg(feature = "trace-velocity-sweep")]
             let tune_route = match autotune_action {
-                crate::tmc::AutotuneAction::Combined
-                | crate::tmc::AutotuneAction::CombinedMirrored
-                | crate::tmc::AutotuneAction::CombinedPaired => {
-                    use crate::commissioning::outer::velocity::integral_reproduction::StageCSlotState;
-
-                    let stage_c_blocks_replacement = match stage_c_candidate.state() {
-                        StageCSlotState::Empty => false,
-                        StageCSlotState::AcceptancePoint => stage_c_candidate
-                            .acceptance_point()
-                            .is_none_or(|point| point.identity.channel != board.channel()),
-                        StageCSlotState::AuthorityOnly | StageCSlotState::Candidate => true,
-                    };
-                    let legacy_retained_state =
-                        stage_b_candidate.candidate().is_some() || stage_c_blocks_replacement;
-                    let stage_b = match crate::commission_dispatch::stage_b::
-                        preflight_combined_stage_b_request(
-                            request,
-                            encoder_counts_per_rev,
-                            current_limit.raw(),
-                            board.velocity_limit_evidence_capability(),
-                            board.channel(),
-                            run_sequence,
-                            legacy_retained_state,
-                        ) {
-                            Ok(preflight) => preflight,
-                            Err(rejection) => {
-                                board.tmc_state().commission_in_flight.store(
-                                    false,
-                                    core::sync::atomic::Ordering::Relaxed,
-                                );
-                                board.emit_reply(stage_b_preflight_failure_payload(
-                                    oid,
-                                    run_sequence,
-                                    rejection,
-                                ));
-                                return TmcControlRequestOutcome::skip_tick_tail();
-                            }
-                        };
-                    let workflow_geometry = match crate::commissioning::outer::velocity::
-                        combined_plan::combined_workflow_geometry(
-                            stage_b.plan,
-                            board.pwm_freq_hz(),
-                        ) {
-                            Ok(geometry) => geometry,
-                            Err(_) => {
-                                board.tmc_state().commission_in_flight.store(
-                                    false,
-                                    core::sync::atomic::Ordering::Relaxed,
-                                );
-                                board.emit_reply(stage_b_preflight_failure_payload(
-                                    oid,
-                                    run_sequence,
-                                    crate::commission_dispatch::stage_b::
-                                        StageBPreflightRejection::InvalidPlan,
-                                ));
-                                return TmcControlRequestOutcome::skip_tick_tail();
-                            }
-                        };
-                    let workflow = crate::commissioning::outer::velocity::integral_plan::
-                        CommissioningWorkflowPlan::new_combined(
-                            run_sequence,
-                            workflow_geometry.combined_nominal_ms,
-                            workflow_geometry.combined_maximum_ms,
-                        )
-                        .expect("valid combined stage plans have a valid workflow envelope");
-                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                        oid,
-                        plan: workflow,
-                    });
-                    TuneRoute::Combined(stage_b)
-                }
                 action @ (crate::tmc::AutotuneAction::MatrixAscending
-                | crate::tmc::AutotuneAction::MatrixDescending
-                | crate::tmc::AutotuneAction::MatrixAscendingMirrored
-                | crate::tmc::AutotuneAction::MatrixDescendingMirrored) => {
+                | crate::tmc::AutotuneAction::MatrixDescending) => {
                     let matrix_config =
                         crate::commission_dispatch::stage_c::StageCPreflightConfig {
                             encoder_counts_per_rev,
@@ -1120,39 +1046,6 @@ where
             #[cfg(feature = "trace-velocity-sweep")]
             {
                 match tune_route {
-                    TuneRoute::Combined(stage_b_preflight) => {
-                        if !stage_c_candidate.begin_acceptance_replacement(board.channel()) {
-                            board
-                                .tmc_state()
-                                .commission_in_flight
-                                .store(false, core::sync::atomic::Ordering::Relaxed);
-                            emit_commission_phase_failure::<Board, Spi>(
-                                board,
-                                oid,
-                                CommissionError::InvalidSchedule.status_code(),
-                            );
-                            return TmcControlRequestOutcome::skip_tick_tail();
-                        }
-                        let planned_event = stage_b_preflight.planned_event();
-                        board.record_velocity_sweep_trace_record(
-                            crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event(
-                                planned_event,
-                            ),
-                        );
-                        board.emit_reply(ReplyPayload::VelocitySweepEvent {
-                            oid,
-                            event: planned_event,
-                        });
-                        runtime.set_commission_engine(
-                            CommissioningEngine::new_outer_for_tmc_with_stage_b_preflight(
-                                oid,
-                                tmc_state,
-                                outer_params,
-                                entry_snapshot,
-                                stage_b_preflight,
-                            ),
-                        );
-                    }
                     TuneRoute::Acceptance(preflight) => {
                         runtime.set_commission_engine(
                             CommissioningEngine::new_outer_for_tmc_with_acceptance_preflight(
@@ -2646,68 +2539,6 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
-    async fn combined_workflow_is_declared_and_recorded_before_engine_execution() {
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-        use crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_event;
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        board.velocity_limit_evidence_capability =
-            crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG;
-        let tmc_state = tmc_channel0();
-        tmc_state
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut slot = StageBCandidateSlot::new();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stage_b(
-            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut slot,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
-        else {
-            panic!("combined workflow envelope must be first")
-        };
-        assert_eq!(
-            workflow.shape,
-            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::CombinedPThenI
-        );
-        assert_eq!(workflow.maximum_workflow_ms, 496_528);
-        let ReplyPayload::VelocitySweepEvent { event, .. } = board.replies[1] else {
-            panic!("accepted combined request must publish its Stage-B plan")
-        };
-        let crate::commissioning::types::VelocitySweepEvent::Planned(planned) = event else {
-            panic!("first Stage B event must be its immutable plan")
-        };
-        let expected =
-            crate::commissioning::outer::velocity::sweep_plan::plan_combined_velocity_sweep(
-                velocity_sweep_request(),
-                4_000,
-                2_816,
-                crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
-        )
-        .unwrap();
-        assert_eq!(planned.plan_digest, expected.digest());
-        assert_eq!(
-            board.velocity_sweep_records,
-            [encode_velocity_sweep_event(event)]
-        );
-        assert!(slot.candidate().is_none());
-        assert!(runtime.is_commission_active());
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[fixture_test]
     async fn breakaway_breadcrumb_begins_when_workflow_is_installed() {
         use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
         use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
@@ -3108,54 +2939,6 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
-    async fn combined_replacement_clears_same_channel_point_only_after_admission() {
-        use crate::commissioning::outer::velocity::integral_reproduction::{
-            AcceptanceMatrixProgress, StageCCandidateSlot,
-        };
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        tmc_channel0()
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
-        let mut stage_c = StageCCandidateSlot::new();
-        stage_c.install_acceptance_point(
-            crate::commission_dispatch::acceptance::test_acceptance_point(
-                velocity_sweep_request(),
-                AcceptanceMatrixProgress::ReadyAscending,
-            ),
-        );
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut stage_b,
-            &mut stage_c,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert!(runtime.is_commission_active());
-        assert_eq!(stage_c.acceptance_point(), None);
-        assert!(matches!(
-            board.replies.as_slice(),
-            [
-                ReplyPayload::CommissioningWorkflowPlan { .. },
-                ReplyPayload::VelocitySweepEvent { .. }
-            ]
-        ));
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[fixture_test]
     async fn matrix_order_mismatch_preserves_point_without_motion() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             AcceptanceMatrixProgress, StageCCandidateSlot,
@@ -3206,122 +2989,6 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
-    async fn combined_workflow_rejects_retained_stage_c_without_mutating_it() {
-        use crate::commissioning::outer::velocity::integral_reproduction::{
-            StageCCandidateSlot, StageCSlotState,
-        };
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-        use crate::commissioning::types::VelocitySweepOutcome;
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        let tmc_state = tmc_channel0();
-        tmc_state
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
-        let mut stage_c = StageCCandidateSlot::new();
-        let retained = retained_stage_c_authority();
-        stage_c.install_authority(retained);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut stage_b,
-            &mut stage_c,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(board.replies.len(), 1);
-        let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
-            panic!("legacy state must produce one Stage-B-family rejection")
-        };
-        assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
-        assert_eq!(
-            terminal.cause,
-            crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
-        );
-        assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
-        assert_eq!(stage_c.authority(), Some(retained));
-        assert!(stage_b.candidate().is_none());
-        assert!(!runtime.is_commission_active());
-        assert!(board.velocity_sweep_records.is_empty());
-        let spi = tmc.into_inner();
-        assert!(spi.write_attempts.iter().all(|(addr, _)| {
-            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-        }));
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[fixture_test]
-    async fn combined_workflow_rejects_retained_stage_b_without_mutating_it() {
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-        use crate::commissioning::outer::velocity::reproduction::{
-            StageBCandidateSlot, StageBReproductionDecision,
-        };
-        use crate::commissioning::types::VelocitySweepOutcome;
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        let tmc_state = tmc_channel0();
-        tmc_state
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
-        let mut stage_c = StageCCandidateSlot::new();
-        let retained = retained_stage_b_candidate();
-        assert!(matches!(
-            stage_b.observe_sufficient(retained),
-            StageBReproductionDecision::CompleteCandidate(_)
-        ));
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::Combined),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut stage_b,
-            &mut stage_c,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(board.replies.len(), 1);
-        let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
-            panic!("legacy state must produce one Stage-B-family rejection");
-        };
-        assert_eq!(terminal.outcome, VelocitySweepOutcome::RejectedPlanMismatch);
-        assert_eq!(
-            terminal.cause,
-            crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH
-        );
-        assert_eq!(stage_b.candidate(), Some(retained));
-        assert!(stage_c.authority().is_none());
-        assert!(!runtime.is_commission_active());
-        let spi = tmc.into_inner();
-        assert!(spi.write_attempts.iter().all(|(addr, _)| {
-            *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
-                && *addr != foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
-        }));
-        assert!(board.velocity_sweep_records.is_empty());
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[fixture_test]
     async fn same_channel_explicit_calibration_preserves_stage_c_authority() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             StageCCandidateSlot, StageCSlotState,
@@ -3351,118 +3018,6 @@ mod tests {
         assert_eq!(
             runtime.pending_commission_kind(),
             Some(EngineKind::Calibrate)
-        );
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[fixture_test]
-    async fn stage_b_changed_plan_is_rejected_before_actuation_and_preserves_candidate() {
-        use crate::commissioning::outer::velocity::reproduction::{
-            StageBCandidateSlot, StageBCandidateSummary,
-        };
-
-        let mut board = RecordingBoard::skip_tick_tail();
-        let tmc_state = tmc_channel0();
-        tmc_state
-            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
-            .expect("valid motion scale");
-        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_calibrated_for_test(true);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-        let request = match tune_request().kind {
-            TmcRequestKind::Tune {
-                requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s,
-                requested_velocity_source,
-                max_stroke_travel_mrev,
-                settle_travel_reserve_mrev,
-                negative_position_headroom_mrev,
-                positive_position_headroom_mrev,
-                max_duration_ms,
-                ..
-            } => crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
-                requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s,
-                requested_velocity_source,
-                max_stroke_travel_mrev,
-                settle_travel_reserve_mrev,
-                negative_position_headroom_mrev,
-                positive_position_headroom_mrev,
-                max_duration_ms,
-            },
-            _ => unreachable!(),
-        };
-        let mut slot = StageBCandidateSlot::new();
-        let accepted = crate::commission_dispatch::stage_b::preflight_stage_b_request(
-            request, 4_000, 2_816, 0, 0, 1, &mut slot,
-        )
-        .expect("valid retained plan");
-        let retained = StageBCandidateSummary {
-            identity: accepted.identity,
-            forward_membership: 0b111,
-            reverse_membership: 0b111,
-            joint_membership: 0b111,
-            nominated_p: 4,
-            p_start: accepted.plan.p_start.raw(),
-            p_top: accepted.plan.p_top.raw(),
-            rung_count: accepted.plan.rung_count,
-            forward_interval: [1, 2],
-            reverse_interval: [-2, -1],
-            forward_common_interval: [1, 2],
-            reverse_common_interval: [-2, -1],
-            run_completed_us: 2,
-            run_digest: 3,
-        };
-        slot.observe_sufficient(retained);
-
-        let mut changed = tune_request_with_action(crate::tmc::AutotuneAction::Combined);
-        let TmcRequestKind::Tune {
-            ref mut max_stroke_travel_mrev,
-            ..
-        } = changed.kind
-        else {
-            unreachable!()
-        };
-        *max_stroke_travel_mrev += 100;
-        let outcome = handle_tmc_control_request_with_stage_b(
-            changed,
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut slot,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
-        assert!(!runtime.is_commission_active());
-        assert_eq!(slot.candidate(), Some(retained));
-        assert_eq!(
-            tmc.into_inner().writes,
-            [(
-                foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
-                    .addr
-                    .addr(),
-                u32::from(foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT.sub_addr),
-            )]
-        );
-        assert_eq!(board.replies.len(), 1);
-        let ReplyPayload::VelocitySweepTerminal { terminal, .. } = board.replies[0] else {
-            match board.replies[0] {
-                ReplyPayload::CommissionPhase { status, .. } => {
-                    panic!("unexpected commissioning failure status {status}")
-                }
-                ReplyPayload::VelocitySweepEvent { .. } => {
-                    panic!("changed plan was incorrectly admitted")
-                }
-                _ => panic!("plan mismatch must use the dedicated Stage B terminal"),
-            }
-        };
-        assert_eq!(
-            terminal.outcome,
-            crate::commissioning::types::VelocitySweepOutcome::RejectedPlanMismatch
         );
     }
 

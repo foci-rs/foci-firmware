@@ -437,32 +437,10 @@ pub enum TmcRequestKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum AutotuneAction {
-    /// Run the combined proportional and integral response acquisition.
-    Combined = 0,
     /// Run the retained fixed-I matrix from lowest to highest amplitude.
     MatrixAscending = 1,
     /// Run the retained fixed-I matrix from highest to lowest amplitude.
     MatrixDescending = 2,
-    /// Ascending amplitudes with the forward and reverse slots mirrored.
-    ///
-    /// Mirroring swaps which end of the travel span each direction's settled tail
-    /// is measured at, which is what separates a direction effect from a
-    /// tail-position effect in the acceptance matrix.
-    MatrixAscendingMirrored = 3,
-    /// Descending amplitudes with the forward and reverse slots mirrored.
-    MatrixDescendingMirrored = 4,
-    /// Combined acquisition with the forward and reverse slots mirrored.
-    ///
-    /// Stage C carries the same tail-position confound as the matrix but is not
-    /// limited by the retained matrix lifecycle, so it is where the mirrored
-    /// order is measured.
-    CombinedMirrored = 5,
-    /// Combined acquisition with paired F,R,R,F slots.
-    ///
-    /// Separates a stroke's direction from whether it leaves or returns to the
-    /// origin and from the direction of the stroke before it, which the two
-    /// alternating orders lock together.
-    CombinedPaired = 6,
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing Stage-C integral continuation as one bounded command.
     ///
@@ -483,13 +461,8 @@ impl AutotuneAction {
     /// Decode one wire action without assigning behavior to unknown values.
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
-            0 => Some(Self::Combined),
             1 => Some(Self::MatrixAscending),
             2 => Some(Self::MatrixDescending),
-            3 => Some(Self::MatrixAscendingMirrored),
-            4 => Some(Self::MatrixDescendingMirrored),
-            5 => Some(Self::CombinedMirrored),
-            6 => Some(Self::CombinedPaired),
             7 => Some(Self::BreakawaySeeded),
             8 => Some(Self::StageCResume),
             _ => None,
@@ -506,22 +479,10 @@ impl AutotuneAction {
     ) -> crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder {
         use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
         match self {
-            Self::Combined | Self::MatrixAscending | Self::MatrixDescending => {
-                IntegralSlotOrder::ForwardFirst
-            }
-            Self::CombinedMirrored
-            | Self::MatrixAscendingMirrored
-            | Self::MatrixDescendingMirrored => IntegralSlotOrder::ReverseFirst,
-            Self::CombinedPaired => IntegralSlotOrder::PairedOutAndBack,
-            // The breakaway campaign runs its own probe/discovery/confirmation
-            // schedule and does not consult the classic forward/reverse slot
-            // order; report the default so the field stays well defined.
-            //
-            // A resume rebuilds from retained authority, which does not carry
-            // the original acquisition's slot order, so it reconstructs at the
-            // same default. Mirrored and paired acquisitions cannot be resumed
-            // faithfully until slot order joins retained identity.
-            Self::BreakawaySeeded | Self::StageCResume => IntegralSlotOrder::ForwardFirst,
+            Self::MatrixAscending
+            | Self::MatrixDescending
+            | Self::BreakawaySeeded
+            | Self::StageCResume => IntegralSlotOrder::ForwardFirst,
         }
     }
 }
