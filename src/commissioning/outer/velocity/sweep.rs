@@ -23,7 +23,6 @@ use foci_tmc4671::registers::{
     PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
-use super::combined_plan::{COMBINED_STAGE_B_SCHEMA_REVISION, select_proportional_response};
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentZeroPhase, begin_velocity_current_primitive,
@@ -241,11 +240,8 @@ fn selected_handoff(
     })
 }
 
-const fn sweep_recovery_rest_schedule(
-    schema_revision: u16,
-    selected_response: bool,
-) -> RecoveryRestSchedule {
-    if schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION || selected_response {
+const fn sweep_recovery_rest_schedule(selected_response: bool) -> RecoveryRestSchedule {
+    if selected_response {
         RecoveryRestSchedule::Stabilized
     } else {
         RecoveryRestSchedule::ImmediateScored
@@ -491,14 +487,6 @@ fn sweep_evidence_terminal(
     );
     let model_direction_mask = data.operating_regions.handoff.model_direction_mask();
     let candidate = selected_candidate(data);
-    let combined_selected = match data.evidence {
-        VelocitySweepEvidenceState::ResponseSelected(selected)
-            if plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION =>
-        {
-            Some(selected)
-        }
-        _ => None,
-    };
     let (mut outcome, mut cause) = if rest_unconfirmed {
         (
             VelocitySweepOutcome::Inconclusive,
@@ -506,17 +494,6 @@ fn sweep_evidence_terminal(
         )
     } else if recovery_failure {
         (VelocitySweepOutcome::Inconclusive, SWEEP_CAUSE_RECOVERY)
-    } else if combined_selected.is_some() {
-        (VelocitySweepOutcome::Complete, SWEEP_CAUSE_NONE)
-    } else if plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION {
-        (
-            VelocitySweepOutcome::Inconclusive,
-            if current_headroom {
-                SWEEP_CAUSE_CURRENT_HEADROOM
-            } else {
-                SWEEP_CAUSE_NO_JOINT_OPERABLE_REGION
-            },
-        )
     } else if candidate.is_some() {
         (
             VelocitySweepOutcome::CompleteCandidate,
@@ -536,8 +513,7 @@ fn sweep_evidence_terminal(
         .saturating_mul(plan.observations_per_direction)
         .saturating_mul(2);
     let expected_rungs = u16::from(plan.rung_count);
-    if combined_selected.is_none()
-        && !current_headroom
+    if !current_headroom
         && !recovery_failure
         && !rest_unconfirmed
         && (data.integrity.emitted_observations() != expected_observations
@@ -571,27 +547,12 @@ fn sweep_evidence_terminal(
                 candidate.joint_union,
             ]
         }),
-        nominated_p: combined_selected.map_or_else(
-            || candidate.map_or(0, |candidate| candidate.nomination.p.raw()),
-            |selected| selected.p.raw(),
-        ),
-        selected_intervals: combined_selected.map_or_else(
-            || {
-                candidate.map_or([[0; 2]; 2], |candidate| {
-                    candidate
-                        .directional
-                        .map(|region| region.map_or([0; 2], |region| region.region.pooled_interval))
-                })
-            },
-            |selected| {
-                selected.response_intervals_q().map(|interval| {
-                    interval.map(|endpoint| {
-                        i32::try_from(endpoint)
-                            .expect("validated combined response interval remains in i32")
-                    })
-                })
-            },
-        ),
+        nominated_p: candidate.map_or(0, |candidate| candidate.nomination.p.raw()),
+        selected_intervals: candidate.map_or([[0; 2]; 2], |candidate| {
+            candidate
+                .directional
+                .map(|region| region.map_or([0; 2], |region| region.region.pooled_interval))
+        }),
         selected_common_intervals: candidate.map_or([[0; 2]; 2], |candidate| {
             candidate
                 .directional
@@ -1605,28 +1566,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
             };
             let terminal_current_headroom = *current_headroom || structural_current_bound;
             let final_rung = data.rung_index + 1 >= plan.rung_count;
-            let selected = if plan.schema_revision == COMBINED_STAGE_B_SCHEMA_REVISION
-                && !terminal_current_headroom
-            {
-                match select_proportional_response(
-                    forward,
-                    reverse,
-                    plan.target_velocity_rpm.raw(),
-                    safety.counts_per_rev(),
-                ) {
-                    Ok(selected) => selected,
-                    Err(_) => {
-                        return fail_sweep(
-                            phase,
-                            backend,
-                            CommissionError::VelocityValidationFailed,
-                        )
-                        .await;
-                    }
-                }
-            } else {
-                None
-            };
+            let selected = None;
             if terminal_current_headroom {
                 *state = VelocitySweepState::FinishForward {
                     current_headroom: true,
@@ -1669,10 +1609,7 @@ pub(crate) async fn step_velocity_sweep_with_trace<B: CommissioningBackend>(
                         lower_rate_q: authority.lower_rate_q(),
                         authority_source: authority.source,
                         current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
-                        rest_schedule: sweep_recovery_rest_schedule(
-                            plan.schema_revision,
-                            selected.is_some(),
-                        ),
+                        rest_schedule: sweep_recovery_rest_schedule(selected.is_some()),
                     },
                     recovery_plan,
                 ) {
@@ -2059,21 +1996,13 @@ mod tests {
     }
 
     #[test]
-    fn live_combined_stage_b_stabilizes_every_origin_recovery() {
+    fn stage_b_recovery_rest_schedule_stabilizes_only_when_response_selected() {
         assert_eq!(
-            sweep_recovery_rest_schedule(COMBINED_STAGE_B_SCHEMA_REVISION, false),
-            RecoveryRestSchedule::Stabilized
-        );
-        assert_eq!(
-            sweep_recovery_rest_schedule(COMBINED_STAGE_B_SCHEMA_REVISION, true),
-            RecoveryRestSchedule::Stabilized
-        );
-        assert_eq!(
-            sweep_recovery_rest_schedule(11, false),
+            sweep_recovery_rest_schedule(false),
             RecoveryRestSchedule::ImmediateScored
         );
         assert_eq!(
-            sweep_recovery_rest_schedule(11, true),
+            sweep_recovery_rest_schedule(true),
             RecoveryRestSchedule::Stabilized
         );
     }
@@ -2404,153 +2333,6 @@ mod tests {
         };
         safety.unwrapped_position = offset_counts;
         *state = VelocitySweepState::EmitRung { current_headroom };
-    }
-
-    fn set_response_interval(report: &mut CompactDirectionalRungReport, interval_q: [i64; 2]) {
-        report.settled_rate_bounds_q[2] =
-            CompactSignedRate::encode(interval_q[0], BoundRounding::TowardNegativeInfinity);
-        report.settled_rate_bounds_q[3] =
-            CompactSignedRate::encode(interval_q[1], BoundRounding::TowardPositiveInfinity);
-    }
-
-    #[test]
-    fn combined_response_selection_waits_for_origin_recovery() {
-        let mut phase = phase();
-        let mut backend = MockBackend::new();
-        install_completed_rung(
-            &mut phase,
-            &mut backend,
-            3,
-            false,
-            [CompactSignedRate::ZERO; 2],
-            0,
-        );
-        let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
-            panic!("velocity sweep should remain active");
-        };
-        data.plan.schema_revision = COMBINED_STAGE_B_SCHEMA_REVISION;
-        let target_rate_q = i64::from(data.plan.target_velocity_rpm.raw()) * 4_000 * 1_000 / 60;
-        let VelocitySweepEvidenceState::Complete {
-            forward, reverse, ..
-        } = &mut data.evidence
-        else {
-            panic!("completed rung evidence must be installed");
-        };
-        set_response_interval(
-            forward,
-            [target_rate_q * 73 / 100, target_rate_q * 77 / 100],
-        );
-        set_response_interval(
-            reverse,
-            [-target_rate_q * 77 / 100, -target_rate_q * 73 / 100],
-        );
-
-        assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
-        ));
-        let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
-            panic!("velocity sweep should remain active");
-        };
-        assert!(matches!(
-            state,
-            VelocitySweepState::RecoverRung {
-                current_headroom: false,
-                final_rung: false,
-            }
-        ));
-        assert!(matches!(
-            data.evidence,
-            VelocitySweepEvidenceState::Recovering {
-                selected: Some(_),
-                ..
-            }
-        ));
-
-        assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::ReadyNow
-        ));
-        assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::VelocitySweepEvent(VelocitySweepEvent::Recovery(_))
-        ));
-        let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
-            panic!("velocity sweep should remain active");
-        };
-        assert!(matches!(state, VelocitySweepState::FinishForward { .. }));
-        let VelocitySweepEvidenceState::ResponseSelected(selected) = data.evidence else {
-            panic!("selection must become visible only after recovery");
-        };
-        assert_eq!(selected.p, data.plan.gain_at(0).unwrap());
-        let terminal = sweep_evidence_terminal(data, false, false, false);
-        assert_eq!(terminal.outcome, VelocitySweepOutcome::Complete);
-        assert_eq!(terminal.nominated_p, selected.p.raw());
-        assert_eq!(
-            terminal.selected_intervals,
-            selected
-                .response_intervals_q()
-                .map(|interval| { interval.map(|endpoint| i32::try_from(endpoint).unwrap()) })
-        );
-        let unavailable = sweep_evidence_terminal(data, false, true, false);
-        assert_eq!(unavailable.outcome, VelocitySweepOutcome::Inconclusive);
-        assert_eq!(unavailable.cause, SWEEP_CAUSE_RECOVERY);
-        assert!(unavailable.recovery_unavailable);
-    }
-
-    #[test]
-    fn combined_response_below_band_recovers_and_advances() {
-        let mut phase = phase();
-        let mut backend = MockBackend::new();
-        install_completed_rung(
-            &mut phase,
-            &mut backend,
-            3,
-            false,
-            [CompactSignedRate::ZERO; 2],
-            0,
-        );
-        let OuterPhase::VelocitySweep { data, .. } = &mut phase else {
-            panic!("velocity sweep should remain active");
-        };
-        data.plan.schema_revision = COMBINED_STAGE_B_SCHEMA_REVISION;
-        let target_rate_q = i64::from(data.plan.target_velocity_rpm.raw()) * 4_000 * 1_000 / 60;
-        let VelocitySweepEvidenceState::Complete {
-            forward, reverse, ..
-        } = &mut data.evidence
-        else {
-            panic!("completed rung evidence must be installed");
-        };
-        set_response_interval(
-            forward,
-            [target_rate_q * 63 / 100, target_rate_q * 67 / 100],
-        );
-        set_response_interval(
-            reverse,
-            [-target_rate_q * 67 / 100, -target_rate_q * 63 / 100],
-        );
-
-        assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::VelocitySweepEvent(VelocitySweepEvent::Rung(_))
-        ));
-        assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::ReadyNow
-        ));
-        assert!(matches!(
-            pollster::block_on(step_velocity_sweep_with_trace(&mut phase, &mut backend)),
-            StepResult::VelocitySweepEvent(VelocitySweepEvent::Recovery(_))
-        ));
-        let OuterPhase::VelocitySweep { state, data, .. } = &phase else {
-            panic!("velocity sweep should remain active");
-        };
-        assert!(matches!(state, VelocitySweepState::WriteGain));
-        assert_eq!(data.rung_index, 1);
-        assert!(!matches!(
-            data.evidence,
-            VelocitySweepEvidenceState::ResponseSelected(_)
-        ));
     }
 
     fn selected_region(

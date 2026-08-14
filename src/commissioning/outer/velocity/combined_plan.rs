@@ -18,8 +18,6 @@ pub const COMBINED_STAGE_B_SCHEMA_REVISION: u16 = 14;
 pub const FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION: u16 = 10;
 /// Live Stage-C schema for the combined P-then-I experiment.
 pub const COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 13;
-/// First combined Stage-C schema, retained for historical digest parity.
-pub const FIRST_COMBINED_STAGE_C_SCHEMA_REVISION: u16 = 8;
 /// Live Stage-B schema for the breakaway-seeded campaign.
 ///
 /// The breakaway probe, additive discovery, and held-out confirmation plans
