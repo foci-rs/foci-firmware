@@ -3313,9 +3313,9 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         panic!("the phase must have become VelocityIntegral after the accept");
     };
-    // The hand-off mirrors begin_stage_c_continuation_with_plan end to end: the
-    // Stage-C data carries the campaign's run_sequence and the exact execution
-    // plan the token route produced, not merely a freshly constructed one.
+    // The in-place Confirmed -> Stage C hand-off end to end: the Stage-C data
+    // carries the campaign's run_sequence and the exact execution plan the token
+    // route produced, not merely a freshly constructed one.
     assert_eq!(data.integrity.run_sequence(), 7);
     assert_eq!(data.plan, expected_execution_plan);
     assert_breakaway_breadcrumb(

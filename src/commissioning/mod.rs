@@ -2985,7 +2985,6 @@ mod tests {
         );
     }
 
-
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn complete_stage_c_uses_dedicated_terminal_and_complete_events() {

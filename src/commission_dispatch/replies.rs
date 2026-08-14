@@ -6030,7 +6030,6 @@ mod tests {
         .unwrap()
     }
 
-
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn combined_velocity_flow_reuses_the_existing_reply_inventory() {
