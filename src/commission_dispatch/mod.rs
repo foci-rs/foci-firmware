@@ -560,37 +560,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocitySweepTerminal(terminal) => {
-            use core::sync::atomic::Ordering::Relaxed;
-
-            #[cfg(feature = "trace-velocity-sweep")]
-            let mut terminal = terminal;
-            #[cfg(feature = "trace-velocity-sweep")]
-            if !disarm_velocity_workflow(engine, backend, state).await {
-                terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Fault;
-                terminal.cause = crate::autotune::CommissionError::Spi.status_code();
-                terminal.recovery_unavailable = true;
-                terminal.safety_fault = None;
-            }
-            let consumed = engine
-                .take()
-                .expect("engine slot is None on VelocitySweepTerminal");
-            let oid = consumed.oid();
-            #[cfg(not(feature = "trace-velocity-sweep"))]
-            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-            state.tmc.commission_in_flight.store(false, Relaxed);
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::VelocitySweepTerminal {
-                    oid,
-                    terminal,
-                    #[cfg(feature = "trace-velocity-sweep")]
-                    reproduction: None,
-                },
-                actions: PostActions {
-                    stop_trace: true,
-                    stepper: StepperPostAction::Stop,
-                },
-            }
+        StepResult::VelocitySweepTerminal(_) => {
+            // The engine never steps in `OuterPhase::VelocitySweep`, so
+            // it never yields `StepResult::VelocitySweepTerminal`. The four trace
+            // constructors `mem::replace` the base VelocitySweep phase before the
+            // first `step()`, and the non-trace build cfg-gates the phase out. The
+            // variant stays for match-exhaustiveness.
+            unreachable!("engine never produces StepResult::VelocitySweepTerminal")
         }
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::VelocityIntegralEvent(event) => {
@@ -1391,16 +1367,6 @@ pub async fn drive_commission_result_with_stage_b<B: CommissioningBackend>(
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
-pub(super) const fn stage_b_continuation_allowed(
-    terminal: crate::commissioning::types::VelocitySweepTerminal,
-) -> bool {
-    matches!(
-        terminal.outcome,
-        crate::commissioning::types::VelocitySweepOutcome::Complete
-    ) && !terminal.recovery_unavailable
-}
-
 /// Dispatch one Stage-C terminal while applying its retained-evidence lifecycle.
 #[cfg(feature = "trace-velocity-sweep")]
 pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
@@ -1559,264 +1525,13 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             )
             .await
         }
-        StepResult::VelocitySweepTerminal(terminal) => {
-            let mut dispatch =
-                stage_b::apply_stage_b_terminal(terminal, channel, retention.stage_b);
-            if !matches!(
-                dispatch.terminal.outcome,
-                crate::commissioning::types::VelocitySweepOutcome::Complete
-            ) {
-                if !disarm_velocity_workflow(engine, backend, state).await {
-                    retention.stage_b.clear();
-                    dispatch.terminal.outcome =
-                        crate::commissioning::types::VelocitySweepOutcome::Fault;
-                    dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
-                    dispatch.terminal.recovery_unavailable = true;
-                    dispatch.terminal.safety_fault = None;
-                    dispatch.reproduction = None;
-                }
-                engine
-                    .as_mut()
-                    .expect("engine slot is None on VelocitySweepTerminal")
-                    .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
-                return match drive_commission_result(
-                    StepResult::VelocitySweepTerminal(dispatch.terminal),
-                    engine,
-                    backend,
-                    state,
-                    pwm_maxcnt,
-                )
-                .await
-                {
-                    CommissionOutcome::Terminal {
-                        reply: ReplyPayload::VelocitySweepTerminal { oid, terminal, .. },
-                        actions,
-                    } => CommissionOutcome::Terminal {
-                        reply: ReplyPayload::VelocitySweepTerminal {
-                            oid,
-                            terminal,
-                            reproduction: dispatch.reproduction,
-                        },
-                        actions,
-                    },
-                    _ => unreachable!("velocity-sweep terminal produced a nonterminal outcome"),
-                };
-            }
-
-            let Some(reproduction) = dispatch.reproduction else {
-                retention.stage_c.observe_fault();
-                return drive_commission_result(
-                    StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
-                    engine,
-                    backend,
-                    state,
-                    pwm_maxcnt,
-                )
-                .await;
-            };
-            let authority = crate::commissioning::outer::velocity::integral_plan::StageCAuthority {
-                channel,
-                acquisition: crate::commissioning::outer::velocity::integral_plan::
-                    StageCAcquisition::ReproducedStageB(dispatch.terminal.plan_digest),
-                directional_memberships: [
-                    dispatch.terminal.selected_memberships[0],
-                    dispatch.terminal.selected_memberships[1],
-                ],
-                stage_b_joint_membership: dispatch.terminal.selected_memberships[2],
-                joint_membership: dispatch.terminal.selected_memberships[2],
-                directional_validity: reproduction.delta.directional_validity,
-                reduced_margin: reproduction.delta.reduced_margin,
-                directional_pooled_intervals: core::array::from_fn(|direction| {
-                    if matches!(
-                        reproduction.delta.directional_validity[direction],
-                        crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP
-                            | crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionTransferred
-                    ) {
-                        dispatch.terminal.selected_intervals[direction]
-                    } else {
-                        [0, 0]
-                    }
-                }),
-            };
-            let engine_ref = engine
-                .as_mut()
-                .expect("engine slot is None on VelocitySweepTerminal");
-            let oid = engine_ref.oid();
-            let stage_c_plan = match engine_ref
-                .plan_stage_c_continuation(authority, backend.tmc_config().pwm_freq_hz())
-            {
-                Ok(plan) => plan,
-                Err(
-                    crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(
-                        failure,
-                    ),
-                ) => {
-                    use core::sync::atomic::Ordering::Relaxed;
-
-                    retention.stage_c.observe_fault();
-                    if !disarm_velocity_workflow(engine, backend, state).await {
-                        retention.stage_b.clear();
-                        dispatch.terminal.outcome =
-                            crate::commissioning::types::VelocitySweepOutcome::Fault;
-                        dispatch.terminal.cause =
-                            crate::autotune::CommissionError::Spi.status_code();
-                        dispatch.terminal.recovery_unavailable = true;
-                        dispatch.terminal.safety_fault = None;
-                        dispatch.reproduction = None;
-                        engine
-                            .as_mut()
-                            .expect("engine slot is None after failed workflow disarm")
-                            .emit_stage_b_terminal_trace(
-                                backend,
-                                dispatch.terminal,
-                                dispatch.reproduction,
-                            );
-                        return drive_commission_result(
-                            StepResult::VelocitySweepTerminal(dispatch.terminal),
-                            engine,
-                            backend,
-                            state,
-                            pwm_maxcnt,
-                        )
-                        .await;
-                    }
-                    let stage_c_terminal =
-                        stage_c::failed_stage_c_terminal(dispatch.terminal.run_sequence, failure);
-                    let engine_ref = engine
-                        .as_mut()
-                        .expect("engine slot is None before Stage-C admission terminal");
-                    engine_ref.emit_stage_b_terminal_evidence(
-                        backend,
-                        dispatch.terminal,
-                        dispatch.reproduction,
-                    );
-                    engine_ref.emit_stage_c_terminal_trace(backend, &stage_c_terminal, None);
-                    let consumed = engine
-                        .take()
-                        .expect("engine slot is None on Stage-C admission terminal");
-                    let oid = consumed.oid();
-                    state.tmc.commission_in_flight.store(false, Relaxed);
-                    return CommissionOutcome::Terminal {
-                        reply: ReplyPayload::VelocityIntegralAdmissionFailure {
-                            oid,
-                            stage_b_terminal: dispatch.terminal,
-                            stage_b_reproduction: dispatch.reproduction,
-                            stage_c_terminal,
-                        },
-                        actions: PostActions {
-                            stop_trace: true,
-                            stepper: StepperPostAction::Stop,
-                        },
-                    };
-                }
-                Err(_) => {
-                    retention.stage_c.observe_fault();
-                    engine
-                        .as_mut()
-                        .expect("engine slot is None after Stage-C plan rejection")
-                        .emit_outer_safety_timing_trace(backend, dispatch.terminal.run_sequence);
-                    return drive_commission_result(
-                        StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
-                        engine,
-                        backend,
-                        state,
-                        pwm_maxcnt,
-                    )
-                    .await;
-                }
-            };
-            retention.stage_c.install_authority(
-                crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary::from_plan(
-                    channel,
-                    crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES,
-                    crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
-                    stage_c_plan.authority.acquisition,
-                    stage_c_plan.execution_plan(),
-                    stage_c_plan.authority,
-                ),
-            );
-            let _ = engine_ref;
-            if !stage_b_continuation_allowed(dispatch.terminal) {
-                if !disarm_velocity_workflow(engine, backend, state).await {
-                    retention.stage_b.clear();
-                    dispatch.terminal.outcome =
-                        crate::commissioning::types::VelocitySweepOutcome::Fault;
-                    dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
-                    dispatch.terminal.recovery_unavailable = true;
-                    dispatch.terminal.safety_fault = None;
-                    dispatch.reproduction = None;
-                }
-                engine
-                    .as_mut()
-                    .expect("engine slot is None before Stage-B terminal trace")
-                    .emit_stage_b_terminal_trace(backend, dispatch.terminal, dispatch.reproduction);
-                return match drive_commission_result(
-                    StepResult::VelocitySweepTerminal(dispatch.terminal),
-                    engine,
-                    backend,
-                    state,
-                    pwm_maxcnt,
-                )
-                .await
-                {
-                    CommissionOutcome::Terminal {
-                        reply: ReplyPayload::VelocitySweepTerminal { oid, terminal, .. },
-                        actions,
-                    } => CommissionOutcome::Terminal {
-                        reply: ReplyPayload::VelocitySweepTerminal {
-                            oid,
-                            terminal,
-                            reproduction: dispatch.reproduction,
-                        },
-                        actions,
-                    },
-                    _ => unreachable!("velocity-sweep terminal produced a nonterminal outcome"),
-                };
-            }
-
-            let engine_ref = engine
-                .as_mut()
-                .expect("engine slot is None before Stage-C continuation");
-            engine_ref.emit_stage_b_terminal_evidence(
-                backend,
-                dispatch.terminal,
-                dispatch.reproduction,
-            );
-            if engine_ref
-                .begin_stage_c_continuation_with_plan(stage_c_plan)
-                .is_err()
-            {
-                retention.stage_c.observe_fault();
-                engine
-                    .as_mut()
-                    .expect("engine slot is None after Stage-C transition rejection")
-                    .emit_outer_safety_timing_trace(backend, dispatch.terminal.run_sequence);
-                return drive_commission_result(
-                    StepResult::OuterFailed(crate::autotune::CommissionError::InvalidSchedule),
-                    engine,
-                    backend,
-                    state,
-                    pwm_maxcnt,
-                )
-                .await;
-            }
-            for record in
-                crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
-                    dispatch.terminal.run_sequence,
-                    stage_c_plan,
-                )
-            {
-                backend.record_velocity_sweep_trace_record(record);
-            }
-            CommissionOutcome::Evidence {
-                reply: ReplyPayload::VelocityIntegralContinuation {
-                    oid,
-                    run_sequence: dispatch.terminal.run_sequence,
-                    stage_b_terminal: dispatch.terminal,
-                    stage_b_reproduction: dispatch.reproduction,
-                    stage_c_plan,
-                },
-            }
+        StepResult::VelocitySweepTerminal(_) => {
+            // Unreachable. The engine never steps in
+            // `OuterPhase::VelocitySweep`, so it never yields this terminal --
+            // the four trace constructors `mem::replace` the base VelocitySweep
+            // phase before the first `step()`, and the non-trace build cfg-gates
+            // the phase out. The variant stays for match-exhaustiveness.
+            unreachable!("engine never produces StepResult::VelocitySweepTerminal")
         }
         StepResult::VelocityIntegralTerminal(_) => {
             unreachable!("Stage-C terminals use their stage-owned dispatcher")

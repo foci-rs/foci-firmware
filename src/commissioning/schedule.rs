@@ -101,7 +101,12 @@ impl CommissionTerminal {
             Self::CalibrateDone(result) => StepResult::CalibrateDone(result),
             Self::SelftestDone => StepResult::SelftestDone,
             Self::CommissionDone(result) => StepResult::CommissionDone(result),
-            Self::VelocitySweep(result) => StepResult::VelocitySweepTerminal(result),
+            // Unreachable. `CommissionTerminal::VelocitySweep` is built
+            // only from `StepResult::VelocitySweepTerminal`, which the engine
+            // never produces. The variant stays for match-exhaustiveness.
+            Self::VelocitySweep(_) => {
+                unreachable!("engine never produces CommissionTerminal::VelocitySweep")
+            }
             Self::VelocityIntegral(result) => StepResult::VelocityIntegralTerminal(result),
             Self::AcceptanceMatrix(result) => StepResult::AcceptanceMatrixTerminal(result),
         }
@@ -204,9 +209,12 @@ pub fn adapt_step_result(
                 event: Some(CommissionEvent::VelocitySweep { oid, event }),
             })
         }
-        StepResult::VelocitySweepTerminal(result) => Ok(CommissionPoll::Terminal {
-            result: CommissionTerminal::VelocitySweep(result),
-        }),
+        // Unreachable. The engine never steps in
+        // `OuterPhase::VelocitySweep`, so it never yields this terminal. The
+        // variant stays for match-exhaustiveness.
+        StepResult::VelocitySweepTerminal(_) => {
+            unreachable!("engine never produces StepResult::VelocitySweepTerminal")
+        }
         StepResult::VelocityIntegralEvent(event) => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
             Ok(CommissionPoll::ReadyNow {
@@ -267,37 +275,6 @@ pub fn adapt_step_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample_sweep_terminal() -> VelocitySweepTerminal {
-        use crate::commissioning::types::VelocitySweepOutcome;
-        VelocitySweepTerminal {
-            run_sequence: 9,
-            evidence_sequence: 0,
-            plan_digest: 0x1234,
-            outcome: VelocitySweepOutcome::Inconclusive,
-            cause: 4,
-            recovery_unavailable: false,
-            model_direction_mask: 0,
-            selected_memberships: [0; 3],
-            nominated_p: 0,
-            selected_intervals: [[0; 2]; 2],
-            selected_common_intervals: [[0; 2]; 2],
-            p_start: 0,
-            p_top: 0,
-            rung_count: 0,
-            coverage_mask: 0,
-            directional_region_counts: [0; 2],
-            directional_fragment_counts: [0; 2],
-            expected_observations: 20,
-            emitted_observations: 20,
-            expected_rungs: 5,
-            emitted_rungs: 5,
-            digest: 0x0123_4567_89ab_cdef,
-            run_started_us: 1_000,
-            run_completed_us: 2_000,
-            safety_fault: None,
-        }
-    }
 
     #[test]
     fn exactly_due_grid_deadline_advances_one_period() {
@@ -552,21 +529,6 @@ mod tests {
         assert!(matches!(
             adapt_step_result(StepResult::VelocitySweepEvent(event), 42_000, None),
             Err(CommissionError::InvalidSchedule)
-        ));
-    }
-
-    #[test]
-    fn velocity_sweep_terminal_maps_without_legacy_outer_result() {
-        let terminal = sample_sweep_terminal();
-
-        assert!(matches!(
-            adapt_step_result(StepResult::VelocitySweepTerminal(terminal), 42_000, None).unwrap(),
-            CommissionPoll::Terminal {
-                result: CommissionTerminal::VelocitySweep(VelocitySweepTerminal {
-                    digest: 0x0123_4567_89ab_cdef,
-                    ..
-                })
-            }
         ));
     }
 

@@ -753,48 +753,6 @@ fn entry_snapshot() -> crate::commissioning::EntrySnapshot {
     }
 }
 
-fn stage_b_terminal() -> crate::commissioning::types::VelocitySweepTerminal {
-    use crate::commissioning::types::{VelocitySweepOutcome, VelocitySweepTerminal};
-
-    VelocitySweepTerminal {
-        run_sequence: 8,
-        evidence_sequence: 0,
-        plan_digest: stage_b_plan().digest(),
-        outcome: VelocitySweepOutcome::CompleteCandidate,
-        cause: 0,
-        recovery_unavailable: false,
-        model_direction_mask: 3,
-        selected_memberships: [0x000e_0000; 3],
-        nominated_p: 1_024,
-        selected_intervals: authority().directional_pooled_intervals,
-        selected_common_intervals: [[15_500_000, 16_500_000], [-18_500_000, -17_500_000]],
-        p_start: stage_b_plan().p_start.raw(),
-        p_top: stage_b_plan().p_top.raw(),
-        rung_count: stage_b_plan().rung_count,
-        coverage_mask: 3,
-        directional_region_counts: [1; 2],
-        directional_fragment_counts: [0; 2],
-        expected_observations: u16::from(stage_b_plan().rung_count) * 8,
-        emitted_observations: u16::from(stage_b_plan().rung_count) * 8,
-        expected_rungs: u16::from(stage_b_plan().rung_count),
-        emitted_rungs: u16::from(stage_b_plan().rung_count),
-        digest: 0x1234,
-        run_started_us: 1_000,
-        run_completed_us: 2_000,
-        safety_fault: None,
-    }
-}
-
-#[test]
-fn stage_b_continuation_requires_a_successful_final_recovery() {
-    let mut terminal = stage_b_terminal();
-    terminal.outcome = crate::commissioning::types::VelocitySweepOutcome::Complete;
-    assert!(super::stage_b_continuation_allowed(terminal));
-
-    terminal.recovery_unavailable = true;
-    assert!(!super::stage_b_continuation_allowed(terminal));
-}
-
 #[test]
 fn stage_c_terminal_causes_reserve_recovery_and_lifecycle_values() {
     assert_eq!(super::stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY, 4);

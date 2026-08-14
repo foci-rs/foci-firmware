@@ -608,34 +608,6 @@ impl CommissioningEngine {
         Ok(engine)
     }
 
-    /// Derive the exact Stage-C continuation plan without changing the live phase.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn plan_stage_c_continuation(
-        &self,
-        authority: crate::commissioning::outer::velocity::integral_plan::StageCAuthority,
-        pwm_hz: u32,
-    ) -> Result<
-        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
-        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError,
-    > {
-        use crate::commissioning::outer::velocity::integral_plan::{
-            VelocityIntegralPlanError, plan_velocity_integral_response,
-        };
-
-        let EngineMode::Outer { phase, .. } = &self.engine_mode else {
-            return Err(VelocityIntegralPlanError::MissingStageBPlan);
-        };
-        let (stage_b_plan, budget) = match phase {
-            OuterPhase::VelocitySweep { data, safety, .. } => (data.plan, safety.budget),
-            _ => return Err(VelocityIntegralPlanError::MissingStageBPlan),
-        };
-        let counts_per_rev = self
-            .tmc_state
-            .encoder_counts_per_rev()
-            .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
-        plan_velocity_integral_response(authority, stage_b_plan, budget, pwm_hz, counts_per_rev)
-    }
-
     /// Return the live breakaway execution plan used by terminal retention.
     ///
     /// `Some` only for a breakaway acceptance run, so a `Some` return is itself
@@ -656,32 +628,6 @@ impl CommissioningEngine {
             return None;
         };
         (data.plan.acceptance_source == AcceptanceSource::Breakaway).then_some(data.plan)
-    }
-
-    /// Transition a live reproduced Stage-B engine into a prederived Stage-C plan.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn begin_stage_c_continuation_with_plan(
-        &mut self,
-        plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
-    ) -> Result<(), crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError>
-    {
-        use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlanError;
-
-        let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
-            return Err(VelocityIntegralPlanError::MissingStageBPlan);
-        };
-        let execution_plan = plan.execution_plan();
-        let old_phase =
-            core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
-        let OuterPhase::VelocitySweep { safety, .. } = old_phase else {
-            unreachable!("Stage-C continuation validated a Stage-B phase")
-        };
-        *phase = OuterPhase::VelocityIntegral {
-            state: VelocityIntegralState::Setup,
-            data: VelocityIntegralData::new(self.trace_run.engine_seq, execution_plan),
-            safety,
-        };
-        Ok(())
     }
 
     /// Create a direct Stage-C resume engine from a preflighted exact plan.
@@ -1261,29 +1207,6 @@ impl CommissioningEngine {
             ),
         );
         self.emit_velocity_sweep_terminal_lifecycle(backend, terminal);
-    }
-
-    /// Emit Stage-B terminal evidence without closing a live Stage-C continuation.
-    #[cfg(feature = "trace-velocity-sweep")]
-    pub(crate) fn emit_stage_b_terminal_evidence<B: CommissioningBackend>(
-        &mut self,
-        backend: &mut B,
-        terminal: crate::commissioning::types::VelocitySweepTerminal,
-        reproduction: Option<crate::commission_dispatch::stage_b::StageBReproductionReport>,
-    ) {
-        if let Some(report) = reproduction {
-            crate::commission_dispatch::stage_b::for_each_stage_b_reproduction_record(
-                report,
-                |record| backend.record_velocity_sweep_trace_record(record),
-            );
-        }
-        backend.record_velocity_sweep_trace_record(
-            crate::commissioning::outer::velocity::sweep_reporting::encode_velocity_sweep_terminal(
-                terminal,
-                backend.mechanical_encoder_quadrature_counts_per_rev(),
-                backend.tmc_config().pwm_freq_hz(),
-            ),
-        );
     }
 
     /// Emit the authoritative Stage-C terminal after retained-evidence policy.
