@@ -425,6 +425,20 @@ impl VelocityIntegralPlan {
             hash_value!(interval[0]);
             hash_value!(interval[1]);
         }
+        // Preserves the wire/offline plan digest across the
+        // removal of `combined_selected_response`. Every surviving plan
+        // (breakaway, matrix, resume) always had that field `None` -- only
+        // the deleted live combined P-then-I workflow ever set it `Some` --
+        // so `u8::from(combined_selected_response.is_some())` was always the
+        // constant byte 0 here. Hashing that same constant keeps `digest()`
+        // byte-identical to pre-removal for every plan that ever existed in
+        // production, which foci-trace's independent offline recomputation
+        // (`velocity_integral.py::integral_plan_digest`) still assumes: it
+        // hashes `int(plan.get("combined_selected_response", False))`, which
+        // is the same `0` for a capture that never carried the key. Do not
+        // turn this back into a real `combined_selected_response` read --
+        // the field is gone; this is a frozen digest-compatibility constant.
+        hash_value!(0u8);
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.target_velocity_rpm);
         hash_value!(self.pwm_hz);
