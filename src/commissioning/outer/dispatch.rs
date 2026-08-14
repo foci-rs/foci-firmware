@@ -5,8 +5,6 @@ use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::types::{OuterSafetyFault, StepResult};
 
 use super::safety::outer_safety_mut;
-#[cfg(feature = "trace-velocity-sweep")]
-use super::state::VelocitySweepEvidenceState;
 use super::{
     OuterPhase, TraceSummarySeqs, check_outer_safety, commit, filter, mechanical, position,
     safety_error_for_phase, velocity,
@@ -14,7 +12,7 @@ use super::{
 #[cfg(feature = "trace-velocity-sweep")]
 use super::{
     OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
-    VelocityIntegralState, VelocitySweepState, check_outer_safety_with_timing,
+    VelocityIntegralState, check_outer_safety_with_timing,
 };
 
 /// Transition the outer phase to `Failed` and emit an `OuterFailed` result.
@@ -55,9 +53,6 @@ fn velocity_fault_terminal(
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
     match &*phase {
-        OuterPhase::VelocitySweep { .. } => {
-            velocity::sweep_fault_terminal(phase, error, safety_fault)
-        }
         OuterPhase::VelocityIntegral { .. } => {
             velocity::integral_fault_terminal(phase, error, safety_fault)
         }
@@ -99,66 +94,10 @@ fn velocity_integral_timing_phase(state: &VelocityIntegralState) -> (OuterSafety
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
-fn velocity_sweep_timing_phase(
-    state: &VelocitySweepState,
-    evidence: &VelocitySweepEvidenceState,
-) -> Result<(OuterSafetyTimingPhase, bool), CommissionError> {
-    let phase = match state {
-        VelocitySweepState::Setup
-        | VelocitySweepState::WriteGain
-        | VelocitySweepState::ClearSignedIntegrator
-        | VelocitySweepState::CommandTarget => (OuterSafetyTimingPhase::Setup, true),
-        VelocitySweepState::Capture { .. } | VelocitySweepState::CommandZero => {
-            (OuterSafetyTimingPhase::MovingCapture, false)
-        }
-        VelocitySweepState::ClearSettleIntegrator { .. }
-        | VelocitySweepState::BeginSettleCapture { .. }
-        | VelocitySweepState::SettleCapture { .. } => (OuterSafetyTimingPhase::ZeroSettle, true),
-        VelocitySweepState::AnalyzeMoving { .. }
-        | VelocitySweepState::AnalyzeSettle { .. }
-        | VelocitySweepState::Advance
-        | VelocitySweepState::AnalyzeForwardRung { .. }
-        | VelocitySweepState::FoldForwardRung { .. }
-        | VelocitySweepState::AnalyzeReverseRung { .. }
-        | VelocitySweepState::FoldReverseRung { .. }
-        | VelocitySweepState::FoldJointRung { .. } => (OuterSafetyTimingPhase::Analysis, true),
-        VelocitySweepState::EmitRung { .. }
-        | VelocitySweepState::FinalizeRecovery { .. }
-        | VelocitySweepState::FinishForward { .. }
-        | VelocitySweepState::FinishReverse { .. }
-        | VelocitySweepState::FinishJoint { .. }
-        | VelocitySweepState::EmitHandoff { .. } => {
-            (OuterSafetyTimingPhase::EvidenceEmission, true)
-        }
-        VelocitySweepState::RecoverRung { .. } => {
-            let VelocitySweepEvidenceState::Recovering { runtime, .. } = evidence else {
-                return Err(CommissionError::InvalidSchedule);
-            };
-            runtime.outer_safety_timing_phase()
-        }
-        VelocitySweepState::FaultTerminal { .. } | VelocitySweepState::Terminal { .. } => {
-            (OuterSafetyTimingPhase::Terminalization, true)
-        }
-    };
-    Ok(phase)
-}
-
-#[cfg(feature = "trace-velocity-sweep")]
 fn velocity_timing_context(
     phase: &OuterPhase,
 ) -> Result<Option<OuterSafetyTimingContext>, CommissionError> {
     match phase {
-        OuterPhase::VelocitySweep { state, data, .. } => {
-            let (timing_phase, target_zero) = velocity_sweep_timing_phase(state, &data.evidence)?;
-            OuterSafetyTimingContext::new(
-                OuterSafetyTimingStage::Proportional,
-                timing_phase,
-                data.rung_index,
-                data.slot,
-                target_zero,
-            )
-            .map(Some)
-        }
         OuterPhase::VelocityIntegral { state, data, .. } => {
             let (timing_phase, target_zero) = velocity_integral_timing_phase(state);
             OuterSafetyTimingContext::new(
@@ -277,9 +216,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             #[cfg(feature = "trace-velocity-sweep")]
             if matches!(
                 phase,
-                OuterPhase::VelocitySweep { .. }
-                    | OuterPhase::VelocityIntegral { .. }
-                    | OuterPhase::BreakawayCampaign { .. }
+                OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
             ) {
                 return velocity_fault_terminal(phase, err, Some(fault));
             }
@@ -316,9 +253,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 #[cfg(feature = "trace-velocity-sweep")]
                 if matches!(
                     phase,
-                    OuterPhase::VelocitySweep { .. }
-                        | OuterPhase::VelocityIntegral { .. }
-                        | OuterPhase::BreakawayCampaign { .. }
+                    OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
                 ) {
                     return velocity_fault_terminal(phase, err, Some(fault));
                 }
@@ -330,9 +265,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 #[cfg(feature = "trace-velocity-sweep")]
                 if matches!(
                     phase,
-                    OuterPhase::VelocitySweep { .. }
-                        | OuterPhase::VelocityIntegral { .. }
-                        | OuterPhase::BreakawayCampaign { .. }
+                    OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
                 ) {
                     return velocity_fault_terminal(phase, error, None);
                 }
@@ -344,10 +277,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     let result = match phase {
         OuterPhase::MechanicalId { .. } => {
             mechanical::step_mechanical_id_with_trace(phase, buf, trace_summary_seqs, backend).await
-        }
-        #[cfg(feature = "trace-velocity-sweep")]
-        OuterPhase::VelocitySweep { .. } => {
-            velocity::step_velocity_sweep_with_trace(phase, backend).await
         }
         #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::VelocityIntegral { .. } => {

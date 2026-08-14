@@ -268,7 +268,11 @@ impl VelocitySweepExecutionPlan {
     }
 
     /// Whether the final predeclared rung is bounded by usable current headroom.
+    ///
+    /// The sole caller lived in the removed velocity-sweep stepper;
+    /// retained pending the deferred sibling dead-code cleanup.
     #[cfg(feature = "trace-velocity-sweep")]
+    #[allow(dead_code)]
     pub(crate) fn structural_current_bound(
         self,
         rung_index: u8,

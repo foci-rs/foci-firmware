@@ -12,27 +12,13 @@ use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::combined_plan::CombinedSelectedResponse;
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::current_guard::{
     VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
 };
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::operating_region::{
-    CompactSignedRate, OperatingRegionRuntime,
-};
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::recovery::{
-    RecoveryRateAuthority, RungOriginRecoveryReport, RungOriginRecoveryRuntime,
+    RungOriginRecoveryReport, RungOriginRecoveryRuntime,
 };
-#[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::sweep_evidence::{
-    CollectedRungEvidence, CompactDirectionalRungReport, DirectionalObservationSet,
-};
-#[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan;
-#[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::sweep_reporting::VelocitySweepIntegrity;
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::{
     integral_evidence::ExactRateInterval, integral_plan::VelocityIntegralExecutionPlan,
@@ -428,219 +414,6 @@ impl VelocityIntegralData {
     }
 }
 
-/// Phase-local state for the trace-gated velocity sweep.
-#[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, defmt::Format)]
-pub(crate) enum VelocitySweepState {
-    /// Validate hardware inputs and construct the immutable plan.
-    Setup,
-    /// Program the first gain after the plan has been made observable.
-    WriteGain,
-    /// Clear the velocity integrator before a signed command.
-    ClearSignedIntegrator,
-    /// Apply the next fixed F1/R1/F2/R2 target.
-    CommandTarget,
-    /// Capture the fixed moving window on an absolute 1 kHz grid.
-    Capture {
-        next_sample_us: u64,
-        deadline_us: u64,
-    },
-    /// Return the velocity target to zero.
-    CommandZero,
-    /// Clear the velocity integrator at the signed-step boundary.
-    ClearSettleIntegrator { settle_started_us: u64 },
-    /// Analyze the completed moving window during the fixed settle.
-    AnalyzeMoving {
-        settle_deadline_us: u64,
-        analysis_deadline_us: u64,
-    },
-    /// Refresh the scored-rest baseline after cooperative moving analysis.
-    BeginSettleCapture {
-        settle_deadline_us: u64,
-        current_headroom: bool,
-    },
-    /// Observe the fixed zero-target settle on an absolute 1 kHz grid.
-    SettleCapture {
-        next_sample_us: u64,
-        deadline_us: u64,
-        current_headroom: bool,
-    },
-    /// Confirm terminal rest without extending the settle deadline.
-    AnalyzeSettle {
-        current_headroom: bool,
-        analysis_deadline_us: u64,
-    },
-    /// Emit a structural-fault terminal after its observation evidence.
-    FaultTerminal { error: CommissionError },
-    /// Advance to the next predeclared observation slot.
-    Advance,
-    /// Begin serial forward derivation after the rung stops collecting.
-    AnalyzeForwardRung { current_headroom: bool },
-    /// Derive and fold the forward directional report.
-    FoldForwardRung { current_headroom: bool },
-    /// Begin serial reverse derivation after forward storage is released.
-    AnalyzeReverseRung { current_headroom: bool },
-    /// Derive and fold the reverse directional report.
-    FoldReverseRung { current_headroom: bool },
-    /// Fold joint operability and emit any closure.
-    FoldJointRung { current_headroom: bool },
-    /// Emit the complete compact per-rung consensus report.
-    EmitRung { current_headroom: bool },
-    /// Execute the shared return-to-origin primitive after rung evidence is emitted.
-    RecoverRung {
-        current_headroom: bool,
-        final_rung: bool,
-    },
-    /// Preserve the recovery report for causal emission before routing onward.
-    FinalizeRecovery {
-        current_headroom: bool,
-        final_rung: bool,
-    },
-    /// Close and emit the active forward directional candidate.
-    FinishForward {
-        current_headroom: bool,
-        recovery_failure: bool,
-    },
-    /// Close and emit the active reverse directional candidate.
-    FinishReverse {
-        current_headroom: bool,
-        recovery_failure: bool,
-    },
-    /// Close and emit the active joint-operability candidate.
-    FinishJoint {
-        current_headroom: bool,
-        recovery_failure: bool,
-    },
-    /// Emit the selected sufficient Stage B handoff, when available.
-    EmitHandoff {
-        current_headroom: bool,
-        recovery_failure: bool,
-    },
-    /// The fixed sweep schedule reached a normal or current-bound terminus.
-    Terminal {
-        current_headroom: bool,
-        recovery_failure: bool,
-    },
-}
-
-/// Engine-owned measurement and current-rung evidence state.
-#[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, defmt::Format)]
-#[allow(dead_code)]
-pub(crate) enum VelocitySweepEvidenceState {
-    /// No current-rung evidence has been admitted.
-    Empty,
-    /// Up to eight compact observations are being collected.
-    Collecting(CollectedRungEvidence),
-    /// Forward has been folded while reverse compact evidence remains.
-    ForwardFolded {
-        forward: CompactDirectionalRungReport,
-        reverse: DirectionalObservationSet,
-        recovery_authorities: [RecoveryRateAuthority; 2],
-    },
-    /// Both compact directional reports are ready for joint folding and emission.
-    Complete {
-        forward: CompactDirectionalRungReport,
-        reverse: CompactDirectionalRungReport,
-        recovery_authorities: [RecoveryRateAuthority; 2],
-    },
-    /// Shared controller state while recovery borrows the measurement workspace.
-    Recovering {
-        runtime: RungOriginRecoveryRuntime,
-        selected: Option<CombinedSelectedResponse>,
-    },
-    /// Completed or contained recovery retained for the reporting seam.
-    RecoveryComplete {
-        report: RungOriginRecoveryReport,
-        selected: Option<CombinedSelectedResponse>,
-    },
-    /// Response-selected evidence retained for the immediate combined continuation.
-    ResponseSelected(CombinedSelectedResponse),
-}
-
-/// Engine-owned measurement and current-rung evidence state.
-#[cfg(feature = "trace-velocity-sweep")]
-#[derive(Debug, defmt::Format)]
-pub(crate) struct VelocitySweepData {
-    pub(crate) plan: VelocitySweepExecutionPlan,
-    pub(crate) rung_index: u8,
-    pub(crate) slot: u8,
-    pub(crate) previous_encoder_raw: u32,
-    pub(crate) previous_read_us: u64,
-    pub(crate) run_started_us: u64,
-    pub(crate) current_observer: VelocityCurrentObserver,
-    /// Cumulative zero-target displacement, saturated outside the accepted band.
-    pub(crate) settle_displacement_counts: i8,
-    /// Lowest saturated cumulative displacement observed during the settle.
-    pub(crate) settle_min_displacement_counts: i8,
-    /// Highest saturated cumulative displacement observed during the settle.
-    pub(crate) settle_max_displacement_counts: i8,
-    #[defmt(Debug2Format)]
-    pub(crate) observations: VelocityObservationRing,
-    #[defmt(Debug2Format)]
-    pub(crate) blocker: DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>,
-    #[defmt(Debug2Format)]
-    pub(crate) analysis: StationarityWork,
-    pub(crate) evidence: VelocitySweepEvidenceState,
-    pub(crate) operating_regions: OperatingRegionRuntime,
-    /// Representative rates at the active joint nomination.
-    pub(crate) active_nomination_rates: [CompactSignedRate; 2],
-    /// Representative rates retained with the selected joint nomination.
-    pub(crate) best_nomination_rates: [CompactSignedRate; 2],
-    /// Representative rates from the immediately preceding rung.
-    pub(crate) previous_rung_rates: [CompactSignedRate; 2],
-    pub(crate) integrity: VelocitySweepIntegrity,
-}
-
-#[cfg(feature = "trace-velocity-sweep")]
-impl VelocitySweepData {
-    pub(crate) const fn new(run_sequence: u32) -> Self {
-        Self {
-            plan: VelocitySweepExecutionPlan::EMPTY,
-            rung_index: 0,
-            slot: 0,
-            previous_encoder_raw: 0,
-            previous_read_us: 0,
-            run_started_us: 0,
-            current_observer: VelocityCurrentObserver::EMPTY,
-            settle_displacement_counts: 0,
-            settle_min_displacement_counts: 0,
-            settle_max_displacement_counts: 0,
-            observations: VelocityObservationRing::new(),
-            blocker: DyadicBlocker::new(),
-            analysis: StationarityWork::new(),
-            evidence: VelocitySweepEvidenceState::Empty,
-            operating_regions: OperatingRegionRuntime::new(),
-            active_nomination_rates: [CompactSignedRate::ZERO; 2],
-            best_nomination_rates: [CompactSignedRate::ZERO; 2],
-            previous_rung_rates: [CompactSignedRate::ZERO; 2],
-            integrity: VelocitySweepIntegrity::new(run_sequence),
-        }
-    }
-
-    /// Construct sweep state from an admitted plan.
-    ///
-    /// Test-only: the sole production caller (the Stage-B-preflight engine
-    /// constructor) had no reachable route once the combined workflow was
-    /// removed and was deleted with it. Kept for `sweep.rs` unit tests that
-    /// want to seed `VelocitySweepData` from a real plan.
-    #[cfg(test)]
-    pub(crate) fn new_with_plan(
-        run_sequence: u32,
-        plan: crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan,
-    ) -> Self {
-        let mut data = Self::new(run_sequence);
-        let plan_digest = plan.digest();
-        let report = plan.report(run_sequence, data.integrity.next_evidence_sequence());
-        data.integrity
-            .record(crate::commissioning::types::VelocitySweepEvent::Planned(
-                report,
-            ));
-        data.plan = plan.execution_plan(plan_digest);
-        data
-    }
-}
-
 /// Mechanical identification sub-state machine (Phase 8).
 #[derive(Debug, defmt::Format)]
 pub(crate) enum MechanicalIdState {
@@ -993,13 +766,6 @@ pub(crate) enum OuterPhase {
         data: MechanicalIdData,
         safety: OuterSafetyLimits,
     },
-    /// Trace-gated replacement velocity identification phase (wire phase 10).
-    #[cfg(feature = "trace-velocity-sweep")]
-    VelocitySweep {
-        state: VelocitySweepState,
-        data: VelocitySweepData,
-        safety: OuterSafetyLimits,
-    },
     /// Trace-gated Stage-C fixed-P velocity-integral response phase.
     #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegral {
@@ -1089,8 +855,6 @@ impl OuterPhase {
         match self {
             Self::MechanicalId { .. } => Some(PhaseId::MechanicalId),
             #[cfg(feature = "trace-velocity-sweep")]
-            Self::VelocitySweep { .. } => Some(PhaseId::VelocityTune),
-            #[cfg(feature = "trace-velocity-sweep")]
             Self::VelocityIntegral { .. } => Some(PhaseId::VelocityTune),
             #[cfg(feature = "trace-velocity-sweep")]
             Self::BreakawayCampaign { .. } => Some(PhaseId::VelocityTune),
@@ -1171,46 +935,6 @@ mod tests {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);
         assert_eq!(size_of::<[u16; 256]>(), 512);
         assert_eq!(size_of::<super::VelocityObservationRing>(), 1_540);
-        assert_eq!(size_of::<super::VelocitySweepData>(), 3_024);
         assert_eq!(size_of::<super::MechanicalIdData>(), 2_184);
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn velocity_sweep_evidence_state_pins_replacement_size_below_delivered_size() {
-        // The delivered prior pair state was exactly 176 bytes.
-        assert_eq!(
-            size_of::<super::super::velocity::recovery::RecoveryStabilizationSummary>(),
-            8
-        );
-        assert_eq!(
-            size_of::<super::super::velocity::recovery::RecoveryRestAnalysis>(),
-            80
-        );
-        assert_eq!(
-            size_of::<crate::commissioning::types::RecoveryRestDiagnostic>(),
-            88
-        );
-        assert_eq!(size_of::<super::VelocitySweepState>(), 24);
-        assert_eq!(size_of::<super::RungOriginRecoveryRuntime>(), 100);
-        assert_eq!(size_of::<super::RungOriginRecoveryReport>(), 48);
-        assert_eq!(size_of::<super::CollectedRungEvidence>(), 144);
-        assert_eq!(size_of::<super::VelocitySweepEvidenceState>(), 144);
-        assert!(size_of::<super::VelocitySweepEvidenceState>() <= 176);
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn velocity_sweep_phase_reports_velocity_tune_wire_id() {
-        let phase = OuterPhase::VelocitySweep {
-            state: super::VelocitySweepState::Setup,
-            data: super::VelocitySweepData::new(0),
-            safety: OuterSafetyLimits::new(
-                0,
-                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
-            ),
-        };
-
-        assert_eq!(phase.current_phase_id(), Some(PhaseId::VelocityTune));
     }
 }

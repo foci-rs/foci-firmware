@@ -22,15 +22,12 @@ use crate::autotune::{
     TransientBuffer,
 };
 use crate::commissioning::inner::InnerPhase;
-#[cfg(not(feature = "trace-velocity-sweep"))]
-use crate::commissioning::outer::{MechanicalIdData, MechanicalIdState};
 use crate::commissioning::outer::{
-    OuterMotionBudget, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
+    MechanicalIdData, MechanicalIdState, OuterMotionBudget, OuterPhase, OuterSafetyLimits,
+    TraceSummarySeqs,
 };
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::{
-    VelocityIntegralData, VelocityIntegralState, VelocitySweepData, VelocitySweepState,
-};
+use crate::commissioning::outer::{VelocityIntegralData, VelocityIntegralState};
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
@@ -606,16 +603,9 @@ impl CommissioningEngine {
     ) -> Self {
         let scaffold =
             Self::outer_scaffold(oid, tmc_state, params, entry_snapshot, trace_engine_seq);
-        #[cfg(not(feature = "trace-velocity-sweep"))]
         let phase = OuterPhase::MechanicalId {
             state: MechanicalIdState::Setup,
             data: MechanicalIdData::new(0),
-            safety: scaffold.safety,
-        };
-        #[cfg(feature = "trace-velocity-sweep")]
-        let phase = OuterPhase::VelocitySweep {
-            state: VelocitySweepState::Setup,
-            data: VelocitySweepData::new(trace_engine_seq),
             safety: scaffold.safety,
         };
         Self::assemble_outer(scaffold, phase)
@@ -844,11 +834,6 @@ impl CommissioningEngine {
             return None;
         };
         match phase {
-            OuterPhase::VelocitySweep { data, .. }
-                if data.plan.is_present() && data.plan.hard_torque_limit != 0 =>
-            {
-                Some(data.plan.hard_torque_limit)
-            }
             OuterPhase::VelocityIntegral { data, .. }
                 if data.plan.plan_digest != 0 && data.plan.hard_torque_limit != 0 =>
             {
@@ -872,7 +857,6 @@ impl CommissioningEngine {
             return;
         };
         match phase {
-            OuterPhase::VelocitySweep { data, .. } => data.plan.hard_torque_limit = 0,
             OuterPhase::VelocityIntegral { data, .. } => data.plan.hard_torque_limit = 0,
             // The campaign's operational limit lives in its frozen inputs, which
             // the Stage-C hand-off still reads, so it must not be cleared. The
@@ -993,10 +977,6 @@ impl CommissioningEngine {
     #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn trace_velocity_run_sequence(&self) -> Option<u32> {
         match &self.engine_mode {
-            EngineMode::Outer {
-                phase: OuterPhase::VelocitySweep { data, .. },
-                ..
-            } => Some(data.integrity.run_sequence()),
             EngineMode::Outer {
                 phase: OuterPhase::VelocityIntegral { data, .. },
                 ..
@@ -1990,10 +1970,6 @@ mod tests {
                 352
             );
             assert_eq!(
-                size_of::<crate::commissioning::outer::VelocitySweepData>(),
-                3_024
-            );
-            assert_eq!(
                 size_of::<crate::commissioning::types::VelocitySweepEvent>(),
                 320
             );
@@ -2001,8 +1977,7 @@ mod tests {
             // that diagnostic also carried the slope and its half-width, 272 before
             // the diagnostic also carried the regression span. These events are
             // transient, built and encoded on the stack, so this does not grow
-            // retained commissioning state: VelocitySweepData is unchanged. Frame
-            // budgets are checked by parity.
+            // retained commissioning state. Frame budgets are checked by parity.
             assert_eq!(
                 size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
                 288
@@ -2349,14 +2324,7 @@ mod tests {
     }
 
     fn initial_outer_phase_id() -> PhaseId {
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        {
-            PhaseId::MechanicalId
-        }
-        #[cfg(feature = "trace-velocity-sweep")]
-        {
-            PhaseId::VelocityTune
-        }
+        PhaseId::MechanicalId
     }
 
     fn assert_trace_event(
@@ -2485,8 +2453,6 @@ mod tests {
         };
         let safety = match phase {
             OuterPhase::MechanicalId { safety, .. } => safety,
-            #[cfg(feature = "trace-velocity-sweep")]
-            OuterPhase::VelocitySweep { safety, .. } => safety,
             _ => panic!("new_outer should enter its first outer phase"),
         };
 
@@ -2498,9 +2464,8 @@ mod tests {
         assert_eq!(safety.budget.max_duration_ms, 2_500);
     }
 
-    #[cfg(not(feature = "trace-velocity-sweep"))]
     #[test]
-    fn new_outer_enters_mechanical_id_without_trace_sweep() {
+    fn new_outer_enters_mechanical_id() {
         let engine =
             CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot());
 
@@ -2508,21 +2473,6 @@ mod tests {
             engine.engine_mode,
             EngineMode::Outer {
                 phase: OuterPhase::MechanicalId { .. },
-                ..
-            }
-        ));
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn new_outer_enters_velocity_sweep_with_trace_feature() {
-        let engine =
-            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot());
-
-        assert!(matches!(
-            engine.engine_mode,
-            EngineMode::Outer {
-                phase: OuterPhase::VelocitySweep { .. },
                 ..
             }
         ));

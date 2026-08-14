@@ -16,10 +16,17 @@ use crate::ankyra::velocity_sweep_encoding::{
     upper_bound_i64, upper_bound_u128,
 };
 
+// Only referenced by the now-unconstructed VelocitySweepIntegrity;
+// retained pending the deferred sibling dead-code cleanup.
+#[allow(dead_code)]
 const FNV1A64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
 /// Fixed-memory sequencing and digest state for one report-only sweep.
+///
+/// Constructed only by the removed velocity-sweep data/state; retained
+/// pending the deferred sibling dead-code cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[allow(dead_code)]
 pub(crate) struct VelocitySweepIntegrity {
     run_sequence: u32,
     next_evidence_sequence: u16,
@@ -30,6 +37,7 @@ pub(crate) struct VelocitySweepIntegrity {
     digest: u64,
 }
 
+#[allow(dead_code)]
 impl VelocitySweepIntegrity {
     /// Construct integrity state for one caller-assigned run sequence.
     pub(crate) const fn new(run_sequence: u32) -> Self {

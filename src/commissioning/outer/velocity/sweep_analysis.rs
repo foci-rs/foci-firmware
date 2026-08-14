@@ -5,31 +5,15 @@ use foci_tmc4671::pid::PidPGain;
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RestSelectionDecision, RestSelectionDisposition, RestStructuralCode,
     StationarityExclusion, StationarityResult, StationarityWork, StationarityWorkPoll,
-    StationarySuffix, StructuredStationarityEvidence, SuffixDiagnostic, VELOCITY_RATE_Q_SCALE,
-    VelocityDirection, VelocityObservationSource, estimate_confidence, lag_one_passes_family,
+    StationarySuffix, SuffixDiagnostic, VELOCITY_RATE_Q_SCALE, VelocityDirection,
+    VelocityObservationSource, estimate_confidence, lag_one_passes_family,
 };
 use crate::autotune::{
     CommissionError, TmcMechanicalRpm, equivalent_disturbance_from_rate,
     equivalent_disturbance_variance_from_rate,
 };
-use crate::commissioning::outer::state::{VelocitySweepData, VelocitySweepEvidenceState};
 
-use super::sweep_evidence::{
-    VelocityEvidenceError, VelocityObservationInput, VelocityObservationSummary,
-    classify_velocity_observation,
-};
-
-pub(super) struct MovingObservationAnalysis {
-    pub(super) summary: VelocityObservationSummary,
-    pub(super) stationarity: StationarityResult,
-    pub(super) selected_delta_counts: i64,
-    pub(super) selected_elapsed_us: u64,
-    pub(super) selected_level: u8,
-    pub(super) selected_blocks: u32,
-    pub(super) variance_of_mean_q2: u128,
-    pub(super) settled_rate_mean_q: i64,
-    pub(super) structured_boundary: Option<StructuredStationarityEvidence>,
-}
+use super::sweep_evidence::VelocityObservationInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -59,23 +43,8 @@ pub(super) enum ScoredRestPoll {
     Complete(SettleConfirmation),
 }
 
-fn slot_direction(slot: u8) -> i32 {
-    if slot.is_multiple_of(2) { 1 } else { -1 }
-}
-
-fn slot_velocity_direction(slot: u8) -> VelocityDirection {
-    if slot_direction(slot) > 0 {
-        VelocityDirection::Forward
-    } else {
-        VelocityDirection::Reverse
-    }
-}
-
 /// Signed mechanical direction: `1` for [`VelocityDirection::Forward`], `-1` for
 /// [`VelocityDirection::Reverse`].
-///
-/// Provably consistent with [`slot_velocity_direction`]/[`slot_direction`]: for every
-/// slot, `direction_sign(slot_velocity_direction(slot)) == slot_direction(slot)`.
 pub(super) const fn direction_sign(direction: VelocityDirection) -> i32 {
     match direction {
         VelocityDirection::Forward => 1,
@@ -116,10 +85,9 @@ pub(super) struct VelocityObservationInputRequest {
 
 /// Assemble one observation's classifier input from already-collected evidence.
 ///
-/// Shared by the sweep (`finish_moving_observation_analysis`, below) and the
-/// breakaway probe (`breakaway_campaign::build_probe_observation_input`) so the
-/// predicted-torque formula and the settled-rate/deficit/disturbance derivation are
-/// never duplicated: a future change to either reaches both callers.
+/// Used by the breakaway probe (`breakaway_campaign::build_probe_observation_input`)
+/// so the predicted-torque formula and the settled-rate/deficit/disturbance
+/// derivation are never duplicated: a future change reaches every caller.
 pub(super) fn assemble_velocity_observation_input(
     request: VelocityObservationInputRequest,
 ) -> Result<VelocityObservationInput, CommissionError> {
@@ -297,90 +265,6 @@ fn populate_derived_observation_fields(
     Ok(())
 }
 
-pub(super) fn poll_moving_observation_analysis(
-    data: &mut VelocitySweepData,
-    counts_per_rev: u32,
-) -> Result<Option<MovingObservationAnalysis>, CommissionError> {
-    let Some((stationarity, _rejection, drift_ratio_ppm)) =
-        poll_stationarity(&mut data.analysis, &data.observations, &mut data.blocker)?
-    else {
-        return Ok(None);
-    };
-    let structured_boundary = data.analysis.structured_evidence();
-    finish_moving_observation_analysis(
-        data,
-        counts_per_rev,
-        stationarity,
-        drift_ratio_ppm,
-        structured_boundary,
-    )
-    .map(Some)
-}
-
-fn finish_moving_observation_analysis(
-    data: &mut VelocitySweepData,
-    counts_per_rev: u32,
-    stationarity: StationarityResult,
-    drift_ratio_ppm: u32,
-    structured_boundary: Option<StructuredStationarityEvidence>,
-) -> Result<MovingObservationAnalysis, CommissionError> {
-    let plan = data.plan;
-    if !plan.is_present() {
-        return Err(CommissionError::InvalidSchedule);
-    }
-    let p = plan
-        .gain_at(data.rung_index)
-        .ok_or(CommissionError::InvalidSchedule)?;
-    let direction = slot_velocity_direction(data.slot);
-    let confidence_family_size = u16::from(plan.rung_count)
-        .checked_mul(plan.observations_per_direction)
-        .ok_or(CommissionError::InvalidSchedule)?;
-
-    let input = assemble_velocity_observation_input(VelocityObservationInputRequest {
-        direction,
-        p,
-        stationarity,
-        rejected_post_fit: None,
-        drift_ratio_ppm,
-        moving_pid_output_peak: data.current_observer.moving_pid_output_peak(),
-        target_velocity_rpm: plan.target_velocity_rpm,
-        usable_torque_limit: plan.usable_torque_limit,
-        hard_torque_limit: plan.hard_torque_limit,
-        initial_lead_in: data.rung_index == 0 && data.slot == 0,
-        confidence_family_size,
-        counts_per_rev,
-    })?;
-    let settled_rate_mean_q = input.settled_rate_mean_q;
-    let summary = classify_velocity_observation(input);
-    let (
-        selected_delta_counts,
-        selected_elapsed_us,
-        selected_level,
-        selected_blocks,
-        variance_of_mean_q2,
-    ) = match stationarity {
-        StationarityResult::Usable(suffix) => (
-            suffix.selection.exact_totals.delta_counts,
-            suffix.selection.exact_totals.elapsed_us,
-            suffix.selection.level,
-            suffix.selection.block_count,
-            suffix.selection.variance_of_mean_q2,
-        ),
-        StationarityResult::Excluded(_) => (0, 0, 0, 0, 0),
-    };
-    Ok(MovingObservationAnalysis {
-        summary,
-        stationarity,
-        selected_delta_counts,
-        selected_elapsed_us,
-        selected_level,
-        selected_blocks,
-        variance_of_mean_q2,
-        settled_rate_mean_q,
-        structured_boundary,
-    })
-}
-
 pub(super) fn deficit_interval_q(
     target_velocity_rpm: i32,
     counts_per_rev: u32,
@@ -428,17 +312,6 @@ pub(super) fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
     } else {
         Ok(quotient)
     }
-}
-
-pub(super) fn retain_observation(
-    data: &mut VelocitySweepData,
-    summary: VelocityObservationSummary,
-    structured: Option<StructuredStationarityEvidence>,
-) -> Result<(), VelocityEvidenceError> {
-    let VelocitySweepEvidenceState::Collecting(collected) = &mut data.evidence else {
-        return Err(VelocityEvidenceError::MismatchedObservation);
-    };
-    collected.retain_with_structured(data.slot, summary, structured)
 }
 
 /// Poll one moving-tail analysis, returning its result and any gate rejection.

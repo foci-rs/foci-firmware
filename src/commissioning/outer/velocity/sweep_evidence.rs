@@ -405,7 +405,11 @@ impl CollectedRungEvidence {
         Ok(())
     }
 
+    // Production callers lived in the removed velocity-sweep stepper;
+    // retained (still exercised by this module's tests) pending the deferred
+    // sibling dead-code cleanup.
     #[cfg(any(test, feature = "trace-velocity-sweep"))]
+    #[allow(dead_code)]
     pub(crate) fn structured_recovery_rate(
         &self,
         direction: VelocityDirection,
@@ -819,7 +823,12 @@ pub fn analyze_directional_rung(
 }
 
 /// Derive the smallest commanded-side rate guaranteed by any intrinsically eligible observation.
+///
+/// Production callers lived in the removed velocity-sweep stepper;
+/// retained (still exercised by this module's tests) pending the deferred
+/// sibling dead-code cleanup.
 #[cfg(any(test, feature = "trace-velocity-sweep"))]
+#[allow(dead_code)]
 pub(crate) fn directional_recovery_lower_rate_q(
     set: DirectionalObservationSet,
     direction: VelocityDirection,

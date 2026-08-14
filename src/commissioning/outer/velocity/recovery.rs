@@ -99,13 +99,22 @@ pub(crate) enum RecoveryBindingSource {
     MissingRate = 2,
     Deadline = 3,
     LocalTravel = 4,
+    // Constructed only by the removed velocity-sweep evidence path
+    // (`RecoveryRateAuthority::structured`). Retained pending the deferred
+    // sibling dead-code cleanup; still matched by shared reporting/tests.
+    #[allow(dead_code)]
     StructuredSuffix = 5,
     CurrentHeadroom = 6,
 }
 
 /// Compact rate bound and the evidence source that authorized its use.
+///
+/// No longer constructed after the velocity-sweep evidence state was
+/// removed; retained (used by `recovery_tests`) pending the deferred sibling
+/// dead-code cleanup.
 #[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[allow(dead_code)]
 pub(crate) struct RecoveryRateAuthority {
     mantissa: i16,
     shift: u8,
@@ -113,6 +122,7 @@ pub(crate) struct RecoveryRateAuthority {
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
+#[allow(dead_code)]
 impl RecoveryRateAuthority {
     pub(crate) const NONE: Self = Self {
         mantissa: 0,

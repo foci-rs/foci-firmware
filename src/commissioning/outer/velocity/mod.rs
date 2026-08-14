@@ -53,8 +53,6 @@ mod recovery_tests;
 pub mod reproduction;
 mod response_ramp;
 #[cfg(feature = "trace-velocity-sweep")]
-mod sweep;
-#[cfg(feature = "trace-velocity-sweep")]
 mod sweep_analysis;
 pub mod sweep_consensus;
 #[cfg(test)]
@@ -85,8 +83,6 @@ pub(crate) use integral_sweep::{
 };
 #[allow(unused_imports)]
 pub(crate) use response_ramp::VELOCITY_RESPONSE_MAX_RETRIES;
-#[cfg(feature = "trace-velocity-sweep")]
-pub(crate) use sweep::{step_velocity_sweep_with_trace, sweep_fault_terminal};
 #[allow(unused_imports)]
 pub(crate) use tune::step_velocity_tune;
 #[allow(unused_imports)]

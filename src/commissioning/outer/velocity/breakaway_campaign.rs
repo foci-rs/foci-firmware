@@ -13,7 +13,7 @@
 //! The live [`BreakawayCampaign`] wires all three phases into
 //! [`super::super::OuterPhase`]. Each phase exposes a single-tick
 //! cooperative stepper -- [`step_breakaway_probe`] -- that a caller (a future engine
-//! phase, or a test harness) drives exactly like [`super::sweep::step_velocity_sweep_with_trace`]:
+//! phase, or a test harness) drives exactly like every other outer phase stepper:
 //! poll until [`BreakawayProbeStep::Done`], running the host-declared periodic safety
 //! envelope check ([`crate::commissioning::outer::check_outer_safety`]) between ticks,
 //! same as every other outer phase.
@@ -141,10 +141,8 @@ use super::sweep_plan::{
     plan_stage_b_velocity_sweep,
 };
 
-/// Outer velocity ramp mode. Matches the wire encoding
-/// [`super::sweep::step_velocity_sweep_with_trace`] writes to `MODE_RAMP_MODE_MOTION`;
-/// duplicated here because that constant is private to the `sweep` module. Shared by
-/// the probe, the additive discovery driver, and the held-out confirmation driver:
+/// Outer velocity ramp mode written to `MODE_RAMP_MODE_MOTION`. Shared by the
+/// probe, the additive discovery driver, and the held-out confirmation driver:
 /// all three command a single-direction velocity ramp with I held at zero.
 const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 
@@ -255,9 +253,9 @@ impl BreakawayProbeSession {
 
 /// Single-tick cooperative stroke cycle for one probe observation.
 ///
-/// Mirrors [`super::sweep::step_velocity_sweep_with_trace`]'s stroke states
-/// (write gain, command target, capture, command zero, settle-capture, analyze) at
-/// probe scale: one direction, one observation, no rung/slot folding.
+/// Runs the canonical outer velocity stroke states (write gain, command target,
+/// capture, command zero, settle-capture, analyze) at probe scale: one
+/// direction, one observation, no rung/slot folding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum BreakawayProbeState {
     /// The frozen plan and cursors are admitted; no stroke has been issued yet.
@@ -336,7 +334,7 @@ pub(crate) enum BreakawayProbeStep {
 /// safe-state restoration on any outer-phase terminal happens at the surrounding
 /// engine boundary (`commissioning::mod::restore_safe_state_via_backend`), not
 /// per-phase. A caller wiring these terminals into that boundary gets safe-disarm
-/// for free, the same way `sweep_fault_terminal` already does.
+/// for free, the same way the other outer fault terminals already do.
 #[derive(Debug, defmt::Format)]
 pub(crate) enum BreakawayProbeOutcome {
     /// The first rung with repeatable motion in both directions.
@@ -407,8 +405,7 @@ fn search_error_outcome(error: BreakawaySearchError) -> BreakawayProbeStep {
 /// is allocated here. The caller is responsible for running
 /// [`crate::commissioning::outer::check_outer_safety`] against `safety` between
 /// ticks, exactly as `step_outer_with_trace` does for every other outer phase; this
-/// function never performs that check itself, matching
-/// [`super::sweep::step_velocity_sweep_with_trace`].
+/// function never performs that check itself, matching every other phase stepper.
 pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
     state: &mut BreakawayProbeState,
     workspace: &mut BreakawayProbeWorkspace,
@@ -1061,21 +1058,17 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
 /// gap fault, or the quarter-turn fault -- is resolved to the exact
 /// [`BreakawayProbeStep`] the caller must return.
 ///
-/// This mirrors the per-tick fault prologue `step_velocity_sweep_with_trace` inlines
-/// twice, at `sweep.rs:867` (`Capture`) and `sweep.rs:1150` (`SettleCapture`) --
-/// same gap window, same quarter-turn test, same current-input check, same fault
-/// constructors, same order. The sweep has no shared helper for this today (it is
-/// duplicated there, not merely here), and `integral_sweep.rs` carries its own third
-/// copy. Deliberately deferred rather than force-extracted in this fix round: a
-/// shared primitive would need to preserve the sweep's interleaved trace-observation
-/// recording (`record_velocity_trace_observation`, diagnostic reads, stroke-index
-/// bookkeeping) byte-for-byte across two call sites plus `integral_sweep.rs`, which
-/// is real surgery on the sweep hot path and deserves its own dedicated,
-/// behavior-preservation-tested slice rather than a rushed one here. Numeric drift
-/// between the three copies is not possible -- they close over the same shared
-/// constants (`MAX_SAFETY_OBSERVATION_GAP_US`, the safety/current-guard fault
-/// constructors) and fields (`OuterSafetyLimits`, `VelocityCurrentObserver`) -- so a
-/// documented follow-up is a safe deferral, not a live risk.
+/// This mirrors the per-tick fault prologue `integral_sweep.rs` inlines -- same gap
+/// window, same quarter-turn test, same current-input check, same fault constructors,
+/// same order. Deliberately not force-extracted into a shared primitive: doing so
+/// would need to preserve the interleaved trace-observation recording
+/// (`record_velocity_trace_observation`, diagnostic reads, stroke-index bookkeeping)
+/// byte-for-byte across both call sites, real surgery that deserves its own dedicated,
+/// behavior-preservation-tested slice. Numeric drift between the copies is not
+/// possible -- they close over the same shared constants
+/// (`MAX_SAFETY_OBSERVATION_GAP_US`, the safety/current-guard fault constructors) and
+/// fields (`OuterSafetyLimits`, `VelocityCurrentObserver`) -- so a documented
+/// follow-up is a safe deferral, not a live risk.
 async fn sample_one_tick<B: CommissioningBackend>(
     workspace: &mut BreakawayProbeWorkspace,
     safety: &mut OuterSafetyLimits,
@@ -4138,12 +4131,11 @@ fn campaign_terminal_event(
 /// of the three drivers' own internal state machines, while a breakaway
 /// campaign phase is active.
 ///
-/// Mirrors [`super::sweep::sweep_fault_terminal`] and
-/// [`super::integral_sweep::integral_fault_terminal`]: a mid-campaign safety
-/// fault must still produce a campaign-closure record before the phase fails,
+/// Mirrors [`super::integral_sweep::integral_fault_terminal`]: a mid-campaign
+/// safety fault must still produce a campaign-closure record before the phase fails,
 /// because offline replay (foci-trace `velocity_measurement.py`) requires
-/// exactly one closure record per campaign. Unlike those two report-only
-/// phases, the campaign streams multiple wire records per run and cannot
+/// exactly one closure record per campaign. Unlike that report-only
+/// phase, the campaign streams multiple wire records per run and cannot
 /// return its closure record directly from here without dropping whatever
 /// record the caller's next tick would otherwise have produced, so this
 /// reuses the campaign's own `pending_event`/`pending_done` deferral -- the
@@ -4809,9 +4801,8 @@ fn confirmation_done_advance<B: CommissioningBackend>(
 
 /// If the active phase is at its `Planned*` state (frozen but no stroke
 /// issued yet), report that phase's plan-freeze event(s) and advance past the
-/// interception point, mirroring
-/// [`super::sweep::step_velocity_sweep_with_trace`]'s `Setup` arm: mutate the
-/// state and return the event in the same tick. The probe's next tick performs
+/// interception point, the same way a phase stepper's `Setup` arm does: mutate
+/// the state and return the event in the same tick. The probe's next tick performs
 /// its motion-free safety setup; discovery and confirmation continue into their
 /// first stroke. Returns `None` once the active phase has left its `Planned*`
 /// state, so the caller falls through to the normal per-tick driver dispatch.

@@ -3482,9 +3482,8 @@ fn zero_safety_fault(reason: u8) -> OuterSafetyFault {
 /// `velocity_measurement.py`) requires a closure record for every campaign.
 ///
 /// `breakaway_campaign_fault_terminal` is the function `dispatch.rs` now calls
-/// for that case; this drives it directly (mirroring `sweep_fault_terminal`'s
-/// own untested-in-isolation shape, since `dispatch.rs` has no fixture for a
-/// tripped outer-safety envelope) and confirms the deferred closure record
+/// for that case; this drives it directly (since `dispatch.rs` has no fixture for
+/// a tripped outer-safety envelope) and confirms the deferred closure record
 /// actually drains on the next tick, carrying the owning phase and safety
 /// cause, before the following tick resolves to the real `Terminal` outcome.
 #[test]
