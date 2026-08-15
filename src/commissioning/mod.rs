@@ -962,7 +962,7 @@ impl CommissioningEngine {
         ));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     pub(crate) fn trace_velocity_run_sequence(&self) -> Option<u32> {
         match &self.engine_mode {
             EngineMode::Outer {
