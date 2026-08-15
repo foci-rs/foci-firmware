@@ -61,26 +61,24 @@ pub struct DispatchState<'a> {
 /// Mutable board-wide evidence retention passed through one dispatch call.
 #[cfg(feature = "trace-velocity-sweep")]
 pub struct CommissionRetention<'a> {
-    pub stage_b: &'a mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
     pub stage_c:
         &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
 }
 
 #[cfg(feature = "trace-velocity-sweep")]
 impl<'a> CommissionRetention<'a> {
-    /// Borrow both stage-local RAM slots as one lifecycle context.
+    /// Borrow the Stage-C RAM slot as one lifecycle context.
     pub fn new(
-        stage_b: &'a mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
         stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
     ) -> Self {
-        Self { stage_b, stage_c }
+        Self { stage_c }
     }
 }
 
 /// Stage-retention and immediate evidence emission for one terminal dispatch.
 #[cfg(feature = "trace-velocity-sweep")]
 pub struct CommissionTerminalContext<'a, E> {
-    /// Mutable Stage-B and Stage-C retained evidence for this dispatch.
+    /// Mutable Stage-C retained evidence for this dispatch.
     pub retention: CommissionRetention<'a>,
     /// Board-owned emitter used before returning the compact scheduler action.
     pub emit_evidence: E,
@@ -88,14 +86,13 @@ pub struct CommissionTerminalContext<'a, E> {
 
 #[cfg(feature = "trace-velocity-sweep")]
 impl<'a, E> CommissionTerminalContext<'a, E> {
-    /// Borrow both retained slots and bind the board's reply emitter.
+    /// Borrow the retained Stage-C slot and bind the board's reply emitter.
     pub fn new(
-        stage_b: &'a mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
         stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
         emit_evidence: E,
     ) -> Self {
         Self {
-            retention: CommissionRetention::new(stage_b, stage_c),
+            retention: CommissionRetention::new(stage_c),
             emit_evidence,
         }
     }

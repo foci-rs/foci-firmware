@@ -768,7 +768,6 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
 
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
     use crate::commissioning::CommissioningEngine;
-    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
     use crate::commissioning::types::StepResult;
 
     let plan = stage_c_plan();
@@ -780,7 +779,6 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
         plan.execution_plan(),
         plan.authority,
     );
-    let mut stage_b_slot = StageBCandidateSlot::new();
     let mut stage_c_slot = StageCCandidateSlot::new();
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
@@ -809,7 +807,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
         &mut state,
         4_095,
         CHANNEL,
-        super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
+        super::CommissionRetention::new(&mut stage_c_slot),
     )
     .await;
 
@@ -835,7 +833,6 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
 
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::CommissioningEngine;
-    use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
     use crate::commissioning::schedule::{CommissionEvent, CommissionPoll};
     use crate::config::TmcConfig;
     use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
@@ -847,7 +844,6 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
         1,
         crate::state::tmc::tmc_channel0(),
     ));
-    let mut stage_b_slot = StageBCandidateSlot::new();
     let mut stage_c_slot = StageCCandidateSlot::new();
     let mut backend = MockBackend::new();
     let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, TmcConfig::default_for_test());
@@ -864,7 +860,7 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
         .drive_commissioning_poll_with_stages(
             poll,
             &mut backend,
-            super::CommissionTerminalContext::new(&mut stage_b_slot, &mut stage_c_slot, |reply| {
+            super::CommissionTerminalContext::new(&mut stage_c_slot, |reply| {
                 emitted_reply = Some(reply)
             }),
             crate::state::tmc::tmc_channel0(),
@@ -905,8 +901,6 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         };
         use crate::commissioning::outer::{PositiveIRestBoundary, VelocitySettleMetrics};
 
-        let mut stage_b_slot =
-            crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
         let mut stage_c_slot = StageCCandidateSlot::new();
         stage_c_slot.install_authority(retained_authority());
         let preflight = preflight_stage_c_request(request(), &preflight_config(), 9, &stage_c_slot)
@@ -967,7 +961,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
             &mut state,
             4_095,
             CHANNEL,
-            super::CommissionRetention::new(&mut stage_b_slot, &mut stage_c_slot),
+            super::CommissionRetention::new(&mut stage_c_slot),
         )
         .await;
 

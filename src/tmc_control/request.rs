@@ -262,12 +262,11 @@ async fn pi_representation_available<Spi: SpiDevice<u8>>(
         .is_ok()
 }
 
-/// Handle one board-routed request with board-wide Stage B and Stage C retention.
+/// Handle one board-routed request with board-wide Stage C retention.
 pub async fn handle_tmc_control_request_with_stages<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,
     runtime: &mut TmcControlRuntime,
-    stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
     #[cfg(feature = "trace-velocity-sweep")]
     stage_c_candidate: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
     tmc: &mut Tmc4671Spi<Spi>,
@@ -325,10 +324,8 @@ where
                     }
                     defmt::info!("Auto-calibrating on enable");
                     // A routine same-channel re-enable may auto-calibrate after the
-                    // required disarm/cooling interval between Stage B runs. Preserve
-                    // that channel's candidate so the separately commanded repeat can
-                    // reproduce it; another channel still invalidates the single slot.
-                    stage_b_candidate.invalidate_for_channel(board.channel());
+                    // required disarm/cooling interval; preserve that channel's
+                    // Stage-C authority across the alignment lifecycle.
                     #[cfg(feature = "trace-velocity-sweep")]
                     stage_c_candidate.preserve_for_same_channel_calibration(board.channel());
                     runtime.set_commission_engine(
@@ -425,11 +422,9 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            // Host homing explicitly calibrates after the required Stage B
-            // disarm/cooling interval. Preserve a same-channel candidate across
-            // that alignment lifecycle; another channel still invalidates the
-            // single board-wide slot.
-            stage_b_candidate.invalidate_for_channel(board.channel());
+            // Host homing explicitly calibrates after the required disarm/cooling
+            // interval. Preserve same-channel Stage-C authority across that
+            // alignment lifecycle.
             #[cfg(feature = "trace-velocity-sweep")]
             stage_c_candidate.preserve_for_same_channel_calibration(board.channel());
             runtime.clear_calibrated();
@@ -691,7 +686,6 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            stage_b_candidate.invalidate_for_unrelated_commissioning();
             #[cfg(feature = "trace-velocity-sweep")]
             stage_c_candidate.invalidate_for_unrelated_commissioning();
             runtime.clear_calibrated();
@@ -1134,7 +1128,6 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            stage_b_candidate.invalidate_for_unrelated_commissioning();
             #[cfg(feature = "trace-velocity-sweep")]
             stage_c_candidate.invalidate_for_unrelated_commissioning();
             runtime.set_commission_engine(
@@ -1250,15 +1243,14 @@ where
     normal_outcome(board.normal_tail())
 }
 
-/// Handle one request with Stage-B retention and temporary empty Stage-C state.
+/// Handle one request with temporary empty Stage-C retention.
 ///
 /// Board integration switches to [`handle_tmc_control_request_with_stages`] when
 /// its persistent Stage-C task-local is added.
-pub async fn handle_tmc_control_request_with_stage_b<Spi, Board>(
+pub async fn handle_tmc_control_request<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,
     runtime: &mut TmcControlRuntime,
-    stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
     tmc: &mut Tmc4671Spi<Spi>,
     board: &mut Board,
 ) -> TmcControlRequestOutcome
@@ -1275,7 +1267,6 @@ where
             req,
             pre_request,
             runtime,
-            stage_b_candidate,
             &mut stage_c_candidate,
             tmc,
             board,
@@ -1283,33 +1274,7 @@ where
         .await;
     }
     #[cfg(not(feature = "trace-velocity-sweep"))]
-    handle_tmc_control_request_with_stages(req, pre_request, runtime, stage_b_candidate, tmc, board)
-        .await
-}
-
-/// Handle one request without retaining cross-command commissioning evidence.
-pub async fn handle_tmc_control_request<Spi, Board>(
-    req: TmcRequest,
-    pre_request: TmcPreRequestDisposition,
-    runtime: &mut TmcControlRuntime,
-    tmc: &mut Tmc4671Spi<Spi>,
-    board: &mut Board,
-) -> TmcControlRequestOutcome
-where
-    Spi: SpiDevice<u8>,
-    Board: TmcRequestBoard<Spi>,
-{
-    let mut stage_b_candidate =
-        crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot::new();
-    handle_tmc_control_request_with_stage_b(
-        req,
-        pre_request,
-        runtime,
-        &mut stage_b_candidate,
-        tmc,
-        board,
-    )
-    .await
+    handle_tmc_control_request_with_stages(req, pre_request, runtime, tmc, board).await
 }
 
 pub(super) fn live_gain_failure_outcome(
@@ -1486,10 +1451,8 @@ mod tests {
     #[fixture_test]
     fn trace_request_future_size_stays_bounded() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         let mut board = RecordingBoard::skip_tick_tail();
@@ -1499,7 +1462,6 @@ mod tests {
             request,
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,
@@ -1729,36 +1691,6 @@ mod tests {
             flux_i: crate::pid::i_gain(12),
             torque_p: crate::pid::p_gain(13),
             torque_i: crate::pid::i_gain(14),
-        }
-    }
-
-    fn retained_stage_b_candidate()
-    -> crate::commissioning::outer::velocity::reproduction::StageBCandidateSummary {
-        use crate::commissioning::outer::velocity::reproduction::{
-            BUILD_FEATURES, STAGE_B_EVIDENCE_SCHEMA_REVISION, StageBCandidateSummary,
-            StageBPlanIdentity,
-        };
-
-        StageBCandidateSummary {
-            identity: StageBPlanIdentity {
-                channel: 0,
-                build_features: BUILD_FEATURES,
-                schema_revision: STAGE_B_EVIDENCE_SCHEMA_REVISION,
-                plan_digest: 0x1234,
-            },
-            forward_membership: 0b0001_1100,
-            reverse_membership: 0b0011_1000,
-            joint_membership: 0b0111_0000,
-            nominated_p: 1_448,
-            p_start: 256,
-            p_top: 2_048,
-            rung_count: 7,
-            forward_interval: [100, 120],
-            reverse_interval: [-130, -100],
-            forward_common_interval: [104, 116],
-            reverse_common_interval: [-126, -105],
-            run_completed_us: 2_000,
-            run_digest: 3,
         }
     }
 
@@ -2204,63 +2136,6 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn same_channel_auto_calibrate_preserves_stage_b_candidate() {
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
-        let retained = retained_stage_b_candidate();
-        let mut slot = StageBCandidateSlot::new();
-        slot.observe_sufficient(retained);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut board = RecordingBoard::skip_tick_tail();
-        set_auto_calibrate_on_enable_allowed(0, true);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stage_b(
-            TmcRequest::new(0, TmcRequestKind::SetEnable(true)),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut slot,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(
-            runtime.pending_commission_kind(),
-            Some(EngineKind::Calibrate)
-        );
-        assert_eq!(slot.candidate(), Some(retained));
-    }
-
-    #[fixture_test]
-    async fn same_channel_explicit_calibrate_preserves_stage_b_candidate() {
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
-        let retained = retained_stage_b_candidate();
-        let mut slot = StageBCandidateSlot::new();
-        slot.observe_sufficient(retained);
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut board = RecordingBoard::skip_tick_tail();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        handle_tmc_control_request_with_stage_b(
-            TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 9 }),
-            TmcPreRequestDisposition::ContinueRequest,
-            &mut runtime,
-            &mut slot,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(
-            runtime.pending_commission_kind(),
-            Some(EngineKind::Calibrate)
-        );
-        assert_eq!(slot.candidate(), Some(retained));
-    }
-
-    #[fixture_test]
     async fn explicit_calibrate_uses_stored_gains() {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_stored_gains(stored_gains());
@@ -2482,7 +2357,6 @@ mod tests {
     #[fixture_test]
     async fn breakaway_breadcrumb_begins_when_workflow_is_installed() {
         use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
         crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2494,14 +2368,12 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut slot = StageBCandidateSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-        handle_tmc_control_request_with_stage_b(
+        handle_tmc_control_request(
             tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut slot,
             &mut tmc,
             &mut board,
         )
@@ -2531,8 +2403,6 @@ mod tests {
     #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn encoder_not_ready_tune_fails_as_commission_phase_not_velocity_sweep_terminal() {
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
-
         // Reach the Stage-B preflight with the encoder domain unestablished:
         // the current limit is stored (so the NoCurrent pre-check passes) but
         // motion scale is never configured, so `encoder_counts_per_rev()` is
@@ -2544,14 +2414,12 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut slot = StageBCandidateSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-        handle_tmc_control_request_with_stage_b(
+        handle_tmc_control_request(
             tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut slot,
             &mut tmc,
             &mut board,
         )
@@ -2574,7 +2442,6 @@ mod tests {
     #[fixture_test]
     async fn matrix_request_without_acceptance_point_fails_without_motion_writes() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
         use crate::commissioning::types::{AcceptanceMatrixCause, AcceptanceMatrixOutcome};
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2585,7 +2452,6 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
@@ -2593,7 +2459,6 @@ mod tests {
             tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,
@@ -2625,7 +2490,6 @@ mod tests {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             AcceptanceMatrixProgress, StageCCandidateSlot,
         };
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
         let mut board = RecordingBoard::skip_tick_tail();
         tmc_channel0()
@@ -2635,7 +2499,6 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         stage_c.install_acceptance_point(
             crate::commission_dispatch::acceptance::test_acceptance_point(
@@ -2649,7 +2512,6 @@ mod tests {
             tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,
@@ -2734,7 +2596,6 @@ mod tests {
     #[fixture_test]
     async fn admitted_resume_discloses_exact_plan_before_engine_execution() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
         let mut board = RecordingBoard::skip_tick_tail();
         tmc_channel0()
@@ -2744,7 +2605,6 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         let plan = resumable_stage_c_plan();
         crate::commission_dispatch::stage_c::install_authority_from_plan(0, &mut stage_c, plan);
@@ -2754,7 +2614,6 @@ mod tests {
             tune_request_with_action(crate::tmc::AutotuneAction::StageCResume),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,
@@ -2794,7 +2653,6 @@ mod tests {
     #[fixture_test]
     async fn resume_plan_mismatch_names_the_retained_plan_without_motion_writes() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
         use crate::commissioning::types::VelocityIntegralOutcome;
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2805,7 +2663,6 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         let plan = resumable_stage_c_plan();
         let retained =
@@ -2825,7 +2682,6 @@ mod tests {
             request,
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,
@@ -2861,7 +2717,6 @@ mod tests {
     #[fixture_test]
     async fn resume_of_an_unplannable_request_still_names_the_retained_plan() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
         use crate::commissioning::types::VelocityIntegralOutcome;
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2872,7 +2727,6 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         let retained = crate::commission_dispatch::stage_c::install_authority_from_plan(
             0,
@@ -2896,7 +2750,6 @@ mod tests {
             request,
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,
@@ -2926,7 +2779,6 @@ mod tests {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             AcceptanceMatrixProgress, StageCCandidateSlot,
         };
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
         use crate::commissioning::types::AcceptanceMatrixCause;
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2937,7 +2789,6 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         let point = crate::commission_dispatch::acceptance::test_acceptance_point(
             velocity_sweep_request(),
@@ -2950,7 +2801,6 @@ mod tests {
             tune_request_with_action(crate::tmc::AutotuneAction::MatrixAscending),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,
@@ -2976,10 +2826,8 @@ mod tests {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             StageCCandidateSlot, StageCSlotState,
         };
-        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
 
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut stage_b = StageBCandidateSlot::new();
         let mut stage_c = StageCCandidateSlot::new();
         stage_c.install_authority(retained_stage_c_authority());
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2989,7 +2837,6 @@ mod tests {
             TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 7 }),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_b,
             &mut stage_c,
             &mut tmc,
             &mut board,

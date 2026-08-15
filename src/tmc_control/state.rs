@@ -703,7 +703,6 @@ impl TmcControlRuntime {
         &mut self,
         result: CommissionTerminal,
         backend: &mut B,
-        stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
@@ -721,7 +720,6 @@ impl TmcControlRuntime {
                     result,
                     backend,
                     crate::commission_dispatch::CommissionTerminalContext::new(
-                        stage_b_candidate,
                         &mut stage_c_candidate,
                         |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                     ),
@@ -741,7 +739,6 @@ impl TmcControlRuntime {
                 &mut self.motor_enabled,
                 &mut self.stored_gains,
             );
-            let _ = stage_b_candidate;
             let outcome = crate::commission_dispatch::drive_commission_result(
                 result.into_step_result(),
                 &mut self.commission_engine,
@@ -771,7 +768,6 @@ impl TmcControlRuntime {
         &mut self,
         poll: CommissionPoll,
         backend: &mut B,
-        stage_b_candidate: &mut crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
         config: &TmcControlConfig,
@@ -789,7 +785,6 @@ impl TmcControlRuntime {
                     poll,
                     backend,
                     crate::commission_dispatch::CommissionTerminalContext::new(
-                        stage_b_candidate,
                         &mut stage_c_candidate,
                         |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
                     ),
@@ -812,15 +807,8 @@ impl TmcControlRuntime {
                 event,
             }),
             CommissionPoll::Terminal { result } => {
-                self.drive_commissioning_terminal(
-                    result,
-                    backend,
-                    stage_b_candidate,
-                    tmc,
-                    stepper,
-                    config,
-                )
-                .await
+                self.drive_commissioning_terminal(result, backend, tmc, stepper, config)
+                    .await
             }
         }
     }

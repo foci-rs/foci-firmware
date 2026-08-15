@@ -580,10 +580,9 @@ pub struct BandConfirmationAcceptance {
     candidate_p: PidPGain,
     /// Per-direction held-out response interval, forward then reverse, in
     /// the SAME signed settled-rate-Q domain `directional_pooled_intervals`
-    /// already carries on the reproduced-Stage-B and combined Stage-C paths
-    /// (see [`super::combined_plan::CombinedSelectedResponse::response_intervals_q`]
-    /// and [`super::reproduction::StageBCandidateSummary::forward_interval`]/
-    /// `reverse_interval`): forward's `[low_q, high_q]` is a strictly
+    /// already carries on the combined Stage-C path
+    /// (see [`super::combined_plan::CombinedSelectedResponse::response_intervals_q`]):
+    /// forward's `[low_q, high_q]` is a strictly
     /// positive commanded-magnitude bound (`low_q > 0`); reverse's is
     /// strictly negative (`high_q < 0`), formed as `[-high_magnitude_q,
     /// -low_magnitude_q]` so `low_q <= high_q` still holds. This is what
