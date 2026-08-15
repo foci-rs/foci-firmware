@@ -586,6 +586,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
         }
         StepResult::AcceptanceMatrixEvent(_) => CommissionOutcome::Continue,
+        // Un-gating the `StepResult` variant definitions lets the
+        // evidence/encoding layer build in production; the campaign engine
+        // that produces these results stays trace-gated, so no
+        // non-trace build can reach this arm today. A later change replaces this stub
+        // with real dispatch once the campaign engine un-gates.
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        StepResult::BreakawayCampaignEvent(_) => CommissionOutcome::Continue,
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayCampaignEvent(event) => {
             let engine_ref = engine
@@ -598,6 +605,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
+        // See the `BreakawayCampaignEvent` stub above: the campaign engine
+        // stays trace-gated until Task 5, so this stub is unreachable in the
+        // non-trace build until then. Task 6 replaces it.
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        StepResult::BreakawayStageCPlanReady { .. } => CommissionOutcome::Continue,
         // A breakaway campaign normally reaches Stage C on the scheduled-tick
         // path, where `adapt_step_result` carries the plan out as a
         // `CommissionEvent`. This arm covers the request-driven path so the

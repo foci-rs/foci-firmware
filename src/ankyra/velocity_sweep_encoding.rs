@@ -16,7 +16,6 @@ pub struct VelocitySweepCanonicalRecord {
 }
 
 impl VelocitySweepCanonicalRecord {
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) const fn new() -> Self {
         Self {
             bytes: [0; VELOCITY_SWEEP_CANONICAL_RECORD_MAX],
@@ -29,32 +28,26 @@ impl VelocitySweepCanonicalRecord {
         &self.bytes[..usize::from(self.len)]
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_u8(&mut self, value: u8) {
         self.push_bytes(&value.to_le_bytes());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_i8(&mut self, value: i8) {
         self.push_bytes(&value.to_le_bytes());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_u16(&mut self, value: u16) {
         self.push_bytes(&value.to_le_bytes());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_u32(&mut self, value: u32) {
         self.push_bytes(&value.to_le_bytes());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn push_i32(&mut self, value: i32) {
         self.push_bytes(&value.to_le_bytes());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     fn push_bytes(&mut self, value: &[u8]) {
         let start = usize::from(self.len);
         let end = start
@@ -79,7 +72,6 @@ pub fn extend_velocity_sweep_digest(mut digest: u64, record: &VelocitySweepCanon
 }
 
 /// Encode an unsigned value as an outward-rounded mantissa and right shift.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn upper_bound_u128(value: u128) -> (u32, u8) {
     for shift in 0..=127u8 {
         let divisor = 1u128 << shift;
@@ -92,7 +84,6 @@ pub(crate) fn upper_bound_u128(value: u128) -> (u32, u8) {
 }
 
 /// Encode a signed value as an outward-rounded mantissa and right shift.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn upper_bound_i64(value: i64) -> (i32, u8) {
     let magnitude = i128::from(value).unsigned_abs();
     for shift in 0..=63u8 {
@@ -106,7 +97,6 @@ pub(crate) fn upper_bound_i64(value: i64) -> (i32, u8) {
 }
 
 /// Encode settled-rate evidence with one common outward-rounded right shift.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn encode_rate_values(values: [i64; 5]) -> ([i32; 5], u8) {
     for shift in 0..=63u8 {
         let divisor = 1i128 << shift;
@@ -141,7 +131,12 @@ pub(crate) fn encode_rate_values(values: [i64; 5]) -> ([i32; 5], u8) {
 }
 
 /// Encode command-lifetime outer-safety timing outside stage evidence digests.
-#[cfg(feature = "trace-velocity-sweep")]
+///
+/// Raw-only: its sole caller is the raw-emission helper
+/// `emit_outer_safety_timing_trace`, which pushes the encoded record to
+/// `record_velocity_sweep_trace_record`. Kept on the raw-emission `trace`
+/// feature rather than un-gated with the rest of the digest-path encoders.
+#[cfg(feature = "trace")]
 pub(crate) fn encode_outer_safety_timing_record(
     engine_sequence: u32,
     run_sequence: u32,
@@ -176,7 +171,6 @@ pub(crate) fn encode_outer_safety_timing_record(
 }
 
 /// Encode one stage-neutral primitive current-evidence record.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn encode_velocity_primitive_current_evidence(
     evidence: crate::commissioning::types::VelocityPrimitiveCurrentEvidence,
 ) -> VelocitySweepCanonicalRecord {

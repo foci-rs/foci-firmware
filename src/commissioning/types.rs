@@ -475,7 +475,6 @@ pub struct VelocityStageBHandoffReport {
 }
 
 /// One causally sequenced rung-origin recovery record shared by Stage B and Stage C.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct RungOriginRecoveryEvidence {
     /// Caller-assigned run sequence.
@@ -487,7 +486,6 @@ pub struct RungOriginRecoveryEvidence {
 }
 
 /// Recovery stabilization lead-in and scored-rest evidence.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct RecoveryRestDiagnostic {
     /// Digest of the immutable owning-stage plan.
@@ -541,7 +539,6 @@ pub struct RecoveryRestDiagnostic {
 }
 
 /// Causal owner of one completed scored-rest selector decision.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum RestSelectionOwner {
@@ -566,7 +563,6 @@ pub enum RestSelectionOwner {
 }
 
 /// Exact trace-only evidence for one completed scored-rest selector decision.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct RestSelectionDiagnostic {
     /// Exact simultaneous intervals in 64-, 128-, and 256-sample order.
@@ -764,13 +760,10 @@ pub enum VelocityIntegralEvent {
     /// One complete anchor, positive, or bookend rung was folded.
     Rung(VelocityIntegralRungReport),
     /// One bounded return to the immutable campaign origin.
-    #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
     /// Recovery stabilization lead-in and scored-rest evidence.
-    #[cfg(feature = "trace-velocity-sweep")]
     RecoveryRest(RecoveryRestDiagnostic),
     /// Exact per-suffix scored-rest selector evidence.
-    #[cfg(feature = "trace-velocity-sweep")]
     RestSelection(RestSelectionDiagnostic),
     /// Current-limit evidence for one completed signed-plus-zero primitive.
     Current(VelocityPrimitiveCurrentEvidence),
@@ -854,13 +847,10 @@ pub enum AcceptanceMatrixEvent {
     /// Current and zero-target rest evidence for one primitive.
     Current(VelocityPrimitiveCurrentEvidence),
     /// One evidence-excluded return to the immutable origin.
-    #[cfg(feature = "trace-velocity-sweep")]
     Recovery(RungOriginRecoveryEvidence),
     /// Recovery stabilization lead-in and scored-rest evidence.
-    #[cfg(feature = "trace-velocity-sweep")]
     RecoveryRest(RecoveryRestDiagnostic),
     /// Exact per-suffix scored-rest selector evidence.
-    #[cfg(feature = "trace-velocity-sweep")]
     RestSelection(RestSelectionDiagnostic),
     /// One complete four-observation fold per direction.
     Amplitude(AcceptanceAmplitudeEvidence),
@@ -987,7 +977,6 @@ pub struct VelocityIntegralTerminal {
 // ============================================================================
 
 /// Immutable breakaway-probe plan evidence emitted before the first probe stroke.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbePlanned {
     /// Caller-assigned run sequence.
@@ -1023,7 +1012,6 @@ pub struct BreakawayProbePlanned {
 }
 
 /// Resolved repeatable-motion rung for the complete upward probe.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbeResolved {
     /// Caller-assigned run sequence.
@@ -1045,7 +1033,6 @@ pub struct BreakawayProbeResolved {
 /// Detailed terminal evidence for a probe campaign that did not resolve a
 /// breakaway (every [`crate::commissioning::outer::velocity::breakaway_campaign::BreakawayProbeOutcome`]
 /// variant other than `BreakawayFound`).
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbeTerminal {
     /// Caller-assigned run sequence.
@@ -1064,7 +1051,6 @@ pub struct BreakawayProbeTerminal {
 
 /// Immutable additive-discovery plan evidence emitted before the first
 /// discovery stroke.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AdditiveDiscoveryPlanned {
     /// Caller-assigned run sequence.
@@ -1122,7 +1108,6 @@ pub struct AdditiveDiscoveryPlanned {
 /// [70, 80] containment itself and flag any disagreement with the firmware's
 /// reported values. The raw atoms are transient (built, enqueued, dropped);
 /// nothing here is retained, so this adds no RAM.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayRawObservation {
     /// Caller-assigned run sequence.
@@ -1194,7 +1179,6 @@ pub struct BreakawayRawObservation {
 }
 
 /// One recovered probe observation committed to the adaptive cursor.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbeDecision {
     /// Caller-assigned run sequence.
@@ -1212,7 +1196,6 @@ pub struct BreakawayProbeDecision {
 }
 
 /// One in-band discovery rung's nomination bounds and pointwise margin `M_i`.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayDiscoveryRungMargin {
     /// Caller-assigned run sequence.
@@ -1241,7 +1224,6 @@ pub struct BreakawayDiscoveryRungMargin {
 /// Diagnostic evidence for whether the additive ladder's rung zero (the
 /// diagnostic floor) itself showed motion. Reported purely as evidence: rung
 /// zero moving does not fail the discovery run (spec section 6).
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayRungZeroDiagnostic {
     /// Caller-assigned run sequence.
@@ -1257,7 +1239,6 @@ pub struct BreakawayRungZeroDiagnostic {
 }
 
 /// Detailed terminal evidence for an additive discovery campaign.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AdditiveDiscoveryTerminal {
     /// Caller-assigned run sequence.
@@ -1288,7 +1269,6 @@ pub struct AdditiveDiscoveryTerminal {
 
 /// Immutable held-out confirmation plan evidence emitted before the first
 /// confirmation stroke.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationPlanned {
     /// Caller-assigned run sequence.
@@ -1319,7 +1299,6 @@ pub struct BandConfirmationPlanned {
 }
 
 /// One fresh held-out confirmation stroke's response interval.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationObservation {
     /// Caller-assigned run sequence.
@@ -1341,7 +1320,6 @@ pub struct BandConfirmationObservation {
 }
 
 /// Detailed terminal evidence for a held-out confirmation block.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationTerminal {
     /// Caller-assigned run sequence.
@@ -1382,7 +1360,6 @@ pub struct BandConfirmationTerminal {
 }
 
 /// Canonical closure record for one complete breakaway campaign.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayCampaignTerminal {
     /// Caller-assigned run sequence.
@@ -1403,7 +1380,6 @@ pub struct BreakawayCampaignTerminal {
 /// Which `p_top` candidate bound the additive-discovery authority ceiling:
 /// the current-limit-derived candidate, or the `PidPGain::MAX`
 /// representability clamp. See `sweep_plan::CEILING_BINDING_*`.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayCeilingSource {
     /// Caller-assigned run sequence.
@@ -1435,7 +1411,6 @@ pub struct BreakawayCeilingSource {
 /// which is otherwise observable, because the settle displacement never
 /// reaches the wire and `RecoveryRestDiagnostic` is only produced under the
 /// stabilized rest schedule that the breakaway campaign never uses.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayRecoveryRestRejected {
     /// Caller-assigned run sequence.
@@ -1492,7 +1467,6 @@ pub struct BreakawayRecoveryRestRejected {
 /// This record supplies the missing magnitude and direction: `delta_counts` is
 /// the exact discrepancy, and `position_window_counts` gives the containment
 /// bound it should be judged against.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayRecoveryOriginMismatch {
     /// Caller-assigned run sequence.
@@ -1536,7 +1510,6 @@ pub struct BreakawayRecoveryOriginMismatch {
 /// whole phase for exactly this reason. The dispatch bridge loops over it to
 /// emit one wire record per item, the same way `emit_acceptance_matrix_plan`
 /// already fans one Rust value out to several wire fragments.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub enum BreakawayCampaignEvent {
@@ -1646,7 +1619,6 @@ pub enum StepResult {
     /// One fixed-I velocity confidence matrix reached its terminal.
     AcceptanceMatrixTerminal(AcceptanceMatrixTerminal),
     /// Streamed breakaway-campaign evidence became available.
-    #[cfg(feature = "trace-velocity-sweep")]
     BreakawayCampaignEvent(BreakawayCampaignEvent),
     /// An accepted breakaway campaign handed off to Stage C, carrying the exact
     /// plan that hand-off installed.
@@ -1656,7 +1628,6 @@ pub enum StepResult {
     /// and the host assembler refuses every Stage-C observation until it has seen
     /// a complete plan. A hand-off that transitions silently strands the host
     /// with no plan and fails the run on its first observation.
-    #[cfg(feature = "trace-velocity-sweep")]
     BreakawayStageCPlanReady {
         /// Campaign run sequence the Stage-C evidence chains to.
         run_sequence: u32,

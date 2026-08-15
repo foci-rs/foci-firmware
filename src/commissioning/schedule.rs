@@ -198,6 +198,14 @@ pub fn adapt_step_result(
             result: CommissionTerminal::VelocityIntegral(result),
         }),
         StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
+        // Un-gating the `StepResult` variant definitions lets the
+        // evidence/encoding layer build in production; the campaign engine
+        // that produces these results stays trace-gated, so no
+        // non-trace build can reach these stubs today. A later change replaces them.
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        StepResult::BreakawayCampaignEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
+        #[cfg(not(feature = "trace-velocity-sweep"))]
+        StepResult::BreakawayStageCPlanReady { .. } => Ok(CommissionPoll::ReadyNow { event: None }),
         #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayCampaignEvent(event) => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;

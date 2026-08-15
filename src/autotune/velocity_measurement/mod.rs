@@ -22,10 +22,8 @@ pub use observation::{
 pub use rest::{
     RestSelectionDecision, RestSelectionDisposition, RestStructuralCode, VELOCITY_SUFFIX_LENGTHS,
 };
-// Only the trace-gated `sweep_reporting` mirror and the tests re-export these
-// through the module root; `stationarity` reaches them via `super::rest`
-// directly. Gating the re-export keeps a plain build free of the unused import.
-#[cfg(any(test, feature = "trace-velocity-sweep"))]
+// `sweep_reporting` re-exports these through the
+// module root; `stationarity` reaches them via `super::rest` directly.
 pub(crate) use rest::{RestSuffixEvaluation, select_causal_rest_suffixes};
 pub use stationarity::{
     RestSelectionCompletion, StationarityDiagnostics, StationarityExclusion, StationarityResult,

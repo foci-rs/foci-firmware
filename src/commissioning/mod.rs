@@ -1296,6 +1296,19 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
                         report.evidence_sequence,
                     ),
+                    // The `VelocityIntegralEvent`
+                    // variant definitions are un-gated, but their only producer (the Stage-C
+                    // engine) stays trace-gated, so this arm is
+                    // unreachable in the non-trace build until then. Task 7
+                    // replaces it once the producer un-gates. Reuses the
+                    // always-imported plan event id as an inert placeholder
+                    // rather than pulling in a trace-gated constant.
+                    #[cfg(not(feature = "trace-velocity-sweep"))]
+                    crate::commissioning::types::VelocityIntegralEvent::Recovery(_)
+                    | crate::commissioning::types::VelocityIntegralEvent::RecoveryRest(_)
+                    | crate::commissioning::types::VelocityIntegralEvent::RestSelection(_) => {
+                        (EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN, 0)
+                    }
                     crate::commissioning::types::VelocityIntegralEvent::Current(report) => (
                         EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
                         report.evidence_sequence,
@@ -1370,6 +1383,15 @@ impl CommissioningEngine {
             #[cfg(not(feature = "trace-velocity-sweep"))]
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::AcceptanceMatrixTerminal(_) => {}
+            // Un-gating the `StepResult` variant definitions lets
+            // the evidence/encoding layer build in production; the campaign
+            // engine that produces these results, and the raw trace emission
+            // below, stay trace-gated. Nothing constructs these
+            // variants in the non-trace build, so this is a no-op stub.
+            #[cfg(not(feature = "trace-velocity-sweep"))]
+            StepResult::BreakawayCampaignEvent(_) => {}
+            #[cfg(not(feature = "trace-velocity-sweep"))]
+            StepResult::BreakawayStageCPlanReady { .. } => {}
             #[cfg(feature = "trace-velocity-sweep")]
             StepResult::BreakawayCampaignEvent(event) => {
                 self.emit_breakaway_campaign_trace(backend, *event);

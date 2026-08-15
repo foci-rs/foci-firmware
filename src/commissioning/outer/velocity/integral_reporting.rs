@@ -1062,6 +1062,37 @@ mod tests {
         assert_eq!(integrity.digest(), 0xabbe_8f32_faa4_a140);
     }
 
+    /// Proves the production Stage-C digest path is live without
+    /// `trace-velocity-sweep`: this module now un-gates in the default build,
+    /// so `VelocityIntegralIntegrity::record` and
+    /// the canonical-record encoders it calls run identically in both
+    /// configurations. The baseline was captured by running this exact
+    /// construction once under `--features trace-velocity-sweep`; since the
+    /// digest path no longer has any `trace-velocity-sweep`-only code left in
+    /// it, the two builds are expected to agree by construction, and this
+    /// test is the regression guard for that agreement.
+    #[test]
+    fn production_stage_c_digest_matches_trace_baseline() {
+        use crate::commissioning::types::{VelocityIntegralEvent, VelocityIntegralPlanned};
+
+        let mut integrity = VelocityIntegralIntegrity::new(7, plan());
+        let planned = VelocityIntegralPlanned {
+            run_sequence: 7,
+            evidence_sequence: 1,
+            plan_digest: 0x0123_4567_89ab_cdef,
+            final_p: 1_448,
+            positive_rung_count: 5,
+            maximum_workflow_ms: 69_888,
+        };
+
+        integrity.record(VelocityIntegralEvent::Planned(planned));
+
+        // Baseline digest captured from the trace build for this exact
+        // sequence.
+        const EXPECTED_BASELINE_DIGEST: u64 = 0xf3de_5916_35ba_9b2f;
+        assert_eq!(integrity.digest(), EXPECTED_BASELINE_DIGEST);
+    }
+
     #[test]
     fn primitive_current_evidence_is_hashed_and_count_neutral() {
         let mut integrity = VelocityIntegralIntegrity::new(7, plan());

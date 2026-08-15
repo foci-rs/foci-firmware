@@ -7,14 +7,20 @@ use crate::autotune::{
 use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::types::{OuterResult, OuterSafetyFault};
 
+// `RawVelocityObservation`/`VelocityMeasurementError` are needed by
+// `VelocityObservationRing` below, a self-contained data type;
+// `DyadicBlocker`/`StationarityWork` stay trace-gated
+// with `VelocityIntegralData`, which still needs its own state-machine
+// un-gating.
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::autotune::velocity_measurement::{
-    DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
-};
+use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork};
+use crate::autotune::velocity_measurement::{RawVelocityObservation, VelocityMeasurementError};
+// `VelocityCurrentPhaseEvidence` is needed by `PositiveIRestBoundary` below,
+// un-gated by Task 4; `VelocityCurrentObserver` stays trace-gated with
+// `VelocityIntegralData` (Task 5).
 #[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::current_guard::{
-    VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
-};
+use crate::commissioning::outer::velocity::current_guard::VelocityCurrentObserver;
+use crate::commissioning::outer::velocity::current_guard::VelocityCurrentPhaseEvidence;
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::recovery::{
     RungOriginRecoveryReport, RungOriginRecoveryRuntime,
@@ -38,14 +44,16 @@ pub(crate) const OUTER_POLICY_WARNING_MASK: u8 =
     OUTER_EVIDENCE_CONSERVATIVE_REQUIRED | OUTER_EVIDENCE_LAMBDA_WIDENED;
 
 /// Number of validated observations retained from the end of one moving stroke.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) const VELOCITY_OBSERVATION_CAPACITY: usize = 256;
 /// Dyadic levels required to analyze every retained suffix through 256 samples.
+///
+/// Stays trace-gated: only used for `DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>`
+/// in `VelocityIntegralData` and `RungOriginRecoveryResources`, both deferred to
+/// Task 5.
 #[cfg(feature = "trace-velocity-sweep")]
 pub(crate) const VELOCITY_SWEEP_BLOCK_LEVELS: usize = 5;
 
 /// Fixed-memory tail ring with split arrays to avoid tuple padding.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct VelocityObservationRing {
@@ -55,7 +63,6 @@ pub(crate) struct VelocityObservationRing {
     len: u16,
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[allow(dead_code)]
 impl VelocityObservationRing {
     pub(crate) const fn new() -> Self {
@@ -115,7 +122,6 @@ impl VelocityObservationRing {
 }
 
 /// Chronological iterator over the retained tail, including after wraparound.
-#[cfg(feature = "trace-velocity-sweep")]
 #[allow(dead_code)]
 pub(crate) struct VelocityObservationIter<'a> {
     ring: &'a VelocityObservationRing,
@@ -123,7 +129,6 @@ pub(crate) struct VelocityObservationIter<'a> {
     offset: usize,
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl Iterator for VelocityObservationIter<'_> {
     type Item = RawVelocityObservation;
 
@@ -145,10 +150,8 @@ impl Iterator for VelocityObservationIter<'_> {
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl ExactSizeIterator for VelocityObservationIter<'_> {}
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl crate::autotune::velocity_measurement::VelocityObservationSource for VelocityObservationRing {
     fn observation_len(&self) -> usize {
         self.len()
@@ -171,8 +174,7 @@ impl crate::autotune::velocity_measurement::VelocityObservationSource for Veloci
     }
 }
 
-/// Phase-local state for the trace-gated velocity-integral response sweep.
-#[cfg(feature = "trace-velocity-sweep")]
+/// Phase-local state for the Stage-C velocity-integral response sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct VelocitySettleTransition {
     pub(crate) sample_index: u16,
@@ -181,7 +183,6 @@ pub(crate) struct VelocitySettleTransition {
     pub(crate) displacement_counts: i32,
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl VelocitySettleTransition {
     const EMPTY: Self = Self {
         sample_index: 0,
@@ -192,7 +193,6 @@ impl VelocitySettleTransition {
 }
 
 /// Incremental whole-window metrics for one zero-target capture.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct VelocitySettleMetrics {
     pub(crate) sample_count: u16,
@@ -205,7 +205,6 @@ pub(crate) struct VelocitySettleMetrics {
     pub(crate) last_transition: VelocitySettleTransition,
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl VelocitySettleMetrics {
     pub(crate) const EMPTY: Self = Self {
         sample_count: 0,
@@ -262,7 +261,6 @@ impl VelocitySettleMetrics {
 }
 
 /// Exact active-I rest loss retained while the I=0 cleanup proof runs.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct PositiveIRestBoundary {
     pub(crate) rung_index: u8,
