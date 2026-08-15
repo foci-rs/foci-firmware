@@ -40,19 +40,6 @@ pub enum StageBPreflightRejection {
     },
 }
 
-/// Exact cross-run comparison emitted immediately before terminal fragments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct StageBReproductionReport {
-    /// Current caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence allocated to this comparison.
-    pub evidence_sequence: u16,
-    /// Matching complete or nonmatching outcome code.
-    pub outcome: u8,
-    /// Exact retained-versus-current evidence delta.
-    pub delta: crate::commissioning::outer::velocity::reproduction::StageBReproductionDelta,
-}
-
 /// Construct and identity-check the only Stage B plan before motor initialization.
 ///
 /// The retained candidate is deliberately not modified on either rejection path.
