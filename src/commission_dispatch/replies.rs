@@ -122,34 +122,6 @@ pub trait CommissionReplySink {
     /// Emit Stage 2 safety-envelope evidence before the terminal tune result.
     fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault);
 
-    /// Emit one velocity-sweep plan-limits fragment.
-    fn foci_velocity_sweep_plan_limits(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocitySweepPlanLimits,
-    ) {
-    }
-
-    /// Emit one velocity-sweep plan-geometry fragment.
-    fn foci_velocity_sweep_plan_geometry(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocitySweepPlanGeometry,
-    ) {
-    }
-
-    /// Emit one velocity-sweep plan-timing fragment.
-    fn foci_velocity_sweep_plan_timing(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocitySweepPlanTiming,
-    ) {
-    }
-
-    /// Emit Stage-B recovery geometry and reserved schedule.
-    fn foci_velocity_sweep_plan_recovery(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocitySweepPlanRecovery,
-    ) {
-    }
-
     /// Emit one compact rung-origin recovery summary.
     fn foci_rung_origin_recovery_summary(
         &mut self,
@@ -161,188 +133,6 @@ pub trait CommissionReplySink {
     fn foci_velocity_primitive_current_evidence(
         &mut self,
         _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
-    ) {
-    }
-
-    /// Emit one velocity-observation core fragment.
-    fn foci_velocity_observation_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityObservationCore,
-    ) {
-    }
-
-    /// Emit one velocity-observation rate fragment.
-    fn foci_velocity_observation_rate(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityObservationRate,
-    ) {
-    }
-
-    /// Emit one velocity-observation stationarity fragment.
-    fn foci_velocity_observation_stationarity(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityObservationStationarity,
-    ) {
-    }
-
-    /// Emit one velocity-observation disturbance fragment.
-    fn foci_velocity_observation_disturbance(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityObservationDisturbance,
-    ) {
-    }
-
-    /// Emit one velocity-rung consensus core fragment.
-    fn foci_velocity_rung_consensus_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityRungConsensusCore,
-    ) {
-    }
-
-    /// Emit one exact velocity-rung consensus component.
-    fn foci_velocity_rung_consensus_component(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityRungConsensusComponent,
-    ) {
-    }
-
-    /// Emit one eligible direction's velocity-rung pool.
-    fn foci_velocity_rung_consensus_pool(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityRungConsensusPool,
-    ) {
-    }
-
-    /// Emit one structured-boundary diagnostic.
-    fn foci_velocity_structured_boundary(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStructuredBoundary,
-    ) {
-    }
-
-    /// Emit one directional-region identity fragment.
-    fn foci_velocity_directional_region_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityDirectionalRegionCore,
-    ) {
-    }
-
-    /// Emit one directional-region model fragment.
-    fn foci_velocity_directional_region_model(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityDirectionalRegionModel,
-    ) {
-    }
-
-    /// Emit one directional-region settled-rate fragment.
-    fn foci_velocity_directional_region_rates(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityDirectionalRegionRates,
-    ) {
-    }
-
-    /// Emit one directional-region boundary fragment.
-    fn foci_velocity_directional_region_boundary(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityDirectionalRegionBoundary,
-    ) {
-    }
-
-    /// Emit one joint-operability region.
-    fn foci_velocity_joint_region(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityJointRegion,
-    ) {
-    }
-
-    /// Emit one selected Stage B handoff.
-    fn foci_velocity_stage_b_handoff_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBHandoffCore,
-    ) {
-    }
-
-    /// Emit one Stage B nomination fragment.
-    fn foci_velocity_stage_b_nomination(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBNomination,
-    ) {
-    }
-
-    /// Emit one selected directional handoff fragment.
-    fn foci_velocity_stage_b_directional_handoff(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBDirectionalHandoff,
-    ) {
-    }
-
-    /// Emit the Stage B reproduction class and nominated gains.
-    fn foci_velocity_stage_b_reproduction_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionCore,
-    ) {
-    }
-
-    /// Emit the exact Stage B reproduction memberships.
-    fn foci_velocity_stage_b_reproduction_membership(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionMembership,
-    ) {
-    }
-
-    /// Emit one direction's Stage B reproduction intervals.
-    fn foci_velocity_stage_b_reproduction_interval(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionInterval,
-    ) {
-    }
-
-    /// Emit exact Stage B reproduction digest inputs.
-    fn foci_velocity_stage_b_reproduction_digest(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionDigest,
-    ) {
-    }
-
-    /// Emit the schema-3 Stage B reproduction outcome and final nomination.
-    fn foci_velocity_stage_b_reproduction_v3_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Core,
-    ) {
-    }
-
-    /// Emit one schema-3 membership/core comparison.
-    fn foci_velocity_stage_b_reproduction_v3_membership(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Membership,
-    ) {
-    }
-
-    /// Emit one schema-3 pooled-interval comparison.
-    fn foci_velocity_stage_b_reproduction_v3_pooled(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Pooled,
-    ) {
-    }
-
-    /// Emit one schema-3 common-interval comparison.
-    fn foci_velocity_stage_b_reproduction_v3_common(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Common,
-    ) {
-    }
-
-    /// Emit one schema-3 core-relative coverage result.
-    fn foci_velocity_stage_b_reproduction_v3_coverage(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Coverage,
-    ) {
-    }
-
-    /// Emit exact schema-3 Stage B reproduction digest inputs.
-    fn foci_velocity_stage_b_reproduction_v3_digest(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV3Digest,
     ) {
     }
 
@@ -406,20 +196,6 @@ pub trait CommissionReplySink {
     fn foci_velocity_stage_b_terminal_interval(
         &mut self,
         _report: crate::ankyra::replies::FociVelocityStageBTerminalInterval,
-    ) {
-    }
-
-    /// Emit one directional velocity-sweep terminal fragment.
-    fn foci_velocity_sweep_terminal_direction(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocitySweepTerminalDirection,
-    ) {
-    }
-
-    /// Emit one velocity-sweep terminal-integrity fragment.
-    fn foci_velocity_sweep_terminal_integrity(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocitySweepTerminalIntegrity,
     ) {
     }
 
@@ -604,9 +380,6 @@ pub trait CommissionReplySink {
         _report: crate::ankyra::replies::FociAcceptanceMatrixTerminal<'_>,
     ) {
     }
-
-    /// Emit the generic outer inconclusive terminal.
-    fn foci_outer_inconclusive(&mut self, _report: crate::ankyra::replies::FociOuterInconclusive) {}
 
     /// Emit the immutable breakaway-probe plan.
     fn foci_breakaway_probe_plan(
@@ -2456,35 +2229,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum ConsensusEvent {
-        Core {
-            fragment: u8,
-            classes: [u8; 2],
-            collected: [u8; 2],
-            eligible: [u8; 2],
-            included: [u8; 2],
-            components: [u8; 2],
-            operable: [u8; 2],
-            flags: u8,
-        },
-        Component {
-            fragment: u8,
-            direction: u8,
-            index: u8,
-            bounds: [i32; 2],
-        },
-        Pool {
-            fragment: u8,
-            direction: u8,
-            point: i32,
-            interval: [i32; 2],
-            variance_floor: u8,
-            rates: [i32; 4],
-            rate_shift: u8,
-        },
-    }
-
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
         Detail {
@@ -2699,29 +2443,6 @@ mod tests {
             velocity_counts_per_ms: i32,
             velocity_cap_counts_per_ms: i32,
         },
-        SweepPlan(u8),
-        SweepPlanRecovery,
-        SweepObservation(u8),
-        SweepRung(ConsensusEvent),
-        SweepStructuredBoundary,
-        SweepDirectionalRegionCore(u32),
-        SweepDirectionalRegionModel(u32),
-        SweepDirectionalRegionRates(u32),
-        SweepDirectionalRegionBoundary(u32),
-        SweepJointRegion(u32),
-        SweepHandoff {
-            nominated_p: u16,
-            joint_union: u32,
-        },
-        SweepNomination {
-            nominated_p: u16,
-            selected_joint: u32,
-        },
-        SweepDirectionalHandoff {
-            direction: u8,
-            member_mask: u32,
-            region_class: u8,
-        },
         StageBReproduction(u8),
         StageBTerminal {
             fragment: u8,
@@ -2749,7 +2470,6 @@ mod tests {
             available: u8,
         },
         IntegralTerminal(u8),
-        OuterInconclusive,
         SelftestResult {
             oid: u8,
             stage: u8,
@@ -3056,34 +2776,6 @@ mod tests {
             });
         }
 
-        fn foci_velocity_sweep_plan_limits(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocitySweepPlanLimits,
-        ) {
-            self.events.push(Event::SweepPlan(report.fragment));
-        }
-
-        fn foci_velocity_sweep_plan_geometry(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocitySweepPlanGeometry,
-        ) {
-            self.events.push(Event::SweepPlan(report.fragment));
-        }
-
-        fn foci_velocity_sweep_plan_timing(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocitySweepPlanTiming,
-        ) {
-            self.events.push(Event::SweepPlan(report.fragment));
-        }
-
-        fn foci_velocity_sweep_plan_recovery(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocitySweepPlanRecovery,
-        ) {
-            self.events.push(Event::SweepPlanRecovery);
-        }
-
         fn foci_rung_origin_recovery_summary(
             &mut self,
             report: crate::ankyra::replies::FociRungOriginRecoverySummary,
@@ -3105,193 +2797,6 @@ mod tests {
             _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
         ) {
             self.events.push(Event::PrimitiveCurrent);
-        }
-
-        fn foci_velocity_observation_core(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityObservationCore,
-        ) {
-            self.events.push(Event::SweepObservation(report.fragment));
-        }
-
-        fn foci_velocity_observation_rate(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityObservationRate,
-        ) {
-            self.events.push(Event::SweepObservation(report.fragment));
-        }
-
-        fn foci_velocity_observation_stationarity(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityObservationStationarity,
-        ) {
-            self.events.push(Event::SweepObservation(report.fragment));
-        }
-
-        fn foci_velocity_observation_disturbance(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityObservationDisturbance,
-        ) {
-            self.events.push(Event::SweepObservation(report.fragment));
-        }
-
-        fn foci_velocity_rung_consensus_core(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityRungConsensusCore,
-        ) {
-            self.events.push(Event::SweepRung(ConsensusEvent::Core {
-                fragment: report.fragment,
-                classes: [report.forward_class, report.reverse_class],
-                collected: [report.forward_collected_mask, report.reverse_collected_mask],
-                eligible: [report.forward_eligible_mask, report.reverse_eligible_mask],
-                included: [report.forward_included_mask, report.reverse_included_mask],
-                components: [
-                    report.forward_component_count,
-                    report.reverse_component_count,
-                ],
-                operable: [report.forward_operable_count, report.reverse_operable_count],
-                flags: report.flags,
-            }));
-        }
-
-        fn foci_velocity_rung_consensus_component(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityRungConsensusComponent,
-        ) {
-            self.events
-                .push(Event::SweepRung(ConsensusEvent::Component {
-                    fragment: report.fragment,
-                    direction: report.direction,
-                    index: report.component_index,
-                    bounds: [report.low_q16, report.high_q16],
-                }));
-        }
-
-        fn foci_velocity_rung_consensus_pool(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityRungConsensusPool,
-        ) {
-            self.events.push(Event::SweepRung(ConsensusEvent::Pool {
-                fragment: report.fragment,
-                direction: report.direction,
-                point: report.pooled_q16,
-                interval: [report.pooled_low_q16, report.pooled_high_q16],
-                variance_floor: report.variance_floor_observations,
-                rates: [
-                    report.mean_min_mantissa,
-                    report.mean_max_mantissa,
-                    report.envelope_low_mantissa,
-                    report.envelope_high_mantissa,
-                ],
-                rate_shift: report.rate_shift,
-            }));
-        }
-
-        fn foci_velocity_structured_boundary(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityStructuredBoundary,
-        ) {
-            self.events.push(Event::SweepStructuredBoundary);
-        }
-
-        fn foci_velocity_directional_region_core(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityDirectionalRegionCore,
-        ) {
-            self.events
-                .push(Event::SweepDirectionalRegionCore(report.member_mask));
-        }
-
-        fn foci_velocity_directional_region_model(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityDirectionalRegionModel,
-        ) {
-            self.events
-                .push(Event::SweepDirectionalRegionModel(report.member_mask));
-        }
-
-        fn foci_velocity_directional_region_rates(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityDirectionalRegionRates,
-        ) {
-            self.events
-                .push(Event::SweepDirectionalRegionRates(report.member_mask));
-        }
-
-        fn foci_velocity_directional_region_boundary(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityDirectionalRegionBoundary,
-        ) {
-            self.events
-                .push(Event::SweepDirectionalRegionBoundary(report.member_mask));
-        }
-
-        fn foci_velocity_joint_region(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityJointRegion,
-        ) {
-            self.events
-                .push(Event::SweepJointRegion(report.member_mask));
-        }
-
-        fn foci_velocity_stage_b_handoff_core(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBHandoffCore,
-        ) {
-            self.events.push(Event::SweepHandoff {
-                nominated_p: report.nominated_p,
-                joint_union: report.joint_member_mask,
-            });
-        }
-
-        fn foci_velocity_stage_b_nomination(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBNomination,
-        ) {
-            self.events.push(Event::SweepNomination {
-                nominated_p: report.nominated_p,
-                selected_joint: report.selected_joint_mask,
-            });
-        }
-
-        fn foci_velocity_stage_b_directional_handoff(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBDirectionalHandoff,
-        ) {
-            self.events.push(Event::SweepDirectionalHandoff {
-                direction: report.direction,
-                member_mask: report.member_mask,
-                region_class: report.region_class,
-            });
-        }
-
-        fn foci_velocity_stage_b_reproduction_core(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityStageBReproductionCore,
-        ) {
-            self.events.push(Event::StageBReproduction(0));
-        }
-
-        fn foci_velocity_stage_b_reproduction_membership(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityStageBReproductionMembership,
-        ) {
-            self.events.push(Event::StageBReproduction(1));
-        }
-
-        fn foci_velocity_stage_b_reproduction_interval(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionInterval,
-        ) {
-            self.events
-                .push(Event::StageBReproduction(report.direction + 2));
-        }
-
-        fn foci_velocity_stage_b_reproduction_digest(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityStageBReproductionDigest,
-        ) {
-            self.events.push(Event::StageBReproduction(4));
         }
 
         fn foci_velocity_stage_b_reproduction_v4_core(
@@ -3552,13 +3057,6 @@ mod tests {
             report: crate::ankyra::replies::FociVelocityIntegralTerminalTiming,
         ) {
             self.events.push(Event::IntegralTerminal(report.fragment));
-        }
-
-        fn foci_outer_inconclusive(
-            &mut self,
-            _report: crate::ankyra::replies::FociOuterInconclusive,
-        ) {
-            self.events.push(Event::OuterInconclusive);
         }
 
         fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult) {
