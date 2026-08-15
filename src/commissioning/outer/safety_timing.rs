@@ -16,6 +16,11 @@ const OVER_BOUND_BIT: u32 = 1 << 29;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum OuterSafetyTimingStage {
     /// Proportional-gain sweep.
+    ///
+    /// Only the velocity-integral stage accumulates per-phase safety timing on
+    /// the production path; this variant is constructed solely by the
+    /// trace/test decode side (`from_packed`).
+    #[cfg(any(test, feature = "trace"))]
     Proportional = 0,
     /// Velocity-integral response sweep.
     Integral = 1,
@@ -46,6 +51,7 @@ pub(crate) enum OuterSafetyTimingPhase {
 }
 
 impl OuterSafetyTimingPhase {
+    #[cfg(any(test, feature = "trace"))]
     fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Setup),
@@ -106,6 +112,7 @@ impl OuterSafetyTimingContext {
             | (u16::from(self.target_zero) << 14)
     }
 
+    #[cfg(any(test, feature = "trace"))]
     fn from_packed(value: u16) -> Option<Self> {
         let phase = OuterSafetyTimingPhase::from_u8((value & 0x0f) as u8)?;
         let stage = match (value >> 4) & 1 {
@@ -124,6 +131,7 @@ impl OuterSafetyTimingContext {
 }
 
 /// Decoded command-lifetime timing evidence emitted after all internal motion.
+#[cfg(any(test, feature = "trace"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct OuterSafetyTimingSummary {
     /// Count of all realized inter-sample gaps.
@@ -191,6 +199,7 @@ impl OuterSafetyTimingAccumulator {
     }
 
     /// Decode the exact timing summary without consuming it.
+    #[cfg(any(test, feature = "trace"))]
     pub(crate) fn summary(&self) -> OuterSafetyTimingSummary {
         let bin_counts = [
             self.bin_count(0),
@@ -215,6 +224,7 @@ impl OuterSafetyTimingAccumulator {
     }
 
     /// Clear all timing evidence before the storage returns to legacy sequence use.
+    #[cfg(any(test, feature = "trace"))]
     pub(crate) fn clear(&mut self) {
         self.words = [0; 4];
     }
@@ -241,6 +251,7 @@ impl OuterSafetyTimingAccumulator {
             | (((self.words[2] >> 19) & 0x3f) << 26)
     }
 
+    #[cfg(any(test, feature = "trace"))]
     fn packed_context(&self) -> u16 {
         let low = (self.words[2] >> 25) & 0x7f;
         let high = (self.words[3] >> 19) & 0xff;

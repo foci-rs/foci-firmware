@@ -70,6 +70,7 @@ use super::sweep_plan::{
 };
 
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
+#[cfg(feature = "trace")]
 const SETTLE_TRACE_STROKE_MARKER: u16 = 1 << 15;
 const INTEGRAL_CAUSE_NONE: u8 = 0;
 const INTEGRAL_CAUSE_TOO_FEW_RUNGS: u8 = 1;

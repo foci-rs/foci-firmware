@@ -18,21 +18,25 @@ use foci_tmc4671::pid::PidPGain;
 
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
 use crate::commissioning::types::{
-    AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationObservation,
-    BandConfirmationPlanned, BandConfirmationTerminal, BreakawayCampaignTerminal,
-    BreakawayDiscoveryRungMargin, BreakawayProbeDecision, BreakawayProbePlanned,
-    BreakawayProbeResolved, BreakawayProbeTerminal, BreakawayRawObservation,
-    BreakawayRungZeroDiagnostic,
+    AdditiveDiscoveryPlanned, AdditiveDiscoveryTerminal, BandConfirmationPlanned,
+    BandConfirmationTerminal, BreakawayCampaignTerminal, BreakawayDiscoveryRungMargin,
+    BreakawayProbeDecision, BreakawayProbePlanned, BreakawayProbeResolved, BreakawayProbeTerminal,
+    BreakawayRawObservation, BreakawayRungZeroDiagnostic,
 };
+// Consumed only by the raw-emission `confirmation_observation_report`, which is
+// gated to the trace/test builds; keep its inputs on the same feature.
+#[cfg(any(test, feature = "trace"))]
+use crate::commissioning::types::BandConfirmationObservation;
 
 use super::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION;
 
 use super::band_confirmation::{
     BandConfirmationFailureCause, BandConfirmationPlan, CONFIRMATION_BAND_LOWER_PERCENT,
     CONFIRMATION_BAND_UPPER_PERCENT, CONFIRMATION_FAMILY_SIZE, ConfirmationDirectionalInput,
-    DiscoveryObservationAtom, DiscoveryRungNominationBounds, NominatedConfirmationCandidate,
-    observation_interval_percent, observation_statistic,
+    DiscoveryRungNominationBounds, NominatedConfirmationCandidate, observation_statistic,
 };
+#[cfg(any(test, feature = "trace"))]
+use super::band_confirmation::{DiscoveryObservationAtom, observation_interval_percent};
 use super::breakaway_campaign::{
     AdditiveDiscoveryOutcome, BandConfirmationOutcome, BreakawayProbeOutcome, CollectedObservation,
 };
@@ -763,6 +767,10 @@ pub(crate) fn confirmation_plan_report(
 /// judged. Returns `None` when the observation's mean is zero, wrong-signed,
 /// or otherwise not representable as a candidate response (the same
 /// condition that fails acceptance with `ResponseLocation`).
+///
+/// Raw-emission only: its sole non-test caller is the `trace`-gated
+/// `emit_breakaway_campaign_trace`, so it is kept on the raw-emission feature.
+#[cfg(any(test, feature = "trace"))]
 pub(crate) fn confirmation_observation_report(
     plan_digest: u64,
     slot_index: u8,
