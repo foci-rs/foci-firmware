@@ -446,8 +446,8 @@ pub enum AutotuneAction {
     ///
     /// This is the production `Tune` path: a non-trace build routes the request
     /// through the breakaway/Stage-C/acceptance engine just like a trace build.
-    /// The `trace-velocity-sweep` feature adds only the raw evidence emission on
-    /// top of the same campaign, not the campaign itself.
+    /// The `trace` feature adds only the raw evidence emission on top of the
+    /// same campaign, not the campaign itself.
     BreakawaySeeded = 7,
     /// Re-run Stage C against retained firmware authority.
     ///
@@ -1456,11 +1456,8 @@ mod tests {
         );
         assert_eq!(AutotuneAction::from_u8(9), None);
         assert_eq!(AutotuneAction::StageCResume as u8, 8);
-        #[cfg(feature = "trace-velocity-sweep")]
-        {
-            assert_eq!(AutotuneAction::StageCResume.matrix_order(), None);
-            assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
-        }
+        assert_eq!(AutotuneAction::StageCResume.matrix_order(), None);
+        assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
         // Retained authority does not carry the acquisition's slot order, so a
         // resume reconstructs at the default. Every surviving action only ever
         // selects `ForwardFirst`, so the reconstruction is exact, not merely a

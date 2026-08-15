@@ -3442,7 +3442,6 @@ mod velocity_sweep_reply_tests {
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
-    #[cfg(feature = "trace-velocity-sweep")]
     use crate::commissioning::outer::velocity::acceptance_reporting::{
         ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES, ACCEPTANCE_TERMINAL_REPLY_BYTES,
     };
@@ -3469,7 +3468,6 @@ mod velocity_sweep_reply_tests {
     }
 
     #[test]
-    #[cfg(feature = "trace-velocity-sweep")]
     fn acceptance_matrix_replies_fit_one_protocol_frame() {
         assert_fits(
             &FociAcceptanceMatrixPlan {

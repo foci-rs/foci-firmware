@@ -10,13 +10,13 @@
 // pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
 pub mod acceptance;
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 mod acceptance_tests;
 pub mod post_actions;
 pub mod replies;
 mod restore;
 pub mod stage_c;
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 mod stage_c_tests;
 #[cfg(test)]
 pub(crate) mod test_support;

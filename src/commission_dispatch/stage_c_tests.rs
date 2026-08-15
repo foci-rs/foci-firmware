@@ -760,7 +760,6 @@ fn stage_c_terminal_causes_reserve_recovery_and_lifecycle_values() {
     assert_eq!(super::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH, 7);
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[fixture_test]
 async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
     crate::state::tmc::reset_all_tmc_channels();
@@ -825,7 +824,6 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
     ));
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[fixture_test]
 async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
     crate::state::tmc::reset_all_tmc_channels();
@@ -979,28 +977,34 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         };
         assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
         assert_eq!(terminal.rest_boundary_slot_plus_one, 6);
-        assert_eq!(
-            backend
+        // Raw FTRC canonical-record content and emission order are a `trace`-only
+        // diagnostic concern; the dispatch/terminal assertions above already cover
+        // this path in the default build.
+        #[cfg(feature = "trace")]
+        {
+            assert_eq!(
+                backend
+                    .velocity_sweep_trace_records
+                    .iter()
+                    .filter(|record| record.as_bytes()[0] == 5)
+                    .count(),
+                1
+            );
+            let terminal_record = backend
                 .velocity_sweep_trace_records
                 .iter()
-                .filter(|record| record.as_bytes()[0] == 5)
-                .count(),
-            1
-        );
-        let terminal_record = backend
-            .velocity_sweep_trace_records
-            .iter()
-            .find(|record| record.as_bytes()[0] == 4)
-            .unwrap();
-        assert_eq!(
-            &terminal_record.as_bytes()[15..23],
-            terminal.digest.to_le_bytes()
-        );
-        assert!(
-            backend
-                .trace_emission_order
-                .windows(3)
-                .any(|window| window == [30, 144, 4])
-        );
+                .find(|record| record.as_bytes()[0] == 4)
+                .unwrap();
+            assert_eq!(
+                &terminal_record.as_bytes()[15..23],
+                terminal.digest.to_le_bytes()
+            );
+            assert!(
+                backend
+                    .trace_emission_order
+                    .windows(3)
+                    .any(|window| window == [30, 144, 4])
+            );
+        }
     });
 }

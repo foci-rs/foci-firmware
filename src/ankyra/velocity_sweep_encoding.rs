@@ -192,7 +192,7 @@ pub(crate) fn encode_velocity_primitive_current_evidence(
     record
 }
 
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(all(test, feature = "trace"))]
 mod outer_safety_timing_record_tests {
     use super::encode_outer_safety_timing_record;
     use crate::commissioning::outer::{
@@ -236,7 +236,7 @@ mod outer_safety_timing_record_tests {
     }
 }
 
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 mod velocity_primitive_current_record_tests {
     use super::encode_velocity_primitive_current_evidence;
     use crate::commissioning::types::VelocityPrimitiveCurrentEvidence;

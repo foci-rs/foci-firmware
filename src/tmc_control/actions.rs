@@ -174,7 +174,6 @@ pub enum ScheduledCommissionTickAction {
     },
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 // This routing enum still carries the pre-existing terminal reply so the board
 // can preserve stop-trace -> stepper action -> reply ordering. Keep it at the
 // compact size; continuation evidence must never add a second

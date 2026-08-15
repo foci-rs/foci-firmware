@@ -1024,7 +1024,7 @@ impl CommissioningEngine {
         Some(record)
     }
 
-    #[cfg(all(test, feature = "trace-velocity-sweep"))]
+    #[cfg(test)]
     pub(crate) fn set_stage_c_rest_boundary_for_test(
         &mut self,
         boundary: crate::commissioning::outer::PositiveIRestBoundary,
@@ -1805,71 +1805,63 @@ mod tests {
         // Outer safety retains independent local and asymmetric absolute travel
         // bounds in the largest engine variant.
         //
-        // 3_840 -> 5_744: un-gates `OuterPhase::VelocityIntegral`
-        // and `OuterPhase::BreakawayCampaign` -- previously trace-velocity-sweep-
-        // only, now the same largest-variant payload compiled in every build --
-        // so the default build's `CommissioningEngine` now matches the
-        // `trace-velocity-sweep` value below exactly.
-        #[cfg(not(feature = "trace-velocity-sweep"))]
+        // 3_840 -> 5_744: un-gated `OuterPhase::VelocityIntegral`
+        // and `OuterPhase::BreakawayCampaign` -- previously gated behind the
+        // acceptance-matrix-only feature that was later removed -- so the
+        // immutable plan and engine-owned cooperative analysis state below are
+        // now compiled into every build and this is the sole size assertion.
+        // Resumable partial-block analysis reaches, but does not raise, the
+        // audited F407 ceiling.
+        assert_eq!(size_of::<TraceRunState>(), 12);
+        assert_eq!(size_of::<TraceSummarySeqs>(), 16);
+        // 2_960 -> 2_944: removes the `combined_workflow`
+        // bool from the embedded execution plan (only the retired live
+        // combined P-then-I workflow ever set it); the `AcceptanceSource`
+        // discriminator added earlier stays.
+        assert_eq!(
+            size_of::<crate::commissioning::outer::VelocityIntegralData>(),
+            2_944
+        );
+        assert!(
+            size_of::<crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan>(
+            ) == 32
+        );
+        assert_eq!(
+            size_of::<
+                crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime,
+            >(),
+            352
+        );
+        // 224 before observations carried the rejection diagnostic, 256 before
+        // that diagnostic also carried the slope and its half-width, 272 before
+        // the diagnostic also carried the regression span. These events are
+        // transient, built and encoded on the stack, so this does not grow
+        // retained commissioning state. Frame budgets are checked by parity.
+        assert_eq!(
+            size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
+            288
+        );
+        assert_eq!(
+            size_of::<crate::commissioning::types::AcceptanceMatrixEvent>(),
+            288
+        );
+        assert_eq!(
+            size_of::<crate::commissioning::types::RestSelectionDiagnostic>(),
+            80
+        );
+        assert_eq!(
+            size_of::<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>(),
+            129
+        );
+        assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
+        // The breakaway campaign is the largest outer payload: its
+        // probe/discovery/confirmation state machine and borrowed workspace
+        // outweigh the classic VelocitySweep variant. Exact, so retained
+        // engine state cannot grow unnoticed; the audited F407 ceiling is
+        // the `<= 6_144` bound below.
+        // 5_760 -> 5_744: removes the `combined_workflow`
+        // bool from the embedded Stage-C execution plan.
         assert_eq!(size_of::<CommissioningEngine>(), 5_744);
-        // The feature-on immutable plan and engine-owned cooperative analysis
-        // state make VelocitySweep the largest outer payload. Resumable
-        // partial-block analysis reaches, but does not raise, the audited F407
-        // ceiling.
-        #[cfg(feature = "trace-velocity-sweep")]
-        {
-            assert_eq!(size_of::<TraceRunState>(), 12);
-            assert_eq!(size_of::<TraceSummarySeqs>(), 16);
-            // 2_960 -> 2_944: removes the `combined_workflow`
-            // bool from the embedded execution plan (only the retired live
-            // combined P-then-I workflow ever set it); the `AcceptanceSource`
-            // discriminator added earlier stays.
-            assert_eq!(
-                size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-                2_944
-            );
-            assert!(
-                size_of::<
-                    crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan,
-                >() == 32
-            );
-            assert_eq!(
-                size_of::<
-                    crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime,
-                >(),
-                352
-            );
-            // 224 before observations carried the rejection diagnostic, 256 before
-            // that diagnostic also carried the slope and its half-width, 272 before
-            // the diagnostic also carried the regression span. These events are
-            // transient, built and encoded on the stack, so this does not grow
-            // retained commissioning state. Frame budgets are checked by parity.
-            assert_eq!(
-                size_of::<crate::commissioning::types::VelocityIntegralEvent>(),
-                288
-            );
-            assert_eq!(
-                size_of::<crate::commissioning::types::AcceptanceMatrixEvent>(),
-                288
-            );
-            assert_eq!(
-                size_of::<crate::commissioning::types::RestSelectionDiagnostic>(),
-                80
-            );
-            assert_eq!(
-                size_of::<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>(),
-                129
-            );
-            assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
-            // The breakaway campaign is the largest outer payload: its
-            // probe/discovery/confirmation state machine and borrowed workspace
-            // outweigh the classic VelocitySweep variant. Exact, so retained
-            // engine state cannot grow unnoticed; the audited F407 ceiling is
-            // the `<= 6_144` bound below.
-            // 5_760 -> 5_744: removes the `combined_workflow`
-            // bool from the embedded Stage-C execution plan.
-            assert_eq!(size_of::<CommissioningEngine>(), 5_744);
-        }
         assert!(size_of::<CommissioningEngine>() <= 5_776);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);
@@ -2344,7 +2336,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     fn breakaway_safety_engine() -> CommissioningEngine {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
         use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
@@ -2373,7 +2364,6 @@ mod tests {
         .expect("valid safety configuration")
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     fn backend_has_register_write(
         backend: &crate::commission_dispatch::test_support::MockBackend,
     ) -> bool {
@@ -2383,7 +2373,6 @@ mod tests {
             .any(|operation| matches!(operation, SpiOp::Write(_, _)))
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn breakaway_planning_rejects_zero_encoder_resolution_before_motion() {
         use crate::autotune::TmcMechanicalRpm;
@@ -2410,7 +2399,6 @@ mod tests {
         assert!(matches!(result, Err(CommissionError::CampaignPlanInvalid)));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     fn breakaway_safety_constructor_rejects_velocity_envelope_overflow() {
         use crate::autotune::TmcMechanicalRpm;
@@ -2446,7 +2434,6 @@ mod tests {
         assert!(matches!(result, Err(CommissionError::InvalidSchedule)));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn breakaway_safety_is_configured_and_armed_before_the_first_gain_write() {
         use crate::commissioning::outer::velocity::breakaway_campaign::{
@@ -2509,7 +2496,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     async fn assert_breakaway_safety_context_change_fails_before_write(
         change_backend: impl FnOnce(&mut crate::commission_dispatch::test_support::MockBackend),
     ) {
@@ -2539,7 +2525,6 @@ mod tests {
         panic!("changed breakaway context must terminate with PlanContractChanged");
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn breakaway_safety_rejects_changed_encoder_resolution_before_write() {
         pollster::block_on(assert_breakaway_safety_context_change_fails_before_write(
@@ -2547,7 +2532,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn breakaway_safety_rejects_changed_current_limit_before_write() {
         pollster::block_on(assert_breakaway_safety_context_change_fails_before_write(
@@ -2555,7 +2539,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     fn breakaway_command_enters_the_campaign_and_reports_its_torque_limit() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
@@ -2613,7 +2596,7 @@ mod tests {
     /// and confirms `emit_trace_after_step` is no longer a no-op for
     /// `StepResult::BreakawayCampaignEvent`: both the canonical detail record
     /// and the lightweight marker land on the `MockBackend`.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     #[fixture_test]
     async fn a_live_campaign_emits_its_probe_plan_onto_the_ftrc_trace_stream() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
@@ -2797,7 +2780,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     #[test]
     fn complete_stage_c_uses_dedicated_terminal_and_complete_events() {
         use crate::commissioning::outer::velocity::integral_evidence::{
@@ -2871,7 +2854,7 @@ mod tests {
     /// `commission_dispatch::replies` tests): build an exact Stage-C plan
     /// directly through `plan_velocity_integral_response`, then hand it to
     /// [`CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight`].
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     fn stage_c_engine_at_rest_boundary_for_test() -> (
         CommissioningEngine,
         crate::commissioning::types::VelocityIntegralTerminal,
@@ -3022,14 +3005,14 @@ mod tests {
     /// The Stage-C rest-boundary digest fold happens inside
     /// `attach_stage_c_rest_boundary` itself, before any board sink ever sees
     /// the record. Whether the sink then records the boundary event or drops
-    /// it (as the newly always-compiled `record_velocity_sweep_trace_record`
-    /// no-op default does outside a `trace` build) cannot retroactively change
-    /// `terminal.digest`. `MockBackend` overrides the sink under
-    /// `trace-velocity-sweep` (see `commission_dispatch::test_support`), so
-    /// this exercises the real sink rather than the no-op default itself; the
-    /// no-op default's compile-time availability is covered by the plain
-    /// (non-trace) `cargo test` run instead.
-    #[cfg(feature = "trace-velocity-sweep")]
+    /// it (as the always-compiled `record_velocity_sweep_trace_record` no-op
+    /// default does outside a `trace` build) cannot retroactively change
+    /// `terminal.digest`. `MockBackend` overrides the sink under `trace` (see
+    /// `commission_dispatch::test_support`), so this exercises the real sink
+    /// rather than the no-op default itself; the no-op default's compile-time
+    /// availability is covered by the plain (non-trace) `cargo test` run
+    /// instead.
+    #[cfg(feature = "trace")]
     #[fixture_test]
     async fn stage_c_terminal_digest_is_independent_of_emission_sink() {
         let (engine, mut terminal, boundary) = stage_c_engine_at_rest_boundary_for_test();

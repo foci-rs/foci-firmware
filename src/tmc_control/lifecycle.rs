@@ -210,7 +210,6 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "trace-velocity-sweep")]
     use crate::commission_dispatch::test_support::breakaway_campaign_engine;
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
     use foci_firmware_macros::fixture_test;
@@ -563,7 +562,6 @@ mod tests {
         assert!(!runtime.is_motor_enabled());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     fn shutdown_breakaway_cancellation_completes_after_safe_state() {
         use core::sync::atomic::Ordering;
@@ -620,7 +618,6 @@ mod tests {
         assert!(!runtime.is_commission_active());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn shutdown_breakaway_cancellation_restore_failure_stays_active() {
         let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);

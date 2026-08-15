@@ -1062,15 +1062,16 @@ mod tests {
         assert_eq!(integrity.digest(), 0xabbe_8f32_faa4_a140);
     }
 
-    /// Proves the production Stage-C digest path is live without
-    /// `trace-velocity-sweep`: this module now un-gates in the default build,
-    /// so `VelocityIntegralIntegrity::record` and
-    /// the canonical-record encoders it calls run identically in both
-    /// configurations. The baseline was captured by running this exact
-    /// construction once under `--features trace-velocity-sweep`; since the
-    /// digest path no longer has any `trace-velocity-sweep`-only code left in
-    /// it, the two builds are expected to agree by construction, and this
-    /// test is the regression guard for that agreement.
+    /// Proves the production Stage-C digest path is live in the default
+    /// build: this module now un-gates in the default build, so
+    /// `VelocityIntegralIntegrity::record` and the
+    /// canonical-record encoders it calls run identically whether or not the
+    /// raw-trace `trace` feature is enabled. The baseline was captured by
+    /// running this exact construction once under the acceptance-matrix
+    /// feature that has since been removed; since the digest path no longer
+    /// has any feature-only code left in it, the two builds are expected to
+    /// agree by construction, and this test is the regression guard for that
+    /// agreement.
     #[test]
     fn production_stage_c_digest_matches_trace_baseline() {
         use crate::commissioning::types::{VelocityIntegralEvent, VelocityIntegralPlanned};

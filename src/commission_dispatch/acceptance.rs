@@ -325,7 +325,7 @@ pub fn failed_acceptance_matrix_terminal(
     }
 }
 
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 pub(crate) fn test_acceptance_point(
     request: VelocitySweepRequest,
     progress: AcceptanceMatrixProgress,

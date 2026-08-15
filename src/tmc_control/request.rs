@@ -1338,7 +1338,6 @@ fn selftest_failure_payload(oid: u8, status: u8) -> ReplyPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "trace-velocity-sweep")]
     use crate::commissioning::outer::velocity::integral_plan::StageCAcquisition;
     use core::sync::atomic::Ordering::Relaxed;
 
@@ -1347,7 +1346,6 @@ mod tests {
 
     use crate::autotune::CommissionProfile;
     use crate::calibration::CalibrationError;
-    #[cfg(feature = "trace-velocity-sweep")]
     use crate::commission_dispatch::test_support::breakaway_campaign_engine;
     use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::types::{AdcCalResult, EngineKind};
@@ -1424,7 +1422,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     fn trace_request_future_size_stays_bounded() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
@@ -1463,7 +1460,7 @@ mod tests {
         register_result: Result<(), crate::tmc_control::dispatch::RegisterRequestError>,
         arm_result: Result<(), CommissionError>,
         replies: std::vec::Vec<ReplyPayload>,
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace")]
         velocity_sweep_records:
             std::vec::Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>,
         busy_diagnostic_requests: std::vec::Vec<TmcRequest>,
@@ -1496,7 +1493,7 @@ mod tests {
                 register_result: Ok(()),
                 arm_result: Ok(()),
                 replies: std::vec::Vec::new(),
-                #[cfg(feature = "trace-velocity-sweep")]
+                #[cfg(feature = "trace")]
                 velocity_sweep_records: std::vec::Vec::new(),
                 busy_diagnostic_requests: std::vec::Vec::new(),
                 diagnostic_calls: 0,
@@ -1582,7 +1579,7 @@ mod tests {
             self.replies.push(payload);
         }
 
-        #[cfg(feature = "trace-velocity-sweep")]
+        #[cfg(feature = "trace")]
         fn record_velocity_sweep_trace_record(
             &mut self,
             record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
@@ -1671,7 +1668,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     fn retained_stage_c_authority()
     -> crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary {
         use crate::commissioning::outer::velocity::integral_reproduction::{
@@ -1741,7 +1737,6 @@ mod tests {
         request
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     fn velocity_sweep_request()
     -> crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
         let TmcRequestKind::Tune {
@@ -2354,7 +2349,6 @@ mod tests {
         assert!(runtime.is_commission_active());
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn breakaway_breadcrumb_begins_when_workflow_is_installed() {
         use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
@@ -2401,7 +2395,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn encoder_not_ready_tune_fails_as_commission_phase_not_velocity_sweep_terminal() {
         // Reach the Stage-B preflight with the encoder domain unestablished:
@@ -2439,7 +2432,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn matrix_request_without_acceptance_point_fails_without_motion_writes() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
@@ -2476,6 +2468,7 @@ mod tests {
             AcceptanceMatrixCause::MissingAcceptancePoint
         );
         assert!(!runtime.is_commission_active());
+        #[cfg(feature = "trace")]
         assert_eq!(board.velocity_sweep_records.len(), 1);
         let spi = tmc.into_inner();
         assert!(spi.write_attempts.iter().all(|(addr, _)| {
@@ -2485,7 +2478,6 @@ mod tests {
         }));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn admitted_matrix_discloses_exact_plan_before_engine_execution() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
@@ -2534,6 +2526,7 @@ mod tests {
             panic!("matrix plan must be disclosed before execution")
         };
         assert_eq!(plan.target_rpm, [16, 33, 66, 132, 263]);
+        #[cfg(feature = "trace")]
         assert_eq!(board.velocity_sweep_records.len(), 3);
         assert!(runtime.is_commission_active());
         assert_eq!(
@@ -2543,7 +2536,6 @@ mod tests {
     }
 
     /// Build the exact Stage-C plan a resume of `velocity_sweep_request` reproduces.
-    #[cfg(feature = "trace-velocity-sweep")]
     fn resumable_stage_c_plan()
     -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
         use crate::commissioning::outer::OuterMotionBudget;
@@ -2593,7 +2585,6 @@ mod tests {
         .expect("valid Stage-C plan")
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn admitted_resume_discloses_exact_plan_before_engine_execution() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
@@ -2640,6 +2631,7 @@ mod tests {
             panic!("exact Stage-C plan must be disclosed before execution")
         };
         assert_eq!(disclosed, plan);
+        #[cfg(feature = "trace")]
         assert_eq!(board.velocity_sweep_records.len(), 3);
         assert!(runtime.is_commission_active());
         assert_eq!(
@@ -2650,7 +2642,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn resume_plan_mismatch_names_the_retained_plan_without_motion_writes() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
@@ -2714,7 +2705,6 @@ mod tests {
         }));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn resume_of_an_unplannable_request_still_names_the_retained_plan() {
         use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
@@ -2774,7 +2764,6 @@ mod tests {
         assert_eq!(stage_c.authority(), Some(retained));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn matrix_order_mismatch_preserves_point_without_motion() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
@@ -2821,7 +2810,6 @@ mod tests {
         }));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[fixture_test]
     async fn same_channel_explicit_calibration_preserves_stage_c_authority() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
@@ -3112,7 +3100,6 @@ mod tests {
         assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn explicit_disable_breakaway_cancellation_completes_after_disarm() {
         let _guard =

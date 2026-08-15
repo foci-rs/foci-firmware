@@ -1117,7 +1117,6 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 /// token against a freshly planned Stage-B digest and refused every resume,
 /// which made the `CompleteCandidate` to `Complete` promotion unreachable for
 /// the only campaign that produces candidates.
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn retained_breakaway_authority_regenerates_its_exact_plan() {
     use crate::commission_dispatch::stage_c::{
@@ -1171,7 +1170,6 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
 /// context hashes the retained PWM and encoder values again, so it still
 /// matches the retained identity even when the live configuration has moved.
 /// Execution then does its target-rate math against the stale resolution.
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn a_resume_under_changed_physical_context_is_refused() {
     use crate::commission_dispatch::stage_c::{
@@ -1217,7 +1215,6 @@ fn a_resume_under_changed_physical_context_is_refused() {
     );
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
     use crate::commission_dispatch::stage_c::{

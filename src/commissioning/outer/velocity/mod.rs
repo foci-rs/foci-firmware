@@ -14,9 +14,9 @@ pub mod breakaway_plan;
 pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
 // breakaway_trace_reporting is the raw FTRC trace-record encoder for the
-// breakaway campaign; kept on `trace` (not `trace-velocity-sweep`) per
-// the general rule that trace-only encoders stay gated, so it survives the eventual removal of
-// trace-velocity-sweep.
+// breakaway campaign; kept on `trace` per the established general rule,
+// which now applies uniformly since Task 12 removed the old
+// acceptance-matrix-only trace feature.
 #[cfg(feature = "trace")]
 pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;

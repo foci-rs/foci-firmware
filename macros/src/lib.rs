@@ -17,8 +17,8 @@ use syn::{ItemFn, parse_macro_input};
 /// Works on both plain `fn` tests (wrapped with `SHARED_STATE_MUTEX.blocking_lock()`)
 /// and `async fn` tests (driven with `pollster::block_on`, guarded with
 /// `SHARED_STATE_MUTEX.lock().await`). Any attributes already on the function,
-/// such as `#[cfg(feature = "trace-velocity-sweep")]`, are preserved ahead of
-/// the generated `#[test]`.
+/// such as `#[cfg(feature = "trace")]`, are preserved ahead of the generated
+/// `#[test]`.
 #[proc_macro_attribute]
 pub fn fixture_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);

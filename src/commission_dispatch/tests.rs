@@ -431,7 +431,6 @@ impl CommissionReplySink for ReplyRecorder {
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn emit_breakaway_probe_plan_splits_the_digest_into_low_and_high_words() {
     use crate::commission_dispatch::replies::emit_breakaway_probe_plan;
@@ -470,7 +469,6 @@ fn emit_breakaway_probe_plan_splits_the_digest_into_low_and_high_words() {
     );
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn emit_breakaway_probe_result_forwards_resolved_rung() {
     use crate::commission_dispatch::replies::emit_breakaway_probe_result;
@@ -502,7 +500,6 @@ fn emit_breakaway_probe_result_forwards_resolved_rung() {
     );
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn emit_additive_discovery_plan_emits_identity_then_geometry_fragments() {
     use crate::commission_dispatch::replies::emit_additive_discovery_plan;
@@ -549,7 +546,6 @@ fn emit_additive_discovery_plan_emits_identity_then_geometry_fragments() {
     );
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn emit_band_confirmation_terminal_emits_identity_then_masks_fragments() {
     use crate::commission_dispatch::replies::emit_band_confirmation_terminal;
@@ -600,7 +596,6 @@ fn emit_band_confirmation_terminal_emits_identity_then_masks_fragments() {
     );
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn emit_breakaway_campaign_terminal_splits_the_stage_c_digest() {
     use crate::commission_dispatch::replies::emit_breakaway_campaign_terminal;
@@ -2208,7 +2203,6 @@ fn outer_failed_restore_rejects_monotonic_creep() {
 /// dispatch owns the disarm. On the engine's `OuterFailed` terminal the safety
 /// fault de-energizes the motor and produces the outer-failure reply namespace,
 /// never a Stage-C / velocity-integral continuation.
-#[cfg(feature = "trace-velocity-sweep")]
 #[fixture_test]
 async fn breakaway_campaign_safety_failure_disarms_without_reaching_stage_c() {
     use core::sync::atomic::Ordering::Relaxed;
@@ -2293,7 +2287,6 @@ async fn outer_failed_during_velocity_workflow_runs_velocity_aware_restore() {
 /// A scheduler-generated outer failure may interrupt a still-active campaign.
 /// Simulate reset immediately after completion becomes visible: safe workflow
 /// restoration must already be done, while engine removal must not happen yet.
-#[cfg(feature = "trace-velocity-sweep")]
 #[fixture_test]
 fn outer_failed_breakaway_cancellation_completes_after_safe_restore() {
     use core::sync::atomic::Ordering::Relaxed;
@@ -2339,7 +2332,6 @@ fn outer_failed_breakaway_cancellation_completes_after_safe_restore() {
 
 /// A failed velocity-limit restoration consumes the terminal engine but keeps
 /// its active breadcrumb so the next boot reports the incomplete safe exit.
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
     pollster::block_on(async {
@@ -2377,8 +2369,9 @@ fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
 /// Build a representative Stage-C terminal for the downgrade-guard test below.
 ///
 /// Field values mirror the fixture `replies.rs`'s own dispatch tests already
-/// build for the same struct; this promotes that pattern out from behind
-/// `trace-velocity-sweep` rather than inventing new evidence.
+/// build for the same struct; this promotes that pattern out from behind the
+/// now-removed acceptance-matrix-only feature flag rather than inventing new
+/// evidence.
 fn sample_velocity_integral_terminal_for_test()
 -> crate::commissioning::types::VelocityIntegralTerminal {
     use crate::commissioning::outer::velocity::integral_evidence::{
@@ -2418,10 +2411,10 @@ fn sample_velocity_integral_terminal_for_test()
 
 /// A Stage-C terminal must not fall through to the generic `TuneResult` reply.
 ///
-/// A disabled-feature stub arm for `StepResult::VelocityIntegralTerminal`
-/// downgraded every
-/// production autotune terminal to a zero-filled `TuneResult`, discarding the
-/// real Stage-C evidence. This test pins the dedicated reply in the default
+/// A disabled-feature stub arm for
+/// `StepResult::VelocityIntegralTerminal` downgraded every production
+/// autotune terminal to a zero-filled `TuneResult`, discarding the real
+/// Stage-C evidence. This test pins the dedicated reply in the default
 /// build.
 #[fixture_test]
 async fn velocity_integral_terminal_is_not_downgraded_to_tune_result() {

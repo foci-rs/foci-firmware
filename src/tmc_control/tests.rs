@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commission_dispatch::test_support::breakaway_campaign_engine;
 use crate::commission_dispatch::test_support::{
     MockBackend, accepted_commission_result, current_limit,
@@ -1987,7 +1986,6 @@ fn take_commission_engine_is_none_when_idle() {
     assert!(!runtime.is_commission_active());
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn raw_take_preserves_breakaway_cancellation_interrupted_state() {
     let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
@@ -2008,7 +2006,6 @@ fn raw_take_preserves_breakaway_cancellation_interrupted_state() {
     );
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn non_breakaway_handled_stop_preserves_completed_stage_c_breadcrumb() {
     let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();

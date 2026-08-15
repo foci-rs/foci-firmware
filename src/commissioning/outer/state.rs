@@ -457,7 +457,6 @@ pub(crate) struct MechanicalIdData {
     pub(crate) sample_timestamp_len: u16,
 }
 
-#[cfg_attr(feature = "trace-velocity-sweep", allow(dead_code))]
 impl MechanicalIdData {
     pub(crate) fn new(torque_step: u16) -> Self {
         Self {
