@@ -1449,7 +1449,6 @@ fn stage_b_preflight_failure_payload(
             run_completed_us: 0,
             safety_fault: None,
         },
-        reproduction: None,
     }
 }
 

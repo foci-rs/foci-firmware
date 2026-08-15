@@ -327,8 +327,6 @@ pub enum ReplyPayload {
     VelocitySweepTerminal {
         oid: u8,
         terminal: VelocitySweepTerminal,
-        #[cfg(feature = "trace-velocity-sweep")]
-        reproduction: Option<stage_b::StageBReproductionReport>,
     },
     /// Complete exact Stage-C plan emitted before direct-resume motion.
     #[cfg(feature = "trace-velocity-sweep")]

@@ -136,48 +136,6 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit the schema-8 Stage B reproduction outcome and selected component.
-    fn foci_velocity_stage_b_reproduction_v4_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Core,
-    ) {
-    }
-
-    /// Emit one schema-8 membership or joint-union comparison.
-    fn foci_velocity_stage_b_reproduction_v4_membership(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Membership,
-    ) {
-    }
-
-    /// Emit one schema-8 pooled-interval comparison.
-    fn foci_velocity_stage_b_reproduction_v4_pooled(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Pooled,
-    ) {
-    }
-
-    /// Emit one schema-8 common-interval comparison.
-    fn foci_velocity_stage_b_reproduction_v4_common(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Common,
-    ) {
-    }
-
-    /// Emit one schema-8 selected-component-relative coverage result.
-    fn foci_velocity_stage_b_reproduction_v4_coverage(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Coverage,
-    ) {
-    }
-
-    /// Emit exact schema-8 Stage B reproduction digest inputs.
-    fn foci_velocity_stage_b_reproduction_v4_digest(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Digest,
-    ) {
-    }
-
     /// Emit the Stage B terminal class and completeness fragment.
     fn foci_velocity_stage_b_terminal_core(
         &mut self,
@@ -1539,112 +1497,6 @@ fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
-fn emit_velocity_stage_b_reproduction<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: crate::commission_dispatch::stage_b::StageBReproductionReport,
-) {
-    let delta = report.delta;
-    sink.foci_velocity_stage_b_reproduction_v4_core(
-        crate::ankyra::replies::FociVelocityStageBReproductionV4Core {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            outcome: report.outcome,
-            reason_mask: delta.reason_mask,
-            previous_provisional_p: delta.previous_provisional_p,
-            current_provisional_p: delta.current_provisional_p,
-            final_p: delta.final_p,
-            selected_joint_mask: delta.selected_joint.member_mask,
-            selected_first_rung: delta.selected_joint.first_rung,
-            selected_member_count: delta.selected_joint.member_count,
-            forward_validity: delta.directional_validity[0] as u8,
-            reverse_validity: delta.directional_validity[1] as u8,
-            reduced_margin: u8::from(delta.reduced_margin),
-            schema_revision:
-                crate::commissioning::outer::velocity::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION,
-        },
-    );
-    for (object, membership) in delta.memberships.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v4_membership(
-            crate::ankyra::replies::FociVelocityStageBReproductionV4Membership {
-                oid,
-                run_sequence: report.run_sequence,
-                evidence_sequence: report.evidence_sequence,
-                object: object as u8,
-                previous_mask: membership.previous,
-                current_mask: membership.current,
-                core_mask: membership.core,
-                previous_only_mask: membership.previous_only,
-                current_only_mask: membership.current_only,
-                low_delta: i32::from(membership.low_delta),
-                high_delta: i32::from(membership.high_delta),
-            },
-        );
-    }
-    for (direction, interval) in delta.intervals.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v4_pooled(
-            crate::ankyra::replies::FociVelocityStageBReproductionV4Pooled {
-                oid,
-                run_sequence: report.run_sequence,
-                evidence_sequence: report.evidence_sequence,
-                direction: direction as u8,
-                previous_low_q16: interval.previous_pooled[0],
-                previous_high_q16: interval.previous_pooled[1],
-                current_low_q16: interval.current_pooled[0],
-                current_high_q16: interval.current_pooled[1],
-                overlap_low_q16: interval.pooled_overlap[0],
-                overlap_high_q16: interval.pooled_overlap[1],
-            },
-        );
-    }
-    for (direction, interval) in delta.intervals.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v4_common(
-            crate::ankyra::replies::FociVelocityStageBReproductionV4Common {
-                oid,
-                run_sequence: report.run_sequence,
-                evidence_sequence: report.evidence_sequence,
-                direction: direction as u8,
-                previous_low_q16: interval.previous_common[0],
-                previous_high_q16: interval.previous_common[1],
-                current_low_q16: interval.current_common[0],
-                current_high_q16: interval.current_common[1],
-                conservative_low_q16: interval.conservative_common[0],
-                conservative_high_q16: interval.conservative_common[1],
-                nonempty: u8::from(interval.conservative_common_nonempty),
-            },
-        );
-    }
-    for (direction, coverage) in delta.coverage.into_iter().enumerate() {
-        sink.foci_velocity_stage_b_reproduction_v4_coverage(
-            crate::ankyra::replies::FociVelocityStageBReproductionV4Coverage {
-                oid,
-                run_sequence: report.run_sequence,
-                evidence_sequence: report.evidence_sequence,
-                direction: direction as u8,
-                coverage: crate::commissioning::outer::velocity::sweep_evidence::coverage_kind_code(
-                    coverage.kind,
-                ),
-                signed_rung_distance: i32::from(coverage.signed_rung_distance),
-                gain_ratio_num: coverage.gain_ratio_num,
-                gain_ratio_den: coverage.gain_ratio_den,
-            },
-        );
-    }
-    sink.foci_velocity_stage_b_reproduction_v4_digest(
-        crate::ankyra::replies::FociVelocityStageBReproductionV4Digest {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            previous_digest_low: delta.previous_run_digest as u32,
-            previous_digest_high: (delta.previous_run_digest >> 32) as u32,
-            current_digest_low: delta.current_run_digest as u32,
-            current_digest_high: (delta.current_run_digest >> 32) as u32,
-        },
-    );
-}
-
 /// Emit all Klipper replies represented by one terminal commissioning payload.
 pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyPayload) {
     match payload {
@@ -1725,18 +1577,9 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             }
             sink.foci_selftest_done(oid, done_status);
         }
-        ReplyPayload::VelocitySweepTerminal {
-            oid,
-            terminal,
-            #[cfg(feature = "trace-velocity-sweep")]
-            reproduction,
-        } => {
+        ReplyPayload::VelocitySweepTerminal { oid, terminal } => {
             if let Some(fault) = terminal.safety_fault {
                 sink.foci_outer_safety_fault(oid, fault);
-            }
-            #[cfg(feature = "trace-velocity-sweep")]
-            if let Some(report) = reproduction {
-                emit_velocity_stage_b_reproduction(sink, oid, report);
             }
             emit_velocity_sweep_terminal_fragments(sink, oid, terminal);
         }
@@ -2443,7 +2286,6 @@ mod tests {
             velocity_counts_per_ms: i32,
             velocity_cap_counts_per_ms: i32,
         },
-        StageBReproduction(u8),
         StageBTerminal {
             fragment: u8,
             evidence_sequence: u16,
@@ -2797,52 +2639,6 @@ mod tests {
             _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
         ) {
             self.events.push(Event::PrimitiveCurrent);
-        }
-
-        fn foci_velocity_stage_b_reproduction_v4_core(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Core,
-        ) {
-            self.events.push(Event::StageBReproduction(10));
-        }
-
-        fn foci_velocity_stage_b_reproduction_v4_membership(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Membership,
-        ) {
-            self.events
-                .push(Event::StageBReproduction(11 + report.object));
-        }
-
-        fn foci_velocity_stage_b_reproduction_v4_pooled(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Pooled,
-        ) {
-            self.events
-                .push(Event::StageBReproduction(14 + report.direction));
-        }
-
-        fn foci_velocity_stage_b_reproduction_v4_common(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Common,
-        ) {
-            self.events
-                .push(Event::StageBReproduction(16 + report.direction));
-        }
-
-        fn foci_velocity_stage_b_reproduction_v4_coverage(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBReproductionV4Coverage,
-        ) {
-            self.events
-                .push(Event::StageBReproduction(18 + report.direction));
-        }
-
-        fn foci_velocity_stage_b_reproduction_v4_digest(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityStageBReproductionV4Digest,
-        ) {
-            self.events.push(Event::StageBReproduction(20));
         }
 
         fn foci_velocity_stage_b_terminal_core(
@@ -4249,144 +4045,6 @@ mod tests {
 
     #[cfg(feature = "trace-velocity-sweep")]
     #[test]
-    fn reproduction_group_emits_before_the_authoritative_terminal() {
-        use crate::commission_dispatch::stage_b::StageBReproductionReport;
-        use crate::commissioning::outer::velocity::operating_region::CoverageKind;
-        use crate::commissioning::outer::velocity::reproduction::{
-            StageBCoreCoverage, StageBDirectionalValidity, StageBIntervalComparison,
-            StageBMembershipComparison, StageBReproductionDelta, StageBSelectedJointComponent,
-        };
-        use crate::commissioning::types::VelocitySweepOutcome;
-
-        let terminal = VelocitySweepTerminal {
-            run_sequence: 8,
-            evidence_sequence: 13,
-            plan_digest: 0x1111_2222_3333_4444,
-            outcome: VelocitySweepOutcome::Complete,
-            cause: 0,
-            recovery_unavailable: false,
-            model_direction_mask: 3,
-            selected_memberships: [0b11100; 3],
-            nominated_p: 724,
-            selected_intervals: [[10, 20], [-20, -10]],
-            selected_common_intervals: [[12, 18], [-18, -12]],
-            p_start: 256,
-            p_top: 1_024,
-            rung_count: 5,
-            coverage_mask: 3,
-            directional_region_counts: [1, 1],
-            directional_fragment_counts: [0, 0],
-            expected_observations: 20,
-            emitted_observations: 20,
-            expected_rungs: 5,
-            emitted_rungs: 5,
-            digest: 0x0123_4567_89ab_cdef,
-            run_started_us: 1_000,
-            run_completed_us: 2_000,
-            safety_fault: None,
-        };
-        let reproduction = StageBReproductionReport {
-            run_sequence: 8,
-            evidence_sequence: 12,
-            outcome: 1,
-            delta: StageBReproductionDelta {
-                memberships: [StageBMembershipComparison {
-                    previous: 0b11100,
-                    current: 0b11100,
-                    core: 0b11100,
-                    previous_only: 0,
-                    current_only: 0,
-                    low_delta: 0,
-                    high_delta: 0,
-                }; 3],
-                intervals: [
-                    StageBIntervalComparison {
-                        previous_pooled: [9, 19],
-                        current_pooled: [10, 20],
-                        pooled_overlap: [10, 19],
-                        previous_common: [11, 18],
-                        current_common: [12, 18],
-                        conservative_common: [12, 18],
-                        conservative_common_nonempty: true,
-                    },
-                    StageBIntervalComparison {
-                        previous_pooled: [-21, -11],
-                        current_pooled: [-20, -10],
-                        pooled_overlap: [-20, -11],
-                        previous_common: [-19, -12],
-                        current_common: [-18, -12],
-                        conservative_common: [-18, -12],
-                        conservative_common_nonempty: true,
-                    },
-                ],
-                selected_joint: StageBSelectedJointComponent {
-                    member_mask: 0b11100,
-                    first_rung: 2,
-                    member_count: 3,
-                },
-                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
-                previous_provisional_p: 724,
-                current_provisional_p: 724,
-                final_p: 724,
-                coverage: [StageBCoreCoverage {
-                    kind: CoverageKind::FullCoverage,
-                    signed_rung_distance: 0,
-                    gain_ratio_num: 1,
-                    gain_ratio_den: 1,
-                }; 2],
-                reduced_margin: false,
-                reason_mask: 0,
-                previous_run_digest: 1,
-                current_run_digest: 2,
-            },
-        };
-        let mut sink = RecordingSink::default();
-
-        emit_terminal_reply(
-            &mut sink,
-            ReplyPayload::VelocitySweepTerminal {
-                oid: 3,
-                terminal,
-                reproduction: Some(reproduction),
-            },
-        );
-
-        assert_eq!(
-            sink.events,
-            [
-                Event::StageBReproduction(10),
-                Event::StageBReproduction(11),
-                Event::StageBReproduction(12),
-                Event::StageBReproduction(13),
-                Event::StageBReproduction(14),
-                Event::StageBReproduction(15),
-                Event::StageBReproduction(16),
-                Event::StageBReproduction(17),
-                Event::StageBReproduction(18),
-                Event::StageBReproduction(19),
-                Event::StageBReproduction(20),
-                Event::StageBTerminal {
-                    fragment: 0,
-                    evidence_sequence: 13,
-                },
-                Event::StageBTerminal {
-                    fragment: 1,
-                    evidence_sequence: 13,
-                },
-                Event::StageBTerminal {
-                    fragment: 2,
-                    evidence_sequence: 13,
-                },
-                Event::StageBTerminal {
-                    fragment: 3,
-                    evidence_sequence: 13,
-                },
-            ]
-        );
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
     fn sweep_terminal_order_separates_fault_and_inconclusive_paths() {
         use crate::commissioning::types::VelocitySweepOutcome;
         let safety_fault = OuterSafetyFault {
@@ -4436,11 +4094,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
-            ReplyPayload::VelocitySweepTerminal {
-                oid: 3,
-                terminal,
-                reproduction: None,
-            },
+            ReplyPayload::VelocitySweepTerminal { oid: 3, terminal },
         );
 
         assert!(matches!(sink.events[0], Event::OuterSafetyFault { .. }));
@@ -4477,11 +4131,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
-            ReplyPayload::VelocitySweepTerminal {
-                oid: 3,
-                terminal,
-                reproduction: None,
-            },
+            ReplyPayload::VelocitySweepTerminal { oid: 3, terminal },
         );
         assert_eq!(
             sink.events,
