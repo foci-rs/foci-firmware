@@ -4,7 +4,6 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::CommissioningEngine;
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::schedule::CommissionEvent;
 use crate::commissioning::schedule::{CommissionPoll, CommissionTerminal, adapt_step_result};
 use crate::commissioning::types::{CommissioningBackend, EngineKind};
@@ -125,7 +124,6 @@ pub struct TmcControlRuntime {
 }
 
 impl TmcControlRuntime {
-    #[cfg(feature = "trace-velocity-sweep")]
     fn retain_stage_c_authority_from_event(
         channel: u8,
         event: &Option<CommissionEvent>,
@@ -544,7 +542,6 @@ impl TmcControlRuntime {
     }
 
     /// Dispatch a terminal commissioning result into the board-facing action.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub async fn drive_commissioning_terminal_with_stages<B, E>(
         &mut self,
         result: CommissionTerminal,
@@ -570,7 +567,6 @@ impl TmcControlRuntime {
             &mut self.motor_enabled,
             &mut self.stored_gains,
         );
-        #[cfg(feature = "trace-velocity-sweep")]
         let outcome = match result {
             CommissionTerminal::VelocityIntegral(terminal) => {
                 crate::commission_dispatch::drive_velocity_integral_terminal_with_stages(
@@ -606,6 +602,7 @@ impl TmcControlRuntime {
             | CommissionTerminal::SelftestDone
             | CommissionTerminal::CommissionDone(_)) => {
                 let other = other.into_step_result();
+                #[cfg(feature = "trace")]
                 crate::commission_dispatch::emit_outer_safety_timing_before_failure(
                     &other,
                     &mut self.commission_engine,
@@ -620,18 +617,6 @@ impl TmcControlRuntime {
                 )
                 .await
             }
-        };
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        let outcome = {
-            let _ = retention;
-            crate::commission_dispatch::drive_commission_result(
-                result.into_step_result(),
-                &mut self.commission_engine,
-                backend,
-                &mut dispatch,
-                config.tmc.pwm_maxcnt,
-            )
-            .await
         };
         match outcome {
             crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
@@ -649,7 +634,6 @@ impl TmcControlRuntime {
     }
 
     /// Convert an explicit poll into the board-facing scheduled action.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub async fn drive_commissioning_poll_with_stages<B, E>(
         &mut self,
         poll: CommissionPoll,
@@ -697,8 +681,9 @@ impl TmcControlRuntime {
 
     /// Dispatch a terminal with temporary empty Stage-C retention.
     ///
-    /// Board integration switches to [`Self::drive_commissioning_terminal_with_stages`]
-    /// when its persistent Stage-C task-local is added.
+    /// Delegates to [`Self::drive_commissioning_terminal_with_stages`] with a
+    /// throwaway Stage-C candidate slot, for callers that do not carry a
+    /// persistent cross-call retention context.
     pub async fn drive_commissioning_terminal<B>(
         &mut self,
         result: CommissionTerminal,
@@ -710,60 +695,28 @@ impl TmcControlRuntime {
     where
         B: CommissioningBackend,
     {
-        #[cfg(feature = "trace-velocity-sweep")]
-        {
-            let mut stage_c_candidate =
+        let mut stage_c_candidate =
             crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
             );
-            return self
-                .drive_commissioning_terminal_with_stages(
-                    result,
-                    backend,
-                    crate::commission_dispatch::CommissionTerminalContext::new(
-                        &mut stage_c_candidate,
-                        |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
-                    ),
-                    tmc,
-                    stepper,
-                    config,
-                )
-                .await;
-        }
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        {
-            self.commission_engine.as_ref()?;
-            let mut dispatch = crate::commission_dispatch::DispatchState::new(
-                tmc,
-                stepper,
-                &mut self.calibrated,
-                &mut self.motor_enabled,
-                &mut self.stored_gains,
-            );
-            let outcome = crate::commission_dispatch::drive_commission_result(
-                result.into_step_result(),
-                &mut self.commission_engine,
-                backend,
-                &mut dispatch,
-                config.tmc.pwm_maxcnt,
-            )
-            .await;
-            match outcome {
-                crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
-                    Some(ScheduledCommissionTickAction::Terminal { reply, actions })
-                }
-                crate::commission_dispatch::CommissionOutcome::Continue
-                | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. }
-                | crate::commission_dispatch::CommissionOutcome::Evidence { .. } => {
-                    unreachable!("terminal poll produced a nonterminal dispatch action")
-                }
-            }
-        }
+        self.drive_commissioning_terminal_with_stages(
+            result,
+            backend,
+            crate::commission_dispatch::CommissionTerminalContext::new(
+                &mut stage_c_candidate,
+                |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
+            ),
+            tmc,
+            stepper,
+            config,
+        )
+        .await
     }
 
     /// Dispatch one poll with temporary empty Stage-C retention.
     ///
-    /// Board integration switches to [`Self::drive_commissioning_poll_with_stages`]
-    /// when its persistent Stage-C task-local is added.
+    /// Delegates to [`Self::drive_commissioning_poll_with_stages`] with a
+    /// throwaway Stage-C candidate slot, for callers that do not carry a
+    /// persistent cross-call retention context.
     pub async fn drive_commissioning_poll<B>(
         &mut self,
         poll: CommissionPoll,
@@ -775,42 +728,21 @@ impl TmcControlRuntime {
     where
         B: CommissioningBackend,
     {
-        #[cfg(feature = "trace-velocity-sweep")]
-        {
-            let mut stage_c_candidate =
+        let mut stage_c_candidate =
             crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
             );
-            return self
-                .drive_commissioning_poll_with_stages(
-                    poll,
-                    backend,
-                    crate::commission_dispatch::CommissionTerminalContext::new(
-                        &mut stage_c_candidate,
-                        |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
-                    ),
-                    tmc,
-                    stepper,
-                    config,
-                )
-                .await;
-        }
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        match poll {
-            CommissionPoll::ReadyNow { event } => {
-                self.classify_commission_poll(CommissionPoll::ReadyNow { event })
-            }
-            CommissionPoll::At {
-                timestamp_us,
-                event,
-            } => self.classify_commission_poll(CommissionPoll::At {
-                timestamp_us,
-                event,
-            }),
-            CommissionPoll::Terminal { result } => {
-                self.drive_commissioning_terminal(result, backend, tmc, stepper, config)
-                    .await
-            }
-        }
+        self.drive_commissioning_poll_with_stages(
+            poll,
+            backend,
+            crate::commission_dispatch::CommissionTerminalContext::new(
+                &mut stage_c_candidate,
+                |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
+            ),
+            tmc,
+            stepper,
+            config,
+        )
+        .await
     }
 
     /// Prepare an enable request up to the point where SPI or backend work begins.
