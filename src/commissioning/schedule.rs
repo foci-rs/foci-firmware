@@ -33,7 +33,6 @@ pub enum CommissionEvent {
     /// runs on -- has no way to turn campaign evidence into a Klipper reply, so
     /// the host's campaign assembler never completes and refuses every later
     /// Stage-C reply.
-    #[cfg(feature = "trace-velocity-sweep")]
     BreakawayCampaign {
         /// Object id of the commissioning channel.
         oid: u8,
@@ -50,7 +49,6 @@ pub enum CommissionEvent {
     /// `commission_dispatch`'s continuation reply instead; a breakaway campaign
     /// reaches Stage C on the scheduled-tick path, which only speaks
     /// [`CommissionEvent`], so it needs this route.
-    #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralPlan {
         /// Object id of the commissioning channel.
         oid: u8,
@@ -198,15 +196,6 @@ pub fn adapt_step_result(
             result: CommissionTerminal::VelocityIntegral(result),
         }),
         StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
-        // Un-gating the `StepResult` variant definitions lets the
-        // evidence/encoding layer build in production; the campaign engine
-        // that produces these results stays trace-gated, so no
-        // non-trace build can reach these stubs today. A later change replaces them.
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        StepResult::BreakawayCampaignEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        StepResult::BreakawayStageCPlanReady { .. } => Ok(CommissionPoll::ReadyNow { event: None }),
-        #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayCampaignEvent(event) => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
             Ok(CommissionPoll::ReadyNow {
@@ -218,7 +207,6 @@ pub fn adapt_step_result(
         // bare `ReadyNow` here drops it, and the host then fails its first
         // Stage-C observation with "integral-response evidence arrived before
         // exact plan".
-        #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
             Ok(CommissionPoll::ReadyNow {
@@ -267,7 +255,6 @@ mod tests {
     /// arriving "before an accepted campaign terminal". The scheduled tick is
     /// the only path a cooperative campaign runs on, so this is the sole route
     /// its evidence has.
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn breakaway_campaign_evidence_reaches_the_host() {
         use crate::commissioning::types::{BreakawayCampaignEvent, BreakawayProbeTerminal};

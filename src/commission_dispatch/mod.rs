@@ -9,14 +9,12 @@
 
 // pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
-#[cfg(feature = "trace-velocity-sweep")]
 pub mod acceptance;
 #[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod acceptance_tests;
 pub mod post_actions;
 pub mod replies;
 mod restore;
-#[cfg(feature = "trace-velocity-sweep")]
 pub mod stage_c;
 #[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod stage_c_tests;
@@ -59,13 +57,11 @@ pub struct DispatchState<'a> {
 }
 
 /// Mutable board-wide evidence retention passed through one dispatch call.
-#[cfg(feature = "trace-velocity-sweep")]
 pub struct CommissionRetention<'a> {
     pub stage_c:
         &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl<'a> CommissionRetention<'a> {
     /// Borrow the Stage-C RAM slot as one lifecycle context.
     pub fn new(
@@ -76,7 +72,6 @@ impl<'a> CommissionRetention<'a> {
 }
 
 /// Stage-retention and immediate evidence emission for one terminal dispatch.
-#[cfg(feature = "trace-velocity-sweep")]
 pub struct CommissionTerminalContext<'a, E> {
     /// Mutable Stage-C retained evidence for this dispatch.
     pub retention: CommissionRetention<'a>,
@@ -84,7 +79,6 @@ pub struct CommissionTerminalContext<'a, E> {
     pub emit_evidence: E,
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl<'a, E> CommissionTerminalContext<'a, E> {
     /// Borrow the retained Stage-C slot and bind the board's reply emitter.
     pub fn new(
@@ -274,7 +268,6 @@ fn record_restore_summary<B: CommissioningBackend>(
 #[allow(clippy::large_enum_variant)]
 pub enum ReplyPayload {
     /// Command-level motion shape and conservative host-timeout authority.
-    #[cfg(feature = "trace-velocity-sweep")]
     CommissioningWorkflowPlan {
         oid: u8,
         plan: crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan,
@@ -317,20 +310,17 @@ pub enum ReplyPayload {
         done_status: u8,
     },
     /// Complete exact Stage-C plan emitted before direct-resume motion.
-    #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralPlan {
         oid: u8,
         run_sequence: u32,
         plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     },
     /// One streamed Stage-C observation or rung event.
-    #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralEvent {
         oid: u8,
         event: crate::commissioning::types::VelocityIntegralEvent,
     },
     /// Dedicated detailed Stage-C terminal and optional comparison.
-    #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralTerminal {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
@@ -345,33 +335,28 @@ pub enum ReplyPayload {
     /// derives leading fragments from run evidence. A refusal has no run, so
     /// those fragments would describe motion that never happened, and the host
     /// reads anything ahead of the terminal as evidence preceding its plan.
-    #[cfg(feature = "trace-velocity-sweep")]
     VelocityIntegralRefusal {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
     },
     /// Complete immutable fixed-I confidence-matrix plan disclosed before motion.
-    #[cfg(feature = "trace-velocity-sweep")]
     AcceptanceMatrixPlan {
         oid: u8,
         run_sequence: u32,
         plan: crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixPlan,
     },
     /// Compact firmware-authored fixed-I confidence-matrix terminal.
-    #[cfg(feature = "trace-velocity-sweep")]
     AcceptanceMatrixTerminal {
         oid: u8,
         terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
     },
     /// One streamed breakaway-campaign plan, terminal, or evidence bundle.
-    #[cfg(feature = "trace-velocity-sweep")]
     BreakawayCampaignEvent {
         oid: u8,
         event: crate::commissioning::types::BreakawayCampaignEvent,
     },
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 // Reply values cross nested async commissioning dispatch. Bound their inline
 // size so a future evidence field cannot recreate the F407 startup reset.
 const _: () = assert!(core::mem::size_of::<ReplyPayload>() <= 1_400);
@@ -457,7 +442,6 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
     calibration_error.status_code()
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 async fn disarm_velocity_workflow<B: CommissioningBackend>(
     engine: &mut Option<CommissioningEngine>,
     backend: &mut B,
@@ -514,7 +498,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 engine_kind: engine_ref.kind(),
             }
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         StepResult::VelocityIntegralEvent(event) => {
             let engine_ref = engine
                 .as_ref()
@@ -526,7 +509,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         StepResult::VelocityIntegralTerminal(mut terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
@@ -534,7 +516,10 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .as_ref()
                 .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
             {
+                #[cfg(feature = "trace")]
                 backend.record_velocity_sweep_trace_record(record);
+                #[cfg(not(feature = "trace"))]
+                let _ = record;
             }
             if !disarm_velocity_workflow(engine, backend, state).await {
                 terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
@@ -560,40 +545,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        StepResult::VelocityIntegralEvent(_) => CommissionOutcome::Continue,
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        StepResult::VelocityIntegralTerminal(terminal) => {
-            use core::sync::atomic::Ordering::Relaxed;
-
-            let consumed = engine
-                .take()
-                .expect("engine slot is None on VelocityIntegralTerminal");
-            let oid = consumed.oid();
-            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-            state.tmc.commission_in_flight.store(false, Relaxed);
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::TuneResult {
-                    oid,
-                    status: terminal.cause,
-                    result: zero_outer_result(),
-                    safety_fault: terminal.safety_fault,
-                },
-                actions: PostActions {
-                    stop_trace: true,
-                    stepper: StepperPostAction::Stop,
-                },
-            }
-        }
         StepResult::AcceptanceMatrixEvent(_) => CommissionOutcome::Continue,
-        // Un-gating the `StepResult` variant definitions lets the
-        // evidence/encoding layer build in production; the campaign engine
-        // that produces these results stays trace-gated, so no
-        // non-trace build can reach this arm today. A later change replaces this stub
-        // with real dispatch once the campaign engine un-gates.
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        StepResult::BreakawayCampaignEvent(_) => CommissionOutcome::Continue,
-        #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayCampaignEvent(event) => {
             let engine_ref = engine
                 .as_ref()
@@ -605,18 +557,12 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // See the `BreakawayCampaignEvent` stub above: the campaign engine
-        // stays trace-gated until Task 5, so this stub is unreachable in the
-        // non-trace build until then. Task 6 replaces it.
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        StepResult::BreakawayStageCPlanReady { .. } => CommissionOutcome::Continue,
         // A breakaway campaign normally reaches Stage C on the scheduled-tick
         // path, where `adapt_step_result` carries the plan out as a
         // `CommissionEvent`. This arm covers the request-driven path so the
         // plan is reported either way. Trace records are not emitted here: the
         // engine's own trace hook already emits them for this result, and doing
         // it twice would duplicate the plan on the wire.
-        #[cfg(feature = "trace-velocity-sweep")]
         StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
             let engine_ref = engine
                 .as_ref()
@@ -629,7 +575,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         StepResult::AcceptanceMatrixTerminal(terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
@@ -641,29 +586,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             state.tmc.commission_in_flight.store(false, Relaxed);
             CommissionOutcome::Terminal {
                 reply: ReplyPayload::AcceptanceMatrixTerminal { oid, terminal },
-                actions: PostActions {
-                    stop_trace: true,
-                    stepper: StepperPostAction::Stop,
-                },
-            }
-        }
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        StepResult::AcceptanceMatrixTerminal(terminal) => {
-            use core::sync::atomic::Ordering::Relaxed;
-
-            let consumed = engine
-                .take()
-                .expect("engine slot is None on AcceptanceMatrixTerminal");
-            let oid = consumed.oid();
-            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-            state.tmc.commission_in_flight.store(false, Relaxed);
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::TuneResult {
-                    oid,
-                    status: terminal.cause as u8,
-                    result: zero_outer_result(),
-                    safety_fault: terminal.safety_fault,
-                },
                 actions: PostActions {
                     stop_trace: true,
                     stepper: StepperPostAction::Stop,
@@ -1272,7 +1194,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 }
 
 /// Dispatch one Stage-C terminal while applying its retained-evidence lifecycle.
-#[cfg(feature = "trace-velocity-sweep")]
 pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
     mut terminal: crate::commissioning::types::VelocityIntegralTerminal,
     engine: &mut Option<CommissioningEngine>,
@@ -1286,7 +1207,10 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         .as_ref()
         .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
     {
+        #[cfg(feature = "trace")]
         backend.record_velocity_sweep_trace_record(record);
+        #[cfg(not(feature = "trace"))]
+        let _ = record;
     }
     // Captured before disarm can tear the phase down. `Some` only for a
     // breakaway run, so it doubles as the `acceptance_source == Breakaway`
@@ -1338,6 +1262,7 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
             }
         }
     }
+    #[cfg(feature = "trace")]
     engine
         .as_mut()
         .expect("engine slot is None on VelocityIntegralTerminal")
@@ -1368,7 +1293,6 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
 }
 
 /// Dispatch one Stage-B result while applying its retained-evidence lifecycle.
-#[cfg(feature = "trace-velocity-sweep")]
 pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     result: StepResult,
     engine: &mut Option<CommissioningEngine>,
@@ -1405,6 +1329,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     crate::commissioning::types::AcceptanceMatrixCause::EvidenceIntegrity;
                 terminal.safety_fault = None;
             }
+            #[cfg(feature = "trace")]
             engine
                 .as_mut()
                 .expect("engine slot is None on AcceptanceMatrixTerminal")

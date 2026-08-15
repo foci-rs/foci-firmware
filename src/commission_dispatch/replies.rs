@@ -5,7 +5,6 @@
 //! commissioning payloads to reply events so boards cannot drift by dropping
 //! fields locally.
 
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::ankyra::velocity_sweep_encoding::{
     encode_rate_values, upper_bound_i64, upper_bound_u128,
 };
@@ -414,7 +413,6 @@ pub trait CommissionReplySink {
 }
 
 /// Emit the command-level workflow envelope that precedes any Stage-B/C motion.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_commissioning_workflow_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -433,7 +431,6 @@ pub fn emit_commissioning_workflow_plan<S: CommissionReplySink>(
 }
 
 /// Emit the immutable breakaway-probe plan before the first probe stroke.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_probe_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -455,7 +452,6 @@ pub fn emit_breakaway_probe_plan<S: CommissionReplySink>(
 }
 
 /// Emit the resolved repeatable-motion rung.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_probe_result<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -475,7 +471,6 @@ pub fn emit_breakaway_probe_result<S: CommissionReplySink>(
 }
 
 /// Emit a probe-campaign terminal that did not resolve a breakaway.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_probe_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -494,7 +489,6 @@ pub fn emit_breakaway_probe_terminal<S: CommissionReplySink>(
 
 /// Emit the additive discovery plan before the first discovery stroke, split
 /// into its identity and geometry fragments.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_additive_discovery_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -531,7 +525,6 @@ pub fn emit_additive_discovery_plan<S: CommissionReplySink>(
 }
 
 /// Emit whether the additive ladder's rung zero itself showed motion.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_rung_zero_diagnostic<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -551,7 +544,6 @@ pub fn emit_breakaway_rung_zero_diagnostic<S: CommissionReplySink>(
 }
 
 /// Emit a discovery-campaign terminal.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_additive_discovery_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -576,7 +568,6 @@ pub fn emit_additive_discovery_terminal<S: CommissionReplySink>(
 
 /// Emit the immutable held-out confirmation plan before the first
 /// confirmation stroke.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_band_confirmation_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -602,7 +593,6 @@ pub fn emit_band_confirmation_plan<S: CommissionReplySink>(
 }
 
 /// Emit a confirmation-block terminal, split into its identity and mask fragments.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_band_confirmation_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -642,7 +632,6 @@ pub fn emit_band_confirmation_terminal<S: CommissionReplySink>(
 }
 
 /// Emit the canonical closure record for one complete breakaway campaign.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -665,7 +654,6 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
 /// in-band rung's margin, every resolved ladder rung, every fresh held-out
 /// stroke) the same way [`emit_acceptance_matrix_plan`] already loops one
 /// Rust value out to several wire fragments.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -738,7 +726,6 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
 
 /// Emit which `p_top` candidate bound the additive-discovery authority
 /// ceiling.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_breakaway_ceiling_source<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -755,7 +742,6 @@ pub fn emit_breakaway_ceiling_source<S: CommissionReplySink>(
 }
 
 /// Emit the single compact matrix-plan reply disclosed before motion.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_acceptance_matrix_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -779,7 +765,6 @@ pub fn emit_acceptance_matrix_plan<S: CommissionReplySink>(
 }
 
 /// Emit the single compact matrix terminal.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_acceptance_matrix_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -794,7 +779,6 @@ pub fn emit_acceptance_matrix_terminal<S: CommissionReplySink>(
 }
 
 /// Emit the complete exact Stage-C plan as bounded causal fragments.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -909,7 +893,6 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
 }
 
 /// Emit one Stage-C observation or rung group.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_velocity_integral_event<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -932,7 +915,6 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 fn emit_velocity_integral_observation<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -1032,7 +1014,6 @@ fn emit_velocity_integral_observation<S: CommissionReplySink>(
     sink.foci_velocity_integral_observation_quality(quality);
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 fn emit_velocity_integral_rung<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -1085,7 +1066,6 @@ fn emit_velocity_integral_rung<S: CommissionReplySink>(
 }
 
 /// Emit Stage-C derived evidence, optional reproduction, and terminal fragments.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -1332,7 +1312,6 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
 /// Split from [`emit_velocity_integral_terminal`] so a request refused before
 /// any exact plan can report its terminal without the derived evidence
 /// fragments, which would otherwise describe a run that never happened.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn emit_velocity_integral_terminal_fragments<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -1385,7 +1364,6 @@ pub fn emit_velocity_integral_terminal_fragments<S: CommissionReplySink>(
     });
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 fn emit_rung_origin_recovery<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -1486,42 +1464,34 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             }
             sink.foci_selftest_done(oid, done_status);
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::CommissioningWorkflowPlan { oid, plan } => {
             emit_commissioning_workflow_plan(sink, oid, plan);
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::VelocityIntegralPlan {
             oid,
             run_sequence,
             plan,
         } => emit_velocity_integral_plan(sink, oid, run_sequence, plan),
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::VelocityIntegralEvent { oid, event } => {
             emit_velocity_integral_event(sink, oid, event);
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::VelocityIntegralTerminal {
             oid,
             terminal,
             reproduction,
             authority,
         } => emit_velocity_integral_terminal(sink, oid, terminal, reproduction, authority),
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::VelocityIntegralRefusal { oid, terminal } => {
             emit_velocity_integral_terminal_fragments(sink, oid, terminal);
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::AcceptanceMatrixPlan {
             oid,
             run_sequence,
             plan,
         } => emit_acceptance_matrix_plan(sink, oid, run_sequence, plan),
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::AcceptanceMatrixTerminal { oid, terminal } => {
             emit_acceptance_matrix_terminal(sink, oid, terminal);
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::BreakawayCampaignEvent { oid, event } => {
             emit_breakaway_campaign_event(sink, oid, event);
         }
@@ -1951,7 +1921,6 @@ mod tests {
         SelftestResults, SelftestStageValue,
     };
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn wide_magnitude_encoding_rounds_outward_without_saturation() {
         for value in [0, u64::MAX as u128, u128::MAX] {
@@ -3912,7 +3881,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     fn velocity_integral_plan_fixture()
     -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
         use crate::commissioning::outer::OuterMotionBudget;
@@ -3975,7 +3943,6 @@ mod tests {
         .unwrap()
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn combined_velocity_flow_reuses_the_existing_reply_inventory() {
         let source = include_str!("replies.rs");
@@ -3994,7 +3961,6 @@ mod tests {
         assert!(!source.contains(concat!("fn foci_velocity_", "combined_")));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn velocity_integral_reply_emits_derived_evidence_before_dedicated_terminal() {
         use crate::commissioning::outer::velocity::integral_evidence::{
@@ -4063,7 +4029,6 @@ mod tests {
         assert_eq!(sink.integral_rest_boundary, Some([5, 6]));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn a_refused_stage_c_admission_emits_no_evidence_ahead_of_its_terminal() {
         // The ordinary terminal derives its leading fragments from run evidence.
@@ -4092,7 +4057,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn velocity_integral_reply_labels_unavailable_model_comparison() {
         use crate::commissioning::outer::velocity::integral_evidence::{

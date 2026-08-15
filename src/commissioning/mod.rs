@@ -26,10 +26,6 @@ use crate::commissioning::outer::{
     MechanicalIdData, MechanicalIdState, OuterMotionBudget, OuterPhase, OuterSafetyLimits,
     TraceSummarySeqs,
 };
-// Only referenced by name inside the two Stage-C/matrix preflight constructors
-// below, which stay trace-gated with their `commission_dispatch::stage_c` /
-// `commission_dispatch::acceptance` parameter types (Task 6/7).
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::{VelocityIntegralData, VelocityIntegralState};
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
@@ -678,13 +674,6 @@ impl CommissioningEngine {
     }
 
     /// Create a direct Stage-C resume engine from a preflighted exact plan.
-    ///
-    /// Stays trace-gated: its `StageCPreflight` parameter is defined in
-    /// `commission_dispatch::stage_c`, a module still gated on
-    /// `trace-velocity-sweep` pending Task 6/7's dispatch retained-evidence
-    /// wiring. Un-gating this constructor alone (without that module) cannot
-    /// compile, so it is deferred with its parameter type.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub fn new_outer_for_tmc_with_stage_c_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -711,13 +700,6 @@ impl CommissioningEngine {
     }
 
     /// Create one direct fixed-I matrix engine from an exact disclosed plan.
-    ///
-    /// Stays trace-gated: its `AcceptanceMatrixPreflight` parameter is defined
-    /// in `commission_dispatch::acceptance`, a module still gated on
-    /// `trace-velocity-sweep` pending Task 6/7's dispatch retained-evidence
-    /// wiring. Un-gating this constructor alone (without that module) cannot
-    /// compile, so it is deferred with its parameter type.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub fn new_outer_for_tmc_with_acceptance_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,

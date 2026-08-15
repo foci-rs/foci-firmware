@@ -2338,3 +2338,83 @@ fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
         );
     });
 }
+
+/// Build a representative Stage-C terminal for the downgrade-guard test below.
+///
+/// Field values mirror the fixture `replies.rs`'s own dispatch tests already
+/// build for the same struct; this promotes that pattern out from behind
+/// `trace-velocity-sweep` rather than inventing new evidence.
+fn sample_velocity_integral_terminal_for_test()
+-> crate::commissioning::types::VelocityIntegralTerminal {
+    use crate::commissioning::outer::velocity::integral_evidence::{
+        ExactRateInterval, IntegralRunEvidence,
+    };
+    use crate::commissioning::types::VelocityIntegralOutcome;
+
+    let evidence = IntegralRunEvidence::new([
+        ExactRateInterval::new(100, 120).unwrap(),
+        ExactRateInterval::new(-120, -100).unwrap(),
+    ]);
+    crate::commissioning::types::VelocityIntegralTerminal {
+        run_sequence: 18,
+        evidence_sequence: 57,
+        plan_digest: 0x1111_2222_3333_4444,
+        digest: 0x5555_6666_7777_8888,
+        outcome: VelocityIntegralOutcome::Inconclusive,
+        cause: 7,
+        breakaway_acceptance: false,
+        final_p: 0,
+        recovery_unavailable: false,
+        recovered_with_current_headroom: false,
+        recovery_quantization_exposed: false,
+        probe_constrained_test_point: false,
+        rest_boundary_rung_plus_one: 5,
+        rest_boundary_slot_plus_one: 6,
+        evidence,
+        expected_observations: 56,
+        emitted_observations: 56,
+        expected_rungs: 7,
+        emitted_rungs: 7,
+        run_started_us: 1_000,
+        run_completed_us: 2_000,
+        safety_fault: None,
+    }
+}
+
+/// A Stage-C terminal must not fall through to the generic `TuneResult` reply.
+///
+/// A disabled-feature stub arm for `StepResult::VelocityIntegralTerminal`
+/// downgraded every
+/// production autotune terminal to a zero-filled `TuneResult`, discarding the
+/// real Stage-C evidence. This test pins the dedicated reply in the default
+/// build.
+#[fixture_test]
+async fn velocity_integral_terminal_is_not_downgraded_to_tune_result() {
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_commission(
+        0,
+        CommissionProfile::Balanced,
+    ));
+    seed_motor_sentinel(&mut backend).await;
+
+    let outcome = drive_commission_result(
+        StepResult::VelocityIntegralTerminal(sample_velocity_integral_terminal_for_test()),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    assert!(
+        matches!(reply, ReplyPayload::VelocityIntegralTerminal { .. }),
+        "Stage-C terminal must emit a VelocityIntegralTerminal reply"
+    );
+
+    clear_motor_sentinel();
+}

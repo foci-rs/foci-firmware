@@ -262,7 +262,6 @@ pub struct StageCPreflightConfig {
 /// on its own, because a plan rebuilt from retained context hashes those same
 /// retained values and still matches the retained identity while execution does
 /// its target-rate math against the stale resolution.
-#[cfg(feature = "trace-velocity-sweep")]
 fn preflight_retained_breakaway(
     token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
     authority: StageCAuthoritySummary,

@@ -9,12 +9,10 @@ pub enum RestoreError<E> {
     Spi(E),
     InvalidGains,
     PiRepresentation,
-    #[cfg_attr(not(feature = "trace-velocity-sweep"), allow(dead_code))]
     VelocityClamp,
 }
 
 /// Leave a trace velocity workflow disarmed with its operational current limit restored.
-#[cfg(feature = "trace-velocity-sweep")]
 pub async fn disarm_and_restore_velocity_limit<B: CommissioningBackend>(
     backend: &mut B,
     state: &mut super::DispatchState<'_>,
