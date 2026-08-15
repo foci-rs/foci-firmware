@@ -784,11 +784,11 @@ where
                     .tmc_state()
                     .commission_in_flight
                     .store(false, core::sync::atomic::Ordering::Relaxed);
-                board.emit_reply(stage_b_preflight_failure_payload(
+                emit_commission_phase_failure::<Board, Spi>(
+                    board,
                     oid,
-                    run_sequence,
-                    crate::commission_dispatch::stage_b::StageBPreflightRejection::InvalidPlan,
-                ));
+                    CommissionError::InvalidSchedule.status_code(),
+                );
                 return TmcControlRequestOutcome::skip_tick_tail();
             };
             #[cfg(feature = "trace-velocity-sweep")]
@@ -1391,64 +1391,6 @@ fn selftest_failure_payload(oid: u8, status: u8) -> ReplyPayload {
         results: SelftestResults::default(),
         diagnostics: CommissionDiagnostics::default(),
         done_status: status,
-    }
-}
-
-#[cfg(feature = "trace-velocity-sweep")]
-fn stage_b_preflight_failure_payload(
-    oid: u8,
-    run_sequence: u32,
-    rejection: crate::commission_dispatch::stage_b::StageBPreflightRejection,
-) -> ReplyPayload {
-    use crate::commissioning::types::{VelocitySweepOutcome, VelocitySweepTerminal};
-
-    let (outcome, cause, plan_digest) = match rejection {
-        crate::commission_dispatch::stage_b::StageBPreflightRejection::InvalidPlan => (
-            VelocitySweepOutcome::Fault,
-            CommissionError::InvalidSchedule.status_code(),
-            0,
-        ),
-        crate::commission_dispatch::stage_b::StageBPreflightRejection::RejectedPlanMismatch {
-            requested,
-            ..
-        }
-        | crate::commission_dispatch::stage_b::StageBPreflightRejection::RejectedLegacyState {
-            requested,
-        } => (
-            VelocitySweepOutcome::RejectedPlanMismatch,
-            crate::commission_dispatch::stage_b::STAGE_B_CAUSE_PLAN_MISMATCH,
-            requested.plan_digest,
-        ),
-    };
-    ReplyPayload::VelocitySweepTerminal {
-        oid,
-        terminal: VelocitySweepTerminal {
-            run_sequence,
-            evidence_sequence: 0,
-            plan_digest,
-            outcome,
-            cause,
-            recovery_unavailable: false,
-            model_direction_mask: 0,
-            selected_memberships: [0; 3],
-            nominated_p: 0,
-            selected_intervals: [[0; 2]; 2],
-            selected_common_intervals: [[0; 2]; 2],
-            p_start: 0,
-            p_top: 0,
-            rung_count: 0,
-            coverage_mask: 0,
-            directional_region_counts: [0; 2],
-            directional_fragment_counts: [0; 2],
-            expected_observations: 0,
-            emitted_observations: 0,
-            expected_rungs: 0,
-            emitted_rungs: 0,
-            digest: 0,
-            run_started_us: 0,
-            run_completed_us: 0,
-            safety_fault: None,
-        },
     }
 }
 
@@ -2583,6 +2525,48 @@ mod tests {
                 checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
                 interrupted: true,
             })
+        );
+    }
+
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn encoder_not_ready_tune_fails_as_commission_phase_not_velocity_sweep_terminal() {
+        use crate::commissioning::outer::velocity::reproduction::StageBCandidateSlot;
+
+        // Reach the Stage-B preflight with the encoder domain unestablished:
+        // the current limit is stored (so the NoCurrent pre-check passes) but
+        // motion scale is never configured, so `encoder_counts_per_rev()` is
+        // None and the preflight rejects before any workflow plan is emitted.
+        let mut board = RecordingBoard::skip_tick_tail();
+        let tmc_state = tmc_channel0();
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        assert_eq!(tmc_state.encoder_counts_per_rev(), None);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut slot = StageBCandidateSlot::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stage_b(
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut slot,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        // The encoder-not-ready preflight must surface as a commission-phase
+        // failure the host already handles (autotune.py sets commissioning
+        // error_code and raises), not a planless VelocitySweepTerminal that the
+        // host's "envelope before evidence" gate rejects with a cryptic protocol
+        // error while discarding the real cause.
+        assert_eq!(board.replies.len(), 1);
+        assert_commission_phase_failure(
+            &board.replies[0],
+            4,
+            CommissionError::InvalidSchedule.status_code(),
         );
     }
 
