@@ -96,7 +96,6 @@ impl CommissioningWorkflowPlan {
     }
 
     /// Construct one checked fixed-I acceptance-matrix workflow envelope.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub fn new_acceptance_matrix(
         run_sequence: u32,
         order: super::acceptance_plan::AcceptanceMatrixOrder,

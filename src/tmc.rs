@@ -444,9 +444,10 @@ pub enum AutotuneAction {
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing Stage-C integral continuation as one bounded command.
     ///
-    /// The full campaign is exposed only under `trace-velocity-sweep`; on a
-    /// non-trace build the request enters the same generic outer tune as every
-    /// other action, since the campaign phase does not exist there.
+    /// This is the production `Tune` path: a non-trace build routes the request
+    /// through the breakaway/Stage-C/acceptance engine just like a trace build.
+    /// The `trace-velocity-sweep` feature adds only the raw evidence emission on
+    /// top of the same campaign, not the campaign itself.
     BreakawaySeeded = 7,
     /// Re-run Stage C against retained firmware authority.
     ///

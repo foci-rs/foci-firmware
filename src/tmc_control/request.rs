@@ -37,7 +37,6 @@ pub enum TmcPreRequestDisposition {
 
 // The breakaway campaign carries the whole admitted campaign by value; boxing is
 // unavailable in this heapless crate, matching the campaign's own terminal enums.
-#[cfg(feature = "trace-velocity-sweep")]
 #[allow(clippy::large_enum_variant)]
 enum TuneRoute {
     Acceptance(crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight),
@@ -50,7 +49,6 @@ enum TuneRoute {
 /// Every rejection here names retained state that disagrees with the request,
 /// so each keeps a plan digest where one exists. The empty-slot case is not a
 /// rejection and is built separately.
-#[cfg(feature = "trace-velocity-sweep")]
 fn stage_c_resume_rejection_terminal(
     run_sequence: u32,
     rejection: crate::commission_dispatch::stage_c::StageCPreflightRejection,
@@ -269,7 +267,6 @@ pub async fn handle_tmc_control_request_with_stages<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,
     runtime: &mut TmcControlRuntime,
-    #[cfg(feature = "trace-velocity-sweep")]
     stage_c_candidate: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
     tmc: &mut Tmc4671Spi<Spi>,
     board: &mut Board,
@@ -278,7 +275,6 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    #[cfg(feature = "trace-velocity-sweep")]
     let autotune_action = req.autotune_action;
     match pre_request {
         TmcPreRequestDisposition::ContinueRequest => {}
@@ -328,7 +324,6 @@ where
                     // A routine same-channel re-enable may auto-calibrate after the
                     // required disarm/cooling interval; preserve that channel's
                     // Stage-C authority across the alignment lifecycle.
-                    #[cfg(feature = "trace-velocity-sweep")]
                     stage_c_candidate.preserve_for_same_channel_calibration(board.channel());
                     runtime.set_commission_engine(
                         CommissioningEngine::new_calibrate_for_tmc_with_gains_and_trace_seq(
@@ -427,7 +422,6 @@ where
             // Host homing explicitly calibrates after the required disarm/cooling
             // interval. Preserve same-channel Stage-C authority across that
             // alignment lifecycle.
-            #[cfg(feature = "trace-velocity-sweep")]
             stage_c_candidate.preserve_for_same_channel_calibration(board.channel());
             runtime.clear_calibrated();
             runtime.set_commission_engine(
@@ -688,7 +682,6 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            #[cfg(feature = "trace-velocity-sweep")]
             stage_c_candidate.invalidate_for_unrelated_commissioning();
             runtime.clear_calibrated();
             runtime.set_commission_engine(
@@ -774,7 +767,6 @@ where
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
             let run_sequence = board.next_commission_trace_seq();
-            #[cfg(feature = "trace-velocity-sweep")]
             let Some(encoder_counts_per_rev) = board.tmc_state().encoder_counts_per_rev() else {
                 board
                     .tmc_state()
@@ -787,7 +779,6 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             };
-            #[cfg(feature = "trace-velocity-sweep")]
             let request = crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
                 requested_velocity_mrev_s,
                 machine_velocity_ceiling_mrev_s,
@@ -798,7 +789,6 @@ where
                 positive_position_headroom_mrev,
                 max_duration_ms,
             };
-            #[cfg(feature = "trace-velocity-sweep")]
             let tune_route = match autotune_action {
                 action @ (crate::tmc::AutotuneAction::MatrixAscending
                 | crate::tmc::AutotuneAction::MatrixDescending) => {
@@ -1039,7 +1029,6 @@ where
                 positive_position_headroom_mrev,
                 max_duration_ms,
             };
-            #[cfg(feature = "trace-velocity-sweep")]
             {
                 match tune_route {
                     TuneRoute::Acceptance(preflight) => {
@@ -1092,14 +1081,6 @@ where
                     }
                 }
             }
-            #[cfg(not(feature = "trace-velocity-sweep"))]
-            runtime.set_commission_engine(CommissioningEngine::new_outer_for_tmc_with_trace_seq(
-                oid,
-                tmc_state,
-                outer_params,
-                entry_snapshot,
-                run_sequence,
-            ));
         }
         TmcRequest {
             kind: TmcRequestKind::SelfTest { oid },
@@ -1130,7 +1111,6 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            #[cfg(feature = "trace-velocity-sweep")]
             stage_c_candidate.invalidate_for_unrelated_commissioning();
             runtime.set_commission_engine(
                 CommissioningEngine::new_selftest_for_tmc_with_trace_seq(
@@ -1260,23 +1240,17 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    #[cfg(feature = "trace-velocity-sweep")]
-    {
-        let mut stage_c_candidate =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
-            );
-        return handle_tmc_control_request_with_stages(
-            req,
-            pre_request,
-            runtime,
-            &mut stage_c_candidate,
-            tmc,
-            board,
-        )
-        .await;
-    }
-    #[cfg(not(feature = "trace-velocity-sweep"))]
-    handle_tmc_control_request_with_stages(req, pre_request, runtime, tmc, board).await
+    let mut stage_c_candidate =
+        crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new();
+    handle_tmc_control_request_with_stages(
+        req,
+        pre_request,
+        runtime,
+        &mut stage_c_candidate,
+        tmc,
+        board,
+    )
+    .await
 }
 
 pub(super) fn live_gain_failure_outcome(
@@ -1364,6 +1338,7 @@ fn selftest_failure_payload(oid: u8, status: u8) -> ReplyPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "trace-velocity-sweep")]
     use crate::commissioning::outer::velocity::integral_plan::StageCAcquisition;
     use core::sync::atomic::Ordering::Relaxed;
 
@@ -1760,7 +1735,6 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     fn tune_request_with_action(action: crate::tmc::AutotuneAction) -> TmcRequest {
         let mut request = tune_request();
         request.autotune_action = action;
@@ -2330,29 +2304,54 @@ mod tests {
         )
         .await;
 
-        #[cfg(feature = "trace-velocity-sweep")]
+        // Production routes the breakaway campaign, so the workflow envelope is
+        // emitted before the phase-advance restore runs; its failure then adds
+        // the commission-phase failure. Both builds emit the same two replies.
         assert_eq!(board.replies.len(), 2);
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        assert_eq!(board.replies.len(), 1);
-        assert_commission_phase_failure(
-            board
-                .replies
-                .get(if cfg!(feature = "trace-velocity-sweep") {
-                    1
-                } else {
-                    0
-                })
-                .unwrap(),
-            4,
-            CommissionError::Spi.status_code(),
-        );
-        #[cfg(feature = "trace-velocity-sweep")]
         assert!(matches!(
             board.replies[0],
             ReplyPayload::CommissioningWorkflowPlan { .. }
         ));
+        assert_commission_phase_failure(
+            board.replies.get(1).unwrap(),
+            4,
+            CommissionError::Spi.status_code(),
+        );
         assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
         assert!(runtime.phase_advance_active_for_test());
+    }
+
+    #[fixture_test]
+    async fn production_tune_routes_breakaway_seeded_to_campaign() {
+        use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        let tmc_state = tmc_channel0();
+        tmc_state
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request(
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(board.replies.len(), 1);
+        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+        else {
+            panic!("breakaway admission must emit exactly the workflow envelope")
+        };
+        assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
+        assert!(runtime.is_commission_active());
     }
 
     #[cfg(feature = "trace-velocity-sweep")]
