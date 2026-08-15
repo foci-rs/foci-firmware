@@ -297,7 +297,6 @@ pub trait CommissionTrace {
     }
 
     /// Record one canonical velocity-sweep evidence record for offline audit.
-    #[cfg(feature = "trace")]
     fn record_velocity_sweep_trace_record(
         &mut self,
         _record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,

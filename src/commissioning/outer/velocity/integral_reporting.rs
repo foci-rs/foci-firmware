@@ -803,6 +803,26 @@ mod tests {
         assert_eq!(encoded.as_bytes().len(), 89);
     }
 
+    #[test]
+    fn encode_velocity_integral_planned_event_bytes_are_stable() {
+        use crate::commissioning::types::{VelocityIntegralEvent, VelocityIntegralPlanned};
+        let report = VelocityIntegralPlanned {
+            run_sequence: 0x0102_0304,
+            evidence_sequence: 0x0506,
+            plan_digest: 0x0708_090A_0B0C_0D0E,
+            final_p: 0x1011,
+            positive_rung_count: 0x12,
+            maximum_workflow_ms: 0x1314_1516,
+        };
+        let record = encode_velocity_integral_event(VelocityIntegralEvent::Planned(report));
+        // Baseline captured from the pre-change trace build. `1` tag + LE fields.
+        let expected: [u8; 22] = [
+            1, 0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07,
+            0x11, 0x10, 0x12, 0x16, 0x15, 0x14, 0x13,
+        ];
+        assert_eq!(record.as_bytes(), &expected);
+    }
+
     fn eligible_rung(direction: VelocityDirection) -> IntegralRungEvidence {
         let interval = ExactRateInterval::new(10, 20).unwrap();
         IntegralRungEvidence {

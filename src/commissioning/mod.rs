@@ -1357,7 +1357,7 @@ impl CommissioningEngine {
                         report.evidence_sequence,
                     ),
                 };
-                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                #[cfg(feature = "trace")]
                 backend.record_velocity_sweep_trace_record(record);
                 backend.record_commission_trace_event(CommissionTraceEvent {
                     level: TraceEventLevel::Info,
@@ -2864,6 +2864,194 @@ mod tests {
             ]
         );
         assert!(engine.trace_run.terminal);
+    }
+
+    /// Build a Stage-C `VelocityIntegral` engine already sitting at a rest
+    /// boundary, plus a matching terminal ready for
+    /// [`CommissioningEngine::attach_stage_c_rest_boundary`] and the
+    /// boundary the engine was seeded with.
+    ///
+    /// Follows the fixture construction used by the surrounding Stage-C
+    /// tests (`commission_dispatch::stage_c_tests` and
+    /// `commission_dispatch::replies` tests): build an exact Stage-C plan
+    /// directly through `plan_velocity_integral_response`, then hand it to
+    /// [`CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight`].
+    #[cfg(feature = "trace-velocity-sweep")]
+    fn stage_c_engine_at_rest_boundary_for_test() -> (
+        CommissioningEngine,
+        crate::commissioning::types::VelocityIntegralTerminal,
+        crate::commissioning::outer::PositiveIRestBoundary,
+    ) {
+        use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
+        use crate::commission_dispatch::stage_c::StageCPreflight;
+        use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
+        use crate::commissioning::outer::velocity::current_guard::{
+            VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
+        };
+        use crate::commissioning::outer::velocity::integral_evidence::{
+            ExactRateInterval, IntegralRunEvidence,
+        };
+        use crate::commissioning::outer::velocity::integral_plan::{
+            StageCAcquisition, StageCAuthority, plan_velocity_integral_response,
+        };
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+        use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
+        use crate::commissioning::outer::velocity::sweep_plan::{
+            RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
+        };
+        use crate::commissioning::outer::{
+            OuterMotionBudget, PositiveIRestBoundary, VelocitySettleMetrics,
+        };
+        use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
+
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: 2_929,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 2_000,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 50_000,
+            positive_position_headroom_mrev: 50_000,
+            max_duration_ms: 60_000,
+        };
+        let stage_b = plan_velocity_sweep(
+            request,
+            4_000,
+            2_816,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        )
+        .unwrap();
+        let digest = stage_b.digest();
+        let plan = plan_velocity_integral_response(
+            StageCAuthority {
+                channel: 0,
+                acquisition: StageCAcquisition::ReproducedStageB(digest),
+                directional_memberships: [0x001c_0000; 2],
+                stage_b_joint_membership: 0x001c_0000,
+                joint_membership: 0x001c_0000,
+                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
+                reduced_margin: false,
+                directional_pooled_intervals: [
+                    [17_000_000, 18_000_000],
+                    [-19_000_000, -18_000_000],
+                ],
+            },
+            stage_b.execution_plan(digest),
+            OuterMotionBudget {
+                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: request.requested_velocity_source,
+                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+                max_duration_ms: request.max_duration_ms,
+            },
+            25_000,
+            4_000,
+        )
+        .unwrap();
+
+        let preflight = StageCPreflight {
+            plan,
+            identity: StageCPlanIdentity {
+                channel: 0,
+                build_features: 0,
+                schema_revision: plan.schema_revision,
+                plan_digest: plan.digest(),
+            },
+            run_sequence: 9,
+        };
+
+        let mut engine = CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+            0,
+            tmc_state(),
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            preflight,
+        );
+
+        let boundary = PositiveIRestBoundary {
+            rung_index: 4,
+            slot: 5,
+            i_raw: 4,
+            direction: -1,
+            active_stationarity: StationarityResult::Excluded(
+                StationarityExclusion::StructuredResidual,
+            ),
+            active_settle: VelocitySettleMetrics::EMPTY,
+            zero_phase_current: VelocityCurrentPhaseEvidence {
+                clamp_limit: 2_534,
+                moving_pid_output_peak: 2_000,
+                zero_pid_output_peak: 2_100,
+                moving_status_flags: 0,
+                zero_status_flags: 0,
+                capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+                contact: VelocityCurrentContact::None,
+            },
+            cleanup_confirmed: true,
+        };
+        engine.set_stage_c_rest_boundary_for_test(boundary);
+
+        let terminal = VelocityIntegralTerminal {
+            run_sequence: 9,
+            evidence_sequence: 57,
+            plan_digest: plan.digest(),
+            digest: 0,
+            outcome: VelocityIntegralOutcome::Complete,
+            cause: 0,
+            breakaway_acceptance: false,
+            final_p: 0,
+            recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
+            evidence: IntegralRunEvidence::new([
+                ExactRateInterval::new(100, 120).unwrap(),
+                ExactRateInterval::new(-120, -100).unwrap(),
+            ]),
+            expected_observations: 56,
+            emitted_observations: 56,
+            expected_rungs: 7,
+            emitted_rungs: 7,
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
+            safety_fault: None,
+        };
+
+        (engine, terminal, boundary)
+    }
+
+    /// The Stage-C rest-boundary digest fold happens inside
+    /// `attach_stage_c_rest_boundary` itself, before any board sink ever sees
+    /// the record. Whether the sink then records the boundary event or drops
+    /// it (as the newly always-compiled `record_velocity_sweep_trace_record`
+    /// no-op default does outside a `trace` build) cannot retroactively change
+    /// `terminal.digest`. `MockBackend` overrides the sink under
+    /// `trace-velocity-sweep` (see `commission_dispatch::test_support`), so
+    /// this exercises the real sink rather than the no-op default itself; the
+    /// no-op default's compile-time availability is covered by the plain
+    /// (non-trace) `cargo test` run instead.
+    #[cfg(feature = "trace-velocity-sweep")]
+    #[fixture_test]
+    async fn stage_c_terminal_digest_is_independent_of_emission_sink() {
+        let (engine, mut terminal, boundary) = stage_c_engine_at_rest_boundary_for_test();
+        let record = engine
+            .attach_stage_c_rest_boundary(&mut terminal)
+            .expect("a boundary record is produced");
+        assert_ne!(terminal.digest, 0);
+        assert_eq!(terminal.rest_boundary_rung_plus_one, boundary.rung_index);
+        assert_eq!(
+            terminal.rest_boundary_slot_plus_one,
+            boundary.slot.checked_add(1).unwrap()
+        );
+        let folded_digest = terminal.digest;
+        // Emitting or not emitting `record` cannot change the digest already folded.
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        backend.record_velocity_sweep_trace_record(record);
+        assert_eq!(terminal.digest, folded_digest);
     }
 
     #[test]

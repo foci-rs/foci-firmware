@@ -142,12 +142,14 @@ where
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
-    /// Record one canonical Stage B record in the trace stream.
-    #[cfg(feature = "trace-velocity-sweep")]
+    /// Record one canonical Stage B record in the trace stream. No-op unless a
+    /// board provides a `trace`-gated implementation.
     fn record_velocity_sweep_trace_record(
         &mut self,
         record: crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord,
-    );
+    ) {
+        let _ = record;
+    }
     /// Emit a board-local motor arm event, if supported.
     fn emit_motor_arm_event(&mut self) {}
     /// Emit a board-local motor disarm event, if supported.
