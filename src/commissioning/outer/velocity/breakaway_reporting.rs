@@ -452,7 +452,6 @@ pub(crate) struct ProbeDecisionReportInput {
 /// The phase driver names the stroke and hands over the selector's verdict and
 /// the settle bounds it scored; the campaign layer attaches the wire identity
 /// (owning phase, plan digest, run sequence, evidence sequence).
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RecoveryRestRejectedInput {
     /// The scored-rest selector's complete decision.
@@ -480,7 +479,6 @@ pub(crate) struct RecoveryRestRejectedInput {
 /// Only rejections reach this function; accepted rest windows are never
 /// reported, so the record's `disposition` is always `Rejected`. It is carried
 /// on the wire regardless, so a decoder validates rather than assumes it.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn recovery_rest_rejected_report(
     plan_digest: u64,
     phase: BreakawayPhase,
@@ -522,7 +520,6 @@ pub(crate) fn recovery_rest_rejected_report(
 /// The worker supplies the measured discrepancy; the stroke's slot and
 /// direction come from the phase driver, and the campaign layer attaches the
 /// wire identity.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) fn recovery_origin_mismatch_report(
     plan_digest: u64,
     phase: BreakawayPhase,

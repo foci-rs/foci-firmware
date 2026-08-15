@@ -4,25 +4,20 @@ pub mod acceptance_evidence;
 #[cfg(test)]
 mod acceptance_evidence_tests;
 pub mod acceptance_plan;
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 mod acceptance_plan_tests;
 pub(crate) mod acceptance_reporting;
 pub mod band_confirmation;
-// breakaway_campaign stays trace-gated for a later data/encoding task: it imports `OuterPhase`, `VelocityIntegralData`, and
-// `VelocityIntegralState` directly from `commissioning::outer::state`, which are
-// un-gated by a separate state-machine task, not this one.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod breakaway_campaign;
 pub(crate) mod breakaway_excursion;
 pub mod breakaway_plan;
-// breakaway_reporting stays trace-gated with breakaway_campaign above: it
-// imports `AdditiveDiscoveryOutcome`, `BandConfirmationOutcome`,
-// `BreakawayProbeOutcome`, and `CollectedObservation` directly from
-// breakaway_campaign, which is deferred to Task 5.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
-#[cfg(feature = "trace-velocity-sweep")]
+// breakaway_trace_reporting is the raw FTRC trace-record encoder for the
+// breakaway campaign; kept on `trace` (not `trace-velocity-sweep`) per
+// the general rule that trace-only encoders stay gated, so it survives the eventual removal of
+// trace-velocity-sweep.
+#[cfg(feature = "trace")]
 pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;
 #[cfg(test)]
@@ -38,15 +33,10 @@ pub mod integral_plan;
 mod integral_plan_tests;
 pub(crate) mod integral_reporting;
 pub mod integral_reproduction;
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 mod integral_reproduction_tests;
-// integral_sweep stays trace-gated for the same reason as breakaway_campaign
-// above: it is the Stage-C engine driver, importing `OuterPhase`,
-// `VelocityIntegralData`, `VelocityIntegralState`, `PositiveIRestBoundary`, and
-// `VelocitySettleMetrics` from `commissioning::outer::state` (Task 5 territory).
-#[cfg(feature = "trace-velocity-sweep")]
 mod integral_sweep;
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 mod integral_sweep_tests;
 #[cfg(test)]
 mod integral_test_point_contract_tests;
@@ -54,7 +44,7 @@ pub mod operating_region;
 #[cfg(test)]
 mod operating_region_tests;
 pub(crate) mod recovery;
-#[cfg(all(test, feature = "trace-velocity-sweep"))]
+#[cfg(test)]
 mod recovery_tests;
 pub mod reproduction;
 mod response_ramp;
@@ -76,15 +66,10 @@ pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT: u32 =
 pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG: u32 =
     current_guard::VelocityLimitEvidenceCapability::LatchedFlag as u32;
 
-// Re-exports stay trace-gated together with their still-gated owning modules
-// (breakaway_campaign, integral_sweep) -- see the module-declaration comments
-// above.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use breakaway_campaign::{
     breakaway_campaign_fault_terminal, breakaway_campaign_pending_terminal,
     step_breakaway_campaign_with_trace,
 };
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use integral_sweep::{
     integral_fault_terminal, integral_i_at, step_velocity_integral_with_trace,
 };

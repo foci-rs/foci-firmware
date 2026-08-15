@@ -3969,7 +3969,6 @@ fn raw_observation_step(
 /// the phase driver names the stroke and its scored evidence, and this attaches
 /// the wire identity (owning phase, plan digest, run sequence, a fresh evidence
 /// sequence).
-#[cfg(feature = "trace-velocity-sweep")]
 fn rest_rejected_step(
     plan_digest: u64,
     phase: super::breakaway_reporting::BreakawayPhase,
@@ -3991,7 +3990,6 @@ fn rest_rejected_step(
 /// Build the streamed origin-mismatch event, mirroring [`rest_rejected_step`]:
 /// the worker supplies the measured discrepancy, the phase driver's session
 /// names the stroke, and this attaches the wire identity.
-#[cfg(feature = "trace-velocity-sweep")]
 fn origin_mismatch_step(
     plan_digest: u64,
     phase: super::breakaway_reporting::BreakawayPhase,
@@ -4026,7 +4024,6 @@ fn origin_mismatch_step(
 /// `settle` is `(net, min, max)` read straight off the recovery worker's
 /// resources after the step returned, so the bounds are the ones the selector
 /// was handed rather than a later window's.
-#[cfg(feature = "trace-velocity-sweep")]
 fn rest_rejected_input(
     decision: crate::autotune::velocity_measurement::RestSelectionDecision,
     stage: RecoveryStage,

@@ -3157,6 +3157,11 @@ fn plan_time_resolution_refusal_keeps_its_discovery_terminal_cause() {
 
 // --- Accept hands off through the engine adapter into VelocityIntegral ---------
 
+// Exercises `crate::commissioning::schedule::adapt_step_result`'s
+// `CommissionEvent::VelocityIntegralPlan` arm, which stays trace-velocity-sweep
+// gated pending Task 6/7's `tmc_control::request` wiring of the breakaway
+// campaign's scheduled-tick path into the default build.
+#[cfg(feature = "trace-velocity-sweep")]
 #[test]
 fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);

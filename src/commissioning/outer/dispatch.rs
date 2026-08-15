@@ -6,13 +6,9 @@ use crate::commissioning::types::{OuterSafetyFault, StepResult};
 
 use super::safety::outer_safety_mut;
 use super::{
-    OuterPhase, TraceSummarySeqs, check_outer_safety, commit, filter, mechanical, position,
-    safety_error_for_phase, velocity,
-};
-#[cfg(feature = "trace-velocity-sweep")]
-use super::{
-    OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
-    VelocityIntegralState, check_outer_safety_with_timing,
+    OuterPhase, OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
+    TraceSummarySeqs, VelocityIntegralState, check_outer_safety, check_outer_safety_with_timing,
+    commit, filter, mechanical, position, safety_error_for_phase, velocity,
 };
 
 /// Transition the outer phase to `Failed` and emit an `OuterFailed` result.
@@ -46,7 +42,6 @@ fn clamp_outer_safety_deadline(
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 fn velocity_fault_terminal(
     phase: &mut OuterPhase,
     error: CommissionError,
@@ -63,7 +58,6 @@ fn velocity_fault_terminal(
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 fn velocity_integral_timing_phase(state: &VelocityIntegralState) -> (OuterSafetyTimingPhase, bool) {
     match state {
         VelocityIntegralState::Setup
@@ -93,7 +87,6 @@ fn velocity_integral_timing_phase(state: &VelocityIntegralState) -> (OuterSafety
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 fn velocity_timing_context(
     phase: &OuterPhase,
 ) -> Result<Option<OuterSafetyTimingContext>, CommissionError> {
@@ -183,12 +176,8 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     // closure, so it would never reach the wire and the phase would never fail
     // out. Skipping the safety block on a drain tick lets the campaign driver
     // emit the closure and then the OuterFailed/FailedWithSafety transition.
-    #[cfg(feature = "trace-velocity-sweep")]
     let draining_campaign_terminal = velocity::breakaway_campaign_pending_terminal(phase);
-    #[cfg(not(feature = "trace-velocity-sweep"))]
-    let draining_campaign_terminal = false;
 
-    #[cfg(feature = "trace-velocity-sweep")]
     let timing_context = if draining_campaign_terminal {
         None
     } else {
@@ -213,7 +202,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             );
             let fault = safety.invalid_budget_fault();
             let err = safety_error_for_phase(phase);
-            #[cfg(feature = "trace-velocity-sweep")]
             if matches!(
                 phase,
                 OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
@@ -222,7 +210,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             }
             return fail_outer_with_safety(phase, err, fault);
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         let safety_result = if let Some(context) = timing_context {
             check_outer_safety_with_timing(
                 safety,
@@ -234,15 +221,12 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         } else {
             check_outer_safety(safety, backend).await
         };
-        #[cfg(not(feature = "trace-velocity-sweep"))]
-        let safety_result = check_outer_safety(safety, backend).await;
         match safety_result {
             Ok(Some(fault)) => {
                 // Zero excitation immediately on any safety violation.
                 let _ = backend
                     .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
                     .await;
-                #[cfg(feature = "trace-velocity-sweep")]
                 let _ = backend
                     .write_register(foci_tmc4671::registers::PID_VELOCITY_TARGET, 0)
                     .await;
@@ -250,7 +234,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                     .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
                     .await;
                 let err = safety_error_for_phase(phase);
-                #[cfg(feature = "trace-velocity-sweep")]
                 if matches!(
                     phase,
                     OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
@@ -262,7 +245,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             Ok(None) => {}
             Err(error) => {
                 defmt::warn!("outer safety check failed: {}", error);
-                #[cfg(feature = "trace-velocity-sweep")]
                 if matches!(
                     phase,
                     OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
@@ -278,11 +260,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         OuterPhase::MechanicalId { .. } => {
             mechanical::step_mechanical_id_with_trace(phase, buf, trace_summary_seqs, backend).await
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::VelocityIntegral { .. } => {
             velocity::step_velocity_integral_with_trace(phase, buf, backend).await
         }
-        #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::BreakawayCampaign { .. } => {
             velocity::step_breakaway_campaign_with_trace(phase, backend).await
         }
@@ -330,9 +310,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::clamp_outer_safety_deadline;
-    #[cfg(feature = "trace-velocity-sweep")]
     use super::velocity_integral_timing_phase;
-    #[cfg(feature = "trace-velocity-sweep")]
     use crate::commissioning::outer::{OuterSafetyTimingPhase, VelocityIntegralState};
     use crate::commissioning::types::StepResult;
 
@@ -343,7 +321,6 @@ mod tests {
         assert!(matches!(result, StepResult::At(2_000)));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn outer_safety_timing_context_distinguishes_motion_from_zero_target_work() {
         assert_eq!(

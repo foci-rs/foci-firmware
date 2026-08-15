@@ -203,15 +203,19 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 
 #[test]
 fn channel_runtime_size_stays_bounded() {
-    // The trace-gated runtime embeds the `CommissioningEngine`, so it tracks
-    // that engine's size plus the runtime's own fixed overhead. The two
-    // baselines differ because the breakaway campaign is trace-gated.
+    // The runtime embeds the `CommissioningEngine`, so it tracks that engine's
+    // size plus the runtime's own fixed overhead.
     // 5_872 -> 5_856: removes the `combined_workflow` bool
     // from the embedded Stage-C execution plan.
     #[cfg(feature = "trace")]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_856);
+    // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
+    // and `OuterPhase::BreakawayCampaign` into the default build, so the
+    // embedded `CommissioningEngine` is now the same largest-variant size as
+    // the `trace` build (see `commissioning::tests::size_regression_gates`);
+    // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 3_920);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_824);
 }
 
 #[test]

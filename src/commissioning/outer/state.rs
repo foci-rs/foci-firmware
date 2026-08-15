@@ -7,25 +7,15 @@ use crate::autotune::{
 use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::types::{OuterResult, OuterSafetyFault};
 
-// `RawVelocityObservation`/`VelocityMeasurementError` are needed by
-// `VelocityObservationRing` below, a self-contained data type;
-// `DyadicBlocker`/`StationarityWork` stay trace-gated
-// with `VelocityIntegralData`, which still needs its own state-machine
-// un-gating.
-#[cfg(feature = "trace-velocity-sweep")]
-use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork};
-use crate::autotune::velocity_measurement::{RawVelocityObservation, VelocityMeasurementError};
-// `VelocityCurrentPhaseEvidence` is needed by `PositiveIRestBoundary` below,
-// un-gated by Task 4; `VelocityCurrentObserver` stays trace-gated with
-// `VelocityIntegralData` (Task 5).
-#[cfg(feature = "trace-velocity-sweep")]
-use crate::commissioning::outer::velocity::current_guard::VelocityCurrentObserver;
-use crate::commissioning::outer::velocity::current_guard::VelocityCurrentPhaseEvidence;
-#[cfg(feature = "trace-velocity-sweep")]
+use crate::autotune::velocity_measurement::{
+    DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
+};
+use crate::commissioning::outer::velocity::current_guard::{
+    VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
+};
 use crate::commissioning::outer::velocity::recovery::{
     RungOriginRecoveryReport, RungOriginRecoveryRuntime,
 };
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::velocity::{
     integral_evidence::ExactRateInterval, integral_plan::VelocityIntegralExecutionPlan,
     sweep_evidence::VelocityObservationClass,
@@ -47,10 +37,8 @@ pub(crate) const OUTER_POLICY_WARNING_MASK: u8 =
 pub(crate) const VELOCITY_OBSERVATION_CAPACITY: usize = 256;
 /// Dyadic levels required to analyze every retained suffix through 256 samples.
 ///
-/// Stays trace-gated: only used for `DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>`
-/// in `VelocityIntegralData` and `RungOriginRecoveryResources`, both deferred to
-/// Task 5.
-#[cfg(feature = "trace-velocity-sweep")]
+/// Used for `DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>` in
+/// `VelocityIntegralData` and `RungOriginRecoveryResources`.
 pub(crate) const VELOCITY_SWEEP_BLOCK_LEVELS: usize = 5;
 
 /// Fixed-memory tail ring with split arrays to avoid tuple padding.
@@ -273,8 +261,7 @@ pub(crate) struct PositiveIRestBoundary {
     pub(crate) cleanup_confirmed: bool,
 }
 
-/// Phase-local state for the trace-gated velocity-integral response sweep.
-#[cfg(feature = "trace-velocity-sweep")]
+/// Phase-local state for the Stage-C velocity-integral response sweep.
 #[derive(Debug, defmt::Format)]
 pub(crate) enum VelocityIntegralState {
     /// Validate the already-emitted immutable plan and arm measurement safety.
@@ -329,7 +316,6 @@ pub(crate) enum VelocityIntegralState {
 }
 
 /// Engine-owned Stage-C acquisition and exact raw-curve state.
-#[cfg(feature = "trace-velocity-sweep")]
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocityIntegralData {
     pub(crate) plan: VelocityIntegralExecutionPlan,
@@ -369,7 +355,6 @@ pub(crate) struct VelocityIntegralData {
     pub(crate) emitted_rungs: u16,
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 impl VelocityIntegralData {
     pub(crate) fn new(run_sequence: u32, plan: VelocityIntegralExecutionPlan) -> Self {
         Self {
@@ -764,19 +749,17 @@ pub(crate) enum OuterPhase {
         data: MechanicalIdData,
         safety: OuterSafetyLimits,
     },
-    /// Trace-gated Stage-C fixed-P velocity-integral response phase.
-    #[cfg(feature = "trace-velocity-sweep")]
+    /// Stage-C fixed-P velocity-integral response phase.
     VelocityIntegral {
         state: VelocityIntegralState,
         data: VelocityIntegralData,
         safety: OuterSafetyLimits,
     },
-    /// Trace-gated breakaway-seeded campaign: probe, additive discovery, and
-    /// held-out confirmation, sequenced through one borrowed workspace before
-    /// the confirmed Stage-C continuation. On an accepted, admitted confirmation
+    /// Breakaway-seeded campaign: probe, additive discovery, and held-out
+    /// confirmation, sequenced through one borrowed workspace before the
+    /// confirmed Stage-C continuation. On an accepted, admitted confirmation
     /// this phase is replaced in place by [`Self::VelocityIntegral`], so
     /// Stage-C execution state never occupies this variant's footprint.
-    #[cfg(feature = "trace-velocity-sweep")]
     BreakawayCampaign {
         campaign: super::velocity::breakaway_campaign::BreakawayCampaign,
         workspace: super::velocity::breakaway_campaign::BreakawayProbeWorkspace,
@@ -852,9 +835,7 @@ impl OuterPhase {
     pub(crate) fn current_phase_id(&self) -> Option<PhaseId> {
         match self {
             Self::MechanicalId { .. } => Some(PhaseId::MechanicalId),
-            #[cfg(feature = "trace-velocity-sweep")]
             Self::VelocityIntegral { .. } => Some(PhaseId::VelocityTune),
-            #[cfg(feature = "trace-velocity-sweep")]
             Self::BreakawayCampaign { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityTune { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityValidate { .. } => Some(PhaseId::VelocityValidate),
@@ -909,7 +890,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn velocity_observation_ring_overwrites_oldest_and_iterates_chronologically() {
         let mut ring = super::VelocityObservationRing::new();
@@ -927,7 +907,6 @@ mod tests {
         assert!(observations.iter().all(|item| item.elapsed_us == 1_000));
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn velocity_observation_ring_has_the_audited_split_array_layout() {
         assert_eq!(size_of::<[i32; 256]>(), 1_024);

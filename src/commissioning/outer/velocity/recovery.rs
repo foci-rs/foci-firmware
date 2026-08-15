@@ -1,41 +1,20 @@
 //! Shared rung-origin recovery geometry and checked deadline arithmetic.
 
-// `controller` stays trace-gated for a later data/encoding task:
-// `step_rung_origin_recovery` takes `&mut RungOriginRecoveryResources`,
-// which borrows `VelocityObservationRing` and the `VELOCITY_SWEEP_BLOCK_LEVELS`
-// dyadic-blocker const from `commissioning::outer::state` -- un-gated by a separate
-// state-machine task, not this one.
-#[cfg(feature = "trace-velocity-sweep")]
 mod controller;
 
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use controller::step_rung_origin_recovery;
 
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, StationarityWork, VELOCITY_RATE_Q_SCALE, VelocityDirection,
 };
-#[cfg(not(feature = "trace-velocity-sweep"))]
-use crate::autotune::velocity_measurement::{VELOCITY_RATE_Q_SCALE, VelocityDirection};
 use crate::autotune::{CommissionError, TmcMechanicalRpm};
 use crate::commissioning::outer::OuterMotionBudget;
-// Only used by `RungOriginRecoveryResources`, which stays trace-gated with
-// `controller` above.
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::OuterSafetyLimits;
-// Only used by `RungOriginRecoveryRuntime::outer_safety_timing_phase`, which
-// stays trace-gated below: it returns `OuterSafetyTimingPhase`, whose
-// re-export in `commissioning::outer::mod` is scoped to
-// `cfg(any(test, feature = "trace-velocity-sweep"))`, and its only production
-// caller (`dispatch::velocity_integral_timing_phase`) is itself trace-gated.
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::OuterSafetyTimingPhase;
-#[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
 use crate::commissioning::types::OuterSafetyFault;
 use foci_tmc4671::pid::PidPGain;
 
-#[cfg(feature = "trace-velocity-sweep")]
 use super::current_guard::VelocityCurrentObserver;
 use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
 
@@ -406,11 +385,6 @@ impl RungOriginRecoveryRuntime {
         })
     }
 
-    // Returns a diagnostic-timing type whose re-export stays scoped to
-    // `cfg(any(test, feature = "trace-velocity-sweep"))`; its only production
-    // caller (`dispatch::velocity_integral_timing_phase`) is itself
-    // trace-gated, so this method stays trace-gated with them.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) const fn outer_safety_timing_phase(&self) -> (OuterSafetyTimingPhase, bool) {
         match self.state {
             RecoveryState::WriteGains
@@ -518,11 +492,6 @@ impl RungOriginRecoveryRuntime {
 }
 
 /// Borrowed large state shared with the owning Stage-B or Stage-C phase.
-///
-/// Stays trace-gated with `controller` above: it borrows `VelocityObservationRing`
-/// and `DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>`, both defined in
-/// `commissioning::outer::state` and un-gated by Task 5, not this task.
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) struct RungOriginRecoveryResources<'a> {
     pub(crate) safety: &'a mut OuterSafetyLimits,
     pub(crate) observations: &'a mut VelocityObservationRing,

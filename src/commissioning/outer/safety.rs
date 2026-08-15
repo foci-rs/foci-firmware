@@ -277,9 +277,8 @@ impl OuterSafetyLimits {
     /// Configure encoder-domain safety using the complete host-declared sweep windows.
     ///
     /// Mechanical identification retains its legacy two-revolution backstop until the
-    /// cutover. The trace-gated velocity sweep instead plans motion from the richer
+    /// cutover. The velocity sweep instead plans motion from the richer
     /// request contract, so its runtime enforcement must use those same declared windows.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn configure_velocity_sweep_encoder_resolution(
         &mut self,
         counts_per_rev: u32,
@@ -472,7 +471,6 @@ impl OuterSafetyLimits {
         self.last_observation_scoring_eligible
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn last_accepted_observation(&self) -> Option<(i32, u64)> {
         self.previous_velocity_observation
             .map(|observation| (observation.signed_delta_counts, observation.elapsed_us))
@@ -548,7 +546,6 @@ impl OuterSafetyLimits {
     }
 
     /// Construct the dedicated fail-closed fault for recovery motion away from origin.
-    #[cfg(feature = "trace-velocity-sweep")]
     #[allow(dead_code)]
     pub(crate) fn recovery_wrong_way_fault(
         &self,
@@ -659,7 +656,6 @@ pub(crate) async fn check_outer_safety<B: CommissioningBackend>(
     check_outer_safety_inner(safety, None, backend).await
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) async fn check_outer_safety_with_timing<B: CommissioningBackend>(
     safety: &mut OuterSafetyLimits,
     timing: &mut super::OuterSafetyTimingAccumulator,
@@ -922,9 +918,7 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
         | OuterPhase::VelocityValidate { safety, .. }
         | OuterPhase::PositionTune { safety, .. }
         | OuterPhase::FilterTune { safety, .. } => Some(safety),
-        #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::VelocityIntegral { safety, .. } => Some(safety),
-        #[cfg(feature = "trace-velocity-sweep")]
         OuterPhase::BreakawayCampaign { safety, .. } => Some(safety),
         OuterPhase::Commit { .. }
         | OuterPhase::Done(_)
@@ -935,7 +929,6 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "trace-velocity-sweep")]
     use super::check_outer_safety_with_timing;
     use super::{
         MAX_SAFETY_OBSERVATION_GAP_US, OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS, OuterMotionBudget,
@@ -947,7 +940,6 @@ mod tests {
         MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
         step_outer,
     };
-    #[cfg(feature = "trace-velocity-sweep")]
     use crate::commissioning::outer::{
         OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
         OuterSafetyTimingStage,
@@ -1532,7 +1524,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
     #[test]
     fn observation_gap_contract_records_the_faulting_gap_before_delta_interpretation() {
         pollster::block_on(async {

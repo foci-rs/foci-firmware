@@ -16,7 +16,6 @@ mod policy_tests;
 pub mod position;
 pub mod response;
 mod safety;
-#[cfg_attr(not(any(test, feature = "trace-velocity-sweep")), allow(dead_code))]
 mod safety_timing;
 #[cfg(test)]
 mod safety_timing_tests;
@@ -37,16 +36,15 @@ pub(crate) use limits::{
     position_tune_step_counts, position_window_counts,
     response_fallback_velocity_limit_counts_per_ms,
 };
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use safety::check_outer_safety_with_timing;
 pub(crate) use safety::{
     OuterMotionBudget, OuterSafetyLimits, check_outer_safety, safety_error_for_phase,
 };
 pub(crate) use safety_timing::OuterSafetyTimingAccumulator;
-#[cfg(any(test, feature = "trace-velocity-sweep"))]
+#[cfg(any(test, feature = "trace"))]
+pub(crate) use safety_timing::OuterSafetyTimingSummary;
 pub(crate) use safety_timing::{
     OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
-    OuterSafetyTimingSummary,
 };
 pub(crate) use state::{
     EffectiveVelocityPolicy, MechanicalIdData, MechanicalIdState,
@@ -60,7 +58,6 @@ pub(crate) use state::{
 };
 #[cfg(all(test, feature = "trace-velocity-sweep"))]
 pub(crate) use state::{PositiveIRestBoundary, VelocitySettleMetrics};
-#[cfg(feature = "trace-velocity-sweep")]
 pub(crate) use state::{VelocityIntegralData, VelocityIntegralState};
 pub(crate) use trace::{
     TraceSummarySeqs, trace_diagnostic_warning, trace_pack_i16_pair, trace_pack_u16_pair,

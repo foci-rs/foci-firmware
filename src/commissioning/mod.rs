@@ -26,6 +26,9 @@ use crate::commissioning::outer::{
     MechanicalIdData, MechanicalIdState, OuterMotionBudget, OuterPhase, OuterSafetyLimits,
     TraceSummarySeqs,
 };
+// Only referenced by name inside the two Stage-C/matrix preflight constructors
+// below, which stay trace-gated with their `commission_dispatch::stage_c` /
+// `commission_dispatch::acceptance` parameter types (Task 6/7).
 #[cfg(feature = "trace-velocity-sweep")]
 use crate::commissioning::outer::{VelocityIntegralData, VelocityIntegralState};
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
@@ -34,11 +37,14 @@ use crate::state::tmc::TmcChannelState;
 use crate::trace::events::{
     CommissionTraceEvent, EVENT_COMMISSION_ENGINE_START, EVENT_COMMISSION_ENGINE_TERMINAL,
     EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED, EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN, EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
-    TraceEventLevel, u32_arg,
+    EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
+    EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG, TraceEventLevel, u32_arg,
 };
-#[cfg(feature = "trace-velocity-sweep")]
+// Raw FTRC trace-channel event ids: used only inside the raw-trace helpers
+// kept on `trace` (Stage-C/matrix/breakaway terminal and evidence emission).
+#[cfg(feature = "trace")]
 use crate::trace::events::{
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
     EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL,
@@ -49,9 +55,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
     EVENT_COMMISSION_BREAKAWAY_RECOVERY_ORIGIN_MISMATCH,
     EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
-    EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
-    EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -623,7 +627,6 @@ impl CommissioningEngine {
     /// Returns [`CommissionError::EncoderFault`] when the campaign's frozen encoder
     /// domain is invalid, or [`CommissionError::InvalidSchedule`] when its planned
     /// velocity cannot configure the independent safety envelope.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn new_outer_for_tmc_with_breakaway_campaign(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -658,7 +661,6 @@ impl CommissioningEngine {
     /// `Some` only for a breakaway acceptance run, so a `Some` return is itself
     /// the "run is breakaway" discriminator the install site needs; a combined
     /// or reproduced-Stage-B run returns `None`.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn breakaway_stage_c_execution_plan(
         &self,
     ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
@@ -676,6 +678,12 @@ impl CommissioningEngine {
     }
 
     /// Create a direct Stage-C resume engine from a preflighted exact plan.
+    ///
+    /// Stays trace-gated: its `StageCPreflight` parameter is defined in
+    /// `commission_dispatch::stage_c`, a module still gated on
+    /// `trace-velocity-sweep` pending Task 6/7's dispatch retained-evidence
+    /// wiring. Un-gating this constructor alone (without that module) cannot
+    /// compile, so it is deferred with its parameter type.
     #[cfg(feature = "trace-velocity-sweep")]
     pub fn new_outer_for_tmc_with_stage_c_preflight(
         oid: u8,
@@ -703,6 +711,12 @@ impl CommissioningEngine {
     }
 
     /// Create one direct fixed-I matrix engine from an exact disclosed plan.
+    ///
+    /// Stays trace-gated: its `AcceptanceMatrixPreflight` parameter is defined
+    /// in `commission_dispatch::acceptance`, a module still gated on
+    /// `trace-velocity-sweep` pending Task 6/7's dispatch retained-evidence
+    /// wiring. Un-gating this constructor alone (without that module) cannot
+    /// compile, so it is deferred with its parameter type.
     #[cfg(feature = "trace-velocity-sweep")]
     pub fn new_outer_for_tmc_with_acceptance_preflight(
         oid: u8,
@@ -730,7 +744,6 @@ impl CommissioningEngine {
     }
 
     /// Return the order of the active fixed-I acceptance matrix.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn acceptance_matrix_order(
         &self,
     ) -> Option<crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrder> {
@@ -756,7 +769,6 @@ impl CommissioningEngine {
     }
 
     /// Return the exact digest of the active fixed-I acceptance matrix.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn acceptance_matrix_plan_digest(&self) -> Option<u64> {
         let EngineMode::Outer {
             phase: OuterPhase::VelocityIntegral { data, .. },
@@ -786,7 +798,6 @@ impl CommissioningEngine {
     /// campaign breadcrumb. Terminal and Stage-C phases are deliberately left
     /// unchanged so their completed evidence cannot be overwritten.
     pub(crate) fn take_after_handled_stop(slot: &mut Option<Self>) -> Option<Self> {
-        #[cfg(feature = "trace-velocity-sweep")]
         if matches!(
             slot.as_ref().map(|engine| &engine.engine_mode),
             Some(EngineMode::Outer {
@@ -825,7 +836,6 @@ impl CommissioningEngine {
     }
 
     /// Operational velocity-output limit owned by an active trace velocity workflow.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn velocity_operational_torque_limit(&self) -> Option<u16> {
         let EngineMode::Outer { phase, .. } = &self.engine_mode else {
             return None;
@@ -848,7 +858,6 @@ impl CommissioningEngine {
     }
 
     /// Mark a completed trace velocity exit after disarm and checked restoration.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn mark_velocity_limit_restored(&mut self) {
         let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
             return;
@@ -946,7 +955,7 @@ impl CommissioningEngine {
         &mut self.trace_summary_seqs
     }
 
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     pub(crate) fn emit_outer_safety_timing_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1000,7 +1009,6 @@ impl CommissioningEngine {
     }
 
     /// Attach and return the terminal-sequenced active-I rest-boundary record.
-    #[cfg(feature = "trace-velocity-sweep")]
     pub(crate) fn attach_stage_c_rest_boundary(
         &self,
         terminal: &mut crate::commissioning::types::VelocityIntegralTerminal,
@@ -1166,7 +1174,7 @@ impl CommissioningEngine {
     }
 
     /// Emit the authoritative Stage-C terminal after retained-evidence policy.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     #[inline(never)]
     pub(crate) fn emit_stage_c_terminal_trace<B: CommissioningBackend>(
         &mut self,
@@ -1220,7 +1228,7 @@ impl CommissioningEngine {
     }
 
     /// Emit the authoritative matrix terminal after disarm and retained-state policy.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     pub(crate) fn emit_acceptance_matrix_terminal_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1262,7 +1270,7 @@ impl CommissioningEngine {
                 self.emit_trace_phase_start(backend, *phase);
             }
             StepResult::VelocityIntegralEvent(event) => {
-                #[cfg(all(feature = "trace", feature = "trace-velocity-sweep"))]
+                #[cfg(feature = "trace")]
                 backend.record_velocity_sweep_trace_record(
                     crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_event(
                         *event,
@@ -1281,34 +1289,18 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
                         report.evidence_sequence,
                     ),
-                    #[cfg(feature = "trace-velocity-sweep")]
                     crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => (
                         EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
                         report.evidence_sequence,
                     ),
-                    #[cfg(feature = "trace-velocity-sweep")]
                     crate::commissioning::types::VelocityIntegralEvent::RecoveryRest(report) => (
                         EVENT_COMMISSION_SELECTED_RECOVERY_REST,
                         report.evidence_sequence,
                     ),
-                    #[cfg(feature = "trace-velocity-sweep")]
                     crate::commissioning::types::VelocityIntegralEvent::RestSelection(report) => (
                         EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
                         report.evidence_sequence,
                     ),
-                    // The `VelocityIntegralEvent`
-                    // variant definitions are un-gated, but their only producer (the Stage-C
-                    // engine) stays trace-gated, so this arm is
-                    // unreachable in the non-trace build until then. Task 7
-                    // replaces it once the producer un-gates. Reuses the
-                    // always-imported plan event id as an inert placeholder
-                    // rather than pulling in a trace-gated constant.
-                    #[cfg(not(feature = "trace-velocity-sweep"))]
-                    crate::commissioning::types::VelocityIntegralEvent::Recovery(_)
-                    | crate::commissioning::types::VelocityIntegralEvent::RecoveryRest(_)
-                    | crate::commissioning::types::VelocityIntegralEvent::RestSelection(_) => {
-                        (EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN, 0)
-                    }
                     crate::commissioning::types::VelocityIntegralEvent::Current(report) => (
                         EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
                         report.evidence_sequence,
@@ -1323,7 +1315,7 @@ impl CommissioningEngine {
                 });
             }
             StepResult::VelocityIntegralTerminal(_) => {}
-            #[cfg(feature = "trace-velocity-sweep")]
+            #[cfg(feature = "trace")]
             StepResult::AcceptanceMatrixEvent(event) => {
                 let (record, event_id, sequence) = match event {
                     crate::commissioning::types::AcceptanceMatrixEvent::Observation(report) => (
@@ -1338,7 +1330,6 @@ impl CommissioningEngine {
                         EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
                         report.evidence_sequence,
                     ),
-                    #[cfg(feature = "trace-velocity-sweep")]
                     crate::commissioning::types::AcceptanceMatrixEvent::Recovery(report) => (
                         crate::commissioning::outer::velocity::acceptance_reporting::
                             encode_acceptance_recovery(*report),
@@ -1380,19 +1371,20 @@ impl CommissioningEngine {
                     payload_count: 1,
                 });
             }
-            #[cfg(not(feature = "trace-velocity-sweep"))]
+            #[cfg(not(feature = "trace"))]
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::AcceptanceMatrixTerminal(_) => {}
-            // Un-gating the `StepResult` variant definitions lets
-            // the evidence/encoding layer build in production; the campaign
-            // engine that produces these results, and the raw trace emission
-            // below, stay trace-gated. Nothing constructs these
-            // variants in the non-trace build, so this is a no-op stub.
-            #[cfg(not(feature = "trace-velocity-sweep"))]
+            // The campaign engine that produces these
+            // `StepResult` variants runs in the default build, so they are now
+            // reachable without any trace feature. This function's only job is
+            // FTRC raw-trace emission (`commission_dispatch::replies` builds the
+            // real Klipper reply from the same evidence over a separate path),
+            // so production still has nothing to do here: no-op stub.
+            #[cfg(not(feature = "trace"))]
             StepResult::BreakawayCampaignEvent(_) => {}
-            #[cfg(not(feature = "trace-velocity-sweep"))]
+            #[cfg(not(feature = "trace"))]
             StepResult::BreakawayStageCPlanReady { .. } => {}
-            #[cfg(feature = "trace-velocity-sweep")]
+            #[cfg(feature = "trace")]
             StepResult::BreakawayCampaignEvent(event) => {
                 self.emit_breakaway_campaign_trace(backend, *event);
             }
@@ -1401,7 +1393,7 @@ impl CommissioningEngine {
             // The combined path emits the equivalent records from
             // `commission_dispatch` because its plan rides a reply built there;
             // a breakaway hand-off has no such reply, so the engine owns it.
-            #[cfg(feature = "trace-velocity-sweep")]
+            #[cfg(feature = "trace")]
             StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
                 for record in
                     crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
@@ -1447,7 +1439,7 @@ impl CommissioningEngine {
     /// Klipper reply path -- both paths loop over the same retained
     /// `breakaway_reporting` per-item report functions, so they can never
     /// disagree about which items exist.
-    #[cfg(feature = "trace-velocity-sweep")]
+    #[cfg(feature = "trace")]
     fn emit_breakaway_campaign_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -1831,14 +1823,13 @@ mod tests {
         // Outer safety retains independent local and asymmetric absolute travel
         // bounds in the largest engine variant.
         //
-        // 3_824 -> 3_840: +16 B for the exact velocity envelope. The runtime cap
-        // moved from whole counts per millisecond to milli-counts per second so
-        // the comparison stops rounding it (the floor cost 6% of the envelope at
-        // the commissioning amplitude), plus the frozen settle ceiling and the
-        // primitive's moving/settle marker. The trace build absorbs the same
-        // fields in existing padding, so only this baseline moves.
+        // 3_840 -> 5_744: un-gates `OuterPhase::VelocityIntegral`
+        // and `OuterPhase::BreakawayCampaign` -- previously trace-velocity-sweep-
+        // only, now the same largest-variant payload compiled in every build --
+        // so the default build's `CommissioningEngine` now matches the
+        // `trace-velocity-sweep` value below exactly.
         #[cfg(not(feature = "trace-velocity-sweep"))]
-        assert_eq!(size_of::<CommissioningEngine>(), 3_840);
+        assert_eq!(size_of::<CommissioningEngine>(), 5_744);
         // The feature-on immutable plan and engine-owned cooperative analysis
         // state make VelocitySweep the largest outer payload. Resumable
         // partial-block analysis reaches, but does not raise, the audited F407

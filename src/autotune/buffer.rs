@@ -169,7 +169,6 @@ impl TransientBuffer {
     /// Commissioning phases that do not use the transient samples may reuse
     /// this fixed allocation instead of growing the engine's largest enum
     /// variant. The logical capture length is intentionally unchanged.
-    #[cfg(any(test, feature = "trace-velocity-sweep"))]
     pub(crate) fn write_workspace_word(&mut self, index: usize, value: u32) -> bool {
         let Some(destination) = self.samples.get_mut(index) else {
             return false;
@@ -179,7 +178,6 @@ impl TransientBuffer {
     }
 
     /// Read one engine-owned workspace word outside a transient capture.
-    #[cfg(any(test, feature = "trace-velocity-sweep"))]
     pub(crate) fn workspace_word(&self, index: usize) -> Option<u32> {
         self.samples.get(index).copied()
     }

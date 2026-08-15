@@ -1567,7 +1567,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
             };
             data.current_observer.observe_moving_output(torque_target);
-            let moving_peak = data.current_observer.moving_pid_output_peak();
+            let _moving_peak = data.current_observer.moving_pid_output_peak();
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
@@ -1575,9 +1575,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let Some(stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
+            let Some(_stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             };
+            #[cfg(feature = "trace")]
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: integral_slot_direction(data.plan.slot_order, data.slot)
@@ -1592,11 +1593,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         ),
                     delta_counts: delta.signed_counts(),
                     elapsed_us: elapsed_us as u32,
-                    stroke_index,
+                    stroke_index: _stroke_index,
                     direction: integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0)
                         as i8,
-                    flags: u8::from(moving_peak >= data.plan.usable_torque_limit),
-                    peak_torque_target_abs: moving_peak,
+                    flags: u8::from(_moving_peak >= data.plan.usable_torque_limit),
+                    peak_torque_target_abs: _moving_peak,
                     velocity_diagnostic_value: 0,
                 },
             );
@@ -1839,7 +1840,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
             };
             data.current_observer.observe_zero_output(torque_target);
-            let zero_peak = data.current_observer.zero_pid_output_peak();
+            let _zero_peak = data.current_observer.zero_pid_output_peak();
             data.settle_displacement_counts = i32::from(data.settle_displacement_counts)
                 .saturating_add(delta.signed_counts())
                 .clamp(-2, 2) as i8;
@@ -1863,18 +1864,19 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let Some(stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
+            let Some(_stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             };
+            #[cfg(feature = "trace")]
             backend.record_velocity_trace_observation(
                 crate::trace::stream::VelocityTraceObservation {
                     target_counts_per_ms: 0,
                     delta_counts: delta.signed_counts(),
                     elapsed_us: elapsed_us as u32,
-                    stroke_index: SETTLE_TRACE_STROKE_MARKER | stroke_index,
+                    stroke_index: SETTLE_TRACE_STROKE_MARKER | _stroke_index,
                     direction: 0,
                     flags: 0,
-                    peak_torque_target_abs: zero_peak,
+                    peak_torque_target_abs: _zero_peak,
                     velocity_diagnostic_value: 0,
                 },
             );
