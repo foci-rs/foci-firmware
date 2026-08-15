@@ -149,9 +149,9 @@ const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 /// Borrowed single-stroke scratch space: capture ring, stationarity analysis, and
 /// current-clamp evidence for one guarded stroke at a time.
 ///
-/// Sized and shaped like the corresponding fields of
-/// [`super::super::VelocitySweepData`] so a future caller can carve this out of the
-/// same workspace rather than allocating a second one. This type never allocates on
+/// Sized and shaped for a single guarded stroke's capture, stationarity, and
+/// current-clamp evidence so a future caller can carve this out of a shared
+/// workspace rather than allocating a second one. This type never allocates on
 /// the heap; every field is fixed-size.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct BreakawayProbeWorkspace {
