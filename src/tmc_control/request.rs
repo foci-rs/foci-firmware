@@ -2559,9 +2559,9 @@ mod tests {
 
         // The encoder-not-ready preflight must surface as a commission-phase
         // failure the host already handles (autotune.py sets commissioning
-        // error_code and raises), not a planless VelocitySweepTerminal that the
-        // host's "envelope before evidence" gate rejects with a cryptic protocol
-        // error while discarding the real cause.
+        // error_code and raises), not a planless velocity-sweep terminal reply
+        // that the host's "envelope before evidence" gate rejects with a cryptic
+        // protocol error while discarding the real cause.
         assert_eq!(board.replies.len(), 1);
         assert_commission_phase_failure(
             &board.replies[0],

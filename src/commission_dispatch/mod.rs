@@ -17,8 +17,6 @@ pub mod post_actions;
 pub mod replies;
 mod restore;
 #[cfg(feature = "trace-velocity-sweep")]
-pub mod stage_b;
-#[cfg(feature = "trace-velocity-sweep")]
 pub mod stage_c;
 #[cfg(all(test, feature = "trace-velocity-sweep"))]
 mod stage_c_tests;
@@ -29,8 +27,6 @@ mod tests;
 
 pub use post_actions::{StepperTaskDirective, apply_stepper_post_action_state};
 pub use replies::{CommissionReplySink, emit_phase_reply, emit_terminal_reply};
-#[cfg(feature = "trace-velocity-sweep")]
-pub use stage_b::{StageBPreflight, StageBPreflightRejection, preflight_stage_b_request};
 
 use crate::autotune::PhaseId;
 // CommissioningEngine lives in commissioning/mod.rs (the engine impl); the
@@ -39,7 +35,7 @@ use crate::commissioning::{
     CommissioningEngine,
     types::{
         AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult,
-        OuterSafetyFault, StepResult, VelocitySweepTerminal,
+        OuterSafetyFault, StepResult,
     },
 };
 use crate::pid::{InnerLoopGains, OuterLoopGains};
@@ -322,11 +318,6 @@ pub enum ReplyPayload {
         results: SelftestResults,
         diagnostics: crate::selftest::CommissionDiagnostics,
         done_status: u8,
-    },
-    /// Dedicated detailed report-only Stage B terminal.
-    VelocitySweepTerminal {
-        oid: u8,
-        terminal: VelocitySweepTerminal,
     },
     /// Complete exact Stage-C plan emitted before direct-resume motion.
     #[cfg(feature = "trace-velocity-sweep")]

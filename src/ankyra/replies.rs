@@ -2504,101 +2504,6 @@ pub struct FociVelocityLimitLatchRestore {
     pub restore_verified_mask: u8,
 }
 
-/// Stage B terminal class and report completeness.
-#[klipper_reply]
-pub struct FociVelocityStageBTerminalCore {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Terminal evidence sequence.
-    pub evidence_sequence: u16,
-    /// Terminal fragment discriminator.
-    pub fragment: u8,
-    /// Stage B terminal outcome.
-    pub outcome: u8,
-    /// Dedicated Stage B terminal cause.
-    pub cause: u8,
-    /// One when final or partial-rung recovery could not establish the continuation origin.
-    pub recovery_unavailable: u8,
-    /// Directional-model sufficiency mask.
-    pub model_direction_mask: u8,
-    /// Direct nominated-P coverage mask.
-    pub coverage_mask: u8,
-    /// Forward valid-region count.
-    pub forward_region_count: u8,
-    /// Reverse valid-region count.
-    pub reverse_region_count: u8,
-    /// Forward fragment count.
-    pub forward_fragment_count: u8,
-    /// Reverse fragment count.
-    pub reverse_fragment_count: u8,
-    /// Planned observation-report count.
-    pub expected_observations: u16,
-    /// Emitted observation-report count.
-    pub emitted_observations: u16,
-    /// Planned rung-report count.
-    pub expected_rungs: u16,
-    /// Emitted rung-report count.
-    pub emitted_rungs: u16,
-}
-
-/// Exact selected memberships, nomination, and terminal digest.
-#[klipper_reply]
-pub struct FociVelocityStageBTerminalIdentity {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Terminal evidence sequence.
-    pub evidence_sequence: u16,
-    /// Terminal fragment discriminator.
-    pub fragment: u8,
-    /// Selected forward model membership.
-    pub forward_member_mask: u32,
-    /// Selected reverse model membership.
-    pub reverse_member_mask: u32,
-    /// Selected joint-operability membership.
-    pub joint_member_mask: u32,
-    /// Firmware-nominated proportional gain.
-    pub nominated_p: u16,
-    /// Exact low immutable-plan digest word.
-    pub plan_digest_low: u32,
-    /// Exact high immutable-plan digest word.
-    pub plan_digest_high: u32,
-    /// Exact low digest word.
-    pub digest_low: u32,
-    /// Exact high digest word.
-    pub digest_high: u32,
-}
-
-/// One selected directional interval from the Stage B terminal.
-#[klipper_reply]
-pub struct FociVelocityStageBTerminalInterval {
-    /// Endpoint object id.
-    pub oid: u8,
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Terminal evidence sequence.
-    pub evidence_sequence: u16,
-    /// Terminal fragment discriminator.
-    pub fragment: u8,
-    /// Direction code.
-    pub direction: u8,
-    /// Exact pooled lower confidence edge, or schema-9 settled-rate lower edge.
-    pub pooled_low_q16: i32,
-    /// Exact pooled upper confidence edge, or schema-9 settled-rate upper edge.
-    pub pooled_high_q16: i32,
-    /// Low monotonic start timestamp word.
-    pub started_low: u32,
-    /// High monotonic start timestamp word.
-    pub started_high: u32,
-    /// Low monotonic completion timestamp word.
-    pub completed_low: u32,
-    /// High monotonic completion timestamp word.
-    pub completed_high: u32,
-}
-
 // ============================================================================
 // Breakaway-seeded campaign reporting
 // ============================================================================
@@ -3700,65 +3605,6 @@ mod velocity_sweep_reply_tests {
     }
 
     #[test]
-    fn worst_case_velocity_sweep_fragments_fit_transport() {
-        assert_fits(
-            &FociVelocityStageBTerminalCore {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                fragment: u8::MAX,
-                outcome: u8::MAX,
-                cause: u8::MAX,
-                recovery_unavailable: u8::MAX,
-                model_direction_mask: u8::MAX,
-                coverage_mask: u8::MAX,
-                forward_region_count: u8::MAX,
-                reverse_region_count: u8::MAX,
-                forward_fragment_count: u8::MAX,
-                reverse_fragment_count: u8::MAX,
-                expected_observations: u16::MAX,
-                emitted_observations: u16::MAX,
-                expected_rungs: u16::MAX,
-                emitted_rungs: u16::MAX,
-            },
-            "stage_b_terminal_core",
-        );
-        assert_fits(
-            &FociVelocityStageBTerminalIdentity {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                fragment: u8::MAX,
-                forward_member_mask: 0x8000_0001,
-                reverse_member_mask: 0x8000_0001,
-                joint_member_mask: 0x8000_0001,
-                nominated_p: u16::MAX,
-                plan_digest_low: 0x0123_4567,
-                plan_digest_high: 0x89ab_cdef,
-                digest_low: 0x7654_3210,
-                digest_high: 0xfedc_ba98,
-            },
-            "stage_b_terminal_identity",
-        );
-        assert_fits(
-            &FociVelocityStageBTerminalInterval {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                fragment: u8::MAX,
-                direction: u8::MAX,
-                pooled_low_q16: i32::MIN,
-                pooled_high_q16: i32::MAX,
-                started_low: WIDE_U32,
-                started_high: WIDE_U32,
-                completed_low: WIDE_U32,
-                completed_high: WIDE_U32,
-            },
-            "stage_b_terminal_interval",
-        );
-    }
-
-    #[test]
     fn worst_case_velocity_integral_fragments_fit_transport() {
         let workflow = FociCommissioningWorkflowPlan {
             oid: u8::MAX,
@@ -4125,36 +3971,6 @@ mod velocity_sweep_reply_tests {
         assert_eq!(
             (u64::from(terminal.digest_high) << 32) | u64::from(terminal.digest_low),
             !digest
-        );
-    }
-
-    #[test]
-    fn stage_b_exact_identity_fields_round_trip_without_compaction() {
-        let identity = FociVelocityStageBTerminalIdentity {
-            oid: 1,
-            run_sequence: 2,
-            evidence_sequence: 3,
-            fragment: 1,
-            forward_member_mask: 0x8000_0001,
-            reverse_member_mask: 0x7fff_fffe,
-            joint_member_mask: 0xa5a5_5a5a,
-            nominated_p: 1_448,
-            plan_digest_low: 0x0123_4567,
-            plan_digest_high: 0x89ab_cdef,
-            digest_low: 0x7654_3210,
-            digest_high: 0xfedc_ba98,
-        };
-
-        assert_eq!(identity.forward_member_mask, 0x8000_0001);
-        assert_eq!(identity.reverse_member_mask, 0x7fff_fffe);
-        assert_eq!(identity.joint_member_mask, 0xa5a5_5a5a);
-        assert_eq!(
-            (identity.plan_digest_high, identity.plan_digest_low),
-            (0x89ab_cdef, 0x0123_4567)
-        );
-        assert_eq!(
-            (identity.digest_high, identity.digest_low),
-            (0xfedc_ba98, 0x7654_3210)
         );
     }
 }

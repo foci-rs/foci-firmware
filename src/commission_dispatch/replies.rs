@@ -14,7 +14,7 @@ use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
     AdcCalResult, AdcResidualEvidence, CommissionResult, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, INDUCTANCE_SOURCE_NONE, InnerResult, OuterResult,
-    OuterSafetyFault, VelocitySweepTerminal,
+    OuterSafetyFault,
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
@@ -133,27 +133,6 @@ pub trait CommissionReplySink {
     fn foci_velocity_primitive_current_evidence(
         &mut self,
         _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
-    ) {
-    }
-
-    /// Emit the Stage B terminal class and completeness fragment.
-    fn foci_velocity_stage_b_terminal_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBTerminalCore,
-    ) {
-    }
-
-    /// Emit the exact Stage B terminal identity fragment.
-    fn foci_velocity_stage_b_terminal_identity(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBTerminalIdentity,
-    ) {
-    }
-
-    /// Emit one Stage B terminal directional interval fragment.
-    fn foci_velocity_stage_b_terminal_interval(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityStageBTerminalInterval,
     ) {
     }
 
@@ -1427,76 +1406,6 @@ fn emit_rung_origin_recovery<S: CommissionReplySink>(
     });
 }
 
-fn emit_velocity_sweep_terminal_fragments<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: VelocitySweepTerminal,
-) {
-    use crate::ankyra::replies::{
-        FociVelocityStageBTerminalCore, FociVelocityStageBTerminalIdentity,
-        FociVelocityStageBTerminalInterval,
-    };
-    use crate::commissioning::types::VelocitySweepOutcome;
-
-    let evidence_sequence = report.evidence_sequence;
-    let outcome = match report.outcome {
-        VelocitySweepOutcome::CompleteCandidate => 0,
-        VelocitySweepOutcome::Complete => 1,
-        VelocitySweepOutcome::Inconclusive => 2,
-        VelocitySweepOutcome::Fault => 3,
-        VelocitySweepOutcome::RejectedPlanMismatch => 4,
-    };
-    sink.foci_velocity_stage_b_terminal_core(FociVelocityStageBTerminalCore {
-        oid,
-        run_sequence: report.run_sequence,
-        evidence_sequence,
-        fragment: 0,
-        outcome,
-        cause: report.cause,
-        recovery_unavailable: u8::from(report.recovery_unavailable),
-        model_direction_mask: report.model_direction_mask,
-        coverage_mask: report.coverage_mask,
-        forward_region_count: report.directional_region_counts[0],
-        reverse_region_count: report.directional_region_counts[1],
-        forward_fragment_count: report.directional_fragment_counts[0],
-        reverse_fragment_count: report.directional_fragment_counts[1],
-        expected_observations: report.expected_observations,
-        emitted_observations: report.emitted_observations,
-        expected_rungs: report.expected_rungs,
-        emitted_rungs: report.emitted_rungs,
-    });
-    sink.foci_velocity_stage_b_terminal_identity(FociVelocityStageBTerminalIdentity {
-        oid,
-        run_sequence: report.run_sequence,
-        evidence_sequence,
-        fragment: 1,
-        forward_member_mask: report.selected_memberships[0],
-        reverse_member_mask: report.selected_memberships[1],
-        joint_member_mask: report.selected_memberships[2],
-        nominated_p: report.nominated_p,
-        plan_digest_low: report.plan_digest as u32,
-        plan_digest_high: (report.plan_digest >> 32) as u32,
-        digest_low: report.digest as u32,
-        digest_high: (report.digest >> 32) as u32,
-    });
-    for direction in 0..2 {
-        let interval = report.selected_intervals[usize::from(direction)];
-        sink.foci_velocity_stage_b_terminal_interval(FociVelocityStageBTerminalInterval {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence,
-            fragment: direction + 2,
-            direction,
-            pooled_low_q16: interval[0],
-            pooled_high_q16: interval[1],
-            started_low: report.run_started_us as u32,
-            started_high: (report.run_started_us >> 32) as u32,
-            completed_low: report.run_completed_us as u32,
-            completed_high: (report.run_completed_us >> 32) as u32,
-        });
-    }
-}
-
 /// Emit all Klipper replies represented by one terminal commissioning payload.
 pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyPayload) {
     match payload {
@@ -1576,12 +1485,6 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 sink.foci_selftest_result(oid, stage, value);
             }
             sink.foci_selftest_done(oid, done_status);
-        }
-        ReplyPayload::VelocitySweepTerminal { oid, terminal } => {
-            if let Some(fault) = terminal.safety_fault {
-                sink.foci_outer_safety_fault(oid, fault);
-            }
-            emit_velocity_sweep_terminal_fragments(sink, oid, terminal);
         }
         #[cfg(feature = "trace-velocity-sweep")]
         ReplyPayload::CommissioningWorkflowPlan { oid, plan } => {
@@ -2286,10 +2189,6 @@ mod tests {
             velocity_counts_per_ms: i32,
             velocity_cap_counts_per_ms: i32,
         },
-        StageBTerminal {
-            fragment: u8,
-            evidence_sequence: u16,
-        },
         WorkflowPlan,
         IntegralPlan(u8),
         IntegralPlanRecovery,
@@ -2639,36 +2538,6 @@ mod tests {
             _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
         ) {
             self.events.push(Event::PrimitiveCurrent);
-        }
-
-        fn foci_velocity_stage_b_terminal_core(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBTerminalCore,
-        ) {
-            self.events.push(Event::StageBTerminal {
-                fragment: report.fragment,
-                evidence_sequence: report.evidence_sequence,
-            });
-        }
-
-        fn foci_velocity_stage_b_terminal_identity(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBTerminalIdentity,
-        ) {
-            self.events.push(Event::StageBTerminal {
-                fragment: report.fragment,
-                evidence_sequence: report.evidence_sequence,
-            });
-        }
-
-        fn foci_velocity_stage_b_terminal_interval(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityStageBTerminalInterval,
-        ) {
-            self.events.push(Event::StageBTerminal {
-                fragment: report.fragment,
-                evidence_sequence: report.evidence_sequence,
-            });
         }
 
         fn foci_commissioning_workflow_plan(
@@ -4038,119 +3907,6 @@ mod tests {
                     stiffness_timebase_ms: 64,
                     velocity_search_stop_reason: 65,
                     motion_budget_mrev: 66,
-                },
-            ]
-        );
-    }
-
-    #[cfg(feature = "trace-velocity-sweep")]
-    #[test]
-    fn sweep_terminal_order_separates_fault_and_inconclusive_paths() {
-        use crate::commissioning::types::VelocitySweepOutcome;
-        let safety_fault = OuterSafetyFault {
-            reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
-            max_travel_mrev: 750,
-            max_velocity_mrev_s: 6_000,
-            max_duration_ms: 3_000,
-            direction_mask: 3,
-            delta_counts: -125,
-            dt_us: 4_000,
-            velocity_counts_per_ms: -31,
-            velocity_cap_counts_per_ms: 24,
-            position_counts: -373,
-            position_window_counts: 3_000,
-            elapsed_us: 120_000,
-            duration_cap_us: 3_000_000,
-        };
-        let digest = 0x0123_4567_89ab_cdef;
-        let mut terminal = VelocitySweepTerminal {
-            run_sequence: 7,
-            evidence_sequence: 11,
-            plan_digest: 0x1111_2222_3333_4444,
-            outcome: VelocitySweepOutcome::Fault,
-            cause: CommissionError::SafetyEnvelopeViolation.status_code(),
-            recovery_unavailable: false,
-            model_direction_mask: 0,
-            selected_memberships: [0; 3],
-            nominated_p: 0,
-            selected_intervals: [[0; 2]; 2],
-            selected_common_intervals: [[0; 2]; 2],
-            p_start: 256,
-            p_top: 1_024,
-            rung_count: 5,
-            coverage_mask: 0,
-            directional_region_counts: [1, 2],
-            directional_fragment_counts: [3, 4],
-            expected_observations: 20,
-            emitted_observations: 4,
-            expected_rungs: 5,
-            emitted_rungs: 1,
-            digest,
-            run_started_us: 1_000,
-            run_completed_us: 2_000,
-            safety_fault: Some(safety_fault),
-        };
-        let mut sink = RecordingSink::default();
-
-        emit_terminal_reply(
-            &mut sink,
-            ReplyPayload::VelocitySweepTerminal { oid: 3, terminal },
-        );
-
-        assert!(matches!(sink.events[0], Event::OuterSafetyFault { .. }));
-        assert_eq!(
-            &sink.events[1..],
-            &[
-                Event::StageBTerminal {
-                    fragment: 0,
-                    evidence_sequence: 11,
-                },
-                Event::StageBTerminal {
-                    fragment: 1,
-                    evidence_sequence: 11,
-                },
-                Event::StageBTerminal {
-                    fragment: 2,
-                    evidence_sequence: 11,
-                },
-                Event::StageBTerminal {
-                    fragment: 3,
-                    evidence_sequence: 11,
-                },
-            ]
-        );
-        assert!(
-            !sink
-                .events
-                .iter()
-                .any(|event| matches!(event, Event::Tune { .. }))
-        );
-
-        terminal.outcome = VelocitySweepOutcome::Inconclusive;
-        terminal.safety_fault = None;
-        let mut sink = RecordingSink::default();
-        emit_terminal_reply(
-            &mut sink,
-            ReplyPayload::VelocitySweepTerminal { oid: 3, terminal },
-        );
-        assert_eq!(
-            sink.events,
-            [
-                Event::StageBTerminal {
-                    fragment: 0,
-                    evidence_sequence: 11,
-                },
-                Event::StageBTerminal {
-                    fragment: 1,
-                    evidence_sequence: 11,
-                },
-                Event::StageBTerminal {
-                    fragment: 2,
-                    evidence_sequence: 11,
-                },
-                Event::StageBTerminal {
-                    fragment: 3,
-                    evidence_sequence: 11,
                 },
             ]
         );
