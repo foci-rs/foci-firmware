@@ -61,7 +61,6 @@ pub fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
 }
 
 /// Build a real admitted breakaway engine for cross-module lifecycle tests.
-#[cfg(feature = "trace-velocity-sweep")]
 pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine {
     use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 

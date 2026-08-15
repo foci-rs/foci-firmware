@@ -1,7 +1,6 @@
 #![allow(unused_imports)]
 //! Tests for drive_commission_result. Populated per-variant in Tasks 12-18.
 
-#[cfg(feature = "trace-velocity-sweep")]
 use super::test_support::breakaway_campaign_engine;
 use super::test_support::{
     MockBackend, SpiOp, accepted_commission_result as sample_commission_result, fresh_state_locals,
@@ -2253,6 +2252,42 @@ async fn breakaway_campaign_safety_failure_disarms_without_reaching_stage_c() {
     }
 
     clear_motor_sentinel();
+}
+
+/// A production outer-tune failure during an active velocity/breakaway workflow
+/// must run the velocity-aware disarm/restore, which zeroes `PID_VELOCITY_TARGET`
+/// and re-clamps the operational current limit. The plain entry-gain restore
+/// never touches `PID_VELOCITY_TARGET`, so leaving the workflow's torque clamp
+/// wrong is exactly what this guards against once breakaway is the default path.
+#[fixture_test]
+async fn outer_failed_during_velocity_workflow_runs_velocity_aware_restore() {
+    let mut backend = MockBackend::new();
+    backend.enable_pin = true;
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(breakaway_campaign_engine());
+    crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
+    crate::diagnostic::begin_breakaway_campaign();
+
+    let _ = drive_commission_result(
+        StepResult::OuterFailed(crate::autotune::CommissionError::Shutdown),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4_095,
+    )
+    .await;
+
+    assert!(
+        backend.spi_log.iter().any(|op| matches!(
+            op,
+            SpiOp::Write(addr, 0)
+                if *addr == foci_tmc4671::registers::PID_VELOCITY_TARGET.addr()
+        )),
+        "velocity-aware restore must zero PID_VELOCITY_TARGET before disarm"
+    );
+    assert!(!backend.enable_pin, "safety fault must disarm the motor");
+    assert!(engine.is_none(), "safety fault must consume the engine");
 }
 
 /// A scheduler-generated outer failure may interrupt a still-active campaign.

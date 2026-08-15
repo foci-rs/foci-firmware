@@ -1037,9 +1037,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
         StepResult::OuterFailed(error) => {
             use crate::autotune::CommissionError as CE;
             use core::sync::atomic::Ordering::Relaxed;
-            #[cfg(feature = "trace-velocity-sweep")]
             let mut error = error;
-            #[cfg(feature = "trace-velocity-sweep")]
             let velocity_workflow_restored = if engine
                 .as_ref()
                 .and_then(CommissioningEngine::velocity_operational_torque_limit)
@@ -1049,7 +1047,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             } else {
                 true
             };
-            #[cfg(feature = "trace-velocity-sweep")]
             if !velocity_workflow_restored {
                 error = CE::Spi;
             }
@@ -1170,14 +1167,11 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
 
             state.tmc.commission_in_flight.store(false, Relaxed);
 
-            #[cfg(feature = "trace-velocity-sweep")]
             let consumed = if velocity_workflow_restored {
                 CommissioningEngine::take_after_handled_stop(engine)
             } else {
                 engine.take()
             };
-            #[cfg(not(feature = "trace-velocity-sweep"))]
-            let consumed = engine.take();
             let _ = consumed.expect("engine slot None after OuterFailed safe restoration");
 
             CommissionOutcome::Terminal {
@@ -1361,7 +1355,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     }
 }
 
-#[cfg(feature = "trace-velocity-sweep")]
+#[cfg(feature = "trace")]
 pub(crate) fn emit_outer_safety_timing_before_failure<B: CommissioningBackend>(
     result: &StepResult,
     engine: &mut Option<CommissioningEngine>,
