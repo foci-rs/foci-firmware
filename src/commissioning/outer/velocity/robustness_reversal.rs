@@ -1040,6 +1040,7 @@ mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
         ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
+        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::OuterMotionBudget;
@@ -1332,6 +1333,51 @@ mod tests {
             );
             assert_eq!(direction.retry_count, 0);
         }
+    }
+
+    /// I5 anti-aliasing, end to end: a run where one direction TRIPS a
+    /// threshold and the other is INCONCLUSIVE must reject with the trip cause,
+    /// never fold the reject and inconclusive verdicts into one another. This
+    /// is the exact mixed regime the hardware characterization produces.
+    #[test]
+    fn mixed_trip_and_inconclusive_yields_rejected_with_trip_cause() {
+        let mut jitter_high = false;
+        let (terminal, _backend) = drive_scripted(test_point(), move |phase, tick, target| {
+            match phase {
+                // Direction 0 reversal (negative target): stall past t_max, then
+                // converge in band -> a real TRIP_TIME rejection.
+                CapturePhase::Reverse if target < 0 => {
+                    if tick < 330 {
+                        0
+                    } else {
+                        target.signum() * STEADY_DELTA
+                    }
+                }
+                // Direction 1 reversal (positive target): jitter so wildly it
+                // never enters the band -> inconclusive after the retry budget.
+                CapturePhase::Reverse if target > 0 => {
+                    jitter_high = !jitter_high;
+                    if jitter_high { 300 } else { -300 }
+                }
+                _ if target != 0 => target.signum() * STEADY_DELTA,
+                _ => 0,
+            }
+        });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED);
+        assert!(terminal.safety_fault.is_none());
+        let [dir0, dir1] = terminal.evidence.directions;
+        assert!(!dir0.inconclusive, "the tripped direction is conclusive");
+        assert_ne!(
+            dir0.tripped & TRIP_TIME,
+            0,
+            "direction 0 must trip the time gate"
+        );
+        assert!(dir1.inconclusive, "direction 1 must be inconclusive");
+        assert_eq!(
+            dir1.tripped, 0,
+            "an inconclusive direction reports no trips"
+        );
     }
 
     /// I3: an establish leg whose settled tail fails stationarity (Excluded)
