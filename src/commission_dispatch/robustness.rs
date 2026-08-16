@@ -1,8 +1,23 @@
-//! Cause codes for the reversal-standstill robustness gate.
+//! Dispatch-side preflight and terminal application for the
+//! reversal-standstill robustness gate.
 //!
-//! This module currently holds only the `ROBUSTNESS_CAUSE_*` namespace,
-//! consumed by `robustness_evidence::summary_cause`. A later change extends it with
-//! the preflight/terminal-application dispatch logic.
+//! Holds the `ROBUSTNESS_CAUSE_*` namespace (consumed by
+//! `robustness_evidence::summary_cause`) plus the read-only preflight, the
+//! failed-terminal builder, and the terminal-application identity check.
+//! Both `preflight_robustness_reversal` and `apply_robustness_terminal`
+//! take `&StageCCandidateSlot`, never `&mut`: this phase probes the
+//! already-accepted operating point but never advances or closes
+//! `AcceptanceMatrixProgress`.
+
+use crate::commissioning::outer::velocity::integral_reproduction::{
+    AcceptancePoint, StageCCandidateSlot,
+};
+use crate::commissioning::outer::velocity::robustness_evidence::{
+    RobustnessDirectionEvidence, RobustnessEvidence,
+};
+use crate::commissioning::outer::velocity::robustness_metrics::ReversalMetrics;
+use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
+use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
 
 /// No direction tripped a threshold gate and no direction was inconclusive.
 pub const ROBUSTNESS_CAUSE_PASS: u8 = 0;
@@ -22,3 +37,205 @@ pub const ROBUSTNESS_CAUSE_SAFETY_FAULT: u8 = 6;
 /// Accepted-point identity mismatch, set at terminal application (Task 6).
 /// Never returned by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY: u8 = 7;
+
+/// Definitive rejection of a robustness-reversal preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum RobustnessPreflightRejection {
+    /// No candidate survived acceptance to be probed for robustness.
+    NoAcceptedCandidate,
+}
+
+/// Immutable robustness-reversal plan accepted before any probe motion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RobustnessPreflight {
+    /// The retained accepted operating point read for this probe.
+    pub point: AcceptancePoint,
+    /// Caller-assigned trace sequence.
+    pub run_sequence: u32,
+}
+
+/// Validate a retained accepted point without mutating retention.
+///
+/// Reads [`StageCCandidateSlot::acceptance_point`] only; never calls
+/// `advance_matrix_progress`/`close_matrix_progress`, so a failed or
+/// completed reversal probe cannot itself move the acceptance-matrix
+/// lifecycle forward.
+pub fn preflight_robustness_reversal(
+    run_sequence: u32,
+    stage_c_candidate: &StageCCandidateSlot,
+) -> Result<RobustnessPreflight, RobustnessPreflightRejection> {
+    let point = stage_c_candidate
+        .acceptance_point()
+        .ok_or(RobustnessPreflightRejection::NoAcceptedCandidate)?;
+    Ok(RobustnessPreflight {
+        point,
+        run_sequence,
+    })
+}
+
+/// Build one definitive zero-motion robustness terminal from admission policy.
+pub fn failed_robustness_terminal(
+    run_sequence: u32,
+    rejection: RobustnessPreflightRejection,
+) -> RobustnessReversalTerminal {
+    let cause = match rejection {
+        RobustnessPreflightRejection::NoAcceptedCandidate => ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE,
+    };
+    RobustnessReversalTerminal {
+        schema_revision: ROBUSTNESS_SCHEMA_REVISION,
+        run_sequence,
+        outcome: RobustnessOutcome::Failed,
+        cause,
+        selected_p: 0,
+        selected_i: 0,
+        target_velocity_rpm: 0,
+        evidence: zero_robustness_evidence(),
+        run_started_us: 0,
+        run_completed_us: 0,
+        safety_fault: None,
+    }
+}
+
+/// Apply one reversal-robustness terminal after confirming the retained
+/// accepted point's identity has not changed underneath the probe.
+///
+/// Takes `&StageCCandidateSlot` (shared, read-only): this phase never
+/// advances or closes `AcceptanceMatrixProgress`, so it cannot take a
+/// mutable slot reference. On identity mismatch (or an emptied slot) the
+/// terminal is stamped `Failed`/`EVIDENCE_INTEGRITY` -- distinct from
+/// `SAFETY_FAULT`, which is reserved for envelope faults.
+pub fn apply_robustness_terminal(
+    mut terminal: RobustnessReversalTerminal,
+    stage_c_candidate: &StageCCandidateSlot,
+) -> RobustnessReversalTerminal {
+    let identity_ok = stage_c_candidate.acceptance_point().is_some_and(|point| {
+        point.selected_p == terminal.selected_p && point.selected_i == terminal.selected_i
+    });
+    if !identity_ok {
+        terminal.outcome = RobustnessOutcome::Failed;
+        terminal.cause = ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY;
+    }
+    terminal
+}
+
+/// All-zero robustness evidence for a terminal built before any probe motion.
+fn zero_robustness_evidence() -> RobustnessEvidence {
+    let direction = RobustnessDirectionEvidence {
+        metrics: ReversalMetrics {
+            reconvergence_time_us: 0,
+            settled_residual_q: 0,
+            recovery_iae_q: 0,
+            forward_settle_time_us: 0,
+            reconvergence_ratio_ppm: 0,
+        },
+        tripped: 0,
+        retry_count: 0,
+        inconclusive: false,
+    };
+    RobustnessEvidence {
+        directions: [direction, direction],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commissioning::outer::velocity::integral_reproduction::{
+        AcceptanceMatrixProgress, StageCPlanIdentity,
+    };
+
+    fn sample_acceptance_point() -> AcceptancePoint {
+        AcceptancePoint {
+            identity: StageCPlanIdentity {
+                channel: 0,
+                build_features: 0x1234,
+                schema_revision: 1,
+                plan_digest: 0xfeed_beef,
+            },
+            selected_p: 1_024,
+            selected_i: 512,
+            target_velocity_rpm: 176,
+            selected_response_intervals_q: [[10, 20], [-20, -10]],
+            qualifier_bits: 0,
+            token: None,
+            progress: AcceptanceMatrixProgress::ReadyAscending,
+        }
+    }
+
+    fn sample_terminal(point: AcceptancePoint) -> RobustnessReversalTerminal {
+        RobustnessReversalTerminal {
+            schema_revision: ROBUSTNESS_SCHEMA_REVISION,
+            run_sequence: 1,
+            outcome: RobustnessOutcome::Complete,
+            cause: ROBUSTNESS_CAUSE_PASS,
+            selected_p: point.selected_p,
+            selected_i: point.selected_i,
+            target_velocity_rpm: point.target_velocity_rpm,
+            evidence: zero_robustness_evidence(),
+            run_started_us: 10,
+            run_completed_us: 20,
+            safety_fault: None,
+        }
+    }
+
+    #[test]
+    fn preflight_refuses_when_no_accepted_point() {
+        let slot = StageCCandidateSlot::new(); // Empty
+        assert_eq!(
+            preflight_robustness_reversal(1, &slot),
+            Err(RobustnessPreflightRejection::NoAcceptedCandidate)
+        );
+        let t = failed_robustness_terminal(1, RobustnessPreflightRejection::NoAcceptedCandidate);
+        assert_eq!(t.outcome, RobustnessOutcome::Failed);
+        assert_eq!(t.cause, ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE);
+    }
+
+    #[test]
+    fn preflight_reads_point_without_mutating_progress() {
+        let mut slot = StageCCandidateSlot::new();
+        slot.install_acceptance_point(sample_acceptance_point()); // helper; progress ReadyAscending
+        let before = slot.acceptance_point().unwrap().progress;
+        let pre = preflight_robustness_reversal(1, &slot).expect("has point");
+        assert_eq!(pre.point.selected_p, sample_acceptance_point().selected_p);
+        assert_eq!(slot.acceptance_point().unwrap().progress, before); // untouched
+    }
+
+    #[test]
+    fn apply_terminal_passes_through_on_identity_match() {
+        let point = sample_acceptance_point();
+        let mut slot = StageCCandidateSlot::new();
+        slot.install_acceptance_point(point);
+        let terminal = sample_terminal(point);
+
+        let applied = apply_robustness_terminal(terminal, &slot);
+
+        assert_eq!(applied.outcome, RobustnessOutcome::Complete);
+        assert_eq!(applied.cause, ROBUSTNESS_CAUSE_PASS);
+    }
+
+    #[test]
+    fn apply_terminal_flags_evidence_integrity_on_identity_mismatch() {
+        let point = sample_acceptance_point();
+        let mut slot = StageCCandidateSlot::new();
+        slot.install_acceptance_point(point);
+        let mut terminal = sample_terminal(point);
+        terminal.selected_p = point.selected_p.wrapping_add(1);
+
+        let applied = apply_robustness_terminal(terminal, &slot);
+
+        assert_eq!(applied.outcome, RobustnessOutcome::Failed);
+        assert_eq!(applied.cause, ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY);
+    }
+
+    #[test]
+    fn apply_terminal_flags_evidence_integrity_when_slot_empty() {
+        let point = sample_acceptance_point();
+        let slot = StageCCandidateSlot::new(); // Empty
+        let terminal = sample_terminal(point);
+
+        let applied = apply_robustness_terminal(terminal, &slot);
+
+        assert_eq!(applied.outcome, RobustnessOutcome::Failed);
+        assert_eq!(applied.cause, ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY);
+    }
+}
