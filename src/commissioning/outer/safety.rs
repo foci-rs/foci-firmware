@@ -917,7 +917,8 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
         | OuterPhase::VelocityTune { safety, .. }
         | OuterPhase::VelocityValidate { safety, .. }
         | OuterPhase::PositionTune { safety, .. }
-        | OuterPhase::FilterTune { safety, .. } => Some(safety),
+        | OuterPhase::FilterTune { safety, .. }
+        | OuterPhase::RobustnessReversal { safety, .. } => Some(safety),
         OuterPhase::VelocityIntegral { safety, .. } => Some(safety),
         OuterPhase::BreakawayCampaign { safety, .. } => Some(safety),
         OuterPhase::Commit { .. }

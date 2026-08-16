@@ -317,6 +317,13 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit one compact reversal-standstill robustness-gate terminal.
+    fn foci_robustness_reversal_terminal(
+        &mut self,
+        _report: crate::ankyra::replies::FociRobustnessReversalTerminal<'_>,
+    ) {
+    }
+
     /// Emit the immutable breakaway-probe plan.
     fn foci_breakaway_probe_plan(
         &mut self,
@@ -776,6 +783,22 @@ pub fn emit_acceptance_matrix_terminal<S: CommissionReplySink>(
         oid,
         payload: &payload,
     });
+}
+
+/// Emit the single compact reversal-standstill robustness-gate terminal.
+pub fn emit_robustness_reversal_terminal<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    terminal: crate::commissioning::types::RobustnessReversalTerminal,
+) {
+    let payload = crate::commissioning::outer::velocity::robustness_reporting::
+        encode_robustness_terminal_reply(&terminal);
+    sink.foci_robustness_reversal_terminal(
+        crate::ankyra::replies::FociRobustnessReversalTerminal {
+            oid,
+            payload: &payload,
+        },
+    );
 }
 
 /// Emit the complete exact Stage-C plan as bounded causal fragments.
@@ -1492,6 +1515,9 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
         ReplyPayload::AcceptanceMatrixTerminal { oid, terminal } => {
             emit_acceptance_matrix_terminal(sink, oid, terminal);
         }
+        ReplyPayload::RobustnessReversalTerminal { oid, terminal } => {
+            emit_robustness_reversal_terminal(sink, oid, terminal);
+        }
         ReplyPayload::BreakawayCampaignEvent { oid, event } => {
             emit_breakaway_campaign_event(sink, oid, event);
         }
@@ -1960,6 +1986,10 @@ mod tests {
             phase: u8,
             status: u8,
         },
+        RobustnessReversalTerminal {
+            oid: u8,
+            payload: Vec<u8>,
+        },
         Calibrate {
             oid: u8,
             status: u8,
@@ -2215,6 +2245,16 @@ mod tests {
 
         fn foci_commission_phase(&mut self, oid: u8, phase: u8, status: u8) {
             self.events.push(Event::Phase { oid, phase, status });
+        }
+
+        fn foci_robustness_reversal_terminal(
+            &mut self,
+            report: crate::ankyra::replies::FociRobustnessReversalTerminal<'_>,
+        ) {
+            self.events.push(Event::RobustnessReversalTerminal {
+                oid: report.oid,
+                payload: report.payload.to_vec(),
+            });
         }
 
         fn foci_commission_result(&mut self, oid: u8, status: u8, result: &CommissionResult) {
@@ -4144,6 +4184,65 @@ mod tests {
                 phase: 17,
                 status: 0,
             }]
+        );
+    }
+
+    #[test]
+    fn emit_terminal_reply_routes_the_robustness_terminal_payload() {
+        use crate::commissioning::outer::velocity::robustness_evidence::{
+            RobustnessDirectionEvidence, RobustnessEvidence,
+        };
+        use crate::commissioning::outer::velocity::robustness_metrics::ReversalMetrics;
+        use crate::commissioning::outer::velocity::robustness_reporting::{
+            ROBUSTNESS_SCHEMA_REVISION, ROBUSTNESS_TERMINAL_REPLY_BYTES,
+            encode_robustness_terminal_reply,
+        };
+        use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
+
+        let direction = RobustnessDirectionEvidence {
+            metrics: ReversalMetrics {
+                reconvergence_time_us: 4_200,
+                settled_residual_q: 17,
+                recovery_iae_q: 900,
+                forward_settle_time_us: 3_100,
+                reconvergence_ratio_ppm: 1_000_000,
+            },
+            tripped: 0,
+            retry_count: 1,
+            inconclusive: false,
+        };
+        let terminal = RobustnessReversalTerminal {
+            schema_revision: ROBUSTNESS_SCHEMA_REVISION,
+            run_sequence: 0x0000_abcd,
+            outcome: RobustnessOutcome::Complete,
+            cause: 0,
+            selected_p: 800,
+            selected_i: 400,
+            target_velocity_rpm: 120,
+            evidence: RobustnessEvidence {
+                directions: [direction, direction],
+            },
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
+            safety_fault: None,
+        };
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::RobustnessReversalTerminal { oid: 3, terminal },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![Event::RobustnessReversalTerminal {
+                oid: 3,
+                payload: encode_robustness_terminal_reply(&terminal).to_vec(),
+            }]
+        );
+        assert_eq!(
+            encode_robustness_terminal_reply(&terminal).len(),
+            ROBUSTNESS_TERMINAL_REPLY_BYTES
         );
     }
 }

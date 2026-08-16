@@ -54,6 +54,13 @@ fn velocity_fault_terminal(
         OuterPhase::BreakawayCampaign { .. } => {
             velocity::breakaway_campaign_fault_terminal(phase, error, safety_fault)
         }
+        OuterPhase::RobustnessReversal { .. } => {
+            velocity::robustness_reversal::robustness_reversal_fault_terminal(
+                phase,
+                error,
+                safety_fault,
+            )
+        }
         _ => StepResult::OuterFailed(error),
     }
 }
@@ -106,6 +113,9 @@ fn velocity_timing_context(
         // per-phase timing accumulator); its own drivers manage primitive-level
         // safety timing internally, exactly as they do in their standalone tests.
         OuterPhase::BreakawayCampaign { .. } => Ok(None),
+        // The robustness gate likewise runs the plain envelope check; its stepper
+        // opens and ends the bounded safety primitive itself.
+        OuterPhase::RobustnessReversal { .. } => Ok(None),
         OuterPhase::MechanicalId { .. }
         | OuterPhase::VelocityTune { .. }
         | OuterPhase::VelocityValidate { .. }
@@ -204,7 +214,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             let err = safety_error_for_phase(phase);
             if matches!(
                 phase,
-                OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
+                OuterPhase::VelocityIntegral { .. }
+                    | OuterPhase::BreakawayCampaign { .. }
+                    | OuterPhase::RobustnessReversal { .. }
             ) {
                 return velocity_fault_terminal(phase, err, Some(fault));
             }
@@ -236,7 +248,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 let err = safety_error_for_phase(phase);
                 if matches!(
                     phase,
-                    OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
+                    OuterPhase::VelocityIntegral { .. }
+                        | OuterPhase::BreakawayCampaign { .. }
+                        | OuterPhase::RobustnessReversal { .. }
                 ) {
                     return velocity_fault_terminal(phase, err, Some(fault));
                 }
@@ -247,7 +261,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 defmt::warn!("outer safety check failed: {}", error);
                 if matches!(
                     phase,
-                    OuterPhase::VelocityIntegral { .. } | OuterPhase::BreakawayCampaign { .. }
+                    OuterPhase::VelocityIntegral { .. }
+                        | OuterPhase::BreakawayCampaign { .. }
+                        | OuterPhase::RobustnessReversal { .. }
                 ) {
                     return velocity_fault_terminal(phase, error, None);
                 }
@@ -265,6 +281,17 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         }
         OuterPhase::BreakawayCampaign { .. } => {
             velocity::step_breakaway_campaign_with_trace(phase, backend).await
+        }
+        OuterPhase::RobustnessReversal {
+            state,
+            workspace,
+            session,
+            safety,
+        } => {
+            velocity::robustness_reversal::step_robustness_reversal(
+                state, workspace, session, safety, backend,
+            )
+            .await
         }
         OuterPhase::VelocityTune { .. } => {
             velocity::step_velocity_tune(

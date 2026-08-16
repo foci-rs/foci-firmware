@@ -3436,6 +3436,15 @@ pub struct FociAcceptanceMatrixTerminal<'a> {
     pub payload: &'a [u8],
 }
 
+/// Compact reversal-standstill robustness-gate terminal.
+#[klipper_reply]
+pub struct FociRobustnessReversalTerminal<'a> {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Exact fixed-layout schema-1 payload.
+    pub payload: &'a [u8],
+}
+
 #[cfg(test)]
 mod velocity_sweep_reply_tests {
     use super::*;

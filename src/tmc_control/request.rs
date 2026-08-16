@@ -42,6 +42,7 @@ enum TuneRoute {
     Acceptance(crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight),
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
     StageCResume(crate::commission_dispatch::stage_c::StageCPreflight),
+    Robustness(crate::commission_dispatch::robustness::RobustnessPreflight),
 }
 
 /// Map a refused Stage-C resume onto the terminal the host will render.
@@ -962,23 +963,28 @@ where
                     });
                     TuneRoute::Breakaway(campaign)
                 }
-                // Placeholder: wired to the phase engine later.
-                // Until then, refuse admission so the tree compiles and no
-                // partial route exists. Reuses the same generic commission-phase
-                // rejection `handle_commission_wait_reject` and the Breakaway arm
-                // above already emit; `AlreadyRunning` is a placeholder status
-                // code, replaced by a dedicated rejection path later.
                 crate::tmc::AutotuneAction::RobustnessReversal => {
-                    board
-                        .tmc_state()
-                        .commission_in_flight
-                        .store(false, core::sync::atomic::Ordering::Relaxed);
-                    emit_commission_phase_failure::<Board, Spi>(
-                        board,
-                        oid,
-                        CommissionError::AlreadyRunning.status_code(),
-                    );
-                    return TmcControlRequestOutcome::skip_tick_tail();
+                    let preflight =
+                        match crate::commission_dispatch::robustness::preflight_robustness_reversal(
+                            run_sequence,
+                            stage_c_candidate,
+                        ) {
+                            Ok(preflight) => preflight,
+                            Err(rejection) => {
+                                let terminal = crate::commission_dispatch::robustness::
+                                failed_robustness_terminal(run_sequence, rejection);
+                                board.emit_reply(ReplyPayload::RobustnessReversalTerminal {
+                                    oid,
+                                    terminal,
+                                });
+                                board
+                                    .tmc_state()
+                                    .commission_in_flight
+                                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                                return TmcControlRequestOutcome::skip_tick_tail();
+                            }
+                        };
+                    TuneRoute::Robustness(preflight)
                 }
             };
             if !runtime.restore_phase_advance_now(tmc).await {
@@ -1096,6 +1102,31 @@ where
                             };
                         runtime.set_commission_engine(engine);
                         crate::diagnostic::begin_breakaway_campaign();
+                    }
+                    TuneRoute::Robustness(preflight) => {
+                        let engine = match CommissioningEngine::new_outer_for_tmc_with_robustness(
+                            oid,
+                            tmc_state,
+                            outer_params,
+                            entry_snapshot,
+                            preflight,
+                            encoder_counts_per_rev,
+                        ) {
+                            Ok(engine) => engine,
+                            Err(error) => {
+                                board
+                                    .tmc_state()
+                                    .commission_in_flight
+                                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                                emit_commission_phase_failure::<Board, Spi>(
+                                    board,
+                                    oid,
+                                    error.status_code(),
+                                );
+                                return TmcControlRequestOutcome::skip_tick_tail();
+                            }
+                        };
+                        runtime.set_commission_engine(engine);
                     }
                 }
             }

@@ -351,6 +351,11 @@ pub enum ReplyPayload {
         oid: u8,
         terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
     },
+    /// Compact firmware-authored reversal-standstill robustness-gate terminal.
+    RobustnessReversalTerminal {
+        oid: u8,
+        terminal: crate::commissioning::types::RobustnessReversalTerminal,
+    },
     /// One streamed breakaway-campaign plan, terminal, or evidence bundle.
     BreakawayCampaignEvent {
         oid: u8,
@@ -593,13 +598,23 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // Placeholder: this will eventually wire into a dedicated
-        // `ReplyPayload` arm and consume the engine. Until then this variant
-        // is never produced -- `AutotuneAction::RobustnessReversal` is
-        // rejected before the engine runs (see `tmc_control/request.rs`) --
-        // so a minimal type-checking arm is enough to keep the tree
-        // compiling.
-        StepResult::RobustnessReversalTerminal(_) => CommissionOutcome::Continue,
+        StepResult::RobustnessReversalTerminal(terminal) => {
+            use core::sync::atomic::Ordering::Relaxed;
+
+            let consumed = engine
+                .take()
+                .expect("engine slot is None on RobustnessReversalTerminal");
+            let oid = consumed.oid();
+            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+            state.tmc.commission_in_flight.store(false, Relaxed);
+            CommissionOutcome::Terminal {
+                reply: ReplyPayload::RobustnessReversalTerminal { oid, terminal },
+                actions: PostActions {
+                    stop_trace: true,
+                    stepper: StepperPostAction::Stop,
+                },
+            }
+        }
         StepResult::SelftestDone => {
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
             let oid = consumed.oid();
@@ -1338,6 +1353,22 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 .emit_acceptance_matrix_terminal_trace(backend, terminal);
             drive_commission_result(
                 StepResult::AcceptanceMatrixTerminal(terminal),
+                engine,
+                backend,
+                state,
+                pwm_maxcnt,
+            )
+            .await
+        }
+        StepResult::RobustnessReversalTerminal(terminal) => {
+            // The robustness probe reads the retained accepted point read-only,
+            // so the only staged policy is the identity check: it re-stamps the
+            // terminal `Failed`/`EVIDENCE_INTEGRITY` if the retained point moved
+            // underneath the probe. The engine disarm and reply build happen in
+            // the shared `drive_commission_result` terminal arm.
+            let terminal = robustness::apply_robustness_terminal(terminal, retention.stage_c);
+            drive_commission_result(
+                StepResult::RobustnessReversalTerminal(terminal),
                 engine,
                 backend,
                 state,

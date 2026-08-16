@@ -764,6 +764,18 @@ pub(crate) enum OuterPhase {
         workspace: super::velocity::breakaway_campaign::BreakawayProbeWorkspace,
         safety: OuterSafetyLimits,
     },
+    /// Reversal-standstill robustness gate over the matrix-accepted point.
+    ///
+    /// Reads the retained accepted point read-only; it never advances or closes
+    /// `AcceptanceMatrixProgress`. Its cooperative stepper owns its own capture
+    /// and analysis state; the shared outer-safety envelope check runs against
+    /// `safety` between ticks like every other outer phase.
+    RobustnessReversal {
+        state: super::velocity::robustness_reversal::RobustnessReversalState,
+        workspace: super::velocity::robustness_reversal::RobustnessReversalWorkspace,
+        session: super::velocity::robustness_reversal::RobustnessReversalSession,
+        safety: OuterSafetyLimits,
+    },
     /// Phase 9: Velocity-loop SIMC gain synthesis.
     VelocityTune {
         model: MechanicalModel,
@@ -836,6 +848,7 @@ impl OuterPhase {
             Self::MechanicalId { .. } => Some(PhaseId::MechanicalId),
             Self::VelocityIntegral { .. } => Some(PhaseId::VelocityTune),
             Self::BreakawayCampaign { .. } => Some(PhaseId::VelocityTune),
+            Self::RobustnessReversal { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityTune { .. } => Some(PhaseId::VelocityTune),
             Self::VelocityValidate { .. } => Some(PhaseId::VelocityValidate),
             Self::PositionTune { .. } => Some(PhaseId::PositionTune),

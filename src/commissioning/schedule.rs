@@ -2,8 +2,8 @@
 
 use crate::autotune::{CommissionError, PhaseId};
 use crate::commissioning::types::{
-    AcceptanceMatrixTerminal, AdcCalResult, CommissionResult, EngineKind, OuterResult, StepResult,
-    VelocityIntegralEvent, VelocityIntegralTerminal,
+    AcceptanceMatrixTerminal, AdcCalResult, CommissionResult, EngineKind, OuterResult,
+    RobustnessReversalTerminal, StepResult, VelocityIntegralEvent, VelocityIntegralTerminal,
 };
 
 /// Nonterminal commissioning evidence emitted independently of scheduling.
@@ -79,6 +79,8 @@ pub enum CommissionTerminal {
     VelocityIntegral(VelocityIntegralTerminal),
     /// One fixed-I velocity confidence matrix completed, remained inconclusive, or faulted.
     AcceptanceMatrix(AcceptanceMatrixTerminal),
+    /// One reversal-standstill robustness gate completed, remained inconclusive, or faulted.
+    RobustnessReversal(RobustnessReversalTerminal),
 }
 
 impl CommissionTerminal {
@@ -92,6 +94,7 @@ impl CommissionTerminal {
             Self::CommissionDone(result) => StepResult::CommissionDone(result),
             Self::VelocityIntegral(result) => StepResult::VelocityIntegralTerminal(result),
             Self::AcceptanceMatrix(result) => StepResult::AcceptanceMatrixTerminal(result),
+            Self::RobustnessReversal(result) => StepResult::RobustnessReversalTerminal(result),
         }
     }
 }
@@ -220,12 +223,9 @@ pub fn adapt_step_result(
         StepResult::AcceptanceMatrixTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::AcceptanceMatrix(result),
         }),
-        // Placeholder: this will eventually wire into `CommissionTerminal`
-        // and the downstream `tmc_control::state` dispatch. Until then this
-        // variant is never produced -- `AutotuneAction::RobustnessReversal` is
-        // rejected before the engine runs -- so a minimal type-checking arm
-        // is enough to keep the tree compiling.
-        StepResult::RobustnessReversalTerminal(_) => Err(CommissionError::InvalidSchedule),
+        StepResult::RobustnessReversalTerminal(result) => Ok(CommissionPoll::Terminal {
+            result: CommissionTerminal::RobustnessReversal(result),
+        }),
         StepResult::InnerFailed(error) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::InnerFailed(error),
         }),

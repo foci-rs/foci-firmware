@@ -94,9 +94,19 @@ impl RobustnessReversalWorkspace {
     }
 }
 
+// The workspace holds measurement scratch buffers (observation ring, dyadic
+// blocker, stationarity work) that do not implement `defmt::Format`, so it
+// cannot derive it. `OuterPhase` requires every field be `Format`, so emit an
+// opaque marker instead of the buffer contents, which carry no diagnostic value.
+impl defmt::Format for RobustnessReversalWorkspace {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "RobustnessReversalWorkspace");
+    }
+}
+
 /// Frozen accepted point plus the mutable per-direction robustness progress.
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub(crate) struct RobustnessReversalSession {
     point: AcceptancePoint,
     run_sequence: u32,
@@ -126,7 +136,7 @@ impl RobustnessReversalSession {
 
 /// Cooperative state for the unreset-reversal robustness phase.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RobustnessReversalState {
     /// Arm the safety baseline before any motion.
     Setup,
@@ -381,6 +391,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             if safety.set_encoder_baseline(baseline).is_err() {
                 return fault_terminal(session, backend, None);
             }
+            // Arm the shared outer-safety envelope check for the ticks that
+            // follow: `check_outer_safety` returns early while `torque_cap == 0`,
+            // so the dispatch only begins enforcing the envelope once the encoder
+            // baseline exists, exactly as the Stage-C sweep does in its own setup.
+            safety.torque_cap = u16::from(backend.current_limit());
             let now_us = backend.elapsed_us();
             if safety.arm_safety_observation(now_us).is_err() {
                 return fault_terminal(session, backend, None);
@@ -827,6 +842,37 @@ fn tick_fault_terminal<B: CommissioningBackend>(
         TickFault::Io => fault_terminal(session, backend, None),
         TickFault::Safety(report) => fault_terminal(session, backend, Some(report)),
     }
+}
+
+/// Build a `Failed` robustness terminal for a dispatch-level outer-safety abort.
+///
+/// Mirrors `integral_fault_terminal`: it reconstructs the terminal from the live
+/// phase session without a backend, so the shared outer dispatch can turn a
+/// pre-tick envelope trip into the phase-appropriate robustness terminal instead
+/// of a generic `OuterFailed`. `run_completed_us` mirrors `run_started_us`
+/// because the abort preempts the phase before it records its own completion.
+pub(crate) fn robustness_reversal_fault_terminal(
+    phase: &crate::commissioning::outer::OuterPhase,
+    error: CommissionError,
+    safety_fault: Option<OuterSafetyFault>,
+) -> StepResult {
+    let crate::commissioning::outer::OuterPhase::RobustnessReversal { session, .. } = phase else {
+        return StepResult::OuterFailed(error);
+    };
+    let _ = error;
+    StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
+        schema_revision: ROBUSTNESS_SCHEMA_REVISION,
+        run_sequence: session.run_sequence,
+        outcome: RobustnessOutcome::Failed,
+        cause: ROBUSTNESS_CAUSE_SAFETY_FAULT,
+        selected_p: session.point.selected_p,
+        selected_i: session.point.selected_i,
+        target_velocity_rpm: session.point.target_velocity_rpm,
+        evidence: assembled_evidence(session),
+        run_started_us: session.run_started_us,
+        run_completed_us: session.run_started_us,
+        safety_fault,
+    })
 }
 
 #[cfg(test)]

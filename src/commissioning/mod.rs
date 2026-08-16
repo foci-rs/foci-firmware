@@ -725,6 +725,61 @@ impl CommissioningEngine {
         Self::assemble_outer(scaffold, phase)
     }
 
+    /// Create a reversal-standstill robustness engine from a preflighted point.
+    ///
+    /// Mirrors [`Self::new_outer_for_tmc_with_acceptance_preflight`] but
+    /// configures the outer safety envelope up front from the accepted point's
+    /// own probe velocity, because the robustness stepper's `Setup` -- unlike the
+    /// Stage-C/acceptance stepper -- assumes the encoder domain and velocity
+    /// envelope are already installed and only reads the encoder baseline itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommissionError::EncoderFault`] for an invalid encoder domain
+    /// and [`CommissionError::InvalidSchedule`] when the probe velocity is zero
+    /// or its envelope arithmetic overflows.
+    pub(crate) fn new_outer_for_tmc_with_robustness(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterTuneParams,
+        entry_snapshot: EntrySnapshot,
+        preflight: crate::commission_dispatch::robustness::RobustnessPreflight,
+        encoder_counts_per_rev: u32,
+    ) -> Result<Self, CommissionError> {
+        use crate::commissioning::outer::velocity::robustness_reversal::{
+            RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
+        };
+
+        let mut scaffold = Self::outer_scaffold(
+            oid,
+            tmc_state,
+            params,
+            entry_snapshot,
+            preflight.run_sequence,
+        );
+        scaffold
+            .safety
+            .configure_velocity_sweep_encoder_resolution(encoder_counts_per_rev)
+            .map_err(|_| CommissionError::EncoderFault)?;
+        let probe_velocity_mrev_s = preflight
+            .point
+            .target_velocity_rpm
+            .unsigned_abs()
+            .checked_mul(1_000)
+            .map(|value| value / 60)
+            .ok_or(CommissionError::InvalidSchedule)?;
+        scaffold
+            .safety
+            .configure_velocity_envelope(probe_velocity_mrev_s)?;
+        let phase = OuterPhase::RobustnessReversal {
+            state: RobustnessReversalState::Setup,
+            workspace: RobustnessReversalWorkspace::new(),
+            session: RobustnessReversalSession::new(preflight.point, preflight.run_sequence),
+            safety: scaffold.safety,
+        };
+        Ok(Self::assemble_outer(scaffold, phase))
+    }
+
     /// Return the order of the active fixed-I acceptance matrix.
     pub(crate) fn acceptance_matrix_order(
         &self,
@@ -1356,11 +1411,10 @@ impl CommissioningEngine {
             #[cfg(not(feature = "trace"))]
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::AcceptanceMatrixTerminal(_) => {}
-            // Placeholder: FTRC trace emission for
-            // this terminal will be wired in later. Until then this variant is never produced --
-            // `AutotuneAction::RobustnessReversal` is rejected before the
-            // engine runs -- so a no-op stub is enough to keep the tree
-            // compiling.
+            // The robustness terminal's Klipper reply is built from the same
+            // evidence over the `commission_dispatch::replies` path, exactly like
+            // the acceptance-matrix terminal above; this FTRC raw-trace hook has
+            // nothing to add for it.
             StepResult::RobustnessReversalTerminal(_) => {}
             // The campaign engine that produces these
             // `StepResult` variants runs in the default build, so they are now
