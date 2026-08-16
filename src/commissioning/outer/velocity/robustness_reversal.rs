@@ -22,8 +22,8 @@ use crate::commission_dispatch::robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::OuterSafetyLimits;
+use crate::commissioning::outer::state::VELOCITY_SWEEP_BLOCK_LEVELS;
 use crate::commissioning::outer::state::VelocityObservationRing;
-use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocitySettleMetrics};
 use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
@@ -39,7 +39,8 @@ use super::integral_reproduction::AcceptancePoint;
 use super::robustness_evidence::{RobustnessDirectionEvidence, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
     ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MAX_RETRIES,
-    ROBUSTNESS_THRESHOLDS, ReversalMetrics, band_entry_time_us, recovery_iae_q, tripped_mask,
+    ROBUSTNESS_MEASUREMENT_BUDGET_US, ROBUSTNESS_THRESHOLDS, ReversalMetrics,
+    ReversalOnlineAccumulator, tripped_mask,
 };
 use super::sweep_analysis::poll_stationarity;
 use super::sweep_analysis::{ScoredRestPoll, deficit_interval_q, poll_scored_rest_confirmation};
@@ -52,11 +53,12 @@ use super::sweep_plan::{
 /// sweep and the breakaway campaign.
 const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 
-/// Fixed moving-capture window for one leg, in microseconds. Chosen to collect
-/// well over the 64-sample shortest stationary suffix at the ~1 ms observation
-/// cadence while leaving room, together with the analysis budget, under
-/// `ROBUSTNESS_MEASUREMENT_BUDGET_US` for the measured reversal leg.
-const ROBUSTNESS_LEG_CAPTURE_US: u32 = 100_000;
+/// Extra in-band capture after band entry, in microseconds, so the ring's
+/// settled tail holds at least the 64-sample shortest stationary suffix for the
+/// residual analysis. The 48 ms band-entry dwell alone falls short of 64
+/// samples at the ~1 ms observation cadence, so band entry stops the search but
+/// this tail keeps sampling the settled cruise before analysis.
+const ROBUSTNESS_SETTLE_TAIL_US: u32 = 80_000;
 
 /// Confidence family size for the settled-rate interval reconstruction, matching
 /// the shared scored-rest reconstruction default.
@@ -66,15 +68,16 @@ const ROBUSTNESS_CONFIDENCE_FAMILY_SIZE: u16 = 3;
 const DIRECTION_COUNT: usize = 2;
 
 /// Borrowed single-leg scratch space: capture ring, stationarity analysis,
-/// dyadic blocker, establish-leg settle metrics, and the running encoder/time
-/// anchors. Never allocates on the heap; every field is fixed-size.
+/// dyadic blocker, the online band-entry/IAE accumulator, and the running
+/// encoder/time anchors. Never allocates on the heap; every field is
+/// fixed-size.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct RobustnessReversalWorkspace {
     observations: VelocityObservationRing,
     blocker: DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>,
     analysis: StationarityWork,
-    establish_settle: VelocitySettleMetrics,
+    capture: ReversalOnlineAccumulator,
     previous_encoder_raw: u32,
     previous_read_us: u64,
 }
@@ -87,7 +90,7 @@ impl RobustnessReversalWorkspace {
             observations: VelocityObservationRing::new(),
             blocker: DyadicBlocker::new(),
             analysis: StationarityWork::new(),
-            establish_settle: VelocitySettleMetrics::EMPTY,
+            capture: ReversalOnlineAccumulator::new(),
             previous_encoder_raw: 0,
             previous_read_us: 0,
         }
@@ -144,31 +147,40 @@ pub(crate) enum RobustnessReversalState {
     EstablishWriteGain,
     /// Command the signed establish-cruise target for the current direction.
     EstablishCommandTarget,
-    /// Collect the establish-cruise capture until its window elapses.
+    /// Collect the establish-cruise capture: search for band entry up to the
+    /// budget, then sample a settled tail for the stationarity analysis.
     EstablishCapture {
         next_sample_us: u64,
-        deadline_us: u64,
+        budget_deadline_us: u64,
+        settle_deadline_us: Option<u64>,
     },
-    /// Analyze the establish capture until it yields a stationary settle.
+    /// Analyze the establish capture until it yields a Usable stationary settle.
     EstablishAnalyze { analysis_deadline_us: u64 },
     /// Reverse the commanded target WITHOUT clearing the integrator.
     ReverseCommandTarget,
-    /// Collect the measured reversal capture until its window elapses.
+    /// Collect the measured reversal capture: search for band entry up to the
+    /// budget, then sample a settled tail for the stationarity analysis.
     ReverseCapture {
         next_sample_us: u64,
-        deadline_us: u64,
+        budget_deadline_us: u64,
+        settle_deadline_us: Option<u64>,
     },
     /// Analyze the reversal capture for band-entry reconvergence.
     ReverseAnalyze { analysis_deadline_us: u64 },
-    /// Command zero and open the between-legs rest window.
-    ZeroCommand,
+    /// Command zero and open the between-legs rest window. `retry_available`
+    /// tracks whether one rejected-rest re-open remains.
+    ZeroCommand { retry_available: bool },
     /// Collect the zero-target rest capture until its window elapses.
     ZeroCapture {
         next_sample_us: u64,
         deadline_us: u64,
+        retry_available: bool,
     },
     /// Confirm rest between legs via scored-rest analysis.
-    ZeroAnalyze { analysis_deadline_us: u64 },
+    ZeroAnalyze {
+        analysis_deadline_us: u64,
+        retry_available: bool,
+    },
     /// Assemble evidence and emit the terminal.
     Assemble,
     /// The terminal has been emitted; further steps are inert.
@@ -225,23 +237,6 @@ fn band_q_for(target_rate_q: i64) -> i64 {
     i64::try_from(band).unwrap_or(i64::MAX)
 }
 
-/// Chronological observation index whose cumulative elapsed reaches
-/// `band_entry_us`, so `recovery_iae_q` integrates `[0, index)` up to band entry.
-fn band_entry_index(observations: &VelocityObservationRing, band_entry_us: u32) -> usize {
-    use crate::autotune::velocity_measurement::VelocityObservationSource;
-    let mut elapsed_before: u32 = 0;
-    for index in 0..observations.observation_len() {
-        if elapsed_before >= band_entry_us {
-            return index;
-        }
-        let Some(sample) = observations.observation(index) else {
-            return index;
-        };
-        elapsed_before = elapsed_before.saturating_add(sample.elapsed_us);
-    }
-    observations.observation_len()
-}
-
 /// Reconvergence time expressed as parts-per-million of the forward settle time,
 /// guarding a zero denominator.
 fn reconvergence_ratio_ppm(reconvergence_time_us: u32, forward_settle_time_us: u32) -> u32 {
@@ -272,49 +267,44 @@ fn settled_rate_interval_q(
     ))
 }
 
-/// Score one measured reversal leg from its completed capture and settled suffix.
+/// Score one measured reversal leg from its online band-entry/IAE measurement
+/// and the settled-tail suffix.
+///
+/// `reconvergence_time_us` and `recovery_iae` come from the online accumulator
+/// (the ring cannot retain the full transient); the suffix supplies only the
+/// settled residual.
+#[allow(clippy::too_many_arguments)]
 fn score_reversal_leg(
-    workspace: &RobustnessReversalWorkspace,
     point: &AcceptancePoint,
     direction: usize,
     counts_per_rev: u32,
     forward_settle_time_us: u32,
+    reconvergence_time_us: u32,
+    recovery_iae: i64,
     retry_count: u8,
     suffix: &crate::autotune::velocity_measurement::StationarySuffix,
-) -> Result<Option<RobustnessDirectionEvidence>, CommissionError> {
+) -> Result<RobustnessDirectionEvidence, CommissionError> {
     let signed_target_rpm = reverse_target_rpm(point, direction);
-    let target_rate = target_rate_q(signed_target_rpm, counts_per_rev);
-    let band = band_q_for(target_rate);
-    let Some(band_entry) = band_entry_time_us(
-        &workspace.observations,
-        target_rate,
-        band,
-        ROBUSTNESS_BAND_DWELL_US,
-    ) else {
-        // Stationary but never dwelled inside the settle band: inconclusive.
-        return Ok(None);
-    };
-    let end_index = band_entry_index(&workspace.observations, band_entry);
-    let recovery_iae = recovery_iae_q(&workspace.observations, target_rate, end_index);
     let (settled_low, settled_high) = settled_rate_interval_q(suffix)?;
     let (deficit_low, deficit_high) =
         deficit_interval_q(signed_target_rpm, counts_per_rev, settled_low, settled_high)?;
     let settled_residual_q = deficit_low.saturating_add(deficit_high) / 2;
     let mut metrics = ReversalMetrics {
-        reconvergence_time_us: band_entry,
+        reconvergence_time_us,
         settled_residual_q,
         recovery_iae_q: recovery_iae,
         forward_settle_time_us,
         reconvergence_ratio_ppm: 0,
     };
-    metrics.reconvergence_ratio_ppm = reconvergence_ratio_ppm(band_entry, forward_settle_time_us);
+    metrics.reconvergence_ratio_ppm =
+        reconvergence_ratio_ppm(reconvergence_time_us, forward_settle_time_us);
     let tripped = tripped_mask(&metrics, &ROBUSTNESS_THRESHOLDS);
-    Ok(Some(RobustnessDirectionEvidence {
+    Ok(RobustnessDirectionEvidence {
         metrics,
         tripped,
         retry_count,
         inconclusive: false,
-    }))
+    })
 }
 
 /// Sample one observation tick into the capture ring, enforcing the shared
@@ -432,11 +422,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         RobustnessReversalState::EstablishCommandTarget => {
             let target = establish_target_rpm(&session.point, session.direction);
             match begin_capture(session, workspace, safety, backend, target, true).await {
-                Ok((next_sample_us, deadline_us)) => {
-                    workspace.establish_settle = VelocitySettleMetrics::EMPTY;
+                Ok((next_sample_us, budget_deadline_us)) => {
                     *state = RobustnessReversalState::EstablishCapture {
                         next_sample_us,
-                        deadline_us,
+                        budget_deadline_us,
+                        settle_deadline_us: None,
                     };
                     StepResult::At(next_sample_us)
                 }
@@ -445,7 +435,8 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         }
         RobustnessReversalState::EstablishCapture {
             next_sample_us,
-            deadline_us,
+            budget_deadline_us,
+            settle_deadline_us,
         } => {
             if backend.elapsed_us() < next_sample_us {
                 return StepResult::At(next_sample_us);
@@ -455,29 +446,48 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Ok(sample) => sample,
                 Err(fault) => return tick_fault_terminal(session, backend, fault),
             };
-            if workspace
-                .establish_settle
-                .observe(delta, elapsed_us)
-                .is_err()
-            {
-                return fault_terminal(session, backend, None);
+            let advance = advance_capture(
+                &mut workspace.capture,
+                read_us,
+                elapsed_us,
+                delta,
+                next_sample_us,
+                budget_deadline_us,
+                settle_deadline_us,
+            );
+            // I2: forward_settle is the establish leg's actual band entry, not
+            // the window duration. Latch it as soon as band entry is measured.
+            if let Some(entry) = workspace.capture.band_entry_us() {
+                session.pending_forward_settle_us = entry;
             }
-            if read_us >= deadline_us {
-                workspace.analysis.reset();
-                let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                    return fault_terminal(session, backend, None);
-                };
-                *state = RobustnessReversalState::EstablishAnalyze {
-                    analysis_deadline_us,
-                };
-                StepResult::ReadyNow
-            } else {
-                let next = (next_sample_us + CAPTURE_PERIOD_US).min(deadline_us);
-                *state = RobustnessReversalState::EstablishCapture {
-                    next_sample_us: next,
-                    deadline_us,
-                };
-                StepResult::At(next)
+            match advance {
+                CaptureAdvance::Continue {
+                    next_sample_us,
+                    settle_deadline_us,
+                } => {
+                    *state = RobustnessReversalState::EstablishCapture {
+                        next_sample_us,
+                        budget_deadline_us,
+                        settle_deadline_us,
+                    };
+                    StepResult::At(next_sample_us)
+                }
+                CaptureAdvance::Converged => {
+                    workspace.analysis.reset();
+                    let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
+                        return fault_terminal(session, backend, None);
+                    };
+                    *state = RobustnessReversalState::EstablishAnalyze {
+                        analysis_deadline_us,
+                    };
+                    StepResult::ReadyNow
+                }
+                CaptureAdvance::Exhausted => {
+                    // I3: the establish leg never confirmed a settle within the
+                    // budget; retry from a fresh entry rather than proceed.
+                    retry_or_finalize_inconclusive(state, session);
+                    StepResult::ReadyNow
+                }
             }
         }
         RobustnessReversalState::EstablishAnalyze {
@@ -486,22 +496,27 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             if backend.elapsed_us() >= analysis_deadline_us {
                 return fault_terminal(session, backend, None);
             }
-            match poll_stationarity(
+            let poll = poll_stationarity(
                 &mut workspace.analysis,
                 &workspace.observations,
                 &mut workspace.blocker,
-            ) {
-                Ok(None) => StepResult::ReadyNow,
-                Ok(Some(_)) => {
-                    // The establish leg only needs a completed analysis to
-                    // anchor its settle time; both Usable and Excluded settle
-                    // metrics carry the same duration. The measured leg is the
-                    // reversal, scored separately below.
-                    session.pending_forward_settle_us = workspace.establish_settle.duration_us;
+            );
+            let stationarity = match poll {
+                Ok(None) => return StepResult::ReadyNow,
+                Ok(Some((result, _, _))) => result,
+                Err(_) => return fault_terminal(session, backend, None),
+            };
+            match stationarity {
+                // I3: the establish leg must confirm a Usable settle before the
+                // reversal is measured against it.
+                StationarityResult::Usable(_) => {
                     *state = RobustnessReversalState::ReverseCommandTarget;
                     StepResult::ReadyNow
                 }
-                Err(_) => fault_terminal(session, backend, None),
+                StationarityResult::Excluded(_) => {
+                    retry_or_finalize_inconclusive(state, session);
+                    StepResult::ReadyNow
+                }
             }
         }
         RobustnessReversalState::ReverseCommandTarget => {
@@ -509,10 +524,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             // Deliberately no clear_velocity_integrator here: the reversal is
             // measured against the integrator state established by the entry leg.
             match begin_capture(session, workspace, safety, backend, target, false).await {
-                Ok((next_sample_us, deadline_us)) => {
+                Ok((next_sample_us, budget_deadline_us)) => {
                     *state = RobustnessReversalState::ReverseCapture {
                         next_sample_us,
-                        deadline_us,
+                        budget_deadline_us,
+                        settle_deadline_us: None,
                     };
                     StepResult::At(next_sample_us)
                 }
@@ -521,32 +537,53 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         }
         RobustnessReversalState::ReverseCapture {
             next_sample_us,
-            deadline_us,
+            budget_deadline_us,
+            settle_deadline_us,
         } => {
             if backend.elapsed_us() < next_sample_us {
                 return StepResult::At(next_sample_us);
             }
-            let (read_us, _elapsed_us, _delta) =
-                match observe_tick(workspace, safety, backend).await {
-                    Ok(sample) => sample,
-                    Err(fault) => return tick_fault_terminal(session, backend, fault),
-                };
-            if read_us >= deadline_us {
-                workspace.analysis.reset();
-                let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                    return fault_terminal(session, backend, None);
-                };
-                *state = RobustnessReversalState::ReverseAnalyze {
-                    analysis_deadline_us,
-                };
-                StepResult::ReadyNow
-            } else {
-                let next = (next_sample_us + CAPTURE_PERIOD_US).min(deadline_us);
-                *state = RobustnessReversalState::ReverseCapture {
-                    next_sample_us: next,
-                    deadline_us,
-                };
-                StepResult::At(next)
+            let (read_us, elapsed_us, delta) = match observe_tick(workspace, safety, backend).await
+            {
+                Ok(sample) => sample,
+                Err(fault) => return tick_fault_terminal(session, backend, fault),
+            };
+            match advance_capture(
+                &mut workspace.capture,
+                read_us,
+                elapsed_us,
+                delta,
+                next_sample_us,
+                budget_deadline_us,
+                settle_deadline_us,
+            ) {
+                CaptureAdvance::Continue {
+                    next_sample_us,
+                    settle_deadline_us,
+                } => {
+                    *state = RobustnessReversalState::ReverseCapture {
+                        next_sample_us,
+                        budget_deadline_us,
+                        settle_deadline_us,
+                    };
+                    StepResult::At(next_sample_us)
+                }
+                CaptureAdvance::Converged => {
+                    workspace.analysis.reset();
+                    let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
+                        return fault_terminal(session, backend, None);
+                    };
+                    *state = RobustnessReversalState::ReverseAnalyze {
+                        analysis_deadline_us,
+                    };
+                    StepResult::ReadyNow
+                }
+                CaptureAdvance::Exhausted => {
+                    // I1: no band entry within the full budget is the
+                    // inconclusive signal; retry from the establish leg.
+                    retry_or_finalize_inconclusive(state, session);
+                    StepResult::ReadyNow
+                }
             }
         }
         RobustnessReversalState::ReverseAnalyze {
@@ -566,44 +603,40 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Err(_) => return fault_terminal(session, backend, None),
             };
             let direction = session.direction;
-            let scored = match stationarity {
-                StationarityResult::Usable(suffix) => match score_reversal_leg(
-                    workspace,
-                    &session.point,
-                    direction,
-                    safety.counts_per_rev(),
-                    session.pending_forward_settle_us,
-                    session.retry_count[direction],
-                    &suffix,
-                ) {
-                    Ok(evidence) => evidence,
-                    Err(_) => return fault_terminal(session, backend, None),
-                },
-                StationarityResult::Excluded(_) => None,
-            };
-            match scored {
-                Some(evidence) => {
+            match stationarity {
+                StationarityResult::Usable(suffix) => {
+                    let Some(reconvergence_time_us) = workspace.capture.band_entry_us() else {
+                        retry_or_finalize_inconclusive(state, session);
+                        return StepResult::ReadyNow;
+                    };
+                    let evidence = match score_reversal_leg(
+                        &session.point,
+                        direction,
+                        safety.counts_per_rev(),
+                        session.pending_forward_settle_us,
+                        reconvergence_time_us,
+                        workspace.capture.recovery_iae_q(),
+                        session.retry_count[direction],
+                        &suffix,
+                    ) {
+                        Ok(evidence) => evidence,
+                        Err(_) => return fault_terminal(session, backend, None),
+                    };
                     session.directions[direction] = Some(evidence);
-                    *state = RobustnessReversalState::ZeroCommand;
+                    *state = RobustnessReversalState::ZeroCommand {
+                        retry_available: true,
+                    };
                     StepResult::ReadyNow
                 }
-                None => {
-                    // Inconclusive: retry from the establish-cruise leg so every
-                    // attempt begins from a freshly confirmed direction-A settle,
-                    // never from the unsettled reversal state.
-                    if session.retry_count[direction] < ROBUSTNESS_MAX_RETRIES {
-                        session.retry_count[direction] += 1;
-                        *state = RobustnessReversalState::EstablishWriteGain;
-                    } else {
-                        session.directions[direction] =
-                            Some(inconclusive_direction(session.retry_count[direction]));
-                        *state = RobustnessReversalState::ZeroCommand;
-                    }
+                StationarityResult::Excluded(_) => {
+                    // Settled tail not stationary: retry from the establish leg
+                    // so every attempt begins from a freshly confirmed settle.
+                    retry_or_finalize_inconclusive(state, session);
                     StepResult::ReadyNow
                 }
             }
         }
-        RobustnessReversalState::ZeroCommand => {
+        RobustnessReversalState::ZeroCommand { retry_available } => {
             if backend
                 .write_register(PID_VELOCITY_TARGET, 0)
                 .await
@@ -612,31 +645,22 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 return fault_terminal(session, backend, None);
             }
             safety.enter_settle_phase();
-            let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
-                Ok(value) => value,
-                Err(_) => return fault_terminal(session, backend, None),
-            };
-            let baseline_us = backend.elapsed_us();
-            workspace.observations.clear();
-            workspace.analysis.reset_for_scored_rest(false);
-            workspace.previous_encoder_raw = baseline;
-            workspace.previous_read_us = baseline_us;
-            let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
-                return fault_terminal(session, backend, None);
-            };
-            let Some(deadline_us) = baseline_us.checked_add(u64::from(ROBUSTNESS_LEG_CAPTURE_US))
-            else {
-                return fault_terminal(session, backend, None);
-            };
-            *state = RobustnessReversalState::ZeroCapture {
-                next_sample_us,
-                deadline_us,
-            };
-            StepResult::At(next_sample_us)
+            match open_zero_window(session, workspace, backend).await {
+                Ok((next_sample_us, deadline_us)) => {
+                    *state = RobustnessReversalState::ZeroCapture {
+                        next_sample_us,
+                        deadline_us,
+                        retry_available,
+                    };
+                    StepResult::At(next_sample_us)
+                }
+                Err(step) => step,
+            }
         }
         RobustnessReversalState::ZeroCapture {
             next_sample_us,
             deadline_us,
+            retry_available,
         } => {
             if backend.elapsed_us() < next_sample_us {
                 return StepResult::At(next_sample_us);
@@ -651,6 +675,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 };
                 *state = RobustnessReversalState::ZeroAnalyze {
                     analysis_deadline_us,
+                    retry_available,
                 };
                 StepResult::ReadyNow
             } else {
@@ -658,12 +683,14 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 *state = RobustnessReversalState::ZeroCapture {
                     next_sample_us: next,
                     deadline_us,
+                    retry_available,
                 };
                 StepResult::At(next)
             }
         }
         RobustnessReversalState::ZeroAnalyze {
             analysis_deadline_us,
+            retry_available,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
                 return fault_terminal(session, backend, None);
@@ -674,15 +701,35 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 &mut workspace.blocker,
             ) {
                 Ok(ScoredRestPoll::Pending | ScoredRestPoll::Diagnostic(_)) => StepResult::ReadyNow,
-                Ok(ScoredRestPoll::Complete(_)) => {
-                    safety.end_primitive();
-                    if session.direction + 1 < DIRECTION_COUNT {
-                        session.direction += 1;
-                        *state = RobustnessReversalState::EstablishWriteGain;
+                Ok(ScoredRestPoll::Complete(confirmation)) => {
+                    if confirmation.confirmed_rest {
+                        safety.end_primitive();
+                        if session.direction + 1 < DIRECTION_COUNT {
+                            session.direction += 1;
+                            *state = RobustnessReversalState::EstablishWriteGain;
+                        } else {
+                            *state = RobustnessReversalState::Assemble;
+                        }
+                        StepResult::ReadyNow
+                    } else if retry_available {
+                        // I4: a rejected rest re-opens one fresh bounded rest
+                        // window before faulting (integral_plan.rs precedent);
+                        // it neither silently proceeds nor immediately kills the
+                        // run.
+                        match open_zero_window(session, workspace, backend).await {
+                            Ok((next_sample_us, deadline_us)) => {
+                                *state = RobustnessReversalState::ZeroCapture {
+                                    next_sample_us,
+                                    deadline_us,
+                                    retry_available: false,
+                                };
+                                StepResult::At(next_sample_us)
+                            }
+                            Err(step) => step,
+                        }
                     } else {
-                        *state = RobustnessReversalState::Assemble;
+                        fault_terminal(session, backend, None)
                     }
-                    StepResult::ReadyNow
                 }
                 Err(_) => fault_terminal(session, backend, None),
             }
@@ -734,12 +781,117 @@ async fn begin_capture<B: CommissioningBackend>(
     }
     workspace.observations.clear();
     workspace.analysis.reset();
+    let target_rate = target_rate_q(signed_target_rpm, safety.counts_per_rev());
+    let band = band_q_for(target_rate);
+    workspace
+        .capture
+        .reset(target_rate, band, ROBUSTNESS_BAND_DWELL_US);
     workspace.previous_encoder_raw = baseline;
     workspace.previous_read_us = baseline_us;
     let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
         return Err(fault_terminal(session, backend, None));
     };
-    let Some(deadline_us) = baseline_us.checked_add(u64::from(ROBUSTNESS_LEG_CAPTURE_US)) else {
+    let Some(budget_deadline_us) =
+        baseline_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
+    else {
+        return Err(fault_terminal(session, backend, None));
+    };
+    Ok((next_sample_us, budget_deadline_us))
+}
+
+/// Outcome of folding one observation into a capture leg.
+enum CaptureAdvance {
+    /// Keep sampling; carry the (possibly newly set) settle-tail deadline.
+    Continue {
+        next_sample_us: u64,
+        settle_deadline_us: Option<u64>,
+    },
+    /// Band entry reached and the settled tail is sampled: analyze it.
+    Converged,
+    /// No band entry within the full measurement budget: inconclusive.
+    Exhausted,
+}
+
+/// Fold one observation into the online accumulator and decide the next capture
+/// transition.
+///
+/// Band entry stops the reconvergence search but opens a bounded settle-tail
+/// window (`ROBUSTNESS_SETTLE_TAIL_US`) so the ring accumulates at least the
+/// shortest stationary suffix before analysis. Without band entry the leg runs
+/// to `budget_deadline_us` and reports [`CaptureAdvance::Exhausted`].
+fn advance_capture(
+    accumulator: &mut ReversalOnlineAccumulator,
+    read_us: u64,
+    elapsed_us: u32,
+    delta: i32,
+    next_sample_us: u64,
+    budget_deadline_us: u64,
+    settle_deadline_us: Option<u64>,
+) -> CaptureAdvance {
+    accumulator.observe(delta, elapsed_us);
+    let settle_deadline_us = settle_deadline_us.or_else(|| {
+        accumulator
+            .band_entry_us()
+            .map(|_| read_us.saturating_add(u64::from(ROBUSTNESS_SETTLE_TAIL_US)))
+    });
+    match settle_deadline_us {
+        Some(settle_deadline) if read_us >= settle_deadline => CaptureAdvance::Converged,
+        None if read_us >= budget_deadline_us => CaptureAdvance::Exhausted,
+        _ => {
+            let active_deadline = settle_deadline_us.unwrap_or(budget_deadline_us);
+            let next = (next_sample_us + CAPTURE_PERIOD_US).min(active_deadline);
+            CaptureAdvance::Continue {
+                next_sample_us: next,
+                settle_deadline_us,
+            }
+        }
+    }
+}
+
+/// Retry the current direction from the establish leg, or finalize it as
+/// inconclusive once the bounded retry budget is exhausted.
+///
+/// Retrying always re-enters at [`RobustnessReversalState::EstablishWriteGain`]
+/// so every attempt begins from a freshly confirmed direction-A settle with a
+/// cleared integrator, never from an unsettled leg.
+fn retry_or_finalize_inconclusive(
+    state: &mut RobustnessReversalState,
+    session: &mut RobustnessReversalSession,
+) {
+    let direction = session.direction;
+    if session.retry_count[direction] < ROBUSTNESS_MAX_RETRIES {
+        session.retry_count[direction] += 1;
+        *state = RobustnessReversalState::EstablishWriteGain;
+    } else {
+        session.directions[direction] =
+            Some(inconclusive_direction(session.retry_count[direction]));
+        *state = RobustnessReversalState::ZeroCommand {
+            retry_available: true,
+        };
+    }
+}
+
+/// Open a fresh zero-target rest capture window without re-commanding the
+/// target or re-entering the settle phase; the caller does that once per rest.
+async fn open_zero_window<B: CommissioningBackend>(
+    session: &RobustnessReversalSession,
+    workspace: &mut RobustnessReversalWorkspace,
+    backend: &mut B,
+) -> Result<(u64, u64), StepResult> {
+    let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
+        Ok(value) => value,
+        Err(_) => return Err(fault_terminal(session, backend, None)),
+    };
+    let baseline_us = backend.elapsed_us();
+    workspace.observations.clear();
+    workspace.analysis.reset_for_scored_rest(false);
+    workspace.previous_encoder_raw = baseline;
+    workspace.previous_read_us = baseline_us;
+    let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
+        return Err(fault_terminal(session, backend, None));
+    };
+    let Some(deadline_us) = baseline_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
+    else {
         return Err(fault_terminal(session, backend, None));
     };
     Ok((next_sample_us, deadline_us))
@@ -886,6 +1038,7 @@ mod tests {
     use crate::commissioning::outer::velocity::integral_reproduction::{
         AcceptanceMatrixProgress, StageCCandidateSlot, StageCPlanIdentity,
     };
+    use crate::commissioning::outer::velocity::robustness_metrics::TRIP_TIME;
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM;
 
@@ -943,16 +1096,35 @@ mod tests {
         }
     }
 
+    /// Which capture leg is scheduling the current sample.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum CapturePhase {
+        Establish,
+        Reverse,
+        Zero,
+    }
+
+    /// Classify a post-step state as a capture leg, if any. `At` results are
+    /// only ever scheduled from these states, so the driver reads the phase from
+    /// the state the step transitioned into.
+    fn capture_phase(state: &RobustnessReversalState) -> Option<CapturePhase> {
+        match state {
+            RobustnessReversalState::EstablishCapture { .. } => Some(CapturePhase::Establish),
+            RobustnessReversalState::ReverseCapture { .. } => Some(CapturePhase::Reverse),
+            RobustnessReversalState::ZeroCapture { .. } => Some(CapturePhase::Zero),
+            _ => None,
+        }
+    }
+
     /// Drive one full run to its terminal against a scripted `MockBackend`.
     ///
-    /// `noisy_reversal` decides whether the measured reversal legs settle
-    /// cleanly (`false`) or jitter so wildly they never enter the band
-    /// (`true`). The establish legs always settle so every attempt begins from
-    /// a confirmed direction-A settle; the zero-target rest window always holds
-    /// still and confirms rest.
-    fn drive(
+    /// `motion` returns the per-tick encoder delta for the sample now being
+    /// scheduled, given the capture phase, the tick index within the current
+    /// leg (reset to 0 whenever a fresh capture leg begins, so retries restart
+    /// the script), and the commanded velocity target.
+    fn drive_scripted(
         point: AcceptancePoint,
-        noisy_reversal: bool,
+        mut motion: impl FnMut(CapturePhase, u32, i32) -> i32,
     ) -> (RobustnessReversalTerminal, MockBackend) {
         let mut state = RobustnessReversalState::Setup;
         let mut workspace = RobustnessReversalWorkspace::new();
@@ -961,11 +1133,10 @@ mod tests {
         let mut backend = test_backend();
 
         let mut encoder_count: i32 = 0;
-        let mut jitter_high = false;
+        let mut was_in_capture = false;
+        let mut leg_tick: u32 = 0;
 
         for _ in 0..STEP_BUDGET {
-            let in_reverse_capture =
-                matches!(state, RobustnessReversalState::ReverseCapture { .. });
             let result = pollster::block_on(step_robustness_reversal(
                 &mut state,
                 &mut workspace,
@@ -973,6 +1144,11 @@ mod tests {
                 &mut safety,
                 &mut backend,
             ));
+            let phase = capture_phase(&state);
+            if phase.is_some() && !was_in_capture {
+                leg_tick = 0;
+            }
+            was_in_capture = phase.is_some();
             match result {
                 StepResult::ReadyNow => {}
                 StepResult::At(deadline) => {
@@ -981,18 +1157,13 @@ mod tests {
                         .registers
                         .get(&PID_VELOCITY_TARGET.addr())
                         .unwrap_or(&0) as i32;
-                    if target != 0 {
-                        if noisy_reversal && in_reverse_capture {
-                            jitter_high = !jitter_high;
-                            encoder_count += if jitter_high { 300 } else { -300 };
-                        } else {
-                            encoder_count += target.signum() * STEADY_DELTA;
-                        }
-                    }
+                    let phase = phase.expect("At is scheduled only from a capture state");
+                    encoder_count += motion(phase, leg_tick, target);
                     // Model the TMC4671 decoder register, which wraps within
                     // [0, counts_per_rev); feeding raw signed counts would alias
                     // against EncoderDomain's u32 modulo at the 2^32 boundary.
                     backend.set_abn_decoder_count(encoder_count.rem_euclid(4_000));
+                    leg_tick += 1;
                 }
                 StepResult::RobustnessReversalTerminal(terminal) => {
                     return (terminal, backend);
@@ -1001,6 +1172,28 @@ mod tests {
             }
         }
         panic!("robustness reversal run exceeded its bounded step budget");
+    }
+
+    /// Drive a run where establish and zero legs behave, and the measured
+    /// reversal legs either settle cleanly (`noisy_reversal == false`) or jitter
+    /// so wildly they never enter the band (`true`).
+    fn drive(
+        point: AcceptancePoint,
+        noisy_reversal: bool,
+    ) -> (RobustnessReversalTerminal, MockBackend) {
+        let mut jitter_high = false;
+        drive_scripted(point, move |phase, _tick, target| {
+            if target == 0 {
+                return 0;
+            }
+            match phase {
+                CapturePhase::Reverse if noisy_reversal => {
+                    jitter_high = !jitter_high;
+                    if jitter_high { 300 } else { -300 }
+                }
+                _ => target.signum() * STEADY_DELTA,
+            }
+        })
     }
 
     #[test]
@@ -1094,5 +1287,108 @@ mod tests {
             );
             assert_eq!(before, AcceptanceMatrixProgress::ReadyAscending);
         }
+    }
+
+    /// I1: a slow-but-clean reconvergence -- band entry between `t_max_us`
+    /// (300 ms) and the 500 ms budget -- now yields a real `TRIP_TIME` +
+    /// `Rejected` verdict. Under the old fixed 100 ms window this was
+    /// physically unreachable: the window ended before band entry, aliasing the
+    /// leg to Inconclusive.
+    #[test]
+    fn slow_reconvergence_trips_time_and_rejects() {
+        let (terminal, _backend) = drive_scripted(test_point(), |phase, tick, target| {
+            if target == 0 {
+                return 0;
+            }
+            match phase {
+                // Stall out of band well past t_max, then converge in-band.
+                CapturePhase::Reverse if tick < 330 => 0,
+                _ => target.signum() * STEADY_DELTA,
+            }
+        });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert!(terminal.safety_fault.is_none());
+        for direction in terminal.evidence.directions {
+            assert!(!direction.inconclusive);
+            assert_ne!(
+                direction.tripped & TRIP_TIME,
+                0,
+                "slow reconvergence must trip the time gate"
+            );
+            assert!(
+                direction.metrics.reconvergence_time_us > ROBUSTNESS_THRESHOLDS.t_max_us,
+                "reconvergence must exceed t_max to reach TRIP_TIME"
+            );
+            assert_eq!(direction.retry_count, 0);
+        }
+    }
+
+    /// I3: an establish leg whose settled tail fails stationarity (Excluded)
+    /// must retry from a fresh entry, counting against the retry budget, rather
+    /// than silently proceeding to measure the reversal against an unconfirmed
+    /// settle.
+    #[test]
+    fn excluded_establish_settle_retries_and_counts() {
+        let (terminal, _backend) = drive_scripted(test_point(), |phase, tick, target| {
+            if target == 0 {
+                return 0;
+            }
+            match phase {
+                CapturePhase::Establish => {
+                    // In-band long enough to reach band entry, then a clear drift
+                    // so the settled tail resolves a slope and is Excluded.
+                    if tick < 50 {
+                        target.signum() * STEADY_DELTA
+                    } else {
+                        target.signum() * STEADY_DELTA + (tick as i32 - 50) * 3
+                    }
+                }
+                _ => target.signum() * STEADY_DELTA,
+            }
+        });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Inconclusive);
+        for direction in terminal.evidence.directions {
+            assert!(direction.inconclusive);
+            assert_eq!(
+                direction.retry_count, ROBUSTNESS_MAX_RETRIES,
+                "an Excluded establish retries rather than proceeding"
+            );
+        }
+    }
+
+    /// I4: a rejected between-legs rest re-opens exactly one fresh bounded rest
+    /// window; if that window confirms, the run proceeds normally.
+    #[test]
+    fn rejected_between_legs_rest_reopens_one_window_then_proceeds() {
+        let mut zero_windows = 0u32;
+        let (terminal, _backend) = drive_scripted(test_point(), move |phase, tick, target| {
+            match phase {
+                CapturePhase::Zero => {
+                    if tick == 0 {
+                        zero_windows += 1;
+                    }
+                    // Reject only the first rest window with sustained motion;
+                    // the re-opened window is at rest and confirms.
+                    if zero_windows == 1 { 8 } else { 0 }
+                }
+                _ if target != 0 => target.signum() * STEADY_DELTA,
+                _ => 0,
+            }
+        });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert!(terminal.safety_fault.is_none());
+    }
+
+    /// I4: a rest that is still rejected after the one bounded re-open faults
+    /// the run rather than silently proceeding.
+    #[test]
+    fn rest_rejected_beyond_retry_faults() {
+        let (terminal, _backend) =
+            drive_scripted(test_point(), |phase, _tick, target| match phase {
+                CapturePhase::Zero => 8,
+                _ if target != 0 => target.signum() * STEADY_DELTA,
+                _ => 0,
+            });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
     }
 }

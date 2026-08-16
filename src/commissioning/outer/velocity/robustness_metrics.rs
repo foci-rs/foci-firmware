@@ -120,6 +120,116 @@ pub(crate) fn recovery_iae_q(
     iae_q
 }
 
+/// Online band-entry and recovery-IAE accumulator for one capture leg.
+///
+/// The [`VelocityObservationRing`](crate::commissioning::outer::state::VelocityObservationRing)
+/// retains only its most recent 256 samples, so a capture that runs up to the
+/// full [`ROBUSTNESS_MEASUREMENT_BUDGET_US`] budget cannot be scanned after the
+/// fact -- the early transient has already been overwritten. This accumulator
+/// therefore folds each observation in as it arrives, deriving exactly the same
+/// band-entry time and recovery IAE that [`band_entry_time_us`] and
+/// [`recovery_iae_q`] would compute over the intact sample stream. The ring is
+/// left to serve only the settled tail (stationarity + residual).
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+#[allow(dead_code)]
+pub(crate) struct ReversalOnlineAccumulator {
+    target_rate_q: i64,
+    lower_q: i64,
+    upper_q: i64,
+    dwell_us: u32,
+    elapsed_before_us: u32,
+    iae_running_q: i64,
+    run_start_us: Option<u32>,
+    run_iae_at_start_q: i64,
+    run_duration_us: u32,
+    band_entry_us: Option<u32>,
+    band_entry_iae_q: i64,
+}
+
+#[allow(dead_code)]
+impl ReversalOnlineAccumulator {
+    /// Construct an idle accumulator with a zero band around zero.
+    pub(crate) const fn new() -> Self {
+        Self {
+            target_rate_q: 0,
+            lower_q: 0,
+            upper_q: 0,
+            dwell_us: 0,
+            elapsed_before_us: 0,
+            iae_running_q: 0,
+            run_start_us: None,
+            run_iae_at_start_q: 0,
+            run_duration_us: 0,
+            band_entry_us: None,
+            band_entry_iae_q: 0,
+        }
+    }
+
+    /// Re-arm the accumulator for a fresh leg targeting `target_rate_q` with a
+    /// symmetric `band_q` half-width and a `dwell_us` sustained-residence
+    /// requirement. Clears every running counter.
+    pub(crate) fn reset(&mut self, target_rate_q: i64, band_q: i64, dwell_us: u32) {
+        self.target_rate_q = target_rate_q;
+        self.lower_q = target_rate_q.saturating_sub(band_q);
+        self.upper_q = target_rate_q.saturating_add(band_q);
+        self.dwell_us = dwell_us;
+        self.elapsed_before_us = 0;
+        self.iae_running_q = 0;
+        self.run_start_us = None;
+        self.run_iae_at_start_q = 0;
+        self.run_duration_us = 0;
+        self.band_entry_us = None;
+        self.band_entry_iae_q = 0;
+    }
+
+    /// Fold one observation into the running band-entry and IAE state.
+    ///
+    /// Mirrors [`band_entry_time_us`]/[`recovery_iae_q`] exactly: band entry is
+    /// recorded at the *first* sample of the dwell that first satisfies
+    /// `dwell_us`, and the recovery IAE integrates `|rate - target| * elapsed`
+    /// over every sample strictly before that dwell start. Once band entry is
+    /// recorded, further observations are ignored so the IAE stays frozen at
+    /// the transient it measured.
+    pub(crate) fn observe(&mut self, delta_counts: i32, elapsed_us: u32) {
+        if self.band_entry_us.is_some() {
+            return;
+        }
+        let rate = per_tick_rate_q(delta_counts, elapsed_us);
+        if rate >= self.lower_q && rate <= self.upper_q {
+            if self.run_start_us.is_none() {
+                self.run_start_us = Some(self.elapsed_before_us);
+                self.run_iae_at_start_q = self.iae_running_q;
+                self.run_duration_us = 0;
+            }
+            self.run_duration_us = self.run_duration_us.saturating_add(elapsed_us);
+            if self.run_duration_us >= self.dwell_us {
+                self.band_entry_us = self.run_start_us;
+                self.band_entry_iae_q = self.run_iae_at_start_q;
+            }
+        } else {
+            self.run_start_us = None;
+            self.run_duration_us = 0;
+        }
+        let error_q = rate.saturating_sub(self.target_rate_q).unsigned_abs();
+        let error_q = i64::try_from(error_q).unwrap_or(i64::MAX);
+        let contribution_q = error_q.saturating_mul(i64::from(elapsed_us));
+        self.iae_running_q = self.iae_running_q.saturating_add(contribution_q);
+        self.elapsed_before_us = self.elapsed_before_us.saturating_add(elapsed_us);
+    }
+
+    /// Band-entry time (elapsed-us from leg start), or `None` while the leg has
+    /// not yet sustained a full `dwell_us` inside the band.
+    pub(crate) fn band_entry_us(&self) -> Option<u32> {
+        self.band_entry_us
+    }
+
+    /// Recovery IAE integrated up to band entry. Meaningful only once
+    /// [`Self::band_entry_us`] returns `Some`.
+    pub(crate) fn recovery_iae_q(&self) -> i64 {
+        self.band_entry_iae_q
+    }
+}
+
 /// Absolute per-direction gate thresholds for one reversal-robustness probe.
 ///
 /// Compared directly against `ReversalMetrics`, never against another
@@ -299,6 +409,63 @@ mod tests {
         } // clean band residence
         let band = per_tick_rate_q(1, 1_000);
         assert!(band_entry_time_us(&ring, target, band, 3_000).is_some());
+    }
+
+    /// Feed identical sample streams through the online accumulator and the pure
+    /// scanners; the accumulator must reproduce band-entry time and recovery IAE
+    /// exactly, since production folds samples online (the 256-sample ring
+    /// cannot retain a full 500 ms transient).
+    fn assert_online_matches_pure(samples: &[(i32, u32)], target: i64, band: i64, dwell_us: u32) {
+        let mut ring = VelocityObservationRing::new();
+        let mut online = ReversalOnlineAccumulator::new();
+        online.reset(target, band, dwell_us);
+        for &(delta, elapsed) in samples {
+            ring.push(delta, elapsed as u16).unwrap();
+            online.observe(delta, elapsed);
+        }
+        let pure_entry = band_entry_time_us(&ring, target, band, dwell_us);
+        assert_eq!(online.band_entry_us(), pure_entry);
+        if let Some(entry) = pure_entry {
+            let mut elapsed_before: u32 = 0;
+            let mut end_index = ring.observation_len();
+            for index in 0..ring.observation_len() {
+                if elapsed_before >= entry {
+                    end_index = index;
+                    break;
+                }
+                elapsed_before =
+                    elapsed_before.saturating_add(ring.observation(index).unwrap().elapsed_us);
+            }
+            assert_eq!(
+                online.recovery_iae_q(),
+                recovery_iae_q(&ring, target, end_index)
+            );
+        }
+    }
+
+    #[test]
+    fn online_accumulator_matches_pure_scanners_for_transient_then_settle() {
+        let target = per_tick_rate_q(100, 1_000);
+        let band = per_tick_rate_q(1, 1_000);
+        // 30 ticks far out of band, then a sustained on-target dwell.
+        let samples: [(i32, u32); 110] =
+            core::array::from_fn(|i| (if i < 30 { 400 } else { 100 }, 1_000));
+        assert_online_matches_pure(&samples, target, band, 48_000);
+    }
+
+    #[test]
+    fn online_accumulator_matches_pure_scanners_when_band_never_reached() {
+        let target = per_tick_rate_q(100, 1_000);
+        let band = per_tick_rate_q(1, 1_000);
+        let samples: [(i32, u32); 20] =
+            core::array::from_fn(|i| (if i % 2 == 0 { 100 } else { 400 }, 1_000));
+        assert_online_matches_pure(&samples, target, band, 3_000);
+        let mut online = ReversalOnlineAccumulator::new();
+        online.reset(target, band, 3_000);
+        for &(delta, elapsed) in &samples {
+            online.observe(delta, elapsed);
+        }
+        assert_eq!(online.band_entry_us(), None);
     }
 
     #[test]
