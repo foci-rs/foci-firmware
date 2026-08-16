@@ -120,6 +120,112 @@ pub(crate) fn recovery_iae_q(
     iae_q
 }
 
+/// Absolute per-direction gate thresholds for one reversal-robustness probe.
+///
+/// Compared directly against `ReversalMetrics`, never against another
+/// candidate's own measurement, so the gate cannot be gamed by an
+/// over-integrated candidate that is merely "less bad" than its peers.
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+#[allow(dead_code)]
+pub(crate) struct RobustnessThresholds {
+    /// Maximum allowed `reconvergence_time_us`.
+    pub t_max_us: u32,
+    /// Maximum allowed `|settled_residual_q|`.
+    pub r_max_q: i64,
+    /// Maximum allowed `recovery_iae_q`.
+    pub iae_max_q: i64,
+}
+
+/// Conservative, pre-characterization seed thresholds. Deliberately loose:
+/// the gate must never false-reject a good candidate before the
+/// hardware characterization pass tightens these values.
+///
+/// `r_max_q` is the deficit-Q equivalent of 10% of a reference acceptance
+/// target rate (176 rpm at `REFERENCE_ENCODER_COUNTS_PER_REV` = 4000 counts
+/// per rev, `commissioning/outer/limits.rs`), computed offline against
+/// `VELOCITY_RATE_Q_SCALE` and frozen as a literal -- never recomputed at
+/// runtime, which would silently reintroduce a self-relative gate:
+///
+/// ```text
+/// target_rate_q = target_velocity_rpm * counts_per_rev * VELOCITY_RATE_Q_SCALE / 60
+///               = 176 * 4_000 * 1_000 / 60
+///               = 704_000_000 / 60
+///               = 11_733_333 (truncated)
+/// r_max_q = target_rate_q * 10 / 100 = 1_173_333 (truncated)
+/// ```
+///
+/// `iae_max_q` is the loose envelope of sustaining `r_max_q` residual for
+/// the full `t_max_us` budget: `300_000 * 1_173_333 = 351_999_900_000`.
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresholds {
+    // Loose seed, pending hardware characterization.
+    t_max_us: 300_000,
+    // Loose seed (10% of target), pending hardware characterization.
+    r_max_q: 1_173_333,
+    // Loose seed, pending hardware characterization.
+    iae_max_q: 351_999_900_000,
+};
+
+/// Bit set in `tripped_mask` when `reconvergence_time_us` exceeds `t_max_us`.
+#[allow(dead_code)]
+pub(crate) const TRIP_TIME: u8 = 1 << 0;
+/// Bit set in `tripped_mask` when `|settled_residual_q|` exceeds `r_max_q`.
+#[allow(dead_code)]
+pub(crate) const TRIP_RESIDUAL: u8 = 1 << 1;
+/// Bit set in `tripped_mask` when `recovery_iae_q` exceeds `iae_max_q`.
+#[allow(dead_code)]
+pub(crate) const TRIP_IAE: u8 = 1 << 2;
+
+/// Settle-band half-width, as a percentage of `|target_rate_q|`. The phase
+/// derives `band_q = |target_rate_q| * ROBUSTNESS_BAND_FRACTION_PCT / 100`
+/// at runtime. This is a settle-detection tolerance proportional to target,
+/// not a self-relative gate -- the ratio concern is confined to `t_max_us`,
+/// which stays absolute.
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_BAND_FRACTION_PCT: u32 = 5;
+
+/// Minimum sustained dwell inside the settle band, in microseconds.
+/// ~48 ticks at the ~1 ms observation cadence (416 samples over 415,488 us
+/// in the scored-rest captures, `docs/logbook/2026-07-28.md`), under the
+/// 64-sample shortest stationary suffix (`VELOCITY_SUFFIX_LENGTHS[0]`).
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_BAND_DWELL_US: u32 = 48_000;
+
+/// Overall measurement budget for one reversal-robustness probe leg, in
+/// microseconds. Matches the existing 500 ms zero-target rest window
+/// budget; must exceed `t_max_us`. A leg that does not reach band entry
+/// within this budget is inconclusive.
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_MEASUREMENT_BUDGET_US: u32 = 500_000;
+
+/// Bounded retry count for an inconclusive probe leg.
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 2;
+
+/// Compute the tripped bitmask for `m` against `t`: which of time, residual,
+/// and IAE gates failed, independently of one another.
+#[allow(dead_code)]
+pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 {
+    let mut mask = 0u8;
+    if m.reconvergence_time_us > t.t_max_us {
+        mask |= TRIP_TIME;
+    }
+    if m.settled_residual_q.abs() > t.r_max_q {
+        mask |= TRIP_RESIDUAL;
+    }
+    if m.recovery_iae_q > t.iae_max_q {
+        mask |= TRIP_IAE;
+    }
+    mask
+}
+
+/// OR the tripped masks of both reversal directions: a candidate fails if
+/// either direction trips any gate.
+#[allow(dead_code)]
+pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
+    a | b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +288,57 @@ mod tests {
         } // clean band residence
         let band = per_tick_rate_q(1, 1_000);
         assert!(band_entry_time_us(&ring, target, band, 3_000).is_some());
+    }
+
+    #[test]
+    fn tripped_mask_flags_each_threshold_independently() {
+        let t = RobustnessThresholds {
+            t_max_us: 100_000,
+            r_max_q: 500,
+            iae_max_q: 1_000_000,
+        };
+        let ok = ReversalMetrics {
+            reconvergence_time_us: 50_000,
+            settled_residual_q: 100,
+            recovery_iae_q: 500_000,
+            forward_settle_time_us: 20_000,
+            reconvergence_ratio_ppm: 0,
+        };
+        assert_eq!(tripped_mask(&ok, &t), 0);
+        let slow = ReversalMetrics {
+            reconvergence_time_us: 200_000,
+            ..ok
+        };
+        assert_eq!(tripped_mask(&slow, &t), TRIP_TIME);
+        let bad = ReversalMetrics {
+            reconvergence_time_us: 200_000,
+            settled_residual_q: -900,
+            recovery_iae_q: 2_000_000,
+            ..ok
+        };
+        assert_eq!(tripped_mask(&bad, &t), TRIP_TIME | TRIP_RESIDUAL | TRIP_IAE);
+    }
+
+    #[test]
+    fn residual_gate_uses_absolute_value() {
+        let t = RobustnessThresholds {
+            t_max_us: u32::MAX,
+            r_max_q: 500,
+            iae_max_q: i64::MAX,
+        };
+        let neg = ReversalMetrics {
+            reconvergence_time_us: 0,
+            settled_residual_q: -600,
+            recovery_iae_q: 0,
+            forward_settle_time_us: 0,
+            reconvergence_ratio_ppm: 0,
+        };
+        assert_eq!(tripped_mask(&neg, &t), TRIP_RESIDUAL);
+    }
+
+    #[test]
+    fn worse_of_ors_both_directions() {
+        assert_eq!(worse_of(TRIP_TIME, TRIP_IAE), TRIP_TIME | TRIP_IAE);
+        assert_eq!(worse_of(0, 0), 0);
     }
 }
