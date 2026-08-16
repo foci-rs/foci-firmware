@@ -901,6 +901,47 @@ pub struct AcceptanceMatrixTerminal {
     pub safety_fault: Option<OuterSafetyFault>,
 }
 
+/// Firmware-owned terminal outcome for one reversal-robustness gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum RobustnessOutcome {
+    /// Both reversal directions converged within every threshold budget.
+    Complete = 0,
+    /// Motion stayed safe but at least one threshold gate tripped.
+    Rejected = 1,
+    /// Motion stayed safe but evidence was insufficient to score the gate.
+    Inconclusive = 2,
+    /// A firmware safety or evidence-integrity invariant failed.
+    Failed = 3,
+}
+
+/// Compact terminal for one reversal-standstill robustness gate.
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+pub struct RobustnessReversalTerminal {
+    /// Independent robustness evidence schema.
+    pub schema_revision: u16,
+    /// Caller-assigned run sequence.
+    pub run_sequence: u32,
+    /// Gate-local terminal class.
+    pub outcome: RobustnessOutcome,
+    /// `ROBUSTNESS_CAUSE_*` gate-local terminal cause.
+    pub cause: u8,
+    /// Selected velocity-loop proportional gain used for the probe.
+    pub selected_p: u16,
+    /// Selected velocity-loop integral gain used for the probe.
+    pub selected_i: u16,
+    /// Signed target velocity used for the probe, in RPM.
+    pub target_velocity_rpm: i32,
+    /// Both reversal directions' measured robustness evidence.
+    pub evidence: crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence,
+    /// Monotonic timestamp before the first probe motion.
+    pub run_started_us: u64,
+    /// Monotonic timestamp after the final probe action.
+    pub run_completed_us: u64,
+    /// Exact safety-fault context, when present.
+    pub safety_fault: Option<OuterSafetyFault>,
+}
+
 /// Detailed Stage-C terminal retained for lifecycle and canonical reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralTerminal {
@@ -1618,6 +1659,8 @@ pub enum StepResult {
     AcceptanceMatrixEvent(AcceptanceMatrixEvent),
     /// One fixed-I velocity confidence matrix reached its terminal.
     AcceptanceMatrixTerminal(AcceptanceMatrixTerminal),
+    /// One reversal-standstill robustness gate reached its terminal.
+    RobustnessReversalTerminal(RobustnessReversalTerminal),
     /// Streamed breakaway-campaign evidence became available.
     BreakawayCampaignEvent(BreakawayCampaignEvent),
     /// An accepted breakaway campaign handed off to Stage C, carrying the exact

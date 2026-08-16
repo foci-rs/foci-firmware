@@ -1356,6 +1356,12 @@ impl CommissioningEngine {
             #[cfg(not(feature = "trace"))]
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::AcceptanceMatrixTerminal(_) => {}
+            // Placeholder: FTRC trace emission for
+            // this terminal will be wired in later. Until then this variant is never produced --
+            // `AutotuneAction::RobustnessReversal` is rejected before the
+            // engine runs -- so a no-op stub is enough to keep the tree
+            // compiling.
+            StepResult::RobustnessReversalTerminal(_) => {}
             // The campaign engine that produces these
             // `StepResult` variants runs in the default build, so they are now
             // reachable without any trace feature. This function's only job is

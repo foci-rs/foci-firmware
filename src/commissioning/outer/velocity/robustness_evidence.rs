@@ -15,7 +15,7 @@ use crate::commission_dispatch::robustness::{
 /// One reversal direction's robustness probe outcome.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 #[allow(dead_code)]
-pub(crate) struct RobustnessDirectionEvidence {
+pub struct RobustnessDirectionEvidence {
     /// The measured reconvergence/residual/IAE metrics for this direction.
     pub metrics: ReversalMetrics,
     /// `TRIP_TIME | TRIP_RESIDUAL | TRIP_IAE` bitmask of threshold gates
@@ -31,7 +31,7 @@ pub(crate) struct RobustnessDirectionEvidence {
 /// Both reversal directions' robustness evidence for one candidate.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 #[allow(dead_code)]
-pub(crate) struct RobustnessEvidence {
+pub struct RobustnessEvidence {
     /// Index 0 = forward->reverse, index 1 = reverse->forward.
     pub directions: [RobustnessDirectionEvidence; 2],
 }

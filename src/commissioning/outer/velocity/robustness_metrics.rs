@@ -16,7 +16,7 @@ const MICROS_PER_SECOND: i128 = 1_000_000;
 /// Reconvergence and recovery metrics for one reversal-robustness probe.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 #[allow(dead_code)]
-pub(crate) struct ReversalMetrics {
+pub struct ReversalMetrics {
     /// Elapsed time from reversal onset to the start of the sustained
     /// band-entry dwell.
     pub reconvergence_time_us: u32,

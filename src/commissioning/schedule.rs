@@ -220,6 +220,12 @@ pub fn adapt_step_result(
         StepResult::AcceptanceMatrixTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::AcceptanceMatrix(result),
         }),
+        // Placeholder: this will eventually wire into `CommissionTerminal`
+        // and the downstream `tmc_control::state` dispatch. Until then this
+        // variant is never produced -- `AutotuneAction::RobustnessReversal` is
+        // rejected before the engine runs -- so a minimal type-checking arm
+        // is enough to keep the tree compiling.
+        StepResult::RobustnessReversalTerminal(_) => Err(CommissionError::InvalidSchedule),
         StepResult::InnerFailed(error) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::InnerFailed(error),
         }),

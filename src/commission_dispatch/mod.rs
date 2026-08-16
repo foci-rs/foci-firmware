@@ -593,6 +593,13 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
+        // Placeholder: this will eventually wire into a dedicated
+        // `ReplyPayload` arm and consume the engine. Until then this variant
+        // is never produced -- `AutotuneAction::RobustnessReversal` is
+        // rejected before the engine runs (see `tmc_control/request.rs`) --
+        // so a minimal type-checking arm is enough to keep the tree
+        // compiling.
+        StepResult::RobustnessReversalTerminal(_) => CommissionOutcome::Continue,
         StepResult::SelftestDone => {
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
             let oid = consumed.oid();

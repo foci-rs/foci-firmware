@@ -48,8 +48,9 @@ pub(crate) mod recovery;
 mod recovery_tests;
 pub mod reproduction;
 mod response_ramp;
-pub(crate) mod robustness_evidence;
-pub(crate) mod robustness_metrics;
+pub mod robustness_evidence;
+pub mod robustness_metrics;
+pub(crate) mod robustness_reporting;
 mod sweep_analysis;
 pub mod sweep_consensus;
 #[cfg(test)]
