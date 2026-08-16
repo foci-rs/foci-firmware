@@ -19,7 +19,8 @@ use crate::autotune::velocity_measurement::{
     StationarityResult, VELOCITY_RATE_Q_SCALE, estimate_confidence,
 };
 use crate::commission_dispatch::robustness::{
-    ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_SAFETY_FAULT,
+    ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
+    ROBUSTNESS_CAUSE_SAFETY_FAULT,
 };
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
@@ -724,7 +725,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                             Err(step) => step,
                         }
                     } else {
-                        fault_terminal(session, backend, None)
+                        // I4: the between-legs rest never confirmed even after the
+                        // one bounded re-open. This is a specific, operator-
+                        // actionable condition, not the generic internal-fault
+                        // bucket, so it gets its own cause.
+                        rest_not_confirmed_terminal(session, backend)
                     }
                 }
                 Err(_) => fault_terminal(session, backend, None),
@@ -959,19 +964,13 @@ fn complete_terminal<B: CommissioningBackend>(
     })
 }
 
-/// Build a `Failed` terminal. A populated `safety_fault` is a real envelope
-/// trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`); `None` is an internal, non-envelope
-/// fault (`ROBUSTNESS_CAUSE_INTERNAL_FAULT`) so the host can disambiguate them.
-fn fault_terminal<B: CommissioningBackend>(
+/// Build a `Failed` terminal stamping an explicit cause and safety fault.
+fn failed_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
+    cause: u8,
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
-    let cause = if safety_fault.is_some() {
-        ROBUSTNESS_CAUSE_SAFETY_FAULT
-    } else {
-        ROBUSTNESS_CAUSE_INTERNAL_FAULT
-    };
     StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
         schema_revision: ROBUSTNESS_SCHEMA_REVISION,
         run_sequence: session.run_sequence,
@@ -985,6 +984,33 @@ fn fault_terminal<B: CommissioningBackend>(
         run_completed_us: backend.elapsed_us(),
         safety_fault,
     })
+}
+
+/// Build a `Failed` terminal. A populated `safety_fault` is a real envelope
+/// trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`); `None` is an internal, non-envelope
+/// fault (`ROBUSTNESS_CAUSE_INTERNAL_FAULT`) so the host can disambiguate them.
+fn fault_terminal<B: CommissioningBackend>(
+    session: &RobustnessReversalSession,
+    backend: &B,
+    safety_fault: Option<OuterSafetyFault>,
+) -> StepResult {
+    let cause = if safety_fault.is_some() {
+        ROBUSTNESS_CAUSE_SAFETY_FAULT
+    } else {
+        ROBUSTNESS_CAUSE_INTERNAL_FAULT
+    };
+    failed_terminal(session, backend, cause, safety_fault)
+}
+
+/// Build a `Failed` terminal for the between-legs rest that was never confirmed,
+/// even after the one bounded re-opened rest window. Distinct from the generic
+/// `ROBUSTNESS_CAUSE_INTERNAL_FAULT` so the host can surface this specific,
+/// operator-actionable condition.
+fn rest_not_confirmed_terminal<B: CommissioningBackend>(
+    session: &RobustnessReversalSession,
+    backend: &B,
+) -> StepResult {
+    failed_terminal(session, backend, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, None)
 }
 
 /// Resolve a per-tick fault into the owning `Failed` terminal.
@@ -1040,7 +1066,7 @@ mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
         ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
-        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
+        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::OuterMotionBudget;
@@ -1437,7 +1463,8 @@ mod tests {
     }
 
     /// I4: a rest that is still rejected after the one bounded re-open faults
-    /// the run rather than silently proceeding.
+    /// the run with the dedicated rest-not-confirmed cause rather than folding
+    /// into the generic internal-fault bucket or silently proceeding.
     #[test]
     fn rest_rejected_beyond_retry_faults() {
         let (terminal, _backend) =
@@ -1447,5 +1474,7 @@ mod tests {
                 _ => 0,
             });
         assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
+        assert!(terminal.safety_fault.is_none());
     }
 }

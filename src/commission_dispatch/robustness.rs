@@ -44,6 +44,13 @@ pub const ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY: u8 = 7;
 /// which is reserved for a real envelope/velocity-limit trip carrying an
 /// `OuterSafetyFault`. Set at the fault terminal, never by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_INTERNAL_FAULT: u8 = 8;
+/// The between-legs standstill was never confirmed, even after the one bounded
+/// re-opened rest window. An operator-actionable subset of the internal-fault
+/// space (outcome stays `Failed`); every other internal fault -- SPI/encoder
+/// I/O, analysis deadline, invalid gains, ring overflow -- stays on
+/// `ROBUSTNESS_CAUSE_INTERNAL_FAULT`. Set at the fault terminal, never by
+/// `summary_cause`.
+pub const ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED: u8 = 9;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
