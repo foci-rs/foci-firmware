@@ -962,6 +962,24 @@ where
                     });
                     TuneRoute::Breakaway(campaign)
                 }
+                // Placeholder: wired to the phase engine later.
+                // Until then, refuse admission so the tree compiles and no
+                // partial route exists. Reuses the same generic commission-phase
+                // rejection `handle_commission_wait_reject` and the Breakaway arm
+                // above already emit; `AlreadyRunning` is a placeholder status
+                // code, replaced by a dedicated rejection path later.
+                crate::tmc::AutotuneAction::RobustnessReversal => {
+                    board
+                        .tmc_state()
+                        .commission_in_flight
+                        .store(false, core::sync::atomic::Ordering::Relaxed);
+                    emit_commission_phase_failure::<Board, Spi>(
+                        board,
+                        oid,
+                        CommissionError::AlreadyRunning.status_code(),
+                    );
+                    return TmcControlRequestOutcome::skip_tick_tail();
+                }
             };
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before tune");

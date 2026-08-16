@@ -340,7 +340,7 @@ fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::MatrixDescending as u8, 2);
     assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
     assert_eq!(AutotuneAction::StageCResume as u8, 8);
-    for byte in [0u8, 3, 4, 5, 6] {
+    for byte in [0u8, 3, 4, 5, 6, 10] {
         assert_eq!(AutotuneAction::from_u8(byte), None);
     }
     assert_eq!(
@@ -359,7 +359,17 @@ fn action_codes_and_invalid_values_are_exact() {
         AutotuneAction::from_u8(8),
         Some(AutotuneAction::StageCResume)
     );
-    assert_eq!(AutotuneAction::from_u8(9), None);
+    assert_eq!(
+        AutotuneAction::from_u8(9),
+        Some(AutotuneAction::RobustnessReversal)
+    );
+    assert_eq!(AutotuneAction::RobustnessReversal as u8, 9);
+    assert_eq!(
+        AutotuneAction::RobustnessReversal.slot_order(),
+        IntegralSlotOrder::ForwardFirst
+    );
+    assert_eq!(AutotuneAction::RobustnessReversal.matrix_order(), None);
+    assert_eq!(AutotuneAction::RobustnessReversal.matrix_slot_order(), None);
     // The breakaway campaign runs its own schedule; it is neither a matrix
     // acquisition nor a classic forward/reverse slot order.
     assert_eq!(

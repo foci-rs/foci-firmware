@@ -456,6 +456,13 @@ pub enum AutotuneAction {
     /// the same power cycle as the run that produced the candidate, and a
     /// campaign in between resets the slot.
     StageCResume = 8,
+    /// Run the reversal/standstill robustness confirmation gates.
+    ///
+    /// Exercises the closed-loop controller through directional reversals and
+    /// forced standstill holds to confirm gain margins survive the conditions
+    /// production motion actually produces, rather than the smooth
+    /// constant-direction runs the other actions use.
+    RobustnessReversal = 9,
 }
 
 impl AutotuneAction {
@@ -466,6 +473,7 @@ impl AutotuneAction {
             2 => Some(Self::MatrixDescending),
             7 => Some(Self::BreakawaySeeded),
             8 => Some(Self::StageCResume),
+            9 => Some(Self::RobustnessReversal),
             _ => None,
         }
     }
@@ -483,7 +491,8 @@ impl AutotuneAction {
             Self::MatrixAscending
             | Self::MatrixDescending
             | Self::BreakawaySeeded
-            | Self::StageCResume => IntegralSlotOrder::ForwardFirst,
+            | Self::StageCResume
+            | Self::RobustnessReversal => IntegralSlotOrder::ForwardFirst,
         }
     }
 }
@@ -1454,7 +1463,11 @@ mod tests {
             AutotuneAction::from_u8(8),
             Some(AutotuneAction::StageCResume)
         );
-        assert_eq!(AutotuneAction::from_u8(9), None);
+        assert_eq!(
+            AutotuneAction::from_u8(9),
+            Some(AutotuneAction::RobustnessReversal)
+        );
+        assert_eq!(AutotuneAction::from_u8(10), None);
         assert_eq!(AutotuneAction::StageCResume as u8, 8);
         assert_eq!(AutotuneAction::StageCResume.matrix_order(), None);
         assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
