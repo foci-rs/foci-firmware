@@ -48,6 +48,7 @@ pub(crate) mod recovery;
 mod recovery_tests;
 pub mod reproduction;
 mod response_ramp;
+pub(crate) mod robustness_evidence;
 pub(crate) mod robustness_metrics;
 mod sweep_analysis;
 pub mod sweep_consensus;

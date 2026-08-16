@@ -15,6 +15,7 @@ mod acceptance_tests;
 pub mod post_actions;
 pub mod replies;
 mod restore;
+pub mod robustness;
 pub mod stage_c;
 #[cfg(test)]
 mod stage_c_tests;
