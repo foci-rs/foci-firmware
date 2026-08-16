@@ -17,6 +17,12 @@ pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 54;
 /// deliberately absent: both of its inputs (`reconvergence_time_us`,
 /// `forward_settle_time_us`) are encoded, so the host derives the ratio
 /// instead of the firmware shipping a third, redundant field.
+///
+/// The IAE wire field is `recovery_iae_qs` (rate-Q seconds): the internal
+/// `recovery_iae_q` is rate-Q microseconds, which a real reversal transient
+/// drives past `i32::MAX` in a single tick, so it is divided by 1_000_000
+/// before the saturating i32 clamp. The i64 gate still compares the full
+/// microsecond value; only the wire readout is rescaled.
 #[allow(dead_code)]
 pub(crate) fn encode_robustness_terminal_reply(
     terminal: &RobustnessReversalTerminal,
@@ -59,7 +65,7 @@ pub(crate) fn encode_robustness_terminal_reply(
         push_reply(
             &mut bytes,
             &mut offset,
-            &saturating_i64_to_i32(direction.metrics.recovery_iae_q).to_le_bytes(),
+            &saturating_i64_to_i32(direction.metrics.recovery_iae_q / 1_000_000).to_le_bytes(),
         );
         push_reply(
             &mut bytes,
@@ -187,6 +193,8 @@ mod tests {
                 i32::try_from(direction.metrics.settled_residual_q)
                     .expect("fixture residual fits i32")
             );
+            // Wire field `recovery_iae_qs`: internal rate-Q microseconds
+            // rescaled to rate-Q seconds (/ 1_000_000) before the i32 clamp.
             assert_eq!(
                 i32::from_le_bytes([
                     bytes[base + 8],
@@ -194,7 +202,7 @@ mod tests {
                     bytes[base + 10],
                     bytes[base + 11]
                 ]),
-                i32::try_from(direction.metrics.recovery_iae_q).expect("fixture IAE fits i32")
+                saturating_i64_to_i32(direction.metrics.recovery_iae_q / 1_000_000)
             );
             assert_eq!(
                 u32::from_le_bytes([
@@ -221,8 +229,8 @@ mod tests {
         let bytes = encode_robustness_terminal_reply(&terminal);
 
         let residual = i32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-        let iae = i32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
+        let iae_qs = i32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
         assert_eq!(residual, i32::MAX);
-        assert_eq!(iae, i32::MIN);
+        assert_eq!(iae_qs, i32::MIN);
     }
 }

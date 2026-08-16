@@ -154,16 +154,27 @@ pub(crate) struct RobustnessThresholds {
 /// r_max_q = target_rate_q * 10 / 100 = 1_173_333 (truncated)
 /// ```
 ///
-/// `iae_max_q` is the loose envelope of sustaining `r_max_q` residual for
-/// the full `t_max_us` budget: `300_000 * 1_173_333 = 351_999_900_000`.
+/// `iae_max_q` is a loose *transient* envelope, not a settled-residual one:
+/// the recovery window integrates the reversal transient, whose error starts
+/// near twice the target rate. The seed allows a 2x margin over that peak
+/// error (`2 * target_rate_q`) sustained across the full measurement budget
+/// (`ROBUSTNESS_MEASUREMENT_BUDGET_US`), in the same rate-Q-microsecond unit
+/// as the internal `recovery_iae_q` the gate compares:
+///
+/// ```text
+/// iae_max_q = 2 (margin) * (2 * target_rate_q) * ROBUSTNESS_MEASUREMENT_BUDGET_US
+///           = 2 * (2 * 11_733_333) * 500_000
+///           = 23_466_666_000_000 (rate-Q microseconds)
+/// ```
 #[allow(dead_code)]
 pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresholds {
     // Loose seed, pending hardware characterization.
     t_max_us: 300_000,
     // Loose seed (10% of target), pending hardware characterization.
     r_max_q: 1_173_333,
-    // Loose seed, pending hardware characterization.
-    iae_max_q: 351_999_900_000,
+    // Loose seed: 2x margin over the full-budget peak-error transient,
+    // pending hardware characterization.
+    iae_max_q: 2 * (2 * 11_733_333) * 500_000,
 };
 
 /// Bit set in `tripped_mask` when `reconvergence_time_us` exceeds `t_max_us`.
