@@ -1225,10 +1225,13 @@ where
     normal_outcome(board.normal_tail())
 }
 
-/// Handle one request with temporary empty Stage-C retention.
+/// Handle one request with a throwaway, per-call Stage-C candidate slot.
 ///
-/// Board integration switches to [`handle_tmc_control_request_with_stages`] when
-/// its persistent Stage-C task-local is added.
+/// This wrapper is a test/convenience entry point: it allocates a fresh
+/// `StageCCandidateSlot` on every call, so it retains no Stage-C state across
+/// calls. Production board integration calls
+/// [`handle_tmc_control_request_with_stages`] directly with its persistent,
+/// task-local Stage-C slot.
 pub async fn handle_tmc_control_request<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,

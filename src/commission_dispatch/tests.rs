@@ -2250,9 +2250,11 @@ async fn breakaway_campaign_safety_failure_disarms_without_reaching_stage_c() {
 
 /// A production outer-tune failure during an active velocity/breakaway workflow
 /// must run the velocity-aware disarm/restore, which zeroes `PID_VELOCITY_TARGET`
-/// and re-clamps the operational current limit. The plain entry-gain restore
-/// never touches `PID_VELOCITY_TARGET`, so leaving the workflow's torque clamp
-/// wrong is exactly what this guards against once breakaway is the default path.
+/// and re-clamps the operational current limit. For the `OuterFailed(Shutdown)`
+/// path exercised here, the alternative is the safe-state restore, which zeroes
+/// `PID_VELOCITY_OFFSET` instead — it never touches `PID_VELOCITY_TARGET` — so
+/// this test's `PID_VELOCITY_TARGET` assertion still discriminates the
+/// velocity-aware path from that alternative on this path.
 #[fixture_test]
 async fn outer_failed_during_velocity_workflow_runs_velocity_aware_restore() {
     let mut backend = MockBackend::new();

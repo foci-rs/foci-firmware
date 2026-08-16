@@ -1318,7 +1318,10 @@ fn retain_analyzed_observation(
     Ok(())
 }
 
-/// Advance the trace-gated Stage-C response sweep by one cooperative state-machine step.
+/// Advance the Stage-C response sweep by one cooperative state-machine step.
+///
+/// This step compiles into the default (production) build; only the raw
+/// trace emission it may call into is gated behind the `trace` feature.
 pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     workspace: &mut TransientBuffer,
