@@ -18,7 +18,9 @@ use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork};
 use crate::autotune::velocity_measurement::{
     StationarityResult, VELOCITY_RATE_Q_SCALE, estimate_confidence,
 };
-use crate::commission_dispatch::robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
+use crate::commission_dispatch::robustness::{
+    ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_SAFETY_FAULT,
+};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::OuterSafetyLimits;
@@ -71,7 +73,6 @@ const DIRECTION_COUNT: usize = 2;
 /// dyadic blocker, the online band-entry/IAE accumulator, and the running
 /// encoder/time anchors. Never allocates on the heap; every field is
 /// fixed-size.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct RobustnessReversalWorkspace {
     observations: VelocityObservationRing,
@@ -84,7 +85,6 @@ pub(crate) struct RobustnessReversalWorkspace {
 
 impl RobustnessReversalWorkspace {
     /// Construct an empty workspace.
-    #[allow(dead_code)]
     pub(crate) const fn new() -> Self {
         Self {
             observations: VelocityObservationRing::new(),
@@ -108,7 +108,6 @@ impl defmt::Format for RobustnessReversalWorkspace {
 }
 
 /// Frozen accepted point plus the mutable per-direction robustness progress.
-#[allow(dead_code)]
 #[derive(Debug, defmt::Format)]
 pub(crate) struct RobustnessReversalSession {
     point: AcceptancePoint,
@@ -123,7 +122,6 @@ pub(crate) struct RobustnessReversalSession {
 impl RobustnessReversalSession {
     /// Freeze the accepted point for a robustness-reversal run. Reads the point
     /// only; never mutates the candidate slot or its acceptance-matrix progress.
-    #[allow(dead_code)]
     pub(crate) const fn new(point: AcceptancePoint, run_sequence: u32) -> Self {
         Self {
             point,
@@ -138,7 +136,6 @@ impl RobustnessReversalSession {
 }
 
 /// Cooperative state for the unreset-reversal robustness phase.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RobustnessReversalState {
     /// Arm the safety baseline before any motion.
@@ -364,7 +361,6 @@ async fn observe_tick<B: CommissioningBackend>(
 /// against `safety` between ticks, exactly as it does for every other outer
 /// phase; this stepper never performs that check itself. The full engine
 /// constructor and dispatch wiring is deferred to later work.
-#[allow(dead_code)]
 pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
     state: &mut RobustnessReversalState,
     workspace: &mut RobustnessReversalWorkspace,
@@ -963,17 +959,24 @@ fn complete_terminal<B: CommissioningBackend>(
     })
 }
 
-/// Build a `Failed` terminal for an internal (non-safety) fault.
+/// Build a `Failed` terminal. A populated `safety_fault` is a real envelope
+/// trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`); `None` is an internal, non-envelope
+/// fault (`ROBUSTNESS_CAUSE_INTERNAL_FAULT`) so the host can disambiguate them.
 fn fault_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
+    let cause = if safety_fault.is_some() {
+        ROBUSTNESS_CAUSE_SAFETY_FAULT
+    } else {
+        ROBUSTNESS_CAUSE_INTERNAL_FAULT
+    };
     StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
         schema_revision: ROBUSTNESS_SCHEMA_REVISION,
         run_sequence: session.run_sequence,
         outcome: RobustnessOutcome::Failed,
-        cause: ROBUSTNESS_CAUSE_SAFETY_FAULT,
+        cause,
         selected_p: session.point.selected_p,
         selected_i: session.point.selected_i,
         target_velocity_rpm: session.point.target_velocity_rpm,
@@ -1012,11 +1015,16 @@ pub(crate) fn robustness_reversal_fault_terminal(
         return StepResult::OuterFailed(error);
     };
     let _ = error;
+    let cause = if safety_fault.is_some() {
+        ROBUSTNESS_CAUSE_SAFETY_FAULT
+    } else {
+        ROBUSTNESS_CAUSE_INTERNAL_FAULT
+    };
     StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
         schema_revision: ROBUSTNESS_SCHEMA_REVISION,
         run_sequence: session.run_sequence,
         outcome: RobustnessOutcome::Failed,
-        cause: ROBUSTNESS_CAUSE_SAFETY_FAULT,
+        cause,
         selected_p: session.point.selected_p,
         selected_i: session.point.selected_i,
         target_velocity_rpm: session.point.target_velocity_rpm,
@@ -1265,6 +1273,9 @@ mod tests {
         );
     }
 
+    // This test checks a slot the phase never receives (the session holds a
+    // copy), so it is tautological; the real guarantee is the
+    // `&StageCCandidateSlot` shared-ref signatures on the dispatch entry points.
     #[test]
     fn run_leaves_acceptance_matrix_progress_untouched() {
         for (noisy, expected) in [(false, false), (true, true)] {

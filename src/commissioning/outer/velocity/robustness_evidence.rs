@@ -14,7 +14,6 @@ use crate::commission_dispatch::robustness::{
 
 /// One reversal direction's robustness probe outcome.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
-#[allow(dead_code)]
 pub struct RobustnessDirectionEvidence {
     /// The measured reconvergence/residual/IAE metrics for this direction.
     pub metrics: ReversalMetrics,
@@ -30,7 +29,6 @@ pub struct RobustnessDirectionEvidence {
 
 /// Both reversal directions' robustness evidence for one candidate.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
-#[allow(dead_code)]
 pub struct RobustnessEvidence {
     /// Index 0 = forward->reverse, index 1 = reverse->forward.
     pub directions: [RobustnessDirectionEvidence; 2],
@@ -38,18 +36,18 @@ pub struct RobustnessEvidence {
 
 /// Derive the primary `ROBUSTNESS_CAUSE_*` for `ev`.
 ///
-/// Priority: `RECONVERGENCE_INCONCLUSIVE` if either direction is
-/// inconclusive; otherwise the first tripped threshold cause, in
-/// time > residual > IAE priority, from the OR of both directions' tripped
-/// masks (`worse_of`); otherwise `PASS`.
+/// Trips-first, to agree with the outcome mapping in `complete_terminal`
+/// (any trip -> `Rejected`): from the OR of both directions' tripped masks
+/// (`worse_of`), the first tripped threshold cause in time > residual > IAE
+/// priority; otherwise `RECONVERGENCE_INCONCLUSIVE` if either direction is
+/// inconclusive; otherwise `PASS`. A mixed result (one direction tripped,
+/// the other inconclusive) therefore reports the trip cause, matching
+/// `outcome = Rejected` rather than aliasing the inconclusive path.
 ///
-/// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` -- that cause is set
-/// only at terminal application (Task 6), not by this summary derivation.
-#[allow(dead_code)]
+/// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` or
+/// `ROBUSTNESS_CAUSE_INTERNAL_FAULT` -- those causes are set only at
+/// terminal application and the fault path, not by this summary derivation.
 pub(crate) fn summary_cause(ev: &RobustnessEvidence) -> u8 {
-    if ev.directions.iter().any(|direction| direction.inconclusive) {
-        return ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE;
-    }
     let combined = worse_of(ev.directions[0].tripped, ev.directions[1].tripped);
     if combined & TRIP_TIME != 0 {
         ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
@@ -57,6 +55,8 @@ pub(crate) fn summary_cause(ev: &RobustnessEvidence) -> u8 {
         ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED
     } else if combined & TRIP_IAE != 0 {
         ROBUSTNESS_CAUSE_IAE_EXCEEDED
+    } else if ev.directions.iter().any(|direction| direction.inconclusive) {
+        ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE
     } else {
         ROBUSTNESS_CAUSE_PASS
     }
@@ -75,7 +75,7 @@ mod tests {
     };
 
     #[test]
-    fn summary_cause_prefers_inconclusive_then_trip_priority() {
+    fn summary_cause_prefers_trip_priority_then_inconclusive() {
         use crate::commission_dispatch::robustness::*; // ROBUSTNESS_CAUSE_*
         use crate::commissioning::outer::velocity::robustness_metrics::{TRIP_IAE, TRIP_TIME};
         let clean = RobustnessDirectionEvidence {
@@ -84,6 +84,7 @@ mod tests {
             retry_count: 0,
             inconclusive: false,
         };
+        // All clean -> PASS.
         assert_eq!(
             summary_cause(&RobustnessEvidence {
                 directions: [clean, clean]
@@ -94,6 +95,7 @@ mod tests {
             inconclusive: true,
             ..clean
         };
+        // Inconclusive with no trip -> INCONCLUSIVE.
         assert_eq!(
             summary_cause(&RobustnessEvidence {
                 directions: [clean, inconclusive]
@@ -104,9 +106,18 @@ mod tests {
             tripped: TRIP_TIME | TRIP_IAE,
             ..clean
         };
+        // A trip outranks IAE within the same direction (time > IAE).
         assert_eq!(
             summary_cause(&RobustnessEvidence {
                 directions: [clean, time_tripped]
+            }),
+            ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
+        );
+        // Mixed: one direction tripped, the other inconclusive -> the TRIP
+        // cause, matching outcome = Rejected (trips dominate the outcome).
+        assert_eq!(
+            summary_cause(&RobustnessEvidence {
+                directions: [time_tripped, inconclusive]
             }),
             ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
         );

@@ -32,11 +32,18 @@ pub const ROBUSTNESS_CAUSE_IAE_EXCEEDED: u8 = 3;
 pub const ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE: u8 = 4;
 /// No candidate survived acceptance to be probed for robustness.
 pub const ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE: u8 = 5;
-/// Envelope/velocity-limit safety fault passthrough only.
+/// Envelope/velocity-limit safety fault passthrough only. Carries a populated
+/// `safety_fault` field; internal (non-envelope) faults use
+/// `ROBUSTNESS_CAUSE_INTERNAL_FAULT` so the host can tell them apart.
 pub const ROBUSTNESS_CAUSE_SAFETY_FAULT: u8 = 6;
 /// Accepted-point identity mismatch, set at terminal application (Task 6).
 /// Never returned by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY: u8 = 7;
+/// Internal (non-envelope) fault: SPI/encoder I/O, analysis deadline, invalid
+/// gains, or ring overflow. Distinct from `ROBUSTNESS_CAUSE_SAFETY_FAULT`,
+/// which is reserved for a real envelope/velocity-limit trip carrying an
+/// `OuterSafetyFault`. Set at the fault terminal, never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_INTERNAL_FAULT: u8 = 8;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -109,7 +116,9 @@ pub fn apply_robustness_terminal(
     stage_c_candidate: &StageCCandidateSlot,
 ) -> RobustnessReversalTerminal {
     let identity_ok = stage_c_candidate.acceptance_point().is_some_and(|point| {
-        point.selected_p == terminal.selected_p && point.selected_i == terminal.selected_i
+        point.selected_p == terminal.selected_p
+            && point.selected_i == terminal.selected_i
+            && point.target_velocity_rpm == terminal.target_velocity_rpm
     });
     if !identity_ok {
         terminal.outcome = RobustnessOutcome::Failed;
@@ -220,6 +229,22 @@ mod tests {
         slot.install_acceptance_point(point);
         let mut terminal = sample_terminal(point);
         terminal.selected_p = point.selected_p.wrapping_add(1);
+
+        let applied = apply_robustness_terminal(terminal, &slot);
+
+        assert_eq!(applied.outcome, RobustnessOutcome::Failed);
+        assert_eq!(applied.cause, ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY);
+    }
+
+    #[test]
+    fn apply_terminal_flags_evidence_integrity_on_target_velocity_mismatch() {
+        let point = sample_acceptance_point();
+        let mut slot = StageCCandidateSlot::new();
+        slot.install_acceptance_point(point);
+        let mut terminal = sample_terminal(point);
+        // Identical gains, different target: a re-installed candidate must not
+        // pass the identity check as unchanged.
+        terminal.target_velocity_rpm = point.target_velocity_rpm.wrapping_add(1);
 
         let applied = apply_robustness_terminal(terminal, &slot);
 

@@ -3,11 +3,9 @@
 use crate::commissioning::types::RobustnessReversalTerminal;
 
 /// Independent robustness evidence schema revision.
-#[allow(dead_code)]
 pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 1;
 
 /// Bytes in the compact ordinary robustness-terminal reply payload.
-#[allow(dead_code)]
 pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 54;
 
 /// Encode the compact robustness-terminal ordinary reply payload.
@@ -23,7 +21,6 @@ pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 54;
 /// drives past `i32::MAX` in a single tick, so it is divided by 1_000_000
 /// before the saturating i32 clamp. The i64 gate still compares the full
 /// microsecond value; only the wire readout is rescaled.
-#[allow(dead_code)]
 pub(crate) fn encode_robustness_terminal_reply(
     terminal: &RobustnessReversalTerminal,
 ) -> [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] {
@@ -87,12 +84,10 @@ pub(crate) fn encode_robustness_terminal_reply(
 }
 
 /// Saturating `i64 -> i32` clamp; never panics on out-of-range magnitudes.
-#[allow(dead_code)]
 fn saturating_i64_to_i32(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
-#[allow(dead_code)]
 fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, value: &[u8]) {
     let end = offset
         .checked_add(value.len())

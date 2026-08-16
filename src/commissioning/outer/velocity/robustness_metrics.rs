@@ -8,14 +8,14 @@
 //! computed directly on the derived per-tick rate, so their outcome is
 //! independent of which (if any) suffix the selector would have chosen.
 
-use crate::autotune::velocity_measurement::{VELOCITY_RATE_Q_SCALE, VelocityObservationSource};
+use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
+#[cfg(test)]
+use crate::autotune::velocity_measurement::VelocityObservationSource;
 
-#[allow(dead_code)]
 const MICROS_PER_SECOND: i128 = 1_000_000;
 
 /// Reconvergence and recovery metrics for one reversal-robustness probe.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
-#[allow(dead_code)]
 pub struct ReversalMetrics {
     /// Elapsed time from reversal onset to the start of the sustained
     /// band-entry dwell.
@@ -38,7 +38,6 @@ pub struct ReversalMetrics {
 ///
 /// Returns `0` for a degenerate zero-elapsed sample rather than dividing by
 /// zero; a valid `VelocityObservationSource` never yields one.
-#[allow(dead_code)]
 pub(crate) fn per_tick_rate_q(delta_counts: i32, elapsed_us: u32) -> i64 {
     if elapsed_us == 0 {
         return 0;
@@ -63,7 +62,11 @@ pub(crate) fn per_tick_rate_q(delta_counts: i32, elapsed_us: u32) -> i64 {
 /// reads as "how long after reversal onset did the rate settle". Returns
 /// `None` if no such dwell exists anywhere in `obs` (the inconclusive
 /// signal).
-#[allow(dead_code)]
+///
+/// Reference scanner: production folds samples online via
+/// [`ReversalOnlineAccumulator`]; this batch form exists only to validate that
+/// accumulator against an intact sample stream, so it is `#[cfg(test)]`.
+#[cfg(test)]
 pub(crate) fn band_entry_time_us(
     obs: &impl VelocityObservationSource,
     target_rate_q: i64,
@@ -100,7 +103,10 @@ pub(crate) fn band_entry_time_us(
 /// Integral of absolute per-tick rate error against `target_rate_q` over
 /// `obs[0..end_index]`, weighted by each sample's elapsed time:
 /// `sum(|rate_i - target_rate_q| * elapsed_us_i)`.
-#[allow(dead_code)]
+///
+/// Reference scanner (see [`band_entry_time_us`]): `#[cfg(test)]`, used only to
+/// validate [`ReversalOnlineAccumulator`] against an intact sample stream.
+#[cfg(test)]
 pub(crate) fn recovery_iae_q(
     obs: &impl VelocityObservationSource,
     target_rate_q: i64,
@@ -131,7 +137,6 @@ pub(crate) fn recovery_iae_q(
 /// [`recovery_iae_q`] would compute over the intact sample stream. The ring is
 /// left to serve only the settled tail (stationarity + residual).
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
-#[allow(dead_code)]
 pub(crate) struct ReversalOnlineAccumulator {
     target_rate_q: i64,
     lower_q: i64,
@@ -146,7 +151,6 @@ pub(crate) struct ReversalOnlineAccumulator {
     band_entry_iae_q: i64,
 }
 
-#[allow(dead_code)]
 impl ReversalOnlineAccumulator {
     /// Construct an idle accumulator with a zero band around zero.
     pub(crate) const fn new() -> Self {
@@ -236,7 +240,6 @@ impl ReversalOnlineAccumulator {
 /// candidate's own measurement, so the gate cannot be gamed by an
 /// over-integrated candidate that is merely "less bad" than its peers.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
-#[allow(dead_code)]
 pub(crate) struct RobustnessThresholds {
     /// Maximum allowed `reconvergence_time_us`.
     pub t_max_us: u32,
@@ -276,7 +279,6 @@ pub(crate) struct RobustnessThresholds {
 ///           = 2 * (2 * 11_733_333) * 500_000
 ///           = 23_466_666_000_000 (rate-Q microseconds)
 /// ```
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresholds {
     // Loose seed, pending hardware characterization.
     t_max_us: 300_000,
@@ -288,13 +290,10 @@ pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresho
 };
 
 /// Bit set in `tripped_mask` when `reconvergence_time_us` exceeds `t_max_us`.
-#[allow(dead_code)]
 pub(crate) const TRIP_TIME: u8 = 1 << 0;
 /// Bit set in `tripped_mask` when `|settled_residual_q|` exceeds `r_max_q`.
-#[allow(dead_code)]
 pub(crate) const TRIP_RESIDUAL: u8 = 1 << 1;
 /// Bit set in `tripped_mask` when `recovery_iae_q` exceeds `iae_max_q`.
-#[allow(dead_code)]
 pub(crate) const TRIP_IAE: u8 = 1 << 2;
 
 /// Settle-band half-width, as a percentage of `|target_rate_q|`. The phase
@@ -302,30 +301,25 @@ pub(crate) const TRIP_IAE: u8 = 1 << 2;
 /// at runtime. This is a settle-detection tolerance proportional to target,
 /// not a self-relative gate -- the ratio concern is confined to `t_max_us`,
 /// which stays absolute.
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_BAND_FRACTION_PCT: u32 = 5;
 
 /// Minimum sustained dwell inside the settle band, in microseconds.
 /// ~48 ticks at the ~1 ms observation cadence (416 samples over 415,488 us
 /// in the scored-rest captures, `docs/logbook/2026-07-28.md`), under the
 /// 64-sample shortest stationary suffix (`VELOCITY_SUFFIX_LENGTHS[0]`).
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_BAND_DWELL_US: u32 = 48_000;
 
 /// Overall measurement budget for one reversal-robustness probe leg, in
 /// microseconds. Matches the existing 500 ms zero-target rest window
 /// budget; must exceed `t_max_us`. A leg that does not reach band entry
 /// within this budget is inconclusive.
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_MEASUREMENT_BUDGET_US: u32 = 500_000;
 
 /// Bounded retry count for an inconclusive probe leg.
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 2;
 
 /// Compute the tripped bitmask for `m` against `t`: which of time, residual,
 /// and IAE gates failed, independently of one another.
-#[allow(dead_code)]
 pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 {
     let mut mask = 0u8;
     if m.reconvergence_time_us > t.t_max_us {
@@ -342,7 +336,6 @@ pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 
 
 /// OR the tripped masks of both reversal directions: a candidate fails if
 /// either direction trips any gate.
-#[allow(dead_code)]
 pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
     a | b
 }
