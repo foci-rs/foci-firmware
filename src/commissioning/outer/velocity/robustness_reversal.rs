@@ -265,23 +265,37 @@ fn settled_rate_interval_q(
     ))
 }
 
-/// Score one measured reversal leg from its online band-entry/IAE measurement
-/// and the settled-tail suffix.
+/// Grouped inputs for scoring one measured reversal leg. Bundles the borrowed
+/// accepted point and settled-tail suffix with the online-accumulator metrics so
+/// [`score_reversal_leg`] stays within the project's parameter budget.
 ///
 /// `reconvergence_time_us` and `recovery_iae` come from the online accumulator
 /// (the ring cannot retain the full transient); the suffix supplies only the
 /// settled residual.
-#[allow(clippy::too_many_arguments)]
-fn score_reversal_leg(
-    point: &AcceptancePoint,
+struct LegScore<'a> {
+    point: &'a AcceptancePoint,
     direction: usize,
     counts_per_rev: u32,
     forward_settle_time_us: u32,
     reconvergence_time_us: u32,
     recovery_iae: i64,
     retry_count: u8,
-    suffix: &crate::autotune::velocity_measurement::StationarySuffix,
-) -> Result<RobustnessDirectionEvidence, CommissionError> {
+    suffix: &'a crate::autotune::velocity_measurement::StationarySuffix,
+}
+
+/// Score one measured reversal leg from its online band-entry/IAE measurement
+/// and the settled-tail suffix.
+fn score_reversal_leg(input: LegScore<'_>) -> Result<RobustnessDirectionEvidence, CommissionError> {
+    let LegScore {
+        point,
+        direction,
+        counts_per_rev,
+        forward_settle_time_us,
+        reconvergence_time_us,
+        recovery_iae,
+        retry_count,
+        suffix,
+    } = input;
     let signed_target_rpm = reverse_target_rpm(point, direction);
     let (settled_low, settled_high) = settled_rate_interval_q(suffix)?;
     let (deficit_low, deficit_high) =
@@ -606,16 +620,16 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         retry_or_finalize_inconclusive(state, session);
                         return StepResult::ReadyNow;
                     };
-                    let evidence = match score_reversal_leg(
-                        &session.point,
+                    let evidence = match score_reversal_leg(LegScore {
+                        point: &session.point,
                         direction,
-                        safety.counts_per_rev(),
-                        session.pending_forward_settle_us,
+                        counts_per_rev: safety.counts_per_rev(),
+                        forward_settle_time_us: session.pending_forward_settle_us,
                         reconvergence_time_us,
-                        workspace.capture.recovery_iae_q(),
-                        session.retry_count[direction],
-                        &suffix,
-                    ) {
+                        recovery_iae: workspace.capture.recovery_iae_q(),
+                        retry_count: session.retry_count[direction],
+                        suffix: &suffix,
+                    }) {
                         Ok(evidence) => evidence,
                         Err(_) => return fault_terminal(session, backend, None),
                     };
