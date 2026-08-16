@@ -210,7 +210,7 @@ pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 
     if m.reconvergence_time_us > t.t_max_us {
         mask |= TRIP_TIME;
     }
-    if m.settled_residual_q.abs() > t.r_max_q {
+    if m.settled_residual_q.unsigned_abs() > t.r_max_q.unsigned_abs() {
         mask |= TRIP_RESIDUAL;
     }
     if m.recovery_iae_q > t.iae_max_q {

@@ -51,6 +51,7 @@ mod response_ramp;
 pub mod robustness_evidence;
 pub mod robustness_metrics;
 pub(crate) mod robustness_reporting;
+pub(crate) mod robustness_reversal;
 mod sweep_analysis;
 pub mod sweep_consensus;
 #[cfg(test)]
