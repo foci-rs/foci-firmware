@@ -139,8 +139,15 @@ impl CycleLedger {
             self.tail_count += 1;
             self.tail_rejected = true;
             self.slots[self.cursor] = Some(metrics);
-            self.advance();
-            return LedgerAction::RejectTail;
+            // The rejection is latched, so the verdict survives regardless of
+            // which action routes the caller. When this second tail fills the
+            // last slot, `advance` signals `DirectionDone` and the caller must
+            // stop issuing cycles; returning `RejectTail` there would let it
+            // record again and index past the final slot.
+            return match self.advance() {
+                LedgerAction::DirectionDone => LedgerAction::DirectionDone,
+                _ => LedgerAction::RejectTail,
+            };
         }
         self.slots[self.cursor] = Some(metrics);
         self.advance()
@@ -453,6 +460,32 @@ mod tests {
             LedgerAction::RejectTail
         );
         assert!(ledger.tail_rejected());
+    }
+
+    #[test]
+    fn second_tail_on_last_slot_signals_direction_done_not_reject() {
+        let mut ledger = CycleLedger::new(TAIL_T_MAX_US);
+        // Fill slots 0..=3 so the next filled slot is the last one.
+        for _ in 0..4 {
+            assert_eq!(
+                ledger.record(CycleRecord::Conclusive(metrics(100))),
+                LedgerAction::NextCycle
+            );
+        }
+        // Grace tail: consumes the one-shot grace, does not fill a slot.
+        assert_eq!(
+            ledger.record(CycleRecord::Conclusive(metrics(700))),
+            LedgerAction::RetryTail
+        );
+        // The second tail fills the final slot. It must signal DirectionDone,
+        // not RejectTail: the latter would let the caller record again and
+        // index past the last slot. The rejection is still latched.
+        assert_eq!(
+            ledger.record(CycleRecord::Conclusive(metrics(650))),
+            LedgerAction::DirectionDone
+        );
+        assert!(ledger.tail_rejected());
+        assert_eq!(ledger.valid_cycles(), 5);
     }
 
     #[test]
