@@ -1516,6 +1516,9 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             emit_acceptance_matrix_terminal(sink, oid, terminal);
         }
         ReplyPayload::RobustnessReversalTerminal { oid, terminal } => {
+            if let Some(fault) = terminal.safety_fault {
+                sink.foci_outer_safety_fault(oid, fault);
+            }
             emit_robustness_reversal_terminal(sink, oid, terminal);
         }
         ReplyPayload::BreakawayCampaignEvent { oid, event } => {
@@ -4243,6 +4246,85 @@ mod tests {
         assert_eq!(
             encode_robustness_terminal_reply(&terminal).len(),
             ROBUSTNESS_TERMINAL_REPLY_BYTES
+        );
+    }
+
+    #[test]
+    fn emit_terminal_reply_emits_outer_safety_fault_before_robustness_terminal() {
+        use crate::commissioning::outer::velocity::robustness_evidence::{
+            RobustnessDirectionEvidence, RobustnessEvidence,
+        };
+        use crate::commissioning::outer::velocity::robustness_metrics::ReversalMetrics;
+        use crate::commissioning::outer::velocity::robustness_reporting::{
+            ROBUSTNESS_SCHEMA_REVISION, encode_robustness_terminal_reply,
+        };
+        use crate::commissioning::types::{
+            OuterSafetyFault, RobustnessOutcome, RobustnessReversalTerminal,
+        };
+
+        let direction = RobustnessDirectionEvidence {
+            metrics: ReversalMetrics {
+                reconvergence_time_us: 0,
+                settled_residual_q: 0,
+                recovery_iae_q: 0,
+                forward_settle_time_us: 0,
+                reconvergence_ratio_ppm: 0,
+            },
+            tripped: 0,
+            retry_count: 0,
+            inconclusive: true,
+        };
+        let terminal = RobustnessReversalTerminal {
+            schema_revision: ROBUSTNESS_SCHEMA_REVISION,
+            run_sequence: 0x0000_abcd,
+            outcome: RobustnessOutcome::Failed,
+            cause: crate::commission_dispatch::robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT,
+            selected_p: 350,
+            selected_i: 1_280,
+            target_velocity_rpm: 322,
+            evidence: RobustnessEvidence {
+                directions: [direction, direction],
+            },
+            run_started_us: 1_000,
+            run_completed_us: 2_000,
+            safety_fault: Some(OuterSafetyFault {
+                reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
+                max_travel_mrev: 750,
+                max_velocity_mrev_s: 6000,
+                max_duration_ms: 3000,
+                direction_mask: 3,
+                delta_counts: -125,
+                dt_us: 4000,
+                velocity_counts_per_ms: -31,
+                velocity_cap_counts_per_ms: 24,
+                position_counts: -373,
+                position_window_counts: 3000,
+                elapsed_us: 120_000,
+                duration_cap_us: 3_000_000,
+            }),
+        };
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::RobustnessReversalTerminal { oid: 3, terminal },
+        );
+
+        assert_eq!(
+            &sink.events[..2],
+            &[
+                Event::OuterSafetyFault {
+                    oid: 3,
+                    reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
+                    delta_counts: -125,
+                    velocity_counts_per_ms: -31,
+                    velocity_cap_counts_per_ms: 24,
+                },
+                Event::RobustnessReversalTerminal {
+                    oid: 3,
+                    payload: encode_robustness_terminal_reply(&terminal).to_vec(),
+                },
+            ]
         );
     }
 }
