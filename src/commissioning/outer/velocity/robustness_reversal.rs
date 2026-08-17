@@ -962,12 +962,30 @@ fn to_ms_saturating(value_us: u32) -> u16 {
 
 /// Bridge one raw measured leg into a single-cycle `RobustnessDirectionSummary`.
 ///
-/// Temporary scaffolding: median = max = this leg's value, `valid_cycles =
-/// 1` unconditionally (even for an inconclusive placeholder leg), and
-/// `overshoot_peak_counts` stays zero pending per-cycle overshoot detection. Deleted once
-/// the K-cycle ledger replaces per-leg scoring with real cycle
-/// statistics.
-fn summarize_single_cycle(leg: RobustnessDirectionEvidence) -> RobustnessDirectionSummary {
+/// Temporary scaffolding: median = max = this leg's value, and
+/// `overshoot_peak_counts` stays zero until per-cycle overshoot detection
+/// exists; this single-cycle bridge is deleted once the K-cycle ledger
+/// replaces per-leg scoring with real cycle statistics.
+///
+/// `leg = None` means the direction never ran a probe at all (a fault
+/// preempted the run before either leg was measured); that reports
+/// `valid_cycles = 0` rather than fabricating a cycle that never happened,
+/// mirroring the all-zero evidence used before any probe motion. A leg that
+/// did run -- including one that stayed inconclusive after exhausting its
+/// retry budget -- reports `valid_cycles = 1`.
+fn summarize_single_cycle(leg: Option<RobustnessDirectionEvidence>) -> RobustnessDirectionSummary {
+    let Some(leg) = leg else {
+        return RobustnessDirectionSummary {
+            median_reconvergence_ms: 0,
+            max_reconvergence_ms: 0,
+            median_forward_settle_ms: 0,
+            overshoot_peak_counts: 0,
+            valid_cycles: 0,
+            trip_count: 0,
+            retry_count: 0,
+            inconclusive: true,
+        };
+    };
     let reconvergence_ms = to_ms_saturating(leg.metrics.reconvergence_time_us);
     RobustnessDirectionSummary {
         median_reconvergence_ms: reconvergence_ms,
@@ -984,13 +1002,15 @@ fn summarize_single_cycle(leg: RobustnessDirectionEvidence) -> RobustnessDirecti
 /// Bridge both directions' raw evidence into the schema-2 wire evidence.
 ///
 /// See [`summarize_single_cycle`] for the single-cycle bridge this builds
-/// on.
+/// on. The off-terminal residual/IAE medians fall back to the zeroed
+/// placeholder (via [`resolved_legs`]) for a direction that never ran,
+/// matching [`summarize_single_cycle`]'s all-zero summary for that case.
 fn assembled_evidence(session: &RobustnessReversalSession) -> RobustnessEvidence {
     let legs = resolved_legs(session);
     RobustnessEvidence {
         directions: [
-            summarize_single_cycle(legs[0]),
-            summarize_single_cycle(legs[1]),
+            summarize_single_cycle(session.directions[0]),
+            summarize_single_cycle(session.directions[1]),
         ],
         residual_medians_q: [
             saturating_i64_to_i32(legs[0].metrics.settled_residual_q),
@@ -1330,6 +1350,73 @@ mod tests {
             assert!(direction.inconclusive);
             assert_eq!(direction.retry_count, ROBUSTNESS_MAX_RETRIES);
         }
+    }
+
+    /// A direction that never recorded any leg (a fault preempted the run
+    /// before either leg was measured) must report `valid_cycles = 0`, not
+    /// fabricate a cycle that never ran.
+    #[test]
+    fn never_ran_direction_reports_zero_valid_cycles() {
+        let session = RobustnessReversalSession::new(test_point(), 7);
+
+        let evidence = assembled_evidence(&session);
+
+        for direction in evidence.directions {
+            assert_eq!(direction.valid_cycles, 0);
+            assert!(direction.inconclusive);
+            assert_eq!(direction.trip_count, 0);
+            assert_eq!(direction.median_reconvergence_ms, 0);
+            assert_eq!(direction.max_reconvergence_ms, 0);
+        }
+        assert_eq!(evidence.residual_medians_q, [0, 0]);
+        assert_eq!(evidence.iae_medians_qs, [0, 0]);
+    }
+
+    /// A recorded leg with extreme values must saturate, not wrap or panic,
+    /// through both the ms conversion (`to_ms_saturating`) and the i64 -> i32
+    /// conversion (`saturating_i64_to_i32`) the bridge applies when reducing
+    /// a raw leg into the schema-2 wire evidence.
+    #[test]
+    fn assembled_evidence_saturates_extreme_leg_values() {
+        // 200 s = 200_000 ms, well past u16::MAX (65_535) milliseconds.
+        const HUGE_DURATION_US: u32 = 200_000_000;
+
+        let mut session = RobustnessReversalSession::new(test_point(), 7);
+        session.directions[0] = Some(RobustnessDirectionEvidence {
+            metrics: ReversalMetrics {
+                reconvergence_time_us: HUGE_DURATION_US,
+                settled_residual_q: i64::MAX,
+                recovery_iae_q: i64::MAX,
+                forward_settle_time_us: HUGE_DURATION_US,
+                reconvergence_ratio_ppm: 0,
+            },
+            tripped: 0,
+            retry_count: 0,
+            inconclusive: false,
+        });
+        session.directions[1] = Some(RobustnessDirectionEvidence {
+            metrics: ReversalMetrics {
+                reconvergence_time_us: HUGE_DURATION_US,
+                settled_residual_q: i64::MIN,
+                recovery_iae_q: i64::MIN,
+                forward_settle_time_us: HUGE_DURATION_US,
+                reconvergence_ratio_ppm: 0,
+            },
+            tripped: 0,
+            retry_count: 0,
+            inconclusive: false,
+        });
+
+        let evidence = assembled_evidence(&session);
+
+        for direction in evidence.directions {
+            assert_eq!(direction.median_reconvergence_ms, u16::MAX);
+            assert_eq!(direction.max_reconvergence_ms, u16::MAX);
+            assert_eq!(direction.median_forward_settle_ms, u16::MAX);
+            assert_eq!(direction.valid_cycles, 1);
+        }
+        assert_eq!(evidence.residual_medians_q, [i32::MAX, i32::MIN]);
+        assert_eq!(evidence.iae_medians_qs, [i32::MAX, i32::MIN]);
     }
 
     /// The load-bearing invariant: the integrator is cleared exactly once per

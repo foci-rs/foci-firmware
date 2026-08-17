@@ -3441,7 +3441,8 @@ pub struct FociAcceptanceMatrixTerminal<'a> {
 pub struct FociRobustnessReversalTerminal<'a> {
     /// Endpoint object id.
     pub oid: u8,
-    /// Exact fixed-layout schema-1 payload.
+    /// Exact fixed-layout payload; length follows the current wire schema
+    /// revision.
     pub payload: &'a [u8],
 }
 
