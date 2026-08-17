@@ -50,6 +50,11 @@ pub const ROBUSTNESS_CAUSE_INTERNAL_FAULT: u8 = 8;
 /// `ROBUSTNESS_CAUSE_INTERNAL_FAULT`. Set at the fault terminal, never by
 /// `summary_cause`.
 pub const ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED: u8 = 9;
+/// Two conclusive tail cycles occurred in one reversal direction, latching a
+/// tail rejection. Distinct from `ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED`
+/// (a slow per-direction median) so the host can tell a slow center from a
+/// heavy tail. Set at terminal assembly; never returned by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_TAIL_REPEATED: u8 = 10;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
