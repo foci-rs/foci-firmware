@@ -1194,7 +1194,7 @@ mod resistance_reply_size_tests {
     use super::{
         FociClosedLoopEntry, FociCommissionResult, FociCommissionTiming, FociCurrentLoopFilters,
         FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis, FociResistanceProfile,
-        FociResistanceRun,
+        FociResistanceRun, FociRobustnessCycleEvidence,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1626,6 +1626,18 @@ mod resistance_reply_size_tests {
             duration_cap_us: 0x7FFF_FFFF,
         };
         assert_fits_with_id(&reply, "foci_outer_safety_fault");
+    }
+
+    #[test]
+    fn robustness_cycle_evidence_reply_fits_klipper_message_limit() {
+        let payload = [u8::MAX;
+            crate::commissioning::outer::velocity::robustness_reporting::
+                ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES];
+        let reply = FociRobustnessCycleEvidence {
+            oid: u8::MAX,
+            payload: &payload,
+        };
+        assert_fits_with_id(&reply, "foci_robustness_cycle_evidence");
     }
 }
 
@@ -3439,6 +3451,21 @@ pub struct FociAcceptanceMatrixTerminal<'a> {
 /// Compact reversal-standstill robustness-gate terminal.
 #[klipper_reply]
 pub struct FociRobustnessReversalTerminal<'a> {
+    /// Endpoint object id.
+    pub oid: u8,
+    /// Exact fixed-layout payload; length follows the current wire schema
+    /// revision.
+    pub payload: &'a [u8],
+}
+
+/// Compact per-cycle reversal-standstill robustness-evidence reply.
+///
+/// Emitted once per direction, ahead of
+/// [`FociRobustnessReversalTerminal`]: carries the off-terminal
+/// residual/IAE medians plus one direction's K-cycle reconvergence,
+/// overshoot, and forward-settle values.
+#[klipper_reply]
+pub struct FociRobustnessCycleEvidence<'a> {
     /// Endpoint object id.
     pub oid: u8,
     /// Exact fixed-layout payload; length follows the current wire schema

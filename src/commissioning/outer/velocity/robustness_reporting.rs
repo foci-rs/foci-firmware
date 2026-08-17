@@ -1,5 +1,7 @@
 //! Compact wire reporting for reversal-standstill robustness gates.
 
+use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
+use crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence;
 use crate::commissioning::types::RobustnessReversalTerminal;
 
 /// Independent robustness evidence schema revision.
@@ -97,6 +99,88 @@ pub(crate) fn saturating_i64_to_i32(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
+/// Bytes in the schema-2 per-cycle robustness-evidence payload: a 10-byte
+/// header (direction, schema revision, off-terminal residual/IAE medians
+/// for this direction) plus [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte
+/// cycle triples.
+pub(crate) const ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES: usize = 40;
+
+/// Sentinel value marking an unfilled cycle slot's `u16` fields.
+const CYCLE_SLOT_UNFILLED: u16 = 0xFFFF;
+
+/// One reversal-probe cycle's wire-narrow evidence triple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) struct CycleWire {
+    /// Time to reconverge to the target band after the reversal, in ms.
+    pub reconvergence_ms: u16,
+    /// Saturating count of overshoot peaks observed during this cycle.
+    pub overshoot_counts: u16,
+    /// Time to settle in the forward direction after reconvergence, in ms.
+    pub forward_settle_ms: u16,
+}
+
+/// Encode one direction's schema-2 per-cycle robustness-evidence payload.
+///
+/// Fixed 10-byte header (direction, schema revision, this direction's
+/// off-terminal residual/IAE medians) plus
+/// [`ROBUSTNESS_CYCLES_PER_DIRECTION`] cycle triples (reconvergence,
+/// overshoot, forward-settle), 6 bytes each, for
+/// [`ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES`] total. An unfilled cycle slot
+/// encodes all three fields as [`CYCLE_SLOT_UNFILLED`].
+pub(crate) fn encode_robustness_cycle_evidence(
+    direction: u8,
+    evidence: &RobustnessEvidence,
+    cycles: &[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION],
+) -> [u8; ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES] {
+    debug_assert!((direction as usize) < evidence.directions.len());
+    let mut bytes = [0_u8; ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES];
+    let mut offset = 0;
+    let index = direction as usize;
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[direction, ROBUSTNESS_SCHEMA_REVISION as u8],
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &evidence.residual_medians_q[index].to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &evidence.iae_medians_qs[index].to_le_bytes(),
+    );
+    for cycle in cycles {
+        match cycle {
+            Some(cycle) => {
+                push_reply(
+                    &mut bytes,
+                    &mut offset,
+                    &cycle.reconvergence_ms.to_le_bytes(),
+                );
+                push_reply(
+                    &mut bytes,
+                    &mut offset,
+                    &cycle.overshoot_counts.to_le_bytes(),
+                );
+                push_reply(
+                    &mut bytes,
+                    &mut offset,
+                    &cycle.forward_settle_ms.to_le_bytes(),
+                );
+            }
+            None => {
+                for _ in 0..3 {
+                    push_reply(&mut bytes, &mut offset, &CYCLE_SLOT_UNFILLED.to_le_bytes());
+                }
+            }
+        }
+    }
+    debug_assert_eq!(offset, ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES);
+    bytes
+}
+
 fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, value: &[u8]) {
     let end = offset
         .checked_add(value.len())
@@ -136,6 +220,22 @@ mod tests {
             trip_count: 1,
             retry_count: 2,
             inconclusive: true,
+        }
+    }
+
+    fn cycle(reconvergence_ms: u16, overshoot_counts: u16, forward_settle_ms: u16) -> CycleWire {
+        CycleWire {
+            reconvergence_ms,
+            overshoot_counts,
+            forward_settle_ms,
+        }
+    }
+
+    fn evidence() -> RobustnessEvidence {
+        RobustnessEvidence {
+            directions: [direction_a(), direction_b()],
+            residual_medians_q: [17, -17],
+            iae_medians_qs: [9, -9],
         }
     }
 
@@ -284,5 +384,67 @@ mod tests {
             assert_eq!(bytes[base + 10], u8::MAX);
             assert_eq!(bytes[base + 11], 1);
         }
+    }
+
+    #[test]
+    fn encode_robustness_cycle_evidence_is_stable_and_within_wire_budget() {
+        let evidence = evidence();
+        let cycles: [Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION] = [
+            Some(cycle(100, 1, 50)),
+            Some(cycle(110, 0, 55)),
+            None,
+            Some(cycle(120, 2, 60)),
+            None,
+        ];
+
+        let bytes = encode_robustness_cycle_evidence(0, &evidence, &cycles);
+        assert_eq!(bytes.len(), ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES);
+
+        #[rustfmt::skip]
+        let expected: [u8; ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES] = [
+            // direction, schema
+            0x00, 0x02,
+            // residual_median_q (i32 LE) = 17
+            0x11, 0x00, 0x00, 0x00,
+            // iae_median_qs (i32 LE) = 9
+            0x09, 0x00, 0x00, 0x00,
+            // cycle 0: reconvergence, overshoot, forward_settle (u16 LE)
+            0x64, 0x00, 0x01, 0x00, 0x32, 0x00,
+            // cycle 1
+            0x6E, 0x00, 0x00, 0x00, 0x37, 0x00,
+            // cycle 2: unfilled sentinel
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            // cycle 3
+            0x78, 0x00, 0x02, 0x00, 0x3C, 0x00,
+            // cycle 4: unfilled sentinel
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn encode_robustness_cycle_evidence_encodes_unfilled_slots_as_sentinel() {
+        let evidence = evidence();
+        let cycles: [Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION] =
+            [None, None, None, None, None];
+
+        let bytes = encode_robustness_cycle_evidence(1, &evidence, &cycles);
+
+        assert_eq!(bytes[0], 1);
+        assert_eq!(bytes[1], ROBUSTNESS_SCHEMA_REVISION as u8);
+        assert_eq!(
+            i32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
+            evidence.residual_medians_q[1]
+        );
+        assert_eq!(
+            i32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]),
+            evidence.iae_medians_qs[1]
+        );
+        assert_eq!(&bytes[10..], &[0xFF_u8; 30][..]);
+    }
+
+    #[test]
+    fn robustness_cycle_evidence_fits_a_single_klipper_frame_at_any_oid() {
+        assert!(ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES <= 54);
     }
 }

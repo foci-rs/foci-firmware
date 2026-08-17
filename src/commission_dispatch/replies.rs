@@ -324,6 +324,15 @@ pub trait CommissionReplySink {
     ) {
     }
 
+    /// Emit one direction's per-cycle reversal-robustness evidence, ahead
+    /// of the compact terminal. No default: every board sink must decide
+    /// whether and how to forward this reply.
+    fn foci_robustness_cycle_evidence(
+        &mut self,
+        oid: u8,
+        report: crate::ankyra::replies::FociRobustnessCycleEvidence<'_>,
+    );
+
     /// Emit the immutable breakaway-probe plan.
     fn foci_breakaway_probe_plan(
         &mut self,
@@ -799,6 +808,51 @@ pub fn emit_robustness_reversal_terminal<S: CommissionReplySink>(
             payload: &payload,
         },
     );
+}
+
+/// Bridge one direction's schema-2 terminal summary into a single-cycle
+/// evidence array.
+///
+/// Only cycle slot 0 is filled, from the terminal's aggregate
+/// reconvergence/forward-settle medians; the terminal carries no per-cycle
+/// overshoot count yet, so slot 0's count stays zero. Slots 1-4 stay
+/// unfilled. Placeholder until the real K-cycle ledger is threaded through.
+fn bridge_single_cycle(
+    direction: crate::commissioning::outer::velocity::robustness_evidence::RobustnessDirectionSummary,
+) -> [Option<crate::commissioning::outer::velocity::robustness_reporting::CycleWire>;
+    crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION] {
+    use crate::commissioning::outer::velocity::robustness_reporting::CycleWire;
+
+    let mut cycles = [None;
+        crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION];
+    cycles[0] = Some(CycleWire {
+        reconvergence_ms: direction.median_reconvergence_ms,
+        overshoot_counts: 0,
+        forward_settle_ms: direction.median_forward_settle_ms,
+    });
+    cycles
+}
+
+/// Emit both directions' per-cycle robustness evidence, ahead of the
+/// compact terminal -- mirrors the tune-result path's
+/// outer-safety-fault-before-terminal-result ordering.
+pub fn emit_robustness_cycle_evidence<S: CommissionReplySink>(
+    sink: &mut S,
+    oid: u8,
+    evidence: &crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence,
+) {
+    for (direction, summary) in evidence.directions.iter().enumerate() {
+        let cycles = bridge_single_cycle(*summary);
+        let payload = crate::commissioning::outer::velocity::robustness_reporting::
+            encode_robustness_cycle_evidence(direction as u8, evidence, &cycles);
+        sink.foci_robustness_cycle_evidence(
+            oid,
+            crate::ankyra::replies::FociRobustnessCycleEvidence {
+                oid,
+                payload: &payload,
+            },
+        );
+    }
 }
 
 /// Emit the complete exact Stage-C plan as bounded causal fragments.
@@ -1519,6 +1573,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             if let Some(fault) = terminal.safety_fault {
                 sink.foci_outer_safety_fault(oid, fault);
             }
+            emit_robustness_cycle_evidence(sink, oid, &terminal.evidence);
             emit_robustness_reversal_terminal(sink, oid, terminal);
         }
         ReplyPayload::BreakawayCampaignEvent { oid, event } => {
@@ -1993,6 +2048,10 @@ mod tests {
             oid: u8,
             payload: Vec<u8>,
         },
+        RobustnessCycleEvidence {
+            oid: u8,
+            payload: Vec<u8>,
+        },
         Calibrate {
             oid: u8,
             status: u8,
@@ -2256,6 +2315,17 @@ mod tests {
         ) {
             self.events.push(Event::RobustnessReversalTerminal {
                 oid: report.oid,
+                payload: report.payload.to_vec(),
+            });
+        }
+
+        fn foci_robustness_cycle_evidence(
+            &mut self,
+            oid: u8,
+            report: crate::ankyra::replies::FociRobustnessCycleEvidence<'_>,
+        ) {
+            self.events.push(Event::RobustnessCycleEvidence {
+                oid,
                 payload: report.payload.to_vec(),
             });
         }
@@ -4196,8 +4266,8 @@ mod tests {
             RobustnessDirectionSummary, RobustnessEvidence,
         };
         use crate::commissioning::outer::velocity::robustness_reporting::{
-            ROBUSTNESS_SCHEMA_REVISION, ROBUSTNESS_TERMINAL_REPLY_BYTES,
-            encode_robustness_terminal_reply,
+            CycleWire, ROBUSTNESS_SCHEMA_REVISION, ROBUSTNESS_TERMINAL_REPLY_BYTES,
+            encode_robustness_cycle_evidence, encode_robustness_terminal_reply,
         };
         use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
 
@@ -4235,12 +4305,47 @@ mod tests {
             ReplyPayload::RobustnessReversalTerminal { oid: 3, terminal },
         );
 
+        // Single-cycle bridge: slot 0 from the direction's aggregate
+        // medians (overshoot zero), slots 1-4 unfilled. Task 5 replaces
+        // this with the real K-cycle ledger.
+        let bridged_cycles: [Option<CycleWire>; 5] = [
+            Some(CycleWire {
+                reconvergence_ms: direction.median_reconvergence_ms,
+                overshoot_counts: 0,
+                forward_settle_ms: direction.median_forward_settle_ms,
+            }),
+            None,
+            None,
+            None,
+            None,
+        ];
+
         assert_eq!(
             sink.events,
-            std::vec![Event::RobustnessReversalTerminal {
-                oid: 3,
-                payload: encode_robustness_terminal_reply(&terminal).to_vec(),
-            }]
+            std::vec![
+                Event::RobustnessCycleEvidence {
+                    oid: 3,
+                    payload: encode_robustness_cycle_evidence(
+                        0,
+                        &terminal.evidence,
+                        &bridged_cycles
+                    )
+                    .to_vec(),
+                },
+                Event::RobustnessCycleEvidence {
+                    oid: 3,
+                    payload: encode_robustness_cycle_evidence(
+                        1,
+                        &terminal.evidence,
+                        &bridged_cycles
+                    )
+                    .to_vec(),
+                },
+                Event::RobustnessReversalTerminal {
+                    oid: 3,
+                    payload: encode_robustness_terminal_reply(&terminal).to_vec(),
+                },
+            ]
         );
         assert_eq!(
             encode_robustness_terminal_reply(&terminal).len(),
@@ -4254,7 +4359,8 @@ mod tests {
             RobustnessDirectionSummary, RobustnessEvidence,
         };
         use crate::commissioning::outer::velocity::robustness_reporting::{
-            ROBUSTNESS_SCHEMA_REVISION, encode_robustness_terminal_reply,
+            CycleWire, ROBUSTNESS_SCHEMA_REVISION, encode_robustness_cycle_evidence,
+            encode_robustness_terminal_reply,
         };
         use crate::commissioning::types::{
             OuterSafetyFault, RobustnessOutcome, RobustnessReversalTerminal,
@@ -4308,15 +4414,45 @@ mod tests {
             ReplyPayload::RobustnessReversalTerminal { oid: 3, terminal },
         );
 
+        let bridged_cycles: [Option<CycleWire>; 5] = [
+            Some(CycleWire {
+                reconvergence_ms: direction.median_reconvergence_ms,
+                overshoot_counts: 0,
+                forward_settle_ms: direction.median_forward_settle_ms,
+            }),
+            None,
+            None,
+            None,
+            None,
+        ];
+
         assert_eq!(
-            &sink.events[..2],
-            &[
+            sink.events,
+            std::vec![
                 Event::OuterSafetyFault {
                     oid: 3,
                     reason: crate::commissioning::types::OUTER_SAFETY_FAULT_VELOCITY,
                     delta_counts: -125,
                     velocity_counts_per_ms: -31,
                     velocity_cap_counts_per_ms: 24,
+                },
+                Event::RobustnessCycleEvidence {
+                    oid: 3,
+                    payload: encode_robustness_cycle_evidence(
+                        0,
+                        &terminal.evidence,
+                        &bridged_cycles
+                    )
+                    .to_vec(),
+                },
+                Event::RobustnessCycleEvidence {
+                    oid: 3,
+                    payload: encode_robustness_cycle_evidence(
+                        1,
+                        &terminal.evidence,
+                        &bridged_cycles
+                    )
+                    .to_vec(),
                 },
                 Event::RobustnessReversalTerminal {
                     oid: 3,
