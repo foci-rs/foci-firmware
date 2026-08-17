@@ -513,6 +513,15 @@ impl OuterSafetyLimits {
             .counts_per_rev()
     }
 
+    /// Per-primitive stroke allocation in encoder counts: the commanded travel
+    /// distance. Independent of `position_window`, which the reserve-open path
+    /// widens to the machine-headroom clamp; the reversal-robustness overshoot
+    /// metric measures against this stroke so it stays stroke-relative rather
+    /// than window-relative.
+    pub(crate) fn stroke_counts(&self) -> u32 {
+        self.budget.travel_counts(self.counts_per_rev())
+    }
+
     pub(crate) fn budget_is_usable(&self) -> bool {
         self.budget_request_is_valid()
             && self.budget.max_duration_ms >= MIN_USEFUL_DURATION_MS

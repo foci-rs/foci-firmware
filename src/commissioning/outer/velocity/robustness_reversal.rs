@@ -658,10 +658,14 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     };
                     // Overshoot spans this cycle's establish and reverse legs
                     // (reset at EstablishWriteGain); fold it into the direction's
-                    // running max and this cycle's wire triple.
+                    // running max and this cycle's wire triple. Measured against
+                    // the stroke, not `position_window`: the reserve-open path
+                    // widens the window to the machine-headroom clamp, and a
+                    // window-relative reference would read a structural zero
+                    // (any scored cycle stayed inside the window or it faulted).
                     let overshoot = overshoot_counts(
                         workspace.capture.peak_excursion_counts(),
-                        safety.position_window,
+                        safety.stroke_counts(),
                     );
                     session.peak_overshoot_counts[direction] =
                         session.peak_overshoot_counts[direction].max(overshoot);
@@ -2085,5 +2089,53 @@ mod tests {
         // Direction 1 never ran: all-zero medians.
         assert_eq!(evidence.residual_medians_q[1], 0);
         assert_eq!(evidence.iae_medians_qs[1], 0);
+    }
+
+    /// Regression: overshoot is measured against the stroke, not the
+    /// reserve-opened `position_window`. The reserve-open path widens
+    /// `position_window` to the machine-headroom clamp; a window-relative
+    /// reference would read a structural zero for every scored cycle (a cycle
+    /// that reached scoring stayed inside the window or it faulted). With a
+    /// budget whose window exceeds the stroke, the same peak excursion yields
+    /// zero against the window but a real overshoot against the stroke.
+    #[test]
+    fn overshoot_reference_is_the_stroke_not_the_reopened_window() {
+        let budget = OuterMotionBudget {
+            requested_velocity_mrev_s: 6_000,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            // Stroke = 1_000 mrev * 4_000 cpr / 1_000 = 4_000 counts.
+            max_stroke_travel_mrev: 1_000,
+            settle_travel_reserve_mrev: 100,
+            // Headroom windows clamp to 2 revs = 8_000 counts, past the stroke.
+            negative_position_headroom_mrev: 2_000,
+            positive_position_headroom_mrev: 2_000,
+            max_duration_ms: 60_000,
+        };
+        let mut safety = OuterSafetyLimits::new(current_limit(2_448).raw(), budget);
+        safety
+            .configure_robustness_encoder_resolution(4_000)
+            .expect("valid encoder resolution");
+
+        let stroke = safety.stroke_counts();
+        let window = safety.position_window;
+        assert_eq!(stroke, 4_000, "stroke is the commanded travel allocation");
+        assert!(
+            window > stroke,
+            "the reserve-open path widens the window past the stroke"
+        );
+
+        // A peak that overshot the stroke but stayed inside the reopened window.
+        let peak = (stroke + window) / 2;
+        assert_eq!(
+            overshoot_counts(peak, window),
+            0,
+            "a window-relative reference structurally reads zero"
+        );
+        assert_eq!(
+            overshoot_counts(peak, safety.stroke_counts()),
+            (peak - stroke) as u16,
+            "the stroke-relative reference reports the real overshoot"
+        );
     }
 }
