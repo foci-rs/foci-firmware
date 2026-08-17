@@ -325,7 +325,6 @@ impl CommissionReplySink for ReplyRecorder {
 
     fn foci_robustness_cycle_evidence(
         &mut self,
-        _oid: u8,
         _report: crate::ankyra::replies::FociRobustnessCycleEvidence<'_>,
     ) {
     }

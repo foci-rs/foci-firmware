@@ -329,7 +329,6 @@ pub trait CommissionReplySink {
     /// whether and how to forward this reply.
     fn foci_robustness_cycle_evidence(
         &mut self,
-        oid: u8,
         report: crate::ankyra::replies::FociRobustnessCycleEvidence<'_>,
     );
 
@@ -845,13 +844,10 @@ pub fn emit_robustness_cycle_evidence<S: CommissionReplySink>(
         let cycles = bridge_single_cycle(*summary);
         let payload = crate::commissioning::outer::velocity::robustness_reporting::
             encode_robustness_cycle_evidence(direction as u8, evidence, &cycles);
-        sink.foci_robustness_cycle_evidence(
+        sink.foci_robustness_cycle_evidence(crate::ankyra::replies::FociRobustnessCycleEvidence {
             oid,
-            crate::ankyra::replies::FociRobustnessCycleEvidence {
-                oid,
-                payload: &payload,
-            },
-        );
+            payload: &payload,
+        });
     }
 }
 
@@ -2321,11 +2317,10 @@ mod tests {
 
         fn foci_robustness_cycle_evidence(
             &mut self,
-            oid: u8,
             report: crate::ankyra::replies::FociRobustnessCycleEvidence<'_>,
         ) {
             self.events.push(Event::RobustnessCycleEvidence {
-                oid,
+                oid: report.oid,
                 payload: report.payload.to_vec(),
             });
         }
