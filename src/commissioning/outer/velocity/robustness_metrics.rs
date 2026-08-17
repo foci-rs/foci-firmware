@@ -358,7 +358,8 @@ pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 2;
 /// three legs in `robustness_reversal` budget their deadline off this same
 /// constant, so the worst-case per-cycle envelope is this leg count times
 /// `ROBUSTNESS_MEASUREMENT_BUDGET_US`.
-#[allow(dead_code)] // Consumed by robustness_worst_case_duration_ms, staged ahead of its call site.
+// Permanent compile/test-time input to the duration guard; no runtime caller by design.
+#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_LEGS_PER_CYCLE: u32 = 3;
 
 /// Compute the tripped bitmask for `m` against `t`: which of time, residual,

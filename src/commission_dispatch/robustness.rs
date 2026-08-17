@@ -26,18 +26,21 @@ use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal}
 /// reverse->forward. Mirrors `robustness_reversal::DIRECTION_COUNT`,
 /// duplicated here so this module's worst-case arithmetic does not need a
 /// cross-module reach for a single scalar.
-#[allow(dead_code)] // Consumed by robustness_worst_case_duration_ms, staged ahead of its call site.
+// Permanent compile/test-time input to the duration guard; no runtime caller by design.
+#[allow(dead_code)]
 const ROBUSTNESS_DIRECTION_COUNT: u32 = 2;
 
 /// Bounded per-direction tail-grace re-run budget: the cycle ledger grants
 /// exactly one free re-run for the first conclusive cycle whose
 /// reconvergence time crosses the tail threshold; a second tail cycle
 /// latches the rejection instead of retrying.
-#[allow(dead_code)] // Consumed by robustness_worst_case_duration_ms, staged ahead of its call site.
+// Permanent compile/test-time input to the duration guard; no runtime caller by design.
+#[allow(dead_code)]
 const ROBUSTNESS_TAIL_GRACE_CYCLES: u32 = 1;
 
 /// Microseconds per millisecond, for the envelope's unit conversion.
-#[allow(dead_code)] // Consumed by robustness_worst_case_duration_ms, staged ahead of its call site.
+// Permanent compile/test-time input to the duration guard; no runtime caller by design.
+#[allow(dead_code)]
 const MICROS_PER_MILLI: u32 = 1_000;
 
 /// No direction tripped a threshold gate and no direction was inconclusive.
@@ -174,7 +177,7 @@ pub fn apply_robustness_terminal(
 /// that reaches band entry early finishes a leg well under its full budget.
 /// The result is asserted inside the u16 millisecond field the host's
 /// duration-budget wire format supplies.
-#[allow(dead_code)] // Staged ahead of its dispatch-route call site.
+#[allow(dead_code)] // Permanent compile/test-time derivation guard; no runtime caller by design.
 pub(crate) fn robustness_worst_case_duration_ms() -> u32 {
     let cycles_per_direction = ROBUSTNESS_CYCLES_PER_DIRECTION as u32
         + u32::from(ROBUSTNESS_MAX_RETRIES)
