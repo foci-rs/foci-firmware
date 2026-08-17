@@ -33,7 +33,9 @@ pub struct RobustnessDirectionSummary {
     pub overshoot_peak_counts: u16,
     /// Count of cycle slots that filled with conclusive evidence.
     pub valid_cycles: u8,
-    /// Count of valid cycles that tripped at least one threshold gate.
+    /// 1 if this direction contributed a rejection (a median threshold trip or
+    /// a latched tail), else 0. Not a per-cycle tally: the median gate keeps no
+    /// per-cycle trip count.
     pub trip_count: u8,
     /// Count of bounded inconclusive retries this direction consumed.
     pub retry_count: u8,
