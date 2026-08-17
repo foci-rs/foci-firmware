@@ -26,21 +26,15 @@ use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal}
 /// reverse->forward. Mirrors `robustness_reversal::DIRECTION_COUNT`,
 /// duplicated here so this module's worst-case arithmetic does not need a
 /// cross-module reach for a single scalar.
-// Permanent compile/test-time input to the duration guard; no runtime caller by design.
-#[allow(dead_code)]
 const ROBUSTNESS_DIRECTION_COUNT: u32 = 2;
 
 /// Bounded per-direction tail-grace re-run budget: the cycle ledger grants
 /// exactly one free re-run for the first conclusive cycle whose
 /// reconvergence time crosses the tail threshold; a second tail cycle
 /// latches the rejection instead of retrying.
-// Permanent compile/test-time input to the duration guard; no runtime caller by design.
-#[allow(dead_code)]
 const ROBUSTNESS_TAIL_GRACE_CYCLES: u32 = 1;
 
 /// Microseconds per millisecond, for the envelope's unit conversion.
-// Permanent compile/test-time input to the duration guard; no runtime caller by design.
-#[allow(dead_code)]
 const MICROS_PER_MILLI: u32 = 1_000;
 
 /// No direction tripped a threshold gate and no direction was inconclusive.
@@ -178,7 +172,6 @@ pub fn apply_robustness_terminal(
 /// that reaches band entry early finishes a leg well under its full budget.
 /// The result is asserted inside the u16 millisecond field the host's
 /// duration-budget wire format supplies.
-#[allow(dead_code)] // Permanent compile/test-time derivation guard; no runtime caller by design.
 pub(crate) fn robustness_worst_case_duration_ms() -> u32 {
     let cycles_per_direction = ROBUSTNESS_CYCLES_PER_DIRECTION as u32
         + u32::from(ROBUSTNESS_MAX_RETRIES)
@@ -194,6 +187,20 @@ pub(crate) fn robustness_worst_case_duration_ms() -> u32 {
         "robustness worst-case duration must fit the host's u16 duration-budget field"
     );
     worst_case_duration_ms
+}
+
+/// Clean-run duration estimate of a full reversal-robustness run, in
+/// milliseconds: the host's `nominal_workflow_ms`.
+///
+/// Every measurement slot fills on its first attempt, so no inconclusive
+/// retries and no tail grace, and each cycle rests once with no re-opened rest
+/// window (`ROBUSTNESS_LEGS_PER_CYCLE - 1` legs). This is only a disclosure
+/// hint; the host arms its run timeout off `robustness_worst_case_duration_ms`.
+pub(crate) fn robustness_nominal_duration_ms() -> u32 {
+    let nominal_cycles = ROBUSTNESS_CYCLES_PER_DIRECTION as u32 * ROBUSTNESS_DIRECTION_COUNT;
+    let per_cycle_envelope_ms =
+        (ROBUSTNESS_MEASUREMENT_BUDGET_US / MICROS_PER_MILLI) * (ROBUSTNESS_LEGS_PER_CYCLE - 1);
+    nominal_cycles * per_cycle_envelope_ms
 }
 
 /// All-zero robustness evidence for a terminal built before any probe motion.

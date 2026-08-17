@@ -984,6 +984,21 @@ where
                                 return TmcControlRequestOutcome::skip_tick_tail();
                             }
                         };
+                    // Disclose the run's worst-case duration before any motion
+                    // so the host arms its extended run timeout: the K-cycle
+                    // probe runs far longer than the host's 5 s initial plan
+                    // window, which caps the run when no workflow plan arrives.
+                    let workflow = crate::commissioning::outer::velocity::integral_plan::
+                        CommissioningWorkflowPlan::new_robustness(
+                            run_sequence,
+                            crate::commission_dispatch::robustness::robustness_nominal_duration_ms(),
+                            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(),
+                        )
+                        .expect("robustness workflow envelope is always valid");
+                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                        oid,
+                        plan: workflow,
+                    });
                     TuneRoute::Robustness(preflight)
                 }
             };
@@ -2584,6 +2599,74 @@ mod tests {
         assert_eq!(
             stage_c.acceptance_point().unwrap().progress,
             AcceptanceMatrixProgress::ReadyAscending
+        );
+    }
+
+    #[fixture_test]
+    async fn robustness_discloses_worst_case_duration_before_motion() {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            AcceptanceMatrixProgress, StageCCandidateSlot,
+        };
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut stage_c = StageCCandidateSlot::new();
+        stage_c.install_acceptance_point(
+            crate::commission_dispatch::acceptance::test_acceptance_point(
+                velocity_sweep_request(),
+                AcceptanceMatrixProgress::ReadyAscending,
+            ),
+        );
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::RobustnessReversal),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut stage_c,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        // The worst-case-duration envelope is the very first reply, before the
+        // engine and any motion, so the host arms its extended run timeout.
+        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+        else {
+            panic!("robustness workflow envelope must be first")
+        };
+        assert_eq!(
+            workflow.shape,
+            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::RobustnessReversal
+        );
+        assert_eq!(
+            workflow.maximum_workflow_ms,
+            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms()
+        );
+        assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
+        // Exactly one workflow plan is emitted.
+        assert_eq!(
+            board
+                .replies
+                .iter()
+                .filter(|reply| matches!(reply, ReplyPayload::CommissioningWorkflowPlan { .. }))
+                .count(),
+            1
+        );
+        assert!(runtime.is_commission_active());
+        // No motion command was written during the dispatch: the plan precedes
+        // the long-motion phase.
+        let spi = tmc.into_inner();
+        assert!(
+            spi.write_attempts
+                .iter()
+                .all(|(addr, _)| { *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr() })
         );
     }
 

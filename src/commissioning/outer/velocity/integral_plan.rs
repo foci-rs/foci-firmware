@@ -50,6 +50,10 @@ pub enum StageCPlanShape {
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing Stage-C integral continuation as one bounded command.
     BreakawaySeededPThenI = 6,
+    /// Run the reversal-standstill robustness gate over the accepted point.
+    /// Distinct from every acquisition shape so the host arms the extended
+    /// run timeout for the multi-cycle probe instead of the 5 s plan window.
+    RobustnessReversal = 7,
 }
 
 /// Conservative command-level plan used only for disclosure and host timeout.
@@ -79,7 +83,8 @@ impl CommissioningWorkflowPlan {
             StageCPlanShape::StageCResume => stage_b_ms == 0 && stage_c_ms != 0,
             StageCPlanShape::AcceptanceMatrixAscending
             | StageCPlanShape::AcceptanceMatrixDescending
-            | StageCPlanShape::BreakawaySeededPThenI => false,
+            | StageCPlanShape::BreakawaySeededPThenI
+            | StageCPlanShape::RobustnessReversal => false,
         };
         if !valid {
             return Err(VelocityIntegralPlanError::InvalidRequest);
@@ -148,6 +153,32 @@ impl CommissioningWorkflowPlan {
         Ok(Self {
             run_sequence,
             shape: StageCPlanShape::BreakawaySeededPThenI,
+            nominal_workflow_ms,
+            maximum_workflow_ms,
+        })
+    }
+
+    /// Construct one checked robustness-reversal workflow envelope.
+    ///
+    /// Reserved before the robustness probe's first motion so the host arms
+    /// its extended run timeout: the K-cycle run runs far longer than the
+    /// host's 5 s initial plan window. `maximum_workflow_ms` is
+    /// `robustness_worst_case_duration_ms`, `nominal_workflow_ms` a clean-run
+    /// estimate.
+    pub fn new_robustness(
+        run_sequence: u32,
+        nominal_workflow_ms: u32,
+        maximum_workflow_ms: u32,
+    ) -> Result<Self, VelocityIntegralPlanError> {
+        if nominal_workflow_ms == 0
+            || maximum_workflow_ms == 0
+            || nominal_workflow_ms > maximum_workflow_ms
+        {
+            return Err(VelocityIntegralPlanError::InvalidRequest);
+        }
+        Ok(Self {
+            run_sequence,
+            shape: StageCPlanShape::RobustnessReversal,
             nominal_workflow_ms,
             maximum_workflow_ms,
         })
