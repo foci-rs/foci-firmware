@@ -353,14 +353,20 @@ pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 2;
 
 /// Number of `ROBUSTNESS_MEASUREMENT_BUDGET_US`-sized legs run per probe
 /// cycle: the establish settle (`begin_capture` in the establish state), the
-/// reversal measurement (`begin_capture` again in the reverse state), and
-/// the between-legs zero-target rest window `open_zero_window` opens. All
-/// three legs in `robustness_reversal` budget their deadline off this same
-/// constant, so the worst-case per-cycle envelope is this leg count times
-/// `ROBUSTNESS_MEASUREMENT_BUDGET_US`.
+/// reversal measurement (`begin_capture` again in the reverse state), the
+/// between-legs zero-target rest window `open_zero_window` opens, and the one
+/// bounded re-opened rest window a rejected rest is granted before the run
+/// faults. All four legs in `robustness_reversal` budget their deadline off
+/// this same constant, so the worst-case per-cycle envelope is this leg count
+/// times `ROBUSTNESS_MEASUREMENT_BUDGET_US`.
+///
+/// The per-leg settle-analysis window (`SETTLE_ANALYSIS_BUDGET_US`) is
+/// deliberately not charged: it is a bounded post-capture analysis, not a
+/// motion budget, and this envelope bounds motion time. Folding it in would
+/// still fit the u16 field but overstate the moving envelope.
 // Permanent compile/test-time input to the duration guard; no runtime caller by design.
 #[allow(dead_code)]
-pub(crate) const ROBUSTNESS_LEGS_PER_CYCLE: u32 = 3;
+pub(crate) const ROBUSTNESS_LEGS_PER_CYCLE: u32 = 4;
 
 /// Compute the tripped bitmask for `m` against `t`: which of time, residual,
 /// and IAE gates failed, independently of one another.

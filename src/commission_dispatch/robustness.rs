@@ -170,10 +170,11 @@ pub fn apply_robustness_terminal(
 /// `ROBUSTNESS_CYCLES_PER_DIRECTION` measurement slots plus
 /// `ROBUSTNESS_MAX_RETRIES` bounded inconclusive retries plus the single
 /// tail-grace re-run, doubled for both reversal directions. Each cycle
-/// budgets `ROBUSTNESS_LEGS_PER_CYCLE` legs (establish, reversal, rest) at
+/// budgets `ROBUSTNESS_LEGS_PER_CYCLE` legs (establish, reversal, rest, and
+/// the one re-opened rest a rejected rest is granted) at
 /// `ROBUSTNESS_MEASUREMENT_BUDGET_US` apiece -- the same budget
-/// `robustness_reversal::open_zero_window` uses for the rest window, so all
-/// three legs share one constant. This is a conservative envelope: a cycle
+/// `robustness_reversal::open_zero_window` uses for each rest window, so all
+/// four legs share one constant. This is a conservative envelope: a cycle
 /// that reaches band entry early finishes a leg well under its full budget.
 /// The result is asserted inside the u16 millisecond field the host's
 /// duration-budget wire format supplies.
@@ -339,9 +340,10 @@ mod tests {
     fn worst_case_run_duration_fits_the_u16_budget_field() {
         // Per direction: 5 measurement slots + 2 bounded inconclusive
         // retries + 1 tail-grace re-run = 8 cycles; both directions = 16.
-        // Each cycle budgets 3 legs (establish, reversal, rest) at the
-        // 500 ms measurement budget apiece: 16 * 3 * 500 = 24_000 ms.
-        let expected_ms: u32 = 24_000;
+        // Each cycle budgets 4 legs (establish, reversal, rest, and the one
+        // re-opened rest) at the 500 ms measurement budget apiece:
+        // 16 * 4 * 500 = 32_000 ms.
+        let expected_ms: u32 = 32_000;
 
         let duration_ms = robustness_worst_case_duration_ms();
 
