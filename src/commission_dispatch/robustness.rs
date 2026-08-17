@@ -12,6 +12,7 @@
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, StageCCandidateSlot,
 };
+use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
 use crate::commissioning::outer::velocity::robustness_evidence::{
     RobustnessDirectionSummary, RobustnessEvidence,
 };
@@ -154,6 +155,7 @@ fn zero_robustness_evidence() -> RobustnessEvidence {
         directions: [direction, direction],
         residual_medians_q: [0, 0],
         iae_medians_qs: [0, 0],
+        cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
     }
 }
 

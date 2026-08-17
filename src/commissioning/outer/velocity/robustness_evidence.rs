@@ -1,41 +1,22 @@
 //! Per-direction reversal-robustness evidence for the robustness gate.
 //!
-//! [`RobustnessDirectionEvidence`] pairs one raw
-//! [`super::robustness_metrics::ReversalMetrics`] leg measurement with its
-//! tripped-threshold bitmask, retry count, and inconclusive flag; the
-//! reversal phase measures with this type internally, one leg at a time.
 //! [`RobustnessDirectionSummary`] is the schema-2 wire summary a terminal
-//! reports instead: median/max reconvergence, median forward-settle, an
+//! reports: median/max reconvergence, median forward-settle, an
 //! overshoot-peak count, and per-direction valid-cycle/trip/retry counts
-//! reduced from a K-cycle probe run. [`summary_cause`] derives the summary
+//! reduced from a K-cycle probe run. [`RobustnessEvidence`] bundles both
+//! directions' summaries with the off-terminal residual/IAE medians and the
+//! per-cycle wire triples. [`summary_cause`] derives the summary
 //! `ROBUSTNESS_CAUSE_*` code a terminal reply reports from both directions'
 //! tripped masks and inconclusive flags.
 
-use super::robustness_metrics::{ReversalMetrics, TRIP_IAE, TRIP_RESIDUAL, TRIP_TIME, worse_of};
+use super::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
+use super::robustness_metrics::{TRIP_IAE, TRIP_RESIDUAL, TRIP_TIME, worse_of};
+use super::robustness_reporting::CycleWire;
 use crate::commission_dispatch::robustness::{
     ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_PASS,
     ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
     ROBUSTNESS_CAUSE_RESIDUAL_EXCEEDED,
 };
-
-/// One reversal direction's raw, single-leg probe outcome.
-///
-/// Internal to the reversal phase: the phase measures one leg per direction
-/// and reduces it into a [`RobustnessDirectionSummary`] for the wire
-/// terminal.
-#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
-pub struct RobustnessDirectionEvidence {
-    /// The measured reconvergence/residual/IAE metrics for this direction.
-    pub metrics: ReversalMetrics,
-    /// `TRIP_TIME | TRIP_RESIDUAL | TRIP_IAE` bitmask of threshold gates
-    /// this direction failed, independently of one another.
-    pub tripped: u8,
-    /// Number of bounded retries consumed by this direction's probe.
-    pub retry_count: u8,
-    /// True when the probe never reached a sustained band-entry dwell
-    /// within its measurement budget, even after retries.
-    pub inconclusive: bool,
-}
 
 /// One reversal direction's cycle-summary robustness evidence, as reported
 /// on the wire.
@@ -72,6 +53,11 @@ pub struct RobustnessEvidence {
     /// Median recovery IAE per direction, in rate-Q seconds. Off-terminal:
     /// carried for the detailed reply, not the compact wire terminal.
     pub iae_medians_qs: [i32; 2],
+    /// Per-cycle wire triples for each direction, in cycle order. An unfilled
+    /// slot is `None`. Off-terminal: carried by the per-cycle evidence reply,
+    /// not encoded into the compact 39-byte terminal. `pub(crate)` because
+    /// [`CycleWire`] is a crate-internal wire type.
+    pub(crate) cycles: [[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
 }
 
 /// Derive the primary `ROBUSTNESS_CAUSE_*` from both directions' tripped

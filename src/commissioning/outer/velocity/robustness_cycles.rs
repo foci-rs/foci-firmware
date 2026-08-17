@@ -73,6 +73,7 @@ pub(crate) enum LedgerAction {
 /// tail grace (one free re-run for the first conclusive cycle whose
 /// reconvergence time exceeds `ROBUSTNESS_TAIL_FACTOR * t_max_us`; a second
 /// tail cycle latches [`CycleLedger::tail_rejected`] instead of retrying).
+#[derive(Debug, defmt::Format)]
 pub(crate) struct CycleLedger {
     slots: [Option<ReversalMetrics>; ROBUSTNESS_CYCLES_PER_DIRECTION],
     cursor: usize,

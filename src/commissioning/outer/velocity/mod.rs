@@ -48,10 +48,6 @@ pub(crate) mod recovery;
 mod recovery_tests;
 pub mod reproduction;
 mod response_ramp;
-// Pure accounting module with no production caller yet; the commissioning
-// state machine has not been wired to it, so its public surface reads as
-// dead code outside its own tests until that wiring lands.
-#[allow(dead_code)]
 pub(crate) mod robustness_cycles;
 pub mod robustness_evidence;
 pub mod robustness_metrics;

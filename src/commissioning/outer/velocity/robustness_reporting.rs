@@ -88,17 +88,6 @@ pub(crate) fn encode_robustness_terminal_reply(
     bytes
 }
 
-/// Saturating `i64 -> i32` clamp; never panics on out-of-range magnitudes.
-///
-/// Not used by [`encode_robustness_terminal_reply`] itself -- every
-/// schema-2 terminal field is already wire-narrow. Reused by the reversal
-/// phase's single-cycle bridge to populate the off-terminal
-/// `residual_medians_q`/`iae_medians_qs` fields from the wider internal
-/// metrics types.
-pub(crate) fn saturating_i64_to_i32(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
-}
-
 /// Bytes in the schema-2 per-cycle robustness-evidence payload: a 10-byte
 /// header (direction, schema revision, off-terminal residual/IAE medians
 /// for this direction) plus [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte
@@ -236,6 +225,7 @@ mod tests {
             directions: [direction_a(), direction_b()],
             residual_medians_q: [17, -17],
             iae_medians_qs: [9, -9],
+            cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
         }
     }
 
@@ -252,6 +242,7 @@ mod tests {
                 directions: [direction_a(), direction_b()],
                 residual_medians_q: [17, -17],
                 iae_medians_qs: [9, -9],
+                cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
             },
             run_started_us: 10_000,
             run_completed_us: 90_000,

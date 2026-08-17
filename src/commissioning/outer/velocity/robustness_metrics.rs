@@ -198,7 +198,6 @@ impl ReversalOnlineAccumulator {
     /// [`Self::reset`], which runs once per capture (twice per cycle) and
     /// must not disturb a peak that spans both the establish and reverse
     /// legs.
-    #[allow(dead_code)]
     pub(crate) fn reset_cycle_peak(&mut self) {
         self.signed_position = 0;
         self.peak_excursion_counts = 0;
@@ -261,7 +260,6 @@ impl ReversalOnlineAccumulator {
     /// does not clear it -- while the zero-target rest window between
     /// cycles is excluded: its braking travel belongs to the settle
     /// reserve, not the reversal transient this metric measures.
-    #[allow(dead_code)]
     pub(crate) fn peak_excursion_counts(&self) -> u32 {
         self.peak_excursion_counts
     }
@@ -283,8 +281,10 @@ pub(crate) struct RobustnessThresholds {
 }
 
 /// Conservative, pre-characterization seed thresholds. Deliberately loose:
-/// the gate must never false-reject a good candidate before the
-/// hardware characterization pass tightens these values.
+/// the gate must never false-reject a good candidate before the hardware
+/// characterization pass tightens these values. The gate compares the
+/// per-direction median of each metric against these bounds, so a single
+/// tail cycle cannot by itself trip a threshold.
 ///
 /// `r_max_q` is the deficit-Q equivalent of 10% of a reference acceptance
 /// target rate (176 rpm at `REFERENCE_ENCODER_COUNTS_PER_REV` = 4000 counts
@@ -376,7 +376,6 @@ pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
 /// Stroke-relative overshoot, in counts: `peak_excursion` saturating-minus
 /// `stroke_counts`, `0` when the peak stayed within the per-primitive
 /// stroke allocation. Evidence-only -- no threshold gates this value.
-#[allow(dead_code)]
 pub(crate) fn overshoot_counts(peak_excursion: u32, stroke_counts: u32) -> u16 {
     let overshoot = peak_excursion.saturating_sub(stroke_counts);
     u16::try_from(overshoot).unwrap_or(u16::MAX)
