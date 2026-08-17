@@ -16,8 +16,29 @@ use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_
 use crate::commissioning::outer::velocity::robustness_evidence::{
     RobustnessDirectionSummary, RobustnessEvidence,
 };
+use crate::commissioning::outer::velocity::robustness_metrics::{
+    ROBUSTNESS_LEGS_PER_CYCLE, ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_MEASUREMENT_BUDGET_US,
+};
 use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
 use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
+
+/// Reversal directions probed per run: forward->reverse and
+/// reverse->forward. Mirrors `robustness_reversal::DIRECTION_COUNT`,
+/// duplicated here so this module's worst-case arithmetic does not need a
+/// cross-module reach for a single scalar.
+#[allow(dead_code)] // Consumed by robustness_worst_case_duration_ms, staged ahead of its call site.
+const ROBUSTNESS_DIRECTION_COUNT: u32 = 2;
+
+/// Bounded per-direction tail-grace re-run budget: the cycle ledger grants
+/// exactly one free re-run for the first conclusive cycle whose
+/// reconvergence time crosses the tail threshold; a second tail cycle
+/// latches the rejection instead of retrying.
+#[allow(dead_code)] // Consumed by robustness_worst_case_duration_ms, staged ahead of its call site.
+const ROBUSTNESS_TAIL_GRACE_CYCLES: u32 = 1;
+
+/// Microseconds per millisecond, for the envelope's unit conversion.
+#[allow(dead_code)] // Consumed by robustness_worst_case_duration_ms, staged ahead of its call site.
+const MICROS_PER_MILLI: u32 = 1_000;
 
 /// No direction tripped a threshold gate and no direction was inconclusive.
 pub const ROBUSTNESS_CAUSE_PASS: u8 = 0;
@@ -137,6 +158,38 @@ pub fn apply_robustness_terminal(
         terminal.cause = ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY;
     }
     terminal
+}
+
+/// Worst-case wall-clock duration of a full reversal-robustness run, in
+/// milliseconds.
+///
+/// Bounds the run at 16 total probe cycles: per direction, the
+/// `ROBUSTNESS_CYCLES_PER_DIRECTION` measurement slots plus
+/// `ROBUSTNESS_MAX_RETRIES` bounded inconclusive retries plus the single
+/// tail-grace re-run, doubled for both reversal directions. Each cycle
+/// budgets `ROBUSTNESS_LEGS_PER_CYCLE` legs (establish, reversal, rest) at
+/// `ROBUSTNESS_MEASUREMENT_BUDGET_US` apiece -- the same budget
+/// `robustness_reversal::open_zero_window` uses for the rest window, so all
+/// three legs share one constant. This is a conservative envelope: a cycle
+/// that reaches band entry early finishes a leg well under its full budget.
+/// The result is asserted inside the u16 millisecond field the host's
+/// duration-budget wire format supplies.
+#[allow(dead_code)] // Staged ahead of its dispatch-route call site.
+pub(crate) fn robustness_worst_case_duration_ms() -> u32 {
+    let cycles_per_direction = ROBUSTNESS_CYCLES_PER_DIRECTION as u32
+        + u32::from(ROBUSTNESS_MAX_RETRIES)
+        + ROBUSTNESS_TAIL_GRACE_CYCLES;
+    let worst_case_cycles = cycles_per_direction * ROBUSTNESS_DIRECTION_COUNT;
+
+    let per_cycle_envelope_ms =
+        (ROBUSTNESS_MEASUREMENT_BUDGET_US / MICROS_PER_MILLI) * ROBUSTNESS_LEGS_PER_CYCLE;
+
+    let worst_case_duration_ms = worst_case_cycles * per_cycle_envelope_ms;
+    assert!(
+        worst_case_duration_ms <= u32::from(u16::MAX),
+        "robustness worst-case duration must fit the host's u16 duration-budget field"
+    );
+    worst_case_duration_ms
 }
 
 /// All-zero robustness evidence for a terminal built before any probe motion.
@@ -275,5 +328,19 @@ mod tests {
 
         assert_eq!(applied.outcome, RobustnessOutcome::Failed);
         assert_eq!(applied.cause, ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY);
+    }
+
+    #[test]
+    fn worst_case_run_duration_fits_the_u16_budget_field() {
+        // Per direction: 5 measurement slots + 2 bounded inconclusive
+        // retries + 1 tail-grace re-run = 8 cycles; both directions = 16.
+        // Each cycle budgets 3 legs (establish, reversal, rest) at the
+        // 500 ms measurement budget apiece: 16 * 3 * 500 = 24_000 ms.
+        let expected_ms: u32 = 24_000;
+
+        let duration_ms = robustness_worst_case_duration_ms();
+
+        assert_eq!(duration_ms, expected_ms);
+        assert!(duration_ms <= u32::from(u16::MAX));
     }
 }
