@@ -286,6 +286,13 @@ pub(crate) struct RobustnessThresholds {
 /// per-direction median of each metric against these bounds, so a single
 /// tail cycle cannot by itself trip a threshold.
 ///
+/// Structural censoring: a conclusive tail cycle cannot be measured while the
+/// tail threshold (`2 * t_max` = 600 ms) exceeds the measurement budget
+/// (`ROBUSTNESS_MEASUREMENT_BUDGET_US` = 500 ms) -- band entry past the budget
+/// reads as inconclusive, never as a slow conclusive cycle. The tail-reject
+/// path is therefore dormant until the tail threshold is pinned below the
+/// budget.
+///
 /// `r_max_q` is the deficit-Q equivalent of 10% of a reference acceptance
 /// target rate (176 rpm at `REFERENCE_ENCODER_COUNTS_PER_REV` = 4000 counts
 /// per rev, `commissioning/outer/limits.rs`), computed offline against
