@@ -260,6 +260,14 @@ impl ReversalOnlineAccumulator {
     /// does not clear it -- while the zero-target rest window between
     /// cycles is excluded: its braking travel belongs to the settle
     /// reserve, not the reversal transient this metric measures.
+    ///
+    /// Dormant channel on the velocity-based probe: this peak is the
+    /// establish-leg cruise distance, bounded near the moving stroke (max
+    /// stroke less the settle reserve), and [`overshoot_counts`] subtracts the
+    /// full stroke, so the overshoot evidence reads structurally near zero.
+    /// A near-zero value must not be read as "no overshoot"; the channel needs
+    /// a reversal-command-anchored peak before it carries reserve-pinning
+    /// evidence.
     pub(crate) fn peak_excursion_counts(&self) -> u32 {
         self.peak_excursion_counts
     }
@@ -398,6 +406,15 @@ pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
 /// Stroke-relative overshoot, in counts: `peak_excursion` saturating-minus
 /// `stroke_counts`, `0` when the peak stayed within the per-primitive
 /// stroke allocation. Evidence-only -- no threshold gates this value.
+///
+/// Dormant channel on the velocity-based probe: the peak feeding this is the
+/// establish-leg cruise distance, bounded near the moving stroke, while the
+/// `stroke_counts` reference is the full stroke. A candidate would have to
+/// overshoot the reversal endpoint by more than the entire settle reserve to
+/// register, so the output reads structurally near zero and must not be read
+/// as "no overshoot". See [`ReversalOnlineAccumulator::peak_excursion_counts`];
+/// reserve pinning stays blocked until the peak is anchored at the position
+/// captured when the reversal is commanded, with the peak measured beyond it.
 pub(crate) fn overshoot_counts(peak_excursion: u32, stroke_counts: u32) -> u16 {
     let overshoot = peak_excursion.saturating_sub(stroke_counts);
     u16::try_from(overshoot).unwrap_or(u16::MAX)
