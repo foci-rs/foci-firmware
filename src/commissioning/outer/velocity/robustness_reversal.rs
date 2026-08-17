@@ -27,7 +27,9 @@ use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::OuterSafetyLimits;
 use crate::commissioning::outer::state::VELOCITY_SWEEP_BLOCK_LEVELS;
 use crate::commissioning::outer::state::VelocityObservationRing;
-use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
+use crate::commissioning::outer::velocity::robustness_reporting::{
+    ROBUSTNESS_SCHEMA_REVISION, saturating_i64_to_i32,
+};
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
     RobustnessOutcome, RobustnessReversalTerminal, StepResult,
@@ -39,7 +41,9 @@ use foci_tmc4671::registers::{
 
 use super::clear_velocity_integrator;
 use super::integral_reproduction::AcceptancePoint;
-use super::robustness_evidence::{RobustnessDirectionEvidence, RobustnessEvidence, summary_cause};
+use super::robustness_evidence::{
+    RobustnessDirectionEvidence, RobustnessDirectionSummary, RobustnessEvidence, summary_cause,
+};
 use super::robustness_metrics::{
     ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MAX_RETRIES,
     ROBUSTNESS_MEASUREMENT_BUDGET_US, ROBUSTNESS_THRESHOLDS, ReversalMetrics,
@@ -936,13 +940,65 @@ fn inconclusive_direction(retry_count: u8) -> RobustnessDirectionEvidence {
     }
 }
 
-/// Fill any direction that never recorded evidence with a zeroed placeholder.
-fn assembled_evidence(session: &RobustnessReversalSession) -> RobustnessEvidence {
+/// Resolve both directions' raw evidence, filling any direction that never
+/// recorded a leg measurement with a zeroed inconclusive placeholder.
+fn resolved_legs(session: &RobustnessReversalSession) -> [RobustnessDirectionEvidence; 2] {
     let zero = inconclusive_direction(0);
+    [
+        session.directions[0].unwrap_or(zero),
+        session.directions[1].unwrap_or(zero),
+    ]
+}
+
+/// Microseconds per millisecond, for the leg's saturating ms conversion.
+const MICROS_PER_MILLI: u32 = 1_000;
+
+/// Convert a microsecond duration to milliseconds, rounding up, saturating
+/// into `u16`. Mirrors `robustness_cycles::to_ms_saturating`.
+fn to_ms_saturating(value_us: u32) -> u16 {
+    let ms = value_us.div_ceil(MICROS_PER_MILLI);
+    u16::try_from(ms).unwrap_or(u16::MAX)
+}
+
+/// Bridge one raw measured leg into a single-cycle `RobustnessDirectionSummary`.
+///
+/// Temporary scaffolding: median = max = this leg's value, `valid_cycles =
+/// 1` unconditionally (even for an inconclusive placeholder leg), and
+/// `overshoot_peak_counts` stays zero pending per-cycle overshoot detection. Deleted once
+/// the K-cycle ledger replaces per-leg scoring with real cycle
+/// statistics.
+fn summarize_single_cycle(leg: RobustnessDirectionEvidence) -> RobustnessDirectionSummary {
+    let reconvergence_ms = to_ms_saturating(leg.metrics.reconvergence_time_us);
+    RobustnessDirectionSummary {
+        median_reconvergence_ms: reconvergence_ms,
+        max_reconvergence_ms: reconvergence_ms,
+        median_forward_settle_ms: to_ms_saturating(leg.metrics.forward_settle_time_us),
+        overshoot_peak_counts: 0,
+        valid_cycles: 1,
+        trip_count: u8::from(leg.tripped != 0),
+        retry_count: leg.retry_count,
+        inconclusive: leg.inconclusive,
+    }
+}
+
+/// Bridge both directions' raw evidence into the schema-2 wire evidence.
+///
+/// See [`summarize_single_cycle`] for the single-cycle bridge this builds
+/// on.
+fn assembled_evidence(session: &RobustnessReversalSession) -> RobustnessEvidence {
+    let legs = resolved_legs(session);
     RobustnessEvidence {
         directions: [
-            session.directions[0].unwrap_or(zero),
-            session.directions[1].unwrap_or(zero),
+            summarize_single_cycle(legs[0]),
+            summarize_single_cycle(legs[1]),
+        ],
+        residual_medians_q: [
+            saturating_i64_to_i32(legs[0].metrics.settled_residual_q),
+            saturating_i64_to_i32(legs[1].metrics.settled_residual_q),
+        ],
+        iae_medians_qs: [
+            saturating_i64_to_i32(legs[0].metrics.recovery_iae_q / 1_000_000),
+            saturating_i64_to_i32(legs[1].metrics.recovery_iae_q / 1_000_000),
         ],
     }
 }
@@ -952,8 +1008,9 @@ fn complete_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
 ) -> StepResult {
+    let legs = resolved_legs(session);
     let evidence = assembled_evidence(session);
-    let any_trip = evidence.directions.iter().any(|d| d.tripped != 0);
+    let any_trip = evidence.directions.iter().any(|d| d.trip_count != 0);
     let any_inconclusive = evidence.directions.iter().any(|d| d.inconclusive);
     let outcome = if any_trip {
         RobustnessOutcome::Rejected
@@ -962,7 +1019,12 @@ fn complete_terminal<B: CommissioningBackend>(
     } else {
         RobustnessOutcome::Complete
     };
-    let cause = summary_cause(&evidence);
+    let cause = summary_cause(
+        legs[0].tripped,
+        legs[1].tripped,
+        legs[0].inconclusive,
+        legs[1].inconclusive,
+    );
     StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
         schema_revision: ROBUSTNESS_SCHEMA_REVISION,
         run_sequence: session.run_sequence,
@@ -1087,7 +1149,6 @@ mod tests {
     use crate::commissioning::outer::velocity::integral_reproduction::{
         AcceptanceMatrixProgress, StageCCandidateSlot, StageCPlanIdentity,
     };
-    use crate::commissioning::outer::velocity::robustness_metrics::TRIP_TIME;
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM;
 
@@ -1254,7 +1315,7 @@ mod tests {
         assert_eq!(terminal.run_sequence, 7);
         for direction in terminal.evidence.directions {
             assert!(!direction.inconclusive);
-            assert_eq!(direction.tripped, 0);
+            assert_eq!(direction.trip_count, 0);
             assert_eq!(direction.retry_count, 0);
         }
     }
@@ -1359,16 +1420,17 @@ mod tests {
             }
         });
         assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED);
         assert!(terminal.safety_fault.is_none());
         for direction in terminal.evidence.directions {
             assert!(!direction.inconclusive);
             assert_ne!(
-                direction.tripped & TRIP_TIME,
-                0,
+                direction.trip_count, 0,
                 "slow reconvergence must trip the time gate"
             );
             assert!(
-                direction.metrics.reconvergence_time_us > ROBUSTNESS_THRESHOLDS.t_max_us,
+                u32::from(direction.median_reconvergence_ms) * 1_000
+                    > ROBUSTNESS_THRESHOLDS.t_max_us,
                 "reconvergence must exceed t_max to reach TRIP_TIME"
             );
             assert_eq!(direction.retry_count, 0);
@@ -1408,14 +1470,10 @@ mod tests {
         assert!(terminal.safety_fault.is_none());
         let [dir0, dir1] = terminal.evidence.directions;
         assert!(!dir0.inconclusive, "the tripped direction is conclusive");
-        assert_ne!(
-            dir0.tripped & TRIP_TIME,
-            0,
-            "direction 0 must trip the time gate"
-        );
+        assert_ne!(dir0.trip_count, 0, "direction 0 must trip the time gate");
         assert!(dir1.inconclusive, "direction 1 must be inconclusive");
         assert_eq!(
-            dir1.tripped, 0,
+            dir1.trip_count, 0,
             "an inconclusive direction reports no trips"
         );
     }

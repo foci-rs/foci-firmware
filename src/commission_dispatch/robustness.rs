@@ -13,9 +13,8 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, StageCCandidateSlot,
 };
 use crate::commissioning::outer::velocity::robustness_evidence::{
-    RobustnessDirectionEvidence, RobustnessEvidence,
+    RobustnessDirectionSummary, RobustnessEvidence,
 };
-use crate::commissioning::outer::velocity::robustness_metrics::ReversalMetrics;
 use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
 use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
 
@@ -136,20 +135,20 @@ pub fn apply_robustness_terminal(
 
 /// All-zero robustness evidence for a terminal built before any probe motion.
 fn zero_robustness_evidence() -> RobustnessEvidence {
-    let direction = RobustnessDirectionEvidence {
-        metrics: ReversalMetrics {
-            reconvergence_time_us: 0,
-            settled_residual_q: 0,
-            recovery_iae_q: 0,
-            forward_settle_time_us: 0,
-            reconvergence_ratio_ppm: 0,
-        },
-        tripped: 0,
+    let direction = RobustnessDirectionSummary {
+        median_reconvergence_ms: 0,
+        max_reconvergence_ms: 0,
+        median_forward_settle_ms: 0,
+        overshoot_peak_counts: 0,
+        valid_cycles: 0,
+        trip_count: 0,
         retry_count: 0,
         inconclusive: false,
     };
     RobustnessEvidence {
         directions: [direction, direction],
+        residual_medians_q: [0, 0],
+        iae_medians_qs: [0, 0],
     }
 }
 

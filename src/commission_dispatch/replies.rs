@@ -4193,24 +4193,21 @@ mod tests {
     #[test]
     fn emit_terminal_reply_routes_the_robustness_terminal_payload() {
         use crate::commissioning::outer::velocity::robustness_evidence::{
-            RobustnessDirectionEvidence, RobustnessEvidence,
+            RobustnessDirectionSummary, RobustnessEvidence,
         };
-        use crate::commissioning::outer::velocity::robustness_metrics::ReversalMetrics;
         use crate::commissioning::outer::velocity::robustness_reporting::{
             ROBUSTNESS_SCHEMA_REVISION, ROBUSTNESS_TERMINAL_REPLY_BYTES,
             encode_robustness_terminal_reply,
         };
         use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
 
-        let direction = RobustnessDirectionEvidence {
-            metrics: ReversalMetrics {
-                reconvergence_time_us: 4_200,
-                settled_residual_q: 17,
-                recovery_iae_q: 900,
-                forward_settle_time_us: 3_100,
-                reconvergence_ratio_ppm: 1_000_000,
-            },
-            tripped: 0,
+        let direction = RobustnessDirectionSummary {
+            median_reconvergence_ms: 4,
+            max_reconvergence_ms: 4,
+            median_forward_settle_ms: 3,
+            overshoot_peak_counts: 0,
+            valid_cycles: 1,
+            trip_count: 0,
             retry_count: 1,
             inconclusive: false,
         };
@@ -4224,6 +4221,8 @@ mod tests {
             target_velocity_rpm: 120,
             evidence: RobustnessEvidence {
                 directions: [direction, direction],
+                residual_medians_q: [17, 17],
+                iae_medians_qs: [0, 0],
             },
             run_started_us: 1_000,
             run_completed_us: 2_000,
@@ -4252,9 +4251,8 @@ mod tests {
     #[test]
     fn emit_terminal_reply_emits_outer_safety_fault_before_robustness_terminal() {
         use crate::commissioning::outer::velocity::robustness_evidence::{
-            RobustnessDirectionEvidence, RobustnessEvidence,
+            RobustnessDirectionSummary, RobustnessEvidence,
         };
-        use crate::commissioning::outer::velocity::robustness_metrics::ReversalMetrics;
         use crate::commissioning::outer::velocity::robustness_reporting::{
             ROBUSTNESS_SCHEMA_REVISION, encode_robustness_terminal_reply,
         };
@@ -4262,15 +4260,13 @@ mod tests {
             OuterSafetyFault, RobustnessOutcome, RobustnessReversalTerminal,
         };
 
-        let direction = RobustnessDirectionEvidence {
-            metrics: ReversalMetrics {
-                reconvergence_time_us: 0,
-                settled_residual_q: 0,
-                recovery_iae_q: 0,
-                forward_settle_time_us: 0,
-                reconvergence_ratio_ppm: 0,
-            },
-            tripped: 0,
+        let direction = RobustnessDirectionSummary {
+            median_reconvergence_ms: 0,
+            max_reconvergence_ms: 0,
+            median_forward_settle_ms: 0,
+            overshoot_peak_counts: 0,
+            valid_cycles: 1,
+            trip_count: 0,
             retry_count: 0,
             inconclusive: true,
         };
@@ -4284,6 +4280,8 @@ mod tests {
             target_velocity_rpm: 322,
             evidence: RobustnessEvidence {
                 directions: [direction, direction],
+                residual_medians_q: [0, 0],
+                iae_medians_qs: [0, 0],
             },
             run_started_us: 1_000,
             run_completed_us: 2_000,

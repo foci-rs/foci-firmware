@@ -3,34 +3,36 @@
 use crate::commissioning::types::RobustnessReversalTerminal;
 
 /// Independent robustness evidence schema revision.
-pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 1;
+///
+/// The wire terminal packs this as a single `u8` (see
+/// [`encode_robustness_terminal_reply`]); the constant and
+/// [`RobustnessReversalTerminal::schema_revision`](crate::commissioning::types::RobustnessReversalTerminal::schema_revision)
+/// stay `u16` so schema comparisons elsewhere (the detailed reply, host
+/// tooling) do not need a second, narrower type.
+pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 2;
 
-/// Bytes in the compact ordinary robustness-terminal reply payload.
-pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 54;
+/// Bytes in the compact schema-2 robustness-terminal reply payload: a
+/// 15-byte header plus 12 bytes per reversal direction (two directions).
+pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 39;
 
 /// Encode the compact robustness-terminal ordinary reply payload.
 ///
-/// Fixed 16-byte header plus 19 bytes per reversal direction (two
-/// directions), for 54 bytes total. `reconvergence_ratio_ppm` is
-/// deliberately absent: both of its inputs (`reconvergence_time_us`,
-/// `forward_settle_time_us`) are encoded, so the host derives the ratio
-/// instead of the firmware shipping a third, redundant field.
+/// Fixed 15-byte header (schema revision, run sequence, outcome, cause,
+/// selected gains, target velocity) plus 12 bytes per reversal direction
+/// (median/max reconvergence, median forward-settle, overshoot-peak count,
+/// valid-cycle/trip/retry counts, inconclusive flag), for 39 bytes total.
 ///
-/// The IAE wire field is `recovery_iae_qs` (rate-Q seconds): the internal
-/// `recovery_iae_q` is rate-Q microseconds, which a real reversal transient
-/// drives past `i32::MAX` in a single tick, so it is divided by 1_000_000
-/// before the saturating i32 clamp. The i64 gate still compares the full
-/// microsecond value; only the wire readout is rescaled.
+/// `residual_medians_q` and `iae_medians_qs` are deliberately absent from
+/// this encoding: they live off-terminal and are carried by the detailed
+/// reply instead, keeping the ordinary terminal inside the single-frame
+/// data budget.
 pub(crate) fn encode_robustness_terminal_reply(
     terminal: &RobustnessReversalTerminal,
 ) -> [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] {
     let mut bytes = [0_u8; ROBUSTNESS_TERMINAL_REPLY_BYTES];
     let mut offset = 0;
-    push_reply(
-        &mut bytes,
-        &mut offset,
-        &terminal.schema_revision.to_le_bytes(),
-    );
+    // Wire field is u8; the struct field stays u16 for schema comparisons.
+    push_reply(&mut bytes, &mut offset, &[terminal.schema_revision as u8]);
     push_reply(
         &mut bytes,
         &mut offset,
@@ -52,28 +54,29 @@ pub(crate) fn encode_robustness_terminal_reply(
         push_reply(
             &mut bytes,
             &mut offset,
-            &direction.metrics.reconvergence_time_us.to_le_bytes(),
+            &direction.median_reconvergence_ms.to_le_bytes(),
         );
         push_reply(
             &mut bytes,
             &mut offset,
-            &saturating_i64_to_i32(direction.metrics.settled_residual_q).to_le_bytes(),
+            &direction.max_reconvergence_ms.to_le_bytes(),
         );
         push_reply(
             &mut bytes,
             &mut offset,
-            &saturating_i64_to_i32(direction.metrics.recovery_iae_q / 1_000_000).to_le_bytes(),
+            &direction.median_forward_settle_ms.to_le_bytes(),
         );
         push_reply(
             &mut bytes,
             &mut offset,
-            &direction.metrics.forward_settle_time_us.to_le_bytes(),
+            &direction.overshoot_peak_counts.to_le_bytes(),
         );
         push_reply(
             &mut bytes,
             &mut offset,
             &[
-                direction.tripped,
+                direction.valid_cycles,
+                direction.trip_count,
                 direction.retry_count,
                 u8::from(direction.inconclusive),
             ],
@@ -84,7 +87,13 @@ pub(crate) fn encode_robustness_terminal_reply(
 }
 
 /// Saturating `i64 -> i32` clamp; never panics on out-of-range magnitudes.
-fn saturating_i64_to_i32(value: i64) -> i32 {
+///
+/// Not used by [`encode_robustness_terminal_reply`] itself -- every
+/// schema-2 terminal field is already wire-narrow. Reused by the reversal
+/// phase's single-cycle bridge to populate the off-terminal
+/// `residual_medians_q`/`iae_medians_qs` fields from the wider internal
+/// metrics types.
+pub(crate) fn saturating_i64_to_i32(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
@@ -100,23 +109,33 @@ fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, val
 mod tests {
     use super::*;
     use crate::commissioning::outer::velocity::robustness_evidence::{
-        RobustnessDirectionEvidence, RobustnessEvidence,
+        RobustnessDirectionSummary, RobustnessEvidence,
     };
-    use crate::commissioning::outer::velocity::robustness_metrics::ReversalMetrics;
     use crate::commissioning::types::RobustnessOutcome;
 
-    fn direction(sign: i64) -> RobustnessDirectionEvidence {
-        RobustnessDirectionEvidence {
-            metrics: ReversalMetrics {
-                reconvergence_time_us: 12_345,
-                settled_residual_q: 250 * sign,
-                recovery_iae_q: 9_000_000 * sign,
-                forward_settle_time_us: 8_765,
-                reconvergence_ratio_ppm: 1_409_000,
-            },
-            tripped: 0b0000_0101,
-            retry_count: 2,
+    fn direction_a() -> RobustnessDirectionSummary {
+        RobustnessDirectionSummary {
+            median_reconvergence_ms: 1_000,
+            max_reconvergence_ms: 1_200,
+            median_forward_settle_ms: 300,
+            overshoot_peak_counts: 7,
+            valid_cycles: 5,
+            trip_count: 2,
+            retry_count: 1,
             inconclusive: false,
+        }
+    }
+
+    fn direction_b() -> RobustnessDirectionSummary {
+        RobustnessDirectionSummary {
+            median_reconvergence_ms: 2_000,
+            max_reconvergence_ms: 2_500,
+            median_forward_settle_ms: 450,
+            overshoot_peak_counts: 3,
+            valid_cycles: 4,
+            trip_count: 1,
+            retry_count: 2,
+            inconclusive: true,
         }
     }
 
@@ -130,7 +149,9 @@ mod tests {
             selected_i: 512,
             target_velocity_rpm: -1_500,
             evidence: RobustnessEvidence {
-                directions: [direction(1), direction(-1)],
+                directions: [direction_a(), direction_b()],
+                residual_medians_q: [17, -17],
+                iae_medians_qs: [9, -9],
             },
             run_started_us: 10_000,
             run_completed_us: 90_000,
@@ -142,90 +163,126 @@ mod tests {
     fn encode_robustness_terminal_reply_is_stable_and_within_wire_budget() {
         let terminal = terminal();
         let bytes = encode_robustness_terminal_reply(&terminal);
-        assert_eq!(bytes.len(), 54);
+        assert_eq!(bytes.len(), 39);
 
+        #[rustfmt::skip]
+        let expected: [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] = [
+            // schema_revision (wire u8)
+            0x02,
+            // run_sequence (u32 LE)
+            0x44, 0x33, 0x22, 0x11,
+            // outcome, cause
+            0x01, 0x02,
+            // selected_p, selected_i (u16 LE)
+            0x00, 0x04, 0x00, 0x02,
+            // target_velocity_rpm (i32 LE)
+            0x24, 0xFA, 0xFF, 0xFF,
+            // direction 0: median/max reconvergence, median settle, overshoot (u16 LE)
+            0xE8, 0x03, 0xB0, 0x04, 0x2C, 0x01, 0x07, 0x00,
+            // direction 0: valid_cycles, trip_count, retry_count, inconclusive
+            0x05, 0x02, 0x01, 0x00,
+            // direction 1: median/max reconvergence, median settle, overshoot (u16 LE)
+            0xD0, 0x07, 0xC4, 0x09, 0xC2, 0x01, 0x03, 0x00,
+            // direction 1: valid_cycles, trip_count, retry_count, inconclusive
+            0x04, 0x01, 0x02, 0x01,
+        ];
+        assert_eq!(bytes, expected);
+
+        // Decoded spot checks documenting the field order/offsets.
+        assert_eq!(bytes[0], terminal.schema_revision as u8);
         assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]),
-            terminal.schema_revision
-        );
-        assert_eq!(
-            u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
+            u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]),
             terminal.run_sequence
         );
-        assert_eq!(bytes[6], terminal.outcome as u8);
-        assert_eq!(bytes[7], terminal.cause);
+        assert_eq!(bytes[5], terminal.outcome as u8);
+        assert_eq!(bytes[6], terminal.cause);
         assert_eq!(
-            u16::from_le_bytes([bytes[8], bytes[9]]),
+            u16::from_le_bytes([bytes[7], bytes[8]]),
             terminal.selected_p
         );
         assert_eq!(
-            u16::from_le_bytes([bytes[10], bytes[11]]),
+            u16::from_le_bytes([bytes[9], bytes[10]]),
             terminal.selected_i
         );
         assert_eq!(
-            i32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+            i32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]),
             terminal.target_velocity_rpm
         );
 
         for (index, direction) in terminal.evidence.directions.into_iter().enumerate() {
-            let base = 16 + index * 19;
+            let base = 15 + index * 12;
             assert_eq!(
-                u32::from_le_bytes([
-                    bytes[base],
-                    bytes[base + 1],
-                    bytes[base + 2],
-                    bytes[base + 3]
-                ]),
-                direction.metrics.reconvergence_time_us
+                u16::from_le_bytes([bytes[base], bytes[base + 1]]),
+                direction.median_reconvergence_ms
             );
             assert_eq!(
-                i32::from_le_bytes([
-                    bytes[base + 4],
-                    bytes[base + 5],
-                    bytes[base + 6],
-                    bytes[base + 7]
-                ]),
-                i32::try_from(direction.metrics.settled_residual_q)
-                    .expect("fixture residual fits i32")
-            );
-            // Wire field `recovery_iae_qs`: internal rate-Q microseconds
-            // rescaled to rate-Q seconds (/ 1_000_000) before the i32 clamp.
-            assert_eq!(
-                i32::from_le_bytes([
-                    bytes[base + 8],
-                    bytes[base + 9],
-                    bytes[base + 10],
-                    bytes[base + 11]
-                ]),
-                saturating_i64_to_i32(direction.metrics.recovery_iae_q / 1_000_000)
+                u16::from_le_bytes([bytes[base + 2], bytes[base + 3]]),
+                direction.max_reconvergence_ms
             );
             assert_eq!(
-                u32::from_le_bytes([
-                    bytes[base + 12],
-                    bytes[base + 13],
-                    bytes[base + 14],
-                    bytes[base + 15]
-                ]),
-                direction.metrics.forward_settle_time_us
+                u16::from_le_bytes([bytes[base + 4], bytes[base + 5]]),
+                direction.median_forward_settle_ms
             );
-            assert_eq!(bytes[base + 16], direction.tripped);
-            assert_eq!(bytes[base + 17], direction.retry_count);
-            assert_eq!(bytes[base + 18], u8::from(direction.inconclusive));
+            assert_eq!(
+                u16::from_le_bytes([bytes[base + 6], bytes[base + 7]]),
+                direction.overshoot_peak_counts
+            );
+            assert_eq!(bytes[base + 8], direction.valid_cycles);
+            assert_eq!(bytes[base + 9], direction.trip_count);
+            assert_eq!(bytes[base + 10], direction.retry_count);
+            assert_eq!(bytes[base + 11], u8::from(direction.inconclusive));
         }
-        // reconvergence_ratio_ppm is intentionally absent from the wire encoding.
+        // residual_medians_q / iae_medians_qs are off-terminal: not encoded.
     }
 
     #[test]
-    fn encode_robustness_terminal_reply_saturates_out_of_range_i64_fields() {
+    fn terminal_fits_a_single_klipper_frame_at_any_oid() {
+        assert!(ROBUSTNESS_TERMINAL_REPLY_BYTES <= 54);
+    }
+
+    /// Every schema-2 per-direction field is already wire-narrow, so nothing
+    /// in the encoder itself clamps a wider value. This instead proves the
+    /// wire format round-trips a field already saturated to its type's
+    /// boundary (`u16::MAX`/`u8::MAX`, as a saturating upstream conversion --
+    /// [`saturating_i64_to_i32`] for the off-terminal fields, or an
+    /// equivalent narrowing for the ledger's own ms fields -- would produce)
+    /// without further truncation or corruption.
+    #[test]
+    fn encoder_saturates_out_of_range_values() {
         let mut terminal = terminal();
-        terminal.evidence.directions[0].metrics.settled_residual_q = i64::MAX;
-        terminal.evidence.directions[0].metrics.recovery_iae_q = i64::MIN;
+        let saturated = RobustnessDirectionSummary {
+            median_reconvergence_ms: u16::MAX,
+            max_reconvergence_ms: u16::MAX,
+            median_forward_settle_ms: u16::MAX,
+            overshoot_peak_counts: u16::MAX,
+            valid_cycles: u8::MAX,
+            trip_count: u8::MAX,
+            retry_count: u8::MAX,
+            inconclusive: true,
+        };
+        terminal.evidence.directions = [saturated, saturated];
 
         let bytes = encode_robustness_terminal_reply(&terminal);
 
-        let residual = i32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-        let iae_qs = i32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-        assert_eq!(residual, i32::MAX);
-        assert_eq!(iae_qs, i32::MIN);
+        for index in 0..2 {
+            let base = 15 + index * 12;
+            assert_eq!(u16::from_le_bytes([bytes[base], bytes[base + 1]]), u16::MAX);
+            assert_eq!(
+                u16::from_le_bytes([bytes[base + 2], bytes[base + 3]]),
+                u16::MAX
+            );
+            assert_eq!(
+                u16::from_le_bytes([bytes[base + 4], bytes[base + 5]]),
+                u16::MAX
+            );
+            assert_eq!(
+                u16::from_le_bytes([bytes[base + 6], bytes[base + 7]]),
+                u16::MAX
+            );
+            assert_eq!(bytes[base + 8], u8::MAX);
+            assert_eq!(bytes[base + 9], u8::MAX);
+            assert_eq!(bytes[base + 10], u8::MAX);
+            assert_eq!(bytes[base + 11], 1);
+        }
     }
 }

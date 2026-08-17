@@ -919,6 +919,10 @@ pub enum RobustnessOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub struct RobustnessReversalTerminal {
     /// Independent robustness evidence schema.
+    ///
+    /// The wire encoding packs this as a single `u8`; the struct field
+    /// stays `u16` so schema comparisons elsewhere (the detailed reply,
+    /// host tooling) do not need a second, narrower type.
     pub schema_revision: u16,
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
