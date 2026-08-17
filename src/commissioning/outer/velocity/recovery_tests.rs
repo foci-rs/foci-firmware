@@ -1290,11 +1290,13 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
     .unwrap();
     local.safety.position_window = 100;
     local.command_motion();
-    assert_eq!(safety_fault(local.sample(1_000, -20)), 5);
+    // Local (per-stroke) branch now reports its own code (POSITION_LOCAL = 11).
+    assert_eq!(safety_fault(local.sample(1_000, -20)), 11);
 
     let mut absolute = RecoveryFixture::new(8_458, Some(14_000_000));
     absolute.safety.positive_position_window = 8_000;
     absolute.command_motion();
+    // Absolute (machine-headroom) branch keeps POSITION = 5.
     assert_eq!(safety_fault(absolute.sample(1_000, 8_450)), 5);
 }
 

@@ -7,8 +7,8 @@ use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_DURATION, OUTER_SAFETY_FAULT_INVALID_BUDGET,
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
-    OUTER_SAFETY_FAULT_QUARTER_TURN, OUTER_SAFETY_FAULT_UNUSABLE_BUDGET,
-    OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
+    OUTER_SAFETY_FAULT_POSITION_LOCAL, OUTER_SAFETY_FAULT_QUARTER_TURN,
+    OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
 };
 
 use super::limits::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS};
@@ -895,13 +895,36 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
             safety.positive_position_window,
         );
         let velocity_cpms = signed_report_value(delta_counts, velocity_magnitude_cpms);
-        return Ok(Some(safety.fault(
-            OUTER_SAFETY_FAULT_POSITION,
-            delta_counts,
-            dt_us,
-            velocity_cpms,
-            elapsed_us,
-        )));
+        // Tie-break: when both branches fire, report the absolute
+        // (machine-headroom) branch -- it is the more safety-relevant claim, and
+        // the local excursion is recoverable from its own numbers anyway. Each
+        // branch reports the excursion it actually compared against the signed
+        // window it exceeded, so the reason code names the guard and
+        // `|position_counts| > |position_window_counts|` holds for both.
+        let (reason, excursion, signed_window) = if absolute_position_exceeds_window {
+            let signed_window =
+                if safety.unwrapped_position > clamp_u32_to_i32(safety.positive_position_window) {
+                    clamp_u32_to_i32(safety.positive_position_window)
+                } else {
+                    -clamp_u32_to_i32(safety.negative_position_window)
+                };
+            (
+                OUTER_SAFETY_FAULT_POSITION,
+                safety.unwrapped_position,
+                signed_window,
+            )
+        } else {
+            let excursion = local_position.unwrap_or(safety.unwrapped_position);
+            let magnitude = clamp_u32_to_i32(safety.position_window);
+            let signed_window = if excursion < 0 { -magnitude } else { magnitude };
+            (OUTER_SAFETY_FAULT_POSITION_LOCAL, excursion, signed_window)
+        };
+        // Override the base fault's absolute-position/local-window pair with the
+        // branch's own compared pair, so the reason code and the numbers agree.
+        let mut fault = safety.fault(reason, delta_counts, dt_us, velocity_cpms, elapsed_us);
+        fault.position_counts = excursion;
+        fault.position_window_counts = signed_window;
+        return Ok(Some(fault));
     }
 
     Ok(None)
@@ -947,7 +970,8 @@ mod tests {
     };
     use crate::commissioning::types::{
         OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
-        OUTER_SAFETY_FAULT_QUARTER_TURN, OUTER_SAFETY_FAULT_VELOCITY, StepResult,
+        OUTER_SAFETY_FAULT_POSITION_LOCAL, OUTER_SAFETY_FAULT_QUARTER_TURN,
+        OUTER_SAFETY_FAULT_VELOCITY, StepResult,
     };
     use foci_tmc4671::registers::{
         ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET,
@@ -1606,8 +1630,15 @@ mod tests {
                 .expect("the settle observation should succeed")
                 .expect("settle drift beyond the full primitive window must fault");
 
-            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
+            // Local (per-stroke) branch: named distinctly, and the payload
+            // carries the actually-compared local excursion against a window
+            // signed to match its direction, so |excursion| > |window|.
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION_LOCAL);
             assert_eq!(fault.position_counts, 2_001);
+            assert!(fault.position_window_counts > 0);
+            assert!(
+                fault.position_counts.unsigned_abs() > fault.position_window_counts.unsigned_abs()
+            );
         });
     }
 
@@ -1656,8 +1687,47 @@ mod tests {
                 .expect("the observation should succeed")
                 .expect("positive cumulative drift beyond headroom must fault");
 
+            // Absolute (machine-headroom) branch: keeps POSITION, and reports
+            // the absolute position against the signed positive window it crossed.
             assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
             assert_eq!(fault.position_counts, 801);
+            assert!(fault.position_window_counts > 0);
+            assert!(
+                fault.position_counts.unsigned_abs() > fault.position_window_counts.unsigned_abs()
+            );
+        });
+    }
+
+    #[test]
+    fn outer_safety_position_tie_break_reports_absolute_branch() {
+        pollster::block_on(async {
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            budget.positive_position_headroom_mrev = 200;
+            let mut safety = OuterSafetyLimits::new(100, budget);
+            safety.configure_encoder_resolution(4_000).unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
+            safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
+            // primitive_start captured at 0, so the local excursion equals the
+            // absolute position; driving past both windows fires both branches.
+            safety.begin_primitive(0).unwrap();
+            safety.unwrapped_position = 2_499;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("the observation should succeed")
+                .expect("position beyond both windows must fault");
+
+            // Tie-break: the absolute branch wins and its code is reported.
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
+            assert_eq!(fault.position_counts, 2_501);
+            assert!(fault.position_window_counts > 0);
+            assert!(
+                fault.position_counts.unsigned_abs() > fault.position_window_counts.unsigned_abs()
+            );
         });
     }
 

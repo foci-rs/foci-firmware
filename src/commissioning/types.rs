@@ -1716,6 +1716,13 @@ pub const OUTER_SAFETY_FAULT_QUARTER_TURN: u8 = 8;
 pub const OUTER_SAFETY_FAULT_CURRENT: u8 = 9;
 /// Rung-origin recovery increased absolute origin error beyond quantization allowance.
 pub const OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY: u8 = 10;
+/// Stage 2 primitive-local travel exceeded its per-stroke geometry window.
+/// Distinct from [`OUTER_SAFETY_FAULT_POSITION`] (the absolute machine-headroom
+/// branch): this is displacement from the primitive start, a per-stroke sizing
+/// concern, whereas `POSITION` is absolute travel from Stage-2 entry approaching
+/// a physical limit. The payload reports the actually-compared excursion and the
+/// signed window it exceeded, so `|position_counts| > |position_window_counts|`.
+pub const OUTER_SAFETY_FAULT_POSITION_LOCAL: u8 = 11;
 
 /// Host-visible Stage 2 safety-envelope fault evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
