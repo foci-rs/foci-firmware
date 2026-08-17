@@ -292,6 +292,28 @@ impl OuterSafetyLimits {
         Ok(())
     }
 
+    /// Configure encoder-domain safety for the reversal-standstill robustness phase.
+    ///
+    /// Identical to [`Self::configure_velocity_sweep_encoder_resolution`] except the
+    /// local per-stroke `position_window` is opened to
+    /// `min(negative_position_window, positive_position_window)` instead of the
+    /// travel-sized sweep window. The local window never exceeds the absolute
+    /// machine-headroom clamp, and until a reserve is characterized on hardware it
+    /// equals it -- the reversal transient's true overshoot peak is otherwise
+    /// right-censored by a finite local window that aborts probing before the
+    /// carriage reaches turnaround. The absolute signed windows, velocity cap, and
+    /// torque cap are untouched and remain the active protection.
+    pub(crate) fn configure_robustness_encoder_resolution(
+        &mut self,
+        counts_per_rev: u32,
+    ) -> Result<(), EncoderMathError> {
+        self.configure_velocity_sweep_encoder_resolution(counts_per_rev)?;
+        self.position_window = self
+            .negative_position_window
+            .min(self.positive_position_window);
+        Ok(())
+    }
+
     /// The amplitude-relative runaway envelope
     /// `E(planned) = max(ceil(3 * planned / 2), planned + 2000)`.
     fn envelope_mrev_s(planned_velocity_mrev_s: u32) -> Result<u32, CommissionError> {
@@ -1197,6 +1219,29 @@ mod tests {
         assert_eq!(safety.position_window, 8_000);
         assert_eq!(safety.negative_position_window, 8_000);
         assert_eq!(safety.positive_position_window, 8_000);
+    }
+
+    #[test]
+    fn robustness_window_opens_to_the_absolute_clamp() {
+        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
+        budget.negative_position_headroom_mrev = 4_000;
+        budget.positive_position_headroom_mrev = 5_000;
+
+        let mut sweep_safety = OuterSafetyLimits::new(100, budget);
+        sweep_safety
+            .configure_velocity_sweep_encoder_resolution(4_000)
+            .unwrap();
+        assert_eq!(sweep_safety.position_window, 12_000);
+        assert_eq!(sweep_safety.negative_position_window, 16_000);
+        assert_eq!(sweep_safety.positive_position_window, 20_000);
+
+        let mut robustness_safety = OuterSafetyLimits::new(100, budget);
+        robustness_safety
+            .configure_robustness_encoder_resolution(4_000)
+            .unwrap();
+        assert_eq!(robustness_safety.position_window, 16_000);
+        assert_eq!(robustness_safety.negative_position_window, 16_000);
+        assert_eq!(robustness_safety.positive_position_window, 20_000);
     }
 
     #[test]

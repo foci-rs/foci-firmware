@@ -759,7 +759,7 @@ impl CommissioningEngine {
         );
         scaffold
             .safety
-            .configure_velocity_sweep_encoder_resolution(encoder_counts_per_rev)
+            .configure_robustness_encoder_resolution(encoder_counts_per_rev)
             .map_err(|_| CommissionError::EncoderFault)?;
         let probe_velocity_mrev_s = preflight
             .point
