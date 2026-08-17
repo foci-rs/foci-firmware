@@ -149,6 +149,8 @@ pub(crate) struct ReversalOnlineAccumulator {
     run_duration_us: u32,
     band_entry_us: Option<u32>,
     band_entry_iae_q: i64,
+    signed_position: i32,
+    peak_excursion_counts: u32,
 }
 
 impl ReversalOnlineAccumulator {
@@ -166,12 +168,18 @@ impl ReversalOnlineAccumulator {
             run_duration_us: 0,
             band_entry_us: None,
             band_entry_iae_q: 0,
+            signed_position: 0,
+            peak_excursion_counts: 0,
         }
     }
 
     /// Re-arm the accumulator for a fresh leg targeting `target_rate_q` with a
     /// symmetric `band_q` half-width and a `dwell_us` sustained-residence
-    /// requirement. Clears every running counter.
+    /// requirement. Clears every running band-entry/IAE counter, but leaves
+    /// the peak-excursion tracking untouched: `reset` is called once per
+    /// capture (establish and reverse legs both call it), while the peak
+    /// spans both legs of one cycle. Use [`Self::reset_cycle_peak`] to clear
+    /// the peak between cycles.
     pub(crate) fn reset(&mut self, target_rate_q: i64, band_q: i64, dwell_us: u32) {
         self.target_rate_q = target_rate_q;
         self.lower_q = target_rate_q.saturating_sub(band_q);
@@ -186,6 +194,16 @@ impl ReversalOnlineAccumulator {
         self.band_entry_iae_q = 0;
     }
 
+    /// Clear the peak-excursion tracking for a new cycle. Separate from
+    /// [`Self::reset`], which runs once per capture (twice per cycle) and
+    /// must not disturb a peak that spans both the establish and reverse
+    /// legs.
+    #[allow(dead_code)]
+    pub(crate) fn reset_cycle_peak(&mut self) {
+        self.signed_position = 0;
+        self.peak_excursion_counts = 0;
+    }
+
     /// Fold one observation into the running band-entry and IAE state.
     ///
     /// Mirrors [`band_entry_time_us`]/[`recovery_iae_q`] exactly: band entry is
@@ -195,6 +213,10 @@ impl ReversalOnlineAccumulator {
     /// recorded, further observations are ignored so the IAE stays frozen at
     /// the transient it measured.
     pub(crate) fn observe(&mut self, delta_counts: i32, elapsed_us: u32) {
+        self.signed_position = self.signed_position.saturating_add(delta_counts);
+        self.peak_excursion_counts = self
+            .peak_excursion_counts
+            .max(self.signed_position.unsigned_abs());
         if self.band_entry_us.is_some() {
             return;
         }
@@ -231,6 +253,17 @@ impl ReversalOnlineAccumulator {
     /// [`Self::band_entry_us`] returns `Some`.
     pub(crate) fn recovery_iae_q(&self) -> i64 {
         self.band_entry_iae_q
+    }
+
+    /// Peak absolute local excursion (`|signed_position|`) observed since the
+    /// last [`Self::reset_cycle_peak`]. Spans the establish and reverse
+    /// captures of one cycle -- [`Self::reset`] runs once per capture and
+    /// does not clear it -- while the zero-target rest window between
+    /// cycles is excluded: its braking travel belongs to the settle
+    /// reserve, not the reversal transient this metric measures.
+    #[allow(dead_code)]
+    pub(crate) fn peak_excursion_counts(&self) -> u32 {
+        self.peak_excursion_counts
     }
 }
 
@@ -338,6 +371,15 @@ pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 
 /// either direction trips any gate.
 pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
     a | b
+}
+
+/// Stroke-relative overshoot, in counts: `peak_excursion` saturating-minus
+/// `stroke_counts`, `0` when the peak stayed within the per-primitive
+/// stroke allocation. Evidence-only -- no threshold gates this value.
+#[allow(dead_code)]
+pub(crate) fn overshoot_counts(peak_excursion: u32, stroke_counts: u32) -> u16 {
+    let overshoot = peak_excursion.saturating_sub(stroke_counts);
+    u16::try_from(overshoot).unwrap_or(u16::MAX)
 }
 
 #[cfg(test)]
@@ -511,5 +553,52 @@ mod tests {
     fn worse_of_ors_both_directions() {
         assert_eq!(worse_of(TRIP_TIME, TRIP_IAE), TRIP_TIME | TRIP_IAE);
         assert_eq!(worse_of(0, 0), 0);
+    }
+
+    #[test]
+    fn accumulator_tracks_peak_absolute_excursion() {
+        let mut online = ReversalOnlineAccumulator::new();
+        online.reset(0, 0, 0);
+        for _ in 0..5 {
+            online.observe(100, 1_000);
+        }
+        for _ in 0..2 {
+            online.observe(-30, 1_000);
+        }
+        assert_eq!(online.peak_excursion_counts(), 500);
+    }
+
+    #[test]
+    fn overshoot_is_zero_within_stroke_and_saturates_beyond() {
+        assert_eq!(overshoot_counts(11_990, 12_000), 0);
+        assert_eq!(overshoot_counts(12_018, 12_000), 18);
+        assert_eq!(overshoot_counts(u32::MAX, 0), u16::MAX);
+    }
+
+    #[test]
+    fn capture_reset_preserves_the_peak_across_legs() {
+        let mut online = ReversalOnlineAccumulator::new();
+        online.reset(0, 0, 0);
+        for _ in 0..5 {
+            online.observe(100, 1_000);
+        }
+        assert_eq!(online.peak_excursion_counts(), 500);
+        online.reset(0, 0, 0);
+        online.observe(-10, 1_000);
+        assert_eq!(online.peak_excursion_counts(), 500);
+    }
+
+    #[test]
+    fn reset_cycle_peak_clears_it() {
+        let mut online = ReversalOnlineAccumulator::new();
+        online.reset(0, 0, 0);
+        for _ in 0..5 {
+            online.observe(100, 1_000);
+        }
+        assert_eq!(online.peak_excursion_counts(), 500);
+        online.reset_cycle_peak();
+        assert_eq!(online.peak_excursion_counts(), 0);
+        online.observe(10, 1_000);
+        assert_eq!(online.peak_excursion_counts(), 10);
     }
 }
