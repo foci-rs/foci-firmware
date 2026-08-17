@@ -1917,6 +1917,86 @@ mod tests {
         }
     }
 
+    /// The tail arms of `apply_cycle_record` itself: `RetryTail` skips the wire
+    /// and holds the cursor, `RejectTail` fills the slot, advances the cursor,
+    /// latches the rejection, and still routes back into the same direction so
+    /// the run does not short-circuit. This is the cause-10 routing glue that no
+    /// real-motion test can reach today (a tail's reconvergence exceeds the
+    /// measurement budget), so it is driven at the record boundary directly.
+    #[test]
+    fn apply_cycle_record_tail_arms_skip_grace_then_latch_and_continue() {
+        const TAIL_MS: u32 = 700;
+        let tail = cycle_metrics(TAIL_MS);
+        let tail_wire = CycleWire {
+            reconvergence_ms: TAIL_MS as u16,
+            overshoot_counts: 3,
+            forward_settle_ms: 12,
+        };
+
+        let mut state = RobustnessReversalState::EstablishWriteGain;
+        let mut session = RobustnessReversalSession::new(test_point(), 7);
+        assert_eq!(session.direction, 0);
+        assert_eq!(session.cycle_cursor[0], 0);
+
+        // First tail -> RetryTail arm: the displaced tail is not written to a
+        // slot, the cursor stays put, and the ledger keeps it only for max.
+        apply_cycle_record(
+            &mut state,
+            &mut session,
+            CycleRecord::Conclusive(tail),
+            Some(tail_wire),
+        );
+        assert_eq!(state, RobustnessReversalState::EstablishWriteGain);
+        assert_eq!(session.direction, 0, "RetryTail retries the same direction");
+        assert_eq!(session.cycle_cursor[0], 0, "RetryTail does not advance");
+        assert_eq!(
+            session.cycle_wires[0][0], None,
+            "displaced tail is not filed"
+        );
+        assert_eq!(session.ledgers[0].valid_cycles(), 0);
+        assert!(!session.ledgers[0].tail_rejected());
+        assert!(
+            session.ledgers[0].max_reconvergence_ms() >= TAIL_MS as u16,
+            "the ledger still carries the displaced tail in max"
+        );
+
+        // Second tail -> RejectTail arm: fills slot 0, advances the cursor by
+        // one (mirroring the ledger), latches the rejection, and still routes
+        // back into direction 0 rather than short-circuiting to Assemble.
+        apply_cycle_record(
+            &mut state,
+            &mut session,
+            CycleRecord::Conclusive(tail),
+            Some(tail_wire),
+        );
+        assert_eq!(
+            state,
+            RobustnessReversalState::EstablishWriteGain,
+            "RejectTail continues the run, it does not short-circuit"
+        );
+        assert_eq!(session.direction, 0);
+        assert!(
+            session.ledgers[0].tail_rejected(),
+            "the second tail latches"
+        );
+        assert_eq!(session.cycle_cursor[0], 1, "RejectTail advances one slot");
+        assert_eq!(
+            session.cycle_wires[0][0],
+            Some(tail_wire),
+            "RejectTail files the second tail's wire"
+        );
+
+        // The mirrored cursor tracks the ledger's own slot fills exactly.
+        assert_eq!(session.ledgers[0].valid_cycles(), 1);
+        for slot in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
+            assert_eq!(
+                session.cycle_wires[0][slot].is_some(),
+                session.ledgers[0].cycles()[slot].is_some(),
+                "wire slot {slot} mirrors the ledger slot",
+            );
+        }
+    }
+
     /// A direction that exhausts its inconclusive budget and leaves two slots
     /// unfilled falls below the valid-cycle floor and reports inconclusive.
     #[test]

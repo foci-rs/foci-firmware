@@ -335,8 +335,8 @@ mod tests {
     /// in the encoder itself clamps a wider value. This instead proves the
     /// wire format round-trips a field already saturated to its type's
     /// boundary (`u16::MAX`/`u8::MAX`, as a saturating upstream conversion --
-    /// [`saturating_i64_to_i32`] for the off-terminal fields, or an
-    /// equivalent narrowing for the ledger's own ms fields -- would produce)
+    /// the ledger's own saturating i64-to-i32 clamp for the off-terminal
+    /// fields, or an equivalent narrowing for its ms fields -- would produce)
     /// without further truncation or corruption.
     #[test]
     fn encoder_saturates_out_of_range_values() {
