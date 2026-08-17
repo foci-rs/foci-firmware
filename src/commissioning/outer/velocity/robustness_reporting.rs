@@ -90,9 +90,9 @@ pub(crate) fn encode_robustness_terminal_reply(
 
 /// Bytes in the schema-2 per-cycle robustness-evidence payload: a 10-byte
 /// header (direction, schema revision, off-terminal residual/IAE medians
-/// for this direction) plus [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte
-/// cycle triples.
-pub(crate) const ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES: usize = 40;
+/// for this direction), [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte cycle
+/// triples, a 1-byte tail count, and one 6-byte displaced-tail triple.
+pub(crate) const ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES: usize = 47;
 
 /// Sentinel value marking an unfilled cycle slot's `u16` fields.
 const CYCLE_SLOT_UNFILLED: u16 = 0xFFFF;
@@ -113,9 +113,11 @@ pub(crate) struct CycleWire {
 /// Fixed 10-byte header (direction, schema revision, this direction's
 /// off-terminal residual/IAE medians) plus
 /// [`ROBUSTNESS_CYCLES_PER_DIRECTION`] cycle triples (reconvergence,
-/// overshoot, forward-settle), 6 bytes each, for
-/// [`ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES`] total. An unfilled cycle slot
-/// encodes all three fields as [`CYCLE_SLOT_UNFILLED`].
+/// overshoot, forward-settle), 6 bytes each; then this direction's tail
+/// count (1 byte) and its displaced (grace-retried) tail triple (6 bytes),
+/// for [`ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES`] total. An unfilled cycle
+/// slot and an absent displaced tail both encode all three `u16` fields as
+/// [`CYCLE_SLOT_UNFILLED`].
 pub(crate) fn encode_robustness_cycle_evidence(
     direction: u8,
     evidence: &RobustnessEvidence,
@@ -141,33 +143,33 @@ pub(crate) fn encode_robustness_cycle_evidence(
         &evidence.iae_medians_qs[index].to_le_bytes(),
     );
     for cycle in cycles {
-        match cycle {
-            Some(cycle) => {
-                push_reply(
-                    &mut bytes,
-                    &mut offset,
-                    &cycle.reconvergence_ms.to_le_bytes(),
-                );
-                push_reply(
-                    &mut bytes,
-                    &mut offset,
-                    &cycle.overshoot_counts.to_le_bytes(),
-                );
-                push_reply(
-                    &mut bytes,
-                    &mut offset,
-                    &cycle.forward_settle_ms.to_le_bytes(),
-                );
-            }
-            None => {
-                for _ in 0..3 {
-                    push_reply(&mut bytes, &mut offset, &CYCLE_SLOT_UNFILLED.to_le_bytes());
-                }
+        push_cycle_triple(&mut bytes, &mut offset, cycle);
+    }
+    push_reply(&mut bytes, &mut offset, &[evidence.tail_counts[index]]);
+    push_cycle_triple(&mut bytes, &mut offset, &evidence.displaced_tails[index]);
+    debug_assert_eq!(offset, ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES);
+    bytes
+}
+
+/// Encode one cycle triple: three `u16` fields when present, or three
+/// [`CYCLE_SLOT_UNFILLED`] sentinels when absent.
+fn push_cycle_triple<const N: usize>(
+    destination: &mut [u8; N],
+    offset: &mut usize,
+    cycle: &Option<CycleWire>,
+) {
+    match cycle {
+        Some(cycle) => {
+            push_reply(destination, offset, &cycle.reconvergence_ms.to_le_bytes());
+            push_reply(destination, offset, &cycle.overshoot_counts.to_le_bytes());
+            push_reply(destination, offset, &cycle.forward_settle_ms.to_le_bytes());
+        }
+        None => {
+            for _ in 0..3 {
+                push_reply(destination, offset, &CYCLE_SLOT_UNFILLED.to_le_bytes());
             }
         }
     }
-    debug_assert_eq!(offset, ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES);
-    bytes
 }
 
 fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, value: &[u8]) {
@@ -226,6 +228,9 @@ mod tests {
             residual_medians_q: [17, -17],
             iae_medians_qs: [9, -9],
             cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+            // Direction 0 grace-retried one tail; direction 1 had none.
+            tail_counts: [1, 0],
+            displaced_tails: [Some(cycle(700, 5, 40)), None],
         }
     }
 
@@ -243,6 +248,8 @@ mod tests {
                 residual_medians_q: [17, -17],
                 iae_medians_qs: [9, -9],
                 cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+                tail_counts: [0, 0],
+                displaced_tails: [None, None],
             },
             run_started_us: 10_000,
             run_completed_us: 90_000,
@@ -409,6 +416,10 @@ mod tests {
             0x78, 0x00, 0x02, 0x00, 0x3C, 0x00,
             // cycle 4: unfilled sentinel
             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            // tail_count = 1
+            0x01,
+            // displaced tail triple: reconvergence 700, overshoot 5, settle 40
+            0xBC, 0x02, 0x05, 0x00, 0x28, 0x00,
         ];
         assert_eq!(bytes, expected);
     }
@@ -431,7 +442,11 @@ mod tests {
             i32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]),
             evidence.iae_medians_qs[1]
         );
-        assert_eq!(&bytes[10..], &[0xFF_u8; 30][..]);
+        // 30 cycle-slot sentinel bytes, then the tail count (0), then the
+        // displaced-tail triple as a 6-byte sentinel (no grace tail).
+        assert_eq!(&bytes[10..40], &[0xFF_u8; 30][..]);
+        assert_eq!(bytes[40], 0);
+        assert_eq!(&bytes[41..], &[0xFF_u8; 6][..]);
     }
 
     #[test]

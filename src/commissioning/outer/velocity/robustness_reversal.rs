@@ -136,6 +136,10 @@ pub(crate) struct RobustnessReversalSession {
     peak_overshoot_counts: [u16; DIRECTION_COUNT],
     /// Per-cycle wire triples, mirroring each ledger's filled slots.
     cycle_wires: [[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
+    /// The grace-retried (displaced) tail cycle's wire triple, per direction.
+    /// It never fills a slot, so its overshoot and forward-settle would
+    /// otherwise be lost -- only its reconvergence survives, in the ledger max.
+    displaced_tail_wires: [Option<CycleWire>; DIRECTION_COUNT],
     /// Slot cursor mirroring each ledger's own cursor, so a filled wire lands
     /// in the same slot the ledger filled.
     cycle_cursor: [usize; DIRECTION_COUNT],
@@ -157,6 +161,7 @@ impl RobustnessReversalSession {
             ledgers: [CycleLedger::new(t_max_us), CycleLedger::new(t_max_us)],
             peak_overshoot_counts: [0; DIRECTION_COUNT],
             cycle_wires: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
+            displaced_tail_wires: [None; DIRECTION_COUNT],
             cycle_cursor: [0; DIRECTION_COUNT],
             pending_forward_settle_us: 0,
             pending_cycle: None,
@@ -966,6 +971,11 @@ fn record_cycle(
         session.cycle_wires[direction][cursor] = wire;
         // The mirrored cursor must land on the slot the ledger just filled.
         debug_assert!(session.ledgers[direction].cycles()[cursor].is_some());
+    } else if matches!(action, LedgerAction::RetryTail) {
+        // The grace-retried tail never fills a slot; keep its triple so the
+        // evidence reply can still report its overshoot and forward-settle,
+        // which the ledger max cannot recover.
+        session.displaced_tail_wires[direction] = wire;
     }
     if !matches!(
         action,
@@ -1131,6 +1141,11 @@ fn assembled_evidence(session: &RobustnessReversalSession) -> RobustnessEvidence
             session.ledgers[1].median_recovery_iae_qs(),
         ],
         cycles: session.cycle_wires,
+        tail_counts: [
+            session.ledgers[0].tail_count(),
+            session.ledgers[1].tail_count(),
+        ],
+        displaced_tails: session.displaced_tail_wires,
     }
 }
 
@@ -2011,6 +2026,11 @@ mod tests {
             session.cycle_wires[0][0], None,
             "displaced tail is not filed"
         );
+        assert_eq!(
+            session.displaced_tail_wires[0],
+            Some(tail_wire),
+            "the displaced tail's full triple (overshoot + settle) is retained"
+        );
         assert_eq!(session.ledgers[0].valid_cycles(), 0);
         assert!(!session.ledgers[0].tail_rejected());
         assert!(
@@ -2053,6 +2073,15 @@ mod tests {
                 "wire slot {slot} mirrors the ledger slot",
             );
         }
+
+        // The assembled evidence carries the tail count and the displaced
+        // tail's full triple for the reply, not just its reconvergence via max.
+        let evidence = assembled_evidence(&session);
+        assert_eq!(
+            evidence.tail_counts[0], 2,
+            "grace tail plus the latched tail"
+        );
+        assert_eq!(evidence.displaced_tails[0], Some(tail_wire));
     }
 
     /// A direction that exhausts its inconclusive budget and leaves two slots

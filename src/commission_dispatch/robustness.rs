@@ -212,6 +212,8 @@ fn zero_robustness_evidence() -> RobustnessEvidence {
         residual_medians_q: [0, 0],
         iae_medians_qs: [0, 0],
         cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+        tail_counts: [0, 0],
+        displaced_tails: [None, None],
     }
 }
 

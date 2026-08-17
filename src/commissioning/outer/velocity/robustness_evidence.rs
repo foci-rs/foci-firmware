@@ -60,6 +60,14 @@ pub struct RobustnessEvidence {
     /// not encoded into the compact 39-byte terminal. `pub(crate)` because
     /// [`CycleWire`] is a crate-internal wire type.
     pub(crate) cycles: [[Option<CycleWire>; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
+    /// Count of conclusive tail cycles per direction (grace-retried plus any
+    /// that latched the rejection). Off-terminal: carried by the per-cycle
+    /// evidence reply so the pinning campaign can see tail incidence.
+    pub tail_counts: [u8; 2],
+    /// The grace-retried (displaced) tail cycle's wire triple per direction, or
+    /// `None` when no grace tail occurred. Off-terminal: recovers the displaced
+    /// tail's overshoot and forward-settle, which no slot retains.
+    pub(crate) displaced_tails: [Option<CycleWire>; 2],
 }
 
 /// Derive the primary `ROBUSTNESS_CAUSE_*` from both directions' tripped
