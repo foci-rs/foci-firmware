@@ -758,19 +758,21 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Ok(ScoredRestPoll::Complete(confirmation)) => {
                     if confirmation.confirmed_rest {
                         safety.end_primitive();
-                        // The reversal leg stashed this cycle's measurement; the
-                        // rest has now confirmed, so record it into the ledger
-                        // and let the ledger route the next cycle or direction.
-                        let pending = session
-                            .pending_cycle
-                            .take()
-                            .expect("a confirmed rest always follows a measured cycle");
-                        apply_cycle_record(
-                            state,
-                            session,
-                            CycleRecord::Conclusive(pending.metrics),
-                            Some(pending.wire),
-                        );
+                        if let Some(pending) = session.pending_cycle.take() {
+                            // A conclusive cycle rested; record it into the
+                            // ledger now and route the next cycle or direction.
+                            apply_cycle_record(
+                                state,
+                                session,
+                                CycleRecord::Conclusive(pending.metrics),
+                                Some(pending.wire),
+                            );
+                        } else {
+                            // The rested cycle was a slot-consuming inconclusive
+                            // one, already recorded before the rest; perform the
+                            // held routing now that the loop has come to rest.
+                            route_after_consumed_slot(state, session);
+                        }
                         StepResult::ReadyNow
                     } else if retry_available {
                         // I4: a rejected rest re-opens one fresh bounded rest
@@ -913,37 +915,48 @@ fn advance_capture(
     }
 }
 
-/// Report an inconclusive cycle into the current direction's ledger and route
-/// on its decision. An inconclusive cycle never fills a slot; the ledger
-/// grants a bounded retry or advances past the permanently unfilled slot.
+/// Report an inconclusive cycle into the current direction's ledger and route.
 ///
-/// A retry re-enters at [`RobustnessReversalState::EstablishWriteGain`] so
-/// every attempt begins from a freshly confirmed establish settle with a
-/// cleared integrator, never from an unsettled leg.
+/// A granted retry (`RetryInconclusive`) re-enters the establish leg
+/// immediately, exactly as a retry did before any between-cycles rest existed.
+/// A slot-consuming outcome (`NextCycle`/`DirectionDone`) instead brings the
+/// machine to rest first: the probe just failed to converge, so the rest
+/// confirms the loop can still come to a stop -- and faults the run with the
+/// rest cause if it cannot -- before handing off to the next cycle or
+/// direction. The record happens here so the ledger can classify the outcome;
+/// the held routing runs from the rest-confirmed arm.
 fn retry_or_finalize_inconclusive(
     state: &mut RobustnessReversalState,
     session: &mut RobustnessReversalSession,
 ) {
-    apply_cycle_record(state, session, CycleRecord::Inconclusive, None);
+    match record_cycle(session, CycleRecord::Inconclusive, None) {
+        LedgerAction::RetryInconclusive => {
+            *state = RobustnessReversalState::EstablishWriteGain;
+        }
+        // NextCycle / DirectionDone consumed the slot; rest before the held
+        // routing. An inconclusive record never yields a tail action, so any
+        // other variant is treated as slot-consuming as a safe default.
+        _ => {
+            *state = RobustnessReversalState::ZeroCommand {
+                retry_available: true,
+            };
+        }
+    }
 }
 
 /// Fold one cycle record into the current direction's ledger, keep the
-/// session's slot cursor in lockstep with the ledger's, store the cycle's wire
-/// triple when a slot fills, and route the state machine on the returned
-/// [`LedgerAction`].
+/// session's slot cursor in lockstep with the ledger's, and store the cycle's
+/// wire triple when a slot fills. Returns the ledger's routing decision.
 ///
 /// `wire` is `Some` for a conclusive cycle, `None` for an inconclusive one. A
 /// retried cycle (an inconclusive retry or the first tail grace) neither fills
-/// a slot nor advances the cursor; every other action advances past the
-/// current slot, filling it only for a conclusive record. `RejectTail` latches
-/// the ledger's tail rejection but the run continues so both directions
-/// complete their cycles -- the verdict is applied at assembly.
-fn apply_cycle_record(
-    state: &mut RobustnessReversalState,
+/// a slot nor advances the cursor; every other action advances past the current
+/// slot, filling it only for a conclusive record.
+fn record_cycle(
     session: &mut RobustnessReversalSession,
     record: CycleRecord,
     wire: Option<CycleWire>,
-) {
+) -> LedgerAction {
     let direction = session.direction;
     let cursor = session.cycle_cursor[direction];
     let action = session.ledgers[direction].record(record);
@@ -960,9 +973,23 @@ fn apply_cycle_record(
     ) {
         session.cycle_cursor[direction] += 1;
     }
+    action
+}
+
+/// Route the state machine on a ledger action for a cycle that has already been
+/// recorded (and, for a slot-consuming action, already rested). `DirectionDone`
+/// advances to the next direction or to assembly; every other action re-enters
+/// the establish leg of the current direction. `RejectTail` latches the ledger
+/// rejection but keeps running so both directions complete their cycles -- the
+/// verdict is applied at assembly.
+fn route_action(
+    state: &mut RobustnessReversalState,
+    session: &mut RobustnessReversalSession,
+    action: LedgerAction,
+) {
     match action {
         LedgerAction::DirectionDone => {
-            if direction + 1 < DIRECTION_COUNT {
+            if session.direction + 1 < DIRECTION_COUNT {
                 session.direction += 1;
                 *state = RobustnessReversalState::EstablishWriteGain;
             } else {
@@ -976,6 +1003,33 @@ fn apply_cycle_record(
             *state = RobustnessReversalState::EstablishWriteGain;
         }
     }
+}
+
+/// Record a conclusive cycle and route immediately. The caller has already
+/// performed the between-cycles rest, so this does not enter another one.
+fn apply_cycle_record(
+    state: &mut RobustnessReversalState,
+    session: &mut RobustnessReversalSession,
+    record: CycleRecord,
+    wire: Option<CycleWire>,
+) {
+    let action = record_cycle(session, record, wire);
+    route_action(state, session, action);
+}
+
+/// Route a slot-consuming inconclusive cycle after its rest confirmed. The
+/// cursor already advanced when the slot was consumed, so its position selects
+/// between the next cycle and finishing the direction.
+fn route_after_consumed_slot(
+    state: &mut RobustnessReversalState,
+    session: &mut RobustnessReversalSession,
+) {
+    let action = if session.cycle_cursor[session.direction] >= ROBUSTNESS_CYCLES_PER_DIRECTION {
+        LedgerAction::DirectionDone
+    } else {
+        LedgerAction::NextCycle
+    };
+    route_action(state, session, action);
 }
 
 /// Open a fresh zero-target rest capture window without re-commanding the
@@ -2137,5 +2191,71 @@ mod tests {
             (peak - stroke) as u16,
             "the stroke-relative reference reports the real overshoot"
         );
+    }
+
+    /// A granted inconclusive retry routes straight back to the establish leg
+    /// with no rest, while the slot-consuming inconclusive that exhausts the
+    /// budget rests first (enters `ZeroCommand`) so the loop's ability to stop
+    /// is confirmed before the run moves on.
+    #[test]
+    fn inconclusive_retry_routes_immediately_but_slot_consume_rests() {
+        let mut state = RobustnessReversalState::EstablishWriteGain;
+        let mut session = RobustnessReversalSession::new(test_point(), 7);
+
+        for _ in 0..ROBUSTNESS_MAX_RETRIES {
+            retry_or_finalize_inconclusive(&mut state, &mut session);
+            assert_eq!(
+                state,
+                RobustnessReversalState::EstablishWriteGain,
+                "a granted retry re-enters establish with no rest"
+            );
+            assert_eq!(
+                session.cycle_cursor[0], 0,
+                "a granted retry does not consume a slot"
+            );
+        }
+
+        // The retry budget is now spent; the next inconclusive consumes the slot
+        // and must rest before the held routing.
+        retry_or_finalize_inconclusive(&mut state, &mut session);
+        assert!(
+            matches!(
+                state,
+                RobustnessReversalState::ZeroCommand {
+                    retry_available: true
+                }
+            ),
+            "an exhausted-inconclusive slot-consume rests before routing"
+        );
+        assert_eq!(
+            session.cycle_cursor[0], 1,
+            "the exhausted inconclusive consumed the slot"
+        );
+        assert_eq!(session.ledgers[0].valid_cycles(), 0);
+    }
+
+    /// A run whose probe never converges AND whose between-cycles rest never
+    /// settles faults with the dedicated rest cause -- not a soft Inconclusive.
+    /// This is the schema-1 fault check the ledger rework must preserve for the
+    /// exact misbehaving runs it exists to catch.
+    #[test]
+    fn exhausted_inconclusive_that_cannot_rest_faults_with_rest_cause() {
+        let mut jitter_high = false;
+        let (terminal, _backend, _session) =
+            drive_scripted(test_point(), move |phase, _tick, target| match phase {
+                // The reversal never enters the band: inconclusive cycles.
+                CapturePhase::Reverse => {
+                    jitter_high = !jitter_high;
+                    if jitter_high { 300 } else { -300 }
+                }
+                // The between-cycles rest never settles: sustained drift.
+                CapturePhase::Zero => 8,
+                // The establish leg converges cleanly.
+                _ => target.signum() * STEADY_DELTA,
+            });
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
+        assert!(terminal.safety_fault.is_none());
     }
 }
