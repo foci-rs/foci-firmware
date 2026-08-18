@@ -126,6 +126,10 @@ pub fn failed_robustness_terminal(
         selected_p: 0,
         selected_i: 0,
         target_velocity_rpm: 0,
+        // No accepted point exists on this rejection path, so no plant
+        // response was ever identified to construct a threshold from.
+        plant_rate_q: 0,
+        iae_max_q: 0,
         evidence: zero_robustness_evidence(),
         run_started_us: 0,
         run_completed_us: 0,
@@ -259,6 +263,8 @@ mod tests {
             selected_p: point.selected_p,
             selected_i: point.selected_i,
             target_velocity_rpm: point.target_velocity_rpm,
+            plant_rate_q: 60_000,
+            iae_max_q: 120_000_000_000,
             evidence: zero_robustness_evidence(),
             run_started_us: 10,
             run_completed_us: 20,

@@ -4277,6 +4277,8 @@ mod tests {
             selected_p: 800,
             selected_i: 400,
             target_velocity_rpm: 120,
+            plant_rate_q: 60_000,
+            iae_max_q: 120_000_000_000,
             evidence: RobustnessEvidence {
                 directions: [direction, direction],
                 residual_medians_q: [17, 17],
@@ -4360,6 +4362,8 @@ mod tests {
             selected_p: 350,
             selected_i: 1_280,
             target_velocity_rpm: 322,
+            plant_rate_q: 0,
+            iae_max_q: 0,
             evidence: RobustnessEvidence {
                 directions: [direction, direction],
                 residual_medians_q: [0, 0],

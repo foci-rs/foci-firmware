@@ -11,34 +11,48 @@ use crate::commissioning::types::RobustnessReversalTerminal;
 /// [`RobustnessReversalTerminal::schema_revision`](crate::commissioning::types::RobustnessReversalTerminal::schema_revision)
 /// stay `u16` so schema comparisons elsewhere (the detailed reply, host
 /// tooling) do not need a second, narrower type.
-pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 2;
+pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 3;
 
-/// Bytes in the compact schema-2 robustness-terminal reply payload: a
-/// 15-byte header plus 12 bytes per reversal direction (two directions).
-pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 39;
+/// Bytes in the compact schema-3 robustness-terminal reply payload: a
+/// 15-byte header, 12 bytes per reversal direction (two directions), and a
+/// 12-byte run-level tail carrying the gate's constructed `plant_rate_q`
+/// (i64) and `iae_max_q` (i32, scaled to rate-Q seconds).
+pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 51;
 
 /// Scale factor from wire IAE encoding to internal microseconds.
 ///
-/// The `RobustnessEvidence.iae_medians_qs` wire field reports recovery IAE in
-/// rate-Q seconds; the internal `recovery_iae_q` gate comparison uses rate-Q
-/// microseconds. The median encoding converts internal microseconds to seconds
-/// via division by this factor with no additional scaling; the coefficient
+/// The `RobustnessEvidence.iae_medians_qs` wire field and the terminal's
+/// `iae_max_q` tail field both report IAE quantities in rate-Q seconds; the
+/// internal `recovery_iae_q`/`iae_max_q` gate comparison uses rate-Q
+/// microseconds. Both encodings convert internal microseconds to seconds via
+/// division by this factor with no additional scaling; the coefficient
 /// calibration multiplies by this factor to restore the internal unit. This
 /// constant guards the load-bearing 1e6 factor against drift.
-#[allow(dead_code)]
 pub const IAE_WIRE_TO_INTERNAL_US_PER_S: i64 = 1_000_000;
+
+/// Saturating `i64 -> i32` clamp; never panics on out-of-range magnitudes.
+/// Mirrors `robustness_cycles::saturating_i64_to_i32`.
+fn saturating_i64_to_i32(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
+}
 
 /// Encode the compact robustness-terminal ordinary reply payload.
 ///
 /// Fixed 15-byte header (schema revision, run sequence, outcome, cause,
-/// selected gains, target velocity) plus 12 bytes per reversal direction
+/// selected gains, target velocity), 12 bytes per reversal direction
 /// (median/max reconvergence, median forward-settle, overshoot-peak count,
-/// valid-cycle/trip/retry counts, inconclusive flag), for 39 bytes total.
+/// valid-cycle/trip/retry counts, inconclusive flag), then a run-level
+/// 12-byte tail carrying the gate's constructed `plant_rate_q` (i64, rate-Q
+/// units, unscaled) and `iae_max_q` (i32, scaled to rate-Q seconds by
+/// [`IAE_WIRE_TO_INTERNAL_US_PER_S`] -- the same scaling `iae_medians_qs`
+/// already uses, so the two compare directly once both are on the host),
+/// for [`ROBUSTNESS_TERMINAL_REPLY_BYTES`] bytes total.
 ///
 /// `residual_medians_q` and `iae_medians_qs` are deliberately absent from
 /// this encoding: they live off-terminal and are carried by the detailed
 /// reply instead, keeping the ordinary terminal inside the single-frame
-/// data budget.
+/// data budget. `plant_rate_q`/`iae_max_q` are run-level (identical for both
+/// directions), so they ride the terminal instead.
 pub(crate) fn encode_robustness_terminal_reply(
     terminal: &RobustnessReversalTerminal,
 ) -> [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] {
@@ -95,6 +109,13 @@ pub(crate) fn encode_robustness_terminal_reply(
             ],
         );
     }
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &terminal.plant_rate_q.to_le_bytes(),
+    );
+    let iae_max_q_qs = saturating_i64_to_i32(terminal.iae_max_q / IAE_WIRE_TO_INTERNAL_US_PER_S);
+    push_reply(&mut bytes, &mut offset, &iae_max_q_qs.to_le_bytes());
     debug_assert_eq!(offset, ROBUSTNESS_TERMINAL_REPLY_BYTES);
     bytes
 }
@@ -254,6 +275,8 @@ mod tests {
             selected_p: 1_024,
             selected_i: 512,
             target_velocity_rpm: -1_500,
+            plant_rate_q: 60_000,
+            iae_max_q: 120_000_000_000,
             evidence: RobustnessEvidence {
                 directions: [direction_a(), direction_b()],
                 residual_medians_q: [17, -17],
@@ -272,12 +295,12 @@ mod tests {
     fn encode_robustness_terminal_reply_is_stable_and_within_wire_budget() {
         let terminal = terminal();
         let bytes = encode_robustness_terminal_reply(&terminal);
-        assert_eq!(bytes.len(), 39);
+        assert_eq!(bytes.len(), ROBUSTNESS_TERMINAL_REPLY_BYTES);
 
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] = [
             // schema_revision (wire u8)
-            0x02,
+            0x03,
             // run_sequence (u32 LE)
             0x44, 0x33, 0x22, 0x11,
             // outcome, cause
@@ -294,6 +317,10 @@ mod tests {
             0xD0, 0x07, 0xC4, 0x09, 0xC2, 0x01, 0x03, 0x00,
             // direction 1: valid_cycles, trip_count, retry_count, inconclusive
             0x04, 0x01, 0x02, 0x01,
+            // plant_rate_q (i64 LE) = 60_000
+            0x60, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // iae_max_q scaled to rate-Q seconds (i32 LE) = 120_000_000_000 / 1e6 = 120_000
+            0xC0, 0xD4, 0x01, 0x00,
         ];
         assert_eq!(bytes, expected);
 
@@ -342,6 +369,37 @@ mod tests {
             assert_eq!(bytes[base + 11], u8::from(direction.inconclusive));
         }
         // residual_medians_q / iae_medians_qs are off-terminal: not encoded.
+
+        assert_eq!(
+            i64::from_le_bytes(bytes[39..47].try_into().unwrap()),
+            terminal.plant_rate_q
+        );
+        assert_eq!(
+            i32::from_le_bytes(bytes[47..51].try_into().unwrap()),
+            i32::try_from(terminal.iae_max_q / IAE_WIRE_TO_INTERNAL_US_PER_S).unwrap()
+        );
+    }
+
+    /// `plant_rate_q` and `iae_max_q` round-trip through the wire encoding:
+    /// `plant_rate_q` unchanged, `iae_max_q` scaled to rate-Q seconds by the
+    /// same [`IAE_WIRE_TO_INTERNAL_US_PER_S`] factor the per-cycle IAE medians
+    /// already use, so a host reading both fields back can compare them
+    /// directly in the same unit.
+    #[test]
+    fn plant_rate_and_iae_max_round_trip_through_the_wire() {
+        let mut terminal = terminal();
+        terminal.plant_rate_q = 4_200_000;
+        terminal.iae_max_q = 8_400_000_000_000;
+
+        let bytes = encode_robustness_terminal_reply(&terminal);
+
+        let decoded_plant_rate_q = i64::from_le_bytes(bytes[39..47].try_into().unwrap());
+        let decoded_iae_max_q_qs = i32::from_le_bytes(bytes[47..51].try_into().unwrap());
+        assert_eq!(decoded_plant_rate_q, terminal.plant_rate_q);
+        assert_eq!(
+            i64::from(decoded_iae_max_q_qs) * IAE_WIRE_TO_INTERNAL_US_PER_S,
+            terminal.iae_max_q
+        );
     }
 
     #[test]
@@ -412,7 +470,7 @@ mod tests {
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES] = [
             // direction, schema
-            0x00, 0x02,
+            0x00, 0x03,
             // residual_median_q (i32 LE) = 17
             0x11, 0x00, 0x00, 0x00,
             // iae_median_qs (i32 LE) = 9

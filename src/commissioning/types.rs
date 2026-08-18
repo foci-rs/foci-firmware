@@ -936,6 +936,15 @@ pub struct RobustnessReversalTerminal {
     pub selected_i: u16,
     /// Signed target velocity used for the probe, in RPM.
     pub target_velocity_rpm: i32,
+    /// The plant-adaptive rate this run's gate thresholds were constructed
+    /// from (see `reduce_plant_rate_q`), in rate-Q units. Diagnostic-only:
+    /// not consumed by gate comparison logic, carried so an on-target
+    /// calibration pass can read back what the gate actually used.
+    pub plant_rate_q: i64,
+    /// The constructed IAE gate threshold for this run (see
+    /// `robustness_thresholds_for`), in rate-Q microseconds. Diagnostic-only,
+    /// same rationale as `plant_rate_q`.
+    pub iae_max_q: i64,
     /// Both reversal directions' measured robustness evidence.
     pub evidence: crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence,
     /// Monotonic timestamp before the first probe motion.

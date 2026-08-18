@@ -47,8 +47,8 @@ use super::robustness_cycles::{
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
     ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
-    ROBUSTNESS_THRESHOLDS, ReversalMetrics, ReversalOnlineAccumulator, overshoot_counts,
-    reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
+    ROBUSTNESS_THRESHOLDS, ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds,
+    overshoot_counts, reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -1089,6 +1089,23 @@ fn to_ms_saturating(value_us: u32) -> u16 {
     u16::try_from(ms).unwrap_or(u16::MAX)
 }
 
+/// Construct this run's plant-adaptive `(plant_rate_q, thresholds)` pair from
+/// the accepted point's identified settled-rate response, shared by the gate
+/// comparison ([`median_tripped`]) and terminal diagnostic reporting so the
+/// reported `plant_rate_q`/`iae_max_q` can never drift from what the gate
+/// actually compared against.
+fn constructed_thresholds(
+    point: &AcceptancePoint,
+    counts_per_rev: u32,
+) -> (i64, RobustnessThresholds) {
+    let plant_rate_q = reduce_plant_rate_q(&point.selected_response_intervals_q);
+    let target = target_rate_q(amplitude_rpm(point), counts_per_rev);
+    (
+        plant_rate_q,
+        robustness_thresholds_for(plant_rate_q, target),
+    )
+}
+
 /// Tripped-threshold bitmask for one direction's median metrics.
 ///
 /// Builds a synthetic [`ReversalMetrics`] from the ledger's per-direction
@@ -1106,9 +1123,7 @@ fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev:
         forward_settle_time_us: u32::from(ledger.median_forward_settle_ms()).saturating_mul(1_000),
         reconvergence_ratio_ppm: 0,
     };
-    let plant_rate_q = reduce_plant_rate_q(&point.selected_response_intervals_q);
-    let target = target_rate_q(amplitude_rpm(point), counts_per_rev);
-    let thresholds = robustness_thresholds_for(plant_rate_q, target);
+    let (_, thresholds) = constructed_thresholds(point, counts_per_rev);
     tripped_mask(&median_metrics, &thresholds)
 }
 
@@ -1185,6 +1200,7 @@ fn complete_terminal<B: CommissioningBackend>(
     let evidence = assembled_evidence(session, counts_per_rev);
     let tripped_a = median_tripped(&session.ledgers[0], &session.point, counts_per_rev);
     let tripped_b = median_tripped(&session.ledgers[1], &session.point, counts_per_rev);
+    let (plant_rate_q, thresholds) = constructed_thresholds(&session.point, counts_per_rev);
     let inconclusive_a = !session.ledgers[0].meets_floor();
     let inconclusive_b = !session.ledgers[1].meets_floor();
     // A latched tail rejection means exactly the second (or later) conclusive
@@ -1219,6 +1235,8 @@ fn complete_terminal<B: CommissioningBackend>(
         selected_p: session.point.selected_p,
         selected_i: session.point.selected_i,
         target_velocity_rpm: session.point.target_velocity_rpm,
+        plant_rate_q,
+        iae_max_q: thresholds.iae_max_q,
         evidence,
         run_started_us: session.run_started_us,
         run_completed_us: backend.elapsed_us(),
@@ -1234,6 +1252,7 @@ fn failed_terminal<B: CommissioningBackend>(
     safety_fault: Option<OuterSafetyFault>,
     counts_per_rev: u32,
 ) -> StepResult {
+    let (plant_rate_q, thresholds) = constructed_thresholds(&session.point, counts_per_rev);
     StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
         schema_revision: ROBUSTNESS_SCHEMA_REVISION,
         run_sequence: session.run_sequence,
@@ -1242,6 +1261,8 @@ fn failed_terminal<B: CommissioningBackend>(
         selected_p: session.point.selected_p,
         selected_i: session.point.selected_i,
         target_velocity_rpm: session.point.target_velocity_rpm,
+        plant_rate_q,
+        iae_max_q: thresholds.iae_max_q,
         evidence: assembled_evidence(session, counts_per_rev),
         run_started_us: session.run_started_us,
         run_completed_us: backend.elapsed_us(),
@@ -1321,6 +1342,8 @@ pub(crate) fn robustness_reversal_fault_terminal(
     } else {
         ROBUSTNESS_CAUSE_INTERNAL_FAULT
     };
+    let (plant_rate_q, thresholds) =
+        constructed_thresholds(&session.point, safety.counts_per_rev());
     StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
         schema_revision: ROBUSTNESS_SCHEMA_REVISION,
         run_sequence: session.run_sequence,
@@ -1329,6 +1352,8 @@ pub(crate) fn robustness_reversal_fault_terminal(
         selected_p: session.point.selected_p,
         selected_i: session.point.selected_i,
         target_velocity_rpm: session.point.target_velocity_rpm,
+        plant_rate_q,
+        iae_max_q: thresholds.iae_max_q,
         evidence: assembled_evidence(session, safety.counts_per_rev()),
         run_started_us: session.run_started_us,
         run_completed_us: session.run_started_us,
