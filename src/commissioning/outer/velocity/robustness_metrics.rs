@@ -389,7 +389,6 @@ pub(crate) const ROBUSTNESS_LEGS_PER_CYCLE: u32 = 4;
 /// (a documented small fraction of target, ~0.4%) fails open to
 /// [`ROBUSTNESS_IAE_SEED_MAX_Q`] instead of scaling the coefficient down
 /// toward a reject-everything threshold.
-#[allow(dead_code)]
 pub(crate) const PLANT_RATE_DEGENERATE_MIN_DIVISOR: i64 = 256;
 
 /// The retired loose IAE seed (see [`ROBUSTNESS_THRESHOLDS`]'s doc comment
@@ -397,7 +396,6 @@ pub(crate) const PLANT_RATE_DEGENERATE_MIN_DIVISOR: i64 = 256;
 /// value and the dormant-equivalent anchor that
 /// [`ROBUSTNESS_IAE_COEFF_NUM`]/[`ROBUSTNESS_IAE_COEFF_DEN`] are calibrated
 /// against.
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_IAE_SEED_MAX_Q: i64 = 23_466_666_000_000;
 
 /// Placeholder calibration coefficient (numerator) for
@@ -416,18 +414,15 @@ pub(crate) const ROBUSTNESS_IAE_SEED_MAX_Q: i64 = 23_466_666_000_000;
 /// loosen its own gate by degrading its measured response. See
 /// [`RobustnessThresholds`]'s doc comment for the same invariant on the
 /// thresholds this coefficient feeds.
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_IAE_COEFF_NUM: i64 = 4;
 /// Placeholder calibration coefficient (denominator). See
 /// [`ROBUSTNESS_IAE_COEFF_NUM`].
-#[allow(dead_code)]
 pub(crate) const ROBUSTNESS_IAE_COEFF_DEN: i64 = 1;
 
 /// Reduce the two reversal-direction response intervals from the accepted
 /// point's identified settled-rate response into one worse-of plant rate,
 /// in rate-Q units: per direction `max(|low|, |high|)`, pooled across the
 /// two directions with worse-of `max`.
-#[allow(dead_code)]
 pub(crate) fn reduce_plant_rate_q(intervals: &[[i32; 2]; 2]) -> i64 {
     let dir0 = intervals[0][0]
         .unsigned_abs()
@@ -447,7 +442,6 @@ pub(crate) fn reduce_plant_rate_q(intervals: &[[i32; 2]; 2]) -> i64 {
 /// Candidate-independence invariant: `plant_rate_q` must derive from
 /// breakaway plant identification, never a candidate's own measurement --
 /// see [`ROBUSTNESS_IAE_COEFF_NUM`].
-#[allow(dead_code)]
 pub(crate) fn robustness_thresholds_for(
     plant_rate_q: i64,
     target_rate_q: i64,

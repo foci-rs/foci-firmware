@@ -48,7 +48,7 @@ use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence,
 use super::robustness_metrics::{
     ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
     ROBUSTNESS_THRESHOLDS, ReversalMetrics, ReversalOnlineAccumulator, overshoot_counts,
-    tripped_mask,
+    reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -409,14 +409,15 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
     safety: &mut OuterSafetyLimits,
     backend: &mut B,
 ) -> StepResult {
+    let counts_per_rev = safety.counts_per_rev();
     match *state {
         RobustnessReversalState::Setup => {
             let baseline = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
-                Err(_) => return fault_terminal(session, backend, None),
+                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
             };
             if safety.set_encoder_baseline(baseline).is_err() {
-                return fault_terminal(session, backend, None);
+                return fault_terminal(session, backend, None, counts_per_rev);
             }
             // Arm the shared outer-safety envelope check for the ticks that
             // follow: `check_outer_safety` returns early while `torque_cap == 0`,
@@ -425,7 +426,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             safety.torque_cap = u16::from(backend.current_limit());
             let now_us = backend.elapsed_us();
             if safety.arm_safety_observation(now_us).is_err() {
-                return fault_terminal(session, backend, None);
+                return fault_terminal(session, backend, None, counts_per_rev);
             }
             session.run_started_us = now_us;
             workspace.previous_encoder_raw = baseline;
@@ -439,7 +440,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             workspace.capture.reset_cycle_peak();
             let (p, i) = match accepted_gains(&session.point) {
                 Ok(pair) => pair,
-                Err(_) => return fault_terminal(session, backend, None),
+                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
             };
             if backend
                 .write_register(
@@ -454,7 +455,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     .is_err()
                 || clear_velocity_integrator(backend).await.is_err()
             {
-                return fault_terminal(session, backend, None);
+                return fault_terminal(session, backend, None, counts_per_rev);
             }
             *state = RobustnessReversalState::EstablishCommandTarget;
             StepResult::ReadyNow
@@ -484,7 +485,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let (read_us, elapsed_us, delta) = match observe_tick(workspace, safety, backend).await
             {
                 Ok(sample) => sample,
-                Err(fault) => return tick_fault_terminal(session, backend, fault),
+                Err(fault) => return tick_fault_terminal(session, backend, fault, counts_per_rev),
             };
             let advance = advance_capture(
                 &mut workspace.capture,
@@ -515,7 +516,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 CaptureAdvance::Converged => {
                     workspace.analysis.reset();
                     let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                        return fault_terminal(session, backend, None);
+                        return fault_terminal(session, backend, None, counts_per_rev);
                     };
                     *state = RobustnessReversalState::EstablishAnalyze {
                         analysis_deadline_us,
@@ -534,7 +535,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             analysis_deadline_us,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
-                return fault_terminal(session, backend, None);
+                return fault_terminal(session, backend, None, counts_per_rev);
             }
             let poll = poll_stationarity(
                 &mut workspace.analysis,
@@ -544,7 +545,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let stationarity = match poll {
                 Ok(None) => return StepResult::ReadyNow,
                 Ok(Some((result, _, _))) => result,
-                Err(_) => return fault_terminal(session, backend, None),
+                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
             };
             match stationarity {
                 // I3: the establish leg must confirm a Usable settle before the
@@ -586,7 +587,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let (read_us, elapsed_us, delta) = match observe_tick(workspace, safety, backend).await
             {
                 Ok(sample) => sample,
-                Err(fault) => return tick_fault_terminal(session, backend, fault),
+                Err(fault) => return tick_fault_terminal(session, backend, fault, counts_per_rev),
             };
             match advance_capture(
                 &mut workspace.capture,
@@ -611,7 +612,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 CaptureAdvance::Converged => {
                     workspace.analysis.reset();
                     let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                        return fault_terminal(session, backend, None);
+                        return fault_terminal(session, backend, None, counts_per_rev);
                     };
                     *state = RobustnessReversalState::ReverseAnalyze {
                         analysis_deadline_us,
@@ -630,7 +631,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             analysis_deadline_us,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
-                return fault_terminal(session, backend, None);
+                return fault_terminal(session, backend, None, counts_per_rev);
             }
             let poll = poll_stationarity(
                 &mut workspace.analysis,
@@ -640,7 +641,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let stationarity = match poll {
                 Ok(None) => return StepResult::ReadyNow,
                 Ok(Some((result, _, _))) => result,
-                Err(_) => return fault_terminal(session, backend, None),
+                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
             };
             let direction = session.direction;
             match stationarity {
@@ -659,7 +660,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         suffix: &suffix,
                     }) {
                         Ok(metrics) => metrics,
-                        Err(_) => return fault_terminal(session, backend, None),
+                        Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
                     };
                     // Overshoot spans this cycle's establish and reverse legs
                     // (reset at EstablishWriteGain); fold it into the direction's
@@ -701,10 +702,10 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 .await
                 .is_err()
             {
-                return fault_terminal(session, backend, None);
+                return fault_terminal(session, backend, None, counts_per_rev);
             }
             safety.enter_settle_phase();
-            match open_zero_window(session, workspace, backend).await {
+            match open_zero_window(session, workspace, backend, counts_per_rev).await {
                 Ok((next_sample_us, deadline_us)) => {
                     *state = RobustnessReversalState::ZeroCapture {
                         next_sample_us,
@@ -726,11 +727,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             }
             let read_us = match observe_tick(workspace, safety, backend).await {
                 Ok((read_us, _, _)) => read_us,
-                Err(fault) => return tick_fault_terminal(session, backend, fault),
+                Err(fault) => return tick_fault_terminal(session, backend, fault, counts_per_rev),
             };
             if read_us >= deadline_us {
                 let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                    return fault_terminal(session, backend, None);
+                    return fault_terminal(session, backend, None, counts_per_rev);
                 };
                 *state = RobustnessReversalState::ZeroAnalyze {
                     analysis_deadline_us,
@@ -752,7 +753,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             retry_available,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
-                return fault_terminal(session, backend, None);
+                return fault_terminal(session, backend, None, counts_per_rev);
             }
             match poll_scored_rest_confirmation(
                 &mut workspace.analysis,
@@ -784,7 +785,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         // window before faulting (integral_plan.rs precedent);
                         // it neither silently proceeds nor immediately kills the
                         // run.
-                        match open_zero_window(session, workspace, backend).await {
+                        match open_zero_window(session, workspace, backend, counts_per_rev).await {
                             Ok((next_sample_us, deadline_us)) => {
                                 *state = RobustnessReversalState::ZeroCapture {
                                     next_sample_us,
@@ -800,15 +801,15 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         // one bounded re-open. This is a specific, operator-
                         // actionable condition, not the generic internal-fault
                         // bucket, so it gets its own cause.
-                        rest_not_confirmed_terminal(session, backend)
+                        rest_not_confirmed_terminal(session, backend, counts_per_rev)
                     }
                 }
-                Err(_) => fault_terminal(session, backend, None),
+                Err(_) => fault_terminal(session, backend, None, counts_per_rev),
             }
         }
         RobustnessReversalState::Assemble => {
             *state = RobustnessReversalState::Done;
-            complete_terminal(session, backend)
+            complete_terminal(session, backend, counts_per_rev)
         }
         RobustnessReversalState::Done => StepResult::ReadyNow,
     }
@@ -830,9 +831,10 @@ async fn begin_capture<B: CommissioningBackend>(
     signed_target_rpm: i32,
     open_primitive: bool,
 ) -> Result<(u64, u64), StepResult> {
+    let counts_per_rev = safety.counts_per_rev();
     let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
         Ok(value) => value,
-        Err(_) => return Err(fault_terminal(session, backend, None)),
+        Err(_) => return Err(fault_terminal(session, backend, None, counts_per_rev)),
     };
     let baseline_us = backend.elapsed_us();
     if backend
@@ -840,7 +842,7 @@ async fn begin_capture<B: CommissioningBackend>(
         .await
         .is_err()
     {
-        return Err(fault_terminal(session, backend, None));
+        return Err(fault_terminal(session, backend, None, counts_per_rev));
     }
     if open_primitive {
         // The establish entry opens the bounded primitive; a retry re-opens after
@@ -848,12 +850,12 @@ async fn begin_capture<B: CommissioningBackend>(
         // never re-opens it.
         safety.end_primitive();
         if safety.begin_primitive(baseline_us).is_err() {
-            return Err(fault_terminal(session, backend, None));
+            return Err(fault_terminal(session, backend, None, counts_per_rev));
         }
     }
     workspace.observations.clear();
     workspace.analysis.reset();
-    let target_rate = target_rate_q(signed_target_rpm, safety.counts_per_rev());
+    let target_rate = target_rate_q(signed_target_rpm, counts_per_rev);
     let band = band_q_for(target_rate);
     workspace
         .capture
@@ -861,12 +863,12 @@ async fn begin_capture<B: CommissioningBackend>(
     workspace.previous_encoder_raw = baseline;
     workspace.previous_read_us = baseline_us;
     let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
-        return Err(fault_terminal(session, backend, None));
+        return Err(fault_terminal(session, backend, None, counts_per_rev));
     };
     let Some(budget_deadline_us) =
         baseline_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
     else {
-        return Err(fault_terminal(session, backend, None));
+        return Err(fault_terminal(session, backend, None, counts_per_rev));
     };
     Ok((next_sample_us, budget_deadline_us))
 }
@@ -1048,10 +1050,11 @@ async fn open_zero_window<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     workspace: &mut RobustnessReversalWorkspace,
     backend: &mut B,
+    counts_per_rev: u32,
 ) -> Result<(u64, u64), StepResult> {
     let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
         Ok(value) => value,
-        Err(_) => return Err(fault_terminal(session, backend, None)),
+        Err(_) => return Err(fault_terminal(session, backend, None, counts_per_rev)),
     };
     let baseline_us = backend.elapsed_us();
     workspace.observations.clear();
@@ -1059,11 +1062,11 @@ async fn open_zero_window<B: CommissioningBackend>(
     workspace.previous_encoder_raw = baseline;
     workspace.previous_read_us = baseline_us;
     let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
-        return Err(fault_terminal(session, backend, None));
+        return Err(fault_terminal(session, backend, None, counts_per_rev));
     };
     let Some(deadline_us) = baseline_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
     else {
-        return Err(fault_terminal(session, backend, None));
+        return Err(fault_terminal(session, backend, None, counts_per_rev));
     };
     Ok((next_sample_us, deadline_us))
 }
@@ -1091,10 +1094,11 @@ fn to_ms_saturating(value_us: u32) -> u16 {
 /// Builds a synthetic [`ReversalMetrics`] from the ledger's per-direction
 /// medians in the units [`tripped_mask`] expects (reconvergence and
 /// forward-settle in microseconds, IAE back in rate-Q microseconds from the
-/// ledger's rate-Q-seconds median) and gates it against
-/// [`ROBUSTNESS_THRESHOLDS`]. An empty ledger yields all-zero medians, which
-/// trip nothing.
-fn median_tripped(ledger: &CycleLedger) -> u8 {
+/// ledger's rate-Q-seconds median) and gates it against thresholds built from
+/// the accepted point's own identified plant response
+/// ([`robustness_thresholds_for`]), rather than a candidate-independent
+/// const. An empty ledger yields all-zero medians, which trip nothing.
+fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev: u32) -> u8 {
     let median_metrics = ReversalMetrics {
         reconvergence_time_us: u32::from(ledger.median_reconvergence_ms()).saturating_mul(1_000),
         settled_residual_q: i64::from(ledger.median_settled_residual_q()),
@@ -1102,7 +1106,10 @@ fn median_tripped(ledger: &CycleLedger) -> u8 {
         forward_settle_time_us: u32::from(ledger.median_forward_settle_ms()).saturating_mul(1_000),
         reconvergence_ratio_ppm: 0,
     };
-    tripped_mask(&median_metrics, &ROBUSTNESS_THRESHOLDS)
+    let plant_rate_q = reduce_plant_rate_q(&point.selected_response_intervals_q);
+    let target = target_rate_q(amplitude_rpm(point), counts_per_rev);
+    let thresholds = robustness_thresholds_for(plant_rate_q, target);
+    tripped_mask(&median_metrics, &thresholds)
 }
 
 /// Reduce one direction's ledger into its schema-2 wire summary. `trip_count`
@@ -1111,8 +1118,10 @@ fn median_tripped(ledger: &CycleLedger) -> u8 {
 fn direction_summary(
     ledger: &CycleLedger,
     peak_overshoot_counts: u16,
+    point: &AcceptancePoint,
+    counts_per_rev: u32,
 ) -> RobustnessDirectionSummary {
-    let tripped = median_tripped(ledger);
+    let tripped = median_tripped(ledger, point, counts_per_rev);
     RobustnessDirectionSummary {
         median_reconvergence_ms: ledger.median_reconvergence_ms(),
         max_reconvergence_ms: ledger.max_reconvergence_ms(),
@@ -1126,11 +1135,24 @@ fn direction_summary(
 }
 
 /// Reduce both directions' ledgers into the schema-2 wire evidence.
-fn assembled_evidence(session: &RobustnessReversalSession) -> RobustnessEvidence {
+fn assembled_evidence(
+    session: &RobustnessReversalSession,
+    counts_per_rev: u32,
+) -> RobustnessEvidence {
     RobustnessEvidence {
         directions: [
-            direction_summary(&session.ledgers[0], session.peak_overshoot_counts[0]),
-            direction_summary(&session.ledgers[1], session.peak_overshoot_counts[1]),
+            direction_summary(
+                &session.ledgers[0],
+                session.peak_overshoot_counts[0],
+                &session.point,
+                counts_per_rev,
+            ),
+            direction_summary(
+                &session.ledgers[1],
+                session.peak_overshoot_counts[1],
+                &session.point,
+                counts_per_rev,
+            ),
         ],
         residual_medians_q: [
             session.ledgers[0].median_settled_residual_q(),
@@ -1158,10 +1180,11 @@ fn assembled_evidence(session: &RobustnessReversalSession) -> RobustnessEvidence
 fn complete_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
+    counts_per_rev: u32,
 ) -> StepResult {
-    let evidence = assembled_evidence(session);
-    let tripped_a = median_tripped(&session.ledgers[0]);
-    let tripped_b = median_tripped(&session.ledgers[1]);
+    let evidence = assembled_evidence(session, counts_per_rev);
+    let tripped_a = median_tripped(&session.ledgers[0], &session.point, counts_per_rev);
+    let tripped_b = median_tripped(&session.ledgers[1], &session.point, counts_per_rev);
     let inconclusive_a = !session.ledgers[0].meets_floor();
     let inconclusive_b = !session.ledgers[1].meets_floor();
     // A latched tail rejection means exactly the second (or later) conclusive
@@ -1209,6 +1232,7 @@ fn failed_terminal<B: CommissioningBackend>(
     backend: &B,
     cause: u8,
     safety_fault: Option<OuterSafetyFault>,
+    counts_per_rev: u32,
 ) -> StepResult {
     StepResult::RobustnessReversalTerminal(RobustnessReversalTerminal {
         schema_revision: ROBUSTNESS_SCHEMA_REVISION,
@@ -1218,7 +1242,7 @@ fn failed_terminal<B: CommissioningBackend>(
         selected_p: session.point.selected_p,
         selected_i: session.point.selected_i,
         target_velocity_rpm: session.point.target_velocity_rpm,
-        evidence: assembled_evidence(session),
+        evidence: assembled_evidence(session, counts_per_rev),
         run_started_us: session.run_started_us,
         run_completed_us: backend.elapsed_us(),
         safety_fault,
@@ -1232,13 +1256,14 @@ fn fault_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
     safety_fault: Option<OuterSafetyFault>,
+    counts_per_rev: u32,
 ) -> StepResult {
     let cause = if safety_fault.is_some() {
         ROBUSTNESS_CAUSE_SAFETY_FAULT
     } else {
         ROBUSTNESS_CAUSE_INTERNAL_FAULT
     };
-    failed_terminal(session, backend, cause, safety_fault)
+    failed_terminal(session, backend, cause, safety_fault, counts_per_rev)
 }
 
 /// Build a `Failed` terminal for the between-legs rest that was never confirmed,
@@ -1248,8 +1273,15 @@ fn fault_terminal<B: CommissioningBackend>(
 fn rest_not_confirmed_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
+    counts_per_rev: u32,
 ) -> StepResult {
-    failed_terminal(session, backend, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, None)
+    failed_terminal(
+        session,
+        backend,
+        ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
+        None,
+        counts_per_rev,
+    )
 }
 
 /// Resolve a per-tick fault into the owning `Failed` terminal.
@@ -1257,10 +1289,11 @@ fn tick_fault_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
     fault: TickFault,
+    counts_per_rev: u32,
 ) -> StepResult {
     match fault {
-        TickFault::Io => fault_terminal(session, backend, None),
-        TickFault::Safety(report) => fault_terminal(session, backend, Some(report)),
+        TickFault::Io => fault_terminal(session, backend, None, counts_per_rev),
+        TickFault::Safety(report) => fault_terminal(session, backend, Some(report), counts_per_rev),
     }
 }
 
@@ -1276,7 +1309,10 @@ pub(crate) fn robustness_reversal_fault_terminal(
     error: CommissionError,
     safety_fault: Option<OuterSafetyFault>,
 ) -> StepResult {
-    let crate::commissioning::outer::OuterPhase::RobustnessReversal { session, .. } = phase else {
+    let crate::commissioning::outer::OuterPhase::RobustnessReversal {
+        session, safety, ..
+    } = phase
+    else {
         return StepResult::OuterFailed(error);
     };
     let _ = error;
@@ -1293,7 +1329,7 @@ pub(crate) fn robustness_reversal_fault_terminal(
         selected_p: session.point.selected_p,
         selected_i: session.point.selected_i,
         target_velocity_rpm: session.point.target_velocity_rpm,
-        evidence: assembled_evidence(session),
+        evidence: assembled_evidence(session, safety.counts_per_rev()),
         run_started_us: session.run_started_us,
         run_completed_us: session.run_started_us,
         safety_fault,
@@ -1304,9 +1340,9 @@ pub(crate) fn robustness_reversal_fault_terminal(
 mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
-        ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
-        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
-        ROBUSTNESS_CAUSE_TAIL_REPEATED,
+        ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_PASS,
+        ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
+        ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_TAIL_REPEATED,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::OuterMotionBudget;
@@ -1517,7 +1553,7 @@ mod tests {
     fn never_ran_direction_reports_zero_valid_cycles() {
         let session = RobustnessReversalSession::new(test_point(), 7);
 
-        let evidence = assembled_evidence(&session);
+        let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
         for direction in evidence.directions {
             assert_eq!(direction.valid_cycles, 0);
@@ -1559,7 +1595,7 @@ mod tests {
             reconvergence_ratio_ppm: 0,
         }));
 
-        let evidence = assembled_evidence(&session);
+        let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
         for direction in evidence.directions {
             assert_eq!(direction.median_reconvergence_ms, u16::MAX);
@@ -1889,6 +1925,89 @@ mod tests {
         }
     }
 
+    /// An accepted point whose identified plant response is well above the
+    /// near-zero/degenerate cut-in, so its derived `iae_max_q` actually scales
+    /// with the coefficient rather than falling open to the retired seed.
+    fn plant_identified_point() -> AcceptancePoint {
+        AcceptancePoint {
+            selected_response_intervals_q: [[50_000, 60_000], [-60_000, -50_000]],
+            ..test_point()
+        }
+    }
+
+    /// Build a `ReversalMetrics` with a fixed reconvergence time and residual
+    /// (both well under their carried-over seeds) and a caller-chosen IAE, so
+    /// IAE tests can reason about the IAE gate alone.
+    fn iae_metrics(recovery_iae_q: i64) -> ReversalMetrics {
+        ReversalMetrics {
+            reconvergence_time_us: 50_000,
+            settled_residual_q: 0,
+            recovery_iae_q,
+            forward_settle_time_us: 10_000,
+            reconvergence_ratio_ppm: 0,
+        }
+    }
+
+    /// Fill both directions' ledgers with `ROBUSTNESS_CYCLES_PER_DIRECTION`
+    /// identical conclusive cycles at the given IAE and drive the run to its
+    /// terminal via `complete_terminal`, mirroring the tail-grace tests' direct
+    /// ledger construction (a conclusive cycle's IAE cannot be driven through
+    /// real capture motion without also entangling reconvergence timing).
+    fn complete_with_uniform_iae(
+        point: AcceptancePoint,
+        recovery_iae_q: i64,
+    ) -> RobustnessReversalTerminal {
+        let backend = test_backend();
+        let mut session = RobustnessReversalSession::new(point, 7);
+        for dir in 0..DIRECTION_COUNT {
+            for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
+                session.ledgers[dir].record(CycleRecord::Conclusive(iae_metrics(recovery_iae_q)));
+            }
+        }
+        let StepResult::RobustnessReversalTerminal(terminal) =
+            complete_terminal(&session, &backend, test_safety().counts_per_rev())
+        else {
+            panic!("complete_terminal must yield a robustness terminal");
+        };
+        terminal
+    }
+
+    /// A median `recovery_iae_q` above the accepted point's plant-derived
+    /// `iae_max_q` trips `TRIP_IAE` and rejects, even though reconvergence
+    /// time and settled residual stay comfortably under their own (unchanged)
+    /// seeds. The IAE and intervals are chosen directly so the assertion holds
+    /// regardless of the placeholder calibration coefficient's exact value.
+    #[test]
+    fn median_iae_exceeding_plant_derived_bound_trips_and_rejects() {
+        // plant_rate_q = 60_000, target_rate_q = 11_733_333 (176 rpm @ 4_000
+        // cpr): non-degenerate, so iae_max_q = 4 * 60_000 * 500_000 =
+        // 120_000_000_000. 130_000_000_000 clears it.
+        let terminal = complete_with_uniform_iae(plant_identified_point(), 130_000_000_000);
+        assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_IAE_EXCEEDED);
+        for direction in terminal.evidence.directions {
+            assert!(!direction.inconclusive);
+            assert_ne!(direction.trip_count, 0, "the excess median IAE must trip");
+        }
+    }
+
+    /// The same plant-derived bound as
+    /// [`median_iae_exceeding_plant_derived_bound_trips_and_rejects`], but with
+    /// a median `recovery_iae_q` under it: the run completes cleanly, proving
+    /// the adaptive threshold does not reject on IAE alone.
+    #[test]
+    fn median_iae_within_plant_derived_bound_completes() {
+        // Same plant/target as the trip case (iae_max_q = 120_000_000_000);
+        // 100_000_000_000 stays under it.
+        let terminal = complete_with_uniform_iae(plant_identified_point(), 100_000_000_000);
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        for direction in terminal.evidence.directions {
+            assert!(!direction.inconclusive);
+            assert_eq!(direction.trip_count, 0);
+        }
+    }
+
     /// Build a `ReversalMetrics` with a given reconvergence time in ms; the
     /// other fields are fixed so tail/median tests can reason about
     /// reconvergence alone.
@@ -1926,7 +2045,7 @@ mod tests {
         }
 
         let StepResult::RobustnessReversalTerminal(terminal) =
-            complete_terminal(&session, &backend)
+            complete_terminal(&session, &backend, test_safety().counts_per_rev())
         else {
             panic!("complete_terminal must yield a robustness terminal");
         };
@@ -1978,7 +2097,7 @@ mod tests {
         }
 
         let StepResult::RobustnessReversalTerminal(terminal) =
-            complete_terminal(&session, &backend)
+            complete_terminal(&session, &backend, test_safety().counts_per_rev())
         else {
             panic!("complete_terminal must yield a robustness terminal");
         };
@@ -2078,7 +2197,7 @@ mod tests {
 
         // The assembled evidence carries the tail count and the displaced
         // tail's full triple for the reply, not just its reconvergence via max.
-        let evidence = assembled_evidence(&session);
+        let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
         assert_eq!(
             evidence.tail_counts[0], 2,
             "grace tail plus the latched tail"
@@ -2164,7 +2283,7 @@ mod tests {
             }));
         }
 
-        let evidence = assembled_evidence(&session);
+        let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
         // Residual median (rate-Q, no unit change): median of [10,20,30,40] = 25.
         assert_eq!(evidence.residual_medians_q[0], 25);
