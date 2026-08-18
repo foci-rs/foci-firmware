@@ -295,7 +295,7 @@ pub(crate) struct RobustnessThresholds {
 /// tail cycle cannot by itself trip a threshold.
 ///
 /// Structural censoring: a conclusive tail cycle cannot be measured while the
-/// tail threshold (`2 * t_max` = 600 ms) exceeds the measurement budget
+/// tail threshold (`2 * t_max` = 860 ms) exceeds the measurement budget
 /// (`ROBUSTNESS_MEASUREMENT_BUDGET_US` = 500 ms) -- band entry past the budget
 /// reads as inconclusive, never as a slow conclusive cycle. The tail-reject
 /// path is therefore dormant until the tail threshold is pinned below the
@@ -328,8 +328,11 @@ pub(crate) struct RobustnessThresholds {
 ///           = 23_466_666_000_000 (rate-Q microseconds)
 /// ```
 pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresholds {
-    // Loose seed, pending hardware characterization.
-    t_max_us: 300_000,
+    // Reconvergence time becomes a coarse live-range catch, above the observed
+    // reference conclusive max and below the budget-minus-dwell censoring point;
+    // beyond-budget slowness surfaces as inconclusive, and the tail path stays
+    // dormant above the measurement budget.
+    t_max_us: 430_000,
     // Loose seed (10% of target), pending hardware characterization.
     r_max_q: 1_173_333,
     // Loose seed: 2x margin over the full-budget peak-error transient,
@@ -638,5 +641,27 @@ mod tests {
         assert_eq!(online.peak_excursion_counts(), 0);
         online.observe(10, 1_000);
         assert_eq!(online.peak_excursion_counts(), 10);
+    }
+
+    #[test]
+    fn t_max_is_a_live_range_coarse_catch() {
+        // Above the observed reference conclusive max (388 ms) and below the
+        // ~452 ms conclusive-time censoring point (budget 500 ms - dwell 48 ms):
+        // a conclusive leg slower than the budget cannot reach this threshold and
+        // reads as inconclusive instead, so the catch is deliberately coarse.
+        assert_eq!(ROBUSTNESS_THRESHOLDS.t_max_us, 430_000);
+        assert!(ROBUSTNESS_THRESHOLDS.t_max_us > 388_000);
+        assert!(
+            ROBUSTNESS_THRESHOLDS.t_max_us
+                < ROBUSTNESS_MEASUREMENT_BUDGET_US - ROBUSTNESS_BAND_DWELL_US
+        );
+    }
+
+    #[test]
+    fn tail_threshold_stays_dormant_above_budget() {
+        // 2 * t_max exceeds the measurement budget, so a conclusive tail cycle
+        // cannot be measured (band entry past budget reads inconclusive). The
+        // cause-10 tail-latch path stays dormant, unchanged by the t_max move.
+        assert!(2 * ROBUSTNESS_THRESHOLDS.t_max_us > ROBUSTNESS_MEASUREMENT_BUDGET_US);
     }
 }
