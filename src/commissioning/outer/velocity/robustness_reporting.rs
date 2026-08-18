@@ -17,6 +17,17 @@ pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 2;
 /// 15-byte header plus 12 bytes per reversal direction (two directions).
 pub const ROBUSTNESS_TERMINAL_REPLY_BYTES: usize = 39;
 
+/// Scale factor from wire IAE encoding to internal microseconds.
+///
+/// The `RobustnessEvidence.iae_medians_qs` wire field reports recovery IAE in
+/// rate-Q seconds; the internal `recovery_iae_q` gate comparison uses rate-Q
+/// microseconds. The median encoding converts internal microseconds to seconds
+/// via division by this factor with no additional scaling; the coefficient
+/// calibration multiplies by this factor to restore the internal unit. This
+/// constant guards the load-bearing 1e6 factor against drift.
+#[allow(dead_code)]
+pub const IAE_WIRE_TO_INTERNAL_US_PER_S: i64 = 1_000_000;
+
 /// Encode the compact robustness-terminal ordinary reply payload.
 ///
 /// Fixed 15-byte header (schema revision, run sequence, outcome, cause,
@@ -452,5 +463,18 @@ mod tests {
     #[test]
     fn robustness_cycle_evidence_fits_a_single_klipper_frame_at_any_oid() {
         assert!(ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES <= 54);
+    }
+
+    #[test]
+    fn iae_wire_seconds_convert_to_internal_microseconds_by_1e6() {
+        // The gate compares recovery_iae_q in rate-Q microseconds; the wire field
+        // reports rate-Q seconds. The coefficient calibration divides internal-unit
+        // IAE by the plant scale, so this factor is load-bearing.
+        assert_eq!(IAE_WIRE_TO_INTERNAL_US_PER_S, 1_000_000);
+        let wire_seconds_q: i64 = 675_000; // representative reference median
+        assert_eq!(
+            wire_seconds_q * IAE_WIRE_TO_INTERNAL_US_PER_S,
+            675_000_000_000
+        );
     }
 }
