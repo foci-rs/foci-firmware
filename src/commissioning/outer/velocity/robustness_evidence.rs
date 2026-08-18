@@ -140,4 +140,15 @@ mod tests {
             ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED
         );
     }
+
+    #[test]
+    fn summary_cause_reports_iae_when_only_iae_trips() {
+        use crate::commission_dispatch::robustness::*;
+        use crate::commissioning::outer::velocity::robustness_metrics::TRIP_IAE;
+
+        assert_eq!(
+            summary_cause(TRIP_IAE, 0, false, false),
+            ROBUSTNESS_CAUSE_IAE_EXCEEDED
+        );
+    }
 }
