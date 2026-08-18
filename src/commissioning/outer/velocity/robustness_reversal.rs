@@ -1647,10 +1647,10 @@ mod tests {
     }
 
     /// I1: a slow-but-clean reconvergence -- band entry between `t_max_us`
-    /// (300 ms) and the 500 ms budget -- now yields a real `TRIP_TIME` +
-    /// `Rejected` verdict. Under the old fixed 100 ms window this was
-    /// physically unreachable: the window ended before band entry, aliasing the
-    /// leg to Inconclusive.
+    /// and the budget-minus-dwell censoring point -- now yields a real
+    /// `TRIP_TIME` + `Rejected` verdict. Under the old fixed 100 ms window
+    /// this was physically unreachable: the window ended before band entry,
+    /// aliasing the leg to Inconclusive.
     #[test]
     fn slow_reconvergence_trips_time_and_rejects() {
         let (terminal, _backend, _session) = drive_scripted(test_point(), |phase, tick, target| {
@@ -1658,8 +1658,9 @@ mod tests {
                 return 0;
             }
             match phase {
-                // Stall out of band well past t_max, then converge in-band.
-                CapturePhase::Reverse if tick < 330 => 0,
+                // Stall past t_max but short of the budget-minus-dwell censoring
+                // point, then converge in-band.
+                CapturePhase::Reverse if tick < 440 => 0,
                 _ => target.signum() * STEADY_DELTA,
             }
         });
@@ -1691,10 +1692,11 @@ mod tests {
         let (terminal, _backend, _session) =
             drive_scripted(test_point(), move |phase, tick, target| {
                 match phase {
-                    // Direction 0 reversal (negative target): stall past t_max, then
+                    // Direction 0 reversal (negative target): stall past t_max but
+                    // short of the budget-minus-dwell censoring point, then
                     // converge in band -> a real TRIP_TIME rejection.
                     CapturePhase::Reverse if target < 0 => {
-                        if tick < 330 {
+                        if tick < 440 {
                             0
                         } else {
                             target.signum() * STEADY_DELTA
@@ -1855,7 +1857,7 @@ mod tests {
     /// cause even when individual cycles are fast.
     #[test]
     fn slow_median_rejects_with_time_cause() {
-        const STALLS_MS: [u32; ROBUSTNESS_CYCLES_PER_DIRECTION] = [200, 350, 320, 280, 400];
+        const STALLS_MS: [u32; ROBUSTNESS_CYCLES_PER_DIRECTION] = [400, 445, 435, 415, 440];
         let mut attempt = [0usize; DIRECTION_COUNT];
         let (terminal, _backend, _session) =
             drive_scripted(test_point(), move |phase, tick, target| match phase {
@@ -1903,13 +1905,13 @@ mod tests {
     /// A single tail cycle spends the one-shot grace, the fast replacement fills
     /// the slot, and the run still passes; the displaced tail still shows in max.
     ///
-    /// A conclusive tail cycle's reconvergence (> `2 * t_max` = 600 ms) exceeds
+    /// A conclusive tail cycle's reconvergence (> `2 * t_max` = 860 ms) exceeds
     /// the 500 ms measurement budget, so it can never be measured through real
     /// capture motion -- the ledger is driven directly to exercise the tail
     /// grace and the assembly gate.
     #[test]
     fn single_tail_cycle_retries_then_passes() {
-        const TAIL_MS: u32 = 700;
+        const TAIL_MS: u32 = 900;
         const FAST_MS: u32 = 60;
         let backend = test_backend();
         let mut session = RobustnessReversalSession::new(test_point(), 7);
@@ -1941,7 +1943,7 @@ mod tests {
             assert_eq!(summary.valid_cycles, ROBUSTNESS_CYCLES_PER_DIRECTION as u8);
             assert!(
                 summary.max_reconvergence_ms >= TAIL_MS as u16,
-                "max reconvergence reflects the displaced 700 ms tail"
+                "max reconvergence reflects the displaced 900 ms tail"
             );
         }
     }
@@ -1953,7 +1955,7 @@ mod tests {
     /// [`single_tail_cycle_retries_then_passes`].
     #[test]
     fn second_tail_cycle_rejects_with_tail_cause_and_both_directions_measured() {
-        const TAIL_MS: u32 = 700;
+        const TAIL_MS: u32 = 900;
         const FAST_MS: u32 = 60;
         let backend = test_backend();
         let mut session = RobustnessReversalSession::new(test_point(), 7);
@@ -1998,7 +2000,7 @@ mod tests {
     /// measurement budget), so it is driven at the record boundary directly.
     #[test]
     fn apply_cycle_record_tail_arms_skip_grace_then_latch_and_continue() {
-        const TAIL_MS: u32 = 700;
+        const TAIL_MS: u32 = 900;
         let tail = cycle_metrics(TAIL_MS);
         let tail_wire = CycleWire {
             reconvergence_ms: TAIL_MS as u16,
