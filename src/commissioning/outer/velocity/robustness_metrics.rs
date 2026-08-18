@@ -384,6 +384,94 @@ pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 2;
 /// still fit the u16 field but overstate the moving envelope.
 pub(crate) const ROBUSTNESS_LEGS_PER_CYCLE: u32 = 4;
 
+/// Near-zero/degenerate cut-in divisor for [`robustness_thresholds_for`]: a
+/// `plant_rate_q` below `target_rate_q / PLANT_RATE_DEGENERATE_MIN_DIVISOR`
+/// (a documented small fraction of target, ~0.4%) fails open to
+/// [`ROBUSTNESS_IAE_SEED_MAX_Q`] instead of scaling the coefficient down
+/// toward a reject-everything threshold.
+#[allow(dead_code)]
+pub(crate) const PLANT_RATE_DEGENERATE_MIN_DIVISOR: i64 = 256;
+
+/// The retired loose IAE seed (see [`ROBUSTNESS_THRESHOLDS`]'s doc comment
+/// for its derivation). Kept as both the near-zero/degenerate fail-open
+/// value and the dormant-equivalent anchor that
+/// [`ROBUSTNESS_IAE_COEFF_NUM`]/[`ROBUSTNESS_IAE_COEFF_DEN`] are calibrated
+/// against.
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_IAE_SEED_MAX_Q: i64 = 23_466_666_000_000;
+
+/// Placeholder calibration coefficient (numerator) for
+/// [`robustness_thresholds_for`]'s `iae_max_q`, pending an on-target
+/// calibration pass. Reuses the retired seed's own margin structure (`2`
+/// margin `* 2` peak-transient-over-target factor `= 4`) so that at a plant
+/// rate equal to the reference target rate, the derived threshold exactly
+/// reproduces [`ROBUSTNESS_IAE_SEED_MAX_Q`] -- every commit that lands ahead
+/// of calibration is therefore behaviorally identical to today's gate.
+/// Numerator and denominator are kept separate, rather than folded into one
+/// integer, so calibration can land as an exact rational.
+///
+/// Candidate-independence invariant: the `plant_rate_q` this coefficient
+/// scales must derive from breakaway plant identification, never from a
+/// candidate's own reversal measurement -- otherwise a candidate could
+/// loosen its own gate by degrading its measured response. See
+/// [`RobustnessThresholds`]'s doc comment for the same invariant on the
+/// thresholds this coefficient feeds.
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_IAE_COEFF_NUM: i64 = 4;
+/// Placeholder calibration coefficient (denominator). See
+/// [`ROBUSTNESS_IAE_COEFF_NUM`].
+#[allow(dead_code)]
+pub(crate) const ROBUSTNESS_IAE_COEFF_DEN: i64 = 1;
+
+/// Reduce the two reversal-direction response intervals from the accepted
+/// point's identified settled-rate response into one worse-of plant rate,
+/// in rate-Q units: per direction `max(|low|, |high|)`, pooled across the
+/// two directions with worse-of `max`.
+#[allow(dead_code)]
+pub(crate) fn reduce_plant_rate_q(intervals: &[[i32; 2]; 2]) -> i64 {
+    let dir0 = intervals[0][0]
+        .unsigned_abs()
+        .max(intervals[0][1].unsigned_abs());
+    let dir1 = intervals[1][0]
+        .unsigned_abs()
+        .max(intervals[1][1].unsigned_abs());
+    i64::from(dir0.max(dir1))
+}
+
+/// Construct plant-adaptive robustness thresholds from the accepted point's
+/// identified settled-rate response (`plant_rate_q`, see
+/// [`reduce_plant_rate_q`]) and the reference target rate. `t_max_us` and
+/// `r_max_q` are carried over unchanged from [`ROBUSTNESS_THRESHOLDS`]; only
+/// `iae_max_q` adapts to the identified plant.
+///
+/// Candidate-independence invariant: `plant_rate_q` must derive from
+/// breakaway plant identification, never a candidate's own measurement --
+/// see [`ROBUSTNESS_IAE_COEFF_NUM`].
+#[allow(dead_code)]
+pub(crate) fn robustness_thresholds_for(
+    plant_rate_q: i64,
+    target_rate_q: i64,
+) -> RobustnessThresholds {
+    let iae_max_q = if plant_rate_q < target_rate_q / PLANT_RATE_DEGENERATE_MIN_DIVISOR {
+        ROBUSTNESS_IAE_SEED_MAX_Q
+    } else {
+        let scaled = i128::from(ROBUSTNESS_IAE_COEFF_NUM)
+            .saturating_mul(i128::from(plant_rate_q))
+            .saturating_mul(i128::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
+            / i128::from(ROBUSTNESS_IAE_COEFF_DEN);
+        i64::try_from(scaled).unwrap_or(if scaled.is_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        })
+    };
+    RobustnessThresholds {
+        t_max_us: ROBUSTNESS_THRESHOLDS.t_max_us,
+        r_max_q: ROBUSTNESS_THRESHOLDS.r_max_q,
+        iae_max_q,
+    }
+}
+
 /// Compute the tripped bitmask for `m` against `t`: which of time, residual,
 /// and IAE gates failed, independently of one another.
 pub(crate) fn tripped_mask(m: &ReversalMetrics, t: &RobustnessThresholds) -> u8 {
@@ -663,5 +751,54 @@ mod tests {
         // cannot be measured (band entry past budget reads inconclusive). The
         // cause-10 tail-latch path stays dormant, unchanged by the t_max move.
         assert!(2 * ROBUSTNESS_THRESHOLDS.t_max_us > ROBUSTNESS_MEASUREMENT_BUDGET_US);
+    }
+
+    #[test]
+    fn reduce_plant_rate_q_takes_worse_of_max_bound() {
+        // dir0 bounds |-3|,|5| -> 5 ; dir1 bounds |7|,|-2| -> 7 ; worse-of -> 7
+        let intervals = [[-3, 5], [7, -2]];
+        assert_eq!(reduce_plant_rate_q(&intervals), 7);
+    }
+
+    #[test]
+    fn iae_max_q_scales_with_plant_rate_above_the_degenerate_cut_in() {
+        let target = 11_733_333;
+        // Both plant rates are well above the near-zero cut-in (target/256), so
+        // both take the coefficient path rather than the fail-open seed.
+        let a = robustness_thresholds_for(1_000_000, target).iae_max_q;
+        let b = robustness_thresholds_for(2_000_000, target).iae_max_q;
+        assert!(a > 0 && b > a);
+        assert!((b - 2 * a).abs() <= 1); // ~linear in plant_rate_q (integer rounding)
+    }
+
+    #[test]
+    fn degenerate_or_near_zero_plant_fails_open_to_the_retired_seed() {
+        // <= 0 AND any positive value below the near-zero cut-in (target/256) must
+        // fail open to the retired seed, independent of the coefficient -- never a
+        // reject-everything iae_max_q ~ 0.
+        let target = 11_733_333;
+        let below_cut_in = target / (PLANT_RATE_DEGENERATE_MIN_DIVISOR * 2); // target/512
+        for plant in [0_i64, -5, below_cut_in] {
+            assert_eq!(
+                robustness_thresholds_for(plant, target).iae_max_q,
+                ROBUSTNESS_IAE_SEED_MAX_Q
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_coefficient_keeps_the_gate_dormant() {
+        // Until Task 7 pins the coefficient, a realistic plant rate must yield a
+        // threshold at least as loose as the retired seed, so intermediate commits
+        // do not change the gate's accept/reject behavior.
+        let target = 11_733_333;
+        assert!(robustness_thresholds_for(target, target).iae_max_q >= ROBUSTNESS_IAE_SEED_MAX_Q);
+    }
+
+    #[test]
+    fn thresholds_for_keeps_time_and_residual_seeds() {
+        let t = robustness_thresholds_for(5_000, 11_733_333);
+        assert_eq!(t.t_max_us, ROBUSTNESS_THRESHOLDS.t_max_us);
+        assert_eq!(t.r_max_q, ROBUSTNESS_THRESHOLDS.r_max_q);
     }
 }
