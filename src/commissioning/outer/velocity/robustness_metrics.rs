@@ -398,26 +398,17 @@ pub(crate) const PLANT_RATE_DEGENERATE_MIN_DIVISOR: i64 = 256;
 /// against.
 pub(crate) const ROBUSTNESS_IAE_SEED_MAX_Q: i64 = 23_466_666_000_000;
 
-/// Placeholder calibration coefficient (numerator) for
-/// [`robustness_thresholds_for`]'s `iae_max_q`, pending an on-target
-/// calibration pass. Reuses the retired seed's own margin structure (`2`
-/// margin `* 2` peak-transient-over-target factor `= 4`) so that at a plant
-/// rate equal to the reference target rate, the derived threshold exactly
-/// reproduces [`ROBUSTNESS_IAE_SEED_MAX_Q`] -- every commit that lands ahead
-/// of calibration is therefore behaviorally identical to today's gate.
-/// Numerator and denominator are kept separate, rather than folded into one
-/// integer, so calibration can land as an exact rational.
+/// Calibration coefficient (numerator) for [`robustness_thresholds_for`]'s
+/// `iae_max_q`: `iae_max_q = plant_rate_q * NUM * BUDGET_US / DEN`. Split as a
+/// rational so the calibration is exact.
 ///
-/// Candidate-independence invariant: the `plant_rate_q` this coefficient
-/// scales must derive from breakaway plant identification, never from a
-/// candidate's own reversal measurement -- otherwise a candidate could
-/// loosen its own gate by degrading its measured response. See
-/// [`RobustnessThresholds`]'s doc comment for the same invariant on the
-/// thresholds this coefficient feeds.
-pub(crate) const ROBUSTNESS_IAE_COEFF_NUM: i64 = 4;
-/// Placeholder calibration coefficient (denominator). See
-/// [`ROBUSTNESS_IAE_COEFF_NUM`].
-pub(crate) const ROBUSTNESS_IAE_COEFF_DEN: i64 = 1;
+/// Candidate-independence invariant: the `plant_rate_q` this scales must derive
+/// from breakaway plant identification, never a candidate's own reversal
+/// measurement, or a candidate could loosen its own gate by degrading its
+/// measured response. See [`RobustnessThresholds`] for the same invariant.
+pub(crate) const ROBUSTNESS_IAE_COEFF_NUM: i64 = 29;
+/// Calibration coefficient (denominator). See [`ROBUSTNESS_IAE_COEFF_NUM`].
+pub(crate) const ROBUSTNESS_IAE_COEFF_DEN: i64 = 200;
 
 /// Reduce the two reversal-direction response intervals from the accepted
 /// point's identified settled-rate response into one worse-of plant rate,
@@ -781,12 +772,35 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_coefficient_keeps_the_gate_dormant() {
-        // Until Task 7 pins the coefficient, a realistic plant rate must yield a
-        // threshold at least as loose as the retired seed, so intermediate commits
-        // do not change the gate's accept/reject behavior.
-        let target = 11_733_333;
-        assert!(robustness_thresholds_for(target, target).iae_max_q >= ROBUSTNESS_IAE_SEED_MAX_Q);
+    fn calibrated_coefficient_accepts_reference_gains_and_rejects_the_weak_anchor() {
+        use crate::commissioning::outer::velocity::robustness_reporting::IAE_WIRE_TO_INTERNAL_US_PER_S;
+        // Measured accept ceiling and reject floor (median recovery IAE, in
+        // wire rate-Q-seconds); the gate compares in internal
+        // rate-Q-microseconds, hence the scale.
+        const PLANT_RATE_Q: i64 = 16_300_855;
+        const TARGET_RATE_Q: i64 = 11_733_333;
+        let accept_ceiling_q = 774_513 * IAE_WIRE_TO_INTERNAL_US_PER_S;
+        let reject_floor_q = 1_527_833 * IAE_WIRE_TO_INTERNAL_US_PER_S;
+
+        let t = robustness_thresholds_for(PLANT_RATE_Q, TARGET_RATE_Q);
+        assert!(t.iae_max_q > accept_ceiling_q);
+        assert!(t.iae_max_q < reject_floor_q);
+        assert!(t.iae_max_q >= accept_ceiling_q * 3 / 2);
+        assert!(reject_floor_q * 4 / 5 >= t.iae_max_q);
+
+        let accept = ReversalMetrics {
+            reconvergence_time_us: 260_000,
+            settled_residual_q: 0,
+            recovery_iae_q: accept_ceiling_q,
+            forward_settle_time_us: 240_000,
+            reconvergence_ratio_ppm: 0,
+        };
+        assert_eq!(tripped_mask(&accept, &t) & TRIP_IAE, 0);
+        let reject = ReversalMetrics {
+            recovery_iae_q: reject_floor_q,
+            ..accept
+        };
+        assert_eq!(tripped_mask(&reject, &t) & TRIP_IAE, TRIP_IAE);
     }
 
     #[test]

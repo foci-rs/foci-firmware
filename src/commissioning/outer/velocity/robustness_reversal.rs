@@ -2004,10 +2004,9 @@ mod tests {
     /// regardless of the placeholder calibration coefficient's exact value.
     #[test]
     fn median_iae_exceeding_plant_derived_bound_trips_and_rejects() {
-        // plant_rate_q = 60_000, target_rate_q = 11_733_333 (176 rpm @ 4_000
-        // cpr): non-degenerate, so iae_max_q = 4 * 60_000 * 500_000 =
-        // 120_000_000_000. 130_000_000_000 clears it.
-        let terminal = complete_with_uniform_iae(plant_identified_point(), 130_000_000_000);
+        // plant_rate_q 60_000, non-degenerate: iae_max_q = 4_350_000_000;
+        // 5_000_000_000 exceeds it.
+        let terminal = complete_with_uniform_iae(plant_identified_point(), 5_000_000_000);
         assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_IAE_EXCEEDED);
         for direction in terminal.evidence.directions {
@@ -2022,9 +2021,9 @@ mod tests {
     /// the adaptive threshold does not reject on IAE alone.
     #[test]
     fn median_iae_within_plant_derived_bound_completes() {
-        // Same plant/target as the trip case (iae_max_q = 120_000_000_000);
-        // 100_000_000_000 stays under it.
-        let terminal = complete_with_uniform_iae(plant_identified_point(), 100_000_000_000);
+        // Same plant as the trip case (iae_max_q = 4_350_000_000);
+        // 4_000_000_000 stays under it.
+        let terminal = complete_with_uniform_iae(plant_identified_point(), 4_000_000_000);
         assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
         for direction in terminal.evidence.directions {
