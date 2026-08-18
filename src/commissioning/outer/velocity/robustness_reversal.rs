@@ -1113,7 +1113,7 @@ fn constructed_thresholds(
 /// forward-settle in microseconds, IAE back in rate-Q microseconds from the
 /// ledger's rate-Q-seconds median) and gates it against thresholds built from
 /// the accepted point's own identified plant response
-/// ([`robustness_thresholds_for`]), rather than a candidate-independent
+/// ([`robustness_thresholds_for`]), rather than the fixed plant-independent
 /// const. An empty ledger yields all-zero medians, which trip nothing.
 fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev: u32) -> u8 {
     let median_metrics = ReversalMetrics {
@@ -2000,8 +2000,7 @@ mod tests {
     /// A median `recovery_iae_q` above the accepted point's plant-derived
     /// `iae_max_q` trips `TRIP_IAE` and rejects, even though reconvergence
     /// time and settled residual stay comfortably under their own (unchanged)
-    /// seeds. The IAE and intervals are chosen directly so the assertion holds
-    /// regardless of the placeholder calibration coefficient's exact value.
+    /// seeds.
     #[test]
     fn median_iae_exceeding_plant_derived_bound_trips_and_rejects() {
         // plant_rate_q 60_000, non-degenerate: iae_max_q = 4_350_000_000;
