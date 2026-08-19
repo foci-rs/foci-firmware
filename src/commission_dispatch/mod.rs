@@ -1237,6 +1237,79 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         .as_ref()
         .and_then(CommissioningEngine::breakaway_stage_c_execution_plan);
     let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+
+    // A promoted breakaway `Complete` (never a first `CompleteCandidate`, which
+    // is promoted only on the reproduced second run) installs the token-carrying
+    // acceptance point. The install happens before any disarm, because the
+    // inline robustness handoff below needs the live velocity-integral phase
+    // intact and disarm can tear it down. The token rides inside the point, so
+    // it is cleared automatically with the point -- no separate retention.
+    let mut promoted_point = None;
+    if dispatch.terminal.outcome == crate::commissioning::types::VelocityIntegralOutcome::Complete
+        && let (Some(execution_plan), Some(authority)) =
+            (breakaway_execution_plan, dispatch.authority)
+    {
+        match stage_c::breakaway_acceptance_point(
+            channel,
+            &authority,
+            execution_plan,
+            &dispatch.terminal,
+        ) {
+            Ok(stage_c::AcceptanceInstall::Installed(point)) => {
+                retention.stage_c.install_acceptance_point(point);
+                promoted_point = Some(point);
+            }
+            Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
+                dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS;
+            }
+            Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {}
+            Err(()) => {
+                retention.stage_c.observe_fault();
+                dispatch.terminal.outcome =
+                    crate::commissioning::types::VelocityIntegralOutcome::Fault;
+                dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+                dispatch.terminal.safety_fault = None;
+                dispatch.reproduction = None;
+                dispatch.authority = None;
+            }
+        }
+    }
+
+    // The promoted run keeps the motor armed and swaps the live engine straight
+    // into the robustness gate on the same physical run, instead of ending the
+    // workflow and waiting for a fresh command. A failed swap leaves the phase
+    // untouched, so it falls through to a disarmed fault terminal.
+    if let Some(point) = promoted_point {
+        let encoder_counts_per_rev = state.tmc.encoder_counts_per_rev().unwrap_or(0);
+        let engine_ref = engine
+            .as_mut()
+            .expect("engine slot is None on a promoted Complete");
+        match engine_ref.begin_inline_robustness(point, encoder_counts_per_rev) {
+            Ok(()) => {
+                return CommissionOutcome::PhaseChanged {
+                    oid: engine_ref.oid(),
+                    phase_id: engine_ref
+                        .current_phase_id()
+                        .unwrap_or(PhaseId::VelocityTune),
+                    engine_kind: engine_ref.kind(),
+                };
+            }
+            Err(error) => {
+                retention.stage_c.observe_fault();
+                dispatch.terminal.outcome =
+                    crate::commissioning::types::VelocityIntegralOutcome::Fault;
+                dispatch.terminal.cause = error.status_code();
+                dispatch.terminal.recovery_unavailable = true;
+                dispatch.terminal.safety_fault = None;
+                dispatch.reproduction = None;
+                dispatch.authority = None;
+            }
+        }
+    }
+
+    // Every path that does not continue into robustness -- `CompleteCandidate`,
+    // a non-promoted `Complete`, and every fault -- disarms the workflow as
+    // before, forcing a fault terminal if the disarm SPI itself fails.
     if !disarm_velocity_workflow(engine, backend, state).await {
         retention.stage_c.observe_fault();
         dispatch.terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
@@ -1245,40 +1318,6 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         dispatch.terminal.safety_fault = None;
         dispatch.reproduction = None;
         dispatch.authority = None;
-    } else if dispatch.terminal.outcome
-        == crate::commissioning::types::VelocityIntegralOutcome::Complete
-    {
-        // A promoted breakaway `Complete` (never a first `CompleteCandidate`,
-        // which is promoted only on the reproduced second run) installs the
-        // token-carrying acceptance point. The token rides inside the point, so
-        // it is cleared automatically with the point -- no separate retention.
-        if let (Some(execution_plan), Some(authority)) =
-            (breakaway_execution_plan, dispatch.authority)
-        {
-            match stage_c::breakaway_acceptance_point(
-                channel,
-                &authority,
-                execution_plan,
-                &dispatch.terminal,
-            ) {
-                Ok(stage_c::AcceptanceInstall::Installed(point)) => {
-                    retention.stage_c.install_acceptance_point(point);
-                }
-                Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
-                    dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS;
-                }
-                Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {}
-                Err(()) => {
-                    retention.stage_c.observe_fault();
-                    dispatch.terminal.outcome =
-                        crate::commissioning::types::VelocityIntegralOutcome::Fault;
-                    dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
-                    dispatch.terminal.safety_fault = None;
-                    dispatch.reproduction = None;
-                    dispatch.authority = None;
-                }
-            }
-        }
     }
     #[cfg(feature = "trace")]
     engine

@@ -1203,11 +1203,24 @@ impl CommissioningEngine {
         data.positive_i_rest_boundary = Some(boundary);
     }
 
-    fn current_phase_id(&self) -> Option<PhaseId> {
+    pub(crate) fn current_phase_id(&self) -> Option<PhaseId> {
         match &self.engine_mode {
             EngineMode::Inner { phase, .. } => phase.current_phase_id(),
             EngineMode::Outer { phase, .. } => phase.current_phase_id(),
         }
+    }
+
+    /// Report whether the outer engine is parked in the robustness-reversal
+    /// phase, disambiguating the phase share that all report `VelocityTune`.
+    #[cfg(test)]
+    pub(crate) fn is_outer_robustness_reversal_for_test(&self) -> bool {
+        matches!(
+            &self.engine_mode,
+            EngineMode::Outer {
+                phase: OuterPhase::RobustnessReversal { .. },
+                ..
+            }
+        )
     }
 
     fn trace_profile_or_mode(&self) -> i32 {

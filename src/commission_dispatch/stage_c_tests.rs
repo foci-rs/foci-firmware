@@ -1,8 +1,9 @@
 use super::stage_c::{
     STAGE_C_CAUSE_EVIDENCE_INTEGRITY, STAGE_C_CAUSE_NO_RETAINED_AUTHORITY,
     STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, STAGE_C_CAUSE_PLAN_MISMATCH,
-    STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflightConfig, StageCPreflightRejection,
-    apply_stage_c_terminal, missing_authority_stage_c_terminal, preflight_stage_c_request,
+    STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflight, StageCPreflightConfig,
+    StageCPreflightRejection, apply_stage_c_terminal, missing_authority_stage_c_terminal,
+    preflight_stage_c_request,
 };
 use super::{CommissionOutcome, ReplyPayload};
 use crate::commissioning::outer::OuterMotionBudget;
@@ -1007,4 +1008,175 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
             );
         }
     });
+}
+
+/// Build the breakaway Stage-C engine parked in `OuterPhase::VelocityIntegral`
+/// whose live execution plan the dispatch seam reads for the promotion.
+fn breakaway_engine(
+    plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
+    authority: &StageCAuthoritySummary,
+) -> crate::commissioning::CommissioningEngine {
+    crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+        1,
+        crate::state::tmc::tmc_channel0(),
+        outer_params(),
+        entry_snapshot(),
+        StageCPreflight {
+            plan,
+            identity: authority.identity,
+            run_sequence: 9,
+        },
+    )
+}
+
+#[fixture_test]
+async fn promoted_complete_transitions_to_inline_robustness() {
+    use crate::autotune::PhaseId;
+    use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+
+    // The inline swap reconfigures the robustness envelope from the live
+    // encoder resolution, so motion scale must be configured for the seam to
+    // resolve a nonzero counts-per-rev.
+    crate::state::tmc::tmc_channel0()
+        .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+        .expect("valid motion scale");
+
+    let plan = breakaway_stage_c_plan();
+    let authority = breakaway_authority_summary(&plan);
+
+    // First sufficient run retains the candidate the reproduced run confirms.
+    let mut stage_c_slot = StageCCandidateSlot::new();
+    stage_c_slot.install_authority(authority);
+    let mut first = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(0),
+    );
+    first.rest_boundary_rung_plus_one = 3;
+    apply_stage_c_terminal(first, &mut stage_c_slot);
+    assert_eq!(stage_c_slot.state(), StageCSlotState::Candidate);
+
+    let mut engine = Some(breakaway_engine(plan, &authority));
+    let mut backend = MockBackend::new();
+    backend.enable_pin = true;
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut calibrated = true;
+    let mut enabled = true;
+    let mut state = super::DispatchState::new(
+        crate::state::tmc::tmc_channel0(),
+        crate::state::stepper::stepper_channel0(),
+        &mut calibrated,
+        &mut enabled,
+        &mut gains,
+    );
+
+    // Reproduced second run: same evidence, matching terminus.
+    let mut second = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(0),
+    );
+    second.rest_boundary_rung_plus_one = 3;
+
+    let outcome = super::drive_velocity_integral_terminal_with_stages(
+        second,
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4_095,
+        CHANNEL,
+        super::CommissionRetention::new(&mut stage_c_slot),
+    )
+    .await;
+
+    assert!(
+        matches!(
+            outcome,
+            CommissionOutcome::PhaseChanged {
+                oid: 1,
+                phase_id: PhaseId::VelocityTune,
+                ..
+            }
+        ),
+        "promoted Complete must transition into robustness, not emit a terminal"
+    );
+    let engine = engine
+        .as_ref()
+        .expect("the promoted run keeps its live engine stepping");
+    // `VelocityTune` is shared by several phases, so pin the exact swap target.
+    assert!(
+        engine.is_outer_robustness_reversal_for_test(),
+        "the live engine must be swapped precisely into robustness reversal"
+    );
+    // The promoted run stays armed so robustness keeps stepping on it.
+    assert!(enabled);
+    assert!(calibrated);
+    assert!(backend.enable_pin);
+}
+
+#[fixture_test]
+async fn complete_candidate_still_emits_report_only_terminal() {
+    use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+
+    crate::state::tmc::tmc_channel0()
+        .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+        .expect("valid motion scale");
+
+    let plan = breakaway_stage_c_plan();
+    let authority = breakaway_authority_summary(&plan);
+
+    // Authority only: the first sufficient run has nothing to reproduce, so it
+    // stays a `CompleteCandidate` the host resumes from.
+    let mut stage_c_slot = StageCCandidateSlot::new();
+    stage_c_slot.install_authority(authority);
+
+    let mut engine = Some(breakaway_engine(plan, &authority));
+    let mut backend = MockBackend::new();
+    backend.enable_pin = true;
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut calibrated = true;
+    let mut enabled = true;
+    let mut state = super::DispatchState::new(
+        crate::state::tmc::tmc_channel0(),
+        crate::state::stepper::stepper_channel0(),
+        &mut calibrated,
+        &mut enabled,
+        &mut gains,
+    );
+
+    let mut first = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(0),
+    );
+    first.rest_boundary_rung_plus_one = 3;
+
+    let outcome = super::drive_velocity_integral_terminal_with_stages(
+        first,
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4_095,
+        CHANNEL,
+        super::CommissionRetention::new(&mut stage_c_slot),
+    )
+    .await;
+
+    assert!(
+        engine.is_none(),
+        "a first CompleteCandidate consumes the engine and ends the run"
+    );
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("CompleteCandidate must emit a report-only terminal");
+    };
+    assert!(matches!(
+        reply,
+        ReplyPayload::VelocityIntegralTerminal { .. }
+    ));
+    // The report-only path disarms exactly as before.
+    assert!(!enabled);
+    assert!(!backend.enable_pin);
 }
