@@ -83,6 +83,29 @@ fn stage_c_resume_rejection_terminal(
     }
 }
 
+/// Build the `stage_c_resume` route's disclosed workflow envelope.
+///
+/// `reproduce_ms` is the retained Stage-C plan's own `maximum_workflow_ms`. An
+/// admitted resume continues inline into robustness on the same dispatch, so
+/// the disclosed envelope has to bound reproduce plus the robustness worst
+/// case: the host arms one wait covering the whole run instead of re-arming
+/// a second wait when robustness starts.
+fn build_stage_c_resume_workflow_plan(
+    run_sequence: u32,
+    reproduce_ms: u32,
+) -> crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan {
+    let maximum_workflow_ms = reproduce_ms
+        .checked_add(crate::commission_dispatch::robustness::robustness_worst_case_duration_ms())
+        .expect("resume reproduce budget plus robustness worst case fits u32");
+    crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new(
+        run_sequence,
+        crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageCResume,
+        0,
+        maximum_workflow_ms,
+    )
+    .expect("a preflighted resume has a valid workflow envelope")
+}
+
 /// A board could not install the validated mapper into its idle P3 scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct MotionScaleMapperInstallError;
@@ -903,15 +926,10 @@ where
                             return TmcControlRequestOutcome::skip_tick_tail();
                         }
                     };
-                    let workflow = crate::commissioning::outer::velocity::integral_plan::
-                        CommissioningWorkflowPlan::new(
-                            run_sequence,
-                            crate::commissioning::outer::velocity::integral_plan::
-                                StageCPlanShape::StageCResume,
-                            0,
-                            preflight.plan.maximum_workflow_ms,
-                        )
-                        .expect("a preflighted resume has a valid workflow envelope");
+                    let workflow = build_stage_c_resume_workflow_plan(
+                        run_sequence,
+                        preflight.plan.maximum_workflow_ms,
+                    );
                     board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
                         oid,
                         plan: workflow,
@@ -2756,7 +2774,14 @@ mod tests {
             workflow.shape,
             crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageCResume
         );
-        assert_eq!(workflow.maximum_workflow_ms, plan.maximum_workflow_ms);
+        // The envelope bounds reproduce plus the inline robustness continuation,
+        // not just the reproduce budget: the host arms one wait across the whole
+        // dispatch instead of re-arming a second wait when robustness starts.
+        assert_eq!(
+            workflow.maximum_workflow_ms,
+            plan.maximum_workflow_ms
+                + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms()
+        );
         // The exact plan, not just the envelope: motion evidence that reaches
         // the host before this reply has no plan to be assembled against.
         let ReplyPayload::VelocityIntegralPlan {
@@ -2774,6 +2799,20 @@ mod tests {
                 .authority()
                 .map(|authority| authority.identity.plan_digest),
             Some(plan.digest())
+        );
+    }
+
+    #[test]
+    fn resume_workflow_plan_budget_covers_robustness() {
+        let reproduce_ms = 12_000;
+
+        let plan = build_stage_c_resume_workflow_plan(0, reproduce_ms);
+
+        assert!(
+            plan.maximum_workflow_ms
+                >= reproduce_ms
+                    + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(),
+            "resume plan must bound reproduce + inline robustness"
         );
     }
 
