@@ -795,9 +795,6 @@ impl CommissioningEngine {
     /// or if the probe velocity is zero or its envelope arithmetic overflows.
     /// Returns [`CommissionError::EncoderFault`] for an invalid encoder
     /// domain.
-    // Not yet called outside tests: the dispatch seam that promotes a
-    // Stage-C `Complete` terminal into this swap lands separately.
-    #[allow(dead_code)]
     pub(crate) fn begin_inline_robustness(
         &mut self,
         point: crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint,
