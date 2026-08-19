@@ -2455,3 +2455,195 @@ async fn velocity_integral_terminal_is_not_downgraded_to_tune_result() {
 
     clear_motor_sentinel();
 }
+
+/// Entry snapshot carrying the position gains, velocity limit, and biquad
+/// cutoffs an inline-robustness pass must join with its selected velocity gains.
+/// `filters` is `(velocity, position, flux, torque)` cutoff Hz.
+fn robustness_entry_snapshot(
+    position_p: u16,
+    position_i: u16,
+    velocity_limit: u32,
+    filters: (u16, u16, u16, u16),
+) -> crate::commissioning::EntrySnapshot {
+    let (velocity_filter_hz, position_filter_hz, flux_filter_hz, torque_filter_hz) = filters;
+    crate::commissioning::EntrySnapshot {
+        velocity_p: crate::pid::p_gain(1_152),
+        velocity_i: crate::pid::i_gain(0),
+        position_p: crate::pid::p_gain(position_p),
+        position_i: crate::pid::i_gain(position_i),
+        velocity_limit,
+        voltage_limit: 16_000,
+        velocity_filter_hz,
+        torque_filter_hz,
+        position_filter_hz,
+        flux_filter_hz,
+    }
+}
+
+/// Outer engine holding `entry`. The robustness-terminal dispatch arm only
+/// reads `entry_snapshot()` and consumes the engine, so the engine's internal
+/// phase is immaterial to the routing this exercises.
+fn robustness_outer_engine(entry: crate::commissioning::EntrySnapshot) -> CommissioningEngine {
+    CommissioningEngine::new_outer(0, sample_outer_params(), entry)
+}
+
+/// Retained accepted point whose identity matches the terminal fixtures below.
+fn robustness_accepted_point(
+    qualifier_bits: u16,
+) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
+    use crate::commissioning::outer::velocity::integral_reproduction::{
+        AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
+    };
+    AcceptancePoint {
+        identity: StageCPlanIdentity {
+            channel: 0,
+            build_features: 0x1234,
+            schema_revision: 1,
+            plan_digest: 0xfeed_beef,
+        },
+        selected_p: 863,
+        selected_i: 512,
+        target_velocity_rpm: 322,
+        selected_response_intervals_q: [[10, 20], [-20, -10]],
+        qualifier_bits,
+        token: None,
+        progress: AcceptanceMatrixProgress::ReadyAscending,
+    }
+}
+
+/// Passed robustness terminal for the retained point, joined gains 863/512.
+/// Built from the zero-evidence terminal so the evidence bundle need not be
+/// hand-assembled here.
+fn robustness_pass_terminal() -> crate::commissioning::types::RobustnessReversalTerminal {
+    use crate::commissioning::types::RobustnessOutcome;
+    let mut terminal = robustness::failed_robustness_terminal(
+        1,
+        robustness::RobustnessPreflightRejection::NoAcceptedCandidate,
+    );
+    terminal.outcome = RobustnessOutcome::Complete;
+    terminal.cause = robustness::ROBUSTNESS_CAUSE_PASS;
+    terminal.selected_p = 863;
+    terminal.selected_i = 512;
+    terminal.target_velocity_rpm = 322;
+    terminal.plant_rate_q = 60_000;
+    terminal
+}
+
+/// Rejected robustness terminal for the same retained point identity.
+fn robustness_reject_terminal(
+    cause: u8,
+) -> crate::commissioning::types::RobustnessReversalTerminal {
+    use crate::commissioning::types::RobustnessOutcome;
+    let mut terminal = robustness_pass_terminal();
+    terminal.outcome = RobustnessOutcome::Rejected;
+    terminal.cause = cause;
+    terminal
+}
+
+#[fixture_test]
+async fn robustness_pass_emits_tune_result_with_joined_gains() {
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use core::sync::atomic::Ordering::Relaxed;
+
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    // Position-mode restore needs a configured motion scale to place the
+    // next-command origin; the backend defaults to 4000 quadrature counts/rev.
+    tmc_state()
+        .configure_motion_scale(stepper_state(), 1_000, 3_200)
+        .expect("valid test motion scale");
+    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
+
+    let mut engine = Some(robustness_outer_engine(robustness_entry_snapshot(
+        700,
+        40,
+        200_000,
+        (300, 300, 150, 300),
+    )));
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_acceptance_point(robustness_accepted_point(0));
+
+    tmc_state().motor_armed.store(false, Relaxed);
+    seed_motor_sentinel(&mut backend).await;
+    tmc_state().motor_armed.store(true, Relaxed);
+
+    let outcome = drive_commission_result_with_stages(
+        StepResult::RobustnessReversalTerminal(robustness_pass_terminal()),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+        0,
+        CommissionRetention::new(&mut slot),
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    let ReplyPayload::TuneResult { status, result, .. } = reply else {
+        panic!("expected TuneResult");
+    };
+    assert_eq!(result.velocity_p, 863);
+    assert_eq!(result.velocity_i, 512);
+    assert_eq!(result.position_p, 700);
+    assert_eq!(result.position_i, 40);
+    assert_eq!(result.velocity_limit, 200_000);
+    assert_eq!(result.j_eff, 0);
+    assert_eq!(result.b_eff, 0);
+    assert_eq!(result.provenance.probed_velocity_mrev_s, 322 * 1_000 / 60);
+    assert_eq!(result.provenance.d_eq_q, 60_000);
+    assert_eq!(result.provenance.band_lower_percent, 70);
+    assert_eq!(result.provenance.band_upper_percent, 80);
+    assert_eq!(result.warning_code, 0);
+    assert_eq!(status, crate::autotune::CommissionStatus::Accepted.to_u8());
+    assert!(backend.deployed_outer_gains(), "pass must deploy the tune");
+
+    tmc_state().motor_armed.store(false, Relaxed);
+    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
+    clear_motor_sentinel();
+}
+
+#[fixture_test]
+async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(robustness_outer_engine(robustness_entry_snapshot(
+        700,
+        40,
+        200_000,
+        (300, 300, 150, 300),
+    )));
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_acceptance_point(robustness_accepted_point(0));
+    seed_motor_sentinel(&mut backend).await;
+
+    let outcome = drive_commission_result_with_stages(
+        StepResult::RobustnessReversalTerminal(robustness_reject_terminal(3)),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+        0,
+        CommissionRetention::new(&mut slot),
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    assert!(
+        matches!(reply, ReplyPayload::RobustnessReversalTerminal { .. }),
+        "reject must keep the robustness fault terminal"
+    );
+    assert!(
+        !backend.deployed_outer_gains(),
+        "reject must not deploy the tune"
+    );
+
+    clear_motor_sentinel();
+}

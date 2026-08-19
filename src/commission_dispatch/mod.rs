@@ -1404,17 +1404,52 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             // The robustness probe reads the retained accepted point read-only,
             // so the only staged policy is the identity check: it re-stamps the
             // terminal `Failed`/`EVIDENCE_INTEGRITY` if the retained point moved
-            // underneath the probe. The engine disarm and reply build happen in
-            // the shared `drive_commission_result` terminal arm.
+            // underneath the probe.
             let terminal = robustness::apply_robustness_terminal(terminal, retention.stage_c);
-            drive_commission_result(
-                StepResult::RobustnessReversalTerminal(terminal),
-                engine,
-                backend,
-                state,
-                pwm_maxcnt,
-            )
-            .await
+            // A passed gate deploys the robustness-selected gains: join them with
+            // the entry snapshot and route through the shared `OuterDone` arm so
+            // the tune result and the host persist path light up. The join needs
+            // both the live entry snapshot and the retained accepted point (for
+            // its operating-point qualifiers); without either, fall back to the
+            // fault-terminal path rather than publish an incomplete tune. Every
+            // non-pass outcome forwards the fault terminal unchanged and deploys
+            // nothing.
+            let deploy = (terminal.outcome
+                == crate::commissioning::types::RobustnessOutcome::Complete)
+                .then(|| {
+                    engine
+                        .as_ref()
+                        .and_then(CommissioningEngine::entry_snapshot)
+                        .zip(retention.stage_c.acceptance_point())
+                })
+                .flatten();
+            match deploy {
+                Some((entry, point)) => {
+                    let result = crate::commissioning::outer::velocity::robustness_reversal::robustness_pass_outer_result(
+                        &terminal,
+                        &entry,
+                        point.qualifier_bits,
+                    );
+                    drive_commission_result(
+                        StepResult::OuterDone(result),
+                        engine,
+                        backend,
+                        state,
+                        pwm_maxcnt,
+                    )
+                    .await
+                }
+                None => {
+                    drive_commission_result(
+                        StepResult::RobustnessReversalTerminal(terminal),
+                        engine,
+                        backend,
+                        state,
+                        pwm_maxcnt,
+                    )
+                    .await
+                }
+            }
         }
         StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
             stage_c::install_authority_from_plan(channel, retention.stage_c, plan);

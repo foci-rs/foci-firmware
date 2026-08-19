@@ -16,6 +16,7 @@
 //! [`AcceptanceMatrixProgress`](super::integral_reproduction::AcceptanceMatrixProgress).
 
 use crate::autotune::CommissionError;
+use crate::autotune::CommissionStatus;
 use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork};
 use crate::autotune::velocity_measurement::{
     StationarityResult, VELOCITY_RATE_Q_SCALE, estimate_confidence,
@@ -24,6 +25,7 @@ use crate::commission_dispatch::robustness::{
     ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
     ROBUSTNESS_CAUSE_SAFETY_FAULT, ROBUSTNESS_CAUSE_TAIL_REPEATED,
 };
+use crate::commissioning::EntrySnapshot;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::OuterSafetyLimits;
@@ -31,14 +33,15 @@ use crate::commissioning::outer::state::VELOCITY_SWEEP_BLOCK_LEVELS;
 use crate::commissioning::outer::state::VelocityObservationRing;
 use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
 use crate::commissioning::types::{
-    OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
-    RobustnessOutcome, RobustnessReversalTerminal, StepResult,
+    OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterResult,
+    OuterSafetyFault, RobustnessOutcome, RobustnessReversalTerminal, StepResult, TuneProvenance,
 };
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
+use super::band_confirmation::{CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT};
 use super::clear_velocity_integrator;
 use super::integral_reproduction::AcceptancePoint;
 use super::robustness_cycles::{
@@ -1367,6 +1370,56 @@ pub(crate) fn robustness_reversal_fault_terminal(
         run_completed_us: session.run_started_us,
         safety_fault,
     })
+}
+
+/// Assemble the deployable outer tune for a passed reversal-robustness gate.
+///
+/// Joins the robustness-selected velocity gains from `terminal` with the entry
+/// snapshot's position gains, velocity limit, and biquad cutoffs, and fills the
+/// firmware-authored provenance from the run's diagnostic evidence. The
+/// mechanical-identification fields stay zero: the breakaway-seeded path that
+/// reaches this gate never runs mechanical identification. `qualifier_bits` are
+/// the retained accepted point's operating-point qualifiers; any nonzero value
+/// downgrades the status to accepted-with-warnings and surfaces its low byte as
+/// the warning code, matching the host's conservative-tune mapping.
+pub(crate) fn robustness_pass_outer_result(
+    terminal: &RobustnessReversalTerminal,
+    entry: &EntrySnapshot,
+    qualifier_bits: u16,
+) -> OuterResult {
+    let status = if qualifier_bits != 0 {
+        CommissionStatus::AcceptedWithWarnings
+    } else {
+        CommissionStatus::Accepted
+    };
+    let provenance = TuneProvenance {
+        probed_velocity_mrev_s: terminal.target_velocity_rpm.unsigned_abs() * 1_000 / 60,
+        // Settled-rate-Q reduction of the accepted point's response intervals,
+        // already computed as the gate's plant rate; the same encoder-rate-Q
+        // domain the provenance field documents. Always non-negative.
+        d_eq_q: i32::try_from(terminal.plant_rate_q).unwrap_or(i32::MAX),
+        confidence_q: 0,
+        band_lower_percent: CONFIRMATION_BAND_LOWER_PERCENT,
+        band_upper_percent: CONFIRMATION_BAND_UPPER_PERCENT,
+        band_position_q: 0,
+    };
+    OuterResult {
+        status,
+        velocity_p: terminal.selected_p,
+        velocity_i: terminal.selected_i,
+        velocity_limit: entry.velocity_limit,
+        position_p: entry.position_p.raw(),
+        position_i: entry.position_i.raw(),
+        velocity_filter_hz: entry.velocity_filter_hz,
+        position_filter_hz: entry.position_filter_hz,
+        flux_filter_hz: entry.flux_filter_hz,
+        torque_filter_hz: entry.torque_filter_hz,
+        j_eff: 0,
+        b_eff: 0,
+        warning_code: qualifier_bits as u8,
+        provenance,
+        ..OuterResult::default()
+    }
 }
 
 #[cfg(test)]
