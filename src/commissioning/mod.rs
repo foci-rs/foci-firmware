@@ -780,6 +780,67 @@ impl CommissioningEngine {
         Ok(Self::assemble_outer(scaffold, phase))
     }
 
+    /// Swap a live outer engine's velocity-integral phase for the reversal
+    /// robustness phase in place, reconfiguring the carried safety envelope
+    /// for the accepted point's probe velocity.
+    ///
+    /// Lets a Stage-C `Complete` promotion keep stepping the same physical
+    /// run straight into the robustness gate, instead of ending the outer
+    /// engine and waiting for a fresh commissioning command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommissionError::InvalidSchedule`] if the engine is not
+    /// currently in an outer velocity-integral phase eligible for the swap,
+    /// or if the probe velocity is zero or its envelope arithmetic overflows.
+    /// Returns [`CommissionError::EncoderFault`] for an invalid encoder
+    /// domain.
+    // Not yet called outside tests: the dispatch seam that promotes a
+    // Stage-C `Complete` terminal into this swap lands separately.
+    #[allow(dead_code)]
+    pub(crate) fn begin_inline_robustness(
+        &mut self,
+        point: crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint,
+        encoder_counts_per_rev: u32,
+    ) -> Result<(), CommissionError> {
+        use crate::commissioning::outer::velocity::robustness_reversal::{
+            RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
+        };
+
+        let EngineMode::Outer { phase, .. } = &mut self.engine_mode else {
+            return Err(CommissionError::InvalidSchedule);
+        };
+        let OuterPhase::VelocityIntegral { data, safety, .. } = phase else {
+            return Err(CommissionError::InvalidSchedule);
+        };
+        let run_sequence = data.integrity.run_sequence();
+
+        // `OuterSafetyLimits` is `Copy`, so the envelope is reconfigured on a
+        // copy and only written back once every fallible step below has
+        // succeeded. That keeps the live phase untouched -- rather than
+        // parked in a placeholder terminal state -- if a reconfiguration call
+        // fails partway through.
+        let mut reconfigured_safety = *safety;
+        reconfigured_safety
+            .configure_robustness_encoder_resolution(encoder_counts_per_rev)
+            .map_err(|_| CommissionError::EncoderFault)?;
+        let probe_velocity_mrev_s = point
+            .target_velocity_rpm
+            .unsigned_abs()
+            .checked_mul(1_000)
+            .map(|value| value / 60)
+            .ok_or(CommissionError::InvalidSchedule)?;
+        reconfigured_safety.configure_velocity_envelope(probe_velocity_mrev_s)?;
+
+        *phase = OuterPhase::RobustnessReversal {
+            state: RobustnessReversalState::Setup,
+            workspace: RobustnessReversalWorkspace::new(),
+            session: RobustnessReversalSession::new(point, run_sequence),
+            safety: reconfigured_safety,
+        };
+        Ok(())
+    }
+
     /// Return the order of the active fixed-I acceptance matrix.
     pub(crate) fn acceptance_matrix_order(
         &self,
@@ -949,6 +1010,53 @@ impl CommissioningEngine {
             state: inner::ElectricalIdState::DelaySample { capture },
             data: inner::ElectricalIdData::new(1_024),
         };
+    }
+
+    /// Return the reversal-robustness phase's probe velocity, recomputed
+    /// from its retained accepted point.
+    ///
+    /// Panics if the engine is not currently in the robustness-reversal
+    /// phase; test fixtures only call this after installing that phase.
+    #[cfg(test)]
+    pub(crate) fn outer_probe_velocity_mrev_s_for_test(&self) -> u32 {
+        match &self.engine_mode {
+            EngineMode::Outer {
+                phase: OuterPhase::RobustnessReversal { session, .. },
+                ..
+            } => session.probe_velocity_mrev_s_for_test(),
+            _ => panic!("robustness probe velocity fixture requires a robustness-reversal phase"),
+        }
+    }
+
+    /// Return the reversal-robustness phase's configured encoder resolution.
+    ///
+    /// Panics if the engine is not currently in the robustness-reversal
+    /// phase; test fixtures only call this after installing that phase.
+    #[cfg(test)]
+    pub(crate) fn outer_safety_counts_per_rev_for_test(&self) -> u32 {
+        match &self.engine_mode {
+            EngineMode::Outer {
+                phase: OuterPhase::RobustnessReversal { safety, .. },
+                ..
+            } => safety.counts_per_rev(),
+            _ => panic!("counts-per-rev fixture requires a robustness-reversal phase"),
+        }
+    }
+
+    /// Return the reversal-robustness phase's active velocity cap, in milli
+    /// counts per second -- the field `configure_velocity_envelope` mutates.
+    ///
+    /// Panics if the engine is not currently in the robustness-reversal
+    /// phase; test fixtures only call this after installing that phase.
+    #[cfg(test)]
+    pub(crate) fn outer_safety_active_velocity_cap_milli_counts_per_s_for_test(&self) -> u64 {
+        match &self.engine_mode {
+            EngineMode::Outer {
+                phase: OuterPhase::RobustnessReversal { safety, .. },
+                ..
+            } => safety.active_velocity_cap_milli_counts_per_s(),
+            _ => panic!("velocity cap fixture requires a robustness-reversal phase"),
+        }
     }
 
     /// Return the entry snapshot for the outer engine, if active.
@@ -1986,6 +2094,151 @@ mod tests {
             position_filter_hz: 0,
             flux_filter_hz: 0,
         }
+    }
+
+    fn sample_acceptance_point()
+    -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
+        use crate::commissioning::outer::velocity::integral_reproduction::{
+            AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
+        };
+
+        AcceptancePoint {
+            identity: StageCPlanIdentity {
+                channel: 0,
+                build_features: 0x1234,
+                schema_revision: 1,
+                plan_digest: 0xfeed_beef,
+            },
+            selected_p: 1_024,
+            selected_i: 512,
+            target_velocity_rpm: 322,
+            selected_response_intervals_q: [[10, 20], [-20, -10]],
+            qualifier_bits: 0,
+            token: None,
+            progress: AcceptanceMatrixProgress::ReadyAscending,
+        }
+    }
+
+    /// Build an outer engine parked in `OuterPhase::VelocityIntegral`
+    /// (`VelocityIntegralState::Setup`), the phase `begin_inline_robustness`
+    /// requires to be eligible for the swap.
+    fn build_outer_engine_in_velocity_integral() -> CommissioningEngine {
+        use crate::commission_dispatch::stage_c::StageCPreflight;
+        use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
+        use crate::commissioning::outer::velocity::integral_plan::{
+            StageCAcquisition, StageCAuthority, plan_velocity_integral_response,
+        };
+        use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+        use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
+        use crate::commissioning::outer::velocity::sweep_plan::{
+            RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
+        };
+
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: 2_929,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 2_000,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 50_000,
+            positive_position_headroom_mrev: 50_000,
+            max_duration_ms: 60_000,
+        };
+        let stage_b = plan_velocity_sweep(
+            request,
+            4_000,
+            2_816,
+            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        )
+        .unwrap();
+        let digest = stage_b.digest();
+        let plan = plan_velocity_integral_response(
+            StageCAuthority {
+                channel: 0,
+                acquisition: StageCAcquisition::ReproducedStageB(digest),
+                directional_memberships: [0x001c_0000; 2],
+                stage_b_joint_membership: 0x001c_0000,
+                joint_membership: 0x001c_0000,
+                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
+                reduced_margin: false,
+                directional_pooled_intervals: [
+                    [17_000_000, 18_000_000],
+                    [-19_000_000, -18_000_000],
+                ],
+            },
+            stage_b.execution_plan(digest),
+            OuterMotionBudget {
+                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
+                requested_velocity_source: request.requested_velocity_source,
+                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
+                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
+                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
+                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
+                max_duration_ms: request.max_duration_ms,
+            },
+            25_000,
+            4_000,
+        )
+        .unwrap();
+
+        let preflight = StageCPreflight {
+            plan,
+            identity: StageCPlanIdentity {
+                channel: 0,
+                build_features: 0,
+                schema_revision: plan.schema_revision,
+                plan_digest: plan.digest(),
+            },
+            run_sequence: 9,
+        };
+
+        CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+            0,
+            tmc_state(),
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            preflight,
+        )
+    }
+
+    #[test]
+    fn begin_inline_robustness_installs_reversal_phase() {
+        let mut engine = build_outer_engine_in_velocity_integral();
+        let point = sample_acceptance_point();
+
+        engine.begin_inline_robustness(point, 65_536).expect("swap");
+
+        assert!(matches!(
+            &engine.engine_mode,
+            EngineMode::Outer {
+                phase: OuterPhase::RobustnessReversal { .. },
+                ..
+            }
+        ));
+        assert_eq!(engine.current_phase_id(), Some(PhaseId::VelocityTune));
+        // Envelope reconfigured for the probe velocity, not the sweep velocity.
+        assert_eq!(
+            engine.outer_probe_velocity_mrev_s_for_test(),
+            322 * 1_000 / 60
+        );
+        assert_eq!(engine.outer_safety_counts_per_rev_for_test(), 65_536);
+
+        // Prove `configure_velocity_envelope` itself ran and had effect, not
+        // just `configure_robustness_encoder_resolution`: replay the same two
+        // calls on a fresh envelope and compare the resulting active cap,
+        // rather than hardcoding the internal envelope-margin formula here.
+        let mut expected_safety = OuterSafetyLimits::new(0, OuterMotionBudget::firmware_caps());
+        expected_safety
+            .configure_robustness_encoder_resolution(65_536)
+            .expect("reference envelope reconfigures its encoder resolution");
+        expected_safety
+            .configure_velocity_envelope(322 * 1_000 / 60)
+            .expect("reference envelope reconfigures its velocity cap");
+        assert_eq!(
+            engine.outer_safety_active_velocity_cap_milli_counts_per_s_for_test(),
+            expected_safety.active_velocity_cap_milli_counts_per_s(),
+        );
     }
 
     fn sample_inner_result(status: crate::autotune::CommissionStatus) -> InnerResult {
