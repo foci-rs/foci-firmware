@@ -3022,6 +3022,7 @@ mod tests {
             stiffness_timebase_ms: 64,
             velocity_search_stop_reason: 65,
             motion_budget_mrev: 66,
+            provenance: crate::commissioning::types::TuneProvenance::default(),
         }
     }
 

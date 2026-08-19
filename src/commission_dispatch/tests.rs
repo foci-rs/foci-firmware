@@ -1103,6 +1103,7 @@ fn sample_outer_result_for_dispatch() -> OuterResult {
         stiffness_timebase_ms: 0,
         velocity_search_stop_reason: 0,
         motion_budget_mrev: 0,
+        provenance: crate::commissioning::types::TuneProvenance::default(),
     }
 }
 

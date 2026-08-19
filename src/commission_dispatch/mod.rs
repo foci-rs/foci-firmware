@@ -398,6 +398,7 @@ fn zero_outer_result() -> OuterResult {
         stiffness_timebase_ms: 0,
         velocity_search_stop_reason: 0,
         motion_budget_mrev: 0,
+        provenance: crate::commissioning::types::TuneProvenance::default(),
     }
 }
 

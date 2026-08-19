@@ -98,6 +98,7 @@ pub(crate) fn step_commit(phase: &mut OuterPhase) -> StepResult {
         stiffness_timebase_ms: diagnostics.stiffness_timebase_ms,
         velocity_search_stop_reason: diagnostics.velocity_search_stop_reason,
         motion_budget_mrev: diagnostics.motion_budget_mrev,
+        provenance: crate::commissioning::types::TuneProvenance::default(),
     };
 
     defmt::info!(

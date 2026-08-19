@@ -2089,6 +2089,29 @@ pub struct InnerResult {
         [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
 }
 
+/// Firmware-authored provenance for a deployed outer tune.
+///
+/// All-zero (via `Default`) on legacy replies and failure paths, where no
+/// robustness-gated candidate was evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
+pub struct TuneProvenance {
+    /// Probed velocity, in milli-revolutions/second. Same domain as the
+    /// request field `requested_velocity_mrev_s`.
+    pub probed_velocity_mrev_s: u32,
+    /// Settled-rate-Q, in the encoder-rate-Q domain of
+    /// `selected_response_intervals_q`.
+    pub d_eq_q: i32,
+    /// Q0.16 normalized confidence fraction (0 = none, 65535 ~= 1.0).
+    pub confidence_q: u16,
+    /// Lower response-band edge, integer percent (e.g. 70).
+    pub band_lower_percent: u8,
+    /// Upper response-band edge, integer percent (e.g. 80).
+    pub band_upper_percent: u8,
+    /// Q0.16 position within `[band_lower_percent, band_upper_percent]`
+    /// (0 = lower edge, 65535 = upper edge).
+    pub band_position_q: u16,
+}
+
 /// Result of outer (mechanical) commissioning.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct OuterResult {
@@ -2157,6 +2180,47 @@ pub struct OuterResult {
     pub velocity_search_stop_reason: u8,
     /// Host-provided motion budget in milli-revolutions after clamping.
     pub motion_budget_mrev: u16,
+    /// Provenance of the deployed tune (probed velocity, D_eq, confidence,
+    /// response band). All-zero on legacy replies and failure paths.
+    pub provenance: TuneProvenance,
+}
+
+impl Default for OuterResult {
+    /// Zero-filled result for legacy and failure paths. `status` defaults to
+    /// `Failed(Spi)`, matching the existing `zero_outer_result` convention.
+    fn default() -> Self {
+        Self {
+            status: CommissionStatus::Failed(CommissionError::Spi),
+            velocity_p: 0,
+            velocity_i: 0,
+            velocity_limit: 0,
+            position_p: 0,
+            position_i: 0,
+            velocity_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
+            torque_filter_hz: 0,
+            j_eff: 0,
+            b_eff: 0,
+            warning_code: 0,
+            mech_torque_step: 0,
+            mech_fwd_accel: 0,
+            mech_rev_accel: 0,
+            mech_fwd_peak_velocity: 0,
+            mech_rev_peak_velocity: 0,
+            mech_fwd_travel: 0,
+            mech_rev_travel: 0,
+            synth_velocity_p: 0,
+            synth_velocity_i: 0,
+            synth_position_p: 0,
+            synth_position_i: 0,
+            outer_evidence_flags: 0,
+            stiffness_timebase_ms: 0,
+            velocity_search_stop_reason: 0,
+            motion_budget_mrev: 0,
+            provenance: TuneProvenance::default(),
+        }
+    }
 }
 
 /// ADC residual stage sampled with PWM chopping disabled after offset programming.
@@ -2340,5 +2404,21 @@ mod acceptance_matrix_code_tests {
         assert_eq!(AcceptanceMatrixCause::EvidenceCapacity as u8, 6);
         assert_eq!(AcceptanceMatrixCause::EvidenceIntegrity as u8, 7);
         assert_eq!(AcceptanceMatrixCause::VelocityRestNotConfirmed as u8, 53);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OuterResult;
+
+    #[test]
+    fn outer_result_provenance_defaults_to_zero() {
+        let r = OuterResult::default();
+        assert_eq!(r.provenance.probed_velocity_mrev_s, 0);
+        assert_eq!(r.provenance.d_eq_q, 0);
+        assert_eq!(r.provenance.confidence_q, 0);
+        assert_eq!(r.provenance.band_lower_percent, 0);
+        assert_eq!(r.provenance.band_upper_percent, 0);
+        assert_eq!(r.provenance.band_position_q, 0);
     }
 }

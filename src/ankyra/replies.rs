@@ -4108,6 +4108,104 @@ pub struct FociTuneResult {
     pub velocity_search_stop_reason: u8,
     /// Host-provided motion budget in milli-revolutions after clamping.
     pub motion_budget_mrev: u16,
+    /// Probed velocity, in milli-revolutions/second. Same domain as the
+    /// request field `requested_velocity_mrev_s`.
+    pub probed_velocity_mrev_s: u32,
+    /// Settled-rate-Q, in the encoder-rate-Q domain of
+    /// `selected_response_intervals_q`.
+    pub d_eq_q: i32,
+    /// Q0.16 normalized confidence fraction (0 = none, 65535 ~= 1.0).
+    pub confidence_q: u16,
+    /// Lower response-band edge, integer percent (e.g. 70).
+    pub band_lower_percent: u8,
+    /// Upper response-band edge, integer percent (e.g. 80).
+    pub band_upper_percent: u8,
+    /// Q0.16 position within `[band_lower_percent, band_upper_percent]`
+    /// (0 = lower edge, 65535 = upper edge).
+    pub band_position_q: u16,
+}
+
+#[cfg(test)]
+mod tune_result_reply_wire_tests {
+    //! Pins the `foci_tune_result` wire order: the provenance block must
+    //! serialize after every pre-existing field, and must not disturb their
+    //! encoding. Mirrors the ascending-small-value idiom
+    //! in `breakaway_reply_wire_tests` above (every field here VLQ-encodes
+    //! values `1..=35` as a single raw byte -- see `encode_vlq_int`'s
+    //! single-byte range of `-32..96`).
+    use super::FociTuneResult;
+    use ankyra::ScratchOutput;
+    use ankyra::encoding::Writable;
+
+    /// Pre-provenance field values, in struct-declaration order.
+    const LEGACY_FIELD_BYTES: [u8; 29] = [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        26, 27, 28, 29,
+    ];
+
+    fn reply_with_known_provenance() -> FociTuneResult {
+        FociTuneResult {
+            oid: 1,
+            status: 2,
+            velocity_p: 3,
+            velocity_i: 4,
+            velocity_limit: 5,
+            position_p: 6,
+            position_i: 7,
+            velocity_filter_hz: 8,
+            position_filter_hz: 9,
+            flux_filter_hz: 10,
+            torque_filter_hz: 11,
+            j_eff: 12,
+            b_eff: 13,
+            warning_code: 14,
+            mech_torque_step: 15,
+            mech_fwd_accel: 16,
+            mech_rev_accel: 17,
+            mech_fwd_peak_velocity: 18,
+            mech_rev_peak_velocity: 19,
+            mech_fwd_travel: 20,
+            mech_rev_travel: 21,
+            synth_velocity_p: 22,
+            synth_velocity_i: 23,
+            synth_position_p: 24,
+            synth_position_i: 25,
+            outer_evidence_flags: 26,
+            stiffness_timebase_ms: 27,
+            velocity_search_stop_reason: 28,
+            motion_budget_mrev: 29,
+            probed_velocity_mrev_s: 30,
+            d_eq_q: 31,
+            confidence_q: 32,
+            band_lower_percent: 33,
+            band_upper_percent: 34,
+            band_position_q: 35,
+        }
+    }
+
+    #[test]
+    fn provenance_fields_encode_after_existing_fields_in_declared_order() {
+        let reply = reply_with_known_provenance();
+        let mut scratch = ScratchOutput::<64>::new();
+        reply.write(&mut scratch);
+        let encoded = scratch.result();
+
+        assert_eq!(
+            &encoded[..LEGACY_FIELD_BYTES.len()],
+            &LEGACY_FIELD_BYTES[..],
+            "existing fields must keep their wire order and values"
+        );
+        assert_eq!(
+            encoded.len(),
+            LEGACY_FIELD_BYTES.len() + 6,
+            "provenance must append exactly six bytes to the existing payload"
+        );
+        assert_eq!(
+            &encoded[LEGACY_FIELD_BYTES.len()..],
+            &[30, 31, 32, 33, 34, 35],
+            "known provenance values must round-trip through the encoder unchanged"
+        );
+    }
 }
 
 /// `spi_transfer_response` reply — echo of a completed SPI transfer.
