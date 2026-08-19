@@ -1039,7 +1039,8 @@ impl CommissioningEngine {
                     | OuterPhase::Commit { .. }
                     | OuterPhase::Done(_)
                     | OuterPhase::Failed(_)
-                    | OuterPhase::FailedWithSafety { .. },
+                    | OuterPhase::FailedWithSafety { .. }
+                    | OuterPhase::RobustnessReversal { .. },
                 ..
             } => None,
         }
