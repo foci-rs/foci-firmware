@@ -277,39 +277,12 @@ impl CurrentLoopEvidence {
     }
 }
 
-/// First-order mechanical plant model estimated during Phase 8.
-///
-/// Represents `G_mech(s) = 1 / (J_eff * s + B_eff)` where J_eff includes
-/// carriage mass, belt compliance, and reflected rotor inertia. Used by
-/// Phase 9 (velocity-loop SIMC synthesis) to compute velocity gains.
-///
-/// All values are in internal units derived from encoder counts and
-/// torque DAC values. Physical conversion happens on the host side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct MechanicalModel {
-    /// Effective inertia in internal units.
-    /// J_eff = torque / initial_acceleration (from first few samples).
-    pub j_eff: u32,
-    /// Effective damping in internal units.
-    /// B_eff = torque / steady_state_velocity, or from deceleration curve.
-    pub b_eff: u32,
-    /// Mechanical time constant J_eff / B_eff in milliseconds.
-    pub tau_mech_ms: u32,
-    /// Effective mechanical delay in microseconds.
-    /// Time from torque step to first measurable velocity change.
-    pub theta_mech_us: u32,
-    /// Static friction estimate in torque units. 0 if not measured.
-    pub t_f: u16,
-}
-
 /// Computed PI gains for the TMC4671 velocity loop.
 ///
-/// Produced by [`simc_velocity_gains`] from a [`MechanicalModel`],
-/// inner-loop bandwidth, and tuning profile. The velocity limit is
-/// derived from the peak velocity observed during mechanical ID and is
-/// represented in encoder counts/ms during commissioning validation. The
-/// validation phase converts it to TMC velocity-register units at the SPI
-/// write boundary.
+/// The velocity limit is derived from the peak velocity observed during
+/// commissioning and is represented in encoder counts/ms during
+/// commissioning validation. The validation phase converts it to TMC
+/// velocity-register units at the SPI write boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityGains {
     /// Velocity P gain — TMC4671 Q8.8 register value.
@@ -323,12 +296,6 @@ pub struct VelocityGains {
     /// Closed-loop time constant lambda_vel in milliseconds.
     pub lambda_vel_ms: u32,
 }
-
-/// Maximum model-synthesized velocity P accepted by outer commissioning.
-///
-/// Keep this centralized so SIMC synthesis and the Phase 10/commit envelope
-/// use the same bound.
-pub(crate) const VELOCITY_SIMC_MAX_P_REG: u16 = 1152 * 4;
 
 /// Computed position-loop gains from Phase 11 P ramp-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

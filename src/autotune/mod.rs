@@ -63,7 +63,6 @@ pub use integral_gain::{
     integral_tau_us, round_positive_ratio, synthesize_i_gain, synthesize_i_gain_from_cycles,
 };
 pub use metrics::Permille;
-pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;
 pub use models::{
     AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
     CURRENT_FLUX_VALIDATION_SAMPLE_COUNT, CURRENT_GAINS_SOURCE_DEFAULT,
@@ -81,8 +80,7 @@ pub use models::{
     CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT, CURRENT_VALIDATION_AXIS_FLUX,
     CURRENT_VALIDATION_AXIS_TORQUE, CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, CurrentGainSynthesis,
     CurrentGainSynthesisError, CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
-    ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, FilterConfig, MechanicalModel,
-    PositionGains, VelocityGains,
+    ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, FilterConfig, PositionGains, VelocityGains,
 };
 pub use position::{
     PositionOscillationDiagnostics, analyze_position_oscillation, detect_position_oscillation,
@@ -92,10 +90,6 @@ pub use types::{
     CLOSED_LOOP_ENTRY_STATUS_NOT_RUN, CLOSED_LOOP_ENTRY_STATUS_PASS,
     CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState, CommissionError, CommissionProfile,
     CommissionStatus, InnerSequence, OperatingMode, PhaseId, SavedGains, ValidationResult,
-};
-pub use velocity::{
-    VelocityStiffnessVerdict, VelocityValidation, classify_velocity_stiffness,
-    classify_velocity_validation, extract_velocity_metrics, simc_velocity_gains,
 };
 pub use velocity_units::{TmcMechanicalRpm, VelocityUnitError};
 

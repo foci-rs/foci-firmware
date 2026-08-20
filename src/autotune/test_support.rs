@@ -1,4 +1,4 @@
-use super::{ElectricalModel, MechanicalModel};
+use super::ElectricalModel;
 
 pub(super) fn autotune_test_config() -> crate::config::TmcConfig {
     crate::config::TmcConfig {
@@ -25,15 +25,5 @@ pub(super) fn test_electrical_model() -> ElectricalModel {
         l_count_micro: 2950,
         tau_e_us: 2622,
         theta_e_us: 700,
-    }
-}
-
-pub(super) fn test_mechanical_model() -> MechanicalModel {
-    MechanicalModel {
-        j_eff: 500,
-        b_eff: 50,
-        tau_mech_ms: 10,     // J/B = 500/50 = 10ms
-        theta_mech_us: 2000, // 2ms mechanical delay
-        t_f: 0,
     }
 }
