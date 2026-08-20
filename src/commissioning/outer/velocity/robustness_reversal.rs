@@ -185,16 +185,6 @@ impl RobustnessReversalSession {
 pub(crate) enum RobustnessReversalState {
     /// Arm the safety baseline before any motion.
     Setup,
-    /// Command zero velocity and confirm rest before the first establish leg.
-    ///
-    /// The inline orchestration hands the phase a motor still cruising at the
-    /// reproduce velocity; clearing the integrator and commanding a full
-    /// establish target followed by a reversal from that motion drives a large
-    /// regenerative transient. Quiescing to a scored-confirmed rest here makes
-    /// the first cycle begin from a stop on every entry path. From the
-    /// standalone entry the loop is already at rest, so the first scored window
-    /// confirms immediately and this is a no-op.
-    QuiesceToRest,
     /// Apply the accepted gains, ramp mode, and clear the integrator (entry leg).
     EstablishWriteGain,
     /// Command the signed establish-cruise target for the current direction.
@@ -223,21 +213,15 @@ pub(crate) enum RobustnessReversalState {
     /// tracks whether one rejected-rest re-open remains.
     ZeroCommand { retry_available: bool },
     /// Collect the zero-target rest capture until its window elapses.
-    /// `initial_quiesce` marks the entry quiesce (before any cycle) so the
-    /// confirmed rest routes to the first establish leg rather than the
-    /// between-cycles ledger routing.
     ZeroCapture {
         next_sample_us: u64,
         deadline_us: u64,
         retry_available: bool,
-        initial_quiesce: bool,
     },
-    /// Confirm rest between legs via scored-rest analysis. `initial_quiesce`
-    /// carries the entry-quiesce marker through to the routing decision.
+    /// Confirm rest between legs via scored-rest analysis.
     ZeroAnalyze {
         analysis_deadline_us: u64,
         retry_available: bool,
-        initial_quiesce: bool,
     },
     /// Assemble evidence and emit the terminal.
     Assemble,
@@ -458,22 +442,8 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             session.run_started_us = now_us;
             workspace.previous_encoder_raw = baseline;
             workspace.previous_read_us = now_us;
-            *state = RobustnessReversalState::QuiesceToRest;
+            *state = RobustnessReversalState::EstablishWriteGain;
             StepResult::ReadyNow
-        }
-        RobustnessReversalState::QuiesceToRest => {
-            match command_rest_window(session, workspace, safety, backend, counts_per_rev).await {
-                Ok((next_sample_us, deadline_us)) => {
-                    *state = RobustnessReversalState::ZeroCapture {
-                        next_sample_us,
-                        deadline_us,
-                        retry_available: true,
-                        initial_quiesce: true,
-                    };
-                    StepResult::At(next_sample_us)
-                }
-                Err(step) => step,
-            }
         }
         RobustnessReversalState::EstablishWriteGain => {
             // Start-of-cycle: clear the peak-excursion tracker so this cycle's
@@ -738,13 +708,20 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             }
         }
         RobustnessReversalState::ZeroCommand { retry_available } => {
-            match command_rest_window(session, workspace, safety, backend, counts_per_rev).await {
+            if backend
+                .write_register(PID_VELOCITY_TARGET, 0)
+                .await
+                .is_err()
+            {
+                return fault_terminal(session, backend, None, counts_per_rev);
+            }
+            safety.enter_settle_phase();
+            match open_zero_window(session, workspace, backend, counts_per_rev).await {
                 Ok((next_sample_us, deadline_us)) => {
                     *state = RobustnessReversalState::ZeroCapture {
                         next_sample_us,
                         deadline_us,
                         retry_available,
-                        initial_quiesce: false,
                     };
                     StepResult::At(next_sample_us)
                 }
@@ -755,7 +732,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             next_sample_us,
             deadline_us,
             retry_available,
-            initial_quiesce,
         } => {
             if backend.elapsed_us() < next_sample_us {
                 return StepResult::At(next_sample_us);
@@ -771,7 +747,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 *state = RobustnessReversalState::ZeroAnalyze {
                     analysis_deadline_us,
                     retry_available,
-                    initial_quiesce,
                 };
                 StepResult::ReadyNow
             } else {
@@ -780,7 +755,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     next_sample_us: next,
                     deadline_us,
                     retry_available,
-                    initial_quiesce,
                 };
                 StepResult::At(next)
             }
@@ -788,7 +762,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         RobustnessReversalState::ZeroAnalyze {
             analysis_deadline_us,
             retry_available,
-            initial_quiesce,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
                 return fault_terminal(session, backend, None, counts_per_rev);
@@ -802,13 +775,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Ok(ScoredRestPoll::Complete(confirmation)) => {
                     if confirmation.confirmed_rest {
                         safety.end_primitive();
-                        if initial_quiesce {
-                            // Entry quiesce confirmed: the loop is at rest, so the
-                            // first establish leg begins from a stop no matter what
-                            // motion the entry path carried in. No cycle has been
-                            // measured yet, so nothing is recorded here.
-                            *state = RobustnessReversalState::EstablishWriteGain;
-                        } else if let Some(pending) = session.pending_cycle.take() {
+                        if let Some(pending) = session.pending_cycle.take() {
                             // A conclusive cycle rested; record it into the
                             // ledger now and route the next cycle or direction.
                             apply_cycle_record(
@@ -835,7 +802,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                                     next_sample_us,
                                     deadline_us,
                                     retry_available: false,
-                                    initial_quiesce,
                                 };
                                 StepResult::At(next_sample_us)
                             }
@@ -1087,27 +1053,6 @@ fn route_after_consumed_slot(
         LedgerAction::NextCycle
     };
     route_action(state, session, action);
-}
-
-/// Command the zero-velocity target, widen the envelope for braking, and open a
-/// fresh scored-rest capture window. Shared by the entry quiesce and every
-/// between-legs rest so both confirm rest through the identical machinery.
-async fn command_rest_window<B: CommissioningBackend>(
-    session: &RobustnessReversalSession,
-    workspace: &mut RobustnessReversalWorkspace,
-    safety: &mut OuterSafetyLimits,
-    backend: &mut B,
-    counts_per_rev: u32,
-) -> Result<(u64, u64), StepResult> {
-    if backend
-        .write_register(PID_VELOCITY_TARGET, 0)
-        .await
-        .is_err()
-    {
-        return Err(fault_terminal(session, backend, None, counts_per_rev));
-    }
-    safety.enter_settle_phase();
-    open_zero_window(session, workspace, backend, counts_per_rev).await
 }
 
 /// Open a fresh zero-target rest capture window without re-commanding the
@@ -1793,85 +1738,6 @@ mod tests {
             noisy_backend.pid_velocity_error_sum_clears,
             attempts_per_direction * DIRECTION_COUNT,
             "each establish attempt clears once; reversals never clear"
-        );
-    }
-
-    /// Regardless of the motion carried in from the entry path, the phase must
-    /// command zero velocity and score-confirm rest before the first establish
-    /// leg clears the integrator and drives a full establish/reversal. Entering
-    /// establish straight from an inline-orchestration cruise drives a large
-    /// regenerative transient that browns the board out, so the quiesce-to-rest
-    /// gate must precede the first integrator clear.
-    #[test]
-    fn quiesces_to_confirmed_rest_before_first_establish_leg() {
-        let mut state = RobustnessReversalState::Setup;
-        let mut workspace = RobustnessReversalWorkspace::new();
-        let mut session = RobustnessReversalSession::new(test_point(), 7);
-        let mut safety = test_safety();
-        let mut backend = test_backend();
-
-        let clear_addr = PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr();
-        let target_addr = PID_VELOCITY_TARGET.addr();
-
-        let encoder_count: i32 = 0;
-        let mut saw_scored_rest_window = false;
-        let mut reached_first_clear = false;
-
-        for _ in 0..STEP_BUDGET {
-            let result = pollster::block_on(step_robustness_reversal(
-                &mut state,
-                &mut workspace,
-                &mut session,
-                &mut safety,
-                &mut backend,
-            ));
-            // A scored-rest window scheduled from a zero-target capture leg is
-            // the observable proof the phase is confirming rest, not merely
-            // parking the target.
-            if matches!(state, RobustnessReversalState::ZeroCapture { .. }) {
-                saw_scored_rest_window = true;
-            }
-            // Stop as soon as the first establish leg clears the integrator.
-            if backend.spi_log.iter().any(
-                |op| matches!(op, SpiOp::Write(addr, value) if *addr == clear_addr && *value == 0),
-            ) {
-                reached_first_clear = true;
-                break;
-            }
-            match result {
-                StepResult::ReadyNow => {}
-                StepResult::At(deadline) => {
-                    backend.elapsed_us_value = deadline;
-                    // The commanded target is zero throughout the quiesce, so the
-                    // loop holds position: model a motor that has come to rest.
-                    backend.set_abn_decoder_count(encoder_count.rem_euclid(4_000));
-                }
-                other => panic!("unexpected step result: {other:?}"),
-            }
-        }
-
-        assert!(
-            reached_first_clear,
-            "the run reached its first establish clear"
-        );
-
-        let first_clear = backend
-            .spi_log
-            .iter()
-            .position(
-                |op| matches!(op, SpiOp::Write(addr, value) if *addr == clear_addr && *value == 0),
-            )
-            .expect("an integrator clear was observed");
-        let zero_target_before_clear = backend.spi_log[..first_clear].iter().any(
-            |op| matches!(op, SpiOp::Write(addr, value) if *addr == target_addr && *value == 0),
-        );
-        assert!(
-            zero_target_before_clear,
-            "a zero velocity target must be commanded before the first establish clear"
-        );
-        assert!(
-            saw_scored_rest_window,
-            "a scored-rest window must confirm rest before the first establish clear"
         );
     }
 
