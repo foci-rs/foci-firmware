@@ -46,10 +46,10 @@ pub(crate) const fn mechanical_id_velocity_onset_threshold_mcpms(counts_per_rev:
     if threshold > 0 { threshold } else { 1 }
 }
 
-/// Quality gate for accepting mechanical-ID estimates. The minimum-peak-velocity
-/// and minimum-travel gates moved to `super::limits` -- the shared outer-safety
-/// envelope depends on them through `OuterSafetyLimits::budget_is_usable`.
+/// Quality gates for accepting mechanical-ID estimates.
 pub(crate) const MECHANICAL_ID_MIN_ACCEL_COUNTS_PER_MS2: u32 = 2;
+pub(crate) const MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS: u32 = 4;
+pub(crate) const MECHANICAL_ID_MIN_TRAVEL_COUNTS: u32 = 64;
 
 /// Velocity-loop response-ramp fallback: target step in encoder counts/ms.
 pub(crate) const VELOCITY_RESPONSE_STEP_TARGET: u32 = 4;
