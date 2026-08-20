@@ -305,7 +305,9 @@ pub enum EngineKind {
     Calibrate,
     /// Engine constructed via `new_selftest` — diagnostic selftest run.
     Selftest,
-    /// Engine constructed via `new_outer` — Stage 2 mechanical/velocity tune.
+    /// Engine constructed via one of the live outer constructors
+    /// (`new_outer_for_tmc_with_acceptance_preflight`, `_with_stage_c_preflight`,
+    /// `_with_breakaway_campaign`, `_with_robustness`) — Stage 2 mechanical/velocity tune.
     OuterTune,
 }
 
