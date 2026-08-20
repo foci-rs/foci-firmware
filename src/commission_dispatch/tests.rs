@@ -1,11 +1,11 @@
 #![allow(unused_imports)]
 //! Tests for drive_commission_result. Populated per-variant in Tasks 12-18.
 
-use super::test_support::breakaway_campaign_engine;
 use super::test_support::{
     MockBackend, SpiOp, accepted_commission_result as sample_commission_result, fresh_state_locals,
     sample_entry_snapshot, sample_outer_params,
 };
+use super::test_support::{breakaway_campaign_engine, robustness_reversal_engine};
 use super::*;
 use crate::autotune::CommissionProfile;
 use foci_firmware_macros::fixture_test;
@@ -1912,11 +1912,7 @@ async fn outer_failed_safety_envelope_violation_full_disarm() {
     let mut en = true; // simulate motor was previously armed
     tmc_state().motor_armed.store(true, Ordering::Relaxed);
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_outer(
-        0,
-        sample_outer_params(),
-        sample_entry_snapshot(),
-    ));
+    let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::SafetyEnvelopeViolation;
 
     let outcome = drive_commission_result(
@@ -1957,11 +1953,7 @@ async fn outer_failed_soft_failure_holds_motor() {
     let mut en = true;
     stepper_state().position.store(99, Ordering::Relaxed);
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_outer(
-        0,
-        sample_outer_params(),
-        sample_entry_snapshot(),
-    ));
+    let mut engine = Some(robustness_reversal_engine());
     // NoCurrent is not a safety-fault variant.
     let err = crate::autotune::CommissionError::NoCurrent;
     seed_motor_sentinel(&mut backend).await;
@@ -2013,11 +2005,7 @@ async fn outer_failed_unstable_drift_preserves_upstream_error() {
     let mut cal = true;
     let mut en = true;
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_outer(
-        0,
-        sample_outer_params(),
-        sample_entry_snapshot(),
-    ));
+    let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::NoCurrent;
 
     let outcome = drive_commission_result(
@@ -2066,11 +2054,7 @@ async fn outer_failed_restore_uses_encoder_scale_for_position_jitter() {
     let mut cal = true;
     let mut en = true;
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_outer(
-        0,
-        sample_outer_params(),
-        sample_entry_snapshot(),
-    ));
+    let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::VelocityValidationFailed;
     seed_motor_sentinel(&mut backend).await;
 
@@ -2118,11 +2102,7 @@ async fn outer_failed_restore_accepts_scaled_encoder_jitter() {
     let mut cal = true;
     let mut en = true;
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_outer(
-        0,
-        sample_outer_params(),
-        sample_entry_snapshot(),
-    ));
+    let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::VelocityValidationFailed;
     seed_motor_sentinel(&mut backend).await;
 
@@ -2170,11 +2150,7 @@ fn outer_failed_restore_rejects_monotonic_creep() {
         let mut cal = true;
         let mut en = true;
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-        let mut engine = Some(CommissioningEngine::new_outer(
-            0,
-            sample_outer_params(),
-            sample_entry_snapshot(),
-        ));
+        let mut engine = Some(robustness_reversal_engine());
         let err = crate::autotune::CommissionError::VelocityValidationFailed;
 
         let outcome = drive_commission_result(
@@ -2484,7 +2460,18 @@ fn robustness_entry_snapshot(
 /// reads `entry_snapshot()` and consumes the engine, so the engine's internal
 /// phase is immaterial to the routing this exercises.
 fn robustness_outer_engine(entry: crate::commissioning::EntrySnapshot) -> CommissioningEngine {
-    CommissioningEngine::new_outer(0, sample_outer_params(), entry)
+    CommissioningEngine::new_outer_for_tmc_with_robustness(
+        0,
+        crate::state::tmc::tmc_channel0(),
+        sample_outer_params(),
+        entry,
+        robustness::RobustnessPreflight {
+            point: robustness_accepted_point(0),
+            run_sequence: 0,
+        },
+        4_000,
+    )
+    .expect("valid robustness safety configuration")
 }
 
 /// Retained accepted point whose identity matches the terminal fixtures below.

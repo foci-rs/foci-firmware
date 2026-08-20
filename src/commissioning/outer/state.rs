@@ -458,6 +458,9 @@ pub(crate) struct MechanicalIdData {
 }
 
 impl MechanicalIdData {
+    // Production now enters live outer phases directly, so `MechanicalId`
+    // (and this constructor) is reachable only from its own phase tests.
+    #[allow(dead_code)]
     pub(crate) fn new(torque_step: u16) -> Self {
         Self {
             start_position: None,

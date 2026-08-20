@@ -23,8 +23,7 @@ use crate::autotune::{
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
-    MechanicalIdData, MechanicalIdState, OuterMotionBudget, OuterPhase, OuterSafetyLimits,
-    TraceSummarySeqs,
+    OuterMotionBudget, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
 };
 use crate::commissioning::outer::{VelocityIntegralData, VelocityIntegralState};
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
@@ -71,7 +70,7 @@ const PHASE_END_OK: u8 = 0;
 /// Parameters for outer (mechanical) commissioning engine construction.
 ///
 /// Groups the inner-loop characterization results and operating mode
-/// that `new_outer()` needs beyond `oid` and `entry_snapshot`.
+/// the outer engine constructors need beyond `oid` and `entry_snapshot`.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct OuterTuneParams {
     /// Commissioning profile (conservative / balanced / aggressive).
@@ -113,7 +112,7 @@ pub struct OuterTuneParams {
 ///
 /// Current-loop gains are not included because Stage 2 never mutates them.
 /// Built by the caller in `main.rs` from firmware atomics and passed to
-/// `new_outer()`.
+/// the outer engine constructors.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub struct EntrySnapshot {
     /// Velocity P gain (Q8.8).
@@ -461,40 +460,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Create an engine for outer (mechanical) commissioning.
-    ///
-    /// `entry_snapshot` captures the active outer gains at entry for
-    /// soft-failure restoration. Built by the caller from firmware atomics.
-    pub fn new_outer(oid: u8, params: OuterTuneParams, entry_snapshot: EntrySnapshot) -> Self {
-        Self::new_outer_with_trace_seq(oid, params, entry_snapshot, 0)
-    }
-
-    /// Create an outer commissioning engine with a caller-assigned trace sequence.
-    pub fn new_outer_with_trace_seq(
-        oid: u8,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
-        trace_engine_seq: u32,
-    ) -> Self {
-        Self::new_outer_for_tmc_with_trace_seq(
-            oid,
-            crate::state::tmc::tmc_channel0(),
-            params,
-            entry_snapshot,
-            trace_engine_seq,
-        )
-    }
-
-    /// Create an outer commissioning engine bound to a TMC channel state.
-    pub fn new_outer_for_tmc(
-        oid: u8,
-        tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
-    ) -> Self {
-        Self::new_outer_for_tmc_with_trace_seq(oid, tmc_state, params, entry_snapshot, 0)
-    }
-
     /// Derive the outer safety envelope and phase-independent engine fields.
     ///
     /// The safety limits start with placeholder values; the entry phase's
@@ -588,24 +553,6 @@ impl CommissioningEngine {
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
         }
-    }
-
-    /// Create an outer commissioning engine bound to a TMC channel state and trace sequence.
-    pub fn new_outer_for_tmc_with_trace_seq(
-        oid: u8,
-        tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
-        trace_engine_seq: u32,
-    ) -> Self {
-        let scaffold =
-            Self::outer_scaffold(oid, tmc_state, params, entry_snapshot, trace_engine_seq);
-        let phase = OuterPhase::MechanicalId {
-            state: MechanicalIdState::Setup,
-            data: MechanicalIdData::new(0),
-            safety: scaffold.safety,
-        };
-        Self::assemble_outer(scaffold, phase)
     }
 
     /// Create a breakaway-campaign engine from an admitted, pre-planned campaign.
@@ -2515,40 +2462,6 @@ mod tests {
         });
     }
 
-    fn sample_outer_result(status: crate::autotune::CommissionStatus) -> OuterResult {
-        OuterResult {
-            status,
-            velocity_p: 1152,
-            velocity_i: 0,
-            velocity_limit: 500_000,
-            position_p: 640,
-            position_i: 0,
-            velocity_filter_hz: 0,
-            position_filter_hz: 0,
-            flux_filter_hz: 0,
-            torque_filter_hz: 0,
-            j_eff: 0,
-            b_eff: 0,
-            warning_code: 0,
-            mech_torque_step: 0,
-            mech_fwd_accel: 0,
-            mech_rev_accel: 0,
-            mech_fwd_peak_velocity: 0,
-            mech_rev_peak_velocity: 0,
-            mech_fwd_travel: 0,
-            mech_rev_travel: 0,
-            synth_velocity_p: 0,
-            synth_velocity_i: 0,
-            synth_position_p: 0,
-            synth_position_i: 0,
-            outer_evidence_flags: 0,
-            stiffness_timebase_ms: 0,
-            velocity_search_stop_reason: 0,
-            motion_budget_mrev: 0,
-            provenance: crate::commissioning::types::TuneProvenance::default(),
-        }
-    }
-
     fn sample_adc_cal_result() -> AdcCalResult {
         AdcCalResult {
             adc_i0: 11,
@@ -2564,8 +2477,11 @@ mod tests {
         }
     }
 
+    /// The live outer entry phases (breakaway campaign, Stage-C velocity
+    /// integral, reversal-standstill robustness) all report `VelocityTune`;
+    /// see `OuterPhase::current_phase_id`.
     fn initial_outer_phase_id() -> PhaseId {
-        PhaseId::MechanicalId
+        PhaseId::VelocityTune
     }
 
     fn assert_trace_event(
@@ -2668,16 +2584,17 @@ mod tests {
             CommissioningEngine::new_selftest(0).kind(),
             EngineKind::Selftest
         );
-        let params = sample_outer_params();
-        let snapshot = sample_entry_snapshot();
-        assert_eq!(
-            CommissioningEngine::new_outer(0, params, snapshot).kind(),
-            EngineKind::OuterTune,
-        );
+        assert_eq!(breakaway_safety_engine(42).kind(), EngineKind::OuterTune,);
     }
 
+    /// The budget-derivation logic in `outer_scaffold` is shared by every
+    /// live outer constructor, so a breakaway-campaign engine is as valid a
+    /// witness for this contract as any other.
     #[test]
     fn new_outer_seeds_host_motion_budget() {
+        use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
+        use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
+
         let params = OuterTuneParams {
             requested_velocity_mrev_s: 4_500,
             max_stroke_travel_mrev: 750,
@@ -2687,14 +2604,34 @@ mod tests {
             max_duration_ms: 2_500,
             ..sample_outer_params()
         };
-        let engine = CommissioningEngine::new_outer(0, params, sample_entry_snapshot());
+        let request = VelocitySweepRequest {
+            requested_velocity_mrev_s: params.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: params.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: params.requested_velocity_source,
+            max_stroke_travel_mrev: params.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: params.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: params.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: params.positive_position_headroom_mrev,
+            max_duration_ms: params.max_duration_ms,
+        };
+        let (campaign, _workflow) =
+            plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 43)
+                .expect("valid breakaway campaign");
+        let engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+            0,
+            tmc_state(),
+            params,
+            sample_entry_snapshot(),
+            campaign,
+        )
+        .expect("valid safety configuration");
 
         let EngineMode::Outer { phase, .. } = engine.engine_mode else {
-            panic!("new_outer should create an outer engine");
+            panic!("breakaway constructor should create an outer engine");
         };
         let safety = match phase {
-            OuterPhase::MechanicalId { safety, .. } => safety,
-            _ => panic!("new_outer should enter its first outer phase"),
+            OuterPhase::BreakawayCampaign { safety, .. } => safety,
+            _ => panic!("breakaway constructor should enter the campaign phase"),
         };
 
         assert_eq!(safety.budget.max_stroke_travel_mrev, 750);
@@ -2705,21 +2642,7 @@ mod tests {
         assert_eq!(safety.budget.max_duration_ms, 2_500);
     }
 
-    #[test]
-    fn new_outer_enters_mechanical_id() {
-        let engine =
-            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot());
-
-        assert!(matches!(
-            engine.engine_mode,
-            EngineMode::Outer {
-                phase: OuterPhase::MechanicalId { .. },
-                ..
-            }
-        ));
-    }
-
-    fn breakaway_safety_engine() -> CommissioningEngine {
+    fn breakaway_safety_engine(run_sequence: u32) -> CommissioningEngine {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
         use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 
@@ -2735,7 +2658,7 @@ mod tests {
             max_duration_ms: params.max_duration_ms,
         };
         let (campaign, _workflow) =
-            plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, 42)
+            plan_breakaway_campaign_command(request, 4_000, 2_816, 0, 25_000, 0, run_sequence)
                 .expect("valid breakaway campaign");
         CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
             0,
@@ -2825,7 +2748,7 @@ mod tests {
         use crate::commissioning::types::{BreakawayCampaignEvent, StepResult};
 
         pollster::block_on(async {
-            let mut engine = breakaway_safety_engine();
+            let mut engine = breakaway_safety_engine(42);
             let EngineMode::Outer {
                 phase: OuterPhase::BreakawayCampaign { campaign, .. },
                 ..
@@ -2884,7 +2807,7 @@ mod tests {
     ) {
         use crate::commissioning::types::{BreakawayCampaignEvent, StepResult};
 
-        let mut engine = breakaway_safety_engine();
+        let mut engine = breakaway_safety_engine(42);
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
         backend.current_limit_value = current_limit(2_816);
 
@@ -3133,17 +3056,6 @@ mod tests {
             TraceEventLevel::Info,
         );
         assert_terminal_trace(
-            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot()),
-            StepResult::OuterDone(sample_outer_result(
-                crate::autotune::CommissionStatus::Accepted,
-            )),
-            EngineKind::OuterTune,
-            initial_outer_phase_id(),
-            0,
-            TraceEventLevel::Info,
-            TraceEventLevel::Info,
-        );
-        assert_terminal_trace(
             CommissioningEngine::new_calibrate(0),
             StepResult::CalibrateDone(sample_adc_cal_result()),
             EngineKind::Calibrate,
@@ -3171,12 +3083,7 @@ mod tests {
         };
         use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
 
-        let mut engine = CommissioningEngine::new_outer_with_trace_seq(
-            0,
-            sample_outer_params(),
-            sample_entry_snapshot(),
-            9,
-        );
+        let mut engine = breakaway_safety_engine(9);
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
         let terminal = VelocityIntegralTerminal {
             run_sequence: 9,
@@ -3455,12 +3362,7 @@ mod tests {
 
     #[test]
     fn failure_trace_ends_active_outer_phase_and_is_idempotent() {
-        let mut engine = CommissioningEngine::new_outer_with_trace_seq(
-            0,
-            sample_outer_params(),
-            sample_entry_snapshot(),
-            22,
-        );
+        let mut engine = breakaway_safety_engine(22);
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
         let err = crate::autotune::CommissionError::VelocityValidationFailed;
 
@@ -3524,17 +3426,6 @@ mod tests {
             EngineKind::Commission,
             crate::autotune::PhaseId::AdcCalibrate,
             crate::autotune::CommissionStatus::AcceptedWithWarnings.to_u8(),
-            TraceEventLevel::Info,
-            TraceEventLevel::Warn,
-        );
-        assert_terminal_trace(
-            CommissioningEngine::new_outer(0, sample_outer_params(), sample_entry_snapshot()),
-            StepResult::OuterDone(sample_outer_result(
-                crate::autotune::CommissionStatus::InnerOnly,
-            )),
-            EngineKind::OuterTune,
-            initial_outer_phase_id(),
-            crate::autotune::CommissionStatus::InnerOnly.to_u8(),
             TraceEventLevel::Info,
             TraceEventLevel::Warn,
         );

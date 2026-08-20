@@ -767,7 +767,6 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
     crate::state::stepper::reset_all_stepper_channels();
 
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
-    use crate::commissioning::CommissioningEngine;
     use crate::commissioning::types::StepResult;
 
     let plan = stage_c_plan();
@@ -791,11 +790,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
         &mut enabled,
         &mut gains,
     );
-    let mut engine = Some(CommissioningEngine::new_outer(
-        1,
-        outer_params(),
-        entry_snapshot(),
-    ));
+    let mut engine = Some(breakaway_engine(plan, &expected_authority));
 
     let outcome = super::drive_commission_result_with_stages(
         StepResult::BreakawayStageCPlanReady {

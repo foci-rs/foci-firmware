@@ -90,6 +90,46 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
     .expect("valid breakaway safety configuration")
 }
 
+/// Build a real admitted reversal-standstill robustness engine for
+/// cross-module lifecycle tests. Unlike a breakaway-campaign or Stage-C
+/// engine, this phase reports no active velocity workflow (see
+/// `CommissioningEngine::velocity_operational_torque_limit`), so it is the
+/// live-path witness for dispatch behavior gated on that distinction.
+pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine {
+    use crate::commission_dispatch::robustness::RobustnessPreflight;
+    use crate::commissioning::outer::velocity::integral_reproduction::{
+        AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
+    };
+
+    let point = AcceptancePoint {
+        identity: StageCPlanIdentity {
+            channel: 0,
+            build_features: 0x1234,
+            schema_revision: 1,
+            plan_digest: 0xfeed_beef,
+        },
+        selected_p: 1_024,
+        selected_i: 512,
+        target_velocity_rpm: 176,
+        selected_response_intervals_q: [[10, 20], [-20, -10]],
+        qualifier_bits: 0,
+        token: None,
+        progress: AcceptanceMatrixProgress::ReadyAscending,
+    };
+    crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_robustness(
+        0,
+        crate::state::tmc::tmc_channel0(),
+        sample_outer_params(),
+        sample_entry_snapshot(),
+        RobustnessPreflight {
+            point,
+            run_sequence: 0,
+        },
+        4_000,
+    )
+    .expect("valid robustness safety configuration")
+}
+
 /// A single SPI operation recorded by `MockBackend`.
 #[derive(Debug, Clone, Copy)]
 pub enum SpiOp {

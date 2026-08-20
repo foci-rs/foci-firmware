@@ -806,4 +806,15 @@ mod tests {
             seen[code] = true;
         }
     }
+
+    /// The dead `MechanicalId`/`VelocityTune`/`VelocityValidate` phase chain
+    /// no longer has a live constructor, but its wire codes were assigned
+    /// once and must never be reused by a future phase.
+    #[test]
+    fn outer_phase_wire_gap_remains_reserved() {
+        assert_eq!(PhaseId::InnerDone.to_u8(), 8);
+        assert_eq!(PhaseId::MechanicalId.to_u8(), 9);
+        assert_eq!(PhaseId::VelocityTune.to_u8(), 10);
+        assert_eq!(PhaseId::VelocityValidate.to_u8(), 11);
+    }
 }
