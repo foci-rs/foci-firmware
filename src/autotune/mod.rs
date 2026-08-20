@@ -63,7 +63,6 @@ pub use integral_gain::{
     integral_tau_us, round_positive_ratio, synthesize_i_gain, synthesize_i_gain_from_cycles,
 };
 pub use metrics::Permille;
-pub(crate) use metrics::saturation_permille;
 pub(crate) use models::VELOCITY_SIMC_MAX_P_REG;
 pub use models::{
     AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
@@ -94,7 +93,6 @@ pub use types::{
     CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState, CommissionError, CommissionProfile,
     CommissionStatus, InnerSequence, OperatingMode, PhaseId, SavedGains, ValidationResult,
 };
-pub(crate) use velocity::simc_velocity_gains_with_lambda_multiplier;
 pub use velocity::{
     VelocityStiffnessVerdict, VelocityValidation, classify_velocity_stiffness,
     classify_velocity_validation, extract_velocity_metrics, simc_velocity_gains,

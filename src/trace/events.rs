@@ -37,13 +37,17 @@ pub const EVENT_COMMISSION_PHASE_END: u16 = 102;
 /// Engine lifecycle terminal event.
 pub const EVENT_COMMISSION_ENGINE_TERMINAL: u16 = 103;
 
-/// Mechanical-ID summary result fragment.
+/// Reserved for historical decoding: the retired mechanical-ID phase's
+/// summary result fragment. No live phase emits this event.
 pub const EVENT_COMMISSION_MECHANICAL_ID_RESULT: u16 = 110;
-/// Mechanical-ID summary attempt fragment.
+/// Reserved for historical decoding: the retired mechanical-ID phase's
+/// summary attempt fragment. No live phase emits this event.
 pub const EVENT_COMMISSION_MECHANICAL_ID_ATTEMPT: u16 = 111;
-/// Mechanical-ID summary response fragment.
+/// Reserved for historical decoding: the retired mechanical-ID phase's
+/// summary response fragment. No live phase emits this event.
 pub const EVENT_COMMISSION_MECHANICAL_ID_RESPONSE: u16 = 112;
-/// Mechanical-ID summary classification fragment.
+/// Reserved for historical decoding: the retired mechanical-ID phase's
+/// summary classification fragment. No live phase emits this event.
 pub const EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION: u16 = 113;
 
 /// Velocity-validation summary result fragment.

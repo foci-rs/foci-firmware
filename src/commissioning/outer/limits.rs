@@ -1,12 +1,12 @@
 //! Pure outer commissioning limits and fallback constants.
 
-/// Reference encoder resolution used only for default values before
-/// MechanicalId reads the real ABN decoder PPR register.
+/// Reference encoder resolution used only for default values before the
+/// entering outer phase's setup step reads the real ABN decoder PPR register.
 pub(crate) const REFERENCE_ENCODER_COUNTS_PER_REV: u32 = 4000;
 
-/// MechanicalId safety velocity cap in encoder counts per millisecond.
-/// The physical limit is 6 rev/s; MechanicalId setup rescales this once the
-/// real encoder resolution is known.
+/// Default outer-safety velocity cap in encoder counts per millisecond.
+/// The physical limit is 6 rev/s; each outer phase's setup step rescales this
+/// once the real encoder resolution is known.
 pub(crate) const MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS: u32 =
     mechanical_id_velocity_cap_counts_per_ms(REFERENCE_ENCODER_COUNTS_PER_REV);
 
@@ -15,26 +15,16 @@ pub(crate) const MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS: u32 =
 pub(super) const POSITION_WINDOW_COUNTS: u32 =
     position_window_counts(REFERENCE_ENCODER_COUNTS_PER_REV);
 
-/// Velocity integral used by response tuning when model gains are unavailable.
-pub(crate) const OUTER_FALLBACK_VELOCITY_I: u16 = 0;
+/// Minimum useful motion budget: a peak velocity below this reads as noise
+/// rather than commanded motion. Shared by every outer phase's safety
+/// envelope through `OuterSafetyLimits::budget_is_usable`.
+pub(crate) const MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS: u32 = 4;
+/// Minimum useful motion budget: travel below this encoder-count window
+/// cannot carry a meaningful safety envelope. Shared by every outer phase's
+/// safety envelope through `OuterSafetyLimits::budget_is_usable`.
+pub(crate) const MECHANICAL_ID_MIN_TRAVEL_COUNTS: u32 = 64;
 
-/// Position P cap used when response-tuned velocity gains are selected.
-pub(crate) const OUTER_FALLBACK_POSITION_P: u16 = 640;
-
-/// Maximum accepted autotuned velocity P gain.
-///
-/// Keep runtime gains near the known-good default envelope even when SIMC
-/// widens lambda to fit high-damping mechanical models.
-pub(crate) const OUTER_MAX_VELOCITY_P: u16 = crate::autotune::VELOCITY_SIMC_MAX_P_REG;
 pub(crate) const OUTER_MAX_VELOCITY_I: u16 = 8_192;
-pub(crate) const OUTER_MAX_POSITION_P: u16 = OUTER_FALLBACK_POSITION_P * 4;
-pub(crate) const OUTER_MAX_POSITION_I: u16 = 2_048;
-
-pub(crate) const OUTER_WARNING_NONE: u8 = 0;
-pub(crate) const OUTER_WARNING_UNSAFE_SYNTH_GAINS: u8 = 2;
-
-/// Starting position P gain: 128 = 0.5 in Q8.8 (conservative).
-pub(crate) const POS_TUNE_INITIAL_P: u16 = 128;
 
 const fn counts_per_ms_for_revs_per_second(counts_per_rev: u32, revs_per_second: u32) -> u32 {
     let counts_per_second = (counts_per_rev as u64).saturating_mul(revs_per_second as u64);
@@ -52,19 +42,6 @@ pub(crate) const fn mechanical_id_velocity_cap_counts_per_ms(counts_per_rev: u32
     counts_per_ms_for_revs_per_second(counts_per_rev, 6)
 }
 
-pub(crate) const fn response_fallback_velocity_limit_counts_per_ms(counts_per_rev: u32) -> u32 {
-    counts_per_ms_for_revs_per_second(counts_per_rev, 4)
-}
-
 pub(crate) const fn position_window_counts(counts_per_rev: u32) -> u32 {
     counts_per_rev.saturating_mul(2)
-}
-
-/// Motor-local position step for position-loop tuning, in ABN encoder counts.
-///
-/// The physical step is 0.002 revolutions. The TMC position target is written
-/// in electrical-position units, while response capture uses ABN counts.
-pub(crate) const fn position_tune_step_counts(counts_per_rev: u32) -> u32 {
-    let step = (counts_per_rev + 250) / 500;
-    if step > 0 { step } else { 1 }
 }

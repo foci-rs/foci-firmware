@@ -118,7 +118,8 @@ pub enum CommissionError {
     ElectricalIdFailed,
     /// Current-loop step-response validation failed after retry. Code 9.
     CurrentValidationFailed,
-    /// Mechanical identification produced zero or negative inertia. Code 10.
+    /// Reserved for historical decoding: the retired mechanical-identification
+    /// phase's failure code. No live phase raises this. Code 10.
     MechanicalIdFailed,
     /// Velocity-loop step-response validation failed after retry. Code 11.
     VelocityValidationFailed,
@@ -419,7 +420,8 @@ pub enum PhaseId {
     CurrentValidate,
     /// Inner commissioning completed.
     InnerDone,
-    /// Outer phase 8 — Mechanical identification (J_eff, B_eff, tau_mech).
+    /// Reserved for historical decoding: the retired mechanical-identification
+    /// phase (J_eff, B_eff, tau_mech). No live phase reports this ID.
     MechanicalId,
     /// Outer phase 9 — Velocity-loop SIMC gain synthesis.
     VelocityTune,

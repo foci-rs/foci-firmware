@@ -8,7 +8,7 @@ use super::safety::outer_safety_mut;
 use super::{
     OuterPhase, OuterSafetyTimingContext, OuterSafetyTimingPhase, OuterSafetyTimingStage,
     TraceSummarySeqs, VelocityIntegralState, check_outer_safety, check_outer_safety_with_timing,
-    commit, filter, mechanical, position, safety_error_for_phase, velocity,
+    safety_error_for_phase, velocity,
 };
 
 /// Transition the outer phase to `Failed` and emit an `OuterFailed` result.
@@ -116,15 +116,7 @@ fn velocity_timing_context(
         // The robustness gate likewise runs the plain envelope check; its stepper
         // opens and ends the bounded safety primitive itself.
         OuterPhase::RobustnessReversal { .. } => Ok(None),
-        OuterPhase::MechanicalId { .. }
-        | OuterPhase::VelocityTune { .. }
-        | OuterPhase::VelocityValidate { .. }
-        | OuterPhase::PositionTune { .. }
-        | OuterPhase::FilterTune { .. }
-        | OuterPhase::Commit { .. }
-        | OuterPhase::Done(_)
-        | OuterPhase::Failed(_)
-        | OuterPhase::FailedWithSafety { .. } => Ok(None),
+        OuterPhase::Failed(_) | OuterPhase::FailedWithSafety { .. } => Ok(None),
     }
 }
 
@@ -165,17 +157,21 @@ pub(crate) async fn step_outer<B: CommissioningBackend>(
     .await
 }
 
+// `profile`/`mode`/`inner_lambda_us`/`theta_e_us`/`current_ringing`/
+// `current_bandwidth_hz`/`inner_warning_flags` were consumed by the dead
+// VelocityTune/VelocityValidate arms this task removed; the parameters stay
+// (unread) so the caller's `EngineMode::Outer` threading is untouched.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     buf: &mut TransientBuffer,
-    profile: CommissionProfile,
-    mode: OperatingMode,
-    inner_lambda_us: u32,
-    theta_e_us: u32,
-    current_ringing: bool,
-    current_bandwidth_hz: u32,
-    inner_warning_flags: u8,
+    _profile: CommissionProfile,
+    _mode: OperatingMode,
+    _inner_lambda_us: u32,
+    _theta_e_us: u32,
+    _current_ringing: bool,
+    _current_bandwidth_hz: u32,
+    _inner_warning_flags: u8,
     trace_summary_seqs: &mut TraceSummarySeqs,
     backend: &mut B,
 ) -> StepResult {
@@ -273,9 +269,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     }
 
     let result = match phase {
-        OuterPhase::MechanicalId { .. } => {
-            mechanical::step_mechanical_id_with_trace(phase, buf, trace_summary_seqs, backend).await
-        }
         OuterPhase::VelocityIntegral { .. } => {
             velocity::step_velocity_integral_with_trace(phase, buf, backend).await
         }
@@ -293,39 +286,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             )
             .await
         }
-        OuterPhase::VelocityTune { .. } => {
-            velocity::step_velocity_tune(
-                phase,
-                profile,
-                mode,
-                inner_lambda_us,
-                theta_e_us,
-                inner_warning_flags,
-                current_bandwidth_hz,
-                backend,
-            )
-            .await
-        }
-        OuterPhase::VelocityValidate { .. } => {
-            velocity::step_velocity_validate_with_trace(
-                phase,
-                buf,
-                mode,
-                inner_lambda_us,
-                theta_e_us,
-                current_ringing,
-                current_bandwidth_hz,
-                trace_summary_seqs,
-                backend,
-            )
-            .await
-        }
-        OuterPhase::PositionTune { .. } => {
-            position::step_position_tune_with_trace(phase, buf, trace_summary_seqs, backend).await
-        }
-        OuterPhase::FilterTune { .. } => filter::step_filter_tune(phase, backend).await,
-        OuterPhase::Commit { .. } => commit::step_commit(phase),
-        OuterPhase::Done(result) => StepResult::OuterDone(result.clone()),
         OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
         OuterPhase::FailedWithSafety { error, .. } => StepResult::OuterFailed(*error),
     };

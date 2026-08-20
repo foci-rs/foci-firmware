@@ -330,8 +330,9 @@ pub(crate) enum BreakawayProbeStep {
 /// Every variant other than [`Self::BreakawayFound`] is a probe-owned terminal: the
 /// caller must not advance toward discovery. The probe never asserts
 /// `set_enable_pin` itself, matching every other outer velocity phase (sweep,
-/// integral): arming happens once, earlier, in `MechanicalId`, and centralized
-/// safe-state restoration on any outer-phase terminal happens at the surrounding
+/// integral): arming happens once, earlier, during inner commissioning's
+/// closed-loop entry, and centralized safe-state restoration on any
+/// outer-phase terminal happens at the surrounding
 /// engine boundary (`commissioning::mod::restore_safe_state_via_backend`), not
 /// per-phase. A caller wiring these terminals into that boundary gets safe-disarm
 /// for free, the same way the other outer fault terminals already do.

@@ -47,7 +47,6 @@ pub(crate) mod recovery;
 #[cfg(test)]
 mod recovery_tests;
 pub mod reproduction;
-mod response_ramp;
 pub(crate) mod robustness_cycles;
 pub mod robustness_evidence;
 pub mod robustness_metrics;
@@ -60,8 +59,6 @@ mod sweep_consensus_tests;
 pub mod sweep_evidence;
 pub mod sweep_plan;
 pub(crate) mod sweep_reporting;
-mod tune;
-mod validate;
 
 /// Wire value declaring best-effort polling for velocity-limit evidence.
 pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT: u32 =
@@ -77,15 +74,6 @@ pub(crate) use breakaway_campaign::{
 };
 pub(crate) use integral_sweep::{
     integral_fault_terminal, integral_i_at, step_velocity_integral_with_trace,
-};
-#[allow(unused_imports)]
-pub(crate) use response_ramp::VELOCITY_RESPONSE_MAX_RETRIES;
-#[allow(unused_imports)]
-pub(crate) use tune::step_velocity_tune;
-#[allow(unused_imports)]
-pub(crate) use validate::{
-    VELOCITY_VALIDATE_CHATTER_WINDOW, VELOCITY_VALIDATE_SAMPLE_PERIOD_US,
-    VELOCITY_VALIDATE_SETTLE_US, step_velocity_validate, step_velocity_validate_with_trace,
 };
 
 /// Zero the TMC4671 velocity-loop integral accumulator.

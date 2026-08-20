@@ -11,17 +11,16 @@ use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_UNUSABLE_BUDGET, OUTER_SAFETY_FAULT_VELOCITY, OuterSafetyFault,
 };
 
-use super::limits::{MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS};
+use super::limits::{
+    MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS, MECHANICAL_ID_MIN_TRAVEL_COUNTS,
+    MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, POSITION_WINDOW_COUNTS,
+};
 use super::velocity::sweep_plan::{
     ENVELOPE_ABSOLUTE_MARGIN_MREV_S, ENVELOPE_PROPORTIONAL_DEN, ENVELOPE_PROPORTIONAL_NUM,
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource,
 };
-use super::{
-    mechanical_id_velocity_cap_counts_per_ms, position_window_counts, response, state::OuterPhase,
-};
+use super::{mechanical_id_velocity_cap_counts_per_ms, position_window_counts, state::OuterPhase};
 
-const FIRMWARE_MAX_TRAVEL_MREV: u32 = 2_000;
-const FIRMWARE_MAX_VELOCITY_MREV_S: u32 = 6_000;
 const MIN_USEFUL_DURATION_MS: u16 = 4;
 /// Fixed observation period for the independent outer safety envelope.
 pub(super) const OUTER_SAFETY_SAMPLE_PERIOD_US: u64 = 1_000;
@@ -54,6 +53,8 @@ impl OuterMotionBudget {
     /// Current firmware hard caps, used by tests that don't exercise host budget tightening.
     #[cfg(test)]
     pub(crate) const fn firmware_caps() -> Self {
+        const FIRMWARE_MAX_TRAVEL_MREV: u32 = 2_000;
+        const FIRMWARE_MAX_VELOCITY_MREV_S: u32 = 6_000;
         Self {
             requested_velocity_mrev_s: FIRMWARE_MAX_VELOCITY_MREV_S,
             machine_velocity_ceiling_mrev_s: 10_000,
@@ -136,10 +137,6 @@ impl OuterSafetyTimestamp {
 
     fn map<T>(self, map: impl FnOnce(u64) -> T) -> Option<T> {
         self.get().map(map)
-    }
-
-    pub(crate) fn and_then<T>(self, map: impl FnOnce(u64) -> Option<T>) -> Option<T> {
-        self.get().and_then(map)
     }
 
     fn unwrap_or(self, default: u64) -> u64 {
@@ -437,15 +434,6 @@ impl OuterSafetyLimits {
         }
     }
 
-    /// The moving-phase bound, truncated to whole counts per millisecond.
-    ///
-    /// Reporting and legacy-comparison use only. The runtime check uses the
-    /// exact milli-counts-per-second value; this floor never claims a higher
-    /// cap than the one actually enforced.
-    pub(crate) const fn velocity_cap_counts_per_ms(&self) -> u32 {
-        milli_counts_per_s_to_counts_per_ms(self.velocity_cap_milli_counts_per_s)
-    }
-
     pub(crate) fn set_encoder_baseline(&mut self, raw_counts: u32) -> Result<(), EncoderMathError> {
         let domain = self
             .encoder_domain
@@ -525,23 +513,11 @@ impl OuterSafetyLimits {
     pub(crate) fn budget_is_usable(&self) -> bool {
         self.budget_request_is_valid()
             && self.budget.max_duration_ms >= MIN_USEFUL_DURATION_MS
-            && self.position_window >= response::MECHANICAL_ID_MIN_TRAVEL_COUNTS
+            && self.position_window >= MECHANICAL_ID_MIN_TRAVEL_COUNTS
             && self.velocity_cap_milli_counts_per_s
                 >= counts_per_ms_to_milli_counts_per_s(
-                    response::MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS,
+                    MECHANICAL_ID_MIN_PEAK_VELOCITY_COUNTS_PER_MS,
                 )
-    }
-
-    pub(crate) fn motion_budget_mrev(&self) -> u16 {
-        self.budget
-            .max_stroke_travel_mrev
-            .min(FIRMWARE_MAX_TRAVEL_MREV)
-            .min(u16::MAX as u32) as u16
-    }
-
-    pub(crate) fn budget_clamped_firmware_caps(&self) -> bool {
-        self.budget.max_stroke_travel_mrev < FIRMWARE_MAX_TRAVEL_MREV
-            || self.budget.requested_velocity_mrev_s < FIRMWARE_MAX_VELOCITY_MREV_S
     }
 
     pub(crate) fn invalid_budget_fault(&self) -> OuterSafetyFault {
@@ -704,8 +680,8 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
     )>,
     backend: &mut B,
 ) -> Result<Option<OuterSafetyFault>, CommissionError> {
-    // Safety limits are initialized by MechanicalId::Setup after it reads
-    // the real encoder baseline. Skip the pre-setup placeholder values.
+    // Safety limits are initialized by the entering phase's setup step after
+    // it reads the real encoder baseline. Skip the pre-setup placeholder values.
     if safety.torque_cap == 0 {
         return Ok(None);
     }
@@ -963,22 +939,14 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
 
 /// Get a mutable reference to the safety limits for the current phase.
 ///
-/// Returns `None` for terminal phases (Done/Failed/Commit) that don't
+/// Returns `None` for terminal phases (Failed/FailedWithSafety) that don't
 /// need per-tick safety checks.
 pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafetyLimits> {
     match phase {
-        OuterPhase::MechanicalId { safety, .. }
-        | OuterPhase::VelocityTune { safety, .. }
-        | OuterPhase::VelocityValidate { safety, .. }
-        | OuterPhase::PositionTune { safety, .. }
-        | OuterPhase::FilterTune { safety, .. }
-        | OuterPhase::RobustnessReversal { safety, .. } => Some(safety),
         OuterPhase::VelocityIntegral { safety, .. } => Some(safety),
         OuterPhase::BreakawayCampaign { safety, .. } => Some(safety),
-        OuterPhase::Commit { .. }
-        | OuterPhase::Done(_)
-        | OuterPhase::Failed(_)
-        | OuterPhase::FailedWithSafety { .. } => None,
+        OuterPhase::RobustnessReversal { safety, .. } => Some(safety),
+        OuterPhase::Failed(_) | OuterPhase::FailedWithSafety { .. } => None,
     }
 }
 
@@ -990,11 +958,14 @@ mod tests {
         OuterSafetyLimits, OuterSafetyTimestamp, check_outer_safety,
     };
     use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
-    use crate::commissioning::outer::{
-        MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS, MechanicalIdData, MechanicalIdState, OuterPhase,
-        step_outer,
+    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commissioning::outer::velocity::integral_reproduction::{
+        AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
     };
+    use crate::commissioning::outer::velocity::robustness_reversal::{
+        RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
+    };
+    use crate::commissioning::outer::{OuterPhase, step_outer};
     use crate::commissioning::outer::{
         OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
         OuterSafetyTimingStage,
@@ -1004,9 +975,7 @@ mod tests {
         OUTER_SAFETY_FAULT_POSITION_LOCAL, OUTER_SAFETY_FAULT_QUARTER_TURN,
         OUTER_SAFETY_FAULT_VELOCITY, StepResult,
     };
-    use foci_tmc4671::registers::{
-        ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET,
-    };
+    use foci_tmc4671::registers::ABN_DECODER_COUNT;
 
     fn armed_safety(last_sample_us: Option<u64>, next_sample_us: u64) -> OuterSafetyLimits {
         let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
@@ -1018,6 +987,33 @@ mod tests {
         };
         safety.next_safety_sample_us = OuterSafetyTimestamp::some(next_sample_us).unwrap();
         safety
+    }
+
+    /// A frozen accepted point for a `RobustnessReversal` fixture. The
+    /// robustness phase never touches this test's dispatch paths (the
+    /// tests either never reach phase dispatch, or reach only
+    /// `ZeroCapture`'s not-yet-due return, before any of these fields are
+    /// read), so the values just need to be well-typed.
+    fn robustness_test_point() -> AcceptancePoint {
+        AcceptancePoint {
+            identity: StageCPlanIdentity {
+                channel: 0,
+                build_features: 0x1234,
+                schema_revision: 1,
+                plan_digest: 0xfeed_beef,
+            },
+            selected_p: 1_024,
+            selected_i: 512,
+            target_velocity_rpm: 176,
+            selected_response_intervals_q: [[10, 20], [-20, -10]],
+            qualifier_bits: 0,
+            token: None,
+            progress: AcceptanceMatrixProgress::ReadyAscending,
+        }
+    }
+
+    fn robustness_reversal_session() -> RobustnessReversalSession {
+        RobustnessReversalSession::new(robustness_test_point(), 1)
     }
 
     #[test]
@@ -1124,11 +1120,14 @@ mod tests {
     fn outer_safety_observes_zero_target_settle() {
         pollster::block_on(async {
             let safety = armed_safety(Some(0), 1_000);
-            let mut phase = OuterPhase::MechanicalId {
-                state: MechanicalIdState::ForwardSettle {
-                    deadline_us: 300_000,
+            let mut phase = OuterPhase::RobustnessReversal {
+                state: RobustnessReversalState::ZeroCapture {
+                    next_sample_us: 300_000,
+                    deadline_us: 500_000,
+                    retry_available: true,
                 },
-                data: MechanicalIdData::new(367),
+                workspace: RobustnessReversalWorkspace::new(),
+                session: robustness_reversal_session(),
                 safety,
             };
             let mut buf = TransientBuffer::new();
@@ -1153,7 +1152,7 @@ mod tests {
             assert!(matches!(result, StepResult::At(2_000)));
             assert!(matches!(
                 phase,
-                OuterPhase::MechanicalId { safety, .. }
+                OuterPhase::RobustnessReversal { safety, .. }
                     if safety.unwrapped_position == 4
                         && safety.next_safety_sample_us == Some(2_000)
             ));
@@ -1184,22 +1183,12 @@ mod tests {
     }
 
     #[test]
-    fn outer_safety_uses_mechanical_id_velocity_cap() {
-        let safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
-        assert_eq!(
-            safety.velocity_cap_counts_per_ms(),
-            MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS
-        );
-    }
-
-    #[test]
     fn outer_safety_limits_scale_with_encoder_resolution() {
         let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
 
         safety.configure_encoder_resolution(8_000).unwrap();
 
         assert_eq!(safety.counts_per_rev(), 8_000);
-        assert_eq!(safety.velocity_cap_counts_per_ms(), 48);
         assert_eq!(safety.position_window, 16_000);
     }
 
@@ -1213,7 +1202,6 @@ mod tests {
         assert_eq!(safety.position_window, 2_000);
         assert_eq!(safety.negative_position_window, 8_000);
         assert_eq!(safety.positive_position_window, 8_000);
-        assert_eq!(safety.velocity_cap_counts_per_ms(), 24);
     }
 
     #[test]
@@ -1251,18 +1239,6 @@ mod tests {
         assert_eq!(robustness_safety.position_window, 16_000);
         assert_eq!(robustness_safety.negative_position_window, 16_000);
         assert_eq!(robustness_safety.positive_position_window, 20_000);
-    }
-
-    #[test]
-    fn outer_safety_uses_the_frozen_amplitude_runtime_envelope() {
-        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
-        safety.configure_encoder_resolution(4_000).unwrap();
-
-        safety.configure_velocity_envelope(1_000).unwrap();
-
-        // E(1000) = max(ceil(3 * 1000 / 2), 1000 + 2000) = 3000 mrev/s, which is
-        // exactly 12 counts/ms at 4000 counts/rev.
-        assert_eq!(safety.velocity_cap_counts_per_ms(), 12);
     }
 
     /// Arm a safety envelope around a frozen amplitude and machine ceiling.
@@ -2097,84 +2073,6 @@ mod tests {
     }
 
     #[test]
-    fn outer_safety_half_turn_stops_dispatch_before_phase_motion() {
-        pollster::block_on(async {
-            let mut safety = OuterSafetyLimits::new(2448, OuterMotionBudget::firmware_caps());
-            safety.configure_encoder_resolution(4_000).unwrap();
-            safety.set_encoder_baseline(1_000).unwrap();
-            safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();
-            safety.primitive_start_us = Some(90_000);
-            let mut phase = OuterPhase::MechanicalId {
-                state: MechanicalIdState::ForwardCapture {
-                    next_sample_us: 101_000,
-                    capture_start_us: 90_000,
-                },
-                data: MechanicalIdData::new(367),
-                safety,
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 101_000;
-            backend.mechanical_encoder_position_counts_value = 3_000;
-
-            let result = step_outer(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                OperatingMode::Nominal,
-                0,
-                0,
-                false,
-                0,
-                0,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
-            ));
-            assert!(matches!(
-                phase,
-                OuterPhase::FailedWithSafety {
-                    error: CommissionError::SafetyEnvelopeViolation,
-                    safety_fault
-                } if safety_fault.reason == OUTER_SAFETY_FAULT_QUARTER_TURN
-            ));
-            assert!(backend.spi_log.iter().any(|op| matches!(
-                op,
-                SpiOp::Write(addr, 0) if *addr == PID_TORQUE_FLUX_TARGET.addr()
-            )));
-            assert!(backend.spi_log.iter().any(|op| matches!(
-                op,
-                SpiOp::Write(addr, 0) if *addr == MODE_RAMP_MODE_MOTION.addr()
-            )));
-            let writes_after_failure = backend.spi_log.len();
-
-            let terminal_result = step_outer(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                OperatingMode::Nominal,
-                0,
-                0,
-                false,
-                0,
-                0,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                terminal_result,
-                StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
-            ));
-            assert_eq!(backend.spi_log.len(), writes_after_failure);
-        });
-    }
-
-    #[test]
     fn outer_safety_reports_velocity_fault_details() {
         pollster::block_on(async {
             let mut safety =
@@ -2293,38 +2191,13 @@ mod tests {
             let mut safety = OuterSafetyLimits::new(2448, OuterMotionBudget::firmware_caps());
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.last_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
-            let mut phase = OuterPhase::MechanicalId {
-                state: MechanicalIdState::ForwardCapture {
-                    next_sample_us: 2_000,
-                    capture_start_us: 1_000,
-                },
-                data: MechanicalIdData::new(367),
-                safety,
-            };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 2_000;
             backend.fail_on_read = Some(ABN_DECODER_COUNT.addr());
 
-            let result = step_outer(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                OperatingMode::Nominal,
-                0,
-                0,
-                false,
-                0,
-                0,
-                &mut backend,
-            )
-            .await;
+            let result = check_outer_safety(&mut safety, &mut backend).await;
 
-            assert!(matches!(
-                result,
-                StepResult::OuterFailed(CommissionError::Spi)
-            ));
-            assert!(matches!(phase, OuterPhase::Failed(CommissionError::Spi)));
+            assert!(matches!(result, Err(CommissionError::Spi)));
         });
     }
 }
