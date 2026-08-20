@@ -125,16 +125,6 @@ fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
 
 const TEST_MOTOR_SENTINEL: u32 = 0x0002_0032;
 
-#[test]
-fn zero_outer_result_clears_outer_evidence_fields() {
-    let result = zero_outer_result();
-
-    assert_eq!(result.outer_evidence_flags, 0);
-    assert_eq!(result.stiffness_timebase_ms, 0);
-    assert_eq!(result.velocity_search_stop_reason, 0);
-    assert_eq!(result.motion_budget_mrev, 0);
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum ReplyEvent {
     Commission {
@@ -1085,24 +1075,7 @@ fn sample_outer_result_for_dispatch() -> OuterResult {
         position_filter_hz: 0,
         flux_filter_hz: 0,
         torque_filter_hz: 0,
-        j_eff: 0,
-        b_eff: 0,
         warning_code: 0,
-        mech_torque_step: 0,
-        mech_fwd_accel: 0,
-        mech_rev_accel: 0,
-        mech_fwd_peak_velocity: 0,
-        mech_rev_peak_velocity: 0,
-        mech_fwd_travel: 0,
-        mech_rev_travel: 0,
-        synth_velocity_p: 0,
-        synth_velocity_i: 0,
-        synth_position_p: 0,
-        synth_position_i: 0,
-        outer_evidence_flags: 0,
-        stiffness_timebase_ms: 0,
-        velocity_search_stop_reason: 0,
-        motion_budget_mrev: 0,
         provenance: crate::commissioning::types::TuneProvenance::default(),
     }
 }
@@ -2577,8 +2550,6 @@ async fn robustness_pass_emits_tune_result_with_joined_gains() {
     assert_eq!(result.position_p, 700);
     assert_eq!(result.position_i, 40);
     assert_eq!(result.velocity_limit, 200_000);
-    assert_eq!(result.j_eff, 0);
-    assert_eq!(result.b_eff, 0);
     assert_eq!(result.provenance.probed_velocity_mrev_s, 322 * 1_000 / 60);
     assert_eq!(result.provenance.d_eq_q, 60_000);
     assert_eq!(result.provenance.band_lower_percent, 70);

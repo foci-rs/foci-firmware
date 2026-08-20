@@ -2210,10 +2210,6 @@ mod tests {
             velocity_p: u16,
             position_p: u16,
             warning_code: u8,
-            outer_evidence_flags: u8,
-            stiffness_timebase_ms: u16,
-            velocity_search_stop_reason: u8,
-            motion_budget_mrev: u16,
         },
         OuterSafetyFault {
             oid: u8,
@@ -2553,10 +2549,6 @@ mod tests {
                 velocity_p: result.velocity_p,
                 position_p: result.position_p,
                 warning_code: result.warning_code,
-                outer_evidence_flags: result.outer_evidence_flags,
-                stiffness_timebase_ms: result.stiffness_timebase_ms,
-                velocity_search_stop_reason: result.velocity_search_stop_reason,
-                motion_budget_mrev: result.motion_budget_mrev,
             });
         }
 
@@ -3004,24 +2996,7 @@ mod tests {
             position_filter_hz: 47,
             flux_filter_hz: 48,
             torque_filter_hz: 49,
-            j_eff: 50,
-            b_eff: 51,
             warning_code: 52,
-            mech_torque_step: 53,
-            mech_fwd_accel: 54,
-            mech_rev_accel: 55,
-            mech_fwd_peak_velocity: 56,
-            mech_rev_peak_velocity: 57,
-            mech_fwd_travel: 58,
-            mech_rev_travel: 59,
-            synth_velocity_p: 60,
-            synth_velocity_i: 61,
-            synth_position_p: 62,
-            synth_position_i: 63,
-            outer_evidence_flags: 0x3f,
-            stiffness_timebase_ms: 64,
-            velocity_search_stop_reason: 65,
-            motion_budget_mrev: 66,
             provenance: crate::commissioning::types::TuneProvenance::default(),
         }
     }
@@ -3903,10 +3878,6 @@ mod tests {
                 velocity_p: 41,
                 position_p: 44,
                 warning_code: 52,
-                outer_evidence_flags: 0x3f,
-                stiffness_timebase_ms: 64,
-                velocity_search_stop_reason: 65,
-                motion_budget_mrev: 66,
             },
         ]);
 
@@ -3957,10 +3928,6 @@ mod tests {
                     velocity_p: 41,
                     position_p: 44,
                     warning_code: 52,
-                    outer_evidence_flags: 0x3f,
-                    stiffness_timebase_ms: 64,
-                    velocity_search_stop_reason: 65,
-                    motion_budget_mrev: 66,
                 },
             ]
         );

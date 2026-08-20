@@ -4072,42 +4072,8 @@ pub struct FociTuneResult {
     pub flux_filter_hz: u16,
     /// Torque filter cutoff in Hz.
     pub torque_filter_hz: u16,
-    /// Effective rotor moment of inertia.
-    pub j_eff: u32,
-    /// Effective viscous friction.
-    pub b_eff: u32,
     /// Warning bitfield for non-fatal tune anomalies.
     pub warning_code: u8,
-    /// Mechanical torque step used during the tune.
-    pub mech_torque_step: u16,
-    /// Forward acceleration measurement.
-    pub mech_fwd_accel: u32,
-    /// Reverse acceleration measurement.
-    pub mech_rev_accel: u32,
-    /// Forward peak velocity measurement.
-    pub mech_fwd_peak_velocity: u32,
-    /// Reverse peak velocity measurement.
-    pub mech_rev_peak_velocity: u32,
-    /// Forward travel measurement.
-    pub mech_fwd_travel: u32,
-    /// Reverse travel measurement.
-    pub mech_rev_travel: u32,
-    /// Synthesized velocity P gain.
-    pub synth_velocity_p: u16,
-    /// Synthesized velocity I gain.
-    pub synth_velocity_i: u16,
-    /// Synthesized position P gain.
-    pub synth_position_p: u16,
-    /// Synthesized position I gain.
-    pub synth_position_i: u16,
-    /// Compact outer evidence bitfield.
-    pub outer_evidence_flags: u8,
-    /// Stiffness classification timebase in milliseconds.
-    pub stiffness_timebase_ms: u16,
-    /// Reason velocity search stopped.
-    pub velocity_search_stop_reason: u8,
-    /// Host-provided motion budget in milli-revolutions after clamping.
-    pub motion_budget_mrev: u16,
     /// Probed velocity, in milli-revolutions/second. Same domain as the
     /// request field `requested_velocity_mrev_s`.
     pub probed_velocity_mrev_s: u32,
@@ -4131,17 +4097,14 @@ mod tune_result_reply_wire_tests {
     //! serialize after every pre-existing field, and must not disturb their
     //! encoding. Mirrors the ascending-small-value idiom
     //! in `breakaway_reply_wire_tests` above (every field here VLQ-encodes
-    //! values `1..=35` as a single raw byte -- see `encode_vlq_int`'s
+    //! values `1..=18` as a single raw byte -- see `encode_vlq_int`'s
     //! single-byte range of `-32..96`).
     use super::FociTuneResult;
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
     /// Pre-provenance field values, in struct-declaration order.
-    const LEGACY_FIELD_BYTES: [u8; 29] = [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-        26, 27, 28, 29,
-    ];
+    const LEGACY_FIELD_BYTES: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
     fn reply_with_known_provenance() -> FociTuneResult {
         FociTuneResult {
@@ -4156,30 +4119,13 @@ mod tune_result_reply_wire_tests {
             position_filter_hz: 9,
             flux_filter_hz: 10,
             torque_filter_hz: 11,
-            j_eff: 12,
-            b_eff: 13,
-            warning_code: 14,
-            mech_torque_step: 15,
-            mech_fwd_accel: 16,
-            mech_rev_accel: 17,
-            mech_fwd_peak_velocity: 18,
-            mech_rev_peak_velocity: 19,
-            mech_fwd_travel: 20,
-            mech_rev_travel: 21,
-            synth_velocity_p: 22,
-            synth_velocity_i: 23,
-            synth_position_p: 24,
-            synth_position_i: 25,
-            outer_evidence_flags: 26,
-            stiffness_timebase_ms: 27,
-            velocity_search_stop_reason: 28,
-            motion_budget_mrev: 29,
-            probed_velocity_mrev_s: 30,
-            d_eq_q: 31,
-            confidence_q: 32,
-            band_lower_percent: 33,
-            band_upper_percent: 34,
-            band_position_q: 35,
+            warning_code: 12,
+            probed_velocity_mrev_s: 13,
+            d_eq_q: 14,
+            confidence_q: 15,
+            band_lower_percent: 16,
+            band_upper_percent: 17,
+            band_position_q: 18,
         }
     }
 
@@ -4202,7 +4148,7 @@ mod tune_result_reply_wire_tests {
         );
         assert_eq!(
             &encoded[LEGACY_FIELD_BYTES.len()..],
-            &[30, 31, 32, 33, 34, 35],
+            &[13, 14, 15, 16, 17, 18],
             "known provenance values must round-trip through the encoder unchanged"
         );
     }

@@ -1410,11 +1410,8 @@ pub(crate) fn robustness_pass_outer_result(
         position_filter_hz: entry.position_filter_hz,
         flux_filter_hz: entry.flux_filter_hz,
         torque_filter_hz: entry.torque_filter_hz,
-        j_eff: 0,
-        b_eff: 0,
         warning_code: 0,
         provenance,
-        ..OuterResult::default()
     }
 }
 

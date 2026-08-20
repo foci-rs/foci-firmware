@@ -2137,51 +2137,8 @@ pub struct OuterResult {
     pub flux_filter_hz: u16,
     /// Torque filter cutoff Hz (0 = disabled).
     pub torque_filter_hz: u16,
-    /// Identified effective inertia from mechanical ID (internal units).
-    pub j_eff: u32,
-    /// Identified effective damping from mechanical ID (internal units).
-    pub b_eff: u32,
     /// Warning reason for accepted-with-warning results (0 = none).
     pub warning_code: u8,
-    /// Torque step used by the final mechanical-ID attempt.
-    pub mech_torque_step: u16,
-    /// Forward initial acceleration, absolute encoder counts/ms^2.
-    pub mech_fwd_accel: u32,
-    /// Reverse initial acceleration, absolute encoder counts/ms^2.
-    pub mech_rev_accel: u32,
-    /// Forward peak velocity, absolute encoder counts/ms.
-    pub mech_fwd_peak_velocity: u32,
-    /// Reverse peak velocity, absolute encoder counts/ms.
-    pub mech_rev_peak_velocity: u32,
-    /// Forward total travel during mechanical ID, encoder counts.
-    pub mech_fwd_travel: u32,
-    /// Reverse total travel during mechanical ID, encoder counts.
-    pub mech_rev_travel: u32,
-    /// Velocity P before safety fallback, if synthesis reached that far.
-    pub synth_velocity_p: u16,
-    /// Velocity I before safety fallback, if synthesis reached that far.
-    pub synth_velocity_i: u16,
-    /// Position P before safety fallback, if position tuning reached that far.
-    pub synth_position_p: u16,
-    /// Position I before safety fallback, if position tuning reached that far.
-    pub synth_position_i: u16,
-    /// Compact outer evidence bitfield.
-    ///
-    /// bit0: velocity model candidate was under-driven and probed upward.
-    /// bit1: mechanical ID was low confidence.
-    /// bit2: mechanical tau was defaulted instead of derived from J/B.
-    /// bit3: host motion budget clamped a firmware hard cap.
-    /// bit4: Conservative velocity policy was required.
-    /// bit5: velocity lambda was widened from Stage 1 warning evidence.
-    ///
-    /// Bits 6-7 are reserved and must be zero.
-    pub outer_evidence_flags: u8,
-    /// Stiffness classification timebase in milliseconds.
-    pub stiffness_timebase_ms: u16,
-    /// Reason velocity search stopped.
-    pub velocity_search_stop_reason: u8,
-    /// Host-provided motion budget in milli-revolutions after clamping.
-    pub motion_budget_mrev: u16,
     /// Provenance of the deployed tune (probed velocity, D_eq, confidence,
     /// response band). All-zero on legacy replies and failure paths.
     pub provenance: TuneProvenance,
@@ -2202,24 +2159,7 @@ impl Default for OuterResult {
             position_filter_hz: 0,
             flux_filter_hz: 0,
             torque_filter_hz: 0,
-            j_eff: 0,
-            b_eff: 0,
             warning_code: 0,
-            mech_torque_step: 0,
-            mech_fwd_accel: 0,
-            mech_rev_accel: 0,
-            mech_fwd_peak_velocity: 0,
-            mech_rev_peak_velocity: 0,
-            mech_fwd_travel: 0,
-            mech_rev_travel: 0,
-            synth_velocity_p: 0,
-            synth_velocity_i: 0,
-            synth_position_p: 0,
-            synth_position_i: 0,
-            outer_evidence_flags: 0,
-            stiffness_timebase_ms: 0,
-            velocity_search_stop_reason: 0,
-            motion_budget_mrev: 0,
             provenance: TuneProvenance::default(),
         }
     }
