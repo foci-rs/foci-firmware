@@ -638,8 +638,20 @@ impl TmcControlRuntime {
                 emit_evidence(reply);
                 Some(ScheduledCommissionTickAction::WorkflowContinuation)
             }
-            crate::commission_dispatch::CommissionOutcome::Continue
-            | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. } => {
+            crate::commission_dispatch::CommissionOutcome::PhaseChanged {
+                oid,
+                phase_id,
+                engine_kind,
+            } => Some(ScheduledCommissionTickAction::ReadyNow {
+                event: Some(
+                    crate::commissioning::schedule::CommissionEvent::PhaseChanged {
+                        oid,
+                        phase_id,
+                        engine_kind,
+                    },
+                ),
+            }),
+            crate::commission_dispatch::CommissionOutcome::Continue => {
                 unreachable!("terminal poll produced a nonterminal dispatch action")
             }
         }

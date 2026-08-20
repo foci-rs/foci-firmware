@@ -1117,6 +1117,83 @@ async fn promoted_complete_transitions_to_inline_robustness() {
 }
 
 #[fixture_test]
+async fn promoted_complete_from_terminal_poll_continues_workflow() {
+    use crate::autotune::PhaseId;
+    use crate::commission_dispatch::test_support::MockBackend;
+    use crate::commissioning::schedule::{CommissionEvent, CommissionTerminal};
+    use crate::config::TmcConfig;
+    use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig, TmcControlRuntime};
+
+    crate::state::tmc::tmc_channel0()
+        .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+        .expect("valid motion scale");
+
+    let plan = breakaway_stage_c_plan();
+    let authority = breakaway_authority_summary(&plan);
+
+    // First sufficient run retains the candidate the reproduced run confirms.
+    let mut stage_c_slot = StageCCandidateSlot::new();
+    stage_c_slot.install_authority(authority);
+    let mut first = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(0),
+    );
+    first.rest_boundary_rung_plus_one = 3;
+    apply_stage_c_terminal(first, &mut stage_c_slot);
+    assert_eq!(stage_c_slot.state(), StageCSlotState::Candidate);
+
+    let mut runtime = TmcControlRuntime::new_for_channel(CHANNEL);
+    runtime.set_commission_engine(breakaway_engine(plan, &authority));
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    let mut backend = MockBackend::new();
+    backend.enable_pin = true;
+    let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, TmcConfig::default_for_test());
+
+    let mut second = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(0),
+    );
+    second.rest_boundary_rung_plus_one = 3;
+
+    let mut emitted_reply = None;
+    let action = runtime
+        .drive_commissioning_terminal_with_stages(
+            CommissionTerminal::VelocityIntegral(second),
+            &mut backend,
+            super::CommissionTerminalContext::new(&mut stage_c_slot, |reply| {
+                emitted_reply = Some(reply)
+            }),
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+            &config,
+        )
+        .await
+        .expect("active engine should drive the promoted terminal");
+
+    // The inline robustness swap must reach the board as a phase-continuation
+    // action, mirroring the scheduled-poll path, not crash the terminal poll.
+    assert!(
+        matches!(
+            action,
+            ScheduledCommissionTickAction::ReadyNow {
+                event: Some(CommissionEvent::PhaseChanged {
+                    oid: 1,
+                    phase_id: PhaseId::VelocityTune,
+                    ..
+                }),
+            }
+        ),
+        "a promoted Complete from the terminal poll must continue into robustness"
+    );
+    assert!(emitted_reply.is_none());
+}
+
+#[fixture_test]
 async fn complete_candidate_still_emits_report_only_terminal() {
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
 
