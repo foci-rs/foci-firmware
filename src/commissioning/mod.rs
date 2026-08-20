@@ -828,6 +828,13 @@ impl CommissioningEngine {
             .map(|value| value / 60)
             .ok_or(CommissionError::InvalidSchedule)?;
         reconfigured_safety.configure_velocity_envelope(probe_velocity_mrev_s)?;
+        // `RobustnessReversalState::Setup` must seed its own encoder baseline
+        // before the shared outer-safety check may run against this phase --
+        // the reconfiguration above just cleared the copied baseline. Zeroing
+        // the cap holds `check_outer_safety` off (it early-returns while
+        // `torque_cap == 0`) until Setup re-arms it, exactly as the
+        // fresh-scaffold path already does.
+        reconfigured_safety.torque_cap = 0;
 
         *phase = OuterPhase::RobustnessReversal {
             state: RobustnessReversalState::Setup,
@@ -2249,6 +2256,57 @@ mod tests {
             engine.outer_safety_active_velocity_cap_milli_counts_per_s_for_test(),
             expected_safety.active_velocity_cap_milli_counts_per_s(),
         );
+    }
+
+    #[test]
+    fn inline_robustness_swap_survives_dispatcher_tick_before_setup_seeds_baseline() {
+        use crate::commissioning::outer::velocity::robustness_reversal::RobustnessReversalState;
+
+        let mut engine = build_outer_engine_in_velocity_integral();
+        let point = sample_acceptance_point();
+
+        // Arm the copied safety exactly as a mid-run VelocityIntegral phase
+        // would have it at the moment a promoted Complete triggers the inline
+        // swap: a configured encoder domain, a seeded baseline, a nonzero
+        // torque cap, and an already-armed observation schedule.
+        {
+            let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
+                unreachable!("engine built in velocity-integral must be Outer");
+            };
+            let OuterPhase::VelocityIntegral { safety, .. } = phase else {
+                unreachable!("fixture parks the engine in VelocityIntegral");
+            };
+            safety
+                .configure_velocity_sweep_encoder_resolution(65_536)
+                .expect("valid encoder resolution");
+            safety
+                .set_encoder_baseline(1_000)
+                .expect("encoder domain configured above");
+            safety.torque_cap = 500;
+            safety
+                .arm_safety_observation(0)
+                .expect("valid observation arm");
+        }
+
+        engine.begin_inline_robustness(point, 65_536).expect("swap");
+
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        backend.current_limit_value = current_limit(500);
+        backend.mechanical_encoder_position_counts_value = 1_000;
+        backend.elapsed_us_value = 1_000;
+
+        let result = pollster::block_on(engine.step(&mut backend));
+
+        assert!(matches!(result, StepResult::ReadyNow));
+        let EngineMode::Outer { phase, .. } = &engine.engine_mode else {
+            unreachable!("engine remains Outer after the tick");
+        };
+        let OuterPhase::RobustnessReversal { state, safety, .. } = phase else {
+            unreachable!("phase remains RobustnessReversal after the tick");
+        };
+        assert!(matches!(state, RobustnessReversalState::EstablishWriteGain));
+        assert!(safety.prev_encoder_count.is_some());
+        assert_ne!(safety.torque_cap, 0);
     }
 
     fn sample_inner_result(status: crate::autotune::CommissionStatus) -> InnerResult {
