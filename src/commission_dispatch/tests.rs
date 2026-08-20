@@ -2605,6 +2605,61 @@ async fn robustness_pass_emits_tune_result_with_joined_gains() {
     clear_motor_sentinel();
 }
 
+/// A robustness pass whose retained point carries nonzero qualifier bits
+/// (e.g. the always-set latched-limit-evidence capability bit) must still
+/// emit an unconditional `Accepted` tune with `warning_code == 0`. Qualifier
+/// bits are measurement/capability provenance, not a status verdict.
+#[fixture_test]
+async fn robustness_pass_with_qualifier_bits_still_emits_accepted_status() {
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use core::sync::atomic::Ordering::Relaxed;
+
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    tmc_state()
+        .configure_motion_scale(stepper_state(), 1_000, 3_200)
+        .expect("valid test motion scale");
+    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
+
+    let mut engine = Some(robustness_outer_engine(robustness_entry_snapshot(
+        700,
+        40,
+        200_000,
+        (300, 300, 150, 300),
+    )));
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_acceptance_point(robustness_accepted_point(0x0200));
+
+    tmc_state().motor_armed.store(false, Relaxed);
+    seed_motor_sentinel(&mut backend).await;
+    tmc_state().motor_armed.store(true, Relaxed);
+
+    let outcome = drive_commission_result_with_stages(
+        StepResult::RobustnessReversalTerminal(robustness_pass_terminal()),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+        0,
+        CommissionRetention::new(&mut slot),
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    let ReplyPayload::TuneResult { status, result, .. } = reply else {
+        panic!("expected TuneResult");
+    };
+    assert_eq!(result.warning_code, 0);
+    assert_eq!(status, crate::autotune::CommissionStatus::Accepted.to_u8());
+
+    tmc_state().motor_armed.store(false, Relaxed);
+    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
+    clear_motor_sentinel();
+}
+
 #[fixture_test]
 async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
     use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;

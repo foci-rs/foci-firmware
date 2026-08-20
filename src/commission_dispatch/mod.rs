@@ -1409,11 +1409,10 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             // A passed gate deploys the robustness-selected gains: join them with
             // the entry snapshot and route through the shared `OuterDone` arm so
             // the tune result and the host persist path light up. The join needs
-            // both the live entry snapshot and the retained accepted point (for
-            // its operating-point qualifiers); without either, fall back to the
-            // fault-terminal path rather than publish an incomplete tune. Every
-            // non-pass outcome forwards the fault terminal unchanged and deploys
-            // nothing.
+            // both the live entry snapshot and the retained accepted point;
+            // without either, fall back to the fault-terminal path rather than
+            // publish an incomplete tune. Every non-pass outcome forwards the
+            // fault terminal unchanged and deploys nothing.
             let deploy = (terminal.outcome
                 == crate::commissioning::types::RobustnessOutcome::Complete)
                 .then(|| {
@@ -1424,11 +1423,10 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 })
                 .flatten();
             match deploy {
-                Some((entry, point)) => {
+                Some((entry, _point)) => {
                     let result = crate::commissioning::outer::velocity::robustness_reversal::robustness_pass_outer_result(
                         &terminal,
                         &entry,
-                        point.qualifier_bits,
                     );
                     drive_commission_result(
                         StepResult::OuterDone(result),

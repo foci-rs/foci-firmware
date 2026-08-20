@@ -1378,20 +1378,16 @@ pub(crate) fn robustness_reversal_fault_terminal(
 /// snapshot's position gains, velocity limit, and biquad cutoffs, and fills the
 /// firmware-authored provenance from the run's diagnostic evidence. The
 /// mechanical-identification fields stay zero: the breakaway-seeded path that
-/// reaches this gate never runs mechanical identification. `qualifier_bits` are
-/// the retained accepted point's operating-point qualifiers; any nonzero value
-/// downgrades the status to accepted-with-warnings and surfaces its low byte as
-/// the warning code, matching the host's conservative-tune mapping.
+/// reaches this gate never runs mechanical identification. A passed gate is
+/// always reported as `Accepted`: the retained point's operating-point
+/// qualifiers are measurement/capability provenance surfaced in the
+/// acceptance evidence, not a status verdict, so they never gate the tune
+/// status here.
 pub(crate) fn robustness_pass_outer_result(
     terminal: &RobustnessReversalTerminal,
     entry: &EntrySnapshot,
-    qualifier_bits: u16,
 ) -> OuterResult {
-    let status = if qualifier_bits != 0 {
-        CommissionStatus::AcceptedWithWarnings
-    } else {
-        CommissionStatus::Accepted
-    };
+    let status = CommissionStatus::Accepted;
     let provenance = TuneProvenance {
         probed_velocity_mrev_s: terminal.target_velocity_rpm.unsigned_abs() * 1_000 / 60,
         // Settled-rate-Q reduction of the accepted point's response intervals,
@@ -1416,7 +1412,7 @@ pub(crate) fn robustness_pass_outer_result(
         torque_filter_hz: entry.torque_filter_hz,
         j_eff: 0,
         b_eff: 0,
-        warning_code: qualifier_bits as u8,
+        warning_code: 0,
         provenance,
         ..OuterResult::default()
     }
