@@ -2462,6 +2462,44 @@ mod tests {
         });
     }
 
+    /// `OuterResult` field values are arbitrary here: `assert_terminal_trace`
+    /// only inspects the trace events emitted around a `StepResult::OuterDone`,
+    /// not this struct's contents, so any well-formed value exercises the
+    /// terminal-trace path shared by every live outer constructor.
+    fn sample_outer_result(status: crate::autotune::CommissionStatus) -> OuterResult {
+        OuterResult {
+            status,
+            velocity_p: 1152,
+            velocity_i: 0,
+            velocity_limit: 500_000,
+            position_p: 640,
+            position_i: 0,
+            velocity_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
+            torque_filter_hz: 0,
+            j_eff: 0,
+            b_eff: 0,
+            warning_code: 0,
+            mech_torque_step: 0,
+            mech_fwd_accel: 0,
+            mech_rev_accel: 0,
+            mech_fwd_peak_velocity: 0,
+            mech_rev_peak_velocity: 0,
+            mech_fwd_travel: 0,
+            mech_rev_travel: 0,
+            synth_velocity_p: 0,
+            synth_velocity_i: 0,
+            synth_position_p: 0,
+            synth_position_i: 0,
+            outer_evidence_flags: 0,
+            stiffness_timebase_ms: 0,
+            velocity_search_stop_reason: 0,
+            motion_budget_mrev: 0,
+            provenance: crate::commissioning::types::TuneProvenance::default(),
+        }
+    }
+
     fn sample_adc_cal_result() -> AdcCalResult {
         AdcCalResult {
             adc_i0: 11,
@@ -3056,6 +3094,20 @@ mod tests {
             TraceEventLevel::Info,
         );
         assert_terminal_trace(
+            // 0: assert_terminal_trace's terminal-event assertion hardcodes a
+            // 0 trace-sequence second value, matching every other engine kind
+            // exercised here.
+            breakaway_safety_engine(0),
+            StepResult::OuterDone(sample_outer_result(
+                crate::autotune::CommissionStatus::Accepted,
+            )),
+            EngineKind::OuterTune,
+            initial_outer_phase_id(),
+            0,
+            TraceEventLevel::Info,
+            TraceEventLevel::Info,
+        );
+        assert_terminal_trace(
             CommissioningEngine::new_calibrate(0),
             StepResult::CalibrateDone(sample_adc_cal_result()),
             EngineKind::Calibrate,
@@ -3426,6 +3478,18 @@ mod tests {
             EngineKind::Commission,
             crate::autotune::PhaseId::AdcCalibrate,
             crate::autotune::CommissionStatus::AcceptedWithWarnings.to_u8(),
+            TraceEventLevel::Info,
+            TraceEventLevel::Warn,
+        );
+        assert_terminal_trace(
+            // 0: see the matching comment in terminal_success_trace_covers_all_engine_paths.
+            breakaway_safety_engine(0),
+            StepResult::OuterDone(sample_outer_result(
+                crate::autotune::CommissionStatus::InnerOnly,
+            )),
+            EngineKind::OuterTune,
+            initial_outer_phase_id(),
+            crate::autotune::CommissionStatus::InnerOnly.to_u8(),
             TraceEventLevel::Info,
             TraceEventLevel::Warn,
         );
