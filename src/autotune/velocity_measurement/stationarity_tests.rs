@@ -1053,7 +1053,7 @@ fn a_moving_stroke_gates_on_drift_not_on_significance() {
     // Steep but noisy: the significance test passes because the half-width is
     // large, yet the rate moves far enough across the span that no single value
     // describes it. The two gates are different predicates, not a loosening.
-    let metrics = metrics_fixture(MetricsFixture {
+    let mut metrics = metrics_fixture(MetricsFixture {
         slope_q: 5_000_000,
         slope_half_width_q: 9_000_000,
         span_x2_us: 2 * 1_000_000,
@@ -1063,7 +1063,7 @@ fn a_moving_stroke_gates_on_drift_not_on_significance() {
 
     assert!(metrics.slope_passed, "fixture must pass the old gate");
     assert_eq!(
-        classify_moving_metrics(metrics, settled(10_000_000, 1_000)),
+        classify_moving_metrics(&mut metrics, settled(10_000_000, 1_000)),
         Err(StationarityExclusion::ExcessiveDrift)
     );
 }
@@ -1091,7 +1091,7 @@ fn an_inert_observation_bypasses_the_drift_gate() {
     // sweep_evidence.rs evaluates StationarityExcluded before Inert, so a
     // zero-rate observation reaches the classifier first. Rejecting it would
     // relabel 15 P-ladder rungs from "did not move" to "excessive drift".
-    let metrics = metrics_fixture(MetricsFixture {
+    let mut metrics = metrics_fixture(MetricsFixture {
         slope_q: 400,
         slope_half_width_q: 1_000_000,
         span_x2_us: 2 * 64_000,
@@ -1100,9 +1100,29 @@ fn an_inert_observation_bypasses_the_drift_gate() {
     });
 
     let settled = settled(900, 1_500); // interval contains zero
-    let classified = classify_moving_metrics(metrics, settled)
+    classify_moving_metrics(&mut metrics, settled)
         .expect("inert observations must not be excluded for drift");
-    assert_eq!(classified.drift_ratio_ppm, u32::MAX);
+    assert_eq!(metrics.drift_ratio_ppm, u32::MAX);
+}
+
+#[test]
+fn a_structured_residual_rejection_still_reports_the_inert_bypass() {
+    // Same inert fixture as an_inert_observation_bypasses_the_drift_gate,
+    // but failing lag-one: the bypass must survive a rejection too.
+    let mut metrics = metrics_fixture(MetricsFixture {
+        slope_q: 400,
+        slope_half_width_q: 1_000_000,
+        span_x2_us: 2 * 64_000,
+        mean_rate_q: 900,
+        lag_one_passed: false,
+    });
+    let settled = settled(900, 1_500); // interval contains zero
+
+    assert_eq!(
+        classify_moving_metrics(&mut metrics, settled),
+        Err(StationarityExclusion::StructuredResidual)
+    );
+    assert_eq!(metrics.drift_ratio_ppm, u32::MAX);
 }
 
 /// A capture whose 64-sample tail is stationary and whose 128-sample tail is not.
@@ -1160,8 +1180,8 @@ fn a_usable_completion_reports_the_selected_suffix_ratio_not_a_later_candidate()
 fn the_drift_boundary_is_inclusive() {
     let settled = settled(1_000_000, 1);
     for (ratio, expect_ok) in [(199_999u32, true), (200_000, true), (200_001, false)] {
-        let metrics = metrics_with_ratio(ratio);
-        let outcome = classify_moving_metrics(metrics, settled);
+        let mut metrics = metrics_with_ratio(ratio);
+        let outcome = classify_moving_metrics(&mut metrics, settled);
         assert_eq!(outcome.is_ok(), expect_ok, "ratio {ratio}");
     }
 }

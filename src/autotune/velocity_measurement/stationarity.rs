@@ -956,7 +956,7 @@ impl StationarityWork {
             settled,
         );
         match metrics {
-            Ok(metrics) => {
+            Ok(mut metrics) => {
                 let diagnostic = suffix_diagnostic_from_metrics(selection, suffix_len, metrics)?;
                 if matches!(self.output, StationarityWorkOutput::RestAccumulator(_)) {
                     let structural_code = match classify_rest_metrics(metrics) {
@@ -980,7 +980,7 @@ impl StationarityWork {
                         classify_rest_metrics(metrics).map_err(Into::into)
                     }
                     StationarityWorkMode::Moving | StationarityWorkMode::Structured => {
-                        classify_moving_metrics(metrics, settled)
+                        classify_moving_metrics(&mut metrics, settled).map(|()| metrics)
                     }
                 };
                 match classified {
@@ -1672,7 +1672,7 @@ fn analyze_stationarity_from_source(
     blocking_variance_of_mean_q2: u128,
     settled: SettledRateContext,
 ) -> Result<StationarityMetrics, StationarityExclusion> {
-    let metrics = calculate_stationarity_metrics_from_source(
+    let mut metrics = calculate_stationarity_metrics_from_source(
         observations,
         suffix_start,
         suffix_len,
@@ -1681,7 +1681,8 @@ fn analyze_stationarity_from_source(
         blocking_variance_of_mean_q2,
         settled,
     )?;
-    classify_moving_metrics(metrics, settled)
+    classify_moving_metrics(&mut metrics, settled)?;
+    Ok(metrics)
 }
 
 fn calculate_stationarity_metrics_from_source(
@@ -1910,13 +1911,16 @@ pub(crate) const MAX_MOVING_DRIFT_PPM: u32 = 200_000;
 /// where a shorter one passed. The drift bound asks the question that matters
 /// instead: whether one settled value can describe the whole span.
 fn classify_moving_metrics(
-    mut metrics: StationarityMetrics,
+    metrics: &mut StationarityMetrics,
     settled: SettledRateContext,
-) -> Result<StationarityMetrics, StationarityExclusion> {
+) -> Result<(), StationarityExclusion> {
     // The settled interval containing zero is exactly the Inert condition.
     // sweep_evidence classifies StationarityExcluded before Inert, so gating here
     // would replace a correct "did not move" verdict with a wrong one on every
     // rung below breakaway.
+    //
+    // Mutates in place so the bypass survives every return path, including a
+    // rejection below.
     let interval_contains_zero = settled.mean_rate_q.unsigned_abs() <= settled.half_width_rate_q;
     if interval_contains_zero {
         metrics.drift_ratio_ppm = NO_REPORTABLE_DRIFT_RATIO_PPM;
@@ -1926,7 +1930,7 @@ fn classify_moving_metrics(
     if !metrics.lag_one_passed {
         return Err(StationarityExclusion::StructuredResidual);
     }
-    Ok(metrics)
+    Ok(())
 }
 
 /// Apply the zero-target rest stationarity gates.
