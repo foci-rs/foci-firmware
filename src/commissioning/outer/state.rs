@@ -1,7 +1,7 @@
 //! Outer commissioning phase state and phase-local data.
 
 use crate::autotune::{CommissionError, PhaseId};
-use crate::commissioning::types::OuterSafetyFault;
+use crate::commissioning::types::{OuterSafetyFault, RestSelectionOwner};
 
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
@@ -336,6 +336,7 @@ pub(crate) struct VelocityIntegralData {
     pub(crate) recovery_failure: bool,
     pub(crate) recovery_unavailable: bool,
     pub(crate) rest_unconfirmed: bool,
+    pub(crate) rest_unconfirmed_owner: Option<RestSelectionOwner>,
     pub(crate) recovered_with_current_headroom: bool,
     pub(crate) emitted_observations: u16,
     pub(crate) emitted_rungs: u16,
@@ -376,6 +377,7 @@ impl VelocityIntegralData {
             recovery_failure: false,
             recovery_unavailable: false,
             rest_unconfirmed: false,
+            rest_unconfirmed_owner: None,
             recovered_with_current_headroom: false,
             emitted_observations: 0,
             emitted_rungs: 0,
