@@ -123,16 +123,17 @@ pub fn classify_absolute_wait(
 /// classification normally ends the polling loop. The staged terminal dispatch
 /// can instead promote a completed Stage-C run straight into the inline
 /// robustness gate and hand back a nonterminal `ReadyNow`/`At` action. That
-/// promotion keeps the live engine stepping, so a stale `Terminal`
-/// classification collapses to an immediate re-poll; every other classification
-/// passes through unchanged.
+/// phase-change promotion keeps the live engine stepping, so a stale `Terminal`
+/// classification collapses to an immediate re-poll only for that case; every
+/// other classification passes through unchanged.
 #[must_use]
-pub fn nonterminal_continuation(driver_action: PollDriverAction) -> PollDriverAction {
-    match driver_action {
-        PollDriverAction::Terminal => PollDriverAction::PollNow,
-        action @ (PollDriverAction::PollNow
-        | PollDriverAction::YieldNow
-        | PollDriverAction::WaitUntil(_)) => action,
+pub fn nonterminal_continuation(
+    driver_action: PollDriverAction,
+    phase_changed: bool,
+) -> PollDriverAction {
+    match (driver_action, phase_changed) {
+        (PollDriverAction::Terminal, true) => PollDriverAction::PollNow,
+        (action, _) => action,
     }
 }
 
@@ -281,19 +282,23 @@ mod tests {
         // to a nonterminal action; the board must keep polling instead of ending
         // the loop, so a `Terminal` pre-classification collapses to `PollNow`.
         assert_eq!(
-            nonterminal_continuation(PollDriverAction::Terminal),
+            nonterminal_continuation(PollDriverAction::Terminal, true),
             PollDriverAction::PollNow
         );
         assert_eq!(
-            nonterminal_continuation(PollDriverAction::PollNow),
+            nonterminal_continuation(PollDriverAction::Terminal, false),
+            PollDriverAction::Terminal
+        );
+        assert_eq!(
+            nonterminal_continuation(PollDriverAction::PollNow, false),
             PollDriverAction::PollNow
         );
         assert_eq!(
-            nonterminal_continuation(PollDriverAction::YieldNow),
+            nonterminal_continuation(PollDriverAction::YieldNow, false),
             PollDriverAction::YieldNow
         );
         assert_eq!(
-            nonterminal_continuation(PollDriverAction::WaitUntil(42)),
+            nonterminal_continuation(PollDriverAction::WaitUntil(42), false),
             PollDriverAction::WaitUntil(42)
         );
     }
