@@ -4,7 +4,8 @@ use super::integral_plan::{
     AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan,
 };
 use super::integral_sweep::{
-    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
+    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_INTEGRITY,
+    INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
     acceptance_amplitude_report, acceptance_terminal, advance_integral_cursor, analyze_rung,
     apply_integral_current_headroom, combined_slot_transition_us, integral_fault_terminal,
@@ -1985,6 +1986,107 @@ fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
     assert_eq!(terminal.cause, 10);
+}
+
+#[test]
+fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition() {
+    // Case (b): evidence.assess(..) would already be Sufficient when a
+    // later rest check rejects the run. The terminal keeps outcome and
+    // cause unchanged (Inconclusive / VelocityRestNotConfirmed) but now
+    // also records that sufficiency was already met, and which owner
+    // rejected rest.
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    seed_sufficient_curve(data, &mut workspace);
+    data.bookend_available_mask = 3;
+    for (index, value) in [100_i32, 200, -200, -100].into_iter().enumerate() {
+        assert!(workspace.write_workspace_word(124 + index, value as u32));
+    }
+    data.rest_unconfirmed = true;
+    data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCRecovery);
+    *state = VelocityIntegralState::Terminal;
+    let mut backend = MockBackend::new();
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("a rest rejection after sufficiency must still terminate Stage C");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
+    assert_eq!(
+        terminal.cause,
+        CommissionError::VelocityRestNotConfirmed.status_code()
+    );
+    assert!(terminal.rest_rejection_after_sufficiency);
+    assert_eq!(
+        terminal.rest_rejection_owner,
+        Some(RestSelectionOwner::StageCRecovery)
+    );
+}
+
+#[test]
+fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
+    // Case (a): the existing partial-acquisition path. Confirms Task 2's
+    // plumbing default still holds once Task 3's real logic is in place,
+    // for a run that never reached sufficiency at all.
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rest_unconfirmed = true;
+    data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCRecovery);
+    *state = VelocityIntegralState::Terminal;
+    let mut backend = MockBackend::new();
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("completed Stage-C recovery rest rejection must terminate");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
+    assert_eq!(
+        terminal.cause,
+        CommissionError::VelocityRestNotConfirmed.status_code()
+    );
+    assert!(!terminal.rest_rejection_after_sufficiency);
+    assert_eq!(terminal.rest_rejection_owner, None);
+}
+
+#[test]
+fn matrix_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
+    // Defensive: evidence_terminal only runs on the non-matrix path, so
+    // data.rest_unconfirmed_owner should never hold a Matrix value here.
+    // If it somehow does, this must surface as the same integrity fault
+    // shape evidence_terminal already uses elsewhere, not a silently
+    // wrong case-(b) terminal.
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    seed_sufficient_curve(data, &mut workspace);
+    data.bookend_available_mask = 3;
+    for (index, value) in [100_i32, 200, -200, -100].into_iter().enumerate() {
+        assert!(workspace.write_workspace_word(124 + index, value as u32));
+    }
+    data.rest_unconfirmed = true;
+    data.rest_unconfirmed_owner = Some(RestSelectionOwner::MatrixRecovery);
+    *state = VelocityIntegralState::Terminal;
+    let mut backend = MockBackend::new();
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("a Matrix owner on this path must still terminate Stage C");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(terminal.cause, INTEGRAL_CAUSE_INTEGRITY);
+    assert!(!terminal.rest_rejection_after_sufficiency);
+    assert_eq!(terminal.rest_rejection_owner, None);
 }
 
 fn phase() -> OuterPhase {

@@ -76,7 +76,7 @@ const INTEGRAL_CAUSE_NONE: u8 = 0;
 const INTEGRAL_CAUSE_TOO_FEW_RUNGS: u8 = 1;
 const INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY: u8 = 2;
 const INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY: u8 = 3;
-const INTEGRAL_CAUSE_INTEGRITY: u8 = 4;
+pub(super) const INTEGRAL_CAUSE_INTEGRITY: u8 = 4;
 const INTEGRAL_CAUSE_RECOVERY: u8 = 5;
 pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
@@ -1138,7 +1138,36 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             );
         }
     };
+    let assessment = evidence.assess(usize::from(data.plan.positive_rung_count));
     if data.rest_unconfirmed {
+        let sufficient_before_rest_rejection =
+            matches!(assessment, Ok(IntegralRunSufficiency::Sufficient { .. }));
+        if sufficient_before_rest_rejection {
+            if matches!(
+                data.rest_unconfirmed_owner,
+                Some(RestSelectionOwner::MatrixObservation)
+                    | Some(RestSelectionOwner::MatrixRecovery)
+            ) {
+                return terminal_from_data(
+                    data,
+                    evidence,
+                    VelocityIntegralOutcome::Fault,
+                    INTEGRAL_CAUSE_INTEGRITY,
+                    None,
+                    false,
+                    None,
+                );
+            }
+            return terminal_from_data(
+                data,
+                evidence,
+                VelocityIntegralOutcome::Inconclusive,
+                CommissionError::VelocityRestNotConfirmed.status_code(),
+                None,
+                true,
+                data.rest_unconfirmed_owner,
+            );
+        }
         return terminal_from_data(
             data,
             evidence,
@@ -1160,7 +1189,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             None,
         );
     }
-    match evidence.assess(usize::from(data.plan.positive_rung_count)) {
+    match assessment {
         Ok(IntegralRunSufficiency::Sufficient {
             current_terminus, ..
         }) => terminal_from_data(
