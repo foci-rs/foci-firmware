@@ -1014,6 +1014,14 @@ pub struct VelocityIntegralTerminal {
     pub run_completed_us: u64,
     /// Safety evidence retained for ordered fault emission.
     pub safety_fault: Option<OuterSafetyFault>,
+    /// Whether `evidence.assess(..)` was already `Sufficient` when a rest
+    /// check rejected the run. Distinguishes a partial acquisition from
+    /// evidence that was discarded after it was already good.
+    pub rest_rejection_after_sufficiency: bool,
+    /// The Stage-C owner responsible, only when `rest_rejection_after_sufficiency`.
+    /// `None` whenever that flag is `false`, even if the run's rest check did
+    /// fail for a different (case-(a)) reason.
+    pub rest_rejection_owner: Option<RestSelectionOwner>,
 }
 
 // ============================================================================

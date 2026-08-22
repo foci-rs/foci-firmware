@@ -4047,6 +4047,8 @@ mod tests {
             run_started_us: 1_000,
             run_completed_us: 2_000,
             safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
         };
         let mut sink = RecordingSink::default();
 
@@ -4160,6 +4162,8 @@ mod tests {
             run_started_us: 1_000,
             run_completed_us: 2_000,
             safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
         };
         let mut sink = RecordingSink::default();
 

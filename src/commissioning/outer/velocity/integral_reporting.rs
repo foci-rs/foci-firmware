@@ -1231,6 +1231,8 @@ mod tests {
             run_started_us: 0x1111_2222_3333_4444,
             run_completed_us: 0x5555_6666_7777_8888,
             safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
         };
         terminal.evidence.opening = [
             super::super::integral_evidence::ExactRateInterval::new(100, 200).unwrap(),
@@ -1297,6 +1299,8 @@ mod tests {
             run_started_us: 0,
             run_completed_us: 1,
             safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
         };
 
         assert_eq!(
@@ -1345,6 +1349,8 @@ mod tests {
             run_started_us: 0,
             run_completed_us: 1,
             safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
         };
         terminal.evidence.eligible_masks = [0b111, 0b111];
 

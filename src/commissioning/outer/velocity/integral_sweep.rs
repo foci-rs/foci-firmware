@@ -939,6 +939,8 @@ pub(super) fn terminal_from_data(
     outcome: VelocityIntegralOutcome,
     cause: u8,
     safety_fault: Option<OuterSafetyFault>,
+    rest_rejection_after_sufficiency: bool,
+    rest_rejection_owner: Option<RestSelectionOwner>,
 ) -> StepResult {
     StepResult::VelocityIntegralTerminal(VelocityIntegralTerminal {
         run_sequence: data.integrity.run_sequence(),
@@ -964,6 +966,8 @@ pub(super) fn terminal_from_data(
         run_started_us: data.run_started_us,
         run_completed_us: data.previous_read_us,
         safety_fault,
+        rest_rejection_after_sufficiency,
+        rest_rejection_owner,
     })
 }
 
@@ -985,6 +989,8 @@ pub(crate) fn integral_fault_terminal(
         VelocityIntegralOutcome::Fault,
         error.status_code(),
         safety_fault,
+        false,
+        None,
     )
 }
 
@@ -1127,6 +1133,8 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
                 VelocityIntegralOutcome::Fault,
                 INTEGRAL_CAUSE_INTEGRITY,
                 None,
+                false,
+                None,
             );
         }
     };
@@ -1137,6 +1145,8 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             VelocityIntegralOutcome::Inconclusive,
             CommissionError::VelocityRestNotConfirmed.status_code(),
             None,
+            false,
+            None,
         );
     }
     if data.recovery_failure {
@@ -1145,6 +1155,8 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             evidence,
             VelocityIntegralOutcome::Inconclusive,
             INTEGRAL_CAUSE_RECOVERY,
+            None,
+            false,
             None,
         );
     }
@@ -1162,6 +1174,8 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             } else {
                 INTEGRAL_CAUSE_NONE
             },
+            None,
+            false,
             None,
         ),
         Ok(IntegralRunSufficiency::Inconclusive { cause, .. }) => terminal_from_data(
@@ -1186,12 +1200,16 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
                 }
             },
             None,
+            false,
+            None,
         ),
         Err(_) => terminal_from_data(
             data,
             evidence,
             VelocityIntegralOutcome::Fault,
             INTEGRAL_CAUSE_INTEGRITY,
+            None,
+            false,
             None,
         ),
     }

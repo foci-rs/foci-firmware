@@ -557,6 +557,8 @@ pub fn missing_authority_stage_c_terminal(run_sequence: u32) -> VelocityIntegral
         run_started_us: 0,
         run_completed_us: 0,
         safety_fault: None,
+        rest_rejection_after_sufficiency: false,
+        rest_rejection_owner: None,
     }
 }
 
@@ -591,5 +593,7 @@ pub(crate) fn failed_stage_c_terminal(
         run_started_us: 0,
         run_completed_us: 0,
         safety_fault: None,
+        rest_rejection_after_sufficiency: false,
+        rest_rejection_owner: None,
     }
 }
