@@ -50,8 +50,8 @@ use super::robustness_cycles::{
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
     ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
-    ROBUSTNESS_THRESHOLDS, ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds,
-    overshoot_counts, reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
+    ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds, overshoot_counts,
+    reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -154,14 +154,15 @@ pub(crate) struct RobustnessReversalSession {
 impl RobustnessReversalSession {
     /// Freeze the accepted point for a robustness-reversal run. Reads the point
     /// only; never mutates the candidate slot or its acceptance-matrix progress.
-    pub(crate) fn new(point: AcceptancePoint, run_sequence: u32) -> Self {
-        let t_max_us = ROBUSTNESS_THRESHOLDS.t_max_us;
+    pub(crate) fn new(point: AcceptancePoint, run_sequence: u32, counts_per_rev: u32) -> Self {
+        let (_, thresholds) = constructed_thresholds(&point, counts_per_rev);
+        let iae_max_q = thresholds.iae_max_q;
         Self {
             point,
             run_sequence,
             run_started_us: 0,
             direction: 0,
-            ledgers: [CycleLedger::new(t_max_us), CycleLedger::new(t_max_us)],
+            ledgers: [CycleLedger::new(iae_max_q), CycleLedger::new(iae_max_q)],
             peak_overshoot_counts: [0; DIRECTION_COUNT],
             cycle_wires: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; DIRECTION_COUNT],
             displaced_tail_wires: [None; DIRECTION_COUNT],
@@ -1419,16 +1420,18 @@ pub(crate) fn robustness_pass_outer_result(
 mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
-        ROBUSTNESS_CAUSE_IAE_EXCEEDED, ROBUSTNESS_CAUSE_PASS,
-        ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
-        ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_TAIL_REPEATED,
+        ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
+        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
+        ROBUSTNESS_CAUSE_TAIL_REPEATED,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::velocity::integral_reproduction::{
         AcceptanceMatrixProgress, StageCCandidateSlot, StageCPlanIdentity,
     };
-    use crate::commissioning::outer::velocity::robustness_metrics::ROBUSTNESS_MAX_RETRIES;
+    use crate::commissioning::outer::velocity::robustness_metrics::{
+        ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
+    };
     use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM;
 
@@ -1467,6 +1470,10 @@ mod tests {
         backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
         backend
     }
+
+    /// Encoder counts/rev used to build each test session's `iae_max_q`,
+    /// matching `test_backend()`'s configured value.
+    const COUNTS_PER_REV: u32 = 4_000;
 
     fn test_point() -> AcceptancePoint {
         AcceptancePoint {
@@ -1522,7 +1529,7 @@ mod tests {
     ) {
         let mut state = RobustnessReversalState::Setup;
         let mut workspace = RobustnessReversalWorkspace::new();
-        let mut session = RobustnessReversalSession::new(point, 7);
+        let mut session = RobustnessReversalSession::new(point, 7, COUNTS_PER_REV);
         let mut safety = test_safety();
         let mut backend = test_backend();
 
@@ -1630,7 +1637,7 @@ mod tests {
     /// fabricate a cycle that never ran.
     #[test]
     fn never_ran_direction_reports_zero_valid_cycles() {
-        let session = RobustnessReversalSession::new(test_point(), 7);
+        let session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
 
         let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
@@ -1648,17 +1655,17 @@ mod tests {
     /// A recorded cycle with extreme values must saturate, not wrap or panic,
     /// through both the ms conversion and the i64 -> i32 conversion the
     /// ledger's median accessors apply when reducing raw cycles into the
-    /// schema-2 wire evidence. A very large `t_max` keeps the huge
-    /// reconvergence from being classed as a tail (which would displace it
-    /// from a slot instead of filling one).
+    /// schema-2 wire evidence. `iae_max_q` is set to `i64::MAX` so the
+    /// extreme `recovery_iae_q` values themselves are never classed as tail
+    /// (which would displace a cycle from a slot instead of filling one).
     #[test]
     fn assembled_evidence_saturates_extreme_cycle_values() {
         // 200 s = 200_000 ms, well past u16::MAX (65_535) milliseconds.
         const HUGE_DURATION_US: u32 = 200_000_000;
 
-        let mut session = RobustnessReversalSession::new(test_point(), 7);
-        session.ledgers[0] = CycleLedger::new(u32::MAX);
-        session.ledgers[1] = CycleLedger::new(u32::MAX);
+        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        session.ledgers[0] = CycleLedger::new(i64::MAX);
+        session.ledgers[1] = CycleLedger::new(i64::MAX);
         session.ledgers[0].record(CycleRecord::Conclusive(ReversalMetrics {
             reconvergence_time_us: HUGE_DURATION_US,
             settled_residual_q: i64::MAX,
@@ -2037,7 +2044,7 @@ mod tests {
         recovery_iae_q: i64,
     ) -> RobustnessReversalTerminal {
         let backend = test_backend();
-        let mut session = RobustnessReversalSession::new(point, 7);
+        let mut session = RobustnessReversalSession::new(point, 7, COUNTS_PER_REV);
         for dir in 0..DIRECTION_COUNT {
             for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
                 session.ledgers[dir].record(CycleRecord::Conclusive(iae_metrics(recovery_iae_q)));
@@ -2052,16 +2059,18 @@ mod tests {
     }
 
     /// A median `recovery_iae_q` above the accepted point's plant-derived
-    /// `iae_max_q` trips `TRIP_IAE` and rejects, even though reconvergence
-    /// time and settled residual stay comfortably under their own (unchanged)
-    /// seeds.
+    /// `iae_max_q` can only occur if at least 3 of 5 cycles individually
+    /// exceed `iae_max_q`; the second such cycle latches a tail rejection
+    /// before a third could ever be recorded, so a genuinely IAE-exceeding
+    /// median always surfaces as `ROBUSTNESS_CAUSE_TAIL_REPEATED`, not a
+    /// median-only IAE trip.
     #[test]
     fn median_iae_exceeding_plant_derived_bound_trips_and_rejects() {
         // plant_rate_q 60_000, non-degenerate: iae_max_q = 4_350_000_000;
         // 5_000_000_000 exceeds it.
         let terminal = complete_with_uniform_iae(plant_identified_point(), 5_000_000_000);
         assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
-        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_IAE_EXCEEDED);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_TAIL_REPEATED);
         for direction in terminal.evidence.directions {
             assert!(!direction.inconclusive);
             assert_ne!(direction.trip_count, 0, "the excess median IAE must trip");
@@ -2085,14 +2094,27 @@ mod tests {
         }
     }
 
-    /// Build a `ReversalMetrics` with a given reconvergence time in ms; the
-    /// other fields are fixed so tail/median tests can reason about
-    /// reconvergence alone.
+    /// `test_point()`'s degenerate plant response gives `iae_max_q =
+    /// 23_466_666_000_000` (the seed bound, see `ROBUSTNESS_IAE_SEED_MAX_Q`).
+    /// `NON_TAIL_IAE_Q` stays far under it; `TAIL_IAE_Q` sits far over it.
+    const NON_TAIL_IAE_Q: i64 = 100_000;
+    const TAIL_IAE_Q: i64 = 25_000_000_000_000;
+
+    /// Build a `ReversalMetrics` with a given reconvergence time in ms and a
+    /// non-tail `recovery_iae_q`; the other fields are fixed so tail/median
+    /// tests can reason about reconvergence alone.
     fn cycle_metrics(reconvergence_ms: u32) -> ReversalMetrics {
+        cycle_metrics_with_iae(reconvergence_ms, NON_TAIL_IAE_Q)
+    }
+
+    /// Build a `ReversalMetrics` with a given reconvergence time in ms and a
+    /// caller-chosen `recovery_iae_q`, so tail tests can drive `is_tail()`
+    /// directly.
+    fn cycle_metrics_with_iae(reconvergence_ms: u32, recovery_iae_q: i64) -> ReversalMetrics {
         ReversalMetrics {
             reconvergence_time_us: reconvergence_ms.saturating_mul(1_000),
             settled_residual_q: 0,
-            recovery_iae_q: 0,
+            recovery_iae_q,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
         }
@@ -2101,19 +2123,21 @@ mod tests {
     /// A single tail cycle spends the one-shot grace, the fast replacement fills
     /// the slot, and the run still passes; the displaced tail still shows in max.
     ///
-    /// A conclusive tail cycle's reconvergence (> `2 * t_max` = 860 ms) exceeds
-    /// the 500 ms measurement budget, so it can never be measured through real
-    /// capture motion -- the ledger is driven directly to exercise the tail
-    /// grace and the assembly gate.
+    /// A conclusive tail cycle's `recovery_iae_q` exceeds the accepted point's
+    /// `iae_max_q`, which real capture motion would only produce on a genuine
+    /// outlier -- the ledger is driven directly to exercise the tail grace and
+    /// the assembly gate.
     #[test]
     fn single_tail_cycle_retries_then_passes() {
         const TAIL_MS: u32 = 900;
         const FAST_MS: u32 = 60;
         let backend = test_backend();
-        let mut session = RobustnessReversalSession::new(test_point(), 7);
+        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
         for dir in 0..DIRECTION_COUNT {
             assert_eq!(
-                session.ledgers[dir].record(CycleRecord::Conclusive(cycle_metrics(TAIL_MS))),
+                session.ledgers[dir].record(CycleRecord::Conclusive(cycle_metrics_with_iae(
+                    TAIL_MS, TAIL_IAE_Q,
+                ))),
                 LedgerAction::RetryTail
             );
             for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
@@ -2147,22 +2171,27 @@ mod tests {
     /// A second conclusive tail cycle latches the tail rejection with the
     /// dedicated cause, and the run continues so both directions still measure
     /// their cycles (the latch is applied at assembly, not mid-run). Driven at
-    /// the ledger for the same budget reason as
-    /// [`single_tail_cycle_retries_then_passes`].
+    /// the ledger for the same reason as
+    /// [`single_tail_cycle_retries_then_passes`]: a genuine `recovery_iae_q`
+    /// outlier above `iae_max_q`.
     #[test]
     fn second_tail_cycle_rejects_with_tail_cause_and_both_directions_measured() {
         const TAIL_MS: u32 = 900;
         const FAST_MS: u32 = 60;
         let backend = test_backend();
-        let mut session = RobustnessReversalSession::new(test_point(), 7);
+        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
         // Direction 0: two tail cycles latch the rejection; the slot fills on the
         // second tail and the remaining four cycles fill normally.
         assert_eq!(
-            session.ledgers[0].record(CycleRecord::Conclusive(cycle_metrics(TAIL_MS))),
+            session.ledgers[0].record(CycleRecord::Conclusive(cycle_metrics_with_iae(
+                TAIL_MS, TAIL_IAE_Q,
+            ))),
             LedgerAction::RetryTail
         );
         assert_eq!(
-            session.ledgers[0].record(CycleRecord::Conclusive(cycle_metrics(TAIL_MS))),
+            session.ledgers[0].record(CycleRecord::Conclusive(cycle_metrics_with_iae(
+                TAIL_MS, TAIL_IAE_Q,
+            ))),
             LedgerAction::RejectTail
         );
         for _ in 0..(ROBUSTNESS_CYCLES_PER_DIRECTION - 1) {
@@ -2191,13 +2220,14 @@ mod tests {
     /// The tail arms of `apply_cycle_record` itself: `RetryTail` skips the wire
     /// and holds the cursor, `RejectTail` fills the slot, advances the cursor,
     /// latches the rejection, and still routes back into the same direction so
-    /// the run does not short-circuit. This is the cause-10 routing glue that no
-    /// real-motion test can reach today (a tail's reconvergence exceeds the
-    /// measurement budget), so it is driven at the record boundary directly.
+    /// the run does not short-circuit. This is the cause-10 routing glue; a
+    /// tail is driven directly at the record boundary via a caller-chosen
+    /// `recovery_iae_q` above the session's `iae_max_q`, rather than through
+    /// real capture motion.
     #[test]
     fn apply_cycle_record_tail_arms_skip_grace_then_latch_and_continue() {
         const TAIL_MS: u32 = 900;
-        let tail = cycle_metrics(TAIL_MS);
+        let tail = cycle_metrics_with_iae(TAIL_MS, TAIL_IAE_Q);
         let tail_wire = CycleWire {
             reconvergence_ms: TAIL_MS as u16,
             overshoot_counts: 3,
@@ -2205,7 +2235,7 @@ mod tests {
         };
 
         let mut state = RobustnessReversalState::EstablishWriteGain;
-        let mut session = RobustnessReversalSession::new(test_point(), 7);
+        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
         assert_eq!(session.direction, 0);
         assert_eq!(session.cycle_cursor[0], 0);
 
@@ -2346,8 +2376,8 @@ mod tests {
     /// ledger's order) differs from converting the median afterward.
     #[test]
     fn assembled_evidence_medians_convert_iae_before_median() {
-        let mut session = RobustnessReversalSession::new(test_point(), 7);
-        session.ledgers[0] = CycleLedger::new(u32::MAX);
+        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        session.ledgers[0] = CycleLedger::new(i64::from(u32::MAX));
         let residuals_q = [10_i64, 40, 20, 30];
         let iae_us = [1_500_000_i64, 4_500_000, 2_500_000, 3_500_000];
         for (residual_q, iae) in residuals_q.into_iter().zip(iae_us) {
@@ -2427,7 +2457,7 @@ mod tests {
     #[test]
     fn inconclusive_retry_routes_immediately_but_slot_consume_rests() {
         let mut state = RobustnessReversalState::EstablishWriteGain;
-        let mut session = RobustnessReversalSession::new(test_point(), 7);
+        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
 
         for _ in 0..ROBUSTNESS_MAX_RETRIES {
             retry_or_finalize_inconclusive(&mut state, &mut session);

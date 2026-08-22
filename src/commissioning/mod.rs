@@ -718,7 +718,11 @@ impl CommissioningEngine {
         let phase = OuterPhase::RobustnessReversal {
             state: RobustnessReversalState::Setup,
             workspace: RobustnessReversalWorkspace::new(),
-            session: RobustnessReversalSession::new(preflight.point, preflight.run_sequence),
+            session: RobustnessReversalSession::new(
+                preflight.point,
+                preflight.run_sequence,
+                encoder_counts_per_rev,
+            ),
             safety: scaffold.safety,
         };
         Ok(Self::assemble_outer(scaffold, phase))
@@ -783,7 +787,7 @@ impl CommissioningEngine {
         *phase = OuterPhase::RobustnessReversal {
             state: RobustnessReversalState::Setup,
             workspace: RobustnessReversalWorkspace::new(),
-            session: RobustnessReversalSession::new(point, run_sequence),
+            session: RobustnessReversalSession::new(point, run_sequence, encoder_counts_per_rev),
             safety: reconfigured_safety,
         };
         Ok(())

@@ -16,11 +16,6 @@ pub(crate) const ROBUSTNESS_CYCLES_PER_DIRECTION: usize = 5;
 /// be trustworthy.
 pub(crate) const ROBUSTNESS_MIN_VALID_CYCLES: u8 = 4;
 
-/// Multiplier applied to `t_max_us` to derive the tail-cycle threshold: a
-/// conclusive cycle whose reconvergence time exceeds
-/// `ROBUSTNESS_TAIL_FACTOR * t_max_us` is a tail cycle.
-pub(crate) const ROBUSTNESS_TAIL_FACTOR: u32 = 2;
-
 /// Bounded retry count for an inconclusive probe leg, shared with
 /// [`super::robustness_metrics::ROBUSTNESS_MAX_RETRIES`]. Duplicated here as
 /// a `u8` constant so the ledger's budget arithmetic does not need to reach
@@ -71,7 +66,7 @@ pub(crate) enum LedgerAction {
 /// exhausted budget leaves a slot permanently unfilled, the only path under
 /// the [`ROBUSTNESS_MIN_VALID_CYCLES`] floor) and a single per-direction
 /// tail grace (one free re-run for the first conclusive cycle whose
-/// reconvergence time exceeds `ROBUSTNESS_TAIL_FACTOR * t_max_us`; a second
+/// `recovery_iae_q` exceeds the ledger's calibrated `iae_max_q`; a second
 /// tail cycle latches [`CycleLedger::tail_rejected`] instead of retrying).
 #[derive(Debug, defmt::Format)]
 pub(crate) struct CycleLedger {
@@ -85,13 +80,14 @@ pub(crate) struct CycleLedger {
     /// still feed [`CycleLedger::max_reconvergence_ms`].
     displaced_tail_reconv_ms: u16,
     tail_rejected: bool,
-    t_max_us: u32,
+    iae_max_q: i64,
 }
 
 impl CycleLedger {
     /// Start a new, empty ledger for one direction against the probe's
-    /// `t_max_us` time gate.
-    pub(crate) fn new(t_max_us: u32) -> Self {
+    /// calibrated `iae_max_q` tail threshold (see
+    /// [`super::robustness_metrics::RobustnessThresholds::iae_max_q`]).
+    pub(crate) fn new(iae_max_q: i64) -> Self {
         Self {
             slots: [None; ROBUSTNESS_CYCLES_PER_DIRECTION],
             cursor: 0,
@@ -100,7 +96,7 @@ impl CycleLedger {
             tail_count: 0,
             displaced_tail_reconv_ms: 0,
             tail_rejected: false,
-            t_max_us,
+            iae_max_q,
         }
     }
 
@@ -154,8 +150,7 @@ impl CycleLedger {
     }
 
     fn is_tail(&self, metrics: &ReversalMetrics) -> bool {
-        let threshold_us = u64::from(self.t_max_us) * u64::from(ROBUSTNESS_TAIL_FACTOR);
-        u64::from(metrics.reconvergence_time_us) > threshold_us
+        metrics.recovery_iae_q > self.iae_max_q
     }
 
     /// Advance the cursor past the current slot and report whether more
@@ -337,30 +332,60 @@ fn median_i64(values: &mut [i64]) -> i64 {
 mod tests {
     use super::*;
 
-    /// Build a `ReversalMetrics` with only `reconvergence_time_us` varying;
-    /// the other fields are fixed so tests can assert on reconvergence
-    /// alone.
+    /// Build a `ReversalMetrics` with a fixed, non-tail recovery IAE
+    /// (`LOW_IAE_Q`); `reconvergence_time_us` is the only varying field.
     fn metrics(reconv_ms: u32) -> ReversalMetrics {
+        metrics_with_iae(reconv_ms, LOW_IAE_Q)
+    }
+
+    /// iae_max_q large enough that `LOW_IAE_Q` (the plain `metrics()`
+    /// filler) is never classified as tail.
+    const NON_TAIL_IAE_MAX_Q: i64 = 50_000_000;
+
+    /// Recovery IAE used by cycles that must not classify as tail.
+    const LOW_IAE_Q: i64 = 100_000;
+
+    /// Recovery IAE used by the first tail-triggering cycle in a test.
+    const HIGH_IAE_Q: i64 = 600_000;
+
+    /// Recovery IAE used by a second, distinct tail-triggering cycle.
+    const HIGH_IAE_Q_2: i64 = 550_000;
+
+    /// Build a `ReversalMetrics` with only `recovery_iae_q` varying; the
+    /// other fields (including `reconvergence_time_us`) are fixed so tests
+    /// can assert that tail classification tracks recovery IAE alone.
+    fn metrics_with_iae(reconv_ms: u32, recovery_iae_q: i64) -> ReversalMetrics {
         ReversalMetrics {
             reconvergence_time_us: reconv_ms * 1_000,
             settled_residual_q: 42,
-            recovery_iae_q: 9_000_000,
+            recovery_iae_q,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
         }
     }
 
-    /// t_max large enough that none of the plain median-test reconvergence
-    /// values (<= 300 ms) are ever classified as tail.
-    const NON_TAIL_T_MAX_US: u32 = 1_000_000;
+    /// iae_max_q used by the IAE-tail test below.
+    const TAIL_IAE_MAX_Q: i64 = 500_000;
 
-    /// t_max used by the tail-focused tests: threshold is
-    /// `ROBUSTNESS_TAIL_FACTOR * 300_000 = 600_000` us (600 ms).
-    const TAIL_T_MAX_US: u32 = 300_000;
+    #[test]
+    fn tail_classification_is_driven_by_recovery_iae_not_reconvergence_time() {
+        let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
+        // Slow reconvergence, well past the retired time-based threshold,
+        // but low recovery IAE: must NOT be classified as tail.
+        assert_eq!(
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(900, 100_000))),
+            LedgerAction::NextCycle
+        );
+        // High recovery IAE, even with fast reconvergence: must be tail.
+        assert_eq!(
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(50, 600_000))),
+            LedgerAction::RetryTail
+        );
+    }
 
     #[test]
     fn median_of_five_valid_cycles_is_middle_element() {
-        let mut ledger = CycleLedger::new(NON_TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
         let order_ms = [100, 300, 200, 250, 150];
         let mut last_action = LedgerAction::NextCycle;
         for ms in order_ms {
@@ -374,7 +399,7 @@ mod tests {
 
     #[test]
     fn median_of_four_valid_cycles_rounds_toward_zero() {
-        let mut ledger = CycleLedger::new(NON_TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
         for ms in [100, 201, 150, 250] {
             ledger.record(CycleRecord::Conclusive(metrics(ms)));
         }
@@ -383,7 +408,7 @@ mod tests {
 
     #[test]
     fn inconclusive_retries_are_bounded_and_only_inconclusive_draws_them() {
-        let mut ledger = CycleLedger::new(NON_TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
         assert_eq!(
             ledger.record(CycleRecord::Inconclusive),
             LedgerAction::RetryInconclusive
@@ -402,9 +427,9 @@ mod tests {
 
     #[test]
     fn first_tail_cycle_gets_exactly_one_grace_retry() {
-        let mut ledger = CycleLedger::new(TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(700))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(700, HIGH_IAE_Q))),
             LedgerAction::RetryTail
         );
         assert_eq!(
@@ -418,13 +443,13 @@ mod tests {
 
     #[test]
     fn tail_replacement_that_is_tail_latches_rejection() {
-        let mut ledger = CycleLedger::new(TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(700))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(700, HIGH_IAE_Q))),
             LedgerAction::RetryTail
         );
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(650))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(650, HIGH_IAE_Q_2))),
             LedgerAction::RejectTail
         );
         assert!(ledger.tail_rejected());
@@ -446,9 +471,9 @@ mod tests {
 
     #[test]
     fn second_tail_in_later_slot_latches_rejection() {
-        let mut ledger = CycleLedger::new(TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(700))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(700, HIGH_IAE_Q))),
             LedgerAction::RetryTail
         );
         assert_eq!(
@@ -456,7 +481,7 @@ mod tests {
             LedgerAction::NextCycle
         );
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(650))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(650, HIGH_IAE_Q_2))),
             LedgerAction::RejectTail
         );
         assert!(ledger.tail_rejected());
@@ -464,7 +489,7 @@ mod tests {
 
     #[test]
     fn second_tail_on_last_slot_signals_direction_done_not_reject() {
-        let mut ledger = CycleLedger::new(TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
         // Fill slots 0..=3 so the next filled slot is the last one.
         for _ in 0..4 {
             assert_eq!(
@@ -474,14 +499,14 @@ mod tests {
         }
         // Grace tail: consumes the one-shot grace, does not fill a slot.
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(700))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(700, HIGH_IAE_Q))),
             LedgerAction::RetryTail
         );
         // The second tail fills the final slot. It must signal DirectionDone,
         // not RejectTail: the latter would let the caller record again and
         // index past the last slot. The rejection is still latched.
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(650))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(650, HIGH_IAE_Q_2))),
             LedgerAction::DirectionDone
         );
         assert!(ledger.tail_rejected());
@@ -490,7 +515,7 @@ mod tests {
 
     #[test]
     fn inconclusive_budget_cannot_consume_tail_grace() {
-        let mut ledger = CycleLedger::new(TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
         assert_eq!(
             ledger.record(CycleRecord::Inconclusive),
             LedgerAction::RetryInconclusive
@@ -500,14 +525,14 @@ mod tests {
             LedgerAction::RetryInconclusive
         );
         assert_eq!(
-            ledger.record(CycleRecord::Conclusive(metrics(700))),
+            ledger.record(CycleRecord::Conclusive(metrics_with_iae(700, HIGH_IAE_Q))),
             LedgerAction::RetryTail
         );
     }
 
     #[test]
     fn floor_breach_reachable_only_through_inconclusive_budget() {
-        let mut ledger = CycleLedger::new(NON_TAIL_T_MAX_US);
+        let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
         // Slot 0 spends the entire per-direction retry budget and is still
         // abandoned.
         assert_eq!(
@@ -533,9 +558,9 @@ mod tests {
         assert_eq!(ledger.valid_cycles(), 3);
         assert!(!ledger.meets_floor());
 
-        let mut grace_ledger = CycleLedger::new(TAIL_T_MAX_US);
+        let mut grace_ledger = CycleLedger::new(TAIL_IAE_MAX_Q);
         assert_eq!(
-            grace_ledger.record(CycleRecord::Conclusive(metrics(700))),
+            grace_ledger.record(CycleRecord::Conclusive(metrics_with_iae(700, HIGH_IAE_Q))),
             LedgerAction::RetryTail
         );
         for ms in [100, 150, 200, 250, 300] {

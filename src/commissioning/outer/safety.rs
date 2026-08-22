@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     fn robustness_reversal_session() -> RobustnessReversalSession {
-        RobustnessReversalSession::new(robustness_test_point(), 1)
+        RobustnessReversalSession::new(robustness_test_point(), 1, 4_000)
     }
 
     #[test]
