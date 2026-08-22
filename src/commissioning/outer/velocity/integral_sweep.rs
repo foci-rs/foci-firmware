@@ -690,7 +690,7 @@ pub(super) fn opening_recovery_lower_rate_q(
     }
 }
 
-fn plan_integral_recovery(
+pub(super) fn plan_integral_recovery(
     data: &mut VelocityIntegralData,
     workspace: &TransientBuffer,
     safety: &OuterSafetyLimits,
@@ -2010,6 +2010,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             } else if !settle_result.confirmed_rest && !data.observation_current_headroom {
                 safety.end_primitive();
                 data.rest_unconfirmed = true;
+                data.rest_unconfirmed_owner =
+                    Some(match integral_rung_kind(data.plan, data.rung_index) {
+                        IntegralRungKind::OpeningAnchor | IntegralRungKind::ClosingBookend => {
+                            RestSelectionOwner::StageCAnchor
+                        }
+                        IntegralRungKind::Positive => RestSelectionOwner::StageCPositiveObservation,
+                        IntegralRungKind::AcceptanceAmplitude => {
+                            RestSelectionOwner::MatrixObservation
+                        }
+                    });
                 *state = VelocityIntegralState::Terminal;
             } else {
                 safety.end_primitive();
@@ -2281,6 +2291,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             safety.end_primitive();
             if !cleanup.confirmed_rest {
                 data.rest_unconfirmed = true;
+                data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCCleanup);
                 *state = VelocityIntegralState::Terminal;
                 return StepResult::ReadyNow;
             }
@@ -2417,11 +2428,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
                 RungOriginRecoveryStep::RestUnconfirmed if is_acceptance_matrix(data.plan) => {
                     data.rest_unconfirmed = true;
+                    data.rest_unconfirmed_owner = Some(RestSelectionOwner::MatrixRecovery);
                     *state = VelocityIntegralState::Terminal;
                     StepResult::ReadyNow
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
                     data.rest_unconfirmed = true;
+                    data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCRecovery);
                     *state = VelocityIntegralState::Terminal;
                     StepResult::ReadyNow
                 }
