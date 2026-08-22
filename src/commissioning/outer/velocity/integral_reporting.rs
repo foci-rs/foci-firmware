@@ -6,9 +6,9 @@ use crate::ankyra::velocity_sweep_encoding::{
 };
 use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
 use crate::commissioning::types::{
-    AcceptanceMatrixEvent, StationarityRejectionDiagnostic, VelocityIntegralEvent,
-    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
-    VelocityIntegralTerminal,
+    AcceptanceMatrixEvent, RestSelectionOwner, StationarityRejectionDiagnostic,
+    VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
+    VelocityIntegralRungReport, VelocityIntegralTerminal,
 };
 
 use super::super::state::PositiveIRestBoundary;
@@ -31,6 +31,10 @@ pub(crate) const TERMINAL_RECOVERY_UNAVAILABLE: u8 = 1 << 0;
 pub(crate) const TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM: u8 = 1 << 1;
 pub(crate) const TERMINAL_RECOVERY_QUANTIZATION_EXPOSED: u8 = 1 << 2;
 pub(crate) const TERMINAL_PROBE_CONSTRAINED_TEST_POINT: u8 = 1 << 3;
+pub(crate) const TERMINAL_REST_REJECTION_AFTER_SUFFICIENCY: u8 = 1 << 4;
+pub(crate) const TERMINAL_REST_REJECTION_OWNER_SHIFT: u32 = 5;
+pub(crate) const TERMINAL_REST_REJECTION_OWNER_MASK: u8 =
+    0b011 << TERMINAL_REST_REJECTION_OWNER_SHIFT;
 
 /// Whether this terminal's firmware-internal target derivations may return
 /// `Some(..)`.
@@ -99,11 +103,25 @@ pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
     // it gated were set only by the now-retired live combined P-then-I
     // workflow; breakaway never set them, so removing that
     // dead branch does not change the wire `recovery_flags` byte.
+    let owner_code: u8 = match report.rest_rejection_owner {
+        Some(RestSelectionOwner::StageCAnchor) | None => 0b00,
+        Some(RestSelectionOwner::StageCPositiveObservation) => 0b01,
+        Some(RestSelectionOwner::StageCRecovery) => 0b10,
+        Some(RestSelectionOwner::StageCCleanup) => 0b11,
+        Some(_) => 0b00,
+    };
     (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
         | (u8::from(report.recovered_with_current_headroom)
             * TERMINAL_RECOVERED_WITH_CURRENT_HEADROOM)
         | (u8::from(report.recovery_quantization_exposed) * TERMINAL_RECOVERY_QUANTIZATION_EXPOSED)
         | (u8::from(report.probe_constrained_test_point) * TERMINAL_PROBE_CONSTRAINED_TEST_POINT)
+        | (u8::from(report.rest_rejection_after_sufficiency)
+            * TERMINAL_REST_REJECTION_AFTER_SUFFICIENCY)
+        | if report.rest_rejection_after_sufficiency {
+            (owner_code << TERMINAL_REST_REJECTION_OWNER_SHIFT) & TERMINAL_REST_REJECTION_OWNER_MASK
+        } else {
+            0
+        }
 }
 
 /// Fixed-memory sequencing and digest state for one Stage-C run.
@@ -1316,6 +1334,59 @@ mod tests {
                 | TERMINAL_PROBE_CONSTRAINED_TEST_POINT
         );
         assert_eq!(terminal_recovery_flags(&terminal) & 0xf0, 0);
+    }
+
+    #[test]
+    fn stage_c_terminal_flags_pack_the_rest_rejection_discriminator() {
+        let mut terminal = VelocityIntegralTerminal {
+            run_sequence: 7,
+            evidence_sequence: 9,
+            plan_digest: 0,
+            digest: 0,
+            outcome: VelocityIntegralOutcome::Inconclusive,
+            cause: 53,
+            breakaway_acceptance: false,
+            final_p: 0,
+            recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
+            evidence: super::super::integral_evidence::IntegralRunEvidence::new(
+                [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
+            ),
+            expected_observations: 112,
+            emitted_observations: 48,
+            expected_rungs: 14,
+            emitted_rungs: 6,
+            run_started_us: 0,
+            run_completed_us: 1,
+            safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
+        };
+        assert_eq!(terminal_recovery_flags(&terminal) & 0xf0, 0);
+
+        for (owner, code) in [
+            (RestSelectionOwner::StageCAnchor, 0b00),
+            (RestSelectionOwner::StageCPositiveObservation, 0b01),
+            (RestSelectionOwner::StageCRecovery, 0b10),
+            (RestSelectionOwner::StageCCleanup, 0b11),
+        ] {
+            terminal.rest_rejection_after_sufficiency = true;
+            terminal.rest_rejection_owner = Some(owner);
+            let flags = terminal_recovery_flags(&terminal);
+            assert_eq!(
+                flags & TERMINAL_REST_REJECTION_AFTER_SUFFICIENCY,
+                TERMINAL_REST_REJECTION_AFTER_SUFFICIENCY
+            );
+            assert_eq!(
+                (flags & TERMINAL_REST_REJECTION_OWNER_MASK) >> TERMINAL_REST_REJECTION_OWNER_SHIFT,
+                code
+            );
+            assert_eq!(flags & (1 << 7), 0);
+        }
     }
 
     /// A breakaway acceptance terminal's firmware-internal target derivations
