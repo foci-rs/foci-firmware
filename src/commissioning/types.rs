@@ -599,6 +599,8 @@ pub struct RestSelectionDiagnostic {
     pub(crate) slot: u8,
     /// Final selector disposition.
     pub(crate) disposition: crate::autotune::velocity_measurement::RestSelectionDisposition,
+    /// Retained observation count at the moment the decision was finalized.
+    pub(crate) retained_sample_count: u16,
 }
 
 /// Causal current-limit evidence for one signed-plus-zero velocity primitive.

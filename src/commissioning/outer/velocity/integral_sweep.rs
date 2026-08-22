@@ -840,6 +840,7 @@ pub(super) fn record_integral_recovery_rest_selection(
         direction: u8::MAX,
         slot: u8::MAX,
         disposition: decision.disposition,
+        retained_sample_count: decision.retained_sample_count,
     };
     if is_acceptance_matrix(data.plan) {
         let event = data
@@ -876,6 +877,7 @@ pub(super) fn record_integral_observation_rest_selection(
         direction: data.plan.slot_order.direction_index(data.slot) as u8,
         slot: data.slot,
         disposition: decision.disposition,
+        retained_sample_count: decision.retained_sample_count,
     };
     if is_acceptance_matrix(data.plan) {
         let event = data
@@ -2031,7 +2033,9 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             RestStructuralCode::StructuredResidual => {
                                 StationarityExclusion::StructuredResidual
                             }
-                            RestStructuralCode::Usable | RestStructuralCode::Arithmetic => {
+                            RestStructuralCode::Usable
+                            | RestStructuralCode::Arithmetic
+                            | RestStructuralCode::InsufficientHistory => {
                                 return fail_integral(
                                     phase,
                                     backend,

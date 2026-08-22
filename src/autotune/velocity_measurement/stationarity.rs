@@ -349,7 +349,7 @@ impl RestSelectionAccumulator {
     const fn new(one_count_fallback: bool) -> Self {
         Self {
             suffixes: [RestSuffixEvaluation {
-                structural_code: RestStructuralCode::TooFewDecorrelatedBlocks,
+                structural_code: RestStructuralCode::InsufficientHistory,
                 interval_present: false,
                 interval_q: [0; 2],
             }; 3],
@@ -361,8 +361,12 @@ impl RestSelectionAccumulator {
         self.suffixes[usize::from(suffix_index)] = evaluation;
     }
 
-    fn decision(self) -> RestSelectionDecision {
-        select_causal_rest_suffixes(self.suffixes, self.one_count_fallback)
+    fn decision(self, retained_sample_count: u16) -> RestSelectionDecision {
+        select_causal_rest_suffixes(
+            self.suffixes,
+            self.one_count_fallback,
+            retained_sample_count,
+        )
     }
 }
 
@@ -497,7 +501,9 @@ impl StationarityWork {
                     let StationarityWorkOutput::RestAccumulator(accumulator) = self.output else {
                         return Err(VelocityMeasurementError::ArithmeticOverflow);
                     };
-                    let decision = accumulator.decision();
+                    let retained_sample_count = u16::try_from(observations.observation_len())
+                        .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+                    let decision = accumulator.decision(retained_sample_count);
                     self.output = StationarityWorkOutput::RestDecision(decision);
                     self.stage = StationarityWorkStage::RestDecisionReady;
                     return Ok(StationarityWorkPoll::RestDiagnostic(decision));
@@ -1241,7 +1247,9 @@ impl StationarityWork {
             return Ok(StationarityWorkPoll::Pending);
         }
 
-        let decision = accumulator.decision();
+        let retained_sample_count = u16::try_from(observations.observation_len())
+            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
+        let decision = accumulator.decision(retained_sample_count);
         self.output = StationarityWorkOutput::RestDecision(decision);
         self.stage = StationarityWorkStage::RestDecisionReady;
         Ok(StationarityWorkPoll::RestDiagnostic(decision))

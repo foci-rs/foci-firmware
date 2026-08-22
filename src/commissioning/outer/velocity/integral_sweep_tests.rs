@@ -339,6 +339,7 @@ fn completed_rest_selection() -> RestSelectionDecision {
         selected_mask: 0b100,
         selected_suffix_len: 256,
         disposition: RestSelectionDisposition::StatisticalAcceptance,
+        retained_sample_count: 256,
     }
 }
 

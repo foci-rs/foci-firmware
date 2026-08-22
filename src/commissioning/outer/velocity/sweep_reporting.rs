@@ -82,6 +82,7 @@ pub(crate) fn encode_rest_selection(
     record.push_u8(report.selected_mask);
     record.push_u16(report.selected_suffix_len);
     record.push_u8(report.disposition as u8);
+    record.push_u16(report.retained_sample_count);
     for interval in report.intervals_q {
         for endpoint in interval {
             push_u64(&mut record, endpoint as u64);
@@ -115,7 +116,8 @@ fn validate_rest_selection(
             RestStructuralCode::Usable => true,
             RestStructuralCode::ResolvedSlope | RestStructuralCode::StructuredResidual => true,
             RestStructuralCode::NoBlockingPlateau
-            | RestStructuralCode::TooFewDecorrelatedBlocks => false,
+            | RestStructuralCode::TooFewDecorrelatedBlocks
+            | RestStructuralCode::InsufficientHistory => false,
             RestStructuralCode::Arithmetic => {
                 return Err(RestSelectionEncodingError::ArithmeticResult);
             }
@@ -137,6 +139,7 @@ fn validate_rest_selection(
     let expected = select_causal_rest_suffixes(
         suffixes,
         report.disposition == RestSelectionDisposition::OneCountFallbackAcceptance,
+        report.retained_sample_count,
     );
     if report.structural_codes != expected.structural_codes
         || report.intervals_q != expected.intervals_q
@@ -217,11 +220,12 @@ mod tests {
             direction: 1,
             slot: 0xff,
             disposition: RestSelectionDisposition::StatisticalAcceptance,
+            retained_sample_count: 256,
         }
     }
 
     #[test]
-    fn rest_selection_record_has_exact_78_byte_layout() {
+    fn rest_selection_record_has_exact_80_byte_layout() {
         let report = rest_selection_diagnostic();
         let record = encode_rest_selection(report).unwrap();
         let mut expected = std::vec![11];
@@ -232,6 +236,7 @@ mod tests {
         expected.extend_from_slice(&[0, 0, 3, 0b111, 0b011, 0b011, 0b010]);
         expected.extend_from_slice(&128_u16.to_le_bytes());
         expected.push(0);
+        expected.extend_from_slice(&report.retained_sample_count.to_le_bytes());
         for interval in report.intervals_q {
             for endpoint in interval {
                 expected.extend_from_slice(&endpoint.to_le_bytes());
@@ -239,7 +244,7 @@ mod tests {
         }
 
         assert_eq!(record.as_bytes(), expected);
-        assert_eq!(record.as_bytes().len(), 78);
+        assert_eq!(record.as_bytes().len(), 80);
     }
 
     #[test]

@@ -115,7 +115,7 @@ fn causal_rest_selector_matches_literal_historical_decisions() {
     ];
 
     for case in cases {
-        let decision = select_causal_rest_suffixes(case.suffixes, case.fallback);
+        let decision = select_causal_rest_suffixes(case.suffixes, case.fallback, 256);
         assert_eq!(
             decision.selected_suffix_len, case.selected_suffix_len,
             "{}",
@@ -138,6 +138,7 @@ fn slot_157_recent_directional_motion_cannot_be_masked_by_older_suffixes() {
             usable_rest_suffix([-7_780, 62_582]),
         ],
         false,
+        256,
     );
 
     assert_eq!(recent_deltas.iter().copied().map(i16::from).sum::<i16>(), 6);
@@ -161,6 +162,7 @@ fn an_unfittable_shortest_window_does_not_veto_longer_windows_that_confirm_rest(
             usable_rest_suffix([-14_721, 22_533]),
         ],
         false,
+        256,
     );
 
     assert_eq!(decision.usable_mask, 0b110);
@@ -185,6 +187,7 @@ fn a_fittable_shortest_window_excluding_zero_still_vetoes_longer_windows() {
             usable_rest_suffix([-7_780, 62_582]),
         ],
         false,
+        256,
     );
 
     assert_eq!(decision.selected_mask, 0);
@@ -201,6 +204,7 @@ fn causal_rest_selector_treats_closed_interval_endpoints_as_zero_compatible() {
                 excluded_rest_suffix(RestStructuralCode::NoBlockingPlateau, None),
             ],
             false,
+            256,
         );
 
         assert_eq!(decision.selected_suffix_len, 64);
@@ -219,7 +223,7 @@ fn one_count_fallback_applies_only_when_the_recent_chain_does_not_start() {
         usable_rest_suffix([-1, 1]),
         usable_rest_suffix([-1, 1]),
     ];
-    let fallback = select_causal_rest_suffixes(recent_motion, true);
+    let fallback = select_causal_rest_suffixes(recent_motion, true, 256);
     assert_eq!(fallback.selected_suffix_len, 0);
     assert_eq!(
         fallback.disposition,
@@ -233,6 +237,7 @@ fn one_count_fallback_applies_only_when_the_recent_chain_does_not_start() {
             usable_rest_suffix([1, 2]),
         ],
         true,
+        256,
     );
     assert_eq!(statistical.selected_suffix_len, 128);
     assert_eq!(
@@ -254,7 +259,7 @@ fn every_selected_rest_suffix_has_a_contiguous_compatible_prefix() {
                     usable_rest_suffix([1, 2])
                 }
             });
-            let decision = select_causal_rest_suffixes(suffixes, false);
+            let decision = select_causal_rest_suffixes(suffixes, false, 256);
             if decision.selected_mask == 0 {
                 continue;
             }
@@ -537,6 +542,42 @@ fn cooperative_rest_work_emits_one_diagnostic_then_reconstructs_its_witness() {
         polls <= 236,
         "diagnostic and witness reconstruction used {polls} cooperative polls"
     );
+}
+
+/// A suffix the accumulator never got to attempt (not enough retained
+/// history for that window) must not be reported with the same structural
+/// code as a suffix that was evaluated and structurally rejected.
+#[test]
+fn rest_diagnostic_marks_unattempted_suffixes_as_insufficient_history() {
+    let samples = observations::<100>(|_| 0);
+    let mut blocker = DyadicBlocker::<LEVELS>::new();
+    let mut work = StationarityWork::new();
+    work.reset_for_scored_rest(false);
+
+    let decision = loop {
+        match work.poll(&samples[..], &mut blocker).unwrap() {
+            StationarityWorkPoll::Pending => {}
+            StationarityWorkPoll::RestDiagnostic(decision) => break decision,
+            other => panic!("expected a rest diagnostic, got {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        decision.structural_codes[0],
+        RestStructuralCode::Usable,
+        "the 64-sample suffix fits in 100 retained samples and was evaluated"
+    );
+    assert_eq!(
+        decision.structural_codes[1],
+        RestStructuralCode::InsufficientHistory,
+        "the 128-sample suffix was never attempted with only 100 retained samples"
+    );
+    assert_eq!(
+        decision.structural_codes[2],
+        RestStructuralCode::InsufficientHistory,
+        "the 256-sample suffix was never attempted with only 100 retained samples"
+    );
+    assert_eq!(decision.retained_sample_count, 100);
 }
 
 #[test]

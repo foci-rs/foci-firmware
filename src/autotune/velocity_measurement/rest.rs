@@ -17,6 +17,8 @@ pub enum RestStructuralCode {
     StructuredResidual = 4,
     /// Checked arithmetic or a numeric conversion failed.
     Arithmetic = 5,
+    /// Not enough retained history was available to attempt this window.
+    InsufficientHistory = 6,
 }
 
 /// Final scored-rest selector disposition.
@@ -50,6 +52,8 @@ pub struct RestSelectionDecision {
     pub selected_suffix_len: u16,
     /// Final selector disposition.
     pub disposition: RestSelectionDisposition,
+    /// Retained observation count at the moment the decision was finalized.
+    pub retained_sample_count: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +66,7 @@ pub(crate) struct RestSuffixEvaluation {
 pub(crate) fn select_causal_rest_suffixes(
     suffixes: [RestSuffixEvaluation; 3],
     one_count_fallback: bool,
+    retained_sample_count: u16,
 ) -> RestSelectionDecision {
     let mut structural_codes = [RestStructuralCode::TooFewDecorrelatedBlocks; 3];
     let mut intervals_q = [[0; 2]; 3];
@@ -119,5 +124,6 @@ pub(crate) fn select_causal_rest_suffixes(
         selected_mask,
         selected_suffix_len,
         disposition,
+        retained_sample_count,
     }
 }
