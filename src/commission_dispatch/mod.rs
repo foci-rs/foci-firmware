@@ -123,6 +123,8 @@ pub enum CommissionOutcome {
         oid: u8,
         phase_id: PhaseId,
         engine_kind: EngineKind,
+        /// Report-only evidence to emit alongside the transition, if any.
+        evidence: Option<ReplyPayload>,
     },
     /// Nonterminal report-only evidence is ready for immediate emission.
     Evidence {
@@ -486,6 +488,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 oid: engine_ref.oid(),
                 phase_id,
                 engine_kind: engine_ref.kind(),
+                evidence: None,
             }
         }
         StepResult::VelocityIntegralEvent(event) => {
@@ -1275,12 +1278,27 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
             .expect("engine slot is None on a promoted Complete");
         match engine_ref.begin_inline_robustness(point, encoder_counts_per_rev) {
             Ok(()) => {
+                let oid = engine_ref.oid();
+                let phase_id = engine_ref
+                    .current_phase_id()
+                    .unwrap_or(PhaseId::VelocityTune);
+                let engine_kind = engine_ref.kind();
+                #[cfg(feature = "trace")]
+                engine_ref.emit_stage_c_terminal_trace(
+                    backend,
+                    &dispatch.terminal,
+                    dispatch.reproduction,
+                );
                 return CommissionOutcome::PhaseChanged {
-                    oid: engine_ref.oid(),
-                    phase_id: engine_ref
-                        .current_phase_id()
-                        .unwrap_or(PhaseId::VelocityTune),
-                    engine_kind: engine_ref.kind(),
+                    oid,
+                    phase_id,
+                    engine_kind,
+                    evidence: Some(ReplyPayload::VelocityIntegralTerminal {
+                        oid,
+                        terminal: dispatch.terminal,
+                        reproduction: dispatch.reproduction,
+                        authority: dispatch.authority,
+                    }),
                 };
             }
             Err(error) => {

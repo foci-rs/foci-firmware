@@ -731,6 +731,7 @@ fn phase_changed_returns_oid_phase_kind() {
                 oid,
                 phase_id,
                 engine_kind,
+                evidence,
             } => {
                 assert_eq!(oid, 7);
                 assert_eq!(phase_id, crate::autotune::PhaseId::ClosedLoopEntry);
@@ -738,6 +739,7 @@ fn phase_changed_returns_oid_phase_kind() {
                     engine_kind,
                     crate::commissioning::types::EngineKind::Commission
                 );
+                assert!(evidence.is_none());
             }
             _ => panic!("expected PhaseChanged"),
         }

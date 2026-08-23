@@ -642,15 +642,21 @@ impl TmcControlRuntime {
                 oid,
                 phase_id,
                 engine_kind,
-            } => Some(ScheduledCommissionTickAction::ReadyNow {
-                event: Some(
-                    crate::commissioning::schedule::CommissionEvent::PhaseChanged {
-                        oid,
-                        phase_id,
-                        engine_kind,
-                    },
-                ),
-            }),
+                evidence,
+            } => {
+                if let Some(reply) = evidence {
+                    emit_evidence(reply);
+                }
+                Some(ScheduledCommissionTickAction::ReadyNow {
+                    event: Some(
+                        crate::commissioning::schedule::CommissionEvent::PhaseChanged {
+                            oid,
+                            phase_id,
+                            engine_kind,
+                        },
+                    ),
+                })
+            }
             crate::commission_dispatch::CommissionOutcome::Continue => {
                 unreachable!("terminal poll produced a nonterminal dispatch action")
             }

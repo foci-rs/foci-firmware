@@ -1103,17 +1103,26 @@ async fn promoted_complete_transitions_to_inline_robustness() {
     )
     .await;
 
-    assert!(
-        matches!(
-            outcome,
-            CommissionOutcome::PhaseChanged {
-                oid: 1,
-                phase_id: PhaseId::VelocityTune,
-                ..
-            }
-        ),
-        "promoted Complete must transition into robustness, not emit a terminal"
-    );
+    let CommissionOutcome::PhaseChanged {
+        oid,
+        phase_id: PhaseId::VelocityTune,
+        evidence,
+        ..
+    } = outcome
+    else {
+        panic!("promoted Complete must transition into robustness, not emit a terminal");
+    };
+    assert_eq!(oid, 1);
+    let Some(ReplyPayload::VelocityIntegralTerminal {
+        oid: reply_oid,
+        terminal,
+        ..
+    }) = evidence
+    else {
+        panic!("promoted Complete must still report its terminal as evidence");
+    };
+    assert_eq!(reply_oid, 1);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
     let engine = engine
         .as_ref()
         .expect("the promoted run keeps its live engine stepping");
@@ -1202,7 +1211,11 @@ async fn promoted_complete_from_terminal_poll_continues_workflow() {
         ),
         "a promoted Complete from the terminal poll must continue into robustness"
     );
-    assert!(emitted_reply.is_none());
+    let Some(ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. }) = emitted_reply else {
+        panic!("a promoted Complete from the terminal poll must still report its terminal");
+    };
+    assert_eq!(oid, 1);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
 }
 
 #[fixture_test]
