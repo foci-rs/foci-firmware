@@ -1316,7 +1316,10 @@ impl CommissioningEngine {
             level,
             event_id: EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
             engine_kind: EngineKind::OuterTune,
-            payload: [terminal.cause.into(), terminal.digest as i32],
+            payload: [
+                i32::from(terminal.cause.raw_value()),
+                terminal.digest as i32,
+            ],
             payload_count: 2,
         });
         if terminal.outcome == crate::commissioning::types::VelocityIntegralOutcome::Complete {
@@ -3110,7 +3113,9 @@ mod tests {
         use crate::commissioning::outer::velocity::integral_evidence::{
             ExactRateInterval, IntegralRunEvidence,
         };
-        use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
+        use crate::commissioning::types::{
+            StageCCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
+        };
 
         let mut engine = breakaway_safety_engine(9);
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
@@ -3120,7 +3125,7 @@ mod tests {
             plan_digest: 0x1111_2222_3333_4444,
             digest: 0x0123_4567_89ab_cdef,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: 0,
+            cause: StageCCause::Engine(0),
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -3201,7 +3206,9 @@ mod tests {
         use crate::commissioning::outer::{
             OuterMotionBudget, PositiveIRestBoundary, VelocitySettleMetrics,
         };
-        use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
+        use crate::commissioning::types::{
+            StageCCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
+        };
 
         let request = VelocitySweepRequest {
             requested_velocity_mrev_s: 2_929,
@@ -3298,7 +3305,7 @@ mod tests {
             plan_digest: plan.digest(),
             digest: 0,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: 0,
+            cause: StageCCause::Engine(0),
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,

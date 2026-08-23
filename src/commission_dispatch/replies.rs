@@ -1379,7 +1379,8 @@ pub fn emit_velocity_integral_terminal_fragments<S: CommissionReplySink>(
         evidence_sequence: sequence,
         fragment: 0,
         outcome: outcome_code(terminal.outcome),
-        cause: terminal.cause,
+        cause: terminal.cause.raw_value(),
+        cause_namespace: terminal.cause.namespace_code(),
         recovery_flags:
             crate::commissioning::outer::velocity::integral_reporting::terminal_recovery_flags(
                 &terminal,
@@ -4030,7 +4031,7 @@ mod tests {
             plan_digest: 0x1111_2222_3333_4444,
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: 7,
+            cause: crate::commissioning::types::StageCCause::Engine(7),
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -4145,7 +4146,7 @@ mod tests {
             plan_digest: plan.digest(),
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: 7,
+            cause: crate::commissioning::types::StageCCause::Engine(7),
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,

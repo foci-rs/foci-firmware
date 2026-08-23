@@ -46,7 +46,8 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::types::{
     AcceptanceMatrixCause, AcceptanceMatrixEvent, AcceptanceMatrixOutcome, RestSelectionOwner,
-    RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent, VelocityIntegralOutcome,
+    RungOriginRecoveryEvidence, StageCCause, StepResult, VelocityIntegralEvent,
+    VelocityIntegralOutcome,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -1101,7 +1102,7 @@ fn integral_recovery_containment_is_cause_five_before_the_bookend() {
         panic!("contained intermediate recovery must terminate Stage C");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-    assert_eq!(terminal.cause, 5);
+    assert_eq!(terminal.cause, StageCCause::Engine(5));
     assert!(!terminal.recovery_unavailable);
     assert!(!backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
@@ -1128,7 +1129,7 @@ fn completed_stage_c_recovery_rest_rejection_is_cause_53() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        CommissionError::VelocityRestNotConfirmed.status_code()
+        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     assert!(!terminal.recovery_unavailable);
 }
@@ -1585,7 +1586,7 @@ fn successful_cleanup_before_directional_floors_is_cause_nine() {
         panic!("successful pre-floor cleanup must terminate with boundary evidence");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-    assert_eq!(terminal.cause, 9);
+    assert_eq!(terminal.cause, StageCCause::Engine(9));
     assert!(!backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
             if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
@@ -1632,7 +1633,7 @@ fn completed_i_zero_cleanup_rejection_is_inconclusive_rest() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        CommissionError::VelocityRestNotConfirmed.status_code()
+        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         unreachable!()
@@ -1690,7 +1691,7 @@ fn stage_c_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
         assert_eq!(
             terminal.cause,
-            CommissionError::VelocityRestNotConfirmed.status_code()
+            StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
         );
         let OuterPhase::VelocityIntegral { data, .. } = &phase else {
             unreachable!()
@@ -1986,7 +1987,7 @@ fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
         panic!("a sufficient boundary run must retain the response candidate");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
-    assert_eq!(terminal.cause, 10);
+    assert_eq!(terminal.cause, StageCCause::Engine(10));
 }
 
 #[test]
@@ -2019,7 +2020,7 @@ fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition(
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        CommissionError::VelocityRestNotConfirmed.status_code()
+        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     assert!(terminal.rest_rejection_after_sufficiency);
     assert_eq!(
@@ -2051,7 +2052,7 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        CommissionError::VelocityRestNotConfirmed.status_code()
+        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     assert!(!terminal.rest_rejection_after_sufficiency);
     assert_eq!(terminal.rest_rejection_owner, None);
@@ -2085,7 +2086,10 @@ fn matrix_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
         panic!("a Matrix owner on this path must still terminate Stage C");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
-    assert_eq!(terminal.cause, INTEGRAL_CAUSE_INTEGRITY);
+    assert_eq!(
+        terminal.cause,
+        StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY)
+    );
     assert!(!terminal.rest_rejection_after_sufficiency);
     assert_eq!(terminal.rest_rejection_owner, None);
 }
@@ -2624,7 +2628,10 @@ fn excluded_closing_bookend_makes_the_curve_inconclusive() {
         panic!("bookend insufficiency must reach the dedicated terminal")
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-    assert_eq!(terminal.cause, INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE);
+    assert_eq!(
+        terminal.cause,
+        StageCCause::Engine(INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE)
+    );
     assert_eq!(terminal.evidence.bookend, [None, None]);
 }
 
@@ -2680,7 +2687,7 @@ fn contained_recovery_after_an_eligible_bookend_is_nonblocking() {
         panic!("contained final recovery must preserve the Stage-C terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
-    assert_eq!(terminal.cause, 0);
+    assert_eq!(terminal.cause, StageCCause::Engine(0));
     assert!(terminal.recovery_unavailable);
     assert_eq!(
         terminal.evidence.bookend,
@@ -2702,7 +2709,7 @@ fn stage_c_safety_fault_uses_the_dedicated_terminal() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
         terminal.cause,
-        CommissionError::SafetyEnvelopeViolation.status_code()
+        StageCCause::Error(CommissionError::SafetyEnvelopeViolation.status_code())
     );
     assert_eq!(terminal.expected_observations, 56);
     assert_eq!(terminal.expected_rungs, 7);
@@ -2872,7 +2879,7 @@ fn recovery_rest_rejection_records_the_matrix_and_stage_c_owners() {
             assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
             assert_eq!(
                 terminal.cause,
-                CommissionError::VelocityRestNotConfirmed.status_code()
+                StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
             );
         }
     }

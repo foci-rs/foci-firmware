@@ -3370,6 +3370,8 @@ pub struct FociVelocityIntegralTerminalCore {
     pub outcome: u8,
     /// Dedicated Stage-C cause.
     pub cause: u8,
+    /// Namespace `cause` belongs to: 0 = engine, 1 = error, 2 = dispatch.
+    pub cause_namespace: u8,
     /// Recovery flags; schema 8 also carries combined target status.
     pub recovery_flags: u8,
     /// One-based rest-boundary rung, or schema-8 target rung when no boundary exists.
@@ -3948,6 +3950,7 @@ mod velocity_sweep_reply_tests {
                 fragment: u8::MAX,
                 outcome: u8::MAX,
                 cause: u8::MAX,
+                cause_namespace: u8::MAX,
                 recovery_flags: u8::MAX,
                 rest_boundary_rung_plus_one: u8::MAX,
                 rest_boundary_slot_plus_one: u8::MAX,

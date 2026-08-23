@@ -24,7 +24,7 @@ use crate::commissioning::outer::velocity::reproduction::{
 use crate::commissioning::outer::velocity::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
 };
-use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
+use crate::commissioning::types::{StageCCause, VelocityIntegralOutcome, VelocityIntegralTerminal};
 use foci_firmware_macros::fixture_test;
 
 const CHANNEL: u8 = 0;
@@ -224,7 +224,7 @@ fn breakaway_terminal(
         plan_digest: plan.digest(),
         digest: 0x1234_5678_9abc_def0,
         outcome,
-        cause: 0,
+        cause: StageCCause::Engine(0),
         breakaway_acceptance: true,
         final_p: authority.final_p,
         recovery_unavailable: false,
@@ -383,7 +383,7 @@ fn terminal(
         plan_digest: plan.digest(),
         digest: 0x1234_5678_9abc_def0,
         outcome,
-        cause: 0,
+        cause: StageCCause::Engine(0),
         breakaway_acceptance: false,
         final_p: 0,
         recovery_unavailable: false,
@@ -425,10 +425,13 @@ fn a_resume_without_retained_authority_fails_closed_and_carries_no_plan() {
     let terminal = missing_authority_stage_c_terminal(4);
 
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
-    assert_eq!(terminal.cause, STAGE_C_CAUSE_NO_RETAINED_AUTHORITY);
+    assert_eq!(
+        terminal.cause,
+        StageCCause::Dispatch(STAGE_C_CAUSE_NO_RETAINED_AUTHORITY)
+    );
     assert_ne!(
         terminal.cause,
-        STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT
+        StageCCause::Dispatch(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT)
     );
     assert_eq!(terminal.run_sequence, 4);
     assert_eq!(terminal.plan_digest, 0);
@@ -523,10 +526,10 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     );
     second_terminal.rest_boundary_rung_plus_one = 5;
     second_terminal.rest_boundary_slot_plus_one = 2;
-    second_terminal.cause = 10;
+    second_terminal.cause = StageCCause::Engine(10);
     let second = apply_stage_c_terminal(second_terminal, &mut slot);
     assert_eq!(second.terminal.outcome, VelocityIntegralOutcome::Complete);
-    assert_eq!(second.terminal.cause, 10);
+    assert_eq!(second.terminal.cause, StageCCause::Engine(10));
     let reproduction = second.reproduction.unwrap();
     assert_eq!(
         reproduction
@@ -571,7 +574,10 @@ fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
         dispatch.terminal.outcome,
         VelocityIntegralOutcome::Inconclusive
     );
-    assert_eq!(dispatch.terminal.cause, STAGE_C_CAUSE_REPRODUCTION_MISMATCH);
+    assert_eq!(
+        dispatch.terminal.cause,
+        StageCCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH)
+    );
     assert!(dispatch.reproduction.is_some());
     assert_eq!(slot.state(), StageCSlotState::Candidate);
 }
@@ -621,7 +627,10 @@ fn unexpected_complete_terminal_fails_closed_in_retained_stage_c_dispatch() {
     );
 
     assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Fault);
-    assert_eq!(dispatch.terminal.cause, STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+    assert_eq!(
+        dispatch.terminal.cause,
+        StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY)
+    );
     assert_eq!(slot.state(), StageCSlotState::Empty);
 }
 
@@ -636,32 +645,32 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
         (
             VelocityIntegralOutcome::Complete,
             VelocityIntegralOutcome::Fault,
-            STAGE_C_CAUSE_EVIDENCE_INTEGRITY,
+            StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
         ),
         (
             VelocityIntegralOutcome::CompleteCandidate,
             VelocityIntegralOutcome::CompleteCandidate,
-            0,
+            StageCCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::Inconclusive,
             VelocityIntegralOutcome::Inconclusive,
-            0,
+            StageCCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::Fault,
             VelocityIntegralOutcome::Fault,
-            0,
+            StageCCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::Failed,
             VelocityIntegralOutcome::Failed,
-            0,
+            StageCCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::RejectedPlanMismatch,
             VelocityIntegralOutcome::Fault,
-            STAGE_C_CAUSE_EVIDENCE_INTEGRITY,
+            StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
         ),
     ];
 
@@ -696,7 +705,9 @@ fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
     );
 
     let mut rest_terminal = terminal(VelocityIntegralOutcome::Inconclusive, empty_evidence());
-    rest_terminal.cause = crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code();
+    rest_terminal.cause = StageCCause::Error(
+        crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code(),
+    );
     let dispatch = apply_stage_c_terminal(rest_terminal, &mut slot);
 
     assert_eq!(
@@ -705,7 +716,9 @@ fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
     );
     assert_eq!(
         dispatch.terminal.cause,
-        crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code()
+        StageCCause::Error(
+            crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code()
+        )
     );
     assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
 }

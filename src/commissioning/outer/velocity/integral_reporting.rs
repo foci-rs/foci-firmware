@@ -358,7 +358,7 @@ pub(crate) fn encode_velocity_integral_terminal(
     push_u64(&mut record, report.plan_digest);
     push_u64(&mut record, report.digest);
     record.push_u8(outcome_code(report.outcome));
-    record.push_u8(report.cause);
+    record.push_u8(report.cause.raw_value());
     record.push_u8(terminal_recovery_flags(report));
     record.push_u16(report.expected_observations);
     record.push_u16(report.emitted_observations);
@@ -379,6 +379,9 @@ pub(crate) fn encode_velocity_integral_terminal(
     record.push_u8(report.evidence.current_terminus.map_or(0, |rung| rung + 1));
     push_u64(&mut record, report.run_started_us);
     push_u64(&mut record, report.run_completed_us);
+    // Appended so an older decoder reading only the historical prefix still
+    // gets a correct, if unnamespaced, cause value.
+    record.push_u8(report.cause.namespace_code());
     record
 }
 
@@ -764,6 +767,7 @@ mod tests {
     use crate::commissioning::outer::velocity::sweep_evidence::{
         VelocityObservationClass, VelocityObservationSummary,
     };
+    use crate::commissioning::types::StageCCause;
     use crate::commissioning::types::VelocityIntegralObservation;
     use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
     use foci_tmc4671::pid::PidPGain;
@@ -1230,7 +1234,7 @@ mod tests {
             plan_digest: 0x0123_4567_89ab_cdef,
             digest: 0xfedc_ba98_7654_3210,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: 0,
+            cause: StageCCause::Engine(0),
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -1284,9 +1288,9 @@ mod tests {
                 0x01, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x01, 0x00, 0x00, 0x38, 0x00,
                 0x38, 0x00, 0x07, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x03, 0x03, 0x00, 0x44, 0x44, 0x33, 0x33, 0x22, 0x22, 0x11, 0x11, 0x88, 0x88, 0x77,
-                0x77, 0x66, 0x66, 0x55, 0x55,
+                0x77, 0x66, 0x66, 0x55, 0x55, 0x00,
             ],
-            "schema-4 terminal bytes remain unchanged"
+            "schema-4 terminal bytes, cause_namespace appended"
         );
     }
 
@@ -1298,7 +1302,7 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: 8,
+            cause: StageCCause::Engine(8),
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -1344,7 +1348,7 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: 53,
+            cause: StageCCause::Error(53),
             breakaway_acceptance: false,
             final_p: 0,
             recovery_unavailable: false,
@@ -1401,7 +1405,7 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: 0,
+            cause: StageCCause::Engine(0),
             breakaway_acceptance: true,
             final_p: 512,
             recovery_unavailable: false,

@@ -19,9 +19,9 @@ use crate::commissioning::types::{
     AcceptanceMatrixOutcome, AcceptanceMatrixTerminal, OUTER_SAFETY_FAULT_CURRENT,
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
     RecoveryRestDiagnostic, RestSelectionDiagnostic, RestSelectionOwner,
-    RungOriginRecoveryEvidence, StepResult, VelocityIntegralEvent, VelocityIntegralObservation,
-    VelocityIntegralOutcome, VelocityIntegralRungReport, VelocityIntegralTerminal,
-    VelocityPrimitiveCurrentEvidence,
+    RungOriginRecoveryEvidence, StageCCause, StepResult, VelocityIntegralEvent,
+    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
+    VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -939,7 +939,7 @@ pub(super) fn terminal_from_data(
     data: &VelocityIntegralData,
     evidence: super::integral_evidence::IntegralRunEvidence,
     outcome: VelocityIntegralOutcome,
-    cause: u8,
+    cause: StageCCause,
     safety_fault: Option<OuterSafetyFault>,
     rest_rejection_after_sufficiency: bool,
     rest_rejection_owner: Option<RestSelectionOwner>,
@@ -989,7 +989,7 @@ pub(crate) fn integral_fault_terminal(
         data,
         super::integral_evidence::IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
         VelocityIntegralOutcome::Fault,
-        error.status_code(),
+        StageCCause::Error(error.status_code()),
         safety_fault,
         false,
         None,
@@ -1133,7 +1133,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
                 data,
                 super::integral_evidence::IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
                 VelocityIntegralOutcome::Fault,
-                INTEGRAL_CAUSE_INTEGRITY,
+                StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
                 None,
                 false,
                 None,
@@ -1154,7 +1154,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
                     data,
                     evidence,
                     VelocityIntegralOutcome::Fault,
-                    INTEGRAL_CAUSE_INTEGRITY,
+                    StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
                     None,
                     false,
                     None,
@@ -1164,7 +1164,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
                 data,
                 evidence,
                 VelocityIntegralOutcome::Inconclusive,
-                CommissionError::VelocityRestNotConfirmed.status_code(),
+                StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code()),
                 None,
                 true,
                 data.rest_unconfirmed_owner,
@@ -1174,7 +1174,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             data,
             evidence,
             VelocityIntegralOutcome::Inconclusive,
-            CommissionError::VelocityRestNotConfirmed.status_code(),
+            StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code()),
             None,
             false,
             None,
@@ -1185,7 +1185,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             data,
             evidence,
             VelocityIntegralOutcome::Inconclusive,
-            INTEGRAL_CAUSE_RECOVERY,
+            StageCCause::Engine(INTEGRAL_CAUSE_RECOVERY),
             None,
             false,
             None,
@@ -1198,13 +1198,13 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             data,
             evidence,
             VelocityIntegralOutcome::CompleteCandidate,
-            if data.positive_i_rest_boundary_after_sufficiency {
+            StageCCause::Engine(if data.positive_i_rest_boundary_after_sufficiency {
                 INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY
             } else if current_terminus.is_some() {
                 INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY
             } else {
                 INTEGRAL_CAUSE_NONE
-            },
+            }),
             None,
             false,
             None,
@@ -1213,23 +1213,27 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             data,
             evidence,
             VelocityIntegralOutcome::Inconclusive,
-            if data.positive_i_rest_boundary.is_some()
-                && !data.positive_i_rest_boundary_after_sufficiency
-            {
-                INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY
-            } else if data.opening_direction_mask != 3 && data.observation_current_headroom {
-                INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY
-            } else {
-                match cause {
-                    IntegralInconclusiveKind::TooFewEligibleRungs => INTEGRAL_CAUSE_TOO_FEW_RUNGS,
-                    IntegralInconclusiveKind::CurrentBoundBeforeSufficiency => {
-                        INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY
+            StageCCause::Engine(
+                if data.positive_i_rest_boundary.is_some()
+                    && !data.positive_i_rest_boundary_after_sufficiency
+                {
+                    INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY
+                } else if data.opening_direction_mask != 3 && data.observation_current_headroom {
+                    INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY
+                } else {
+                    match cause {
+                        IntegralInconclusiveKind::TooFewEligibleRungs => {
+                            INTEGRAL_CAUSE_TOO_FEW_RUNGS
+                        }
+                        IntegralInconclusiveKind::CurrentBoundBeforeSufficiency => {
+                            INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY
+                        }
+                        IntegralInconclusiveKind::BookendUnavailable => {
+                            INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE
+                        }
                     }
-                    IntegralInconclusiveKind::BookendUnavailable => {
-                        INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE
-                    }
-                }
-            },
+                },
+            ),
             None,
             false,
             None,
@@ -1238,7 +1242,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
             data,
             evidence,
             VelocityIntegralOutcome::Fault,
-            INTEGRAL_CAUSE_INTEGRITY,
+            StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
             None,
             false,
             None,

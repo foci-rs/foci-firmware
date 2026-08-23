@@ -15,7 +15,7 @@ use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepRequest, plan_velocity_sweep,
 };
 use crate::commissioning::types::{
-    VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
+    StageCCause, VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
     VelocityIntegralTerminal,
 };
 
@@ -426,7 +426,7 @@ pub fn apply_stage_c_terminal(
 ) -> StageCTerminalDispatch {
     let Some(authority) = stage_c_candidate.authority() else {
         terminal.outcome = VelocityIntegralOutcome::Fault;
-        terminal.cause = STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+        terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
         return StageCTerminalDispatch {
             terminal,
             reproduction: None,
@@ -436,7 +436,7 @@ pub fn apply_stage_c_terminal(
     if terminal.plan_digest != authority.identity.plan_digest {
         stage_c_candidate.observe_fault();
         terminal.outcome = VelocityIntegralOutcome::Fault;
-        terminal.cause = STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+        terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
         return StageCTerminalDispatch {
             terminal,
             reproduction: None,
@@ -476,7 +476,7 @@ pub fn apply_stage_c_terminal(
                 }
                 StageCReproductionDecision::InconclusiveReproductionMismatch(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Inconclusive;
-                    terminal.cause = STAGE_C_CAUSE_REPRODUCTION_MISMATCH;
+                    terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH);
                     Some(StageCReproductionReport {
                         delta,
                         outcome: 2,
@@ -486,12 +486,12 @@ pub fn apply_stage_c_terminal(
                 }
                 StageCReproductionDecision::RejectedPlanMismatch { .. } => {
                     terminal.outcome = VelocityIntegralOutcome::RejectedPlanMismatch;
-                    terminal.cause = STAGE_C_CAUSE_PLAN_MISMATCH;
+                    terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
                     None
                 }
                 StageCReproductionDecision::EvidenceIntegrityFault => {
                     terminal.outcome = VelocityIntegralOutcome::Fault;
-                    terminal.cause = STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+                    terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
                     None
                 }
             }
@@ -511,7 +511,7 @@ pub fn apply_stage_c_terminal(
         VelocityIntegralOutcome::Complete | VelocityIntegralOutcome::RejectedPlanMismatch => {
             stage_c_candidate.observe_fault();
             terminal.outcome = VelocityIntegralOutcome::Fault;
-            terminal.cause = STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+            terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
             None
         }
     };
@@ -540,7 +540,7 @@ pub fn missing_authority_stage_c_terminal(run_sequence: u32) -> VelocityIntegral
         plan_digest: 0,
         digest: 0,
         outcome: VelocityIntegralOutcome::Failed,
-        cause: STAGE_C_CAUSE_NO_RETAINED_AUTHORITY,
+        cause: StageCCause::Dispatch(STAGE_C_CAUSE_NO_RETAINED_AUTHORITY),
         breakaway_acceptance: false,
         final_p: 0,
         recovery_unavailable: false,
@@ -576,7 +576,7 @@ pub(crate) fn failed_stage_c_terminal(
         plan_digest: failure.plan_digest,
         digest: 0,
         outcome: VelocityIntegralOutcome::Failed,
-        cause: STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
+        cause: StageCCause::Dispatch(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT),
         breakaway_acceptance: false,
         final_p: 0,
         recovery_unavailable: false,

@@ -70,13 +70,15 @@ fn stage_c_resume_rejection_terminal(
         // "nothing to resume" apart from "that is not what was retained".
         StageCPreflightRejection::RejectedPlanMismatch { retained, .. } => {
             let mut terminal = missing_authority_stage_c_terminal(run_sequence);
-            terminal.cause = STAGE_C_CAUSE_PLAN_MISMATCH;
+            terminal.cause =
+                crate::commissioning::types::StageCCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
             terminal.plan_digest = retained.plan_digest;
             terminal
         }
         StageCPreflightRejection::InvalidPlan => {
             let mut terminal = missing_authority_stage_c_terminal(run_sequence);
-            terminal.cause = STAGE_C_CAUSE_PLAN_MISMATCH;
+            terminal.cause =
+                crate::commissioning::types::StageCCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
             terminal.plan_digest = retained_plan_digest;
             terminal
         }
@@ -2863,7 +2865,9 @@ mod tests {
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(
             terminal.cause,
-            crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+            crate::commissioning::types::StageCCause::Dispatch(
+                crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+            )
         );
         // The host tells "nothing retained" from "not what was retained" by the
         // digest, so a mismatch has to name the plan it disagreed with.
@@ -2930,7 +2934,9 @@ mod tests {
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(
             terminal.cause,
-            crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+            crate::commissioning::types::StageCCause::Dispatch(
+                crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+            )
         );
         assert_eq!(terminal.plan_digest, retained.identity.plan_digest);
         assert_ne!(terminal.plan_digest, 0);

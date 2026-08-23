@@ -959,6 +959,39 @@ pub struct RobustnessReversalTerminal {
     pub safety_fault: Option<OuterSafetyFault>,
 }
 
+/// Namespaced Stage-C terminal cause: engine (`INTEGRAL_CAUSE_*`), error
+/// (`CommissionError::status_code()`), or dispatch (`STAGE_C_CAUSE_*`).
+/// The three source enumerations are independently numbered and can share a
+/// raw value, so the namespace must travel with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StageCCause {
+    /// From `integral_sweep::INTEGRAL_CAUSE_*`.
+    Engine(u8),
+    /// From `CommissionError::status_code()`.
+    Error(u8),
+    /// From `commission_dispatch::stage_c::STAGE_C_CAUSE_*`.
+    Dispatch(u8),
+}
+
+impl StageCCause {
+    /// Wire discriminator identifying which namespace `raw_value` belongs
+    /// to: 0 = engine, 1 = error, 2 = dispatch.
+    pub(crate) const fn namespace_code(self) -> u8 {
+        match self {
+            Self::Engine(_) => 0,
+            Self::Error(_) => 1,
+            Self::Dispatch(_) => 2,
+        }
+    }
+
+    /// The raw cause value within its namespace.
+    pub(crate) const fn raw_value(self) -> u8 {
+        match self {
+            Self::Engine(value) | Self::Error(value) | Self::Dispatch(value) => value,
+        }
+    }
+}
+
 /// Detailed Stage-C terminal retained for lifecycle and canonical reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralTerminal {
@@ -972,8 +1005,8 @@ pub struct VelocityIntegralTerminal {
     pub digest: u64,
     /// Terminal measurement-stage class.
     pub outcome: VelocityIntegralOutcome,
-    /// Dedicated Stage-C phase-local cause.
-    pub cause: u8,
+    /// Dedicated Stage-C phase-local cause, namespaced (see [`StageCCause`]).
+    pub cause: StageCCause,
     /// Whether this terminal came from a breakaway-campaign acceptance run.
     ///
     /// Terminus-independent: a breakaway `Complete` that finished on
@@ -2356,6 +2389,39 @@ mod acceptance_matrix_code_tests {
         assert_eq!(AcceptanceMatrixCause::EvidenceCapacity as u8, 6);
         assert_eq!(AcceptanceMatrixCause::EvidenceIntegrity as u8, 7);
         assert_eq!(AcceptanceMatrixCause::VelocityRestNotConfirmed as u8, 53);
+    }
+}
+
+#[cfg(test)]
+mod stage_c_cause_tests {
+    use super::StageCCause;
+
+    #[test]
+    fn namespace_and_raw_value_round_trip_per_variant() {
+        assert_eq!(StageCCause::Engine(4).namespace_code(), 0);
+        assert_eq!(StageCCause::Engine(4).raw_value(), 4);
+
+        assert_eq!(StageCCause::Error(4).namespace_code(), 1);
+        assert_eq!(StageCCause::Error(4).raw_value(), 4);
+
+        assert_eq!(StageCCause::Dispatch(4).namespace_code(), 2);
+        assert_eq!(StageCCause::Dispatch(4).raw_value(), 4);
+    }
+
+    /// The same raw value from each namespace must stay distinguishable by
+    /// `namespace_code` alone -- two enumerations legitimately assigning the
+    /// same number to different things is not itself a bug.
+    #[test]
+    fn colliding_raw_values_remain_distinguishable_by_namespace() {
+        let engine = StageCCause::Engine(4);
+        let error = StageCCause::Error(4);
+        let dispatch = StageCCause::Dispatch(4);
+
+        assert_ne!(engine.namespace_code(), error.namespace_code());
+        assert_ne!(engine.namespace_code(), dispatch.namespace_code());
+        assert_ne!(error.namespace_code(), dispatch.namespace_code());
+        assert_eq!(engine.raw_value(), error.raw_value());
+        assert_eq!(engine.raw_value(), dispatch.raw_value());
     }
 }
 

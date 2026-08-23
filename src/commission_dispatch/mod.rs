@@ -513,7 +513,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
             if !disarm_velocity_workflow(engine, backend, state).await {
                 terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
-                terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+                terminal.cause = crate::commissioning::types::StageCCause::Error(
+                    crate::autotune::CommissionError::Spi.status_code(),
+                );
                 terminal.recovery_unavailable = true;
                 terminal.safety_fault = None;
             }
@@ -1243,14 +1245,18 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
                 promoted_point = Some(point);
             }
             Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
-                dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS;
+                dispatch.terminal.cause = crate::commissioning::types::StageCCause::Dispatch(
+                    stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS,
+                );
             }
             Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {}
             Err(()) => {
                 retention.stage_c.observe_fault();
                 dispatch.terminal.outcome =
                     crate::commissioning::types::VelocityIntegralOutcome::Fault;
-                dispatch.terminal.cause = stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY;
+                dispatch.terminal.cause = crate::commissioning::types::StageCCause::Dispatch(
+                    stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY,
+                );
                 dispatch.terminal.safety_fault = None;
                 dispatch.reproduction = None;
                 dispatch.authority = None;
@@ -1281,7 +1287,8 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
                 retention.stage_c.observe_fault();
                 dispatch.terminal.outcome =
                     crate::commissioning::types::VelocityIntegralOutcome::Fault;
-                dispatch.terminal.cause = error.status_code();
+                dispatch.terminal.cause =
+                    crate::commissioning::types::StageCCause::Error(error.status_code());
                 dispatch.terminal.recovery_unavailable = true;
                 dispatch.terminal.safety_fault = None;
                 dispatch.reproduction = None;
@@ -1296,7 +1303,9 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     if !disarm_velocity_workflow(engine, backend, state).await {
         retention.stage_c.observe_fault();
         dispatch.terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
-        dispatch.terminal.cause = crate::autotune::CommissionError::Spi.status_code();
+        dispatch.terminal.cause = crate::commissioning::types::StageCCause::Error(
+            crate::autotune::CommissionError::Spi.status_code(),
+        );
         dispatch.terminal.recovery_unavailable = true;
         dispatch.terminal.safety_fault = None;
         dispatch.reproduction = None;
