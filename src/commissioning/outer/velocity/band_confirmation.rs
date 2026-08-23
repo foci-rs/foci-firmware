@@ -405,6 +405,121 @@ pub(super) fn rung_response_bounds_percent(
     Some((lower?, upper?))
 }
 
+/// Fold one rung's included discovery observations into per-direction
+/// inverse-variance-pooled percent-response intervals.
+///
+/// Unlike [`rung_response_bounds_percent`] (a min/max union, kept unchanged
+/// for nomination and confirmation-margin math), this pools each direction's
+/// included observations by inverse variance, so more evidence narrows the
+/// interval instead of widening it. Used only by discovery's own collection
+/// stop-rule (`breakaway_campaign.rs::classify_rung_band`); must not be
+/// reused for nomination or confirmation.
+///
+/// Returns `None` under the same unjudgeable conditions as
+/// [`rung_response_bounds_percent`]: ineligible consensus, a missing included
+/// observation, or a zero/wrong-signed mean.
+pub(super) fn rung_directional_pooled_bounds_percent(
+    rung: &DiscoveryRungNominationInput,
+    multiplier: f32,
+    c_sigma: f32,
+) -> Option<[(f32, f32); 2]> {
+    let forward = pooled_direction_interval_percent(
+        rung.forward_consensus,
+        &rung.forward_observations,
+        multiplier,
+        c_sigma,
+    )?;
+    let reverse = pooled_direction_interval_percent(
+        rung.reverse_consensus,
+        &rung.reverse_observations,
+        multiplier,
+        c_sigma,
+    )?;
+    Some([forward, reverse])
+}
+
+/// Inverse-variance pool one direction's included observations into one
+/// percent-response interval.
+///
+/// A zero-variance observation is exact and dominates any nonzero-variance
+/// ones included alongside it. Conflicting exact observations return `None`.
+fn pooled_direction_interval_percent(
+    consensus: DirectionalConsensus,
+    observations: &[Option<DiscoveryObservationAtom>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    multiplier: f32,
+    c_sigma: f32,
+) -> Option<(f32, f32)> {
+    if consensus.classification != DirectionalConsensusClass::EligibleConsensus {
+        return None;
+    }
+
+    let mut weighted_magnitude_sum = 0.0_f32;
+    let mut weight_sum = 0.0_f32;
+    let mut exact: Option<(i64, f32)> = None;
+    let mut target_magnitude: Option<f32> = None;
+    for (index, observation) in observations.iter().enumerate() {
+        if consensus.included_mask & (1 << index) == 0 {
+            continue;
+        }
+        let atom = (*observation)?;
+        if atom.target_rate_q <= 0 {
+            return None;
+        }
+        let magnitude = commanded_side_mean_rate_q(atom.direction, atom.mean_rate_q)? as f32;
+        let variance = atom.variance_of_mean_q2 as f32;
+        if !magnitude.is_finite() || !variance.is_finite() {
+            return None;
+        }
+        if target_magnitude.is_none() {
+            target_magnitude = Some(atom.target_rate_q as f32);
+        }
+        if variance == 0.0 {
+            match exact {
+                Some((existing_mean, _)) if existing_mean != atom.mean_rate_q => return None,
+                _ => exact = Some((atom.mean_rate_q, magnitude)),
+            }
+        } else {
+            let weight = 1.0 / variance;
+            if !weight.is_finite() {
+                return None;
+            }
+            weighted_magnitude_sum += magnitude * weight;
+            weight_sum += weight;
+        }
+    }
+    let target_magnitude = target_magnitude?;
+
+    let (pooled_magnitude, pooled_relative_se) = if let Some((_, magnitude)) = exact {
+        (magnitude, 0.0)
+    } else {
+        if weight_sum <= 0.0 || !weight_sum.is_finite() {
+            return None;
+        }
+        let pooled_magnitude = weighted_magnitude_sum / weight_sum;
+        let pooled_variance = 1.0 / weight_sum;
+        if !pooled_magnitude.is_finite() || !pooled_variance.is_finite() || pooled_magnitude <= 0.0
+        {
+            return None;
+        }
+        (
+            pooled_magnitude,
+            libm::sqrtf(pooled_variance) / pooled_magnitude,
+        )
+    };
+
+    let response_percent = 100.0 * pooled_magnitude / target_magnitude;
+    let half_width_fraction = multiplier * pooled_relative_se * c_sigma;
+    if !response_percent.is_finite() || !half_width_fraction.is_finite() {
+        return None;
+    }
+    let low = response_percent * (1.0 - half_width_fraction);
+    let high = response_percent * (1.0 + half_width_fraction);
+    if !low.is_finite() || !high.is_finite() {
+        return None;
+    }
+    Some((low, high))
+}
+
 /// Fold one rung's discovery evidence into its pointwise confirmable margin.
 ///
 /// Returns `None` when the rung is not nominatable at all: either direction

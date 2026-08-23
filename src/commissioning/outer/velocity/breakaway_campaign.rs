@@ -81,7 +81,7 @@ use super::band_confirmation::{
     DiscoveryRungNominationBounds, DiscoveryRungNominationInput, NominatedConfirmationCandidate,
     TargetBandConfirmationInconclusive, TargetBandUnconfirmableFromDiscovery,
     evaluate_band_confirmation, nominate_confirmation_candidate_from_bounds,
-    plan_band_confirmation, rung_nomination_bounds, rung_response_bounds_percent,
+    plan_band_confirmation, rung_directional_pooled_bounds_percent, rung_nomination_bounds,
     validate_fixed_contract,
 };
 use super::breakaway_excursion::{ProbeExcursionCapture, ProbeExcursionError, ProbeMotionClass};
@@ -1771,26 +1771,17 @@ fn discovery_target_rate_q(
         .ok_or(CommissionError::TargetRateInvalid)
 }
 
-/// Discovery's own containment multiplier is applied with NO confirmation-style
-/// inflation on top of it (`c_sigma = 1.0`, versus confirmation's
-/// [`super::band_confirmation::NOMINATION_SCREEN_C_SIGMA`]) and with NO outward
-/// endpoint rounding (versus confirmation's outward rounding at the exact 70/80
-/// boundary).
+/// No confirmation-style inflation on top of discovery's own multiplier
+/// (`c_sigma = 1.0`, versus confirmation's
+/// [`super::band_confirmation::NOMINATION_SCREEN_C_SIGMA`]).
 ///
-/// This is a deliberate, documented divergence from confirmation, not
-/// undocumented drift between two copies of the same math: both callers share
-/// one implementation
-/// ([`rung_response_bounds_percent`](super::band_confirmation::rung_response_bounds_percent)),
-/// parameterized exactly by these two values. Discovery is the *permissive
-/// collector* -- it only decides which rungs to hand to 6d/6e's nomination
-/// screen, and it never authorizes Stage C itself, so silently excluding a
-/// borderline-viable rung here (which discovery's own `Ambiguous` verdict would
-/// do) is worse than collecting one that nomination's own conservative screen
-/// rejects later. Confirmation is the *conservative gate* that actually
-/// authorizes Stage C, so it inflates for a future held-out family-eight test
-/// and defends the exact band boundary against floating-point rounding noise.
-/// Neither behavior may drift out of sync with the other by accident: both are
-/// two call sites into the same parameterized function.
+/// Discovery pools each direction's included observations
+/// ([`rung_directional_pooled_bounds_percent`](super::band_confirmation::rung_directional_pooled_bounds_percent))
+/// rather than taking nomination's min/max union
+/// ([`rung_response_bounds_percent`](super::band_confirmation::rung_response_bounds_percent)):
+/// a union can only widen as observations accrue, so one noisy stroke could
+/// veto an otherwise well-contained rung. The two stay separate
+/// implementations on purpose.
 const DISCOVERY_CONTAINMENT_C_SIGMA: f32 = 1.0;
 
 /// One rung's classification against the 70-80% target band, judged entirely on
@@ -1798,14 +1789,16 @@ const DISCOVERY_CONTAINMENT_C_SIGMA: f32 = 1.0;
 /// against neighboring rungs (spec section 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RungBandVerdict {
-    /// This rung's own response interval is wholly contained in 70-80%.
+    /// Both directions' own pooled response intervals are wholly contained in
+    /// 70-80%.
     InBand,
-    /// This rung's own response interval is wholly above 80%: both directions are
+    /// Both directions' own pooled response intervals are wholly above 80%:
     /// confidently past the band.
     ConfidentlyAboveBand,
     /// Neither of the above: still below the band, straddling it without full
-    /// containment, or not judgeable (loss of consensus other than current
-    /// headroom). Not a stop condition by itself; the ladder continues.
+    /// containment in at least one direction, or not judgeable (loss of
+    /// consensus other than current headroom). Not a stop condition by
+    /// itself; the ladder continues.
     Ambiguous,
 }
 
@@ -1833,14 +1826,27 @@ fn direction_motion_class(
 }
 
 fn classify_rung_band(rung: &DiscoveryRungNominationInput, own_multiplier: f32) -> RungBandVerdict {
-    match rung_response_bounds_percent(rung, own_multiplier, DISCOVERY_CONTAINMENT_C_SIGMA, false) {
-        Some((lower, upper))
-            if lower >= f32::from(CONFIRMATION_BAND_LOWER_PERCENT)
-                && upper <= f32::from(CONFIRMATION_BAND_UPPER_PERCENT) =>
+    match rung_directional_pooled_bounds_percent(
+        rung,
+        own_multiplier,
+        DISCOVERY_CONTAINMENT_C_SIGMA,
+    ) {
+        Some(
+            [
+                (forward_lower, forward_upper),
+                (reverse_lower, reverse_upper),
+            ],
+        ) if forward_lower >= f32::from(CONFIRMATION_BAND_LOWER_PERCENT)
+            && forward_upper <= f32::from(CONFIRMATION_BAND_UPPER_PERCENT)
+            && reverse_lower >= f32::from(CONFIRMATION_BAND_LOWER_PERCENT)
+            && reverse_upper <= f32::from(CONFIRMATION_BAND_UPPER_PERCENT) =>
         {
             RungBandVerdict::InBand
         }
-        Some((lower, _upper)) if lower > f32::from(CONFIRMATION_BAND_UPPER_PERCENT) => {
+        Some([(forward_lower, _), (reverse_lower, _)])
+            if forward_lower > f32::from(CONFIRMATION_BAND_UPPER_PERCENT)
+                && reverse_lower > f32::from(CONFIRMATION_BAND_UPPER_PERCENT) =>
+        {
             RungBandVerdict::ConfidentlyAboveBand
         }
         Some(_) | None => RungBandVerdict::Ambiguous,

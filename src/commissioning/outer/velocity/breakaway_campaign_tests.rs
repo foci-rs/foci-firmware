@@ -1,3 +1,4 @@
+use super::super::band_confirmation::rung_response_bounds_percent;
 use super::super::breakaway_reporting::BreakawayTerminalCause;
 use super::super::sweep_consensus::DirectionalConsensusClass;
 use super::*;
@@ -1606,6 +1607,97 @@ fn an_unconfirmed_settle_reports_discovery_evidence_excluded() {
             }
         }
     }
+}
+
+// ================================================================================
+// classify_rung_band: pooled directional containment
+// ================================================================================
+
+/// A rung whose forward and reverse slots are three tight observations and
+/// one loose one, all centered on a 75% response -- the union math widens to
+/// the loose slot's own interval and stops being contained; directional
+/// pooling lets the three tight slots dominate instead.
+fn mixed_precision_discovery_rung(p_raw: u16) -> DiscoveryRungNominationInput {
+    const MEAN: i64 = 750_000;
+    const TARGET: i64 = 1_000_000;
+    fn variance_for_relative_se(commanded_magnitude: i64, relative_se: f64) -> u128 {
+        let standard_error_of_mean = commanded_magnitude as f64 * relative_se;
+        (standard_error_of_mean * standard_error_of_mean).round() as u128
+    }
+    let tight_variance = variance_for_relative_se(MEAN, 0.01);
+    let loose_variance = variance_for_relative_se(MEAN, 0.10);
+    let full_consensus = DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let forward_variances = [
+        tight_variance,
+        tight_variance,
+        tight_variance,
+        loose_variance,
+    ];
+    let reverse_variances = forward_variances;
+    DiscoveryRungNominationInput {
+        p: gain(p_raw),
+        forward_consensus: full_consensus,
+        forward_observations: core::array::from_fn(|index| {
+            Some(DiscoveryObservationAtom {
+                mean_rate_q: MEAN,
+                variance_of_mean_q2: forward_variances[index],
+                target_rate_q: TARGET,
+                direction: VelocityDirection::Forward,
+            })
+        }),
+        reverse_consensus: full_consensus,
+        reverse_observations: core::array::from_fn(|index| {
+            Some(DiscoveryObservationAtom {
+                mean_rate_q: -MEAN,
+                variance_of_mean_q2: reverse_variances[index],
+                target_rate_q: TARGET,
+                direction: VelocityDirection::Reverse,
+            })
+        }),
+    }
+}
+
+#[test]
+fn classify_rung_band_retains_a_rung_the_old_union_would_have_called_ambiguous() {
+    let rung = mixed_precision_discovery_rung(700);
+    let own_multiplier = 2.0_f32;
+
+    // The union math (still used by nomination, unchanged) is not contained:
+    // confirms the fixture actually distinguishes the two methods.
+    let (union_low, union_high) =
+        rung_response_bounds_percent(&rung, own_multiplier, DISCOVERY_CONTAINMENT_C_SIGMA, false)
+            .expect("union is judgeable");
+    assert!(
+        union_low < 70.0 || union_high > 80.0,
+        "fixture must widen the union outside 70-80: [{union_low}, {union_high}]"
+    );
+
+    assert_eq!(
+        classify_rung_band(&rung, own_multiplier),
+        RungBandVerdict::InBand,
+        "pooled directional containment must retain what the union would call Ambiguous"
+    );
+}
+
+#[test]
+fn classify_rung_band_stays_ambiguous_when_only_one_direction_pools_in_band() {
+    let mut rung = mixed_precision_discovery_rung(700);
+    for observation in rung.reverse_observations.iter_mut().flatten() {
+        observation.mean_rate_q = -(750_000_i64 * 6 / 10); // 60%: below the band.
+    }
+
+    assert_eq!(
+        classify_rung_band(&rung, 2.0),
+        RungBandVerdict::Ambiguous,
+        "one direction missing the band must not retain the rung"
+    );
 }
 
 // ================================================================================

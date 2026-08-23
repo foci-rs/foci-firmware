@@ -22,7 +22,8 @@ use super::{
     TargetBandUnconfirmableFromDiscovery, commanded_side_mean_rate_q, evaluate_band_confirmation,
     nominate_confirmation_candidate, nominate_confirmation_candidate_from_bounds,
     observation_statistic, plan_band_confirmation, rung_confirmable_margin_percent,
-    rung_nomination_bounds, validate_fixed_contract,
+    rung_directional_pooled_bounds_percent, rung_nomination_bounds, rung_response_bounds_percent,
+    validate_fixed_contract,
 };
 use crate::autotune::velocity_measurement::{VelocityDirection, confidence_multiplier_95_df15};
 use foci_tmc4671::pid::PidPGain;
@@ -1191,4 +1192,203 @@ fn non_nominatable_rung_is_excluded_even_alongside_a_nominatable_one() {
     let nominated = nominate_confirmation_candidate_from_bounds(&bounds)
         .expect("the non-nominatable rung must not block the nominatable one");
     assert_eq!(nominated.p, gain(724));
+}
+
+// --- Discovery-only directional pooling: a distinct method from the shared
+// --- union above, used solely by `classify_rung_band` -----------------------
+
+/// A rung whose forward slots are three tight observations and one loose one,
+/// all centered on the same 75% response. A union widens to the loose slot's
+/// own interval; inverse-variance pooling instead lets the three tight slots
+/// dominate the weighted estimate.
+fn mixed_precision_rung(p_raw: u16) -> DiscoveryRungNominationInput {
+    let tight_variance = variance_for_relative_se(RUNG18_MEAN, 0.01);
+    let loose_variance = variance_for_relative_se(RUNG18_MEAN, 0.10);
+    let forward_observations = [
+        Some(atom(
+            VelocityDirection::Forward,
+            RUNG18_MEAN,
+            tight_variance,
+            TARGET,
+        )),
+        Some(atom(
+            VelocityDirection::Forward,
+            RUNG18_MEAN,
+            tight_variance,
+            TARGET,
+        )),
+        Some(atom(
+            VelocityDirection::Forward,
+            RUNG18_MEAN,
+            tight_variance,
+            TARGET,
+        )),
+        Some(atom(
+            VelocityDirection::Forward,
+            RUNG18_MEAN,
+            loose_variance,
+            TARGET,
+        )),
+    ];
+    let reverse_observations = [
+        Some(atom(
+            VelocityDirection::Reverse,
+            -RUNG18_MEAN,
+            tight_variance,
+            TARGET,
+        )),
+        Some(atom(
+            VelocityDirection::Reverse,
+            -RUNG18_MEAN,
+            tight_variance,
+            TARGET,
+        )),
+        Some(atom(
+            VelocityDirection::Reverse,
+            -RUNG18_MEAN,
+            tight_variance,
+            TARGET,
+        )),
+        Some(atom(
+            VelocityDirection::Reverse,
+            -RUNG18_MEAN,
+            loose_variance,
+            TARGET,
+        )),
+    ];
+    DiscoveryRungNominationInput {
+        p: gain(p_raw),
+        forward_consensus: full_consensus(),
+        forward_observations,
+        reverse_consensus: full_consensus(),
+        reverse_observations,
+    }
+}
+
+#[test]
+fn one_loose_observation_widens_the_union_past_the_band_but_not_the_pooled_estimate() {
+    let rung = mixed_precision_rung(700);
+    let multiplier = 2.0_f32;
+
+    let (union_low, union_high) =
+        rung_response_bounds_percent(&rung, multiplier, 1.0, false).expect("union is judgeable");
+    assert!(
+        union_low < 70.0 || union_high > 80.0,
+        "the loose observation alone must widen the union outside 70-80: [{union_low}, {union_high}]"
+    );
+
+    let [
+        (pooled_forward_low, pooled_forward_high),
+        (pooled_reverse_low, pooled_reverse_high),
+    ] = rung_directional_pooled_bounds_percent(&rung, multiplier, 1.0)
+        .expect("directional pooling is judgeable");
+    assert!(
+        pooled_forward_low >= 70.0 && pooled_forward_high <= 80.0,
+        "three tight observations must dominate the pooled forward estimate: \
+         [{pooled_forward_low}, {pooled_forward_high}]"
+    );
+    assert!(
+        pooled_reverse_low >= 70.0 && pooled_reverse_high <= 80.0,
+        "three tight observations must dominate the pooled reverse estimate: \
+         [{pooled_reverse_low}, {pooled_reverse_high}]"
+    );
+}
+
+#[test]
+fn nomination_still_uses_the_union_unaffected_by_the_pooled_method() {
+    // The same rung that pooling accepts for discovery collection must still
+    // go through nomination's own unchanged union math -- proving the two
+    // methods are wired to their own, separate call sites.
+    let rung = mixed_precision_rung(700);
+    let bounds = rung_nomination_bounds(&rung);
+    let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE)
+        .expect("confirmation family size 8 is within the audited multiplier table");
+    let (union_low, union_high) =
+        rung_response_bounds_percent(&rung, multiplier, NOMINATION_SCREEN_C_SIGMA, true)
+            .expect("union is judgeable");
+    assert_eq!(bounds.lower_percent, union_low);
+    assert_eq!(bounds.upper_percent, union_high);
+}
+
+#[test]
+fn one_direction_outside_the_pooled_band_leaves_the_other_directions_result_visible() {
+    let mut rung = mixed_precision_rung(700);
+    // Shift only the reverse mean off 75% so its pooled interval misses the
+    // band while forward's stays put.
+    for observation in rung.reverse_observations.iter_mut().flatten() {
+        observation.mean_rate_q = -(RUNG18_MEAN * 6 / 10); // 60%: below the band.
+    }
+
+    let [(forward_low, forward_high), (_reverse_low, reverse_high)] =
+        rung_directional_pooled_bounds_percent(&rung, 2.0, 1.0)
+            .expect("directional pooling is judgeable even when one direction misses the band");
+    assert!(forward_low >= 70.0 && forward_high <= 80.0);
+    assert!(
+        reverse_high < 70.0,
+        "60% reverse response must miss the band: {reverse_high}"
+    );
+}
+
+#[test]
+fn directional_pooling_is_not_judgeable_for_a_non_eligible_direction() {
+    let mut rung = mixed_precision_rung(700);
+    rung.reverse_consensus.classification = DirectionalConsensusClass::AmbiguousConsensus;
+    assert_eq!(
+        rung_directional_pooled_bounds_percent(&rung, 2.0, 1.0),
+        None
+    );
+}
+
+#[test]
+fn directional_pooling_is_not_judgeable_for_a_missing_included_observation() {
+    let mut rung = mixed_precision_rung(700);
+    rung.forward_observations[0] = None;
+    assert_eq!(
+        rung_directional_pooled_bounds_percent(&rung, 2.0, 1.0),
+        None
+    );
+}
+
+#[test]
+fn directional_pooling_is_not_judgeable_for_a_zero_mean_observation() {
+    let mut rung = mixed_precision_rung(700);
+    rung.forward_observations[0] = Some(atom(
+        VelocityDirection::Forward,
+        0,
+        variance_for_relative_se(RUNG18_MEAN, 0.01),
+        TARGET,
+    ));
+    assert_eq!(
+        rung_directional_pooled_bounds_percent(&rung, 2.0, 1.0),
+        None
+    );
+}
+
+#[test]
+fn directional_pooling_treats_identical_zero_variance_observations_as_one_exact_point() {
+    let full_consensus = full_consensus();
+    let observations = [Some(atom(VelocityDirection::Forward, RUNG18_MEAN, 0, TARGET)); 4];
+    let rung = DiscoveryRungNominationInput {
+        p: gain(700),
+        forward_consensus: full_consensus,
+        forward_observations: observations,
+        reverse_consensus: full_consensus,
+        reverse_observations: [Some(atom(VelocityDirection::Reverse, -RUNG18_MEAN, 0, TARGET)); 4],
+    };
+    let [(forward_low, forward_high), _] = rung_directional_pooled_bounds_percent(&rung, 2.0, 1.0)
+        .expect("identical exact observations are judgeable");
+    assert_eq!(forward_low, 75.0);
+    assert_eq!(forward_high, 75.0);
+}
+
+#[test]
+fn directional_pooling_rejects_conflicting_zero_variance_observations() {
+    let mut rung = mixed_precision_rung(700);
+    rung.forward_observations[0] = Some(atom(VelocityDirection::Forward, RUNG18_MEAN, 0, TARGET));
+    rung.forward_observations[1] =
+        Some(atom(VelocityDirection::Forward, RUNG18_MEAN + 1, 0, TARGET));
+    assert_eq!(
+        rung_directional_pooled_bounds_percent(&rung, 2.0, 1.0),
+        None
+    );
 }
