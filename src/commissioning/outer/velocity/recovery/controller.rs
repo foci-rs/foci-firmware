@@ -71,8 +71,18 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             );
             RungOriginRecoveryStep::Finished(report)
         }
-        RecoveryState::OriginMismatchFault => {
-            recovery_fault(CommissionError::RecoveryOriginMismatch, None)
+        RecoveryState::OriginMismatchContained => {
+            runtime.state = RecoveryState::Terminal {
+                outcome: RungOriginRecoveryOutcome::ContainedDeadline,
+                binding_source: RecoveryBindingSource::LocalTravel,
+            };
+            RungOriginRecoveryStep::Contained(runtime.report(
+                RungOriginRecoveryOutcome::ContainedDeadline,
+                RecoveryBindingSource::LocalTravel,
+                resources.safety.unwrapped_position,
+                backend.elapsed_us(),
+                resources.current_observer.peak_pid_output_abs(),
+            ))
         }
         RecoveryState::WriteGains => {
             if runtime.start_offset_counts.unsigned_abs() > resources.safety.position_window {
@@ -109,9 +119,9 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 .unwrapped_position
                 .saturating_sub(runtime.start_offset_counts);
             if origin_drift_counts.unsigned_abs() > runtime.plan.origin_band_counts {
-                // Report the measured discrepancy before faulting. The fault is
-                // raised unchanged on the next tick from `OriginMismatchFault`.
-                runtime.state = RecoveryState::OriginMismatchFault;
+                // Report the measured discrepancy before containing; the
+                // containment is applied unchanged on the next tick.
+                runtime.state = RecoveryState::OriginMismatchContained;
                 return RungOriginRecoveryStep::OriginMismatch(RecoveryOriginMismatchEvidence {
                     expected_counts: runtime.start_offset_counts,
                     observed_counts: resources.safety.unwrapped_position,

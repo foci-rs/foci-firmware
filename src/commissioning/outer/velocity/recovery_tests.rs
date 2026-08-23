@@ -1365,27 +1365,30 @@ fn recovery_tolerates_origin_drift_up_to_the_whole_band() {
     }
 }
 
-/// Drift beyond the band still faults, and reports the measurement first.
+/// Drift beyond the band reports its measurement, then contains from the
+/// live position instead of faulting: every verdict already reads live
+/// position, so a stale plan cannot produce a wrong outcome, only a smaller
+/// return distance than planned.
 #[test]
-fn recovery_reports_and_faults_on_drift_beyond_the_band() {
+fn recovery_reports_and_contains_on_drift_beyond_the_band() {
     let band = i32::try_from(origin_band_counts()).unwrap();
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
-    fixture.safety.unwrapped_position = 1_040 + band + 1;
+    let observed = 1_040 + band + 1;
+    fixture.safety.unwrapped_position = observed;
 
     let RungOriginRecoveryStep::OriginMismatch(evidence) = fixture.step() else {
         panic!("drift beyond the band must report its measurement");
     };
     assert_eq!(evidence.expected_counts, 1_040);
-    assert_eq!(evidence.observed_counts, 1_040 + band + 1);
+    assert_eq!(evidence.observed_counts, observed);
 
-    // The fault itself is unchanged; it simply arrives one tick later.
-    assert_eq!(
-        fixture.step(),
-        RungOriginRecoveryStep::Fault {
-            error: crate::autotune::CommissionError::RecoveryOriginMismatch,
-            safety: None,
-        }
-    );
+    // Containment arrives one tick later, from the live position.
+    let RungOriginRecoveryStep::Contained(report) = fixture.step() else {
+        panic!("drift beyond the band must contain, not fault");
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::ContainedDeadline);
+    assert_eq!(report.binding_source, RecoveryBindingSource::LocalTravel);
+    assert_eq!(report.final_offset_counts, observed);
 }
 
 /// A drift that crosses zero is necessarily already inside the band.

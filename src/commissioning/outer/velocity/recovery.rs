@@ -179,8 +179,9 @@ pub(crate) enum RungOriginRecoveryStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum RecoveryState {
     WriteGains,
-    /// The origin-mismatch evidence has been reported; raise its fault now.
-    OriginMismatchFault,
+    /// The origin-mismatch evidence has been reported; contain from the live
+    /// position now rather than attempt the stale-planned return.
+    OriginMismatchContained,
     ClearMovingIntegrator,
     CommandTowardOrigin,
     Observe {
@@ -395,7 +396,7 @@ impl RungOriginRecoveryRuntime {
             | RecoveryState::CaptureSettle { .. }
             | RecoveryState::AnalyzeSettle { .. } => (OuterSafetyTimingPhase::RecoverySettle, true),
             RecoveryState::RestTerminal { .. } => (OuterSafetyTimingPhase::Terminalization, true),
-            RecoveryState::Terminal { .. } | RecoveryState::OriginMismatchFault => {
+            RecoveryState::Terminal { .. } | RecoveryState::OriginMismatchContained => {
                 (OuterSafetyTimingPhase::Terminalization, true)
             }
         }
