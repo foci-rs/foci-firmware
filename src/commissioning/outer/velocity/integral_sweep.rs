@@ -2070,7 +2070,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         IntegralRungKind::OpeningAnchor | IntegralRungKind::ClosingBookend => {
                             RestSelectionOwner::StageCAnchor
                         }
-                        IntegralRungKind::Positive => RestSelectionOwner::StageCPositiveObservation,
+                        // The sibling if-branch above already claims every Positive rung.
+                        IntegralRungKind::Positive => unreachable!(),
                         IntegralRungKind::AcceptanceAmplitude => {
                             RestSelectionOwner::MatrixObservation
                         }
@@ -2481,15 +2482,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 RungOriginRecoveryStep::RestAnalysis(analysis) => {
                     record_integral_recovery_rest(data, analysis)
                 }
-                RungOriginRecoveryStep::RestUnconfirmed if is_acceptance_matrix(data.plan) => {
+                // Only an acceptance-matrix plan's Stabilized schedule reaches this state.
+                RungOriginRecoveryStep::RestUnconfirmed => {
+                    debug_assert!(is_acceptance_matrix(data.plan));
                     data.rest_unconfirmed = true;
                     data.rest_unconfirmed_owner = Some(RestSelectionOwner::MatrixRecovery);
-                    *state = VelocityIntegralState::Terminal;
-                    StepResult::ReadyNow
-                }
-                RungOriginRecoveryStep::RestUnconfirmed => {
-                    data.rest_unconfirmed = true;
-                    data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCRecovery);
                     *state = VelocityIntegralState::Terminal;
                     StepResult::ReadyNow
                 }

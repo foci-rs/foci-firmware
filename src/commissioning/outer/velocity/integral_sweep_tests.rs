@@ -2778,134 +2778,96 @@ fn rung_aggregation_follows_the_declared_slot_order() {
 }
 
 #[test]
-fn recovery_rest_rejection_records_the_matrix_and_stage_c_owners() {
-    // The `:2418-2426` owner match reads only `data.plan.acquisition_kind`
-    // (via `is_acceptance_matrix`), not the recovery runtime's own rest
-    // schedule. In production the two are always coupled --
-    // `integral_recovery_rest_schedule` derives `Stabilized` exactly when
-    // `is_acceptance_matrix` is true -- and only a `Stabilized` recovery ever
-    // reaches `RecoveryState::RestTerminal` and therefore
-    // `RungOriginRecoveryStep::RestUnconfirmed`: a non-matrix
-    // (`ImmediateScored`) recovery reports unconfirmed rest as a
-    // `CommissionError::VelocityRestNotConfirmed` fault instead (see
-    // `recovery_safety_rejects_unconfirmed_rest` in recovery_tests.rs), never
-    // through this owner match. Build the runtime directly with an explicit
-    // `Stabilized` schedule for both cases so the test can exercise the
-    // owner-selection dispatch itself, independent of that reachability gap.
-    for (acquisition_kind, expected_owner) in [
-        (
-            VelocityIntegralAcquisitionKind::ResponseLadder,
-            RestSelectionOwner::StageCRecovery,
-        ),
-        (
-            VelocityIntegralAcquisitionKind::AcceptanceAscending,
-            RestSelectionOwner::MatrixRecovery,
-        ),
-    ] {
-        let mut phase = phase();
-        let mut workspace = TransientBuffer::new();
-        let OuterPhase::VelocityIntegral {
-            state,
-            data,
-            safety,
-        } = &mut phase
-        else {
-            unreachable!()
-        };
-        data.plan.acquisition_kind = acquisition_kind;
-        data.rung_index = 1;
+fn recovery_rest_rejection_records_the_matrix_owner() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    data.rung_index = 1;
 
-        let start_offset_counts = 1_500_i32;
-        safety
-            .configure_velocity_sweep_encoder_resolution(4_000)
-            .unwrap();
-        safety.configure_velocity_envelope(4_394).unwrap();
-        let raw = start_offset_counts.rem_euclid(4_000) as u32;
-        safety.set_encoder_baseline(raw).unwrap();
-        safety.unwrapped_position = start_offset_counts;
-        safety.arm_safety_observation(0).unwrap();
-
-        let recovery_plan =
-            plan_rung_origin_recovery(safety.budget, safety.counts_per_rev(), 4_394).unwrap();
-        let clamp_limit =
-            PidTorqueFluxLimit::new(u32::from(data.plan.usable_torque_limit)).unwrap();
-        data.current_observer
-            .reset(clamp_limit, data.plan.limit_evidence_capability);
-        let runtime = RungOriginRecoveryRuntime::new(
-            RungOriginRecoveryConfig {
-                stage: RecoveryStage::Integral,
-                rung_index: data.rung_index,
-                p: PidPGain::new(data.plan.final_p).unwrap(),
-                target_velocity_rpm: TmcMechanicalRpm::from_register(264),
-                planned_velocity_mrev_s: 4_394,
-                start_offset_counts,
-                lower_rate_q: Some(14_000_000),
-                authority_source: RecoveryBindingSource::SettledRate,
-                current_contact_policy: integral_recovery_current_contact_policy(data),
-                rest_schedule: RecoveryRestSchedule::Stabilized,
-            },
-            recovery_plan,
-        )
+    let start_offset_counts = 1_500_i32;
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
         .unwrap();
-        *state = VelocityIntegralState::RecoverRung(runtime);
+    safety.configure_velocity_envelope(4_394).unwrap();
+    let raw = start_offset_counts.rem_euclid(4_000) as u32;
+    safety.set_encoder_baseline(raw).unwrap();
+    safety.unwrapped_position = start_offset_counts;
+    safety.arm_safety_observation(0).unwrap();
 
-        let mut backend = MockBackend::new();
-        backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
-        // Never move the mock encoder: the axis stays exactly where it
-        // started, well outside the origin band, so `in_band` is false at
-        // the settle check regardless of the settle displacement itself --
-        // `confirmed = confirmation.confirmed_rest && in_band` is false either
-        // way, without needing to also force the settle analysis unstable.
-        backend.mechanical_encoder_position_counts_value = raw;
+    let recovery_plan =
+        plan_rung_origin_recovery(safety.budget, safety.counts_per_rev(), 4_394).unwrap();
+    let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.usable_torque_limit)).unwrap();
+    data.current_observer
+        .reset(clamp_limit, data.plan.limit_evidence_capability);
+    let runtime = RungOriginRecoveryRuntime::new(
+        RungOriginRecoveryConfig {
+            stage: RecoveryStage::Integral,
+            rung_index: data.rung_index,
+            p: PidPGain::new(data.plan.final_p).unwrap(),
+            target_velocity_rpm: TmcMechanicalRpm::from_register(264),
+            planned_velocity_mrev_s: 4_394,
+            start_offset_counts,
+            lower_rate_q: Some(14_000_000),
+            authority_source: RecoveryBindingSource::SettledRate,
+            current_contact_policy: integral_recovery_current_contact_policy(data),
+            rest_schedule: RecoveryRestSchedule::Stabilized,
+        },
+        recovery_plan,
+    )
+    .unwrap();
+    *state = VelocityIntegralState::RecoverRung(runtime);
 
-        let terminal = loop {
-            match step(&mut phase, &mut workspace, &mut backend) {
-                StepResult::ReadyNow => {}
-                StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
-                StepResult::VelocityIntegralEvent(_) => {}
-                StepResult::AcceptanceMatrixEvent(_) => {}
-                StepResult::VelocityIntegralTerminal(terminal) => break Some(terminal),
-                StepResult::AcceptanceMatrixTerminal(_) => break None,
-                other => panic!("unexpected recovery rest result: {other:?}"),
-            }
-        };
+    let mut backend = MockBackend::new();
+    backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
+    // Never move the mock encoder: the axis stays exactly where it
+    // started, well outside the origin band, so `in_band` is false at
+    // the settle check regardless of the settle displacement itself --
+    // `confirmed = confirmation.confirmed_rest && in_band` is false either
+    // way, without needing to also force the settle analysis unstable.
+    backend.mechanical_encoder_position_counts_value = raw;
 
-        let OuterPhase::VelocityIntegral { data, .. } = &phase else {
-            unreachable!()
-        };
-        assert!(data.rest_unconfirmed);
-        assert_eq!(data.rest_unconfirmed_owner, Some(expected_owner));
-        if let Some(terminal) = terminal {
-            assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-            assert_eq!(
-                terminal.cause,
-                StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
-            );
+    let terminal = loop {
+        match step(&mut phase, &mut workspace, &mut backend) {
+            StepResult::ReadyNow => {}
+            StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+            StepResult::VelocityIntegralEvent(_) => {}
+            StepResult::AcceptanceMatrixEvent(_) => {}
+            StepResult::VelocityIntegralTerminal(terminal) => break Some(terminal),
+            StepResult::AcceptanceMatrixTerminal(_) => break None,
+            other => panic!("unexpected recovery rest result: {other:?}"),
         }
+    };
+
+    let OuterPhase::VelocityIntegral { data, .. } = &phase else {
+        unreachable!()
+    };
+    assert!(data.rest_unconfirmed);
+    assert_eq!(
+        data.rest_unconfirmed_owner,
+        Some(RestSelectionOwner::MatrixRecovery)
+    );
+    if let Some(terminal) = terminal {
+        assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
+        assert_eq!(
+            terminal.cause,
+            StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+        );
     }
 }
 
 #[test]
 fn positive_observation_unconfirmed_rest_reports_its_diagnostic_owner() {
-    // A genuinely `Positive`-kind rung whose own moving-stroke settle check
-    // fails does not terminate directly at the `:2010-2013` else-if this task
-    // modified: `integral_sweep.rs`'s enclosing `if` there requires
-    // `!settle_result.confirmed_rest && !data.observation_current_headroom &&
-    // matches!(integral_rung_kind(..), IntegralRungKind::Positive)` to route
-    // to `BeginPositiveIRestCleanup` instead, and that condition is a strict
-    // subset of the else-if's own condition -- so whenever the else-if's
-    // guard is satisfiable for a `Positive` rung, the `if` above it already
-    // was, and wins. The `Positive => StageCPositiveObservation` arm this
-    // task added to the owner match at that site is therefore unreachable for
-    // `data.rest_unconfirmed_owner`: a `Positive` rung's own failed settle
-    // always resolves through the positive-I=0 cleanup path first (and, if
-    // that cleanup's own rest check also fails, ends with `StageCCleanup`
-    // instead -- see `completed_i_zero_cleanup_rejection_is_inconclusive_rest`).
-    // `StageCPositiveObservation` still reaches the RestSelection
-    // *diagnostic* (Event 151) correctly, from the same three-way match's
-    // `Diagnostic` branch a few lines above (`:1931-1939`, unchanged by this
-    // task) -- that is what this test verifies, stopping once that first
-    // diagnostic is captured rather than driving to a terminal.
+    // A Positive rung's failed settle always resolves through the positive-I=0
+    // cleanup path, never the terminal owner match, so this stops at the
+    // RestSelection diagnostic rather than driving to a terminal.
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
