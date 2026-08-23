@@ -122,6 +122,15 @@ pub(crate) struct CoilObservation {
 pub(crate) enum EncoderCheckState {
     /// Set up current-regulated mode for direction sweep.
     Setup,
+    /// Wait for the rotor to settle at PHI_E=0 before measuring, so a
+    /// pull-to-align snap from wherever it was previously resting isn't
+    /// folded into the sweep's measured delta.
+    Settle {
+        deadline_us: u64,
+        /// Zero-based direction-sweep attempt, bounded and retried internally
+        /// before a hard failure is surfaced to the host.
+        attempt: u8,
+    },
     /// Sweep PHI_E_EXT in steps, one per tick.
     Sweep {
         step: u16,

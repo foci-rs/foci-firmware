@@ -422,6 +422,36 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
 
     match state {
         EncoderCheckState::Setup => {
+            if EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()).is_err() {
+                return super::fail_inner(phase, CommissionError::EncoderFault);
+            }
+
+            if let Err(error) = start_encoder_current_drive(backend, 0, 0).await {
+                return super::fail_inner(phase, error);
+            }
+
+            let deadline = match backend
+                .elapsed_us()
+                .checked_add(ENCODER_ALIGNMENT_SETTLE_US)
+            {
+                Some(deadline) => deadline,
+                None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
+            };
+            *state = EncoderCheckState::Settle {
+                deadline_us: deadline,
+                attempt: 0,
+            };
+            StepResult::At(deadline)
+        }
+
+        EncoderCheckState::Settle {
+            deadline_us,
+            attempt,
+        } => {
+            if backend.elapsed_us() < *deadline_us {
+                return StepResult::At(*deadline_us);
+            }
+
             let count_start = match read_mechanical_encoder_position_counts_stable(
                 backend,
                 Some(diagnostics),
@@ -433,21 +463,18 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 Err(error) => return super::fail_inner(phase, error),
             };
 
-            if let Err(error) = start_encoder_current_drive(backend, 0, 0).await {
-                return super::fail_inner(phase, error);
-            }
-
-            let deadline = match backend.elapsed_us().checked_add(ENCODER_DIRECTION_STEP_US) {
+            let att = *attempt;
+            let sweep_deadline = match backend.elapsed_us().checked_add(ENCODER_DIRECTION_STEP_US) {
                 Some(deadline) => deadline,
                 None => return super::fail_inner(phase, CommissionError::InvalidSchedule),
             };
             *state = EncoderCheckState::Sweep {
                 step: 0,
-                deadline_us: deadline,
+                deadline_us: sweep_deadline,
                 count_start,
-                attempt: 0,
+                attempt: att,
             };
-            StepResult::At(deadline)
+            StepResult::At(sweep_deadline)
         }
 
         EncoderCheckState::Sweep {
@@ -589,17 +616,17 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                     {
                         return super::fail_inner(phase, error);
                     }
-                    let deadline = match backend.elapsed_us().checked_add(ENCODER_DIRECTION_STEP_US)
+                    let deadline = match backend
+                        .elapsed_us()
+                        .checked_add(ENCODER_ALIGNMENT_SETTLE_US)
                     {
                         Some(deadline) => deadline,
                         None => {
                             return super::fail_inner(phase, CommissionError::InvalidSchedule);
                         }
                     };
-                    *state = EncoderCheckState::Sweep {
-                        step: 0,
+                    *state = EncoderCheckState::Settle {
                         deadline_us: deadline,
-                        count_start: count_end,
                         attempt: next_attempt,
                     };
                     return StepResult::At(deadline);
@@ -991,14 +1018,42 @@ mod tests {
                 &mut backend,
             )
             .await;
-            assert!(matches!(setup, StepResult::At(ENCODER_DIRECTION_STEP_US)));
+            assert!(matches!(setup, StepResult::At(ENCODER_ALIGNMENT_SETTLE_US)));
             assert!(register_op_count(&backend) <= ENCODER_MAX_REGISTER_OPS_PER_ARM);
+            assert!(matches!(
+                phase,
+                InnerPhase::EncoderCheck {
+                    state: EncoderCheckState::Settle {
+                        deadline_us: ENCODER_ALIGNMENT_SETTLE_US,
+                        attempt: 0,
+                    }
+                }
+            ));
+
+            backend.elapsed_us_value = ENCODER_ALIGNMENT_SETTLE_US;
+            let settled = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            match settled {
+                StepResult::At(deadline) => {
+                    assert_eq!(
+                        deadline,
+                        ENCODER_ALIGNMENT_SETTLE_US + ENCODER_DIRECTION_STEP_US
+                    )
+                }
+                other => panic!("expected settle to schedule the sweep, got {other:?}"),
+            }
 
             let InnerPhase::EncoderCheck {
                 state: EncoderCheckState::Sweep { deadline_us, .. },
             } = &mut phase
             else {
-                panic!("setup should enter direction sweep");
+                panic!("settle should enter direction sweep");
             };
             *deadline_us = 1_000;
             backend.elapsed_us_value = 35_000;
@@ -1264,11 +1319,7 @@ mod tests {
             assert!(matches!(
                 phase,
                 InnerPhase::EncoderCheck {
-                    state: EncoderCheckState::Sweep {
-                        step: 0,
-                        attempt: 1,
-                        ..
-                    }
+                    state: EncoderCheckState::Settle { attempt: 1, .. }
                 }
             ));
             // The failed attempt is still recorded even though it retried.
@@ -1598,7 +1649,7 @@ mod tests {
             assert!(matches!(
                 phase,
                 InnerPhase::EncoderCheck {
-                    state: EncoderCheckState::Sweep { attempt: 1, .. }
+                    state: EncoderCheckState::Settle { attempt: 1, .. }
                 }
             ));
         });
@@ -1631,7 +1682,7 @@ mod tests {
             assert!(matches!(
                 phase,
                 InnerPhase::EncoderCheck {
-                    state: EncoderCheckState::Sweep { attempt: 1, .. }
+                    state: EncoderCheckState::Settle { attempt: 1, .. }
                 }
             ));
         });
