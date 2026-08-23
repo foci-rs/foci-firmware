@@ -305,10 +305,42 @@ impl OuterSafetyLimits {
         counts_per_rev: u32,
     ) -> Result<(), EncoderMathError> {
         self.configure_velocity_sweep_encoder_resolution(counts_per_rev)?;
+        self.open_position_window_to_headroom();
+        Ok(())
+    }
+
+    /// Configure encoder-domain safety for the Stage-C `VelocityIntegral`
+    /// phase (both first acquisition and resume/reproduce -- they share the
+    /// same `Setup` entry point, so there is no narrower seam to hook).
+    ///
+    /// Identical to [`Self::configure_velocity_sweep_encoder_resolution`]
+    /// except the local `position_local` window is opened to the same
+    /// absolute machine-headroom clamp [`Self::configure_robustness_encoder_resolution`]
+    /// uses, instead of the travel-sized sweep window. A resume that
+    /// reproduces every rung can still trip `position_local` on a sub-0.1%
+    /// overshoot at the travel-sized window, non-deterministically failing
+    /// an otherwise-passing `FOCI_AUTOTUNE`. The observed overshoot is
+    /// itself right-censored at the trip point (the check aborts the
+    /// instant it crosses the line), so there is no sound data yet to size
+    /// a bounded margin from -- seed open, tighten later once
+    /// characterization data exists. The absolute signed windows, velocity
+    /// cap, and torque cap are untouched and remain the active protection.
+    pub(crate) fn configure_stage_c_encoder_resolution(
+        &mut self,
+        counts_per_rev: u32,
+    ) -> Result<(), EncoderMathError> {
+        self.configure_velocity_sweep_encoder_resolution(counts_per_rev)?;
+        self.open_position_window_to_headroom();
+        Ok(())
+    }
+
+    /// Open the local `position_window` to the absolute machine-headroom
+    /// clamp shared by every phase that seeds its transient reserve open
+    /// rather than sizing a bounded margin from uncharacterized data.
+    fn open_position_window_to_headroom(&mut self) {
         self.position_window = self
             .negative_position_window
             .min(self.positive_position_window);
-        Ok(())
     }
 
     /// The amplitude-relative runaway envelope
@@ -1230,6 +1262,31 @@ mod tests {
         assert_eq!(robustness_safety.position_window, 16_000);
         assert_eq!(robustness_safety.negative_position_window, 16_000);
         assert_eq!(robustness_safety.positive_position_window, 20_000);
+    }
+
+    /// The Stage-C `VelocityIntegral` phase's `position_local` window
+    /// currently equals `travel_counts` exactly (via
+    /// `configure_velocity_sweep_encoder_resolution`), giving it zero
+    /// transient reserve -- a resume/reproduce that is otherwise passing can
+    /// intermittently trip on a sub-0.1% overshoot. Mirrors
+    /// `robustness_window_opens_to_the_absolute_clamp`: Stage-C's window
+    /// should open to the same absolute machine-headroom clamp the
+    /// robustness phase already uses, not a bespoke bounded margin --
+    /// the observed overshoot is itself right-censored at the trip point, so
+    /// there is no sound data yet to size a tighter margin from.
+    #[test]
+    fn stage_c_window_opens_to_the_absolute_clamp() {
+        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
+        budget.negative_position_headroom_mrev = 4_000;
+        budget.positive_position_headroom_mrev = 5_000;
+
+        let mut stage_c_safety = OuterSafetyLimits::new(100, budget);
+        stage_c_safety
+            .configure_stage_c_encoder_resolution(4_000)
+            .unwrap();
+        assert_eq!(stage_c_safety.position_window, 16_000);
+        assert_eq!(stage_c_safety.negative_position_window, 16_000);
+        assert_eq!(stage_c_safety.positive_position_window, 20_000);
     }
 
     /// Arm a safety envelope around a frozen amplitude and machine ceiling.

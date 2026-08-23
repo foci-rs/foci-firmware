@@ -1403,7 +1403,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Err(_) => return integral_fault_terminal(phase, CommissionError::Spi, None),
             };
             if safety
-                .configure_velocity_sweep_encoder_resolution(counts_per_rev)
+                .configure_stage_c_encoder_resolution(counts_per_rev)
                 .and_then(|_| safety.set_encoder_baseline(encoder_raw))
                 .is_err()
                 || safety
