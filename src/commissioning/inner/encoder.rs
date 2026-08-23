@@ -76,8 +76,10 @@ pub(super) const ENCODER_MAX_REGISTER_OPS_PER_ARM: usize = 14;
 const DIAG_ENCODER_READ_UNSTABLE: u8 = 1;
 const DIAG_ENCODER_DIRECTION_RESULT: u8 = 2;
 const DIAG_ENCODER_ALIGN_RESULT: u8 = 1;
-const DIAG_ENCODER_DIRECTION_EXPECTED: u8 = 3;
-const DIAG_ENCODER_DIRECTION_BOUNDS: u8 = 4;
+// The host's diagnostic formatter dispatches some codes without regard to
+// phase, so a new code must be unique across all phases, not just this one.
+const DIAG_ENCODER_DIRECTION_EXPECTED: u8 = 40;
+const DIAG_ENCODER_DIRECTION_BOUNDS: u8 = 41;
 
 /// PHI_E_EXT units per electrical revolution.
 const PHI_E_UNITS_PER_ELECTRICAL_REV: u32 = 65_536;
@@ -534,6 +536,8 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 backend.mechanical_encoder_quadrature_counts_per_rev(),
                 pole_pairs,
             );
+            let above_window =
+                window.is_some_and(|window| delta.signed_counts() > window.max_signed_counts);
             let accepted = window.is_some_and(|window| window.contains(delta.signed_counts()));
             if !accepted {
                 push_encoder_direction_result(
@@ -565,6 +569,19 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                     delta.signed_counts(),
                     pole_pairs
                 );
+
+                // Escalating-current retry is only physically valid for a
+                // below-window reading (static friction held the rotor back;
+                // more current can overcome that). A rotor that already
+                // moved too far cannot be fixed by more torque -- re-zeroing
+                // PHI_E_EXT and driving more current into it only corrupts
+                // the next reading. Fail immediately instead.
+                if above_window {
+                    if matches!(sequence, InnerSequence::Selftest) {
+                        selftest_results.set(5, crate::selftest::SelftestStageValue::fail(0));
+                    }
+                    return super::fail_inner(phase, CommissionError::EncoderFault);
+                }
 
                 let next_attempt = *attempt + 1;
                 if next_attempt < ENCODER_DIRECTION_MAX_ATTEMPTS {
@@ -1358,6 +1375,7 @@ mod tests {
             },
         };
         let mut backend = MockBackend::new();
+        backend.current_limit_value = current_limit(2_448);
         backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
         backend
             .last_motor_sentinel_stored
@@ -1521,6 +1539,101 @@ mod tests {
                 StepResult::InnerFailed(CommissionError::EncoderFault)
             ));
             assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_overscale_fails_immediately_without_retry() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            // attempt=0, so a retry would still be available if the code
+            // treated this like an underscale result; overscale must fail
+            // immediately instead.
+            let (mut phase, mut backend) = finalize_backend(1_000, 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_underscale_still_retries_with_escalated_current() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) = finalize_backend(10, 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(result, StepResult::At(_)),
+                "underscale on the first attempt should retry, got {result:?}"
+            );
+            assert!(matches!(
+                phase,
+                InnerPhase::EncoderCheck {
+                    state: EncoderCheckState::Sweep { attempt: 1, .. }
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_reversed_sign_still_retries_with_escalated_current() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            // -40 counts is below the window's lower bound, same as an
+            // undershoot reading, so it takes the retry path rather than
+            // the overscale fast-fail.
+            let (mut phase, mut backend) = finalize_backend(3_960, 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(result, StepResult::At(_)),
+                "reversed sign on the first attempt should retry, got {result:?}"
+            );
+            assert!(matches!(
+                phase,
+                InnerPhase::EncoderCheck {
+                    state: EncoderCheckState::Sweep { attempt: 1, .. }
+                }
+            ));
         });
     }
 
