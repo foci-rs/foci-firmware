@@ -1070,6 +1070,24 @@ where
                         .unwrap_or(default_current_filter_hz),
                 }
             };
+            // Measurement runs filter-free regardless of `printer.cfg`;
+            // `entry_snapshot` above already captured the operator's real
+            // values, which the existing restore-on-failure and
+            // restore-on-success paths use to put them back afterward.
+            if crate::tmc_control::filters::force_velocity_position_filters_disabled(tmc)
+                .await
+                .is_err()
+            {
+                tmc_state
+                    .commission_in_flight
+                    .store(false, core::sync::atomic::Ordering::Relaxed);
+                emit_commission_phase_failure::<Board, Spi>(
+                    board,
+                    oid,
+                    CommissionError::Spi.status_code(),
+                );
+                return TmcControlRequestOutcome::skip_tick_tail();
+            }
             let outer_params = OuterTuneParams {
                 slot_order: req.autotune_action.slot_order(),
                 profile: CommissionProfile::from_u8(profile),
@@ -2434,6 +2452,54 @@ mod tests {
         };
         assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
         assert!(runtime.is_commission_active());
+    }
+
+    #[fixture_test]
+    async fn production_tune_forces_filters_off_regardless_of_configured_cutoff() {
+        use foci_tmc4671::registers::{CONFIG_BIQUAD_V_ENABLE, CONFIG_BIQUAD_X_ENABLE};
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        let tmc_state = tmc_channel0();
+        tmc_state
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_state.store_current_limit(current_limit(2_816), Relaxed);
+        tmc_state.velocity_filter_hz.store(Some(200), Relaxed);
+        tmc_state.position_filter_hz.store(Some(50), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request(
+            tune_request_with_action(crate::tmc::AutotuneAction::BreakawaySeeded),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        let writes = tmc.into_inner().writes;
+        let has_sub_write_zero = |sub: foci_tmc4671::registers::SubRegister| {
+            writes.windows(2).any(|pair| {
+                pair[0] == (sub.addr.addr(), sub.sub_addr as u32) && pair[1] == (sub.data.addr(), 0)
+            })
+        };
+        assert!(
+            has_sub_write_zero(CONFIG_BIQUAD_V_ENABLE),
+            "measurement dispatch must disable the velocity filter on the chip \
+             regardless of the configured cutoff"
+        );
+        assert!(
+            has_sub_write_zero(CONFIG_BIQUAD_X_ENABLE),
+            "measurement dispatch must disable the position filter on the chip \
+             regardless of the configured cutoff"
+        );
+        // The operator's configured cutoffs are untouched -- only the chip's
+        // live state is forced off for the duration of measurement.
+        assert_eq!(tmc_state.velocity_filter_hz.load(Relaxed), Some(200));
+        assert_eq!(tmc_state.position_filter_hz.load(Relaxed), Some(50));
     }
 
     #[fixture_test]

@@ -139,6 +139,29 @@ where
     Ok(())
 }
 
+/// Force the velocity and position biquad filters disabled.
+///
+/// Writes `enable=0` directly, bypassing the zero-cutoff no-op in
+/// [`apply_one_backend_filter`] (which leaves an already-enabled filter
+/// active on `filter_hz == 0`). Used at Stage 2 dispatch so a commissioning
+/// measurement's filter state is deterministic and independent of whatever
+/// `printer.cfg` has configured, rather than inheriting it.
+///
+/// # Errors
+///
+/// Returns the first SPI write error encountered.
+pub async fn force_velocity_position_filters_disabled<B>(
+    tmc: &mut Tmc4671Spi<B>,
+) -> Result<(), SpiError<B::Error>>
+where
+    B: SpiDevice<u8>,
+{
+    use foci_tmc4671::registers::{CONFIG_BIQUAD_V_ENABLE, CONFIG_BIQUAD_X_ENABLE};
+
+    tmc.write_sub_register(CONFIG_BIQUAD_V_ENABLE, 0).await?;
+    tmc.write_sub_register(CONFIG_BIQUAD_X_ENABLE, 0).await
+}
+
 /// Re-apply biquad filters from stored atomics.
 ///
 /// Called after `CalibrateDone` to restore filters that the commissioning
@@ -661,6 +684,38 @@ mod tests {
             assert!(has_sub_write(CONFIG_BIQUAD_V_B_2, coeffs.b_2 as u32));
             assert!(has_sub_write(CONFIG_BIQUAD_V_ENABLE, 1));
         });
+    }
+
+    #[fixture_test]
+    async fn force_velocity_position_filters_disabled_writes_enable_zero_for_both() {
+        use foci_tmc4671::registers::{
+            CONFIG_BIQUAD_V_ENABLE, CONFIG_BIQUAD_X_ENABLE, SubRegister,
+        };
+
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        force_velocity_position_filters_disabled(&mut tmc)
+            .await
+            .expect("forcing filters off should succeed");
+
+        let raw_spi = tmc.into_inner();
+        assert_eq!(
+            raw_spi.writes.len(),
+            4,
+            "expected two sub-register writes (selector + data each)"
+        );
+
+        let frame = |addr: u8, value: u32| -> std::vec::Vec<u8> {
+            let bytes = value.to_be_bytes();
+            std::vec![addr | 0x80, bytes[0], bytes[1], bytes[2], bytes[3]]
+        };
+        let expect_sub_write_zero = |writes: &[std::vec::Vec<u8>], sub: SubRegister| {
+            assert_eq!(writes[0], frame(sub.addr.addr(), sub.sub_addr as u32));
+            assert_eq!(writes[1], frame(sub.data.addr(), 0));
+        };
+        expect_sub_write_zero(&raw_spi.writes[0..2], CONFIG_BIQUAD_V_ENABLE);
+        expect_sub_write_zero(&raw_spi.writes[2..4], CONFIG_BIQUAD_X_ENABLE);
     }
 
     #[test]
