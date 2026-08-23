@@ -2402,7 +2402,7 @@ mod tests {
     /// isolation (Step 1's tests already cover that).
     #[test]
     fn overshoot_reaches_the_terminal_when_a_reverse_leg_outpaces_its_target() {
-        let (terminal, _backend, _session) =
+        let (terminal, _backend, session) =
             drive_scripted(test_point(), |phase, leg_tick, target| {
                 if target == 0 {
                     return 0;
@@ -2416,10 +2416,17 @@ mod tests {
                 }
             });
         assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
-        for direction in terminal.evidence.directions {
+        for direction in 0..DIRECTION_COUNT {
             assert!(
-                direction.overshoot_peak_counts > 0,
+                terminal.evidence.directions[direction].overshoot_peak_counts > 0,
                 "a genuine burst above the target rate must reach the wire"
+            );
+            let first_cycle = session.cycle_wires[direction][0]
+                .expect("a clean reversal run fills every cycle slot");
+            assert!(
+                first_cycle.overshoot_counts > 0,
+                "the per-cycle evidence reply's own overshoot_counts field must \
+                 carry the burst too, not just the terminal's aggregate max"
             );
         }
     }
