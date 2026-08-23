@@ -50,8 +50,8 @@ use super::robustness_cycles::{
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
     ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
-    ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds, overshoot_counts,
-    reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
+    ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds, reduce_plant_rate_q,
+    robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -447,9 +447,6 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         RobustnessReversalState::EstablishWriteGain => {
-            // Start-of-cycle: clear the peak-excursion tracker so this cycle's
-            // overshoot spans only its own establish and reverse legs.
-            workspace.capture.reset_cycle_peak();
             let (p, i) = match accepted_gains(&session.point) {
                 Ok(pair) => pair,
                 Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
@@ -674,17 +671,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         Ok(metrics) => metrics,
                         Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
                     };
-                    // Overshoot spans this cycle's establish and reverse legs
-                    // (reset at EstablishWriteGain); fold it into the direction's
-                    // running max and this cycle's wire triple. Measured against
-                    // the stroke, not `position_window`: the reserve-open path
-                    // widens the window to the machine-headroom clamp, and a
-                    // window-relative reference would read a structural zero
-                    // (any scored cycle stayed inside the window or it faulted).
-                    let overshoot = overshoot_counts(
-                        workspace.capture.peak_excursion_counts(),
-                        safety.stroke_counts(),
-                    );
+                    let overshoot = workspace.capture.reversal_overshoot_counts();
                     session.peak_overshoot_counts[direction] =
                         session.peak_overshoot_counts[direction].max(overshoot);
                     session.pending_cycle = Some(PendingCycle {
@@ -2402,52 +2389,39 @@ mod tests {
         assert_eq!(evidence.iae_medians_qs[1], 0);
     }
 
-    /// Regression: overshoot is measured against the stroke, not the
-    /// reserve-opened `position_window`. The reserve-open path widens
-    /// `position_window` to the machine-headroom clamp; a window-relative
-    /// reference would read a structural zero for every scored cycle (a cycle
-    /// that reached scoring stayed inside the window or it faulted). With a
-    /// budget whose window exceeds the stroke, the same peak excursion yields
-    /// zero against the window but a real overshoot against the stroke.
+    /// The call site reads `reversal_overshoot_counts()` directly -- no stroke
+    /// or window reference enters into it at all (superseding
+    /// `overshoot_reference_is_the_stroke_not_the_reopened_window`, whose
+    /// stroke-relative premise this redesign removes). A reverse leg that
+    /// genuinely runs ahead of its commanded target rate for a few ticks, even
+    /// if it settles back onto the target rate before band entry, must reach
+    /// the terminal's per-direction wire summary as a nonzero
+    /// `overshoot_peak_counts` -- proving the new accumulator value actually
+    /// propagates through `PendingCycle`/`session.peak_overshoot_counts` to the
+    /// terminal, not just that the accumulator computes it correctly in
+    /// isolation (Step 1's tests already cover that).
     #[test]
-    fn overshoot_reference_is_the_stroke_not_the_reopened_window() {
-        let budget = OuterMotionBudget {
-            requested_velocity_mrev_s: 6_000,
-            machine_velocity_ceiling_mrev_s: 10_000,
-            requested_velocity_source: RequestedVelocitySource::Defaulted,
-            // Stroke = 1_000 mrev * 4_000 cpr / 1_000 = 4_000 counts.
-            max_stroke_travel_mrev: 1_000,
-            settle_travel_reserve_mrev: 100,
-            // Headroom windows clamp to 2 revs = 8_000 counts, past the stroke.
-            negative_position_headroom_mrev: 2_000,
-            positive_position_headroom_mrev: 2_000,
-            max_duration_ms: 60_000,
-        };
-        let mut safety = OuterSafetyLimits::new(current_limit(2_448).raw(), budget);
-        safety
-            .configure_robustness_encoder_resolution(4_000)
-            .expect("valid encoder resolution");
-
-        let stroke = safety.stroke_counts();
-        let window = safety.position_window;
-        assert_eq!(stroke, 4_000, "stroke is the commanded travel allocation");
-        assert!(
-            window > stroke,
-            "the reserve-open path widens the window past the stroke"
-        );
-
-        // A peak that overshot the stroke but stayed inside the reopened window.
-        let peak = (stroke + window) / 2;
-        assert_eq!(
-            overshoot_counts(peak, window),
-            0,
-            "a window-relative reference structurally reads zero"
-        );
-        assert_eq!(
-            overshoot_counts(peak, safety.stroke_counts()),
-            (peak - stroke) as u16,
-            "the stroke-relative reference reports the real overshoot"
-        );
+    fn overshoot_reaches_the_terminal_when_a_reverse_leg_outpaces_its_target() {
+        let (terminal, _backend, _session) =
+            drive_scripted(test_point(), |phase, leg_tick, target| {
+                if target == 0 {
+                    return 0;
+                }
+                match phase {
+                    // 2x steady rate for the first 3 ticks of every reverse leg,
+                    // well under quarter_turn_fault_counts (1_000 at this test's
+                    // 4_000 counts/rev) so it never trips the safety fault.
+                    CapturePhase::Reverse if leg_tick < 3 => target.signum() * STEADY_DELTA * 2,
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        for direction in terminal.evidence.directions {
+            assert!(
+                direction.overshoot_peak_counts > 0,
+                "a genuine burst above the target rate must reach the wire"
+            );
+        }
     }
 
     /// A granted inconclusive retry routes straight back to the establish leg

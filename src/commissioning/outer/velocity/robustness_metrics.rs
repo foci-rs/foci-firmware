@@ -14,6 +14,12 @@ use crate::autotune::velocity_measurement::VelocityObservationSource;
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
 
+/// `SCALE` in the spec's Algorithm section: multiplying `target_rate_q *
+/// elapsed_us` for one tick yields `expected_delta_counts * SCALE`, by the
+/// same identity `per_tick_rate_q` divides out. See
+/// `docs/specs/2026-08-22-foc-274-overshoot-metric-redesign.md`, "Units".
+const OVERSHOOT_SCALE_Q: i64 = 1_000_000 * VELOCITY_RATE_Q_SCALE;
+
 /// Reconvergence and recovery metrics for one reversal-robustness probe.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub struct ReversalMetrics {
@@ -149,8 +155,9 @@ pub(crate) struct ReversalOnlineAccumulator {
     run_duration_us: u32,
     band_entry_us: Option<u32>,
     band_entry_iae_q: i64,
-    signed_position: i32,
-    peak_excursion_counts: u32,
+    actual_position_counts: i32,
+    expected_position_q: i64,
+    peak_excess_q: i64,
 }
 
 impl ReversalOnlineAccumulator {
@@ -168,18 +175,20 @@ impl ReversalOnlineAccumulator {
             run_duration_us: 0,
             band_entry_us: None,
             band_entry_iae_q: 0,
-            signed_position: 0,
-            peak_excursion_counts: 0,
+            actual_position_counts: 0,
+            expected_position_q: 0,
+            peak_excess_q: 0,
         }
     }
 
     /// Re-arm the accumulator for a fresh leg targeting `target_rate_q` with a
     /// symmetric `band_q` half-width and a `dwell_us` sustained-residence
-    /// requirement. Clears every running band-entry/IAE counter, but leaves
-    /// the peak-excursion tracking untouched: `reset` is called once per
-    /// capture (establish and reverse legs both call it), while the peak
-    /// spans both legs of one cycle. Use [`Self::reset_cycle_peak`] to clear
-    /// the peak between cycles.
+    /// requirement. Also clears the leg-scoped overshoot-excess tracking
+    /// (`actual_position_counts`, `expected_position_q`, `peak_excess_q`):
+    /// unlike the old whole-cycle peak this design replaces, the excess
+    /// tracker is scoped to one leg, so the reverse leg's own `reset()` call
+    /// is the reversal-command instant it anchors at. See
+    /// `docs/specs/2026-08-22-foc-274-overshoot-metric-redesign.md`.
     pub(crate) fn reset(&mut self, target_rate_q: i64, band_q: i64, dwell_us: u32) {
         self.target_rate_q = target_rate_q;
         self.lower_q = target_rate_q.saturating_sub(band_q);
@@ -192,15 +201,9 @@ impl ReversalOnlineAccumulator {
         self.run_duration_us = 0;
         self.band_entry_us = None;
         self.band_entry_iae_q = 0;
-    }
-
-    /// Clear the peak-excursion tracking for a new cycle. Separate from
-    /// [`Self::reset`], which runs once per capture (twice per cycle) and
-    /// must not disturb a peak that spans both the establish and reverse
-    /// legs.
-    pub(crate) fn reset_cycle_peak(&mut self) {
-        self.signed_position = 0;
-        self.peak_excursion_counts = 0;
+        self.actual_position_counts = 0;
+        self.expected_position_q = 0;
+        self.peak_excess_q = 0;
     }
 
     /// Fold one observation into the running band-entry and IAE state.
@@ -212,10 +215,15 @@ impl ReversalOnlineAccumulator {
     /// recorded, further observations are ignored so the IAE stays frozen at
     /// the transient it measured.
     pub(crate) fn observe(&mut self, delta_counts: i32, elapsed_us: u32) {
-        self.signed_position = self.signed_position.saturating_add(delta_counts);
-        self.peak_excursion_counts = self
-            .peak_excursion_counts
-            .max(self.signed_position.unsigned_abs());
+        self.expected_position_q = self
+            .expected_position_q
+            .saturating_add(self.target_rate_q.saturating_mul(i64::from(elapsed_us)));
+        self.actual_position_counts = self.actual_position_counts.saturating_add(delta_counts);
+        let excess_q = i64::from(self.actual_position_counts)
+            .saturating_mul(OVERSHOOT_SCALE_Q)
+            .saturating_sub(self.expected_position_q)
+            .saturating_mul(self.target_rate_q.signum());
+        self.peak_excess_q = self.peak_excess_q.max(excess_q.max(0));
         if self.band_entry_us.is_some() {
             return;
         }
@@ -254,22 +262,13 @@ impl ReversalOnlineAccumulator {
         self.band_entry_iae_q
     }
 
-    /// Peak absolute local excursion (`|signed_position|`) observed since the
-    /// last [`Self::reset_cycle_peak`]. Spans the establish and reverse
-    /// captures of one cycle -- [`Self::reset`] runs once per capture and
-    /// does not clear it -- while the zero-target rest window between
-    /// cycles is excluded: its braking travel belongs to the settle
-    /// reserve, not the reversal transient this metric measures.
-    ///
-    /// Dormant channel on the velocity-based probe: this peak is the
-    /// establish-leg cruise distance, bounded near the moving stroke (max
-    /// stroke less the settle reserve), and [`overshoot_counts`] subtracts the
-    /// full stroke, so the overshoot evidence reads structurally near zero.
-    /// A near-zero value must not be read as "no overshoot"; the channel needs
-    /// a reversal-command-anchored peak before it carries reserve-pinning
-    /// evidence.
-    pub(crate) fn peak_excursion_counts(&self) -> u32 {
-        self.peak_excursion_counts
+    /// Peak positive excess of actual displacement over the ideal
+    /// constant-target-rate trajectory, observed since the last `reset()`
+    /// -- i.e. scoped to one leg. Zero for a leg that never ran ahead of its
+    /// commanded target rate. See
+    /// `docs/specs/2026-08-22-foc-274-overshoot-metric-redesign.md`.
+    pub(crate) fn reversal_overshoot_counts(&self) -> u16 {
+        u16::try_from(self.peak_excess_q / OVERSHOOT_SCALE_Q).unwrap_or(u16::MAX)
     }
 }
 
@@ -479,23 +478,6 @@ pub(crate) fn worse_of(a: u8, b: u8) -> u8 {
     a | b
 }
 
-/// Stroke-relative overshoot, in counts: `peak_excursion` saturating-minus
-/// `stroke_counts`, `0` when the peak stayed within the per-primitive
-/// stroke allocation. Evidence-only -- no threshold gates this value.
-///
-/// Dormant channel on the velocity-based probe: the peak feeding this is the
-/// establish-leg cruise distance, bounded near the moving stroke, while the
-/// `stroke_counts` reference is the full stroke. A candidate would have to
-/// overshoot the reversal endpoint by more than the entire settle reserve to
-/// register, so the output reads structurally near zero and must not be read
-/// as "no overshoot". See [`ReversalOnlineAccumulator::peak_excursion_counts`];
-/// reserve pinning stays blocked until the peak is anchored at the position
-/// captured when the reversal is commanded, with the peak measured beyond it.
-pub(crate) fn overshoot_counts(peak_excursion: u32, stroke_counts: u32) -> u16 {
-    let overshoot = peak_excursion.saturating_sub(stroke_counts);
-    u16::try_from(overshoot).unwrap_or(u16::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,50 +652,119 @@ mod tests {
     }
 
     #[test]
-    fn accumulator_tracks_peak_absolute_excursion() {
+    fn overshoot_is_zero_when_leg_tracks_target_rate_exactly() {
         let mut online = ReversalOnlineAccumulator::new();
-        online.reset(0, 0, 0);
-        for _ in 0..5 {
+        let target = per_tick_rate_q(100, 1_000); // 100 counts per 1ms tick
+        online.reset(target, 0, 0);
+        for _ in 0..10 {
             online.observe(100, 1_000);
         }
-        for _ in 0..2 {
-            online.observe(-30, 1_000);
-        }
-        assert_eq!(online.peak_excursion_counts(), 500);
+        assert_eq!(online.reversal_overshoot_counts(), 0);
     }
 
     #[test]
-    fn overshoot_is_zero_within_stroke_and_saturates_beyond() {
-        assert_eq!(overshoot_counts(11_990, 12_000), 0);
-        assert_eq!(overshoot_counts(12_018, 12_000), 18);
-        assert_eq!(overshoot_counts(u32::MAX, 0), u16::MAX);
+    fn overshoot_registers_a_mid_transient_burst_even_after_settling_back() {
+        let mut online = ReversalOnlineAccumulator::new();
+        let target = per_tick_rate_q(100, 1_000);
+        online.reset(target, 0, 0);
+        for _ in 0..3 {
+            // 2x target rate for 3 ticks: +100 counts of excess per tick.
+            online.observe(200, 1_000);
+        }
+        for _ in 0..10 {
+            // Settles back onto the target rate exactly -- this does not erase
+            // the excess already reached, it only stops it from growing
+            // further, since actual and expected now advance in lockstep. This
+            // is the case a single-point-at-band-entry comparison would miss.
+            online.observe(100, 1_000);
+        }
+        assert_eq!(online.reversal_overshoot_counts(), 300);
     }
 
     #[test]
-    fn capture_reset_preserves_the_peak_across_legs() {
+    fn overshoot_stays_zero_when_leg_runs_behind_target_rate() {
         let mut online = ReversalOnlineAccumulator::new();
-        online.reset(0, 0, 0);
-        for _ in 0..5 {
-            online.observe(100, 1_000);
+        let target = per_tick_rate_q(100, 1_000);
+        online.reset(target, 0, 0);
+        for _ in 0..10 {
+            // Half the target rate, never ahead of the ideal trajectory.
+            online.observe(50, 1_000);
         }
-        assert_eq!(online.peak_excursion_counts(), 500);
-        online.reset(0, 0, 0);
-        online.observe(-10, 1_000);
-        assert_eq!(online.peak_excursion_counts(), 500);
+        assert_eq!(online.reversal_overshoot_counts(), 0);
+    }
+
+    /// Reverse-target (negative `target_rate_q`) counterparts of the three
+    /// cases above. `overshoot_is_zero_when_leg_tracks_target_rate_exactly`'s
+    /// negative counterpart is deliberately omitted: with actual and expected
+    /// exactly equal, `excess_q` is `0` before the sign projection is even
+    /// applied, so that case cannot distinguish a correct sign projection from
+    /// an omitted or broken one at any target sign -- it is structurally
+    /// incapable of catching a sign bug, so a negative-target duplicate would
+    /// add no coverage. The burst and behind-target cases below are not
+    /// redundant with that reasoning: the sign projection is a no-op for a
+    /// positive target (`signum() == 1`), so the *positive*-target burst/behind
+    /// tests above cannot distinguish "sign applied" from "sign omitted"
+    /// either -- only a *negative*-target case exercises a projection that
+    /// actually changes the sign of `excess_q` before clamping. A sign-omitted
+    /// implementation would report `300` here as `0`
+    /// (`overshoot_sign_symmetry_burst_...`) and `0` here as a spurious nonzero
+    /// value (`overshoot_sign_symmetry_behind_...`) -- so both are needed to
+    /// close the gap the positive-only tests leave open.
+    #[test]
+    fn overshoot_sign_symmetry_holds_for_a_reverse_target_burst() {
+        let mut online = ReversalOnlineAccumulator::new();
+        let target = per_tick_rate_q(-100, 1_000);
+        online.reset(target, 0, 0);
+        for _ in 0..3 {
+            online.observe(-200, 1_000);
+        }
+        for _ in 0..10 {
+            online.observe(-100, 1_000);
+        }
+        assert_eq!(online.reversal_overshoot_counts(), 300);
     }
 
     #[test]
-    fn reset_cycle_peak_clears_it() {
+    fn overshoot_sign_symmetry_holds_for_a_reverse_target_running_behind() {
         let mut online = ReversalOnlineAccumulator::new();
-        online.reset(0, 0, 0);
-        for _ in 0..5 {
-            online.observe(100, 1_000);
+        let target = per_tick_rate_q(-100, 1_000);
+        online.reset(target, 0, 0);
+        for _ in 0..10 {
+            // Half the target magnitude, same (negative) direction -- never
+            // ahead of the ideal trajectory. A sign-omitted implementation
+            // computes `(actual*SCALE - expected_q)`, which is positive here
+            // (actual is *less* negative than expected) and would wrongly clamp
+            // to a nonzero value instead of 0.
+            online.observe(-50, 1_000);
         }
-        assert_eq!(online.peak_excursion_counts(), 500);
-        online.reset_cycle_peak();
-        assert_eq!(online.peak_excursion_counts(), 0);
-        online.observe(10, 1_000);
-        assert_eq!(online.peak_excursion_counts(), 10);
+        assert_eq!(online.reversal_overshoot_counts(), 0);
+    }
+
+    /// The excess tracker is leg-scoped: `reset()` must clear it, unlike the
+    /// old whole-cycle peak this design replaces (which was cleared only once
+    /// per cycle, by the now-deleted `reset_cycle_peak()`). Without this test,
+    /// a future change that accidentally drops the three new clearing lines
+    /// from `reset()` would leave every other test in this file passing (they
+    /// each call `reset()` only once, at the start), while production code
+    /// would silently carry a burst's excess across into the next leg.
+    #[test]
+    fn reset_clears_the_excess_tracker_for_a_fresh_leg() {
+        let mut online = ReversalOnlineAccumulator::new();
+        let target = per_tick_rate_q(100, 1_000);
+        online.reset(target, 0, 0);
+        for _ in 0..3 {
+            online.observe(200, 1_000); // burst: reaches overshoot 300
+        }
+        assert_eq!(online.reversal_overshoot_counts(), 300);
+
+        online.reset(target, 0, 0); // new leg
+        assert_eq!(
+            online.reversal_overshoot_counts(),
+            0,
+            "reset() must clear peak_excess_q, not carry it into the new leg"
+        );
+        online.observe(100, 1_000); // exactly on target: only this leg's sample counts
+        assert_eq!(online.reversal_overshoot_counts(), 0);
     }
 
     #[test]
