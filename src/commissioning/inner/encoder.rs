@@ -76,6 +76,66 @@ pub(super) const ENCODER_MAX_REGISTER_OPS_PER_ARM: usize = 14;
 const DIAG_ENCODER_READ_UNSTABLE: u8 = 1;
 const DIAG_ENCODER_DIRECTION_RESULT: u8 = 2;
 const DIAG_ENCODER_ALIGN_RESULT: u8 = 1;
+const DIAG_ENCODER_DIRECTION_EXPECTED: u8 = 3;
+const DIAG_ENCODER_DIRECTION_BOUNDS: u8 = 4;
+
+/// PHI_E_EXT units per electrical revolution.
+const PHI_E_UNITS_PER_ELECTRICAL_REV: u32 = 65_536;
+
+/// Tolerance half-width as a fraction of the expected direction-sweep
+/// displacement. Wide enough to absorb encoder read jitter
+/// (`ENCODER_READ_MAX_JITTER`) and normal breakaway/settling variance, tight
+/// enough to reject a halved/doubled PPR or pole-pair count.
+const ENCODER_DIRECTION_TOLERANCE_NUMERATOR: u32 = 1;
+const ENCODER_DIRECTION_TOLERANCE_DENOMINATOR: u32 = 4;
+
+/// Accepted signed-count window for the `PHI_E_EXT` direction sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EncoderDirectionWindow {
+    expected_signed_counts: i32,
+    min_signed_counts: i32,
+    max_signed_counts: i32,
+}
+
+impl EncoderDirectionWindow {
+    fn contains(self, signed_counts: i32) -> bool {
+        (self.min_signed_counts..=self.max_signed_counts).contains(&signed_counts)
+    }
+}
+
+/// Derive the accepted encoder-count window for the `PHI_E_EXT` direction
+/// sweep.
+///
+/// The sweep commands `ENCODER_DIRECTION_TARGET_PHI_E` out of a full
+/// `PHI_E_UNITS_PER_ELECTRICAL_REV`-unit electrical revolution -- exactly
+/// half an electrical revolution. `ABN_DECODER_MODE`'s direction-invert bit
+/// normalizes the sign of `ABN_DECODER_COUNT` at the register level, so a
+/// correctly wired, correctly configured encoder always reports positive
+/// movement here; a negative or grossly mismatched magnitude indicates
+/// swapped channels, a wrong invert setting, or an incorrect PPR/pole-pair
+/// count.
+///
+/// Returns `None` when `pole_pairs` is zero (motor configuration not yet
+/// established); the caller must treat that as a hard failure rather than
+/// falling back to a default pole-pair count.
+fn encoder_direction_window(
+    counts_per_rev: u32,
+    pole_pairs: u16,
+) -> Option<EncoderDirectionWindow> {
+    if pole_pairs == 0 {
+        return None;
+    }
+    let counts_per_electrical_rev = u64::from(counts_per_rev) / u64::from(pole_pairs);
+    let expected = counts_per_electrical_rev * u64::from(ENCODER_DIRECTION_TARGET_PHI_E)
+        / u64::from(PHI_E_UNITS_PER_ELECTRICAL_REV);
+    let tolerance = expected * u64::from(ENCODER_DIRECTION_TOLERANCE_NUMERATOR)
+        / u64::from(ENCODER_DIRECTION_TOLERANCE_DENOMINATOR);
+    Some(EncoderDirectionWindow {
+        expected_signed_counts: i32::try_from(expected).unwrap_or(i32::MAX),
+        min_signed_counts: i32::try_from(expected.saturating_sub(tolerance)).unwrap_or(i32::MAX),
+        max_signed_counts: i32::try_from(expected.saturating_add(tolerance)).unwrap_or(i32::MAX),
+    })
+}
 
 fn encoder_alignment_min_movement(encoder_counts_per_rev: u32) -> u32 {
     let denominator = 20_u64 * u64::from(ENCODER_ALIGNMENT_POLE_PAIRS);
@@ -138,6 +198,38 @@ fn push_encoder_direction_result(
         value0: count_start.raw_counts(),
         value1: count_end.raw_counts(),
         value2: delta_abs,
+    });
+}
+
+fn push_encoder_direction_expected(
+    diagnostics: &mut CommissionDiagnostics,
+    commanded_electrical_displacement: u32,
+    expected_signed_counts: i32,
+    observed_signed_counts: i32,
+) {
+    diagnostics.push(CommissionDiagnostic {
+        phase: PhaseId::EncoderCheck.to_u8(),
+        code: DIAG_ENCODER_DIRECTION_EXPECTED,
+        status: 1,
+        value0: commanded_electrical_displacement,
+        value1: expected_signed_counts as u32,
+        value2: observed_signed_counts as u32,
+    });
+}
+
+fn push_encoder_direction_bounds(
+    diagnostics: &mut CommissionDiagnostics,
+    min_signed_counts: i32,
+    max_signed_counts: i32,
+    pole_pairs: u16,
+) {
+    diagnostics.push(CommissionDiagnostic {
+        phase: PhaseId::EncoderCheck.to_u8(),
+        code: DIAG_ENCODER_DIRECTION_BOUNDS,
+        status: 1,
+        value0: min_signed_counts as u32,
+        value1: max_signed_counts as u32,
+        value2: u32::from(pole_pairs),
     });
 }
 
@@ -437,7 +529,13 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 count_end.raw_counts(),
                 delta.signed_counts()
             );
-            if delta.signed_counts() == 0 {
+            let pole_pairs = backend.motor_pole_pairs();
+            let window = encoder_direction_window(
+                backend.mechanical_encoder_quadrature_counts_per_rev(),
+                pole_pairs,
+            );
+            let accepted = window.is_some_and(|window| window.contains(delta.signed_counts()));
+            if !accepted {
                 push_encoder_direction_result(
                     diagnostics,
                     *count_start,
@@ -445,11 +543,27 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                     delta.absolute_counts(),
                     true,
                 );
+                if let Some(window) = window {
+                    push_encoder_direction_expected(
+                        diagnostics,
+                        ENCODER_DIRECTION_TARGET_PHI_E,
+                        window.expected_signed_counts,
+                        delta.signed_counts(),
+                    );
+                    push_encoder_direction_bounds(
+                        diagnostics,
+                        window.min_signed_counts,
+                        window.max_signed_counts,
+                        pole_pairs,
+                    );
+                }
                 defmt::warn!(
-                    "encoder-dir FAIL (attempt {}): start={} end={} delta=0",
+                    "encoder-dir FAIL (attempt {}): start={} end={} delta={} pole_pairs={}",
                     attempt,
                     count_start.raw_counts(),
-                    count_end.raw_counts()
+                    count_end.raw_counts(),
+                    delta.signed_counts(),
+                    pole_pairs
                 );
 
                 let next_attempt = *attempt + 1;
@@ -965,6 +1079,31 @@ mod tests {
     }
 
     #[test]
+    fn encoder_direction_window_derives_expected_and_tolerance_from_pole_pairs() {
+        let window = encoder_direction_window(4_000, 50).expect("50 pole pairs is valid");
+        assert_eq!(window.expected_signed_counts, 40);
+        assert_eq!(window.min_signed_counts, 30);
+        assert_eq!(window.max_signed_counts, 50);
+    }
+
+    #[test]
+    fn encoder_direction_window_scales_with_configured_pole_pairs() {
+        // Half as many pole pairs doubles the electrical revolution's encoder
+        // span, and therefore the expected half-electrical-revolution
+        // displacement, proving the window is driven by the passed-in
+        // pole-pair count rather than a fixed constant.
+        let window = encoder_direction_window(4_000, 25).expect("25 pole pairs is valid");
+        assert_eq!(window.expected_signed_counts, 80);
+        assert_eq!(window.min_signed_counts, 60);
+        assert_eq!(window.max_signed_counts, 100);
+    }
+
+    #[test]
+    fn encoder_direction_window_rejects_zero_pole_pairs() {
+        assert_eq!(encoder_direction_window(4_000, 0), None);
+    }
+
+    #[test]
     fn encoder_movement_current_target_escalates_within_current_limit() {
         // Attempt 0 keeps the original 50%-of-limit, 1000-count ceiling.
         assert_eq!(encoder_movement_current_target(2_448, 0), 1_000);
@@ -1177,6 +1316,11 @@ mod tests {
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut backend = MockBackend::new();
             backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            // 500 pole pairs makes the expected half-electrical-revolution
+            // displacement land exactly on this test's pre-existing delta of 4.
+            backend
+                .last_motor_sentinel_stored
+                .set(Some(pole_pairs_sentinel(500)));
             backend.set_abn_decoder_count_sequence(&[2, 2, 2]);
 
             let result = step_encoder_check(
@@ -1194,6 +1338,359 @@ mod tests {
             ));
             assert_eq!(selftest_results.stage(5).unwrap().value, 4);
             assert_eq!(selftest_results.stage(6).unwrap().value, 0);
+        });
+    }
+
+    fn pole_pairs_sentinel(n_pole_pairs: u16) -> u32 {
+        foci_tmc4671::registers::MotorTypeNPolePairs::new()
+            .with_n_pole_pairs(n_pole_pairs)
+            .into()
+    }
+
+    /// Builds a `Finalize` backend at 50 pole pairs / 4000 counts-per-rev
+    /// (expected window [30, 50], centered on 40), and drives it from
+    /// `count_start` to a fixed encoder read of `count_end`.
+    fn finalize_backend(count_end: u32, attempt: u8) -> (InnerPhase, MockBackend) {
+        let phase = InnerPhase::EncoderCheck {
+            state: EncoderCheckState::Finalize {
+                count_start: encoder_count(0),
+                attempt,
+            },
+        };
+        let mut backend = MockBackend::new();
+        backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+        backend
+            .last_motor_sentinel_stored
+            .set(Some(pole_pairs_sentinel(50)));
+        backend.set_abn_decoder_count_sequence(&[count_end, count_end, count_end]);
+        (phase, backend)
+    }
+
+    #[test]
+    fn encoder_direction_check_accepts_correct_sign_and_ppr_consistent_displacement() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) = finalize_backend(40, 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_accepts_wrap_boundary_displacement() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut phase = InnerPhase::EncoderCheck {
+                state: EncoderCheckState::Finalize {
+                    count_start: encoder_count(3980),
+                    attempt: 0,
+                },
+            };
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            backend
+                .last_motor_sentinel_stored
+                .set(Some(pole_pairs_sentinel(50)));
+            // 3980 -> 20 wraps across the origin; the shortest signed path is
+            // still exactly the expected +40 counts.
+            backend.set_abn_decoder_count_sequence(&[20, 20, 20]);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_rejects_reversed_sign_with_plausible_magnitude() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            // -40 counts: the same magnitude the correct sign would accept.
+            let (mut phase, mut backend) =
+                finalize_backend(3_960, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_rejects_underscale_displacement() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) = finalize_backend(10, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+
+            let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
+            assert_eq!(events.len(), 3);
+            assert_eq!(events[0].code, DIAG_ENCODER_DIRECTION_RESULT);
+            assert_eq!(events[0].value0, 0);
+            assert_eq!(events[0].value1, 10);
+            assert_eq!(events[0].value2, 10);
+            assert_eq!(events[1].code, DIAG_ENCODER_DIRECTION_EXPECTED);
+            assert_eq!(events[1].value0, ENCODER_DIRECTION_TARGET_PHI_E);
+            assert_eq!(events[1].value1, 40);
+            assert_eq!(events[1].value2, 10);
+            assert_eq!(events[2].code, DIAG_ENCODER_DIRECTION_BOUNDS);
+            assert_eq!(events[2].value0, 30);
+            assert_eq!(events[2].value1, 50);
+            assert_eq!(events[2].value2, 50);
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_rejects_overscale_displacement() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) =
+                finalize_backend(1_000, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_accepts_lower_tolerance_boundary() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) = finalize_backend(30, 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_rejects_just_below_lower_tolerance_boundary() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) = finalize_backend(29, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_accepts_upper_tolerance_boundary() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) = finalize_backend(50, 0);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_rejects_just_above_upper_tolerance_boundary() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let (mut phase, mut backend) = finalize_backend(51, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_uses_configured_pole_pairs_not_a_hardcoded_constant() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            // 25 pole pairs (not the 50-pole-pair default elsewhere in this
+            // module) doubles the expected displacement to 80. A delta of 80
+            // would fail against a hardcoded 50-pole-pair assumption
+            // (window [30, 50]), so this only passes if the sentinel-sourced
+            // pole-pair count is actually used.
+            let mut phase = InnerPhase::EncoderCheck {
+                state: EncoderCheckState::Finalize {
+                    count_start: encoder_count(0),
+                    attempt: 0,
+                },
+            };
+            let mut backend = MockBackend::new();
+            backend.mechanical_encoder_quadrature_counts_per_rev_value = 4000;
+            backend
+                .last_motor_sentinel_stored
+                .set(Some(pole_pairs_sentinel(25)));
+            backend.set_abn_decoder_count_sequence(&[80, 80, 80]);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+            ));
+        });
+    }
+
+    #[test]
+    fn encoder_direction_check_fails_closed_without_a_calibrated_pole_pair_count() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            // A perfect 40-count delta, but no motor_sentinel has been
+            // established (pole_pairs() reads back 0): the check must not
+            // silently accept an unvalidated motor configuration.
+            let (mut phase, mut backend) = finalize_backend(40, ENCODER_DIRECTION_MAX_ATTEMPTS - 1);
+            backend.last_motor_sentinel_stored.set(None);
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_encoder_check(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::EncoderFault)
+            ));
+            assert!(!backend.enable_pin);
+            // No expectation window exists without a valid pole-pair count,
+            // so only the base direction-result diagnostic is recorded.
+            let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].code, DIAG_ENCODER_DIRECTION_RESULT);
         });
     }
 

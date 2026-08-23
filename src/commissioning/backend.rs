@@ -12,7 +12,7 @@ use crate::config::TmcConfig;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::{ErrorType, SpiDevice};
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-use foci_tmc4671::registers::{ABN_DECODER_COUNT, Register};
+use foci_tmc4671::registers::{ABN_DECODER_COUNT, MotorTypeNPolePairs, Register};
 use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
 
 /// Register I/O capability for TMC4671 commissioning operations.
@@ -263,6 +263,15 @@ pub trait CommissionBoardConfig {
 
     /// Encoder counts per mechanical revolution.
     fn mechanical_encoder_quadrature_counts_per_rev(&self) -> u32;
+
+    /// Configured motor electrical pole-pair count.
+    ///
+    /// Decoded from the chip-verified `MOTOR_TYPE_N_POLE_PAIRS` sentinel
+    /// captured by ADC calibration, not a check-specific hardcoded constant.
+    /// Zero means the sentinel has not been established yet (motor
+    /// configuration not calibrated); callers must treat that as a hard
+    /// failure rather than falling back to a default pole-pair count.
+    fn motor_pole_pairs(&self) -> u16;
 
     /// Whether ADC current-offset calibration has been established.
     ///
@@ -655,6 +664,15 @@ where
             .saturating_mul(4)
     }
 
+    fn motor_pole_pairs(&self) -> u16 {
+        MotorTypeNPolePairs::from(
+            self.tmc_state()
+                .motor_sentinel
+                .load(core::sync::atomic::Ordering::Relaxed),
+        )
+        .n_pole_pairs()
+    }
+
     fn adc_offsets_ready(&self) -> bool {
         // The ADC-calibration phase captures a non-zero motor sentinel before
         // any later phase energizes. Electrical identification (which runs the
@@ -904,6 +922,50 @@ mod tests {
         LAST_TRACE_EVENT_ID.store(0, Relaxed);
         #[cfg(feature = "trace")]
         LAST_VELOCITY_DELTA.store(0, Relaxed);
+        TEST_TMC_STATE.motor_sentinel.store(0, Relaxed);
+    }
+
+    #[fixture_test]
+    fn shared_backend_decodes_motor_pole_pairs_from_sentinel() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+
+        let sentinel: u32 = foci_tmc4671::registers::MotorTypeNPolePairs::new()
+            .with_n_pole_pairs(50)
+            .into();
+        TEST_TMC_STATE.motor_sentinel.store(sentinel, Relaxed);
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let backend = SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+            1,
+            &mut tmc,
+            &mut enable_pin,
+            &TEST_TMC_STATE,
+        );
+
+        assert_eq!(backend.motor_pole_pairs(), 50);
+    }
+
+    #[fixture_test]
+    fn shared_backend_reports_zero_pole_pairs_for_uncalibrated_sentinel() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let backend = SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+            1,
+            &mut tmc,
+            &mut enable_pin,
+            &TEST_TMC_STATE,
+        );
+
+        assert_eq!(backend.motor_pole_pairs(), 0);
     }
 
     #[test]

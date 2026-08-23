@@ -732,6 +732,13 @@ impl CommissionBoardConfig for MockBackend {
         self.mechanical_encoder_quadrature_counts_per_rev_value
     }
 
+    fn motor_pole_pairs(&self) -> u16 {
+        foci_tmc4671::registers::MotorTypeNPolePairs::from(
+            self.last_motor_sentinel_stored.get().unwrap_or(0),
+        )
+        .n_pole_pairs()
+    }
+
     fn adc_offsets_ready(&self) -> bool {
         self.adc_offsets_ready_value
     }
