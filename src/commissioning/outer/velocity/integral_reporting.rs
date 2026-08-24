@@ -594,6 +594,7 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
             record.push_i32(component.high_q);
         }
     }
+    record.push_u8(report.target_terminus_plus_one);
     record
 }
 
@@ -876,17 +877,19 @@ mod tests {
                 eligible_rung(VelocityDirection::Forward),
                 eligible_rung(VelocityDirection::Reverse),
             ],
+            target_terminus_plus_one: 4,
         };
 
         let record = encode_velocity_integral_event(VelocityIntegralEvent::Rung(report));
 
-        assert_eq!(record.as_bytes().len(), 83);
+        assert_eq!(record.as_bytes().len(), 84);
         assert_eq!(&record.as_bytes()[18..26], &655_360_u64.to_le_bytes());
         assert_eq!(&record.as_bytes()[26..30], &512_000_u32.to_le_bytes());
         assert_eq!(
             record.as_bytes()[30],
             ResponseHorizonClass::SubHorizon as u8
         );
+        assert_eq!(*record.as_bytes().last().unwrap(), 4);
     }
 
     #[test]
@@ -904,13 +907,14 @@ mod tests {
                 eligible_rung(VelocityDirection::Forward),
                 eligible_rung(VelocityDirection::Reverse),
             ],
+            target_terminus_plus_one: 0,
         };
 
         assert_eq!(
             encode_velocity_integral_event(VelocityIntegralEvent::Rung(report))
                 .as_bytes()
                 .len(),
-            70
+            71
         );
     }
 

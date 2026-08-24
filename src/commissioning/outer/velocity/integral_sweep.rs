@@ -2432,6 +2432,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 moving_horizon_us: 0,
                 horizon_class,
                 directions,
+                target_terminus_plus_one: data.target_terminus.map_or(0, |rung| rung + 1),
             };
             let rung_kind = integral_rung_kind(data.plan, data.rung_index);
             match rung_kind {

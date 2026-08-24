@@ -752,6 +752,10 @@ pub struct VelocityIntegralRungReport {
     /// Forward and reverse exact consensus evidence.
     pub directions:
         [crate::commissioning::outer::velocity::integral_evidence::IntegralRungEvidence; 2],
+    /// Recorded breakaway target terminus after this rung, one-based; zero when
+    /// none is recorded. Diagnostic: exposes the recorder's per-rung state to the
+    /// sweep trace so a missing-terminus resume can be localized to the rung.
+    pub target_terminus_plus_one: u8,
 }
 
 /// Nonterminal Stage-C evidence produced by one cooperative poll.
