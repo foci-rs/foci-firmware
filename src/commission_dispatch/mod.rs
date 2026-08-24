@@ -587,13 +587,33 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::RobustnessReversalTerminal(terminal) => {
+        StepResult::RobustnessReversalTerminal(mut terminal) => {
             use core::sync::atomic::Ordering::Relaxed;
 
             let consumed = engine
                 .take()
                 .expect("engine slot is None on RobustnessReversalTerminal");
             let oid = consumed.oid();
+            // Every non-`Complete` outcome (`Rejected`, `Inconclusive`, `Failed`)
+            // leaves the live registers holding the probed candidate; restore
+            // the operator's Stage 2 baseline before disarm so a non-passing
+            // probe never leaves the wrong gains armed. A `Complete` outcome
+            // deploys instead (staged wrapper), so it never reaches here with
+            // the entry snapshot still needed.
+            if terminal.outcome != crate::commissioning::types::RobustnessOutcome::Complete {
+                let restored = match consumed.entry_snapshot() {
+                    Some(snapshot) => {
+                        restore::restore_entry_snapshot_to_registers(backend, &snapshot)
+                            .await
+                            .is_ok()
+                    }
+                    None => false,
+                };
+                if !restored {
+                    terminal.outcome = crate::commissioning::types::RobustnessOutcome::Failed;
+                    terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
+                }
+            }
             crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
             state.tmc.commission_in_flight.store(false, Relaxed);
             CommissionOutcome::Terminal {
@@ -1482,7 +1502,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             // so the only staged policy is the identity check: it re-stamps the
             // terminal `Failed`/`EVIDENCE_INTEGRITY` if the retained point moved
             // underneath the probe.
-            let terminal = robustness::apply_robustness_terminal(terminal, retention.stage_c);
+            let mut terminal = robustness::apply_robustness_terminal(terminal, retention.stage_c);
             // A passed gate deploys the robustness-selected gains: join them with
             // the entry snapshot and route through the shared `OuterDone` arm so
             // the tune result and the host persist path light up. The join needs
@@ -1516,6 +1536,18 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                     .await
                 }
                 None => {
+                    // A `Complete` outcome that could not be joined (missing
+                    // entry snapshot or retained acceptance point) is not a
+                    // deploy and not a genuine non-pass terminal either -- it
+                    // is a firmware evidence-integrity gap. Stamp it `Failed`
+                    // before forwarding so the generic handler's restore
+                    // (gated on non-`Complete`) actually runs, and so the host
+                    // sees the safety-fault cause rather than a stale pass.
+                    if terminal.outcome == crate::commissioning::types::RobustnessOutcome::Complete
+                    {
+                        terminal.outcome = crate::commissioning::types::RobustnessOutcome::Failed;
+                        terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
+                    }
                     drive_commission_result(
                         StepResult::RobustnessReversalTerminal(terminal),
                         engine,

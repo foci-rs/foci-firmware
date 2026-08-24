@@ -2670,3 +2670,186 @@ async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
 
     clear_motor_sentinel();
 }
+
+/// Baseline gains an entry snapshot must restore before disarm, as the
+/// `PID_VELOCITY_P_VELOCITY_I`/`PID_POSITION_P_POSITION_I` register values.
+fn entry_snapshot_baseline_registers(entry: &crate::commissioning::EntrySnapshot) -> (u32, u32) {
+    let baseline = crate::pid::OuterLoopGains {
+        position_p: entry.position_p,
+        position_i: entry.position_i,
+        velocity_p: entry.velocity_p,
+        velocity_i: entry.velocity_i,
+    };
+    baseline.to_registers()
+}
+
+fn assert_baseline_restored(backend: &MockBackend, entry: &crate::commissioning::EntrySnapshot) {
+    let (velocity_reg, position_reg) = entry_snapshot_baseline_registers(entry);
+    assert!(
+        backend.spi_log.iter().any(|op| matches!(
+            op,
+            SpiOp::Write(addr, val)
+                if *addr == foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr()
+                    && *val == velocity_reg
+        )),
+        "must restore the baseline velocity gains before disarm"
+    );
+    assert!(
+        backend.spi_log.iter().any(|op| matches!(
+            op,
+            SpiOp::Write(addr, val)
+                if *addr == foci_tmc4671::registers::PID_POSITION_P_POSITION_I.addr()
+                    && *val == position_reg
+        )),
+        "must restore the baseline position gains before disarm"
+    );
+}
+
+#[fixture_test]
+async fn robustness_rejected_restores_entry_snapshot_before_disarm() {
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let entry = robustness_entry_snapshot(700, 40, 200_000, (300, 300, 150, 300));
+    let mut engine = Some(robustness_outer_engine(entry));
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_acceptance_point(robustness_accepted_point(0));
+    seed_motor_sentinel(&mut backend).await;
+
+    let outcome = drive_commission_result_with_stages(
+        StepResult::RobustnessReversalTerminal(robustness_reject_terminal(
+            robustness::ROBUSTNESS_CAUSE_IAE_EXCEEDED,
+        )),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+        0,
+        CommissionRetention::new(&mut slot),
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    let ReplyPayload::RobustnessReversalTerminal { terminal, .. } = reply else {
+        panic!("expected RobustnessReversalTerminal");
+    };
+    assert_eq!(
+        terminal.outcome,
+        crate::commissioning::types::RobustnessOutcome::Rejected,
+        "ordinary reject keeps its own outcome"
+    );
+    assert_eq!(terminal.cause, robustness::ROBUSTNESS_CAUSE_IAE_EXCEEDED);
+    assert_baseline_restored(&backend, &entry);
+    assert!(
+        !backend
+            .spi_log
+            .iter()
+            .any(|op| matches!(op, SpiOp::Write(addr, _)
+                if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr())),
+        "reject restore must not rewrite the operational current limit -- the \
+         sweep never touches PID_TORQUE_FLUX_LIMITS, so it stays at the value \
+         arm_motor_electrical set at fresh arm"
+    );
+
+    clear_motor_sentinel();
+}
+
+#[fixture_test]
+async fn robustness_inconclusive_restores_entry_snapshot_before_disarm() {
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::types::RobustnessOutcome;
+
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let entry = robustness_entry_snapshot(700, 40, 200_000, (300, 300, 150, 300));
+    let mut engine = Some(robustness_outer_engine(entry));
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_acceptance_point(robustness_accepted_point(0));
+    seed_motor_sentinel(&mut backend).await;
+
+    let mut terminal =
+        robustness_reject_terminal(robustness::ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE);
+    terminal.outcome = RobustnessOutcome::Inconclusive;
+
+    let outcome = drive_commission_result_with_stages(
+        StepResult::RobustnessReversalTerminal(terminal),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+        0,
+        CommissionRetention::new(&mut slot),
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    let ReplyPayload::RobustnessReversalTerminal { terminal, .. } = reply else {
+        panic!("expected RobustnessReversalTerminal");
+    };
+    assert_eq!(
+        terminal.outcome,
+        RobustnessOutcome::Inconclusive,
+        "inconclusive keeps its own outcome"
+    );
+    assert_baseline_restored(&backend, &entry);
+
+    clear_motor_sentinel();
+}
+
+#[fixture_test]
+async fn robustness_restore_failure_maps_to_safety_fault() {
+    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::types::RobustnessOutcome;
+
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let entry = robustness_entry_snapshot(700, 40, 200_000, (300, 300, 150, 300));
+    let mut engine = Some(robustness_outer_engine(entry));
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_acceptance_point(robustness_accepted_point(0));
+    seed_motor_sentinel(&mut backend).await;
+    // A register the entry-snapshot restore writes but the safe-state disarm
+    // sequence never touches, so this fails the restore specifically rather
+    // than any later disarm write.
+    backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_LIMIT.addr());
+
+    let outcome = drive_commission_result_with_stages(
+        StepResult::RobustnessReversalTerminal(robustness_reject_terminal(
+            robustness::ROBUSTNESS_CAUSE_IAE_EXCEEDED,
+        )),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+        0,
+        CommissionRetention::new(&mut slot),
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    let ReplyPayload::RobustnessReversalTerminal { terminal, .. } = reply else {
+        panic!("expected RobustnessReversalTerminal");
+    };
+    assert_eq!(
+        terminal.outcome,
+        RobustnessOutcome::Failed,
+        "a restore failure must override the original reject outcome"
+    );
+    assert_eq!(
+        terminal.cause,
+        robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT,
+        "a restore failure must report the safety-fault cause the host checks"
+    );
+
+    clear_motor_sentinel();
+}
