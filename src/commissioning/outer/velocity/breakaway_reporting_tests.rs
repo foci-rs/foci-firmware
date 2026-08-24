@@ -962,6 +962,7 @@ fn campaign_terminal_report_carries_owning_phase_and_stage_c_digest() {
         BreakawayTerminalCause::Accepted,
         true,
         0x7788,
+        0,
         12,
         9,
     );
@@ -982,6 +983,7 @@ fn campaign_terminal_report_zeroes_stage_c_digest_on_failure() {
         BreakawayTerminalCause::ProbeAuthorityFailure,
         false,
         0,
+        0,
         12,
         9,
     );
@@ -996,6 +998,7 @@ fn campaign_terminal_report_names_the_owning_discovery_phase() {
         BreakawayPhase::Discovery,
         BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
         false,
+        0,
         0,
         13,
         1,

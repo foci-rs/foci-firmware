@@ -1478,6 +1478,14 @@ pub struct BreakawayCampaignTerminal {
     /// Exact digest of the Stage-C plan bound through the confirmed candidate,
     /// or zero when `accepted == 0`.
     pub stage_c_plan_digest: u64,
+    /// `CommissionError::status_code()` for a campaign terminal that carries a
+    /// causally-relevant error beyond `terminal_cause` alone, or `0` when the
+    /// terminal carries no error.
+    ///
+    /// `terminal_cause` says which phase closed and, broadly, why; it does not
+    /// carry a specific `CommissionError` identity. Without this, a confirmed
+    /// acceptance whose Stage-C plan build was refused is unattributable.
+    pub error_code: u8,
 }
 
 /// Which `p_top` candidate bound the additive-discovery authority ceiling:

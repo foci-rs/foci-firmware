@@ -2026,8 +2026,9 @@ mod breakaway_reply_wire_tests {
             accepted: 6,
             stage_c_plan_digest_low: 7,
             stage_c_plan_digest_high: 8,
+            error_code: 9,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_fits_with_id(
             &FociBreakawayCampaignTerminal {
                 oid: u8::MAX,
@@ -2038,6 +2039,7 @@ mod breakaway_reply_wire_tests {
                 accepted: u8::MAX,
                 stage_c_plan_digest_low: u32::MAX,
                 stage_c_plan_digest_high: u32::MAX,
+                error_code: u8::MAX,
             },
             "foci_breakaway_campaign_terminal",
         );
@@ -2812,6 +2814,9 @@ pub struct FociBreakawayCampaignTerminal {
     pub stage_c_plan_digest_low: u32,
     /// Exact high Stage-C plan digest word.
     pub stage_c_plan_digest_high: u32,
+    /// `CommissionError::status_code()` for a campaign terminal that carries a
+    /// causally-relevant error, or `0` when the terminal carries no error.
+    pub error_code: u8,
 }
 
 /// Which `p_top` candidate bound the additive-discovery authority ceiling.

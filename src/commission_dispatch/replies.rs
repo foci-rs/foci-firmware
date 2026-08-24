@@ -661,6 +661,7 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
         accepted: report.accepted,
         stage_c_plan_digest_low: report.stage_c_plan_digest as u32,
         stage_c_plan_digest_high: (report.stage_c_plan_digest >> 32) as u32,
+        error_code: report.error_code,
     });
 }
 

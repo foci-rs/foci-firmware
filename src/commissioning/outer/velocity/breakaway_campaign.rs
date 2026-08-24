@@ -4115,6 +4115,7 @@ fn campaign_terminal_event(
     terminal_cause: super::breakaway_reporting::BreakawayTerminalCause,
     accepted: bool,
     stage_c_plan_digest: u64,
+    error_code: u8,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> crate::commissioning::types::BreakawayCampaignTerminal {
@@ -4124,6 +4125,7 @@ fn campaign_terminal_event(
         terminal_cause,
         accepted,
         stage_c_plan_digest,
+        error_code,
         inputs.run_sequence,
         sequence,
     )
@@ -4222,6 +4224,7 @@ pub(crate) fn breakaway_campaign_fault_terminal(
         terminal_cause,
         false,
         0,
+        0,
         &campaign.inputs,
         &mut campaign.evidence_sequence,
     );
@@ -4268,6 +4271,7 @@ fn discovery_construction_fault(
         BreakawayPhase::Discovery,
         super::breakaway_reporting::BreakawayTerminalCause::DiscoveryInternalFault,
         false,
+        0,
         0,
         inputs,
         evidence_sequence,
@@ -4320,6 +4324,7 @@ fn route_discovery_outcome(
                 BreakawayPhase::Confirmation,
                 cause,
                 false,
+                0,
                 0,
                 inputs,
                 evidence_sequence,
@@ -4482,6 +4487,7 @@ fn enter_discovery(
                 cause,
                 false,
                 0,
+                0,
                 inputs,
                 evidence_sequence,
             );
@@ -4532,6 +4538,7 @@ fn probe_failure_advance(
         BreakawayPhase::Probe,
         cause,
         false,
+        0,
         0,
         inputs,
         evidence_sequence,
@@ -4601,6 +4608,7 @@ fn discovery_done_advance(
                 cause,
                 false,
                 0,
+                0,
                 inputs,
                 evidence_sequence,
             );
@@ -4617,6 +4625,7 @@ fn discovery_done_advance(
                 BreakawayPhase::Discovery,
                 super::breakaway_reporting::BreakawayTerminalCause::DiscoveryEvidenceExcluded,
                 false,
+                0,
                 0,
                 inputs,
                 evidence_sequence,
@@ -4638,6 +4647,7 @@ fn discovery_done_advance(
                     super::breakaway_reporting::BreakawayTerminalCause::DiscoveryInternalFault
                 },
                 false,
+                0,
                 0,
                 inputs,
                 evidence_sequence,
@@ -4793,6 +4803,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         cause,
         accepted,
         stage_c_plan_digest,
+        0,
         inputs,
         evidence_sequence,
     );

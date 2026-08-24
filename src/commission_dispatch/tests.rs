@@ -198,6 +198,7 @@ enum ReplyEvent {
         accepted: u8,
         stage_c_plan_digest_low: u32,
         stage_c_plan_digest_high: u32,
+        error_code: u8,
     },
 }
 
@@ -423,6 +424,7 @@ impl CommissionReplySink for ReplyRecorder {
             accepted: report.accepted,
             stage_c_plan_digest_low: report.stage_c_plan_digest_low,
             stage_c_plan_digest_high: report.stage_c_plan_digest_high,
+            error_code: report.error_code,
         });
     }
 }
@@ -608,6 +610,7 @@ fn emit_breakaway_campaign_terminal_splits_the_stage_c_digest() {
             terminal_cause: 21,
             accepted: 1,
             stage_c_plan_digest: 0x0000_0006_0000_0005,
+            error_code: 65,
         },
     );
 
@@ -619,6 +622,7 @@ fn emit_breakaway_campaign_terminal_splits_the_stage_c_digest() {
             accepted: 1,
             stage_c_plan_digest_low: 5,
             stage_c_plan_digest_high: 6,
+            error_code: 65,
         }]
     );
 }
