@@ -689,7 +689,8 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                             }
                             restore::RestoreError::Spi(_)
                             | restore::RestoreError::InvalidGains
-                            | restore::RestoreError::VelocityClamp => {
+                            | restore::RestoreError::VelocityClamp
+                            | restore::RestoreError::Readback => {
                                 crate::calibration::CalibrationError::SpiError.status_code()
                             }
                         },
@@ -929,9 +930,9 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 Ok(gains) => gains,
                 Err(error) => {
                     let status = match error {
-                        restore::RestoreError::Spi(_) | restore::RestoreError::VelocityClamp => {
-                            crate::autotune::CommissionError::Spi
-                        }
+                        restore::RestoreError::Spi(_)
+                        | restore::RestoreError::VelocityClamp
+                        | restore::RestoreError::Readback => crate::autotune::CommissionError::Spi,
                         restore::RestoreError::PiRepresentation => {
                             crate::autotune::CommissionError::ChipResetDetected
                         }
@@ -1366,10 +1367,25 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         }
     }
 
+    // Restore the operator's Stage 2 entry baseline before any terminal that
+    // does not continue into robustness. `disarm_velocity_workflow` below
+    // restores the *current* limit (owned by tmc_state, not the snapshot), so
+    // this must run first -- reversing the order would let this restore
+    // overwrite the current-limit register the disarm call is about to set.
+    let baseline_restored = match engine
+        .as_ref()
+        .and_then(CommissioningEngine::entry_snapshot)
+    {
+        Some(snapshot) => restore::restore_entry_snapshot_to_registers(backend, &snapshot)
+            .await
+            .is_ok(),
+        None => false,
+    };
+
     // Every path that does not continue into robustness -- `CompleteCandidate`,
     // a non-promoted `Complete`, and every fault -- disarms the workflow as
     // before, forcing a fault terminal if the disarm SPI itself fails.
-    if !disarm_velocity_workflow(engine, backend, state).await {
+    if !disarm_velocity_workflow(engine, backend, state).await || !baseline_restored {
         retention.stage_c.observe_fault();
         dispatch.terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
         dispatch.terminal.cause = crate::commissioning::types::StageCCause::Error(

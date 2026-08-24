@@ -340,6 +340,34 @@ pub async fn apply_outer_result_filters_via_backend<B: CommissioningBackend>(
     .await
 }
 
+/// Apply Stage 2 entry-snapshot filter cutoffs, the inverse of
+/// [`force_velocity_position_filters_disabled`].
+///
+/// Used to restore the operator's baseline filters on a commissioning
+/// terminal that returns registers to their pre-Stage-2 state without
+/// publishing a new tuned result.
+///
+/// # Errors
+///
+/// Returns the first backend register-write error.
+pub async fn apply_entry_snapshot_filters_via_backend<B: CommissioningBackend>(
+    backend: &mut B,
+    snapshot: &crate::commissioning::EntrySnapshot,
+    pwm_maxcnt: u16,
+) -> Result<(), B::Error> {
+    apply_backend_filter_cutoffs(
+        backend,
+        BackendFilterCutoffs {
+            velocity_hz: snapshot.velocity_filter_hz,
+            torque_hz: snapshot.torque_filter_hz,
+            position_hz: snapshot.position_filter_hz,
+            flux_hz: snapshot.flux_filter_hz,
+        },
+        pwm_maxcnt,
+    )
+    .await
+}
+
 #[derive(Clone, Copy)]
 struct BackendFilterCutoffs {
     velocity_hz: u16,

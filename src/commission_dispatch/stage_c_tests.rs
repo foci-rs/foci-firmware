@@ -1026,6 +1026,154 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
     });
 }
 
+#[test]
+fn candidate_terminal_restores_entry_snapshot_to_registers() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+        use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
+        use crate::commission_dispatch::test_support::{MockBackend, SpiOp, fresh_state_locals};
+        use crate::commissioning::CommissioningEngine;
+        use crate::commissioning::outer::velocity::current_guard::{
+            VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
+        };
+        use crate::commissioning::outer::{PositiveIRestBoundary, VelocitySettleMetrics};
+        use foci_tmc4671::registers::{
+            PID_POSITION_P_POSITION_I, PID_VELOCITY_LIMIT, PID_VELOCITY_P_VELOCITY_I,
+            PIDOUT_UQ_UD_LIMITS,
+        };
+
+        let mut stage_c_slot = StageCCandidateSlot::new();
+        stage_c_slot.install_authority(retained_authority());
+        let preflight = preflight_stage_c_request(request(), &preflight_config(), 9, &stage_c_slot)
+            .unwrap()
+            .unwrap();
+        let baseline = entry_snapshot();
+        let mut engine = Some(
+            CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+                1,
+                crate::state::tmc::tmc_channel0(),
+                outer_params(),
+                baseline,
+                preflight,
+            ),
+        );
+        engine
+            .as_mut()
+            .unwrap()
+            .set_stage_c_rest_boundary_for_test(PositiveIRestBoundary {
+                rung_index: 4,
+                slot: 5,
+                i_raw: 4,
+                direction: -1,
+                active_stationarity: StationarityResult::Excluded(
+                    StationarityExclusion::StructuredResidual,
+                ),
+                active_settle: VelocitySettleMetrics::EMPTY,
+                zero_phase_current: VelocityCurrentPhaseEvidence {
+                    clamp_limit: 2_534,
+                    moving_pid_output_peak: 2_000,
+                    zero_pid_output_peak: 2_100,
+                    moving_status_flags: 0,
+                    zero_status_flags: 0,
+                    capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+                    contact: VelocityCurrentContact::None,
+                },
+                cleanup_confirmed: true,
+            });
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+
+        // Live "candidate" registers diverge from the baseline snapshot -- the
+        // restore must overwrite them, not merely no-op because a value is
+        // already present.
+        let _ = backend
+            .write_register(PID_VELOCITY_P_VELOCITY_I, 0xdead_beef)
+            .await;
+        let _ = backend
+            .write_register(PID_POSITION_P_POSITION_I, 0xdead_beef)
+            .await;
+        let _ = backend.write_register(PID_VELOCITY_LIMIT, 999_999).await;
+        let _ = backend.write_register(PIDOUT_UQ_UD_LIMITS, 999).await;
+        backend.spi_log.clear();
+
+        let (_, _, mut gains) = fresh_state_locals();
+        let mut calibrated = true;
+        let mut enabled = true;
+        let mut state = super::DispatchState::new(
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+            &mut calibrated,
+            &mut enabled,
+            &mut gains,
+        );
+
+        let _outcome = super::drive_velocity_integral_terminal_with_stages(
+            terminal(
+                VelocityIntegralOutcome::CompleteCandidate,
+                sufficient_evidence(0),
+            ),
+            &mut engine,
+            &mut backend,
+            &mut state,
+            4_095,
+            CHANNEL,
+            super::CommissionRetention::new(&mut stage_c_slot),
+        )
+        .await;
+
+        let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
+            position_p: baseline.position_p,
+            position_i: baseline.position_i,
+            velocity_p: baseline.velocity_p,
+            velocity_i: baseline.velocity_i,
+        }
+        .to_registers();
+
+        assert!(backend.spi_log.iter().any(|op| matches!(
+            op,
+            SpiOp::Write(addr, val)
+                if *addr == PID_VELOCITY_P_VELOCITY_I.addr() && *val == velocity_reg
+        )));
+        assert!(backend.spi_log.iter().any(|op| matches!(
+            op,
+            SpiOp::Write(addr, val)
+                if *addr == PID_POSITION_P_POSITION_I.addr() && *val == position_reg
+        )));
+        assert!(backend.spi_log.iter().any(|op| matches!(
+            op,
+            SpiOp::Write(addr, val)
+                if *addr == PID_VELOCITY_LIMIT.addr() && *val == baseline.velocity_limit
+        )));
+        assert!(backend.spi_log.iter().any(|op| matches!(
+            op,
+            SpiOp::Write(addr, val)
+                if *addr == PIDOUT_UQ_UD_LIMITS.addr() && *val == baseline.voltage_limit
+        )));
+
+        let restore_index = backend
+            .spi_log
+            .iter()
+            .position(|op| {
+                matches!(op, SpiOp::Write(addr, val)
+                    if *addr == PID_VELOCITY_P_VELOCITY_I.addr() && *val == velocity_reg)
+            })
+            .expect("restore write present");
+        let disarm_index = backend
+            .spi_log
+            .iter()
+            .position(|op| matches!(op, SpiOp::EnablePin(false)))
+            .expect("disarm present");
+        assert!(
+            restore_index < disarm_index,
+            "restore must run before disarm"
+        );
+    });
+}
+
 /// Build the breakaway Stage-C engine parked in `OuterPhase::VelocityIntegral`
 /// whose live execution plan the dispatch seam reads for the promotion.
 fn breakaway_engine(

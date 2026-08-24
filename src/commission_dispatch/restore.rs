@@ -4,12 +4,14 @@ use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum RestoreError<E> {
     Spi(E),
     InvalidGains,
     PiRepresentation,
     VelocityClamp,
+    /// A restored register did not read back the value that was written.
+    Readback,
 }
 
 /// Leave a trace velocity workflow disarmed with its operational current limit restored.
@@ -235,6 +237,78 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
         .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
         .await
         .map_err(RestoreError::Spi)?;
+
+    Ok(())
+}
+
+/// SPI restore sequence for a non-deploying candidate/resume terminal.
+///
+/// Writes back only the Stage 2 entry snapshot's own registers: outer
+/// velocity and position gains, the velocity limit, the voltage limit
+/// (`PIDOUT_UQ_UD_LIMITS`), and the four biquad filters. Reads the gain and
+/// limit registers back afterward to confirm the writes landed.
+///
+/// Does **not** touch `PID_TORQUE_FLUX_LIMITS`: the operational current limit
+/// lives in `tmc_state`, not the snapshot, and is restored separately by
+/// [`disarm_and_restore_velocity_limit`], which must run after this helper.
+///
+/// # Errors
+///
+/// Returns `RestoreError::Spi` on the first failed write or read, or
+/// `RestoreError::Readback` if a written register does not read back the
+/// value just written.
+pub async fn restore_entry_snapshot_to_registers<B: CommissioningBackend>(
+    backend: &mut B,
+    snapshot: &crate::commissioning::EntrySnapshot,
+) -> Result<(), RestoreError<B::Error>> {
+    use foci_tmc4671::registers::*;
+
+    let gains = crate::pid::OuterLoopGains {
+        position_p: snapshot.position_p,
+        position_i: snapshot.position_i,
+        velocity_p: snapshot.velocity_p,
+        velocity_i: snapshot.velocity_i,
+    };
+    let (velocity_reg, position_reg) = gains.to_registers();
+
+    backend
+        .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
+        .await
+        .map_err(RestoreError::Spi)?;
+    backend
+        .write_register(PID_POSITION_P_POSITION_I, position_reg)
+        .await
+        .map_err(RestoreError::Spi)?;
+    backend
+        .write_register(PID_VELOCITY_LIMIT, snapshot.velocity_limit)
+        .await
+        .map_err(RestoreError::Spi)?;
+    backend
+        .write_register(PIDOUT_UQ_UD_LIMITS, snapshot.voltage_limit)
+        .await
+        .map_err(RestoreError::Spi)?;
+
+    let pwm_maxcnt = backend.pwm_maxcnt();
+    crate::tmc_control::filters::apply_entry_snapshot_filters_via_backend(
+        backend, snapshot, pwm_maxcnt,
+    )
+    .await
+    .map_err(RestoreError::Spi)?;
+
+    for (reg, expected) in [
+        (PID_VELOCITY_P_VELOCITY_I, velocity_reg),
+        (PID_POSITION_P_POSITION_I, position_reg),
+        (PID_VELOCITY_LIMIT, snapshot.velocity_limit),
+        (PIDOUT_UQ_UD_LIMITS, snapshot.voltage_limit),
+    ] {
+        let readback = backend
+            .read_register(reg)
+            .await
+            .map_err(RestoreError::Spi)?;
+        if readback != expected {
+            return Err(RestoreError::Readback);
+        }
+    }
 
     Ok(())
 }
@@ -476,5 +550,84 @@ mod tests {
             )
         }));
         tmc_state().clear_pi_representation_established();
+    }
+
+    fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
+        crate::commission_dispatch::test_support::sample_entry_snapshot()
+    }
+
+    fn snapshot_outer_gains(
+        snap: &crate::commissioning::EntrySnapshot,
+    ) -> crate::pid::OuterLoopGains {
+        crate::pid::OuterLoopGains {
+            position_p: snap.position_p,
+            position_i: snap.position_i,
+            velocity_p: snap.velocity_p,
+            velocity_i: snap.velocity_i,
+        }
+    }
+
+    #[fixture_test]
+    async fn restore_entry_snapshot_writes_gains_limits_and_validates_readback() {
+        use foci_tmc4671::registers::*;
+        let mut backend = MockBackend::new();
+        let snap = sample_entry_snapshot();
+
+        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
+        assert!(result.is_ok());
+
+        let (velocity_reg, position_reg) = snapshot_outer_gains(&snap).to_registers();
+        let w = write_log(&backend);
+        assert!(w.contains(&(PID_VELOCITY_P_VELOCITY_I.addr(), velocity_reg)));
+        assert!(w.contains(&(PID_POSITION_P_POSITION_I.addr(), position_reg)));
+        assert!(w.contains(&(PID_VELOCITY_LIMIT.addr(), snap.velocity_limit)));
+        assert!(w.contains(&(PIDOUT_UQ_UD_LIMITS.addr(), snap.voltage_limit)));
+        assert!(
+            !w.iter()
+                .any(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr()),
+            "restore must not touch the current limit -- it is not snapshot-owned"
+        );
+    }
+
+    #[fixture_test]
+    async fn restore_entry_snapshot_writes_filters_when_present() {
+        use foci_tmc4671::registers::*;
+        let mut backend = MockBackend::new();
+        let mut snap = sample_entry_snapshot();
+        snap.velocity_filter_hz = 200;
+
+        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
+        assert!(result.is_ok());
+        assert!(
+            backend
+                .spi_log
+                .iter()
+                .any(|op| matches!(op, SpiOp::Write(addr, _) if *addr == CONFIG_BIQUAD_V_ENABLE.data.addr())),
+            "a non-zero velocity filter cutoff must enable the velocity biquad filter"
+        );
+    }
+
+    #[fixture_test]
+    async fn restore_entry_snapshot_returns_readback_error_on_mismatch() {
+        use foci_tmc4671::registers::*;
+        let mut backend = MockBackend::new();
+        let snap = sample_entry_snapshot();
+        backend.read_override = Some((PID_VELOCITY_LIMIT.addr(), snap.velocity_limit + 1));
+
+        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
+
+        assert_eq!(result, Err(RestoreError::Readback));
+    }
+
+    #[fixture_test]
+    async fn restore_entry_snapshot_propagates_spi_write_failure() {
+        use foci_tmc4671::registers::*;
+        let mut backend = MockBackend::new();
+        backend.fail_on_write = Some(PIDOUT_UQ_UD_LIMITS.addr());
+        let snap = sample_entry_snapshot();
+
+        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
+
+        assert!(matches!(result, Err(RestoreError::Spi(_))));
     }
 }
