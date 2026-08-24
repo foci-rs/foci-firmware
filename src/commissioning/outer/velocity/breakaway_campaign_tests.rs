@@ -1220,6 +1220,74 @@ fn a_discovery_terminal_carries_only_the_rung_zero_diagnostic_and_the_terminal()
     ));
 }
 
+/// Retained in-band rungs after a discovery safety fault are diagnostic
+/// evidence only. The fault must still route to the campaign's terminal
+/// closure -- never into confirmation -- even though a rung was already
+/// retained before the fault.
+#[test]
+fn a_discovery_safety_fault_never_seeds_confirmation_from_a_retained_rung() {
+    let (_, session, _) = run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+        if rung_index == 0 {
+            5 // 75%: in band, retained.
+        } else {
+            8 // 120%: confidently above 80%, stopping exploration here.
+        }
+    });
+    assert_eq!(
+        session.in_band.count(),
+        1,
+        "the session must have a retained in-band rung before the fault"
+    );
+
+    let outcome = AdditiveDiscoveryOutcome::SafetyFault {
+        error: CommissionError::SafetyEnvelopeViolation,
+        safety: Some(zero_safety_fault(4)),
+    };
+    let inputs = stage_c_inputs(2_448);
+    let mut evidence_sequence = 3_u16;
+    let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
+    let CampaignAdvance::Emit { now, next } = advance else {
+        panic!("expected an Emit advance");
+    };
+    let BreakawayCampaignEvent::DiscoveryTerminal { terminal, .. } = now else {
+        panic!("expected the discovery terminal, got {now:?}");
+    };
+    assert_eq!(
+        terminal.collected_count, 1,
+        "the retained rung is still reported as diagnostic evidence"
+    );
+    assert_eq!(terminal.has_safety_fault, 1);
+    assert_eq!(
+        terminal.terminal_cause,
+        BreakawayTerminalCause::DiscoverySafetyFault as u8
+    );
+    match next {
+        EmitContinuation::Terminal {
+            campaign_terminal,
+            done,
+        } => {
+            assert!(
+                matches!(done, BreakawayCampaignOutcome::Terminal { .. }),
+                "a discovery safety fault must close the campaign, never mint a Stage-C plan"
+            );
+            // The closure record must still name Discovery as the owning phase
+            // and keep the discovery-specific cause -- proof the fault took its
+            // own dedicated terminal path, not the generic
+            // `route_discovery_outcome` gate that a `TargetBandSelected`
+            // success uses to enter confirmation.
+            assert_eq!(campaign_terminal.phase, BreakawayPhase::Discovery as u8);
+            assert_eq!(
+                campaign_terminal.terminal_cause,
+                BreakawayTerminalCause::DiscoverySafetyFault as u8
+            );
+        }
+        EmitContinuation::EnterPhase(phase) => panic!(
+            "a discovery safety fault must never enter a new phase -- retained rungs are \
+             diagnostic only, got {phase:?}"
+        ),
+    }
+}
+
 /// The walk enters `StreamMargins` on a target-band selection and emits one
 /// `Margin { collected_index }` per retained in-band rung, cursor covering every
 /// entry (including any non-nominatable one, which the campaign layer turns into
