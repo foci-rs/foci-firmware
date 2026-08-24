@@ -60,6 +60,8 @@ fn authority() -> StageCAuthority {
         directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
         reduced_margin: false,
         directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
+        confidence_q: 0,
+        band_position_q: 0,
     }
 }
 
@@ -871,8 +873,13 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     // `StageCAuthority::new_breakaway` takes a `ConfirmedAcquisitionDigest`,
     // not a bare `u64`, so this call could not have compiled with a hand-picked
     // digest, only with the value the gate above actually validated.
-    let authority =
-        StageCAuthority::new_breakaway(0, bound, acceptance.held_out_response_intervals_q);
+    let authority = StageCAuthority::new_breakaway(
+        0,
+        bound,
+        acceptance.held_out_response_intervals_q,
+        acceptance.confidence_q,
+        acceptance.band_position_q,
+    );
     assert_eq!(
         authority.acquisition,
         StageCAcquisition::ConfirmedBreakaway(bound)
@@ -906,7 +913,7 @@ fn new_breakaway_authority_stores_confirmation_intervals() {
     let token = breakaway_token_for(confirmation_plan);
     let intervals = [[3_i32, 9], [-9, -3]];
 
-    let authority = StageCAuthority::new_breakaway(0, token, intervals);
+    let authority = StageCAuthority::new_breakaway(0, token, intervals, 0, 0);
 
     assert_eq!(authority.directional_pooled_intervals, intervals);
 }
@@ -1130,6 +1137,8 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
         confirmation_plan,
         breakaway_acquisition_context(),
         breakaway_intervals_for(confirmation_plan),
+        0,
+        0,
         motion_budget(),
         25_000,
         4_000,
@@ -1184,6 +1193,8 @@ fn a_resume_under_changed_physical_context_is_refused() {
         confirmation_plan,
         breakaway_acquisition_context(),
         breakaway_intervals_for(confirmation_plan),
+        0,
+        0,
         motion_budget(),
         25_000,
         4_000,
@@ -1229,6 +1240,8 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
         confirmation_plan,
         breakaway_acquisition_context(),
         breakaway_intervals_for(confirmation_plan),
+        0,
+        0,
         motion_budget(),
         25_000,
         4_000,
@@ -1272,6 +1285,8 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
         confirmation_plan,
         context,
         breakaway_intervals_for(confirmation_plan),
+        0,
+        0,
         motion_budget(),
         25_000,
         4_000,
@@ -1314,6 +1329,8 @@ fn execution_plan_reports_acceptance_source_from_authority() {
         confirmation_plan,
         breakaway_acquisition_context(),
         breakaway_intervals_for(confirmation_plan),
+        0,
+        0,
         motion_budget(),
         25_000,
         4_000,
@@ -1366,6 +1383,8 @@ fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_a
             confirmation_plan,
             context,
             breakaway_intervals_for(confirmation_plan),
+            0,
+            0,
             motion_budget(),
             25_000,
             4_000,
@@ -1396,6 +1415,8 @@ fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_
             confirmation_plan,
             context,
             breakaway_intervals_for(confirmation_plan),
+            0,
+            0,
             motion_budget(),
             25_000,
             4_000,
@@ -1419,6 +1440,8 @@ fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validat
             tampered_digest,
             context,
             breakaway_intervals_for(confirmation_plan),
+            0,
+            0,
             motion_budget(),
             25_000,
             4_000,
@@ -1435,6 +1458,8 @@ fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validat
             tampered_family,
             context,
             breakaway_intervals_for(confirmation_plan),
+            0,
+            0,
             motion_budget(),
             25_000,
             4_000,
@@ -1457,6 +1482,8 @@ fn breakaway_stage_c_rejects_a_token_minted_for_a_different_confirmation_plan() 
             confirmation_plan_b,
             context,
             breakaway_intervals_for(confirmation_plan_a),
+            0,
+            0,
             motion_budget(),
             25_000,
             4_000,
@@ -1504,6 +1531,8 @@ fn breakaway_stage_c_requires_a_token_matching_the_confirmation_plan() {
             forged_plan,
             breakaway_acquisition_context(),
             breakaway_intervals_for(genuine_plan),
+            0,
+            0,
             motion_budget(),
             25_000,
             4_000,
@@ -1528,6 +1557,8 @@ fn breakaway_stage_c_refuses_when_plan_time_physical_context_differs_from_live()
             confirmation_plan,
             context,
             intervals,
+            0,
+            0,
             motion_budget(),
             50_000,
             4_000,
@@ -1542,6 +1573,8 @@ fn breakaway_stage_c_refuses_when_plan_time_physical_context_differs_from_live()
             confirmation_plan,
             context,
             intervals,
+            0,
+            0,
             motion_budget(),
             25_000,
             8_000,

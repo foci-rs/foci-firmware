@@ -939,6 +939,8 @@ mod tests {
                     [17_000_000, 18_000_000],
                     [-19_000_000, -18_000_000],
                 ],
+                confidence_q: 0,
+                band_position_q: 0,
             },
             final_p: 1_448,
             planned_velocity_mrev_s: 4_394,

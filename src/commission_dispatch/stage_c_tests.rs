@@ -65,6 +65,8 @@ fn authority() -> StageCAuthority {
         directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
         reduced_margin: false,
         directional_pooled_intervals: [[15_000_000, 17_000_000], [-19_000_000, -17_000_000]],
+        confidence_q: 0,
+        band_position_q: 0,
     }
 }
 
@@ -179,6 +181,8 @@ fn breakaway_stage_c_plan()
         confirmation_plan,
         context,
         intervals,
+        acceptance.confidence_q,
+        acceptance.band_position_q,
         OuterMotionBudget {
             requested_velocity_mrev_s: request.requested_velocity_mrev_s,
             machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,

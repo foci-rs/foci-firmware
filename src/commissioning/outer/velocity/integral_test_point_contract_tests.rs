@@ -45,6 +45,8 @@ fn authority(plan_digest: u64, source: u32) -> StageCAuthority {
         directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
         reduced_margin: false,
         directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
+        confidence_q: 0,
+        band_position_q: 0,
     }
 }
 

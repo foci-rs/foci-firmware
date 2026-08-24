@@ -2074,6 +2074,8 @@ mod tests {
             selected_i: 512,
             target_velocity_rpm: 322,
             selected_response_intervals_q: [[10, 20], [-20, -10]],
+            confidence_q: 0,
+            band_position_q: 0,
             qualifier_bits: 0,
             token: None,
             progress: AcceptanceMatrixProgress::ReadyAscending,
@@ -2126,6 +2128,8 @@ mod tests {
                     [17_000_000, 18_000_000],
                     [-19_000_000, -18_000_000],
                 ],
+                confidence_q: 0,
+                band_position_q: 0,
             },
             stage_b.execution_plan(digest),
             OuterMotionBudget {
@@ -3241,6 +3245,8 @@ mod tests {
                     [17_000_000, 18_000_000],
                     [-19_000_000, -18_000_000],
                 ],
+                confidence_q: 0,
+                band_position_q: 0,
             },
             stage_b.execution_plan(digest),
             OuterMotionBudget {

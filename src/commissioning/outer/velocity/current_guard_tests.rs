@@ -185,6 +185,8 @@ fn velocity_current_guard_contract() {
             ],
             reduced_margin: false,
             directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
+            confidence_q: 0,
+            band_position_q: 0,
         },
         stage_b.execution_plan(stage_b.digest()),
         OuterMotionBudget {

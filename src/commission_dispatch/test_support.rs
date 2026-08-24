@@ -112,6 +112,8 @@ pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine
         selected_i: 512,
         target_velocity_rpm: 176,
         selected_response_intervals_q: [[10, 20], [-20, -10]],
+        confidence_q: 0,
+        band_position_q: 0,
         qualifier_bits: 0,
         token: None,
         progress: AcceptanceMatrixProgress::ReadyAscending,

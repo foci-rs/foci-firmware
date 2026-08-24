@@ -269,6 +269,13 @@ pub struct StageCAuthority {
     pub reduced_margin: bool,
     /// Reproduced pooled intervals, or `[0, 0]` where model comparison is unavailable.
     pub directional_pooled_intervals: [[i32; 2]; 2],
+    /// Held-out confirmation confidence in Q0.16, or `0` off the breakaway path.
+    /// See [`super::band_confirmation::BandConfirmationAcceptance::confidence_q`].
+    pub confidence_q: u16,
+    /// Held-out confirmation band position in Q0.16, or `0` off the breakaway
+    /// path. See
+    /// [`super::band_confirmation::BandConfirmationAcceptance::band_position_q`].
+    pub band_position_q: u16,
 }
 
 impl StageCAuthority {
@@ -318,6 +325,8 @@ impl StageCAuthority {
         channel: u8,
         confirmed_digest: ConfirmedAcquisitionDigest,
         held_out_response_intervals_q: [[i32; 2]; 2],
+        confidence_q: u16,
+        band_position_q: u16,
     ) -> Self {
         Self {
             channel,
@@ -328,6 +337,8 @@ impl StageCAuthority {
             directional_validity: [StageBDirectionalValidity::NoRegion; 2],
             reduced_margin: false,
             directional_pooled_intervals: held_out_response_intervals_q,
+            confidence_q,
+            band_position_q,
         }
     }
 }
@@ -1402,11 +1413,14 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// `append_exact_cap: false`, using the existing non-combined integral ladder
 /// unchanged.
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
     confirmation_plan: BandConfirmationPlan,
     context: AcquisitionContext,
     held_out_response_intervals_q: [[i32; 2]; 2],
+    confidence_q: u16,
+    band_position_q: u16,
     motion_budget: OuterMotionBudget,
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
@@ -1432,8 +1446,13 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     // Build the authority INTERNALLY from the token. The gate never accepts a
     // pre-built `StageCAuthority`, so a caller cannot forge one (its fields are
     // `pub`) and pass it in to bypass confirmation.
-    let authority =
-        StageCAuthority::new_breakaway(context.channel, token, held_out_response_intervals_q);
+    let authority = StageCAuthority::new_breakaway(
+        context.channel,
+        token,
+        held_out_response_intervals_q,
+        confidence_q,
+        band_position_q,
+    );
     let fixed_p = confirmation_plan.candidate_p.raw();
     if !transition_capable_stage_c_gain(
         fixed_p,
@@ -1495,11 +1514,14 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 /// the resume is refused as a mismatch even though nothing about the request
 /// actually changed.
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
     final_p: u16,
     context: AcquisitionContext,
     held_out_response_intervals_q: [[i32; 2]; 2],
+    confidence_q: u16,
+    band_position_q: u16,
     motion_budget: OuterMotionBudget,
     pwm_hz: u32,
     encoder_counts_per_rev: u32,
@@ -1509,8 +1531,13 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     {
         return Err(VelocityIntegralPlanError::PhysicalContextMismatch);
     }
-    let authority =
-        StageCAuthority::new_breakaway(context.channel, token, held_out_response_intervals_q);
+    let authority = StageCAuthority::new_breakaway(
+        context.channel,
+        token,
+        held_out_response_intervals_q,
+        confidence_q,
+        band_position_q,
+    );
     if !transition_capable_stage_c_gain(
         final_p,
         context.target_velocity_rpm,

@@ -726,6 +726,17 @@ pub struct BandConfirmationAcceptance {
     /// non-descendant module, so a `candidate_p`-style
     /// private-field-plus-accessor pair would only add ceremony here.
     pub(crate) held_out_response_intervals_q: [[i32; 2]; 2],
+    /// Q0.16 confidence: `1 - worst_half_width_fraction / MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION`,
+    /// clamped to `[0, 1]`. The worst (largest) half-width fraction across all
+    /// eight held-out observations, expressed as its margin below the
+    /// structural containment limit -- `0` at the limit, `65535` when the
+    /// worst observation carried no measurable uncertainty at all.
+    pub(crate) confidence_q: u16,
+    /// Q0.16 position of the mean held-out response percent within the fixed
+    /// `[CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT]`
+    /// band, clamped to `[0, 1]`: `0` at the lower edge, `65535` at the upper
+    /// edge.
+    pub(crate) band_position_q: u16,
 }
 
 impl BandConfirmationAcceptance {
@@ -810,6 +821,13 @@ pub fn evaluate_band_confirmation(
     // `response_location` and this function returns `Err` before ever
     // constructing `Ok`.
     let mut pooled_magnitude_q: [Option<(f32, f32)>; 2] = [None, None];
+    // Worst (largest) half-width fraction and the mean response percent
+    // across all eight held-out observations, retained for the acceptance's
+    // `confidence_q`/`band_position_q` below -- not used by the containment
+    // gate itself, which judges each atom independently.
+    let mut worst_half_width_fraction = 0.0_f32;
+    let mut response_percent_sum = 0.0_f32;
+    let mut response_percent_count = 0_u32;
     for (direction_index, directional) in [forward, reverse].iter().enumerate() {
         for atom in directional.observations.iter() {
             let Some(atom) = atom else {
@@ -831,6 +849,9 @@ pub fn evaluate_band_confirmation(
             if half_width_fraction > MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION {
                 excessive_uncertainty = true;
             }
+            worst_half_width_fraction = worst_half_width_fraction.max(half_width_fraction);
+            response_percent_sum += statistic.response_percent;
+            response_percent_count += 1;
             let low = round_outward_lower(statistic.response_percent * (1.0 - half_width_fraction));
             let high =
                 round_outward_upper(statistic.response_percent * (1.0 + half_width_fraction));
@@ -883,9 +904,23 @@ pub fn evaluate_band_confirmation(
         }
     });
 
+    let confidence =
+        (1.0 - worst_half_width_fraction / MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION).clamp(0.0, 1.0);
+    let confidence_q = (confidence * 65535.0) as u16;
+    let band_position_q = if response_percent_count == 0 {
+        0
+    } else {
+        let mean_r = response_percent_sum / response_percent_count as f32;
+        let span = f32::from(CONFIRMATION_BAND_UPPER_PERCENT - CONFIRMATION_BAND_LOWER_PERCENT);
+        let pos = ((mean_r - f32::from(CONFIRMATION_BAND_LOWER_PERCENT)) / span).clamp(0.0, 1.0);
+        (pos * 65535.0) as u16
+    };
+
     Ok(BandConfirmationAcceptance {
         candidate_p,
         held_out_response_intervals_q,
+        confidence_q,
+        band_position_q,
     })
 }
 

@@ -49,6 +49,10 @@ pub struct StageCAuthoritySummary {
     pub reduced_margin: bool,
     /// Reproduced pooled intervals, or selected response intervals for a combined plan.
     pub directional_pooled_intervals: [[i32; 2]; DIRECTION_COUNT],
+    /// Held-out confirmation confidence in Q0.16, or `0` off the breakaway path.
+    pub confidence_q: u16,
+    /// Held-out confirmation band position in Q0.16, or `0` off the breakaway path.
+    pub band_position_q: u16,
     /// Frozen encoder-domain amplitude.
     pub planned_velocity_mrev_s: u32,
     /// Frozen signed-target magnitude.
@@ -102,6 +106,8 @@ impl StageCAuthoritySummary {
             directional_validity: authority.directional_validity,
             reduced_margin: authority.reduced_margin,
             directional_pooled_intervals: authority.directional_pooled_intervals,
+            confidence_q: authority.confidence_q,
+            band_position_q: authority.band_position_q,
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
             target_velocity_rpm: plan.target_velocity_rpm,
             pwm_hz: plan.pwm_hz,
@@ -127,6 +133,8 @@ impl StageCAuthoritySummary {
             directional_validity: self.directional_validity,
             reduced_margin: self.reduced_margin,
             directional_pooled_intervals: self.directional_pooled_intervals,
+            confidence_q: self.confidence_q,
+            band_position_q: self.band_position_q,
         }
     }
 
@@ -176,6 +184,10 @@ pub struct AcceptancePoint {
     pub target_velocity_rpm: i32,
     /// Exact compact response intervals needed to reconstruct the accepted plan identity.
     pub selected_response_intervals_q: [[i32; 2]; 2],
+    /// Held-out confirmation confidence in Q0.16, or `0` off the breakaway path.
+    pub confidence_q: u16,
+    /// Held-out confirmation band position in Q0.16, or `0` off the breakaway path.
+    pub band_position_q: u16,
     /// Packed operating-point, model-validity, and evidence-quality qualifiers.
     pub qualifier_bits: u16,
     /// Unforgeable breakaway confirmation token that authorized this point.

@@ -1801,6 +1801,8 @@ mod tests {
             limit_evidence_capability:
                 crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
             directional_pooled_intervals: [[100, 120], [-130, -100]],
+            confidence_q: 0,
+            band_position_q: 0,
             planned_velocity_mrev_s: 2_929,
             target_velocity_rpm: 176,
             pwm_hz: 25_000,
@@ -2788,6 +2790,8 @@ mod tests {
                     [15_000_000, 17_000_000],
                     [-19_000_000, -17_000_000],
                 ],
+                confidence_q: 0,
+                band_position_q: 0,
             },
             stage_b.execution_plan(stage_b.digest()),
             OuterMotionBudget {
