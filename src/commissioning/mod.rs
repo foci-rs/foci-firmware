@@ -617,6 +617,29 @@ impl CommissioningEngine {
         (data.plan.acceptance_source == AcceptanceSource::Breakaway).then_some(data.plan)
     }
 
+    /// Trace diagnostic read at the acceptance-point install seam: the live
+    /// velocity-integral plan's acceptance source and whether that phase is
+    /// still resident. Returns `(source_code, phase_live)` with source_code
+    /// 1=Breakaway, 2=ReproducedStageB, 0=phase not resident. Lets a skipped
+    /// install be attributed to phase liveness versus plan source without
+    /// re-deriving either from the terminal.
+    #[cfg(feature = "trace")]
+    pub(crate) fn stage_c_promotion_source_diagnostic(&self) -> (u8, bool) {
+        use crate::commissioning::outer::velocity::integral_plan::AcceptanceSource;
+        let EngineMode::Outer {
+            phase: OuterPhase::VelocityIntegral { data, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return (0, false);
+        };
+        let code = match data.plan.acceptance_source {
+            AcceptanceSource::Breakaway => 1,
+            AcceptanceSource::ReproducedStageB => 2,
+        };
+        (code, true)
+    }
+
     /// Create a direct Stage-C resume engine from a preflighted exact plan.
     pub fn new_outer_for_tmc_with_stage_c_preflight(
         oid: u8,

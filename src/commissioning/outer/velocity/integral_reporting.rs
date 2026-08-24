@@ -598,6 +598,54 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
     record
 }
 
+/// Trace-only diagnostic captured at the breakaway acceptance-point install
+/// seam, to attribute a promotion that produced no installed point (terminal
+/// promotes to `Complete` but `cause` stays engine 0).
+#[cfg(feature = "trace")]
+pub(crate) struct StageCPromotionDiagnostic {
+    /// FOC channel.
+    pub channel: u8,
+    /// Terminal outcome code (`outcome_code`) at the seam.
+    pub outcome: u8,
+    /// Live plan acceptance source: 1=Breakaway, 2=ReproducedStageB, 0=phase not resident.
+    pub acceptance_source_code: u8,
+    /// The velocity-integral phase was still resident when the plan was read.
+    pub phase_live: bool,
+    /// The terminal's `breakaway_acceptance` flag.
+    pub breakaway_acceptance: bool,
+    /// `breakaway_stage_c_execution_plan()` returned `Some`.
+    pub execution_plan_present: bool,
+    /// The dispatch carried an authority.
+    pub authority_present: bool,
+    /// Terminal `rest_boundary_rung_plus_one` (one-based target terminus).
+    pub rest_boundary_rung_plus_one: u8,
+    /// Terminal `rest_boundary_slot_plus_one`.
+    pub rest_boundary_slot_plus_one: u8,
+    /// Installer outcome: 0=block skipped, 1=Installed, 2=MissingTargetTerminus,
+    /// 3=NotAcceptanceTerminal, 4=Err.
+    pub installer_result: u8,
+}
+
+/// Encode a [`StageCPromotionDiagnostic`] as a canonical trace record (kind 10).
+#[cfg(feature = "trace")]
+pub(crate) fn encode_stage_c_promotion_diagnostic(
+    diagnostic: StageCPromotionDiagnostic,
+) -> VelocitySweepCanonicalRecord {
+    let mut record = VelocitySweepCanonicalRecord::new();
+    record.push_u8(40);
+    record.push_u8(diagnostic.channel);
+    record.push_u8(diagnostic.outcome);
+    record.push_u8(diagnostic.acceptance_source_code);
+    record.push_u8(u8::from(diagnostic.phase_live));
+    record.push_u8(u8::from(diagnostic.breakaway_acceptance));
+    record.push_u8(u8::from(diagnostic.execution_plan_present));
+    record.push_u8(u8::from(diagnostic.authority_present));
+    record.push_u8(diagnostic.rest_boundary_rung_plus_one);
+    record.push_u8(diagnostic.rest_boundary_slot_plus_one);
+    record.push_u8(diagnostic.installer_result);
+    record
+}
+
 pub(crate) fn integral_observation_class(
     report: VelocityIntegralObservation,
 ) -> IntegralObservationClass {

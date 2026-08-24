@@ -1221,10 +1221,19 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     // Captured before disarm can tear the phase down. `Some` only for a
     // breakaway run, so it doubles as the `acceptance_source == Breakaway`
     // discriminator; the authority the promotion held arrives on `dispatch`.
+    #[cfg(feature = "trace")]
+    let promotion_source_diagnostic = engine.as_ref().map_or(
+        (0, false),
+        CommissioningEngine::stage_c_promotion_source_diagnostic,
+    );
     let breakaway_execution_plan = engine
         .as_ref()
         .and_then(CommissioningEngine::breakaway_stage_c_execution_plan);
+    #[cfg(feature = "trace")]
+    let promotion_execution_plan_present = breakaway_execution_plan.is_some();
     let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+    #[cfg(feature = "trace")]
+    let promotion_authority_present = dispatch.authority.is_some();
 
     // A promoted breakaway `Complete` (never a first `CompleteCandidate`, which
     // is promoted only on the reproduced second run) installs the token-carrying
@@ -1233,6 +1242,8 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     // intact and disarm can tear it down. The token rides inside the point, so
     // it is cleared automatically with the point -- no separate retention.
     let mut promoted_point = None;
+    #[cfg(feature = "trace")]
+    let mut promotion_installer_result: u8 = 0;
     if dispatch.terminal.outcome == crate::commissioning::types::VelocityIntegralOutcome::Complete
         && let (Some(execution_plan), Some(authority)) =
             (breakaway_execution_plan, dispatch.authority)
@@ -1246,13 +1257,26 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
             Ok(stage_c::AcceptanceInstall::Installed(point)) => {
                 retention.stage_c.install_acceptance_point(point);
                 promoted_point = Some(point);
+                #[cfg(feature = "trace")]
+                {
+                    promotion_installer_result = 1;
+                }
             }
             Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
                 dispatch.terminal.cause = crate::commissioning::types::StageCCause::Dispatch(
                     stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS,
                 );
+                #[cfg(feature = "trace")]
+                {
+                    promotion_installer_result = 2;
+                }
             }
-            Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {}
+            Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {
+                #[cfg(feature = "trace")]
+                {
+                    promotion_installer_result = 3;
+                }
+            }
             Err(()) => {
                 retention.stage_c.observe_fault();
                 dispatch.terminal.outcome =
@@ -1263,8 +1287,35 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
                 dispatch.terminal.safety_fault = None;
                 dispatch.reproduction = None;
                 dispatch.authority = None;
+                #[cfg(feature = "trace")]
+                {
+                    promotion_installer_result = 4;
+                }
             }
         }
+    }
+
+    #[cfg(feature = "trace")]
+    {
+        let (acceptance_source_code, phase_live) = promotion_source_diagnostic;
+        backend.record_velocity_sweep_trace_record(
+            crate::commissioning::outer::velocity::integral_reporting::encode_stage_c_promotion_diagnostic(
+                crate::commissioning::outer::velocity::integral_reporting::StageCPromotionDiagnostic {
+                    channel,
+                    outcome: crate::commissioning::outer::velocity::integral_reporting::outcome_code(
+                        dispatch.terminal.outcome,
+                    ),
+                    acceptance_source_code,
+                    phase_live,
+                    breakaway_acceptance: dispatch.terminal.breakaway_acceptance,
+                    execution_plan_present: promotion_execution_plan_present,
+                    authority_present: promotion_authority_present,
+                    rest_boundary_rung_plus_one: dispatch.terminal.rest_boundary_rung_plus_one,
+                    rest_boundary_slot_plus_one: dispatch.terminal.rest_boundary_slot_plus_one,
+                    installer_result: promotion_installer_result,
+                },
+            ),
+        );
     }
 
     // The promoted run keeps the motor armed and swaps the live engine straight
