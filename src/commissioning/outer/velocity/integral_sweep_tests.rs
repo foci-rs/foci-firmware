@@ -1964,6 +1964,124 @@ fn breakaway_rest_boundary_sufficiency_leaves_terminus_none_without_target() {
     assert_eq!(data.target_terminus, None);
 }
 
+/// A breakaway positive rung whose directional consensuses cross the target
+/// must record the target terminus as it is analyzed through `AnalyzeRung ->
+/// retain_rung`. This is the closure the hardware took on the non-promoting
+/// resume (all rungs settle, no current-headroom or rest-boundary diversion),
+/// and the peak rung's measured response reached ~98.6% of target -- above the
+/// reach threshold. If the recorder does not fire here, the resume terminal
+/// carries no terminus and promotion refuses with a missing-terminus cause even
+/// though the candidate genuinely reached target.
+#[test]
+fn breakaway_analyze_rung_records_target_terminus_when_target_reached() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    data.plan.acceptance_source = AcceptanceSource::Breakaway;
+    data.plan.target_velocity_rpm = 264;
+    data.plan.encoder_counts_per_rev = 4_000;
+    *state = VelocityIntegralState::AnalyzeRung;
+    data.rung_index = 1;
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    // Both directional consensuses collapse across the target: the deficit is
+    // within the reach threshold, mirroring the hardware rung that measured
+    // ~98.6% of target on both directions.
+    data.rung_intervals = core::array::from_fn(|slot| {
+        if slot.is_multiple_of(2) {
+            ExactRateInterval::new(-100_000, 340_000).unwrap()
+        } else {
+            ExactRateInterval::new(-340_000, 100_000).unwrap()
+        }
+    });
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    safety.unwrapped_position = 1_001;
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Rung(_))
+    ));
+
+    let OuterPhase::VelocityIntegral { data, .. } = &phase else {
+        unreachable!()
+    };
+    assert_eq!(data.target_terminus, Some(0));
+}
+
+/// Continuation guard for the "recorded then lost" hypothesis: once a positive
+/// rung has recorded the target terminus, the recovery + bookend + terminal
+/// continuation of a clean-sufficiency close must carry it through to the
+/// terminal. If any state on that path cleared `target_terminus`, the terminal
+/// would encode no terminus (rest_boundary_rung_plus_one == 0) and promotion
+/// would refuse even though the candidate reached target.
+#[test]
+fn breakaway_clean_sufficiency_preserves_recorded_terminus_through_continuation() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    *state = VelocityIntegralState::AnalyzeRung;
+    data.plan.acceptance_source = AcceptanceSource::Breakaway;
+    data.rung_index = data.plan.positive_rung_count + 1;
+    seed_sufficient_curve(data, &mut workspace);
+    for (index, value) in [-1_i32, 11_733_334, -11_733_334, 1].into_iter().enumerate() {
+        assert!(workspace.write_workspace_word(index, value as u32));
+    }
+    data.rung_classes = [VelocityObservationClass::Eligible; 8];
+    data.rung_intervals = core::array::from_fn(|slot| {
+        if slot % 2 == 0 {
+            ExactRateInterval::new(100, 200).unwrap()
+        } else {
+            ExactRateInterval::new(-200, -100).unwrap()
+        }
+    });
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    safety.unwrapped_position = 1_001;
+    // A prior positive rung already recorded the target terminus at rung 3.
+    data.target_terminus = Some(3);
+    let mut backend = MockBackend::new();
+
+    // Drive the clean-sufficiency close: AnalyzeRung -> RecoverRung -> recovery -> Terminal.
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Rung(_))
+    ));
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
+    ));
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("clean sufficiency close must reach the terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
+    assert_eq!(terminal.cause, StageCCause::Engine(0));
+    // The recorded terminus (rung 3) must survive to the terminal as rung + 1.
+    assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
+}
+
 #[test]
 fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
     let mut phase = phase();
