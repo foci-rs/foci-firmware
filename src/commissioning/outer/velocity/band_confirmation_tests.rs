@@ -223,10 +223,16 @@ fn nomination_selects_the_confirmable_rung_and_skips_the_excluded_one() {
     assert!(nominated.margin_percent > 0.0);
 }
 
-// --- Equal-noise maximizer and unequal-noise preference ---------------------
+// --- Highest band-admissible P wins, not the best margin --------------------
 
 #[test]
-fn equal_noise_maximizer_is_exactly_seventy_five_percent() {
+fn nomination_selects_the_highest_admissible_rung_not_the_equal_noise_maximizer() {
+    // Under equal relative noise, margin is unimodal and peaks at 75% (the
+    // old best-margin choice: see the margin derivation this fixture is
+    // built from). But 76% is still band-admissible with a smaller, positive
+    // margin, and 78%/80% are pushed out of the band entirely by the same
+    // noise. Nomination must select 76%, the highest-P rung that clears
+    // `M_i >= 0`, not the margin-maximizing 75% rung.
     let relative_se = 0.01_f64;
     let candidates = [70_u16, 72, 74, 75, 76, 78, 80];
     let rungs: heapless::Vec<DiscoveryRungNominationInput, 8> = candidates
@@ -238,18 +244,18 @@ fn equal_noise_maximizer_is_exactly_seventy_five_percent() {
         })
         .collect();
 
-    let nominated = nominate_confirmation_candidate(&rungs).expect("all rungs nominatable");
-    assert_eq!(nominated.p, gain(750));
+    let nominated = nominate_confirmation_candidate(&rungs).expect("some rungs are admissible");
+    assert_eq!(nominated.p, gain(760));
 }
 
 #[test]
-fn unequal_noise_prefers_the_quieter_rung_over_the_more_central_one() {
+fn nomination_selects_the_higher_p_rung_even_when_it_is_noisier() {
     // Noisier rung sitting exactly on the equal-noise maximizer, 75%.
     let noisy_mean = 750_000;
     let noisy_variance = variance_for_relative_se(noisy_mean, 0.012);
     let noisy_rung = uniform_rung(700, noisy_mean, noisy_variance, TARGET);
 
-    // Quieter rung off-center at 73%.
+    // Quieter rung off-center at 73%, with the larger margin.
     let quiet_mean = 730_000;
     let quiet_variance = variance_for_relative_se(quiet_mean, 0.004);
     let quiet_rung = uniform_rung(690, quiet_mean, quiet_variance, TARGET);
@@ -261,14 +267,27 @@ fn unequal_noise_prefers_the_quieter_rung_over_the_more_central_one() {
         quiet_margin > noisy_margin,
         "quiet={quiet_margin} noisy={noisy_margin}"
     );
+    assert!(
+        noisy_margin >= 0.0,
+        "noisy rung must be band-admissible: {noisy_margin}"
+    );
+    assert!(
+        quiet_margin >= 0.0,
+        "quiet rung must be band-admissible: {quiet_margin}"
+    );
 
+    // Both rungs are band-admissible, so selection is decided by P, not by
+    // which one has the larger margin: the noisier rung has the higher P.
     let nominated =
         nominate_confirmation_candidate(&[noisy_rung, quiet_rung]).expect("nominatable");
-    assert_eq!(nominated.p, gain(690));
+    assert_eq!(nominated.p, gain(700));
 }
 
 #[test]
-fn exact_margin_ties_break_toward_higher_p() {
+fn nomination_selects_the_higher_p_rung_regardless_of_input_order() {
+    // Both rungs share the same discovery evidence, so the same margin;
+    // selection among band-admissible candidates is by P alone, independent
+    // of which one appears first.
     let low_p_rung = uniform_rung(300, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
     let high_p_rung = uniform_rung(500, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
 
@@ -279,6 +298,37 @@ fn exact_margin_ties_break_toward_higher_p() {
     let nominated_reordered =
         nominate_confirmation_candidate(&[high_p_rung, low_p_rung]).expect("nominatable");
     assert_eq!(nominated_reordered.p, gain(500));
+}
+
+#[test]
+fn nomination_selects_highest_band_admissible_rung_not_best_margin() {
+    // Band-center rung: largest margin (min(74-70, 80-76) = 4), lower P.
+    let center = DiscoveryRungNominationBounds {
+        p: gain(400),
+        nominatable: true,
+        lower_percent: 74.0,
+        upper_percent: 76.0,
+    };
+    // Band-top rung: smaller margin (min(71-70, 80-79) = 1) but higher P -- the
+    // best-IAE candidate under monotone IAE. This is the one to nominate.
+    let top = DiscoveryRungNominationBounds {
+        p: gain(480),
+        nominatable: true,
+        lower_percent: 71.0,
+        upper_percent: 79.0,
+    };
+    // Out-of-band rung: highest P but response below 70% (margin < 0) -- must be
+    // excluded, proving band-admissibility still gates selection.
+    let out_of_band = DiscoveryRungNominationBounds {
+        p: gain(520),
+        nominatable: true,
+        lower_percent: 69.0,
+        upper_percent: 78.0,
+    };
+
+    let nominated = nominate_confirmation_candidate_from_bounds(&[center, top, out_of_band])
+        .expect("a band-admissible rung exists");
+    assert_eq!(nominated.p, gain(480));
 }
 
 // --- Rungs that cannot nominate ---------------------------------------------
@@ -1078,7 +1128,7 @@ fn reduced_bounds_nominate_the_same_candidate_and_margin_as_raw_atoms() {
 }
 
 #[test]
-fn reduced_bounds_agree_with_raw_atoms_on_the_unequal_noise_preference() {
+fn reduced_bounds_agree_with_raw_atoms_on_the_higher_p_selection_when_noisier() {
     let noisy_mean = 750_000;
     let noisy_variance = variance_for_relative_se(noisy_mean, 0.012);
     let noisy_rung = uniform_rung(700, noisy_mean, noisy_variance, TARGET);
@@ -1093,11 +1143,13 @@ fn reduced_bounds_agree_with_raw_atoms_on_the_unequal_noise_preference() {
     let reduced_result = nominate_confirmation_candidate_from_bounds(&bounds);
 
     assert_eq!(raw_atom_result, reduced_result);
-    assert_eq!(raw_atom_result.unwrap().p, gain(690));
+    // Both rungs are band-admissible; the noisier one has the higher P, so it
+    // is selected over the quieter, larger-margin rung.
+    assert_eq!(raw_atom_result.unwrap().p, gain(700));
 }
 
 #[test]
-fn reduced_bounds_break_exact_margin_ties_toward_higher_p_like_raw_atoms() {
+fn reduced_bounds_select_the_higher_p_rung_regardless_of_order_like_raw_atoms() {
     let low_p_rung = uniform_rung(300, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
     let high_p_rung = uniform_rung(500, RUNG18_MEAN, RUNG18_VARIANCE, TARGET);
     let rungs = [low_p_rung, high_p_rung];

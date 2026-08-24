@@ -552,8 +552,9 @@ fn margin_percent_from_bounds(lower_percent: f32, upper_percent: f32) -> f32 {
     lower_margin.min(upper_margin)
 }
 
-/// Select the max-margin candidate from `(p, margin_percent)` pairs, breaking
-/// exact ties toward the higher gain and excluding negative margins.
+/// Select the highest-P candidate from `(p, margin_percent)` pairs whose
+/// margin is band-admissible (`margin_percent >= 0`), excluding negative
+/// margins.
 ///
 /// Shared by [`nominate_confirmation_candidate`] (raw-atom evidence) and
 /// [`nominate_confirmation_candidate_from_bounds`] (the reduced
@@ -573,10 +574,10 @@ where
         }
         let replace = match best {
             None => true,
-            Some(current) => {
-                margin_percent > current.margin_percent
-                    || (margin_percent == current.margin_percent && p.raw() > current.p.raw())
-            }
+            // Highest band-admissible P is the most robust band candidate: recovery IAE
+            // is monotone-decreasing in P within the response band, so the top rung has
+            // the best IAE of any admissible candidate and dominates every lower one.
+            Some(current) => p.raw() > current.p.raw(),
         };
         if replace {
             best = Some(NominatedConfirmationCandidate { p, margin_percent });
@@ -585,8 +586,9 @@ where
     best.ok_or(TargetBandUnconfirmableFromDiscovery)
 }
 
-/// Screen every discovery rung and nominate the confirmable candidate with the
-/// largest pointwise margin `M_i`, breaking exact ties toward the higher gain.
+/// Screen every discovery rung and nominate the highest band-admissible rung
+/// (`M_i >= 0`); under monotone IAE this is the most robust candidate the
+/// band admits.
 ///
 /// See spec section 7, "Nomination screen, computed from discovery data only".
 /// A rung is confirmable from discovery when `M_i >= 0`. When no rung
@@ -604,8 +606,8 @@ pub fn nominate_confirmation_candidate(
 }
 
 /// Screen every collected [`DiscoveryRungNominationBounds`] and nominate the
-/// confirmable candidate with the largest pointwise margin `M_i`, breaking
-/// exact ties toward the higher gain.
+/// highest band-admissible rung (`M_i >= 0`); under monotone IAE this is the
+/// most robust candidate the band admits.
 ///
 /// Runs the SAME selection as [`nominate_confirmation_candidate`] --
 /// [`select_nominated_candidate`] -- but from the compact bounds discovery
