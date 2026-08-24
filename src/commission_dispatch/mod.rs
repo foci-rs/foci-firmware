@@ -1433,10 +1433,11 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 })
                 .flatten();
             match deploy {
-                Some((entry, _point)) => {
+                Some((entry, point)) => {
                     let result = crate::commissioning::outer::velocity::robustness_reversal::robustness_pass_outer_result(
                         &terminal,
                         &entry,
+                        &point,
                     );
                     drive_commission_result(
                         StepResult::OuterDone(result),

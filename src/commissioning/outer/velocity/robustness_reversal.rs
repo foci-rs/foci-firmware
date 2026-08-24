@@ -1374,6 +1374,7 @@ pub(crate) fn robustness_reversal_fault_terminal(
 pub(crate) fn robustness_pass_outer_result(
     terminal: &RobustnessReversalTerminal,
     entry: &EntrySnapshot,
+    point: &AcceptancePoint,
 ) -> OuterResult {
     let status = CommissionStatus::Accepted;
     let provenance = TuneProvenance {
@@ -1382,10 +1383,10 @@ pub(crate) fn robustness_pass_outer_result(
         // already computed as the gate's plant rate; the same encoder-rate-Q
         // domain the provenance field documents. Always non-negative.
         d_eq_q: i32::try_from(terminal.plant_rate_q).unwrap_or(i32::MAX),
-        confidence_q: 0,
+        confidence_q: point.confidence_q,
         band_lower_percent: CONFIRMATION_BAND_LOWER_PERCENT,
         band_upper_percent: CONFIRMATION_BAND_UPPER_PERCENT,
-        band_position_q: 0,
+        band_position_q: point.band_position_q,
     };
     OuterResult {
         status,
@@ -1411,7 +1412,9 @@ mod tests {
         ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
         ROBUSTNESS_CAUSE_TAIL_REPEATED,
     };
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
+    use crate::commission_dispatch::test_support::{
+        MockBackend, SpiOp, current_limit, sample_entry_snapshot,
+    };
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::velocity::integral_reproduction::{
         AcceptanceMatrixProgress, StageCCandidateSlot, StageCPlanIdentity,
@@ -2081,6 +2084,25 @@ mod tests {
             assert!(!direction.inconclusive);
             assert_eq!(direction.trip_count, 0);
         }
+    }
+
+    /// The passed gate's tune provenance must report the accepted point's
+    /// held-out confirmation confidence and band position, not stubs.
+    #[test]
+    fn robustness_pass_provenance_carries_confidence_and_band_position() {
+        let point = AcceptancePoint {
+            confidence_q: 40_000,
+            band_position_q: 20_000,
+            ..test_point()
+        };
+        let terminal = complete_with_uniform_iae(point, NON_TAIL_IAE_Q);
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        let entry = sample_entry_snapshot();
+
+        let result = robustness_pass_outer_result(&terminal, &entry, &point);
+
+        assert_eq!(result.provenance.confidence_q, 40_000);
+        assert_eq!(result.provenance.band_position_q, 20_000);
     }
 
     /// `test_point()`'s degenerate plant response gives `iae_max_q =
