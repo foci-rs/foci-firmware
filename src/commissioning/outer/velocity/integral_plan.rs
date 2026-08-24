@@ -1412,6 +1412,10 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// [`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`] with
 /// `append_exact_cap: false`, using the existing non-combined integral ladder
 /// unchanged.
+///
+/// `confidence_q`/`band_position_q` are carried-through diagnostics only:
+/// unlike `held_out_response_intervals_q`, they are excluded from
+/// `plan.digest()` and so never affect resume matching.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_breakaway_velocity_integral_response(
@@ -1513,6 +1517,10 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 /// rebuilds a plan whose digest can never match the retained identity, and
 /// the resume is refused as a mismatch even though nothing about the request
 /// actually changed.
+///
+/// `confidence_q`/`band_position_q` are carried-through diagnostics only:
+/// unlike `held_out_response_intervals_q` above, they are excluded from
+/// `plan.digest()` and so never affect resume matching.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_retained_breakaway_velocity_integral_response(

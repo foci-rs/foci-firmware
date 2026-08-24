@@ -867,24 +867,36 @@ fn confirmation_acceptance_retains_held_out_response_intervals() {
 
 #[test]
 fn confirmation_acceptance_carries_confidence_and_band_position() {
+    // Deliberately asymmetric: band_position (driven by response_percent,
+    // 77%) and confidence (driven by half_width_fraction, still pinned at
+    // half the containment limit) must land on DIFFERENT Q0.16 values here,
+    // so this test cannot pass if a future change transposes which computed
+    // value feeds which field.
+    const MEAN_RATE_Q: i64 = 770_000;
+
     let multiplier = confidence_multiplier_95_df15(CONFIRMATION_FAMILY_SIZE)
         .expect("confirmation family size 8 is within the audited multiplier table");
     // Worst half-width fraction pinned to exactly half the 1/15 containment
     // limit, so confidence = 1 - 0.5 = 0.5 -> 32767 in Q0.16.
     let half_width_fraction = 1.0_f64 / 30.0;
     let relative_se = half_width_fraction / f64::from(multiplier);
-    let variance = variance_for_relative_se(RUNG18_MEAN, relative_se);
+    let variance = variance_for_relative_se(MEAN_RATE_Q, relative_se);
 
-    // 750,000 / 1,000,000 -> response_percent exactly 75.0 for every atom, so
-    // band_position = (75-70)/10 = 0.5 -> 32767 in Q0.16.
-    let forward = confirmation_input(VelocityDirection::Forward, RUNG18_MEAN, variance, TARGET);
-    let reverse = confirmation_input(VelocityDirection::Reverse, -RUNG18_MEAN, variance, TARGET);
+    // 770,000 / 1,000,000 -> response_percent ~77.0 for every atom, so
+    // band_position = (77-70)/10 = 0.7 -> 45874 in Q0.16 (65535 * 0.7 =
+    // 45874.5, and `as u16` truncates toward zero). At h = 1/30 the interval
+    // [77*(1 - 1/30), 77*(1 + 1/30)] ~= [74.43, 79.57] still lies wholly
+    // inside the confirmable [70, 80] band -- 78% would not (its upper
+    // bound at this h overshoots 80).
+    let forward = confirmation_input(VelocityDirection::Forward, MEAN_RATE_Q, variance, TARGET);
+    let reverse = confirmation_input(VelocityDirection::Reverse, -MEAN_RATE_Q, variance, TARGET);
 
     let acceptance = evaluate_band_confirmation(gain(724), forward, reverse)
-        .expect("75% response at half the containable half-width accepts");
+        .expect("77% response at half the containable half-width accepts");
 
-    assert_eq!(acceptance.band_position_q, 32767); // (75-70)/10 -> 0.5 -> ~32767
+    assert_eq!(acceptance.band_position_q, 45874); // (77-70)/10 -> 0.7 -> ~45874
     assert_eq!(acceptance.confidence_q, 32767); // 1 - 0.5 -> 0.5 -> ~32767
+    assert_ne!(acceptance.band_position_q, acceptance.confidence_q);
 }
 
 #[test]

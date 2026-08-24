@@ -731,11 +731,23 @@ pub struct BandConfirmationAcceptance {
     /// eight held-out observations, expressed as its margin below the
     /// structural containment limit -- `0` at the limit, `65535` when the
     /// worst observation carried no measurable uncertainty at all.
+    ///
+    /// Normalized against `MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION`; comparable
+    /// only within a fixed containment threshold, unlike `band_position_q`
+    /// which is self-describing via the emitted `band_lower_percent`/
+    /// `band_upper_percent`.
     pub(crate) confidence_q: u16,
     /// Q0.16 position of the mean held-out response percent within the fixed
     /// `[CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT]`
     /// band, clamped to `[0, 1]`: `0` at the lower edge, `65535` at the upper
     /// edge.
+    ///
+    /// Pools forward and reverse into a single mean, so it can mask
+    /// directional asymmetry (e.g. 71% forward / 79% reverse both read as
+    /// "75%, dead centre"). This is intentional and safe: the containment
+    /// gate already independently bounds each individual observation to the
+    /// confirmation band, so the asymmetry is a diagnostic nuance, not
+    /// something that could hide a bad candidate.
     pub(crate) band_position_q: u16,
 }
 
@@ -907,14 +919,18 @@ pub fn evaluate_band_confirmation(
     let confidence =
         (1.0 - worst_half_width_fraction / MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION).clamp(0.0, 1.0);
     let confidence_q = (confidence * 65535.0) as u16;
-    let band_position_q = if response_percent_count == 0 {
-        0
-    } else {
-        let mean_r = response_percent_sum / response_percent_count as f32;
-        let span = f32::from(CONFIRMATION_BAND_UPPER_PERCENT - CONFIRMATION_BAND_LOWER_PERCENT);
-        let pos = ((mean_r - f32::from(CONFIRMATION_BAND_LOWER_PERCENT)) / span).clamp(0.0, 1.0);
-        (pos * 65535.0) as u16
-    };
+    // Every atom in both directions contributed to `response_percent_count`
+    // on this accepted path (the same invariant `held_out_response_intervals_q`
+    // above proves via its own `.expect(...)`): a zero count here would be a
+    // silent invariant break, and `0` is itself a legitimate `band_position_q`
+    // value (the lower band edge), so it must not be used as a fallback.
+    let response_percent_count = core::num::NonZeroU32::new(response_percent_count).expect(
+        "every atom in both directions contributed a response_percent on the accepted path above",
+    );
+    let mean_r = response_percent_sum / response_percent_count.get() as f32;
+    let span = f32::from(CONFIRMATION_BAND_UPPER_PERCENT - CONFIRMATION_BAND_LOWER_PERCENT);
+    let pos = ((mean_r - f32::from(CONFIRMATION_BAND_LOWER_PERCENT)) / span).clamp(0.0, 1.0);
+    let band_position_q = (pos * 65535.0) as u16;
 
     Ok(BandConfirmationAcceptance {
         candidate_p,
