@@ -1194,13 +1194,13 @@ fn breakaway_engine(
 }
 
 #[fixture_test]
-async fn promoted_complete_transitions_to_inline_robustness() {
-    use crate::autotune::PhaseId;
-    use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_point() {
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, fresh_state_locals};
+    use foci_tmc4671::registers::{
+        PID_POSITION_P_POSITION_I, PID_VELOCITY_LIMIT, PID_VELOCITY_P_VELOCITY_I,
+        PIDOUT_UQ_UD_LIMITS,
+    };
 
-    // The inline swap reconfigures the robustness envelope from the live
-    // encoder resolution, so motion scale must be configured for the seam to
-    // resolve a nonzero counts-per-rev.
     crate::state::tmc::tmc_channel0()
         .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
         .expect("valid motion scale");
@@ -1221,9 +1221,24 @@ async fn promoted_complete_transitions_to_inline_robustness() {
     apply_stage_c_terminal(first, &mut stage_c_slot);
     assert_eq!(stage_c_slot.state(), StageCSlotState::Candidate);
 
+    let baseline = entry_snapshot();
     let mut engine = Some(breakaway_engine(plan, &authority));
     let mut backend = MockBackend::new();
     backend.enable_pin = true;
+
+    // Live "candidate" registers diverge from the baseline snapshot -- the
+    // restore must overwrite them, not merely no-op because a value is
+    // already present.
+    let _ = backend
+        .write_register(PID_VELOCITY_P_VELOCITY_I, 0xdead_beef)
+        .await;
+    let _ = backend
+        .write_register(PID_POSITION_P_POSITION_I, 0xdead_beef)
+        .await;
+    let _ = backend.write_register(PID_VELOCITY_LIMIT, 999_999).await;
+    let _ = backend.write_register(PIDOUT_UQ_UD_LIMITS, 999).await;
+    backend.spi_log.clear();
+
     let (_, _, mut gains) = fresh_state_locals();
     let mut calibrated = true;
     let mut enabled = true;
@@ -1255,45 +1270,79 @@ async fn promoted_complete_transitions_to_inline_robustness() {
     )
     .await;
 
-    let CommissionOutcome::PhaseChanged {
-        oid,
-        phase_id: PhaseId::VelocityTune,
-        evidence,
+    let CommissionOutcome::Terminal {
+        reply: ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. },
         ..
     } = outcome
     else {
-        panic!("promoted Complete must transition into robustness, not emit a terminal");
+        panic!("a promoted Complete must emit a normal velocity-integral terminal");
     };
     assert_eq!(oid, 1);
-    let Some(ReplyPayload::VelocityIntegralTerminal {
-        oid: reply_oid,
-        terminal,
-        ..
-    }) = evidence
-    else {
-        panic!("promoted Complete must still report its terminal as evidence");
-    };
-    assert_eq!(reply_oid, 1);
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
-    let engine = engine
-        .as_ref()
-        .expect("the promoted run keeps its live engine stepping");
-    // `VelocityTune` is shared by several phases, so pin the exact swap target.
+
+    // The acceptance point install (unchanged from before F3) still happens.
+    assert_eq!(stage_c_slot.state(), StageCSlotState::AcceptancePoint);
+
+    // The engine is consumed and the motor fully disarmed -- no inline
+    // continuation into robustness.
+    assert!(engine.is_none());
+    assert!(!enabled);
+    assert!(!calibrated);
+    assert!(!backend.enable_pin);
+
+    // The operator's Stage 2 entry baseline is restored to the registers
+    // before the disarm safe-state overwrites the torque-limit register.
+    let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
+        position_p: baseline.position_p,
+        position_i: baseline.position_i,
+        velocity_p: baseline.velocity_p,
+        velocity_i: baseline.velocity_i,
+    }
+    .to_registers();
+    assert!(backend.spi_log.iter().any(|op| matches!(
+        op,
+        SpiOp::Write(addr, val)
+            if *addr == PID_VELOCITY_P_VELOCITY_I.addr() && *val == velocity_reg
+    )));
+    assert!(backend.spi_log.iter().any(|op| matches!(
+        op,
+        SpiOp::Write(addr, val)
+            if *addr == PID_POSITION_P_POSITION_I.addr() && *val == position_reg
+    )));
+    assert!(backend.spi_log.iter().any(|op| matches!(
+        op,
+        SpiOp::Write(addr, val)
+            if *addr == PID_VELOCITY_LIMIT.addr() && *val == baseline.velocity_limit
+    )));
+    assert!(backend.spi_log.iter().any(|op| matches!(
+        op,
+        SpiOp::Write(addr, val)
+            if *addr == PIDOUT_UQ_UD_LIMITS.addr() && *val == baseline.voltage_limit
+    )));
+
+    let restore_index = backend
+        .spi_log
+        .iter()
+        .position(|op| {
+            matches!(op, SpiOp::Write(addr, val)
+                if *addr == PID_VELOCITY_P_VELOCITY_I.addr() && *val == velocity_reg)
+        })
+        .expect("restore write present");
+    let disarm_index = backend
+        .spi_log
+        .iter()
+        .position(|op| matches!(op, SpiOp::EnablePin(false)))
+        .expect("disarm present");
     assert!(
-        engine.is_outer_robustness_reversal_for_test(),
-        "the live engine must be swapped precisely into robustness reversal"
+        restore_index < disarm_index,
+        "restore must run before disarm"
     );
-    // The promoted run stays armed so robustness keeps stepping on it.
-    assert!(enabled);
-    assert!(calibrated);
-    assert!(backend.enable_pin);
 }
 
 #[fixture_test]
-async fn promoted_complete_from_terminal_poll_continues_workflow() {
-    use crate::autotune::PhaseId;
+async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
     use crate::commission_dispatch::test_support::MockBackend;
-    use crate::commissioning::schedule::{CommissionEvent, CommissionTerminal};
+    use crate::commissioning::schedule::CommissionTerminal;
     use crate::config::TmcConfig;
     use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig, TmcControlRuntime};
 
@@ -1348,26 +1397,20 @@ async fn promoted_complete_from_terminal_poll_continues_workflow() {
         .await
         .expect("active engine should drive the promoted terminal");
 
-    // The inline robustness swap must reach the board as a phase-continuation
-    // action, mirroring the scheduled-poll path, not crash the terminal poll.
-    assert!(
-        matches!(
-            action,
-            ScheduledCommissionTickAction::ReadyNow {
-                event: Some(CommissionEvent::PhaseChanged {
-                    oid: 1,
-                    phase_id: PhaseId::VelocityTune,
-                    ..
-                }),
-            }
-        ),
-        "a promoted Complete from the terminal poll must continue into robustness"
-    );
-    let Some(ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. }) = emitted_reply else {
-        panic!("a promoted Complete from the terminal poll must still report its terminal");
+    // A promoted Complete from the terminal poll ends the workflow like any
+    // other terminal outcome, disarming instead of continuing into
+    // robustness.
+    let ScheduledCommissionTickAction::Terminal { reply, .. } = action else {
+        panic!("a promoted Complete from the terminal poll must emit a Terminal action");
+    };
+    let ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. } = reply else {
+        panic!("a promoted Complete from the terminal poll must report its terminal");
     };
     assert_eq!(oid, 1);
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
+    // The Terminal action already carries the reply; the terminal poll must
+    // not also forward it through the report-only evidence channel.
+    assert!(emitted_reply.is_none());
 }
 
 #[fixture_test]

@@ -171,14 +171,6 @@ impl RobustnessReversalSession {
             pending_cycle: None,
         }
     }
-
-    /// Recompute the probe velocity from the retained accepted point's target
-    /// RPM, mirroring the conversion applied when the safety envelope was
-    /// configured for this run.
-    #[cfg(test)]
-    pub(crate) fn probe_velocity_mrev_s_for_test(&self) -> u32 {
-        self.point.target_velocity_rpm.unsigned_abs() * 1_000 / 60
-    }
 }
 
 /// Cooperative state for the unreset-reversal robustness phase.

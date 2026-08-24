@@ -123,8 +123,6 @@ pub enum CommissionOutcome {
         oid: u8,
         phase_id: PhaseId,
         engine_kind: EngineKind,
-        /// Report-only evidence to emit alongside the transition, if any.
-        evidence: Option<ReplyPayload>,
     },
     /// Nonterminal report-only evidence is ready for immediate emission.
     Evidence {
@@ -488,7 +486,6 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 oid: engine_ref.oid(),
                 phase_id,
                 engine_kind: engine_ref.kind(),
-                evidence: None,
             }
         }
         StepResult::VelocityIntegralEvent(event) => {
@@ -1285,11 +1282,8 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
 
     // A promoted breakaway `Complete` (never a first `CompleteCandidate`, which
     // is promoted only on the reproduced second run) installs the token-carrying
-    // acceptance point. The install happens before any disarm, because the
-    // inline robustness handoff below needs the live velocity-integral phase
-    // intact and disarm can tear it down. The token rides inside the point, so
-    // it is cleared automatically with the point -- no separate retention.
-    let mut promoted_point = None;
+    // acceptance point. The token rides inside the point, so it is cleared
+    // automatically with the point -- no separate retention.
     #[cfg(feature = "trace")]
     let mut promotion_installer_result: u8 = 0;
     if dispatch.terminal.outcome == crate::commissioning::types::VelocityIntegralOutcome::Complete
@@ -1304,7 +1298,6 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         ) {
             Ok(stage_c::AcceptanceInstall::Installed(point)) => {
                 retention.stage_c.install_acceptance_point(point);
-                promoted_point = Some(point);
                 #[cfg(feature = "trace")]
                 {
                     promotion_installer_result = 1;
@@ -1366,59 +1359,11 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         );
     }
 
-    // The promoted run keeps the motor armed and swaps the live engine straight
-    // into the robustness gate on the same physical run, instead of ending the
-    // workflow and waiting for a fresh command. A failed swap leaves the phase
-    // untouched, so it falls through to a disarmed fault terminal.
-    if let Some(point) = promoted_point {
-        let encoder_counts_per_rev = state.tmc.encoder_counts_per_rev().unwrap_or(0);
-        let engine_ref = engine
-            .as_mut()
-            .expect("engine slot is None on a promoted Complete");
-        match engine_ref.begin_inline_robustness(point, encoder_counts_per_rev) {
-            Ok(()) => {
-                let oid = engine_ref.oid();
-                let phase_id = engine_ref
-                    .current_phase_id()
-                    .unwrap_or(PhaseId::VelocityTune);
-                let engine_kind = engine_ref.kind();
-                #[cfg(feature = "trace")]
-                engine_ref.emit_stage_c_terminal_trace(
-                    backend,
-                    &dispatch.terminal,
-                    dispatch.reproduction,
-                );
-                return CommissionOutcome::PhaseChanged {
-                    oid,
-                    phase_id,
-                    engine_kind,
-                    evidence: Some(ReplyPayload::VelocityIntegralTerminal {
-                        oid,
-                        terminal: dispatch.terminal,
-                        reproduction: dispatch.reproduction,
-                        authority: dispatch.authority,
-                    }),
-                };
-            }
-            Err(error) => {
-                retention.stage_c.observe_fault();
-                dispatch.terminal.outcome =
-                    crate::commissioning::types::VelocityIntegralOutcome::Fault;
-                dispatch.terminal.cause =
-                    crate::commissioning::types::StageCCause::Error(error.status_code());
-                dispatch.terminal.recovery_unavailable = true;
-                dispatch.terminal.safety_fault = None;
-                dispatch.reproduction = None;
-                dispatch.authority = None;
-            }
-        }
-    }
-
-    // Restore the operator's Stage 2 entry baseline before any terminal that
-    // does not continue into robustness. `disarm_velocity_workflow` below
-    // restores the *current* limit (owned by tmc_state, not the snapshot), so
-    // this must run first -- reversing the order would let this restore
-    // overwrite the current-limit register the disarm call is about to set.
+    // Restore the operator's Stage 2 entry baseline before disarming.
+    // `disarm_velocity_workflow` below restores the *current* limit (owned by
+    // tmc_state, not the snapshot), so this must run first -- reversing the
+    // order would let this restore overwrite the current-limit register the
+    // disarm call is about to set.
     let baseline_restored = match engine
         .as_ref()
         .and_then(CommissioningEngine::entry_snapshot)
@@ -1429,9 +1374,8 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         None => false,
     };
 
-    // Every path that does not continue into robustness -- `CompleteCandidate`,
-    // a non-promoted `Complete`, and every fault -- disarms the workflow as
-    // before, forcing a fault terminal if the disarm SPI itself fails.
+    // Every path -- `CompleteCandidate`, `Complete`, and every fault -- disarms
+    // the workflow, forcing a fault terminal if the disarm SPI itself fails.
     if !disarm_velocity_workflow(engine, backend, state).await || !baseline_restored {
         retention.stage_c.observe_fault();
         dispatch.terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
