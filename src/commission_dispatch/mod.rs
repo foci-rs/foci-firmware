@@ -603,11 +603,38 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             if terminal.outcome != crate::commissioning::types::RobustnessOutcome::Complete {
                 let restored = match consumed.entry_snapshot() {
                     Some(snapshot) => {
-                        restore::restore_entry_snapshot_to_registers(backend, &snapshot)
-                            .await
-                            .is_ok()
+                        match restore::restore_entry_snapshot_to_registers(backend, &snapshot).await
+                        {
+                            Ok(()) => true,
+                            Err(err) => {
+                                // `restore::RestoreError` is generic over the
+                                // backend's SPI error type, which is not
+                                // `defmt::Format`-bound here; log the variant
+                                // instead of the whole error so a transport
+                                // failure is still distinguishable from a
+                                // readback mismatch or an invalid-gains
+                                // rejection.
+                                let variant = match err {
+                                    restore::RestoreError::Spi(_) => "spi",
+                                    restore::RestoreError::InvalidGains => "invalid_gains",
+                                    restore::RestoreError::PiRepresentation => "pi_representation",
+                                    restore::RestoreError::VelocityClamp => "velocity_clamp",
+                                    restore::RestoreError::Readback => "readback",
+                                };
+                                defmt::error!(
+                                    "robustness terminal: baseline restore failed: {}",
+                                    variant
+                                );
+                                false
+                            }
+                        }
                     }
-                    None => false,
+                    None => {
+                        defmt::error!(
+                            "robustness terminal: no entry snapshot to restore baseline from"
+                        );
+                        false
+                    }
                 };
                 if !restored {
                     terminal.outcome = crate::commissioning::types::RobustnessOutcome::Failed;

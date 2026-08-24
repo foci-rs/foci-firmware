@@ -2853,3 +2853,49 @@ async fn robustness_restore_failure_maps_to_safety_fault() {
 
     clear_motor_sentinel();
 }
+
+/// Distinct from `robustness_restore_failure_maps_to_safety_fault`: this
+/// drives the generic (non-staged) handler directly with an engine that was
+/// never in `Outer` mode, so `entry_snapshot()` returns `None` rather than a
+/// restore call returning `Err`. Both must land on the same
+/// `Failed`/`SAFETY_FAULT` terminal.
+#[fixture_test]
+async fn robustness_missing_entry_snapshot_maps_to_safety_fault() {
+    use crate::commissioning::types::RobustnessOutcome;
+
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_calibrate(0));
+    seed_motor_sentinel(&mut backend).await;
+
+    let outcome = drive_commission_result(
+        StepResult::RobustnessReversalTerminal(robustness_reject_terminal(
+            robustness::ROBUSTNESS_CAUSE_IAE_EXCEEDED,
+        )),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+
+    let CommissionOutcome::Terminal { reply, .. } = outcome else {
+        panic!("expected a terminal outcome");
+    };
+    let ReplyPayload::RobustnessReversalTerminal { terminal, .. } = reply else {
+        panic!("expected RobustnessReversalTerminal");
+    };
+    assert_eq!(
+        terminal.outcome,
+        RobustnessOutcome::Failed,
+        "a missing entry snapshot must override the original reject outcome"
+    );
+    assert_eq!(
+        terminal.cause,
+        robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT,
+        "a missing entry snapshot must report the safety-fault cause the host checks"
+    );
+
+    clear_motor_sentinel();
+}
