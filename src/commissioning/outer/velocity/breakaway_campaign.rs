@@ -4788,11 +4788,19 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         forward,
         reverse,
     };
-    let done = match outcome {
+    let (done, campaign_cause, error_code) = match outcome {
         BandConfirmationOutcome::Accepted { acceptance, plan } => {
-            route_confirmed_accept(acceptance, plan, inputs, safety, backend)
+            let done = route_confirmed_accept(acceptance, plan, inputs, safety, backend);
+            let (campaign_cause, error_code) = match &done {
+                BreakawayCampaignOutcome::StageCPlanReady(_) => (cause, 0),
+                BreakawayCampaignOutcome::Terminal { error, .. } => (
+                    super::breakaway_reporting::BreakawayTerminalCause::ConfirmationStageCPlanRefused,
+                    error.status_code(),
+                ),
+            };
+            (done, campaign_cause, error_code)
         }
-        other => confirmation_terminal(other),
+        other => (confirmation_terminal(other), cause, 0),
     };
     let (accepted, stage_c_plan_digest) = match &done {
         BreakawayCampaignOutcome::StageCPlanReady(plan) => (true, plan.digest()),
@@ -4800,10 +4808,10 @@ fn confirmation_done_advance<B: CommissioningBackend>(
     };
     let campaign_terminal = campaign_terminal_event(
         BreakawayPhase::Confirmation,
-        cause,
+        campaign_cause,
         accepted,
         stage_c_plan_digest,
-        0,
+        error_code,
         inputs,
         evidence_sequence,
     );

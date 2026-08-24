@@ -113,6 +113,15 @@ pub(crate) enum BreakawayTerminalCause {
     DiscoveryInternalFault = 24,
     /// A confirmation fault that carries no safety fault.
     ConfirmationInternalFault = 25,
+    /// A confirmation genuinely accepted the held-out block, but
+    /// `route_confirmed_accept` refused to build a Stage-C plan (transition
+    /// capability, physical-context match, or recovery-geometry/duration
+    /// admission). See the campaign terminal's `error_code` for the specific
+    /// `CommissionError`. Distinct from `Accepted`: this is a legitimate,
+    /// non-safety-fault divergence between confirmation acceptance and
+    /// Stage-C plan-buildability -- the two are deliberately separate,
+    /// stacked admission gates.
+    ConfirmationStageCPlanRefused = 26,
 }
 
 /// Relative standard error above which no achievable response location could

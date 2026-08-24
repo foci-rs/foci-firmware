@@ -2988,6 +2988,63 @@ fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_stage_c_without_motion() 
     assert!(backend.spi_log.is_empty());
 }
 
+#[test]
+fn a_confirmed_accept_whose_stage_c_plan_build_is_refused_reports_a_distinct_campaign_cause() {
+    let (acceptance, plan) = accepted_confirmation(1_024);
+    let session =
+        BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
+    // Same starved-torque fixture as
+    // `an_accept_whose_confirmed_p_fails_6a_safety_refuses_stage_c_without_motion`:
+    // a torque authority of 1 cannot carry any nonzero I prefix at the confirmed
+    // P, so `plan_breakaway_velocity_integral_response` refuses with
+    // `VelocityValidationFailed`.
+    let inputs = stage_c_inputs(1);
+    let safety = test_safety();
+    let backend = test_backend();
+    let mut evidence_sequence = 0_u16;
+
+    let advance = confirmation_done_advance(
+        BandConfirmationOutcome::Accepted { acceptance, plan },
+        &session,
+        &inputs,
+        &safety,
+        &backend,
+        &mut evidence_sequence,
+    );
+
+    let CampaignAdvance::Emit { now, next } = advance else {
+        panic!("expected an Emit advance");
+    };
+    let BreakawayCampaignEvent::ConfirmationTerminal { terminal, .. } = now else {
+        panic!("expected the confirmation terminal, got {now:?}");
+    };
+    // Confirmation itself genuinely succeeded -- this fix must not touch it.
+    assert_eq!(
+        terminal.terminal_cause,
+        BreakawayTerminalCause::Accepted as u8
+    );
+    assert_eq!(terminal.accepted, 1);
+
+    let EmitContinuation::Terminal {
+        campaign_terminal,
+        done,
+    } = next
+    else {
+        panic!("expected a Terminal continuation");
+    };
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::ConfirmationStageCPlanRefused as u8
+    );
+    assert_eq!(campaign_terminal.accepted, 0);
+    assert_eq!(campaign_terminal.stage_c_plan_digest, 0);
+    assert_eq!(
+        campaign_terminal.error_code,
+        CommissionError::VelocityValidationFailed.status_code()
+    );
+    assert!(matches!(done, BreakawayCampaignOutcome::Terminal { .. }));
+}
+
 // --- Non-accept confirmation terminals never carry a Stage-C plan -------------
 
 #[test]
