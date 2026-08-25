@@ -305,8 +305,26 @@ impl OuterSafetyLimits {
         counts_per_rev: u32,
     ) -> Result<(), EncoderMathError> {
         self.configure_velocity_sweep_encoder_resolution(counts_per_rev)?;
+        self.reserve_absolute_window_settle_travel(counts_per_rev);
         self.open_position_window_to_headroom();
         Ok(())
+    }
+
+    /// Pad the absolute negative/positive windows by the host-declared
+    /// settle travel reserve, in counts.
+    ///
+    /// The absolute headroom otherwise has no allowance for a phase's own
+    /// transient, unlike the local window: the host already folds
+    /// `settle_travel_reserve_mrev` into `max_stroke_travel_mrev`, so the
+    /// local budget assumes that much room is available. Giving the
+    /// absolute windows the same reserve keeps them at least as permissive
+    /// as what the local budget already promised the primitive.
+    fn reserve_absolute_window_settle_travel(&mut self, counts_per_rev: u32) {
+        let reserve_counts = mrev_to_counts(self.budget.settle_travel_reserve_mrev, counts_per_rev);
+        self.negative_position_window =
+            self.negative_position_window.saturating_add(reserve_counts);
+        self.positive_position_window =
+            self.positive_position_window.saturating_add(reserve_counts);
     }
 
     /// Configure encoder-domain safety for the Stage-C `VelocityIntegral`
@@ -1257,13 +1275,78 @@ mod tests {
         assert_eq!(sweep_safety.negative_position_window, 16_000);
         assert_eq!(sweep_safety.positive_position_window, 20_000);
 
+        // The absolute windows carry the same settle_travel_reserve_mrev the
+        // local budget already assumes it may spend, so a phase's own
+        // transient has the same allowance on both branches (400 counts at
+        // 100 mrev reserve / 4_000 counts-per-rev): 16_000+400 and 20_000+400.
         let mut robustness_safety = OuterSafetyLimits::new(100, budget);
         robustness_safety
             .configure_robustness_encoder_resolution(4_000)
             .unwrap();
-        assert_eq!(robustness_safety.position_window, 16_000);
-        assert_eq!(robustness_safety.negative_position_window, 16_000);
-        assert_eq!(robustness_safety.positive_position_window, 20_000);
+        assert_eq!(robustness_safety.position_window, 16_400);
+        assert_eq!(robustness_safety.negative_position_window, 16_400);
+        assert_eq!(robustness_safety.positive_position_window, 20_400);
+    }
+
+    /// A transient landing just past raw headroom must now pass; a transient
+    /// beyond the reserve must still fault -- the reserve bounds the
+    /// allowance, it does not remove the check.
+    #[test]
+    fn robustness_absolute_window_tolerates_a_transient_within_the_reserve() {
+        pollster::block_on(async {
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            budget.negative_position_headroom_mrev = 100;
+            budget.positive_position_headroom_mrev = 200;
+            let mut safety = OuterSafetyLimits::new(100, budget);
+            safety
+                .configure_robustness_encoder_resolution(4_000)
+                .unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
+            safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
+            // Raw positive headroom is 800 counts; the identical setup through
+            // the plain (non-robustness) path faults here today
+            // (see outer_safety_asymmetric_window_catches_cumulative_drift).
+            safety.unwrapped_position = 799;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            assert_eq!(
+                check_outer_safety(&mut safety, &mut backend).await,
+                Ok(None),
+                "801 counts is past raw headroom (800) but within the 400-count reserve"
+            );
+        });
+    }
+
+    #[test]
+    fn robustness_absolute_window_still_faults_beyond_the_reserve() {
+        pollster::block_on(async {
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            budget.negative_position_headroom_mrev = 100;
+            budget.positive_position_headroom_mrev = 200;
+            let mut safety = OuterSafetyLimits::new(100, budget);
+            safety
+                .configure_robustness_encoder_resolution(4_000)
+                .unwrap();
+            safety.set_encoder_baseline(0).unwrap();
+            safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
+            safety.next_safety_sample_us = OuterSafetyTimestamp::some(1_000).unwrap();
+            // Reserved positive window is 800 + 400 = 1_200 counts; 1_199 + 2
+            // crosses it.
+            safety.unwrapped_position = 1_199;
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 2;
+
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("the observation should succeed")
+                .expect("drift beyond the reserved window must still fault");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_POSITION);
+        });
     }
 
     /// The Stage-C `VelocityIntegral` phase's `position_local` window
