@@ -58,6 +58,30 @@ pub struct TmcConfig {
     pub resistance_scale_metadata_validated: bool,
 }
 
+/// Which physical encoder drives a TMC4671 selection register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum FeedbackSource {
+    /// ABN (quadrature) encoder.
+    Abn,
+    /// Analog or Hall-effect encoder, read through the AENC input.
+    Analog,
+}
+
+/// A channel's steady-state feedback wiring, mirroring the TMC4671's two
+/// independent selection registers (`PHI_E_SELECTION`, `POSITION_SELECTION`).
+///
+/// Describes board wiring, not live register state: commissioning routines
+/// (e.g. electrical identification's open-loop phase) may transiently write a
+/// selection register to a value other than what's declared here. See
+/// `current_loop_actionable_status_mask`'s "Known limitation" doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct FeedbackConfig {
+    /// Source driving `PHI_E_SELECTION` (commutation angle) at steady state.
+    pub phi_e_source: FeedbackSource,
+    /// Source driving `POSITION_SELECTION` (mechanical position) at steady state.
+    pub position_source: FeedbackSource,
+}
+
 impl TmcConfig {
     /// PWM switching frequency in Hz (datasheet section 4.9.3):
     /// `fPWM = 4 * fCLK / (PWM_MAXCNT + 1)`
@@ -144,6 +168,17 @@ impl TmcConfig {
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
             resistance_scale_metadata_validated: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl FeedbackConfig {
+    /// ABN on both selectors — every board's configuration today.
+    pub const fn abn_abn() -> Self {
+        Self {
+            phi_e_source: FeedbackSource::Abn,
+            position_source: FeedbackSource::Abn,
         }
     }
 }
@@ -304,5 +339,12 @@ mod tests {
         assert_eq!(profile.bbm_l, cfg.bbm_l);
         assert_eq!(profile.dsadc_mdec_a, cfg.dsadc_mdec_a);
         assert_eq!(profile.dsadc_mdec_b, cfg.dsadc_mdec_b);
+    }
+
+    #[test]
+    fn feedback_config_abn_abn_is_abn_on_both_selectors() {
+        let config = FeedbackConfig::abn_abn();
+        assert_eq!(config.phi_e_source, FeedbackSource::Abn);
+        assert_eq!(config.position_source, FeedbackSource::Abn);
     }
 }
