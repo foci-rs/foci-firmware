@@ -77,6 +77,247 @@ macro_rules! __commission_reply_manifest {
                 reply: foci_firmware::ankyra::replies::FociCommissionTiming,
                 fields: { oid: u8, method: u8, status: u8, requested_period_us: u16, valid_samples: u16, missed_samples: u16, max_consecutive_misses: u8, max_lateness_us: u32, max_interval_us: u32, max_poll_wall_us: u32, max_spi_wall_us: u32 },
             }
+            entry {
+                name: foci_rung_origin_recovery_summary,
+                doc: "Emit one compact rung-origin recovery summary.",
+                reply: foci_firmware::ankyra::replies::FociRungOriginRecoverySummary,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, stage: u8, rung_index: u8, p_raw: u16, binding_source: u8, outcome: u8 },
+            }
+            entry {
+                name: foci_velocity_primitive_current_evidence,
+                doc: "Emit causal current-limit evidence for one velocity primitive.",
+                reply: foci_firmware::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, stage: u8, rung_index: u8, slot: u8, clamp_limit: u16, clamp_readback: u16, moving_pid_output_peak: u16, zero_pid_output_peak: u16, moving_status_flags: u32, zero_status_flags: u32, capability: u8, contact: u8 },
+            }
+            entry {
+                name: foci_commissioning_workflow_plan,
+                doc: "Emit the command-level workflow envelope.",
+                reply: foci_firmware::ankyra::replies::FociCommissioningWorkflowPlan,
+                fields: { oid: u8, run_sequence: u32, shape: u8, digest_low: u32, digest_high: u32, nominal_workflow_ms: u32, maximum_workflow_ms: u32 },
+            }
+            entry {
+                name: foci_velocity_integral_plan_core,
+                doc: "Emit the Stage-C plan identity.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanCore,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, stage_b_digest_low: u32, stage_b_digest_high: u32, build_features: u16, build_identity: u32, schema_revision: u16, channel: u8, final_p: u16 },
+            }
+            entry {
+                name: foci_velocity_integral_plan_geometry,
+                doc: "Emit the Stage-C plan geometry.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanGeometry,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, planned_velocity_mrev_s: u32, target_velocity_rpm: i32, pwm_hz: u32, encoder_counts_per_rev: u32, i_start: u16, positive_rung_count: u8, family_size: u16, total_rung_count: u8, expected_observations: u16, hard_torque_limit: u16, usable_torque_limit: u16 },
+            }
+            entry {
+                name: foci_velocity_integral_plan_authority,
+                doc: "Emit one direction of Stage-C authority.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanAuthority,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, directional_membership: u32, joint_membership: u32, directional_validity: u8, reduced_margin: u8, pooled_low_q16: i32, pooled_high_q16: i32 },
+            }
+            entry {
+                name: foci_velocity_integral_plan_timing,
+                doc: "Emit Stage-C schedule timing.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanTiming,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, moving_stroke_us: u32, zero_settle_us: u32, analysis_budget_us: u32, nominal_workflow_ms: u32, maximum_workflow_ms: u32 },
+            }
+            entry {
+                name: foci_velocity_integral_plan_travel,
+                doc: "Emit Stage-C travel identity.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanTravel,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, max_stroke_travel_mrev: u32, settle_travel_reserve_mrev: u32, negative_position_headroom_mrev: u32, positive_position_headroom_mrev: u32 },
+            }
+            entry {
+                name: foci_velocity_integral_plan_recovery,
+                doc: "Emit Stage-C recovery geometry and reserved schedule.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanRecovery,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, origin_band_counts: u32, nominal_slot_us: u32, maximum_slot_us: u32, slot_count: u8, flags: u8 },
+            }
+            entry {
+                name: foci_velocity_integral_plan_rung,
+                doc: "Emit one exact positive-I plan rung.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanRung,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, rung_index: u8, i_raw: u16, tau_us: u32 },
+            }
+            entry {
+                name: foci_velocity_integral_observation_core,
+                doc: "Emit Stage-C observation identity.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralObservationCore,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, rung_index: u8, slot: u8, i_raw: u16, direction: u8, classification: u8, initial_lead_in: u8, peak_torque_target_abs: u16 },
+            }
+            entry {
+                name: foci_velocity_integral_observation_rate,
+                doc: "Emit Stage-C observation rate evidence.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralObservationRate,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, settled_low: i32, settled_mean: i32, settled_high: i32, settled_shift: u8, deficit_low_q: i32, deficit_high_q: i32 },
+            }
+            entry {
+                name: foci_velocity_integral_observation_quality,
+                doc: "Emit Stage-C observation stationarity quality.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralObservationQuality,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, suffix_len: u16, level_or_exclusion: u8, selected_blocks: u32, slope_mantissa: i32, slope_shift: u8, slope_half_width_mantissa: u32, slope_half_width_shift: u8, lag_one_q: i32, lag_one_half_width_q: u32, residual_mantissa: u32, residual_shift: u8, tested_suffixes: u8 },
+            }
+            entry {
+                name: foci_velocity_integral_rung_core,
+                doc: "Emit one Stage-C directional rung verdict.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralRungCore,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, rung_index: u8, i_raw: u16, direction: u8, kind: u8, classification: u8, component_count: u8, usable_mask: u8, included_mask: u8, observation_classes: u16 },
+            }
+            entry {
+                name: foci_velocity_integral_rung_component,
+                doc: "Emit one exact Stage-C consensus component.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralRungComponent,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, rung_index: u8, direction: u8, component: u8, low_q: i32, high_q: i32 },
+            }
+            entry {
+                name: foci_velocity_integral_run_summary,
+                doc: "Emit Stage-C run sufficiency and membership.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralRunSummary,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, forward_eligible_mask: u32, reverse_eligible_mask: u32, opening_available_mask: u8, bookend_available_mask: u8, current_terminus_plus_one: u8, sufficient_direction_mask: u8 },
+            }
+            entry {
+                name: foci_velocity_integral_curve_interval,
+                doc: "Emit one exact Stage-C curve interval.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralCurveInterval,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, kind: u8, direction: u8, rung_index: u8, low_q: i32, high_q: i32 },
+            }
+            entry {
+                name: foci_velocity_integral_drift,
+                doc: "Emit one direction's opening-to-bookend drift.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralDrift,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, available: u8, opening_low_q: i32, opening_high_q: i32, closing_low_q: i32, closing_high_q: i32 },
+            }
+            entry {
+                name: foci_velocity_integral_stage_b_comparison,
+                doc: "Emit fresh-anchor comparison with retained Stage-B disturbance.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralStageBComparison,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, available: u8, stage_b_low_q16: i32, stage_b_high_q16: i32, expected_low_q: i32, expected_high_q: i32, opening_low_q: i32, opening_high_q: i32 },
+            }
+            entry {
+                name: foci_velocity_integral_reproduction_core,
+                doc: "Emit the Stage-C reproduction class.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionCore,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, outcome: u8, direction_mask: u8 },
+            }
+            entry {
+                name: foci_velocity_integral_reproduction_mask,
+                doc: "Emit one direction's Stage-C reproduction masks.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionMask,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, previous_mask: u32, current_mask: u32, shared_mask: u32, reproduced_mask: u32, divergent_mask: u32, previous_only_mask: u32, current_only_mask: u32 },
+            }
+            entry {
+                name: foci_velocity_integral_reproduction_interval,
+                doc: "Emit one reproduced or divergent Stage-C interval comparison.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionInterval,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, rung_index: u8, kind: u8, previous_low_q: i32, previous_high_q: i32, current_low_q: i32, current_high_q: i32, result_low_or_gap_q: i32, result_high_q: i32 },
+            }
+            entry {
+                name: foci_velocity_integral_reproduction_digest,
+                doc: "Emit exact Stage-C reproduction run digests.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionDigest,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, previous_digest_low: u32, previous_digest_high: u32, current_digest_low: u32, current_digest_high: u32 },
+            }
+            entry {
+                name: foci_velocity_integral_terminal_core,
+                doc: "Emit the Stage-C terminal class and completeness.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminalCore,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, outcome: u8, cause: u8, cause_namespace: u8, recovery_flags: u8, rest_boundary_rung_plus_one: u8, rest_boundary_slot_plus_one: u8, expected_observations: u16, emitted_observations: u16, expected_rungs: u16, emitted_rungs: u16 },
+            }
+            entry {
+                name: foci_velocity_integral_terminal_identity,
+                doc: "Emit exact Stage-C terminal identity.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminalIdentity,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, digest_low: u32, digest_high: u32 },
+            }
+            entry {
+                name: foci_velocity_integral_terminal_timing,
+                doc: "Emit Stage-C terminal timing.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminalTiming,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, started_low: u32, started_high: u32, completed_low: u32, completed_high: u32 },
+            }
+            entry {
+                name: foci_acceptance_matrix_plan,
+                doc: "Emit one immutable fixed-I confidence-matrix plan.",
+                reply: foci_firmware::ankyra::replies::FociAcceptanceMatrixPlan<'_>,
+                fields: { oid: u8, fragment: u8, payload: &[u8] },
+            }
+            entry {
+                name: foci_robustness_reversal_terminal,
+                doc: "Emit one compact reversal-standstill robustness-gate terminal.",
+                reply: foci_firmware::ankyra::replies::FociRobustnessReversalTerminal<'_>,
+                fields: { oid: u8, payload: &[u8] },
+            }
+            entry {
+                name: foci_breakaway_probe_plan,
+                doc: "Emit the immutable breakaway-probe plan.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayProbePlan,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, max_observations: u8, search_count: u8, p_start_raw: u16, p_top_raw: u16, motion_threshold_counts: u32, max_capture_interval_us: u32 },
+            }
+            entry {
+                name: foci_breakaway_probe_result,
+                doc: "Emit the resolved repeatable-motion rung.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayProbeResult,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, rung_index: u8, breakaway_p_raw: u16, motion_threshold_counts: u32, observation_count: u8 },
+            }
+            entry {
+                name: foci_breakaway_probe_terminal,
+                doc: "Emit a probe-campaign terminal that did not resolve a breakaway.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayProbeTerminal,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, terminal_cause: u8, has_safety_fault: u8 },
+            }
+            entry {
+                name: foci_breakaway_discovery_plan_identity,
+                doc: "Emit the additive discovery plan's identity fragment.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayDiscoveryPlanIdentity,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16 },
+            }
+            entry {
+                name: foci_breakaway_discovery_plan_geometry,
+                doc: "Emit the additive discovery plan's geometry fragment.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayDiscoveryPlanGeometry,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, schema_revision: u16, rung_count: u8, observations_per_direction: u16, floor_p_raw: u16, floor_origin: u8, breakaway_p_raw: u16, ceiling_p_raw: u16, first_additive_step_raw: u32, maximum_workflow_ms: u32 },
+            }
+            entry {
+                name: foci_breakaway_ceiling_source,
+                doc: "Emit which `p_top` candidate bound the additive-discovery authority",
+                doc: "ceiling.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayCeilingSource,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, binding_source: u8 },
+            }
+            entry {
+                name: foci_breakaway_rung_zero_diagnostic,
+                doc: "Emit whether the additive ladder's rung zero itself showed motion.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayRungZeroDiagnostic,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, forward_moved: u8, reverse_moved: u8 },
+            }
+            entry {
+                name: foci_breakaway_discovery_terminal,
+                doc: "Emit a discovery-campaign terminal.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayDiscoveryTerminal,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16, terminal_cause: u8, collected_count: u8, has_safety_fault: u8 },
+            }
+            entry {
+                name: foci_breakaway_confirmation_plan,
+                doc: "Emit the immutable held-out confirmation plan.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayConfirmationPlan,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16, observations_per_direction: u16, candidate_p_raw: u16, band_lower_percent: u8, band_upper_percent: u8, capture_profile: u8, acceptance_rule: u8, nominated_margin_percent_milli: i32 },
+            }
+            entry {
+                name: foci_breakaway_confirmation_terminal_identity,
+                doc: "Emit the confirmation terminal's identity fragment.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayConfirmationTerminalIdentity,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16, terminal_cause: u8 },
+            }
+            entry {
+                name: foci_breakaway_confirmation_terminal_masks,
+                doc: "Emit the confirmation terminal's mask/acceptance fragment.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayConfirmationTerminalMasks,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, forward_collected_mask: u8, forward_eligible_mask: u8, forward_included_mask: u8, reverse_collected_mask: u8, reverse_eligible_mask: u8, reverse_included_mask: u8, accepted: u8, confirmed_p_raw: u16, max_relative_se_permille: u16, required_relative_se_permille: u16, has_safety_fault: u8 },
+            }
+            entry {
+                name: foci_breakaway_campaign_terminal,
+                doc: "Emit the canonical closure record for one complete breakaway campaign.",
+                reply: foci_firmware::ankyra::replies::FociBreakawayCampaignTerminal,
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, phase: u8, terminal_cause: u8, accepted: u8, stage_c_plan_digest_low: u32, stage_c_plan_digest_high: u32, error_code: u8 },
+            }
         }
     };
 }
@@ -167,287 +408,6 @@ pub trait CommissionReplySink {
 
     /// Emit Stage 2 safety-envelope evidence before the terminal tune result.
     fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault);
-
-    /// Emit one compact rung-origin recovery summary.
-    fn foci_rung_origin_recovery_summary(
-        &mut self,
-        _report: crate::ankyra::replies::FociRungOriginRecoverySummary,
-    ) {
-    }
-
-    /// Emit causal current-limit evidence for one velocity primitive.
-    fn foci_velocity_primitive_current_evidence(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
-    ) {
-    }
-
-    /// Emit the command-level workflow envelope.
-    fn foci_commissioning_workflow_plan(
-        &mut self,
-        _report: crate::ankyra::replies::FociCommissioningWorkflowPlan,
-    ) {
-    }
-
-    /// Emit the Stage-C plan identity.
-    fn foci_velocity_integral_plan_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralPlanCore,
-    ) {
-    }
-
-    /// Emit the Stage-C plan geometry.
-    fn foci_velocity_integral_plan_geometry(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralPlanGeometry,
-    ) {
-    }
-
-    /// Emit one direction of Stage-C authority.
-    fn foci_velocity_integral_plan_authority(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralPlanAuthority,
-    ) {
-    }
-
-    /// Emit Stage-C schedule timing.
-    fn foci_velocity_integral_plan_timing(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralPlanTiming,
-    ) {
-    }
-
-    /// Emit Stage-C travel identity.
-    fn foci_velocity_integral_plan_travel(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralPlanTravel,
-    ) {
-    }
-
-    /// Emit Stage-C recovery geometry and reserved schedule.
-    fn foci_velocity_integral_plan_recovery(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralPlanRecovery,
-    ) {
-    }
-
-    /// Emit one exact positive-I plan rung.
-    fn foci_velocity_integral_plan_rung(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralPlanRung,
-    ) {
-    }
-
-    /// Emit Stage-C observation identity.
-    fn foci_velocity_integral_observation_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralObservationCore,
-    ) {
-    }
-
-    /// Emit Stage-C observation rate evidence.
-    fn foci_velocity_integral_observation_rate(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralObservationRate,
-    ) {
-    }
-
-    /// Emit Stage-C observation stationarity quality.
-    fn foci_velocity_integral_observation_quality(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralObservationQuality,
-    ) {
-    }
-
-    /// Emit one Stage-C directional rung verdict.
-    fn foci_velocity_integral_rung_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralRungCore,
-    ) {
-    }
-
-    /// Emit one exact Stage-C consensus component.
-    fn foci_velocity_integral_rung_component(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralRungComponent,
-    ) {
-    }
-
-    /// Emit Stage-C run sufficiency and membership.
-    fn foci_velocity_integral_run_summary(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralRunSummary,
-    ) {
-    }
-
-    /// Emit one exact Stage-C curve interval.
-    fn foci_velocity_integral_curve_interval(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralCurveInterval,
-    ) {
-    }
-
-    /// Emit one direction's opening-to-bookend drift.
-    fn foci_velocity_integral_drift(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralDrift,
-    ) {
-    }
-
-    /// Emit fresh-anchor comparison with retained Stage-B disturbance.
-    fn foci_velocity_integral_stage_b_comparison(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralStageBComparison,
-    ) {
-    }
-
-    /// Emit the Stage-C reproduction class.
-    fn foci_velocity_integral_reproduction_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralReproductionCore,
-    ) {
-    }
-
-    /// Emit one direction's Stage-C reproduction masks.
-    fn foci_velocity_integral_reproduction_mask(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralReproductionMask,
-    ) {
-    }
-
-    /// Emit one reproduced or divergent Stage-C interval comparison.
-    fn foci_velocity_integral_reproduction_interval(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralReproductionInterval,
-    ) {
-    }
-
-    /// Emit exact Stage-C reproduction run digests.
-    fn foci_velocity_integral_reproduction_digest(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralReproductionDigest,
-    ) {
-    }
-
-    /// Emit the Stage-C terminal class and completeness.
-    fn foci_velocity_integral_terminal_core(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralTerminalCore,
-    ) {
-    }
-
-    /// Emit exact Stage-C terminal identity.
-    fn foci_velocity_integral_terminal_identity(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralTerminalIdentity,
-    ) {
-    }
-
-    /// Emit Stage-C terminal timing.
-    fn foci_velocity_integral_terminal_timing(
-        &mut self,
-        _report: crate::ankyra::replies::FociVelocityIntegralTerminalTiming,
-    ) {
-    }
-
-    /// Emit one immutable fixed-I confidence-matrix plan.
-    fn foci_acceptance_matrix_plan(
-        &mut self,
-        _report: crate::ankyra::replies::FociAcceptanceMatrixPlan<'_>,
-    ) {
-    }
-
-    /// Emit one compact reversal-standstill robustness-gate terminal.
-    fn foci_robustness_reversal_terminal(
-        &mut self,
-        _report: crate::ankyra::replies::FociRobustnessReversalTerminal<'_>,
-    ) {
-    }
-
-    /// Emit the immutable breakaway-probe plan.
-    fn foci_breakaway_probe_plan(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayProbePlan,
-    ) {
-    }
-
-    /// Emit the resolved repeatable-motion rung.
-    fn foci_breakaway_probe_result(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayProbeResult,
-    ) {
-    }
-
-    /// Emit a probe-campaign terminal that did not resolve a breakaway.
-    fn foci_breakaway_probe_terminal(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayProbeTerminal,
-    ) {
-    }
-
-    /// Emit the additive discovery plan's identity fragment.
-    fn foci_breakaway_discovery_plan_identity(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayDiscoveryPlanIdentity,
-    ) {
-    }
-
-    /// Emit the additive discovery plan's geometry fragment.
-    fn foci_breakaway_discovery_plan_geometry(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayDiscoveryPlanGeometry,
-    ) {
-    }
-
-    /// Emit which `p_top` candidate bound the additive-discovery authority
-    /// ceiling.
-    fn foci_breakaway_ceiling_source(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayCeilingSource,
-    ) {
-    }
-
-    /// Emit whether the additive ladder's rung zero itself showed motion.
-    fn foci_breakaway_rung_zero_diagnostic(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayRungZeroDiagnostic,
-    ) {
-    }
-
-    /// Emit a discovery-campaign terminal.
-    fn foci_breakaway_discovery_terminal(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayDiscoveryTerminal,
-    ) {
-    }
-
-    /// Emit the immutable held-out confirmation plan.
-    fn foci_breakaway_confirmation_plan(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayConfirmationPlan,
-    ) {
-    }
-
-    /// Emit the confirmation terminal's identity fragment.
-    fn foci_breakaway_confirmation_terminal_identity(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayConfirmationTerminalIdentity,
-    ) {
-    }
-
-    /// Emit the confirmation terminal's mask/acceptance fragment.
-    fn foci_breakaway_confirmation_terminal_masks(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayConfirmationTerminalMasks,
-    ) {
-    }
-
-    /// Emit the canonical closure record for one complete breakaway campaign.
-    fn foci_breakaway_campaign_terminal(
-        &mut self,
-        _report: crate::ankyra::replies::FociBreakawayCampaignTerminal,
-    ) {
-    }
 
     /// Emit the ADC calibration result.
     fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult);
