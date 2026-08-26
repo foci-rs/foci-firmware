@@ -246,6 +246,10 @@ pub trait CommissionBoardConfig {
     /// Board-specific TMC4671 configuration.
     fn tmc_config(&self) -> &TmcConfig;
 
+    /// This channel's feedback wiring (which encoder drives each TMC4671
+    /// selection register).
+    fn feedback_config(&self) -> crate::config::FeedbackConfig;
+
     /// Host-configured torque filter cutoff, including explicit zero disable.
     fn configured_torque_filter_hz(&self) -> Option<u16> {
         None
@@ -341,6 +345,9 @@ pub trait CommissionEnablePinAccess {
 pub trait CommissionConfigAccess {
     /// Board-specific TMC4671 configuration.
     fn commission_tmc_config(&self) -> &'static TmcConfig;
+
+    /// This channel's feedback wiring.
+    fn commission_feedback_config(&self) -> crate::config::FeedbackConfig;
 }
 
 /// Opt-in timing hooks for shared commissioning timing impls.
@@ -387,6 +394,9 @@ pub trait CommissionTraceAccess {
 pub trait CommissionBackendHooks {
     /// Board-specific TMC4671 configuration.
     fn commission_tmc_config() -> &'static TmcConfig;
+
+    /// Board-specific per-channel feedback wiring, indexed by channel.
+    fn commission_feedback_configs() -> &'static [crate::config::FeedbackConfig];
 
     /// Microseconds elapsed since the board monotonic epoch.
     fn commission_elapsed_us() -> u64;
@@ -488,6 +498,10 @@ where
 {
     fn commission_tmc_config(&self) -> &'static TmcConfig {
         Hooks::commission_tmc_config()
+    }
+
+    fn commission_feedback_config(&self) -> crate::config::FeedbackConfig {
+        Hooks::commission_feedback_configs()[self.channel as usize]
     }
 }
 
@@ -639,6 +653,10 @@ where
 
     fn tmc_config(&self) -> &TmcConfig {
         self.commission_tmc_config()
+    }
+
+    fn feedback_config(&self) -> crate::config::FeedbackConfig {
+        self.commission_feedback_config()
     }
 
     fn configured_torque_filter_hz(&self) -> Option<u16> {
@@ -801,6 +819,14 @@ mod tests {
         resistance_max_expected_current_count: 1600,
         resistance_scale_metadata_validated: false,
     };
+    static TEST_FEEDBACK_CONFIGS: [crate::config::FeedbackConfig; 8] = {
+        let mut configs = [crate::config::FeedbackConfig::abn_abn(); 8];
+        configs[3] = crate::config::FeedbackConfig {
+            phi_e_source: crate::config::FeedbackSource::Analog,
+            position_source: crate::config::FeedbackSource::Abn,
+        };
+        configs
+    };
     static ELAPSED_US: AtomicU64 = AtomicU64::new(0);
     static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
     static LAST_DELAY_US: AtomicU32 = AtomicU32::new(0);
@@ -887,6 +913,10 @@ mod tests {
             &TEST_CONFIG
         }
 
+        fn commission_feedback_configs() -> &'static [crate::config::FeedbackConfig] {
+            &TEST_FEEDBACK_CONFIGS
+        }
+
         fn commission_elapsed_us() -> u64 {
             ELAPSED_US.load(Relaxed)
         }
@@ -947,6 +977,35 @@ mod tests {
         );
 
         assert_eq!(backend.motor_pole_pairs(), 50);
+    }
+
+    #[fixture_test]
+    fn shared_backend_reads_feedback_config_for_its_own_channel() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let backend = SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+            3,
+            &mut tmc,
+            &mut enable_pin,
+            &TEST_TMC_STATE,
+        );
+
+        // Channel 3's TEST_FEEDBACK_CONFIGS entry is deliberately distinct from
+        // every other channel's (see Step 4) — this only passes if the lookup is
+        // genuinely indexed by `self.channel`, not a hard-coded index or a
+        // channel-blind constant.
+        assert_eq!(
+            backend.feedback_config(),
+            crate::config::FeedbackConfig {
+                phi_e_source: crate::config::FeedbackSource::Analog,
+                position_source: crate::config::FeedbackSource::Abn,
+            }
+        );
     }
 
     #[fixture_test]

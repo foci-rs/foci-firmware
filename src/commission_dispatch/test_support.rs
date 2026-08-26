@@ -242,6 +242,8 @@ pub struct MockBackend {
     pub operational_voltage_limit_value: u32,
     /// Value returned by `tmc_config()`.
     pub tmc_config: TmcConfig,
+    /// Value returned by `feedback_config()`.
+    pub feedback_config: crate::config::FeedbackConfig,
     /// Optional torque-filter override returned by `configured_torque_filter_hz()`.
     pub configured_torque_filter_hz: Option<u16>,
     /// Optional flux-filter override returned by `configured_flux_filter_hz()`.
@@ -334,6 +336,7 @@ impl MockBackend {
             operational_voltage_limit_value:
                 crate::state::tmc::DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
             tmc_config: TmcConfig::default_for_test(),
+            feedback_config: crate::config::FeedbackConfig::abn_abn(),
             configured_torque_filter_hz: None,
             configured_flux_filter_hz: None,
             mechanical_encoder_position_counts_value: 0,
@@ -719,6 +722,10 @@ impl CommissionBoardConfig for MockBackend {
 
     fn tmc_config(&self) -> &TmcConfig {
         &self.tmc_config
+    }
+
+    fn feedback_config(&self) -> crate::config::FeedbackConfig {
+        self.feedback_config
     }
 
     fn configured_torque_filter_hz(&self) -> Option<u16> {
