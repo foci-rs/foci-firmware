@@ -1023,6 +1023,48 @@ pub fn compute_planner_velocity_offset_scaled(
     if dir_high { -magnitude } else { magnitude }
 }
 
+/// Compute the velocity feedforward offset directly in mechanical RPM.
+///
+/// # Parameters
+/// - `scale`: exact planner-timing mechanical-RPM ratio
+/// - `step_interval`: current step interval in TIM5 clock ticks (from atomic)
+/// - `dir_high`: true if the TMC4671 DIR input is high
+/// - `gain_permille`: unitless feedforward gain, in thousandths (1000 = unity)
+///
+/// Returns 0 if `step_interval == 0` or `gain_permille == 0` (motor idle or
+/// feedforward disabled).
+///
+/// With a positive STEP_WIDTH, the TMC4671 STEP/DIR input reports a
+/// negative velocity for DIR high and a positive velocity for DIR low.
+pub fn compute_planner_velocity_offset_rpm(
+    scale: crate::motion_scale::PlannerRpmScale,
+    step_interval: u32,
+    dir_high: bool,
+    gain_permille: u16,
+) -> i32 {
+    if step_interval == 0 || gain_permille == 0 {
+        return 0;
+    }
+    let mut numerators = [scale.numerator(), u64::from(gain_permille)];
+    let mut denominators = [scale.denominator(), u64::from(step_interval), 1_000];
+    let magnitude = round_ratio_to_cap(&mut numerators, &mut denominators, i32::MAX as u64) as i32;
+    if dir_high { -magnitude } else { magnitude }
+}
+
+/// Compute the signed command-RPM reference the RPM feedforward clamp bounds against.
+///
+/// This is the unity-gain (`gain_permille == 1_000`) case of
+/// `compute_planner_velocity_offset_rpm`, mirroring how
+/// `compute_planner_command_velocity_reference` relates to
+/// `compute_planner_velocity_offset_scaled`.
+pub fn compute_planner_command_rpm_reference(
+    scale: crate::motion_scale::PlannerRpmScale,
+    step_interval: u32,
+    dir_high: bool,
+) -> i32 {
+    compute_planner_velocity_offset_rpm(scale, step_interval, dir_high, 1_000)
+}
+
 fn cross_reduce_factors(numerators: &mut [u64; 2], denominators: &mut [u64; 2]) {
     for numerator in numerators {
         for denominator in denominators.iter_mut() {
@@ -2136,6 +2178,47 @@ mod tests {
 
         assert_eq!(reference, 19);
         assert_eq!(offset, 768);
+    }
+
+    #[test]
+    fn velocity_offset_rpm_matches_command_rpm_at_unity_gain() {
+        let scale = crate::motion_scale::MotionScale::new(1_000, 3_200)
+            .unwrap()
+            .planner_rpm_scale(84_000_000)
+            .unwrap();
+        // 1_575_000 / 2_800 = 562.5 -> 563.
+        assert_eq!(
+            compute_planner_velocity_offset_rpm(scale, 2_800, false, 1_000),
+            563
+        );
+        assert_eq!(
+            compute_planner_command_rpm_reference(scale, 2_800, false),
+            563
+        );
+    }
+
+    #[test]
+    fn velocity_offset_rpm_signs_gain_and_edges() {
+        let scale = crate::motion_scale::MotionScale::new(1_000, 3_200)
+            .unwrap()
+            .planner_rpm_scale(84_000_000)
+            .unwrap();
+        assert_eq!(
+            compute_planner_velocity_offset_rpm(scale, 2_800, true, 1_000),
+            -563
+        );
+        assert_eq!(
+            compute_planner_velocity_offset_rpm(scale, 2_800, false, 0),
+            0
+        );
+        assert_eq!(
+            compute_planner_velocity_offset_rpm(scale, 0, false, 1_000),
+            0
+        );
+        assert_eq!(
+            compute_planner_velocity_offset_rpm(scale, 2_800, false, 2_000),
+            1_125
+        );
     }
 
     #[test]
