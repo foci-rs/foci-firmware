@@ -177,10 +177,13 @@ impl HoldGateAccumulator {
     }
 
     /// Build an accumulator with the current-loop actionable status mask.
-    pub const fn commissioning(requested_sample_period_us: u16) -> Self {
+    pub const fn commissioning(
+        requested_sample_period_us: u16,
+        feedback_config: crate::config::FeedbackConfig,
+    ) -> Self {
         Self::new(
             requested_sample_period_us,
-            current_loop_actionable_status_mask(),
+            current_loop_actionable_status_mask(feedback_config),
         )
     }
 
@@ -457,7 +460,10 @@ mod tests {
 
     #[test]
     fn quiet_hold_reports_zero_rms_and_passes() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         acc.push(HoldGateSample {
             elapsed_us: 0,
             position_count: 10,
@@ -489,7 +495,10 @@ mod tests {
 
     #[test]
     fn alternating_current_reports_rms_span_and_crossings() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         for (idx, torque) in [100, -100, 100, -100].iter().copied().enumerate() {
             acc.push(HoldGateSample {
                 elapsed_us: (idx as u32) * 1_000,
@@ -511,7 +520,10 @@ mod tests {
 
     #[test]
     fn dc_biased_alternation_reports_raw_not_demeaned_crossings() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         for (idx, torque) in [100, 200, 100, 200].iter().copied().enumerate() {
             acc.push(HoldGateSample {
                 elapsed_us: (idx as u32) * 1_000,
@@ -536,7 +548,10 @@ mod tests {
 
     #[test]
     fn high_positive_dc_one_count_ripple_rms_uses_reported_mean() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         for (idx, torque) in [32766, 32767].iter().copied().enumerate() {
             acc.push(HoldGateSample {
                 elapsed_us: (idx as u32) * 1_000,
@@ -556,7 +571,10 @@ mod tests {
 
     #[test]
     fn high_negative_dc_one_count_ripple_rms_uses_reported_mean() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         for (idx, torque) in [-32768, -32767].iter().copied().enumerate() {
             acc.push(HoldGateSample {
                 elapsed_us: (idx as u32) * 1_000,
@@ -576,7 +594,10 @@ mod tests {
 
     #[test]
     fn noisy_current_metrics_do_not_warn_before_threshold_selection() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         for (idx, torque) in [600, -600, 600, -600].iter().copied().enumerate() {
             acc.push(HoldGateSample {
                 elapsed_us: (idx as u32) * 1_000,
@@ -598,7 +619,10 @@ mod tests {
 
     #[test]
     fn non_actionable_status_sets_only_status_warning() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         acc.push(HoldGateSample {
             elapsed_us: 0,
             position_count: 0,
@@ -618,7 +642,10 @@ mod tests {
 
     #[test]
     fn sample_overrun_sets_only_overrun_warning() {
-        let mut acc = HoldGateAccumulator::new(1_000, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            1_000,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         acc.push(HoldGateSample {
             elapsed_us: 0,
             position_count: 0,
@@ -642,7 +669,10 @@ mod tests {
 
     #[test]
     fn samples_beyond_cap_set_overrun_warning() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         for idx in 0..HOLD_GATE_MAX_SAMPLES {
             acc.push(HoldGateSample {
                 elapsed_us: u32::from(idx),
@@ -670,7 +700,10 @@ mod tests {
 
     #[test]
     fn position_span_above_limit_is_evidence_warning() {
-        let mut acc = HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+        let mut acc = HoldGateAccumulator::new(
+            0,
+            current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+        );
         acc.push(HoldGateSample {
             elapsed_us: 0,
             position_count: -8,

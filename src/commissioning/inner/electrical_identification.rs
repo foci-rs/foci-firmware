@@ -635,8 +635,11 @@ async fn poll_delay_sample<B: CommissioningBackend>(
     Ok(DelaySamplePoll::At)
 }
 
-fn inductance_status_is_critical(flags: u32) -> bool {
-    flags & crate::autotune::current_loop_actionable_status_mask() != 0
+fn inductance_status_is_critical(
+    flags: u32,
+    feedback_config: crate::config::FeedbackConfig,
+) -> bool {
+    flags & crate::autotune::current_loop_actionable_status_mask(feedback_config) != 0
 }
 
 fn pack_ud_drive(ud_ext: i16) -> u32 {
@@ -1781,7 +1784,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     );
                 }
             };
-            if inductance_status_is_critical(status_flags_or) {
+            if inductance_status_is_critical(status_flags_or, backend.feedback_config()) {
                 return begin_inductance_restore(
                     electrical_id_state,
                     backend,
@@ -1904,7 +1907,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
             };
             next_capture.status_flags_or |= status;
-            if inductance_status_is_critical(status) {
+            if inductance_status_is_critical(status, backend.feedback_config()) {
                 return begin_inductance_restore(
                     electrical_id_state,
                     backend,

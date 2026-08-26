@@ -909,7 +909,10 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::InvalidSchedule);
             };
             *cle_state = ClosedLoopEntryState::SustainedHoldSample {
-                accumulator: HoldGateAccumulator::commissioning(HOLD_GATE_SAMPLE_PERIOD_US as u16),
+                accumulator: HoldGateAccumulator::commissioning(
+                    HOLD_GATE_SAMPLE_PERIOD_US as u16,
+                    backend.feedback_config(),
+                ),
                 started_us: now,
                 next_sample_us: now,
                 deadline_us,
@@ -2166,8 +2169,10 @@ mod tests {
     #[test]
     fn sustained_hold_position_span_accepts_with_warning_evidence() {
         pollster::block_on(async {
-            let mut accumulator =
-                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            let mut accumulator = HoldGateAccumulator::new(
+                0,
+                current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+            );
             accumulator.push(HoldGateSample {
                 elapsed_us: 0,
                 position_count: 0,
@@ -2226,8 +2231,10 @@ mod tests {
     #[test]
     fn sustained_hold_pass_returns_commission_done_with_metrics_and_upstream_evidence() {
         pollster::block_on(async {
-            let mut accumulator =
-                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            let mut accumulator = HoldGateAccumulator::new(
+                0,
+                current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+            );
             accumulator.push(HoldGateSample {
                 elapsed_us: 0,
                 position_count: 4,
@@ -2290,8 +2297,10 @@ mod tests {
     #[test]
     fn sustained_hold_position_span_returns_accepted_result_with_evidence() {
         pollster::block_on(async {
-            let mut accumulator =
-                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            let mut accumulator = HoldGateAccumulator::new(
+                0,
+                current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+            );
             accumulator.push(HoldGateSample {
                 elapsed_us: 0,
                 position_count: 0,
@@ -2352,8 +2361,10 @@ mod tests {
     #[test]
     fn sustained_hold_missing_inner_result_fails_without_default_evidence() {
         pollster::block_on(async {
-            let mut accumulator =
-                HoldGateAccumulator::new(0, current_loop_actionable_status_mask());
+            let mut accumulator = HoldGateAccumulator::new(
+                0,
+                current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
+            );
             accumulator.push(HoldGateSample {
                 elapsed_us: 0,
                 position_count: 4,
@@ -2411,7 +2422,7 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
                 accumulator: HoldGateAccumulator::new(
                     HOLD_GATE_SAMPLE_PERIOD_US as u16,
-                    current_loop_actionable_status_mask(),
+                    current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
                 ),
                 started_us: 0,
                 next_sample_us: 0,
@@ -2451,7 +2462,7 @@ mod tests {
             let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
                 accumulator: HoldGateAccumulator::new(
                     HOLD_GATE_SAMPLE_PERIOD_US as u16,
-                    current_loop_actionable_status_mask(),
+                    current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
                 ),
                 started_us: 0,
                 next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
@@ -2501,7 +2512,7 @@ mod tests {
         pollster::block_on(async {
             let mut accumulator = HoldGateAccumulator::new(
                 HOLD_GATE_SAMPLE_PERIOD_US as u16,
-                current_loop_actionable_status_mask(),
+                current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
             );
             accumulator.push(HoldGateSample {
                 elapsed_us: 0,

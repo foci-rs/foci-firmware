@@ -393,7 +393,12 @@ fn settled_sample_evidence_from_sample(
 ) -> CurrentValidationSettledSampleEvidence {
     let gate = classify_current_axis_sample(
         sample,
-        &validation_gate(backend.tmc_config(), axis, sample_delay_ms),
+        &validation_gate(
+            backend.tmc_config(),
+            backend.feedback_config(),
+            axis,
+            sample_delay_ms,
+        ),
     );
 
     CurrentValidationSettledSampleEvidence {
@@ -435,6 +440,7 @@ fn should_average_current_sample(axis: CurrentValidationAxis, sample_delay_ms: u
 
 fn validation_gate(
     config: &crate::config::TmcConfig,
+    feedback_config: crate::config::FeedbackConfig,
     axis: CurrentValidationAxis,
     sample_delay_ms: u16,
 ) -> CurrentAxisGate {
@@ -464,6 +470,7 @@ fn validation_gate(
         min_response_permille,
         max_response_permille,
         max_encoder_delta_counts,
+        feedback_config,
     )
 }
 
@@ -491,6 +498,7 @@ fn combine_axis_pair_evidence(
     sample_delay_ms: u16,
     positive: AxisDirectionalEvidence,
     negative: AxisDirectionalEvidence,
+    feedback_config: crate::config::FeedbackConfig,
 ) -> CurrentValidationAxisEvidence {
     let mut positive_response = positive.gate.response_permille;
     let mut negative_response = negative.gate.response_permille;
@@ -515,12 +523,12 @@ fn combine_axis_pair_evidence(
         );
         if safety_status != crate::autotune::CURRENT_AXIS_VALIDATION_PASS {
             safety_status
-        } else if pair_cross_axis_status(pair_cross, pair_cross_count)
+        } else if pair_cross_axis_status(pair_cross, pair_cross_count, feedback_config)
             != crate::autotune::CURRENT_AXIS_VALIDATION_PASS
         {
             crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
         } else {
-            pair_response_status(pair_response, pair_error_count)
+            pair_response_status(pair_response, pair_error_count, feedback_config)
         }
     } else {
         merge_axis_pair_status(positive.gate.status, negative.gate.status)
@@ -665,11 +673,16 @@ fn bidirectional_pair_cross_axis_count(
     ((numerator + denominator / 2) / denominator).min(u64::from(u16::MAX)) as u16
 }
 
-fn pair_cross_axis_status(cross_axis_permille: u16, cross_axis_count: u16) -> u8 {
+fn pair_cross_axis_status(
+    cross_axis_permille: u16,
+    cross_axis_count: u16,
+    feedback_config: crate::config::FeedbackConfig,
+) -> u8 {
     let gate = CurrentAxisGate::commissioning_short_sample(
         SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
         SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
         u16::MAX,
+        feedback_config,
     );
     if cross_axis_count > gate.min_cross_axis_fault_count
         && cross_axis_permille > gate.max_cross_axis_permille
@@ -680,11 +693,16 @@ fn pair_cross_axis_status(cross_axis_permille: u16, cross_axis_count: u16) -> u8
     }
 }
 
-fn pair_response_status(response_permille: u16, response_error_count: u16) -> u8 {
+fn pair_response_status(
+    response_permille: u16,
+    response_error_count: u16,
+    feedback_config: crate::config::FeedbackConfig,
+) -> u8 {
     let gate = CurrentAxisGate::commissioning_short_sample(
         SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
         SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
         u16::MAX,
+        feedback_config,
     );
     if response_error_count > gate.min_response_fault_delta_count
         && response_permille < gate.min_response_permille
@@ -756,7 +774,12 @@ fn directional_evidence_from_sample<B: CommissioningBackend>(
 ) -> AxisDirectionalEvidence {
     let gate = classify_current_axis_sample(
         &sample,
-        &validation_gate(backend.tmc_config(), axis, sample_delay_ms),
+        &validation_gate(
+            backend.tmc_config(),
+            backend.feedback_config(),
+            axis,
+            sample_delay_ms,
+        ),
     );
 
     AxisDirectionalEvidence {
@@ -926,6 +949,7 @@ fn advance_after_directional_sample(
     sample_delay_ms: u16,
     direction: CaptureDirection,
     directional: AxisDirectionalEvidence,
+    feedback_config: crate::config::FeedbackConfig,
 ) -> Result<(), CommissionError> {
     match direction {
         CaptureDirection::Forward => {
@@ -951,6 +975,7 @@ fn advance_after_directional_sample(
                 sample_delay_ms,
                 positive,
                 directional,
+                feedback_config,
             );
             match axis {
                 CurrentValidationAxis::Flux => {
@@ -1727,6 +1752,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 sample_delay_ms,
                 direction,
                 directional,
+                backend.feedback_config(),
             ) {
                 return super::fail_inner(phase, err);
             }
@@ -3793,6 +3819,7 @@ mod tests {
             2,
             axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE),
             axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS),
+            crate::config::FeedbackConfig::abn_abn(),
         );
 
         assert_eq!(
@@ -3810,8 +3837,15 @@ mod tests {
         negative.encoder_delta_counts = -3;
         negative.gate.encoder_delta_counts = 3;
 
-        let evidence =
-            combine_axis_pair_evidence(CurrentValidationAxis::Flux, 0, 250, 2, positive, negative);
+        let evidence = combine_axis_pair_evidence(
+            CurrentValidationAxis::Flux,
+            0,
+            250,
+            2,
+            positive,
+            negative,
+            crate::config::FeedbackConfig::abn_abn(),
+        );
 
         assert_eq!(evidence.encoder_delta_counts, 7);
         assert_eq!(evidence.positive_encoder_delta_counts, 7);
@@ -3878,6 +3912,7 @@ mod tests {
                 100,
                 positive,
                 negative,
+                crate::config::FeedbackConfig::abn_abn(),
             );
 
             assert_eq!(
@@ -3949,6 +3984,7 @@ mod tests {
                 100,
                 positive,
                 negative,
+                crate::config::FeedbackConfig::abn_abn(),
             );
 
             assert_eq!(
@@ -4013,6 +4049,7 @@ mod tests {
                 100,
                 positive,
                 negative,
+                crate::config::FeedbackConfig::abn_abn(),
             );
 
             assert_eq!(
