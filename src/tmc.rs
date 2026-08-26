@@ -1065,6 +1065,28 @@ pub fn compute_planner_command_rpm_reference(
     compute_planner_velocity_offset_rpm(scale, step_interval, dir_high, 1_000)
 }
 
+/// Default multiple of commanded RPM the velocity feedforward offset may not exceed.
+pub const VELOCITY_FF_CLAMP_K: u16 = 3;
+
+/// Clamp a velocity feedforward offset to `k` times the magnitude of `command_rpm`.
+///
+/// Returns the (possibly clamped) offset and whether clamping engaged. A zero
+/// `command_rpm` forces the bound to zero, so any nonzero offset is clamped.
+pub fn clamp_velocity_offset_rpm(offset: i32, command_rpm: i32, k: u16) -> (i32, bool) {
+    // i64/unsigned_abs/saturating_mul avoids overflow when command_rpm == i32::MIN.
+    let bound = i64::from(command_rpm)
+        .unsigned_abs()
+        .saturating_mul(u64::from(k))
+        .min(i32::MAX as u64) as i32;
+    if offset > bound {
+        (bound, true)
+    } else if offset < -bound {
+        (-bound, true)
+    } else {
+        (offset, false)
+    }
+}
+
 fn cross_reduce_factors(numerators: &mut [u64; 2], denominators: &mut [u64; 2]) {
     for numerator in numerators {
         for denominator in denominators.iter_mut() {
@@ -2219,6 +2241,20 @@ mod tests {
             compute_planner_velocity_offset_rpm(scale, 2_800, false, 2_000),
             1_125
         );
+    }
+
+    #[test]
+    fn clamp_bounds_offset_to_k_times_command() {
+        assert_eq!(clamp_velocity_offset_rpm(20_000, 500, 3), (1_500, true));
+        assert_eq!(clamp_velocity_offset_rpm(-20_000, 500, 3), (-1_500, true));
+        assert_eq!(clamp_velocity_offset_rpm(1_000, 500, 3), (1_000, false));
+        assert_eq!(clamp_velocity_offset_rpm(1_500, -500, 3), (1_500, false));
+    }
+
+    #[test]
+    fn clamp_zero_command_forces_zero_offset() {
+        assert_eq!(clamp_velocity_offset_rpm(4_000, 0, 3), (0, true));
+        assert_eq!(clamp_velocity_offset_rpm(0, 0, 3), (0, false));
     }
 
     #[test]
