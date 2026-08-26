@@ -178,6 +178,12 @@ pub struct TmcChannelState {
     velocity_p_value: AtomicU16,
     /// Velocity I gain for cross-priority access (Q4.12).
     velocity_i_value: AtomicU16,
+    /// Set once the velocity feedforward RPM-domain clamp has engaged, and
+    /// stays set until the next `reset()`.
+    velocity_ff_clamp_latched: AtomicBool,
+    /// Saturating count of velocity feedforward clamp engagements since the
+    /// last `reset()`.
+    velocity_ff_clamp_count: AtomicU32,
 }
 
 impl TmcChannelState {
@@ -235,6 +241,8 @@ impl TmcChannelState {
             position_i_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.position_i.raw()),
             velocity_p_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.velocity_p.raw()),
             velocity_i_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.velocity_i.raw()),
+            velocity_ff_clamp_latched: AtomicBool::new(false),
+            velocity_ff_clamp_count: AtomicU32::new(0),
         }
     }
 
@@ -290,6 +298,7 @@ impl TmcChannelState {
         self.commission_in_flight.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);
         self.store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
+        self.clear_velocity_clamp_latch();
     }
 
     /// Load the validated torque/flux current limit.
@@ -440,6 +449,45 @@ impl TmcChannelState {
             sample_count,
         })
     }
+
+    /// Latch the velocity feedforward clamp flag and saturating-increment
+    /// its engagement counter.
+    pub fn record_velocity_clamp_engagement(&self) {
+        self.velocity_ff_clamp_latched
+            .store(true, Ordering::Relaxed);
+
+        let mut current = self.velocity_ff_clamp_count.load(Ordering::Relaxed);
+        while current < u32::MAX {
+            match self.velocity_ff_clamp_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(next) => current = next,
+            }
+        }
+    }
+
+    /// Clear the latched velocity feedforward clamp flag and its counter.
+    pub fn clear_velocity_clamp_latch(&self) {
+        self.velocity_ff_clamp_latched
+            .store(false, Ordering::Relaxed);
+        self.velocity_ff_clamp_count.store(0, Ordering::Relaxed);
+    }
+
+    /// Return whether the velocity feedforward clamp has engaged since the
+    /// last `reset()`.
+    pub fn velocity_clamp_latched(&self) -> bool {
+        self.velocity_ff_clamp_latched.load(Ordering::Relaxed)
+    }
+
+    /// Return the saturating count of velocity feedforward clamp engagements
+    /// since the last `reset()`.
+    pub fn velocity_clamp_count(&self) -> u32 {
+        self.velocity_ff_clamp_count.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]
@@ -551,7 +599,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 120);
+        assert_eq!(size_of::<TmcChannelState>(), 124);
     }
 
     #[test]
@@ -728,5 +776,18 @@ mod tests {
         assert_eq!(channel.torque_filter_hz.load(Relaxed), None);
         assert_eq!(channel.position_filter_hz.load(Relaxed), None);
         assert_eq!(channel.flux_filter_hz.load(Relaxed), None);
+    }
+
+    #[test]
+    fn clamp_latch_records_and_clears() {
+        let state = TmcChannelState::new();
+        assert!(!state.velocity_clamp_latched());
+        state.record_velocity_clamp_engagement();
+        state.record_velocity_clamp_engagement();
+        assert!(state.velocity_clamp_latched());
+        assert_eq!(state.velocity_clamp_count(), 2);
+        state.clear_velocity_clamp_latch();
+        assert!(!state.velocity_clamp_latched());
+        assert_eq!(state.velocity_clamp_count(), 0);
     }
 }
