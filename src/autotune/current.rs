@@ -52,19 +52,51 @@ pub const CURRENT_AXIS_VALIDATION_ZERO_TARGET: u8 = 8;
 const CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK: u32 =
     (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7);
 const CURRENT_AXIS_PID_OUTPUT_STATUS_MASK: u32 = (1 << 11) | (1 << 15);
-const CURRENT_AXIS_INACTIVE_ENCODER_STATUS_MASK: u32 =
-    (1 << 27) | (1 << 28) | (1 << 29) | (1 << 30);
+// enc_n/enc_2_n/aenc_n (bits 28-30) are documented as "N pulse detected" /
+// "N signal detected" events (registers.rs StatusFlags), not source-presence
+// faults, so they stay unconditionally excluded regardless of which encoder
+// is active.
+const CURRENT_AXIS_N_PULSE_STATUS_MASK: u32 = (1 << 28) | (1 << 29) | (1 << 30);
+// aenc_clipped (bit 27) is the one bit of the four that is a real analog-input
+// fault (signal out of range), so it is the only bit gated by feedback source.
+const CURRENT_AXIS_AENC_CLIPPED_STATUS_MASK: u32 = 1 << 27;
 // STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout. It may appear
 // in sampled flags, but it is not an actionable current-validation fault.
 const CURRENT_AXIS_RESERVED_STATUS_MASK: u32 = 1 << 31;
-const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK: u32 = CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK
+const CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK_BASE: u32 = CURRENT_AXIS_POSITION_VELOCITY_STATUS_MASK
     | CURRENT_AXIS_PID_OUTPUT_STATUS_MASK
-    | CURRENT_AXIS_INACTIVE_ENCODER_STATUS_MASK
+    | CURRENT_AXIS_N_PULSE_STATUS_MASK
     | CURRENT_AXIS_RESERVED_STATUS_MASK;
 
 /// Status flags that fail current-loop validation and sustained-hold checks.
-pub const fn current_loop_actionable_status_mask() -> u32 {
-    !CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK
+///
+/// `aenc_clipped` is actionable only when analog feedback is selected on
+/// either the commutation (`phi_e_source`) or position (`position_source`)
+/// selector; the ABN/analog N-pulse bits are never actionable regardless of
+/// source (see `CURRENT_AXIS_N_PULSE_STATUS_MASK`).
+///
+/// Known limitation: `feedback_config` reflects a channel's steady-state
+/// wiring, not the live `PHI_E_SELECTION`/`POSITION_SELECTION` register
+/// state. Electrical identification transiently overrides `PHI_E_SELECTION`
+/// away from its steady-state value during its open-loop phase; this is safe
+/// today only because no board declares `FeedbackSource::Analog` anywhere.
+/// A future ticket enabling `Analog` on a real board must re-audit those
+/// transient-override phases before relying on this function there.
+pub const fn current_loop_actionable_status_mask(
+    feedback_config: crate::config::FeedbackConfig,
+) -> u32 {
+    let analog_selected = matches!(
+        feedback_config.phi_e_source,
+        crate::config::FeedbackSource::Analog
+    ) || matches!(
+        feedback_config.position_source,
+        crate::config::FeedbackSource::Analog
+    );
+    if analog_selected {
+        !CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK_BASE
+    } else {
+        !(CURRENT_AXIS_NON_ACTIONABLE_STATUS_MASK_BASE | CURRENT_AXIS_AENC_CLIPPED_STATUS_MASK)
+    }
 }
 
 /// Retry action for one failed current-axis short-sample validation.
@@ -128,6 +160,7 @@ impl CurrentAxisGate {
         min_response_permille: u16,
         max_response_permille: u16,
         max_encoder_delta_counts: u16,
+        feedback_config: crate::config::FeedbackConfig,
     ) -> Self {
         Self {
             min_response_permille,
@@ -137,7 +170,7 @@ impl CurrentAxisGate {
             min_cross_axis_fault_count: 32,
             max_voltage_output_permille: 900,
             max_encoder_delta_counts,
-            actionable_status_mask: current_loop_actionable_status_mask(),
+            actionable_status_mask: current_loop_actionable_status_mask(feedback_config),
         }
     }
 }
@@ -1033,7 +1066,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
@@ -1054,7 +1092,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_ZERO_TARGET);
@@ -1073,7 +1116,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_WRONG_SIGN);
@@ -1092,7 +1140,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.response_permille, u16::MAX);
@@ -1112,7 +1165,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.cross_axis_permille, u16::MAX);
@@ -1133,7 +1191,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                850,
+                1150,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.cross_axis_permille, 156);
@@ -1153,7 +1216,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                850,
+                1150,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.cross_axis_permille, 257);
@@ -1173,7 +1241,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                850,
+                1150,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.response_permille, 1179);
@@ -1193,7 +1266,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                850,
+                1150,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.response_permille, 1257);
@@ -1213,7 +1291,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(850, 1150, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                850,
+                1150,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.response_permille, 742);
@@ -1233,7 +1316,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.response_permille, 0);
@@ -1253,7 +1341,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
@@ -1272,7 +1365,81 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
+        );
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn current_sample_gate_analog_phi_e_source_makes_aenc_clipped_actionable() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0x0800_0000, // aenc_clipped only
+        };
+        let feedback_config = crate::config::FeedbackConfig {
+            phi_e_source: crate::config::FeedbackSource::Analog,
+            position_source: crate::config::FeedbackSource::Abn,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4, feedback_config),
+        );
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
+    }
+
+    #[test]
+    fn current_sample_gate_analog_position_source_alone_makes_aenc_clipped_actionable() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0x0800_0000, // aenc_clipped only
+        };
+        let feedback_config = crate::config::FeedbackConfig {
+            phi_e_source: crate::config::FeedbackSource::Abn,
+            position_source: crate::config::FeedbackSource::Analog,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4, feedback_config),
+        );
+
+        assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
+    }
+
+    #[test]
+    fn current_sample_gate_analog_source_still_ignores_n_pulse_bits() {
+        let sample = CurrentAxisSample {
+            target: 250,
+            same_axis_actual: 240,
+            cross_axis_actual: 8,
+            output_limited: 500,
+            output_limit: 2000,
+            encoder_delta_counts: 0,
+            status_flags: 0x7000_0000, // enc_n | enc_2_n | aenc_n, no aenc_clipped
+        };
+        let feedback_config = crate::config::FeedbackConfig {
+            phi_e_source: crate::config::FeedbackSource::Analog,
+            position_source: crate::config::FeedbackSource::Analog,
+        };
+        let gate = classify_current_axis_sample(
+            &sample,
+            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4, feedback_config),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
@@ -1291,7 +1458,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
@@ -1310,7 +1482,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
@@ -1329,7 +1506,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
@@ -1348,7 +1530,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
@@ -1367,7 +1554,12 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4),
+            &CurrentAxisGate::commissioning_short_sample(
+                700,
+                1250,
+                4,
+                crate::config::FeedbackConfig::abn_abn(),
+            ),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);

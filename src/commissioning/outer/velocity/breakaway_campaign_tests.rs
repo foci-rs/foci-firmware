@@ -1580,7 +1580,9 @@ fn an_actionable_status_on_the_first_settle_is_not_retried() {
                 .registers
                 .insert(
                     STATUS_FLAGS.addr(),
-                    crate::autotune::current_loop_actionable_status_mask(),
+                    crate::autotune::current_loop_actionable_status_mask(
+                        crate::config::FeedbackConfig::abn_abn(),
+                    ),
                 )
                 .expect("status register fixture fits");
         }
