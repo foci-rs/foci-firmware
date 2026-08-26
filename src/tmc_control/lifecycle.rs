@@ -162,8 +162,9 @@ pub async fn arm_motor_for_voltage_vectors<B: CommissioningBackend>(
 /// Clears the channel motor-armed flag first so the step-timer ISR stops
 /// accepting step events before async SPI cleanup begins, then routes the
 /// safe-state register sequence through
-/// [`crate::tmc_safe_state::restore_safe_state_via_backend`] and clears
-/// `state.calibrated` and `state.motor_enabled`.
+/// [`crate::tmc_safe_state::restore_safe_state_via_backend`] and clears the
+/// latched velocity feedforward clamp, `state.calibrated`, and
+/// `state.motor_enabled`.
 ///
 /// Idempotent: safe to call when the motor is already disarmed.
 /// Does not touch the stepper queue or invoke `stepper_stop_from_p1` —
@@ -174,6 +175,7 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
         .motor_armed
         .store(false, core::sync::atomic::Ordering::Relaxed);
     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
+    state.tmc.clear_velocity_clamp_latch();
     *state.calibrated = false;
     *state.motor_enabled = false;
 }
@@ -280,6 +282,20 @@ mod tests {
         assert!(!*state.motor_enabled);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn disarm_motor_clears_latched_velocity_clamp() {
+        let mut backend = MockBackend::new();
+        let (mut cal, mut en, mut gains) = fresh_state_locals();
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state().record_velocity_clamp_engagement();
+        assert!(tmc_state().velocity_clamp_latched());
+
+        disarm_motor(&mut backend, &mut state).await;
+
+        assert!(!tmc_state().velocity_clamp_latched());
+        assert_eq!(tmc_state().velocity_clamp_count(), 0);
     }
 
     #[fixture_test]

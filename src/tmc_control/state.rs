@@ -108,6 +108,7 @@ pub struct TmcControlRuntime {
     commission_engine: Option<CommissioningEngine>,
     shutdown_handled: bool,
     planner_velocity_scale: Option<crate::motion_scale::PlannerVelocityScale>,
+    planner_rpm_scale: Option<crate::motion_scale::PlannerRpmScale>,
     feedforward_was_active: bool,
     torque_flux_offset_was_active: bool,
     applied_velocity_offset: Option<u32>,
@@ -148,6 +149,7 @@ impl TmcControlRuntime {
             commission_engine: None,
             shutdown_handled: false,
             planner_velocity_scale: None,
+            planner_rpm_scale: None,
             feedforward_was_active: false,
             torque_flux_offset_was_active: false,
             applied_velocity_offset: None,
@@ -238,6 +240,7 @@ impl TmcControlRuntime {
         self.commission_engine = None;
         self.shutdown_handled = false;
         self.planner_velocity_scale = None;
+        self.planner_rpm_scale = None;
         self.feedforward_was_active = false;
         self.torque_flux_offset_was_active = false;
         self.applied_velocity_offset = None;
@@ -840,12 +843,19 @@ impl TmcControlRuntime {
         self.planner_velocity_scale
     }
 
-    /// Cache the exact planner-timing velocity ratio.
-    pub fn set_planner_velocity_scale(
+    /// Return the exact planner-timing mechanical-RPM ratio cached for feedforward.
+    pub const fn planner_rpm_scale(&self) -> Option<crate::motion_scale::PlannerRpmScale> {
+        self.planner_rpm_scale
+    }
+
+    /// Cache both exact planner-timing ratios derived from one planner resolution.
+    pub fn set_planner_scales(
         &mut self,
-        scale: Option<crate::motion_scale::PlannerVelocityScale>,
+        velocity: Option<crate::motion_scale::PlannerVelocityScale>,
+        rpm: Option<crate::motion_scale::PlannerRpmScale>,
     ) {
-        self.planner_velocity_scale = scale;
+        self.planner_velocity_scale = velocity;
+        self.planner_rpm_scale = rpm;
     }
 
     /// Return whether velocity feedforward was active on the previous control tick.
@@ -931,11 +941,11 @@ impl TmcControlRuntime {
         B: embedded_hal_async::spi::SpiDevice<u8>,
     {
         let ff_active = self.motor_enabled
-            && self.planner_velocity_scale.is_some()
+            && self.planner_rpm_scale.is_some()
             && refs.tmc.velocity_feedforward.load(Relaxed)
             && self.commission_engine.is_none();
         let velocity_transient_active = self.motor_enabled
-            && self.planner_velocity_scale.is_some()
+            && self.planner_rpm_scale.is_some()
             && refs.tmc.velocity_transient_feedforward.load(Relaxed)
             && self.commission_engine.is_none();
         let accel_ff_active = self.motor_enabled
@@ -956,14 +966,16 @@ impl TmcControlRuntime {
                 .load(Relaxed)
                 .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             let forward = refs.stepper.direction.load(Relaxed);
+            let rpm_scale = self
+                .planner_rpm_scale
+                .expect("active feedforward has planner rpm scale");
             let base_offset = if ff_active && !homing_active && !reset {
-                let multiplier = refs.tmc.velocity_feedforward_multiplier.load(Relaxed);
-                crate::tmc::compute_planner_velocity_offset_scaled(
-                    self.planner_velocity_scale
-                        .expect("active feedforward has planner velocity scale"),
+                let gain_permille = refs.tmc.velocity_feedforward_gain_permille.load(Relaxed);
+                crate::tmc::compute_planner_velocity_offset_rpm(
+                    rpm_scale,
                     interval,
                     forward,
-                    multiplier,
+                    gain_permille,
                 )
             } else {
                 0
@@ -971,9 +983,7 @@ impl TmcControlRuntime {
             let transient_offset = if velocity_transient_active && !homing_active && !reset {
                 crate::tmc::compute_planner_velocity_transient_offset(
                     crate::tmc::PlannerVelocityTransientFeedforwardInput {
-                        scale: self
-                            .planner_velocity_scale
-                            .expect("active transient feedforward has planner velocity scale"),
+                        scale: rpm_scale,
                         clock_freq: config.clock_freq,
                         step_interval: interval,
                         interval_add,
@@ -988,7 +998,16 @@ impl TmcControlRuntime {
             } else {
                 0
             };
-            let offset = base_offset.saturating_add(transient_offset);
+            let command_rpm =
+                crate::tmc::compute_planner_command_rpm_reference(rpm_scale, interval, forward);
+            let (offset, clamp_engaged) = crate::tmc::clamp_velocity_offset_rpm(
+                base_offset.saturating_add(transient_offset),
+                command_rpm,
+                crate::tmc::VELOCITY_FF_CLAMP_K,
+            );
+            if clamp_engaged {
+                refs.tmc.record_velocity_clamp_engagement();
+            }
             let desired = offset as u32;
 
             if self.applied_velocity_offset != Some(desired) {
@@ -1737,6 +1756,9 @@ impl TmcControlRuntime {
         self.planner_velocity_scale = Some(
             crate::motion_scale::PlannerVelocityScale::from_reduced(numerator, 1),
         );
+        self.planner_rpm_scale = Some(crate::motion_scale::PlannerRpmScale::from_reduced(
+            numerator, 1,
+        ));
     }
 
     #[cfg(test)]

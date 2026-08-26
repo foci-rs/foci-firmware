@@ -2,7 +2,7 @@
 //! `tmc_write_register`, `tmc_set_current`, `tmc_set_motion_scale`,
 //! `tmc_set_encoder_dir`, `tmc_set_flux_filter`, `tmc_set_pid_gains`,
 //! `tmc_set_position_filter`, `tmc_set_position_gains`,
-//! `tmc_set_torque_filter`, `tmc_set_velocity_feedforward`,
+//! `tmc_set_torque_filter`, `tmc_set_velocity_feedforward_rpm`,
 //! `tmc_set_velocity_filter`, `tmc_set_velocity_limit`,
 //! `tmc_set_voltage_limit`, `tmc_current_torque_sample_test`,
 //! `tmc_position_torque_offset_sample_test`, `tmc_voltage_step_test`,
@@ -288,13 +288,13 @@ pub fn tmc_set_position_gains(
     }
 }
 
-/// Enable or disable velocity feedforward from host config.
+/// Enable or disable RPM-domain velocity feedforward from host config.
 #[klipper_command]
-pub fn tmc_set_velocity_feedforward(
+pub fn tmc_set_velocity_feedforward_rpm(
     ctx: &mut dyn ShutdownRecovery,
     oid: u8,
     enable: u8,
-    multiplier: u16,
+    gain_permille: u16,
 ) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
@@ -303,12 +303,12 @@ pub fn tmc_set_velocity_feedforward(
         .velocity_feedforward
         .store(enable != 0, Ordering::Relaxed);
     state
-        .velocity_feedforward_multiplier
-        .store(multiplier, Ordering::Relaxed);
+        .velocity_feedforward_gain_permille
+        .store(gain_permille, Ordering::Relaxed);
     defmt::info!(
-        "Velocity feedforward: {} multiplier={}",
+        "Velocity feedforward: {} gain_permille={}",
         enable != 0,
-        multiplier
+        gain_permille
     );
 }
 
@@ -1606,5 +1606,43 @@ mod tests {
 
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, Some(ShutdownReason::InvalidTmcChannel));
+    }
+
+    #[test]
+    fn tmc_set_velocity_feedforward_rpm_stores_gain_permille() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+
+        tmc_set_velocity_feedforward_rpm(&mut ctx, &mut sender, 10, 1, 1_450);
+
+        assert!(tmc_state.velocity_feedforward.load(Relaxed));
+        assert_eq!(
+            tmc_state.velocity_feedforward_gain_permille.load(Relaxed),
+            1_450
+        );
+
+        tmc_set_velocity_feedforward_rpm(&mut ctx, &mut sender, 10, 0, 1_000);
+
+        assert!(!tmc_state.velocity_feedforward.load(Relaxed));
+        assert_eq!(
+            tmc_state.velocity_feedforward_gain_permille.load(Relaxed),
+            1_000
+        );
+    }
+
+    #[test]
+    fn provider_registers_the_rpm_velocity_feedforward_command() {
+        let source = include_str!("../provider.rs");
+
+        assert_eq!(
+            source
+                .matches("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward_rpm,")
+                .count(),
+            2
+        );
+        assert!(!source.contains("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,"));
     }
 }

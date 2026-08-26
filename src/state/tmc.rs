@@ -106,8 +106,9 @@ pub struct TmcChannelState {
     pub flux_filter_hz: AtomicOptionalFilterHz,
     /// Velocity feedforward enable flag.
     pub velocity_feedforward: AtomicBool,
-    /// Runtime multiplier for the computed velocity feedforward offset.
-    pub velocity_feedforward_multiplier: AtomicU16,
+    /// Runtime gain in permille applied to the RPM-domain velocity feedforward
+    /// offset (1000 = unity).
+    pub velocity_feedforward_gain_permille: AtomicU16,
     /// Velocity-surface transient feedforward enable flag.
     pub velocity_transient_feedforward: AtomicBool,
     /// Transient feedforward lead time in microseconds.
@@ -205,7 +206,7 @@ impl TmcChannelState {
             position_filter_hz: AtomicOptionalFilterHz::new(None),
             flux_filter_hz: AtomicOptionalFilterHz::new(None),
             velocity_feedforward: AtomicBool::new(false),
-            velocity_feedforward_multiplier: AtomicU16::new(1),
+            velocity_feedforward_gain_permille: AtomicU16::new(1_000),
             velocity_transient_feedforward: AtomicBool::new(false),
             velocity_transient_lead_time_us: AtomicU16::new(0),
             velocity_transient_gain_permille: AtomicU16::new(0),
@@ -264,7 +265,8 @@ impl TmcChannelState {
         self.position_filter_hz.store(None, Relaxed);
         self.flux_filter_hz.store(None, Relaxed);
         self.velocity_feedforward.store(false, Relaxed);
-        self.velocity_feedforward_multiplier.store(1, Relaxed);
+        self.velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
         self.velocity_transient_feedforward.store(false, Relaxed);
         self.velocity_transient_lead_time_us.store(0, Relaxed);
         self.velocity_transient_gain_permille.store(0, Relaxed);

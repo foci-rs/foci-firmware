@@ -56,8 +56,8 @@ pub struct AccelFeedforwardGains {
 /// Command-acceleration inputs for velocity-surface transient feedforward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct PlannerVelocityTransientFeedforwardInput {
-    /// Exact planner-timing velocity ratio.
-    pub scale: crate::motion_scale::PlannerVelocityScale,
+    /// Exact planner-timing mechanical-RPM ratio.
+    pub scale: crate::motion_scale::PlannerRpmScale,
     /// Step-timer clock frequency in Hz.
     pub clock_freq: u32,
     /// Current step interval in timer ticks.
@@ -2038,6 +2038,13 @@ mod tests {
             .unwrap()
     }
 
+    fn planner_rpm_scale(encoder_ppr: u32) -> crate::motion_scale::PlannerRpmScale {
+        crate::motion_scale::MotionScale::new(encoder_ppr, 3_000)
+            .unwrap()
+            .planner_rpm_scale(100)
+            .unwrap()
+    }
+
     #[test]
     fn command_velocity_uses_exact_planner_scale_independent_of_encoder_ppr() {
         let low_ppr = compute_planner_command_velocity_reference(planner_scale(500), 3, false);
@@ -2075,8 +2082,8 @@ mod tests {
             )
         };
 
-        assert_eq!(offset(planner_scale(500)), 1);
-        assert_eq!(offset(planner_scale(4_000)), 1);
+        assert_eq!(offset(planner_rpm_scale(500)), 1);
+        assert_eq!(offset(planner_rpm_scale(4_000)), 1);
     }
 
     #[test]
@@ -2495,7 +2502,7 @@ mod tests {
         dir_high: bool,
     ) -> PlannerVelocityTransientFeedforwardInput {
         PlannerVelocityTransientFeedforwardInput {
-            scale: crate::motion_scale::PlannerVelocityScale::from_reduced(
+            scale: crate::motion_scale::PlannerRpmScale::from_reduced(
                 u64::from(scale_numerator),
                 1,
             ),

@@ -29,23 +29,26 @@ impl LiveGainWriteStatus {
     }
 }
 
-/// Recompute the exact runtime velocity scale from planner resolution.
+/// Recompute the exact runtime velocity and mechanical-RPM scales from planner resolution.
 pub fn refresh_velocity_scale_from_state(
     runtime: &mut TmcControlRuntime,
     tmc_state: &TmcChannelState,
     clock_freq: u32,
     pwm_freq_hz: u32,
 ) {
-    let rational_scale = crate::state::stepper::stepper_channel(runtime.channel())
-        .and_then(|stepper| stepper.planner_steps_per_rev(tmc_state))
-        .and_then(|planner_steps_per_rev| {
-            crate::motion_scale::PlannerVelocityScale::new(
-                planner_steps_per_rev,
-                clock_freq,
-                pwm_freq_hz,
-            )
-        });
-    runtime.set_planner_velocity_scale(rational_scale);
+    let planner_steps_per_rev = crate::state::stepper::stepper_channel(runtime.channel())
+        .and_then(|stepper| stepper.planner_steps_per_rev(tmc_state));
+    let velocity_scale = planner_steps_per_rev.and_then(|planner_steps_per_rev| {
+        crate::motion_scale::PlannerVelocityScale::new(
+            planner_steps_per_rev,
+            clock_freq,
+            pwm_freq_hz,
+        )
+    });
+    let rpm_scale = planner_steps_per_rev.and_then(|planner_steps_per_rev| {
+        crate::motion_scale::PlannerRpmScale::new(planner_steps_per_rev, clock_freq)
+    });
+    runtime.set_planner_scales(velocity_scale, rpm_scale);
 }
 
 /// Write and publish one validated motion scale as an idle P1 transaction.

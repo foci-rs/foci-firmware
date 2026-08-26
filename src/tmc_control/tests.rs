@@ -206,15 +206,18 @@ fn channel_runtime_size_stays_bounded() {
     // size plus the runtime's own fixed overhead.
     // 5_872 -> 5_856: removes the `combined_workflow` bool
     // from the embedded Stage-C execution plan.
+    // Both builds grow because the runtime now caches the planner mechanical-RPM
+    // ratio alongside the position-per-PWM ratio; the trace build absorbs part of
+    // it into existing padding.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_856);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_872);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_824);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_856);
 }
 
 #[test]
@@ -1228,6 +1231,7 @@ fn config_reset_runtime_state_clears_owned_flags_and_defaults() {
     assert!(!runtime.is_calibrated());
     assert!(!runtime.is_motor_enabled());
     assert_eq!(runtime.planner_velocity_scale(), None);
+    assert_eq!(runtime.planner_rpm_scale(), None);
     assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
 }
 
@@ -2231,14 +2235,15 @@ fn feedforward_tick_writes_velocity_offset_and_marks_active() {
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let config = commissioning_runtime_config();
         tmc_state.velocity_feedforward.store(true, Relaxed);
-        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.direction.store(false, Relaxed);
-        let expected = crate::tmc::compute_planner_velocity_offset_scaled(
-            crate::motion_scale::PlannerVelocityScale::from_reduced(84_000_000, 1),
+        let expected = crate::tmc::compute_planner_command_rpm_reference(
+            crate::motion_scale::PlannerRpmScale::from_reduced(84_000_000, 1),
             2_800,
             false,
-            40,
         ) as u32;
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
@@ -2261,6 +2266,54 @@ fn feedforward_tick_writes_velocity_offset_and_marks_active() {
             std::vec![(PID_VELOCITY_OFFSET.addr(), expected)]
         );
         assert!(runtime.feedforward_was_active());
+        assert!(!tmc_state.velocity_clamp_latched());
+    });
+}
+
+#[test]
+fn feedforward_tick_clamps_velocity_offset_to_command_multiple_and_latches() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_planner_velocity_scale_for_test(84_000_000);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let config = commissioning_runtime_config();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(60_000, Relaxed);
+        stepper_state.interval.store(8_400_000, Relaxed);
+        stepper_state.direction.store(false, Relaxed);
+        let command = crate::tmc::compute_planner_command_rpm_reference(
+            crate::motion_scale::PlannerRpmScale::from_reduced(84_000_000, 1),
+            8_400_000,
+            false,
+        );
+        let expected = command * i32::from(crate::tmc::VELOCITY_FF_CLAMP_K);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            runtime
+                .apply_feedforward_tick(
+                    &mut tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &config,
+                    false,
+                    false,
+                    true,
+                )
+                .await,
+            Ok(())
+        );
+
+        assert_eq!(command, 10);
+        assert_eq!(
+            tmc.into_inner().writes,
+            std::vec![(PID_VELOCITY_OFFSET.addr(), expected as u32)]
+        );
+        assert!(tmc_state.velocity_clamp_latched());
+        assert_eq!(tmc_state.velocity_clamp_count(), 1);
     });
 }
 
@@ -2324,7 +2377,9 @@ fn feedforward_tick_retries_failed_velocity_offset_clear() {
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let config = commissioning_runtime_config();
         tmc_state.velocity_feedforward.store(true, Relaxed);
-        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
         tmc_state
             .velocity_transient_feedforward
             .store(true, Relaxed);
@@ -2578,7 +2633,9 @@ fn feedforward_tick_skips_unchanged_velocity_offset_write() {
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let config = commissioning_runtime_config();
         tmc_state.velocity_feedforward.store(true, Relaxed);
-        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.direction.store(false, Relaxed);
         let mut first_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -2629,7 +2686,9 @@ fn feedforward_tick_retries_velocity_offset_after_a_failed_change() {
         let stepper_state = crate::state::stepper::StepperChannelState::new();
         let config = commissioning_runtime_config();
         tmc_state.velocity_feedforward.store(true, Relaxed);
-        tmc_state.velocity_feedforward_multiplier.store(40, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
         stepper_state.interval.store(2_800, Relaxed);
         stepper_state.direction.store(false, Relaxed);
         let mut first_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -2940,10 +2999,17 @@ fn command_velocity_reference_zeroes_when_runtime_inactive() {
 fn planner_velocity_scale_accessors_round_trip() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     assert_eq!(runtime.planner_velocity_scale(), None);
+    assert_eq!(runtime.planner_rpm_scale(), None);
     runtime.set_planner_velocity_scale_for_test(123_456);
     assert_eq!(
         runtime.planner_velocity_scale(),
         Some(crate::motion_scale::PlannerVelocityScale::from_reduced(
+            123_456, 1
+        ))
+    );
+    assert_eq!(
+        runtime.planner_rpm_scale(),
+        Some(crate::motion_scale::PlannerRpmScale::from_reduced(
             123_456, 1
         ))
     );
