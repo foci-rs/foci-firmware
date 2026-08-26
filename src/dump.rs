@@ -91,6 +91,20 @@ pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
     (0x87, foci_tmc4671::registers::ADC_AGPI_A_RAW_ADC_VM_RAW),
 ];
 
+/// Synthetic dump address for the latched velocity-clamp flag.
+pub const DUMP_CLAMP_LATCHED_ADDR: u8 = 0x88;
+
+/// Synthetic dump address for the velocity-clamp activation count.
+pub const DUMP_CLAMP_COUNT_ADDR: u8 = 0x89;
+
+/// Maps velocity-clamp runtime state to synthetic dump `(addr, value)` pairs.
+pub fn clamp_dump_values(latched: bool, count: u32) -> [(u8, u32); 2] {
+    [
+        (DUMP_CLAMP_LATCHED_ADDR, u32::from(latched)),
+        (DUMP_CLAMP_COUNT_ADDR, count),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,12 +154,27 @@ mod tests {
     }
 
     #[test]
-    fn dump_sub_registers_no_duplicate_addrs() {
-        for (i, &(a, _)) in DUMP_SUB_REGISTERS.iter().enumerate() {
-            for &(b, _) in &DUMP_SUB_REGISTERS[i + 1..] {
-                assert_ne!(a, b, "duplicate synthetic addr {:#04X}", a);
-            }
+    fn synthetic_addresses_do_not_collide_across_lists() {
+        let mut seen = heapless::index_set::FnvIndexSet::<u8, 32>::new();
+        for &(addr, _) in DUMP_SUB_REGISTERS {
+            assert!(seen.insert(addr).unwrap(), "dup {:#04X}", addr);
         }
+        for addr in [DUMP_CLAMP_LATCHED_ADDR, DUMP_CLAMP_COUNT_ADDR] {
+            assert!(
+                seen.insert(addr).unwrap(),
+                "clamp addr {:#04X} collides",
+                addr
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_dump_values_map_addresses() {
+        assert_eq!(clamp_dump_values(true, 5), [(0x88u8, 1u32), (0x89u8, 5u32)]);
+        assert_eq!(
+            clamp_dump_values(false, 0),
+            [(0x88u8, 0u32), (0x89u8, 0u32)]
+        );
     }
 
     #[test]
