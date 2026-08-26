@@ -209,8 +209,10 @@ fn channel_runtime_size_stays_bounded() {
     // Both builds grow because the runtime now caches the planner mechanical-RPM
     // ratio alongside the position-per-PWM ratio; the trace build absorbs part of
     // it into existing padding.
+    // 5_872 -> 5_888: the trace-only runtime state gains a per-sample velocity
+    // feedforward clamp-engaged flag.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_872);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_888);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as

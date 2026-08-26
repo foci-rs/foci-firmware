@@ -20,6 +20,8 @@ pub struct TraceSampleInputs {
     pub cached_velocity_offset: i32,
     /// Last transient velocity feedforward offset emitted to trace sampling.
     pub cached_velocity_transient_offset: i32,
+    /// Velocity feedforward offset was clamped on the last tick.
+    pub cached_velocity_clamped: bool,
     /// Last acceleration/decoupling torque offset emitted to trace sampling.
     pub cached_accel_torque_offset: i32,
     /// Last acceleration feedforward gain emitted to trace sampling.
@@ -37,6 +39,7 @@ impl TraceSampleInputs {
             command_velocity_reference: 0,
             cached_velocity_offset: 0,
             cached_velocity_transient_offset: 0,
+            cached_velocity_clamped: false,
             cached_accel_torque_offset: 0,
             accel_feedforward_gain_permille: 0,
             accel_feedforward_flags: 0,
@@ -53,6 +56,7 @@ impl TraceSampleInputs {
             command_velocity_reference: trace_state.cached_velocity_reference,
             cached_velocity_offset: trace_state.cached_velocity_offset,
             cached_velocity_transient_offset: trace_state.cached_velocity_transient_offset,
+            cached_velocity_clamped: trace_state.cached_velocity_clamped,
             cached_accel_torque_offset: trace_state.cached_accel_torque_offset,
             accel_feedforward_gain_permille: trace_state.cached_accel_gain_permille,
             accel_feedforward_flags: trace_state.cached_accel_flags,
@@ -104,6 +108,7 @@ mod tests {
                 command_velocity_reference: 0,
                 cached_velocity_offset: 0,
                 cached_velocity_transient_offset: 0,
+                cached_velocity_clamped: false,
                 cached_accel_torque_offset: 0,
                 accel_feedforward_gain_permille: 0,
                 accel_feedforward_flags: 0,
@@ -119,6 +124,7 @@ mod tests {
             cached_velocity_reference: -11,
             cached_velocity_offset: 22,
             cached_velocity_transient_offset: -33,
+            cached_velocity_clamped: true,
             cached_accel_torque_offset: 44,
             cached_accel_gain_permille: 55,
             cached_accel_flags: 0xA5,
@@ -143,6 +149,7 @@ mod tests {
                 command_velocity_reference: -11,
                 cached_velocity_offset: 22,
                 cached_velocity_transient_offset: -33,
+                cached_velocity_clamped: true,
                 cached_accel_torque_offset: 44,
                 accel_feedforward_gain_permille: 55,
                 accel_feedforward_flags: 0xA5,

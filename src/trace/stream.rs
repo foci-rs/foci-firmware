@@ -7,7 +7,9 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Firmware trace protocol version. Version 19 adds `error_code` to the
+/// Firmware trace protocol version. Version 20 adds the velocity
+/// feedforward clamp-engaged flag to the critical sample, at byte 83 bit 0.
+/// Version 19 adds `error_code` to the
 /// breakaway campaign terminal record, so a confirmed acceptance whose
 /// Stage-C plan build was refused names the `CommissionError` behind it
 /// rather than leaving the terminal cause self-contradictory. Version 18
@@ -21,7 +23,7 @@ pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// Version 16 added the measured `moving_pid_output_peak` to the breakaway
 /// raw-observation record. Version 15 published the
 /// physical-excursion upward-probe contract.
-pub const PROTOCOL_VERSION: u8 = 19;
+pub const PROTOCOL_VERSION: u8 = 20;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -83,6 +85,8 @@ pub const PHASE_ADVANCE_FLAG_DEADBAND: u8 = 1 << 3;
 pub const PHASE_ADVANCE_FLAG_GATED: u8 = 1 << 4;
 /// Last phase-advance register write failed; hardware state may be stale.
 pub const PHASE_ADVANCE_FLAG_WRITE_FAILED: u8 = 1 << 5;
+/// Velocity feedforward offset was clamped for this critical sample.
+pub const VELOCITY_FF_FLAG_CLAMPED: u8 = 1 << 0;
 
 /// Version-6 critical payload length.
 pub const CRITICAL_PAYLOAD_LEN: usize = 88;
@@ -318,6 +322,8 @@ pub struct CriticalSample {
     pub accel_feedforward_flags: u8,
     /// Cached velocity-surface transient feedforward component.
     pub cached_velocity_transient_offset: i32,
+    /// Velocity feedforward offset was clamped for this sample.
+    pub cached_velocity_clamped: bool,
 }
 
 /// Low-rate current-path diagnostic sample.
@@ -452,7 +458,7 @@ fn put_u64(out: &mut [u8], offset: usize, value: u64) {
     out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-/// Encode a critical payload into an exact 84-byte buffer.
+/// Encode a critical payload into an exact 88-byte buffer.
 pub fn encode_critical_payload(sample: &CriticalSample, out: &mut [u8; CRITICAL_PAYLOAD_LEN]) {
     *out = [0; CRITICAL_PAYLOAD_LEN];
     put_i32(out, 0, sample.step_position);
@@ -477,6 +483,11 @@ pub fn encode_critical_payload(sample: &CriticalSample, out: &mut [u8; CRITICAL_
     put_i32(out, 76, sample.cached_accel_torque_offset);
     put_u16(out, 80, sample.accel_feedforward_gain_permille);
     out[82] = sample.accel_feedforward_flags;
+    out[83] = if sample.cached_velocity_clamped {
+        VELOCITY_FF_FLAG_CLAMPED
+    } else {
+        0
+    };
     put_i32(out, 84, sample.cached_velocity_transient_offset);
 }
 
@@ -629,6 +640,7 @@ mod tests {
             accel_feedforward_gain_permille: 2000,
             accel_feedforward_flags: 0x03,
             cached_velocity_transient_offset: 21,
+            cached_velocity_clamped: false,
         };
 
         let mut payload = [0xAA; CRITICAL_PAYLOAD_LEN];
@@ -650,8 +662,47 @@ mod tests {
     }
 
     #[test]
+    fn critical_payload_encodes_velocity_clamp_flag() {
+        let mut sample = CriticalSample {
+            step_position: 0,
+            tmc_position_actual: 0,
+            position_error: 0,
+            target_velocity: 0,
+            pid_velocity_actual: 0,
+            cached_pid_velocity_offset: 0,
+            velocity_error: 0,
+            enable_and_direction: 0,
+            sample_flags: 0,
+            timer_queue_depth: 0,
+            step_timer_jitter: 0,
+            min_deadline_slack: 0,
+            last_served_step_tick: 0,
+            last_klipper_command_service_tick: 0,
+            missed_or_deferred_step_counter: 0,
+            interim_pidin_target_torque: 0,
+            interim_pid_torque_target_actual: 0,
+            interim_foc_uq_ud: 0,
+            interim_foc_uq_ud_limited: 0,
+            cached_accel_torque_offset: 0,
+            accel_feedforward_gain_permille: 0,
+            accel_feedforward_flags: 0,
+            cached_velocity_transient_offset: 0,
+            cached_velocity_clamped: true,
+        };
+
+        let mut payload = [0xAA; CRITICAL_PAYLOAD_LEN];
+        encode_critical_payload(&sample, &mut payload);
+        assert_eq!(payload[83], VELOCITY_FF_FLAG_CLAMPED);
+        assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
+
+        sample.cached_velocity_clamped = false;
+        encode_critical_payload(&sample, &mut payload);
+        assert_eq!(payload[83], 0);
+    }
+
+    #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 19);
+        assert_eq!(PROTOCOL_VERSION, 20);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);

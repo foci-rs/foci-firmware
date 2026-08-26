@@ -30,6 +30,8 @@ pub struct TmcControlTraceState {
     pub cached_velocity_offset: i32,
     /// Last transient velocity feedforward offset emitted to trace sampling.
     pub cached_velocity_transient_offset: i32,
+    /// Velocity feedforward offset was clamped on the last tick.
+    pub cached_velocity_clamped: bool,
     /// Last acceleration/decoupling torque offset emitted to trace sampling.
     pub cached_accel_torque_offset: i32,
     /// Last acceleration gain emitted to trace sampling.
@@ -54,6 +56,7 @@ impl TmcControlTraceState {
             cached_velocity_reference: 0,
             cached_velocity_offset: 0,
             cached_velocity_transient_offset: 0,
+            cached_velocity_clamped: false,
             cached_accel_torque_offset: 0,
             cached_accel_gain_permille: 0,
             cached_accel_flags: 0,
@@ -1021,6 +1024,7 @@ impl TmcControlRuntime {
                 let trace = self.trace_state_mut();
                 trace.cached_velocity_offset = offset;
                 trace.cached_velocity_transient_offset = transient_offset;
+                trace.cached_velocity_clamped = clamp_engaged;
             }
         } else if self.feedforward_was_active {
             tmc_spi
@@ -1033,6 +1037,7 @@ impl TmcControlRuntime {
                 let trace = self.trace_state_mut();
                 trace.cached_velocity_offset = 0;
                 trace.cached_velocity_transient_offset = 0;
+                trace.cached_velocity_clamped = false;
             }
         }
         self.feedforward_was_active = velocity_offset_active;
