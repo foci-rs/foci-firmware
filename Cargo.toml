@@ -24,11 +24,11 @@ foci-tmc4671 = { git = "https://github.com/foci-rs/foci-tmc4671" }
 heapless = { version = "0.9", features = ["defmt"] }
 libm = "0.2"
 static_assertions = "1.1"
+foci-firmware-macros = { path = "macros" }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }
 defmt = { version = "1.0", features = ["unstable-test"] }
 embedded-hal-mock = { version = "0.11", features = ["eh1", "embedded-hal-async"] }
-foci-firmware-macros = { path = "macros" }
 pollster = "0.4"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }

@@ -3,7 +3,7 @@ name = "foci-firmware-macros"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Proc-macros for foci-firmware host-side tests"
+description = "Proc-macros for foci-firmware: host-side test fixtures and CommissionReplySink manifest codegen"
 repository = "https://github.com/foci-rs/foci-firmware"
 publish = false
 
