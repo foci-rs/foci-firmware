@@ -30,6 +30,57 @@ const RESISTANCE_AXIS0_PHI_E_EXT: u16 = 0;
 /// TMC4671 external electrical angle for electrical axis 1 (PHASE90).
 const RESISTANCE_AXIS1_PHI_E_EXT: u16 = 16_384;
 
+/// Single source of truth for every `CommissionReplySink` reply that can be
+/// generated mechanically: which trait method it becomes, its wire reply
+/// type, and the fields forwarded into it. Consumed via the callback
+/// pattern by `foci_firmware_macros::commission_reply_trait_methods!`
+/// (inside this trait) and `foci_firmware_macros::commission_reply_forwarding_impls!`
+/// (inside each board's `impl CommissionReplySink` block) so both surfaces
+/// stay generated from exactly one list.
+///
+/// Entries use the crate-absolute path `foci_firmware::ankyra::replies::...`
+/// for `reply`/`param`, not `crate::ankyra::replies::...`: this macro's
+/// entries are expanded verbatim at each *invocation* site (once here, once
+/// per board), and a board has no `crate::ankyra::replies` module of its
+/// own. `foci_firmware::` resolves to the same crate everywhere, since
+/// every invocation site (this trait's own crate and both boards) already
+/// depends on `foci-firmware` -- including this crate's own trait
+/// definition below, via the `extern crate self as foci_firmware;` alias
+/// in `lib.rs` (a crate cannot otherwise refer to itself by its own crate
+/// name).
+#[macro_export]
+macro_rules! __commission_reply_manifest {
+    ($callback:path) => {
+        $callback! {
+            entry {
+                name: foci_acceptance_matrix_terminal,
+                doc: "Emit one compact fixed-I confidence-matrix terminal.",
+                reply: foci_firmware::ankyra::replies::FociAcceptanceMatrixTerminal<'_>,
+                fields: { oid: u8, payload: &[u8] },
+            }
+            entry {
+                name: foci_robustness_cycle_evidence,
+                doc: "Emit one direction's per-cycle reversal-robustness evidence, ahead",
+                doc: "of the compact terminal. No default: every board sink must decide",
+                doc: "whether and how to forward this reply.",
+                reply: foci_firmware::ankyra::replies::FociRobustnessCycleEvidence<'_>,
+                fields: { oid: u8, payload: &[u8] },
+                no_default,
+            }
+            entry {
+                name: foci_commission_timing,
+                doc: "Emit timing-quality evidence for one commissioning electrical method.",
+                doc: "",
+                doc: "The default keeps the shared API additive until each board adopts the",
+                doc: "coordinated data dictionary in its board-integration task.",
+                param: foci_firmware::tmc_diagnostics::CommissionTimingReport,
+                reply: foci_firmware::ankyra::replies::FociCommissionTiming,
+                fields: { oid: u8, method: u8, status: u8, requested_period_us: u16, valid_samples: u16, missed_samples: u16, max_consecutive_misses: u8, max_lateness_us: u32, max_interval_us: u32, max_poll_wall_us: u32, max_spi_wall_us: u32 },
+            }
+        }
+    };
+}
+
 /// Board-local sink for commissioning-family Klipper replies.
 ///
 /// Implementations call board-generated ankyra reply macros. Methods return
@@ -44,11 +95,7 @@ pub trait CommissionReplySink {
     /// Emit the Stage 1 commissioning result.
     fn foci_commission_result(&mut self, oid: u8, status: u8, result: &CommissionResult);
 
-    /// Emit timing-quality evidence for one commissioning electrical method.
-    ///
-    /// The default keeps the shared API additive until each board adopts the
-    /// coordinated data dictionary in its board-integration task.
-    fn foci_commission_timing(&mut self, _report: CommissionTimingReport) {}
+    crate::__commission_reply_manifest!(foci_firmware_macros::commission_reply_trait_methods);
 
     /// Emit the resistance-identification per-run evidence captured during
     /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
@@ -310,27 +357,12 @@ pub trait CommissionReplySink {
     ) {
     }
 
-    /// Emit one compact fixed-I confidence-matrix terminal.
-    fn foci_acceptance_matrix_terminal(
-        &mut self,
-        _report: crate::ankyra::replies::FociAcceptanceMatrixTerminal<'_>,
-    ) {
-    }
-
     /// Emit one compact reversal-standstill robustness-gate terminal.
     fn foci_robustness_reversal_terminal(
         &mut self,
         _report: crate::ankyra::replies::FociRobustnessReversalTerminal<'_>,
     ) {
     }
-
-    /// Emit one direction's per-cycle reversal-robustness evidence, ahead
-    /// of the compact terminal. No default: every board sink must decide
-    /// whether and how to forward this reply.
-    fn foci_robustness_cycle_evidence(
-        &mut self,
-        report: crate::ankyra::replies::FociRobustnessCycleEvidence<'_>,
-    );
 
     /// Emit the immutable breakaway-probe plan.
     fn foci_breakaway_probe_plan(

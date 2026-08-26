@@ -11,6 +11,12 @@
 #[cfg(test)]
 extern crate std;
 
+// Lets code inside this crate use the crate-absolute path
+// `foci_firmware::...` (needed by __commission_reply_manifest!'s entries,
+// which must resolve the same way whether expanded here or in a board
+// crate that depends on foci-firmware normally) instead of only `crate::...`.
+extern crate self as foci_firmware;
+
 pub mod adc_vm;
 pub mod ankyra;
 pub mod autotune;

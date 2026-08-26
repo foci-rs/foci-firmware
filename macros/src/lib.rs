@@ -1,5 +1,8 @@
 //! Proc-macros for `foci-firmware` host-side tests.
 
+mod commission_reply_manifest;
+
+use commission_reply_manifest::Manifest;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{ItemFn, parse_macro_input};
@@ -59,4 +62,56 @@ pub fn fixture_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Expands a `CommissionReplySink` manifest (see `commission_reply_manifest`)
+/// into the trait's generated method signatures: empty-bodied (`{}`) by
+/// default, or required (`;`, no body, parameter named `report` not
+/// `_report`) for entries flagged `no_default`.
+#[proc_macro]
+pub fn commission_reply_trait_methods(input: TokenStream) -> TokenStream {
+    let manifest = parse_macro_input!(input as Manifest);
+    let methods = manifest.entries.iter().map(|entry| {
+        let name = &entry.name;
+        let param_ty = entry.param_type();
+        let docs = entry.doc_lines.iter().map(|line| quote! { #[doc = #line] });
+        if entry.no_default {
+            quote! {
+                #(#docs)*
+                fn #name(&mut self, report: #param_ty);
+            }
+        } else {
+            quote! {
+                #(#docs)*
+                fn #name(&mut self, _report: #param_ty) {}
+            }
+        }
+    });
+    quote! { #(#methods)* }.into()
+}
+
+/// Expands a `CommissionReplySink` manifest into forwarding method bodies —
+/// the same shape the old `forward_commission_reply!` macro produced for
+/// every entry, generated for `no_default` entries too (their forwarding
+/// body has no connection to whether the trait signature has a default).
+#[proc_macro]
+pub fn commission_reply_forwarding_impls(input: TokenStream) -> TokenStream {
+    let manifest = parse_macro_input!(input as Manifest);
+    let methods = manifest.entries.iter().map(|entry| {
+        let name = &entry.name;
+        let param_ty = entry.param_type();
+        let reply_path = entry.reply_path();
+        let field_names: Vec<_> = entry.fields.iter().map(|f| &f.name).collect();
+        let field_tys: Vec<_> = entry.fields.iter().map(|f| &f.ty).collect();
+        quote! {
+            fn #name(&mut self, report: #param_ty) {
+                ::ankyra::klipper_reply_from!(
+                    &mut crate::_ankyra_config::Sender,
+                    #reply_path,
+                    #( #field_names: #field_tys = report.#field_names, )*
+                );
+            }
+        }
+    });
+    quote! { #(#methods)* }.into()
 }
