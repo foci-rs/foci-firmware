@@ -166,6 +166,13 @@ impl MotionScale {
     ) -> Option<PlannerVelocityScale> {
         PlannerVelocityScale::new(self.planner_steps_per_rev(), step_timer_hz, f_pwm_hz)
     }
+
+    /// Builds the exact planner-timing mechanical-RPM ratio for velocity feedforward.
+    ///
+    /// Returns `None` when `step_timer_hz` is zero.
+    pub fn planner_rpm_scale(&self, step_timer_hz: u32) -> Option<PlannerRpmScale> {
+        PlannerRpmScale::new(self.planner_steps_per_rev(), step_timer_hz)
+    }
 }
 
 /// Reduced exact ratio for converting planner step timing to TMC velocity units.
@@ -207,6 +214,51 @@ impl PlannerVelocityScale {
     }
 
     /// Returns the reduced `planner_steps_per_rev * f_pwm_hz` factor.
+    pub const fn denominator(&self) -> u64 {
+        self.denominator
+    }
+}
+
+/// Reduced exact ratio for converting planner step timing to mechanical RPM.
+///
+/// A planner step every `denominator` step-timer ticks corresponds to one
+/// full mechanical revolution every `denominator * planner_steps_per_rev`
+/// ticks, so RPM is `60 * step_timer_hz / planner_steps_per_rev` — independent
+/// of the PWM frequency and of position units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct PlannerRpmScale {
+    numerator: u64,
+    denominator: u64,
+}
+
+impl PlannerRpmScale {
+    pub(crate) fn new(planner_steps_per_rev: u32, step_timer_hz: u32) -> Option<Self> {
+        if step_timer_hz == 0 || planner_steps_per_rev == 0 {
+            return None;
+        }
+        let numerator = 60 * u64::from(step_timer_hz);
+        let denominator = u64::from(planner_steps_per_rev);
+        let divisor = greatest_common_divisor(numerator, denominator);
+        Some(Self {
+            numerator: numerator / divisor,
+            denominator: denominator / divisor,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_reduced(numerator: u64, denominator: u64) -> Self {
+        Self {
+            numerator,
+            denominator,
+        }
+    }
+
+    /// Returns the reduced `60 * step_timer_hz` factor.
+    pub const fn numerator(&self) -> u64 {
+        self.numerator
+    }
+
+    /// Returns the reduced `planner_steps_per_rev` factor.
     pub const fn denominator(&self) -> u64 {
         self.denominator
     }
@@ -326,6 +378,37 @@ mod tests {
 
         assert_eq!(velocity.numerator(), 344_064);
         assert_eq!(velocity.denominator(), 5);
+    }
+
+    #[test]
+    fn planner_rpm_scale_is_reduced_and_coprime() {
+        let scale = MotionScale::new(1_000, 3_200).unwrap();
+        // 60*84_000_000 = 5_040_000_000; gcd(5_040_000_000, 3_200) = 3_200.
+        let rpm = scale.planner_rpm_scale(84_000_000).unwrap();
+        assert_eq!(rpm.numerator(), 1_575_000);
+        assert_eq!(rpm.denominator(), 1);
+        assert_eq!(
+            greatest_common_divisor(rpm.numerator(), rpm.denominator()),
+            1
+        );
+    }
+
+    #[test]
+    fn planner_rpm_scale_rejects_zero_step_timer() {
+        let scale = MotionScale::new(1_000, 3_200).unwrap();
+        assert!(scale.planner_rpm_scale(0).is_none());
+    }
+
+    #[test]
+    fn planner_rpm_equals_pos_per_pwm_times_exact_factor() {
+        // Exact-rational cross-check (no truncation):
+        // rpm.num * ppwm.den * 65536 == ppwm.num * rpm.den * 60 * 25000.
+        let scale = MotionScale::new(1_000, 3_200).unwrap();
+        let rpm = scale.planner_rpm_scale(84_000_000).unwrap();
+        let ppwm = scale.planner_velocity_scale(84_000_000, 25_000).unwrap();
+        let lhs = (rpm.numerator() as u128) * (ppwm.denominator() as u128) * 65_536;
+        let rhs = (ppwm.numerator() as u128) * (rpm.denominator() as u128) * 60 * 25_000;
+        assert_eq!(lhs, rhs);
     }
 
     #[test]
