@@ -2152,6 +2152,18 @@ pub struct FociStepperPerfEvent {
     pub stepper_load_lateness_last_ticks: i32,
     /// Non-zero when firmware was built with trace instrumentation.
     pub build_trace_enabled: u8,
+    /// `PERF_SITE_SHUTDOWN` critical sections measured since the last reset.
+    pub shutdown_site_count: u32,
+    /// Longest `PERF_SITE_SHUTDOWN` critical section in CPU cycles.
+    pub shutdown_site_max_cycles: u32,
+    /// `PERF_SITE_RESET` critical sections measured since the last reset.
+    pub reset_site_count: u32,
+    /// Longest `PERF_SITE_RESET` critical section in CPU cycles.
+    pub reset_site_max_cycles: u32,
+    /// `PERF_SITE_TRIGGER_STOP` samples measured since the last reset.
+    pub trigger_stop_site_count: u32,
+    /// Longest `PERF_SITE_TRIGGER_STOP` measured span in CPU cycles.
+    pub trigger_stop_site_max_cycles: u32,
 }
 
 /// `foci_stepper_stats_result` reply - step queue/execution counters.
@@ -2320,6 +2332,18 @@ pub struct FociStepperPerfStatsResult {
     pub stepper_load_lateness_last_ticks: i32,
     /// Non-zero when firmware was built with trace instrumentation.
     pub build_trace_enabled: u8,
+    /// `PERF_SITE_SHUTDOWN` critical sections measured since the last reset.
+    pub shutdown_site_count: u32,
+    /// Longest `PERF_SITE_SHUTDOWN` critical section in CPU cycles.
+    pub shutdown_site_max_cycles: u32,
+    /// `PERF_SITE_RESET` critical sections measured since the last reset.
+    pub reset_site_count: u32,
+    /// Longest `PERF_SITE_RESET` critical section in CPU cycles.
+    pub reset_site_max_cycles: u32,
+    /// `PERF_SITE_TRIGGER_STOP` samples measured since the last reset.
+    pub trigger_stop_site_count: u32,
+    /// Longest `PERF_SITE_TRIGGER_STOP` measured span in CPU cycles.
+    pub trigger_stop_site_max_cycles: u32,
 }
 
 /// `foci_stepper_stop_stats_result` reply - physical stop/reset counters.

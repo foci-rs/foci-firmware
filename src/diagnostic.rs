@@ -944,6 +944,9 @@ impl<const CHANNELS: usize> Default for StepperExecutionStats<CHANNELS> {
 }
 
 const PERF_SITE_QUEUE_STEP: u8 = 1;
+const PERF_SITE_SHUTDOWN: u8 = 3;
+const PERF_SITE_RESET: u8 = 4;
+const PERF_SITE_TRIGGER_STOP: u8 = 5;
 
 struct StepperPerfCounterState {
     sample_count: AtomicU32,
@@ -956,6 +959,12 @@ struct StepperPerfCounterState {
     crit_over_1000us: AtomicU32,
     queue_step_count: AtomicU32,
     queue_step_max_cycles: AtomicU32,
+    shutdown_site_count: AtomicU32,
+    shutdown_site_max_cycles: AtomicU32,
+    reset_site_count: AtomicU32,
+    reset_site_max_cycles: AtomicU32,
+    trigger_stop_site_count: AtomicU32,
+    trigger_stop_site_max_cycles: AtomicU32,
     tim5_activation_count: AtomicU32,
     tim5_irq_max_cycles: AtomicU32,
     tim5_dispatch_max_cycles: AtomicU32,
@@ -995,6 +1004,12 @@ impl StepperPerfCounterState {
             crit_over_1000us: AtomicU32::new(0),
             queue_step_count: AtomicU32::new(0),
             queue_step_max_cycles: AtomicU32::new(0),
+            shutdown_site_count: AtomicU32::new(0),
+            shutdown_site_max_cycles: AtomicU32::new(0),
+            reset_site_count: AtomicU32::new(0),
+            reset_site_max_cycles: AtomicU32::new(0),
+            trigger_stop_site_count: AtomicU32::new(0),
+            trigger_stop_site_max_cycles: AtomicU32::new(0),
             tim5_activation_count: AtomicU32::new(0),
             tim5_irq_max_cycles: AtomicU32::new(0),
             tim5_dispatch_max_cycles: AtomicU32::new(0),
@@ -1033,6 +1048,12 @@ impl StepperPerfCounterState {
         self.crit_over_1000us.store(0, Relaxed);
         self.queue_step_count.store(0, Relaxed);
         self.queue_step_max_cycles.store(0, Relaxed);
+        self.shutdown_site_count.store(0, Relaxed);
+        self.shutdown_site_max_cycles.store(0, Relaxed);
+        self.reset_site_count.store(0, Relaxed);
+        self.reset_site_max_cycles.store(0, Relaxed);
+        self.trigger_stop_site_count.store(0, Relaxed);
+        self.trigger_stop_site_max_cycles.store(0, Relaxed);
         self.tim5_activation_count.store(0, Relaxed);
         self.tim5_irq_max_cycles.store(0, Relaxed);
         self.tim5_dispatch_max_cycles.store(0, Relaxed);
@@ -1106,6 +1127,18 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
         if site == PERF_SITE_QUEUE_STEP {
             counters.queue_step_count.fetch_add(1, Relaxed);
             record_max(&counters.queue_step_max_cycles, cycles);
+        }
+        if site == PERF_SITE_SHUTDOWN {
+            counters.shutdown_site_count.fetch_add(1, Relaxed);
+            record_max(&counters.shutdown_site_max_cycles, cycles);
+        }
+        if site == PERF_SITE_RESET {
+            counters.reset_site_count.fetch_add(1, Relaxed);
+            record_max(&counters.reset_site_max_cycles, cycles);
+        }
+        if site == PERF_SITE_TRIGGER_STOP {
+            counters.trigger_stop_site_count.fetch_add(1, Relaxed);
+            record_max(&counters.trigger_stop_site_max_cycles, cycles);
         }
     }
 
@@ -1228,6 +1261,12 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
             crit_over_1000us: counters.crit_over_1000us.load(Relaxed),
             queue_step_count: counters.queue_step_count.load(Relaxed),
             queue_step_max_cycles: counters.queue_step_max_cycles.load(Relaxed),
+            shutdown_site_count: counters.shutdown_site_count.load(Relaxed),
+            shutdown_site_max_cycles: counters.shutdown_site_max_cycles.load(Relaxed),
+            reset_site_count: counters.reset_site_count.load(Relaxed),
+            reset_site_max_cycles: counters.reset_site_max_cycles.load(Relaxed),
+            trigger_stop_site_count: counters.trigger_stop_site_count.load(Relaxed),
+            trigger_stop_site_max_cycles: counters.trigger_stop_site_max_cycles.load(Relaxed),
             tim5_activation_count: counters.tim5_activation_count.load(Relaxed),
             tim5_irq_max_cycles: counters.tim5_irq_max_cycles.load(Relaxed),
             tim5_dispatch_max_cycles: counters.tim5_dispatch_max_cycles.load(Relaxed),
@@ -1368,6 +1407,18 @@ pub struct StepperPerfSnapshot {
     pub queue_step_count: u32,
     /// Longest `queue_step` trigger-domain section in CPU cycles.
     pub queue_step_max_cycles: u32,
+    /// `PERF_SITE_SHUTDOWN` critical sections measured since the last reset.
+    pub shutdown_site_count: u32,
+    /// Longest `PERF_SITE_SHUTDOWN` critical section in CPU cycles.
+    pub shutdown_site_max_cycles: u32,
+    /// `PERF_SITE_RESET` critical sections measured since the last reset.
+    pub reset_site_count: u32,
+    /// Longest `PERF_SITE_RESET` critical section in CPU cycles.
+    pub reset_site_max_cycles: u32,
+    /// `PERF_SITE_TRIGGER_STOP` samples measured since the last reset.
+    pub trigger_stop_site_count: u32,
+    /// Longest `PERF_SITE_TRIGGER_STOP` measured span in CPU cycles.
+    pub trigger_stop_site_max_cycles: u32,
     /// TIM5 IRQ dispatch activations since the last reset.
     pub tim5_activation_count: u32,
     /// Longest TIM5 IRQ handler duration in CPU cycles.
@@ -1929,6 +1980,12 @@ mod tests {
             crit_over_1000us: 1,
             queue_step_count: 23,
             queue_step_max_cycles: 175_000,
+            shutdown_site_count: 0,
+            shutdown_site_max_cycles: 0,
+            reset_site_count: 0,
+            reset_site_max_cycles: 0,
+            trigger_stop_site_count: 0,
+            trigger_stop_site_max_cycles: 0,
             tim5_activation_count: 203,
             tim5_irq_max_cycles: 2_400,
             tim5_dispatch_max_cycles: 2_100,
@@ -1998,6 +2055,12 @@ mod tests {
             crit_over_1000us: 1,
             queue_step_count: 23,
             queue_step_max_cycles: 175_000,
+            shutdown_site_count: 0,
+            shutdown_site_max_cycles: 0,
+            reset_site_count: 0,
+            reset_site_max_cycles: 0,
+            trigger_stop_site_count: 0,
+            trigger_stop_site_max_cycles: 0,
             tim5_activation_count: 203,
             tim5_irq_max_cycles: 2_400,
             tim5_dispatch_max_cycles: 2_100,
@@ -2056,6 +2119,38 @@ mod tests {
         assert_eq!(snapshot.queue_step_count, 1);
         assert_eq!(snapshot.queue_step_max_cycles, 10_000);
         assert!(snapshot.build_trace_enabled);
+    }
+
+    #[test]
+    fn record_critical_section_tracks_shutdown_reset_and_trigger_stop_independently_of_the_global_max()
+     {
+        let counters: StepperPerfCounters<168> = StepperPerfCounters::new();
+        // A large TIM5 sample should not erase the dedicated shutdown/reset/
+        // trigger-stop counters, even though it dominates crit_max_site.
+        counters.record_critical_section(2, 100_000); // PERF_SITE_TIM5
+        counters.record_critical_section(3, 500); // PERF_SITE_SHUTDOWN
+        counters.record_critical_section(4, 700); // PERF_SITE_RESET
+        counters.record_critical_section(5, 300); // PERF_SITE_TRIGGER_STOP
+
+        let snapshot = counters.snapshot(0, false, false);
+        assert_eq!(snapshot.crit_max_site, 2);
+        assert_eq!(snapshot.crit_max_cycles, 100_000);
+        assert_eq!(snapshot.shutdown_site_count, 1);
+        assert_eq!(snapshot.shutdown_site_max_cycles, 500);
+        assert_eq!(snapshot.reset_site_count, 1);
+        assert_eq!(snapshot.reset_site_max_cycles, 700);
+        assert_eq!(snapshot.trigger_stop_site_count, 1);
+        assert_eq!(snapshot.trigger_stop_site_max_cycles, 300);
+    }
+
+    #[test]
+    fn record_critical_section_leaves_dedicated_site_counters_at_zero_for_non_matching_sites() {
+        let counters: StepperPerfCounters<168> = StepperPerfCounters::new();
+        counters.record_critical_section(0, 42); // PERF_SITE_TRIGGER_DOMAIN (generic)
+        let snapshot = counters.snapshot(0, false, false);
+        assert_eq!(snapshot.shutdown_site_count, 0);
+        assert_eq!(snapshot.reset_site_count, 0);
+        assert_eq!(snapshot.trigger_stop_site_count, 0);
     }
 
     #[test]
