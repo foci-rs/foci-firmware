@@ -18,7 +18,8 @@ use super::integral_plan::{
     bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
-    integral_workflow_maximum_ms, plan_breakaway_velocity_integral_response,
+    integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms, native_rung_count,
+    native_velocity_i_at, plan_breakaway_velocity_integral_response,
     plan_velocity_integral_response, recovery_quantization_exposed, response_horizon,
     velocity_i_tau_us,
 };
@@ -1581,4 +1582,82 @@ fn breakaway_stage_c_refuses_when_plan_time_physical_context_differs_from_live()
         ),
         Err(VelocityIntegralPlanError::PhysicalContextMismatch)
     );
+}
+
+#[test]
+fn integral_top_gap_candidate_at_todays_cap_is_724() {
+    // upper_octave=1024 (largest native rung <= 1310), lower_octave=512.
+    assert_eq!(integral_top_gap_candidate(1_310), Some(724));
+}
+
+#[test]
+fn integral_top_gap_candidate_none_for_zero_sentinel() {
+    assert_eq!(integral_top_gap_candidate(0), None);
+}
+
+#[test]
+fn integral_top_gap_candidate_none_when_lower_octave_below_four() {
+    // cap=4: upper_octave=4, lower_octave=2 -- below the prefix guard.
+    assert_eq!(integral_top_gap_candidate(4), None);
+    // cap=7: upper_octave=4 still (8 > 7), lower_octave=2 -- still guarded.
+    assert_eq!(integral_top_gap_candidate(7), None);
+}
+
+#[test]
+fn integral_top_gap_candidate_present_at_the_smallest_eligible_cap() {
+    // cap=8: upper_octave=8, lower_octave=4 (eligible), candidate=6.
+    assert_eq!(integral_top_gap_candidate(8), Some(6));
+}
+
+#[test]
+fn native_rung_count_matches_native_velocity_i_at_walk() {
+    assert_eq!(native_rung_count(1_310), 12); // 1,2,3,4,8,16,32,64,128,256,512,1024
+    assert_eq!(native_rung_count(4), 4); // 1,2,3,4
+}
+
+#[test]
+fn integral_gain_at_with_zero_cap_matches_native_velocity_i_at_unaugmented() {
+    for index in 0..12 {
+        assert_eq!(integral_gain_at(0, index), native_velocity_i_at(index));
+    }
+    assert_eq!(integral_gain_at(0, 200), None);
+}
+
+#[test]
+fn integral_gain_at_inserts_the_candidate_before_the_final_native_rung() {
+    // native_rung_count(1310) = 12, indices 0..=11 are 1,2,3,4,...,512,1024.
+    // Augmented: indices 0..=9 unchanged (1..256), index 10 = 724 (was 512's
+    // successor slot -- 512 itself is index 9, unchanged), wait: the
+    // insertion happens immediately before the FINAL native rung (1024,
+    // index 11), so index 11 becomes 724 and a new index 12 becomes 1024.
+    let expected = [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1024];
+    for (index, value) in expected.iter().enumerate() {
+        assert_eq!(integral_gain_at(1_310, index as u8), Some(*value));
+    }
+    assert_eq!(integral_gain_at(1_310, 13), None);
+}
+
+#[test]
+fn integral_gain_at_final_rung_closing_bookend_and_first_out_of_range() {
+    // "Final positive rung" per the spec's boundary-test requirement: index
+    // 12 (1024) is the last positive rung; index 13 is out of range.
+    assert_eq!(integral_gain_at(1_310, 12), Some(1_024));
+    assert_eq!(integral_gain_at(1_310, 13), None);
+}
+
+#[test]
+fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() {
+    // integral_gain_at itself does not bound the sentinel case (matching
+    // native_velocity_i_at's own pre-existing unbounded behavior) --
+    // guarding against the round-5 mistake (a Breakaway plan whose
+    // positive_rung_count disagrees with what integral_gain_at can produce)
+    // is Task 4's responsibility (the count and the accessor must be
+    // derived from the same construction), checked by
+    // reproduced_stage_b_plan_includes_the_half_octave_rung_and_real_cap
+    // and breakaway_plan_i_top_cap_is_zero_and_rungs_are_unaugmented in
+    // integral_plan_tests.rs, and by integral_i_at's own
+    // `rung_index >= total` bound in integral_sweep.rs, which is what
+    // actually prevents a caller from ever reaching index 12 on a 12-rung
+    // Breakaway plan.
+    assert_eq!(integral_gain_at(0, 12), Some(2_048));
 }

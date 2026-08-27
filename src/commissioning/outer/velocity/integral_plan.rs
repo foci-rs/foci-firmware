@@ -893,6 +893,96 @@ pub(crate) const fn native_velocity_i_at(index: u8) -> Option<u16> {
     }
 }
 
+/// Count of [`native_velocity_i_at`] entries at or below `i_top_cap`.
+// No production caller yet; wiring lands in a later change.
+#[allow(dead_code)]
+pub(crate) fn native_rung_count(i_top_cap: u16) -> u8 {
+    let mut index = 0_u8;
+    while let Some(candidate) = native_velocity_i_at(index) {
+        if candidate > i_top_cap {
+            break;
+        }
+        index = match index.checked_add(1) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    index
+}
+
+/// The one possible half-octave rung for the gap immediately below
+/// `i_top_cap`, or `None` if no insertion applies.
+///
+/// Applies only when the gap between the last two native octave rungs
+/// (`upper_octave`, `lower_octave = upper_octave / 2`) is entirely within
+/// the pure-octave region (`lower_octave >= 4`), never inside the fixed
+/// `1, 2, 3` prefix. `i_top_cap = 0` (the not-applicable sentinel used by
+/// non-`ReproducedStageB` plans) always yields `None`.
+// No production caller yet; wiring lands in a later change.
+#[allow(dead_code)]
+pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
+    let count = native_rung_count(i_top_cap);
+    if count == 0 {
+        return None;
+    }
+    let upper_octave = native_velocity_i_at(count - 1)?;
+    if upper_octave < 8 {
+        return None;
+    }
+    let lower_octave = upper_octave / 2;
+    if lower_octave < 4 {
+        return None;
+    }
+    let candidate = super::sweep_plan::half_octave_candidate(lower_octave)?;
+    if candidate > lower_octave && candidate < upper_octave {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Regenerate one positive-I response-ladder rung by index, matching the
+/// exact array [`plan_velocity_integral_response_from_source`] plans:
+/// the native fixed-prefix/octave sequence, with the half-octave candidate
+/// (if any) inserted immediately before the final native rung.
+///
+/// `i_top_cap == 0` is the not-applicable sentinel (`Breakaway`- and
+/// matrix-sourced plans, per `VelocityIntegralPlan`/`VelocityIntegralExecutionPlan`
+/// doc comments) and always delegates straight to [`native_velocity_i_at`]
+/// with no augmentation and no bound -- this is the exact pre-existing
+/// behavior those plans had before this function existed. It must be
+/// checked before `native_rung_count`, which treats `i_top_cap` as a real
+/// ceiling and would otherwise compute zero native rungs at cap zero.
+// No production caller yet; wiring lands in a later change.
+#[allow(dead_code)]
+pub(crate) fn integral_gain_at(i_top_cap: u16, positive_index: u8) -> Option<u16> {
+    if i_top_cap == 0 {
+        return native_velocity_i_at(positive_index);
+    }
+    let native_len = native_rung_count(i_top_cap);
+    match integral_top_gap_candidate(i_top_cap) {
+        None => {
+            if positive_index < native_len {
+                native_velocity_i_at(positive_index)
+            } else {
+                None
+            }
+        }
+        Some(candidate) => {
+            let insert_index = native_len.checked_sub(1)?;
+            if positive_index < insert_index {
+                native_velocity_i_at(positive_index)
+            } else if positive_index == insert_index {
+                Some(candidate)
+            } else if positive_index == insert_index.checked_add(1)? {
+                native_velocity_i_at(insert_index)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Build the fixed-prefix and whole-octave I geometry from declared acquisition times.
 pub fn build_integral_ladder(
     pwm_hz: u32,
