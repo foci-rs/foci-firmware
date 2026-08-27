@@ -941,16 +941,30 @@ fn append_settled_samples(
     append_directional_settled_samples(data, axis, sample_index, 1, negative);
 }
 
-fn advance_after_directional_sample(
-    data: &mut CurrentValidateData,
-    validate_state: &mut CurrentValidateState,
+/// Capture coordinates for one directional current-validation sample: axis,
+/// sample slot, settle delay, and the direction just completed. These four
+/// always travel together -- they are also the fields the per-step
+/// `CurrentValidateState` variants carry -- so they move as one value.
+struct DirectionalSampleStep {
     axis: CurrentValidationAxis,
     sample_index: u8,
     sample_delay_ms: u16,
     direction: CaptureDirection,
+}
+
+fn advance_after_directional_sample(
+    data: &mut CurrentValidateData,
+    validate_state: &mut CurrentValidateState,
+    step: DirectionalSampleStep,
     directional: AxisDirectionalEvidence,
     feedback_config: crate::config::FeedbackConfig,
 ) -> Result<(), CommissionError> {
+    let DirectionalSampleStep {
+        axis,
+        sample_index,
+        sample_delay_ms,
+        direction,
+    } = step;
     match direction {
         CaptureDirection::Forward => {
             data.pending_positive_sample = Some(directional);
@@ -1747,10 +1761,12 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             if let Err(err) = advance_after_directional_sample(
                 data,
                 validate_state,
-                axis,
-                sample_index,
-                sample_delay_ms,
-                direction,
+                DirectionalSampleStep {
+                    axis,
+                    sample_index,
+                    sample_delay_ms,
+                    direction,
+                },
                 directional,
                 backend.feedback_config(),
             ) {
