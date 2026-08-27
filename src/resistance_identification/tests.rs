@@ -460,6 +460,10 @@ impl ResistanceBackend for FakeResistanceBackend {
         self.encoder_counts_per_rev
     }
 
+    fn feedback_config(&self) -> crate::config::FeedbackConfig {
+        crate::config::FeedbackConfig::abn_abn()
+    }
+
     fn adc_offsets_ready(&self) -> bool {
         self.adc_offsets_ready
     }

@@ -421,6 +421,10 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
         self.backend.mechanical_encoder_quadrature_counts_per_rev()
     }
 
+    fn feedback_config(&self) -> crate::config::FeedbackConfig {
+        self.backend.feedback_config()
+    }
+
     fn adc_offsets_ready(&self) -> bool {
         self.backend.adc_offsets_ready()
     }

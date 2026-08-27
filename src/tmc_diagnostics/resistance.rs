@@ -98,6 +98,10 @@ where
             .unwrap_or(0)
     }
 
+    fn feedback_config(&self) -> crate::config::FeedbackConfig {
+        self.ctx.feedback_config
+    }
+
     fn adc_offsets_ready(&self) -> bool {
         crate::state::tmc::tmc_channel(self.ctx.runtime.channel())
             .is_some_and(|state| state.motor_sentinel.load(Relaxed) != 0)

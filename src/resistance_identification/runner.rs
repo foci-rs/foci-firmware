@@ -102,6 +102,8 @@ pub trait ResistanceBackend {
     fn profile(&self) -> ResistanceProfile;
     /// Encoder counts per revolution, used to wrap the encoder-move delta.
     fn encoder_counts_per_rev(&self) -> u32;
+    /// This channel's feedback wiring.
+    fn feedback_config(&self) -> crate::config::FeedbackConfig;
     /// Whether ADC current-offset calibration is ready.
     fn adc_offsets_ready(&self) -> bool;
 }

@@ -125,7 +125,7 @@ impl ResistanceRunner {
             10 => match backend.read_register(STATUS_FLAGS.addr()).await {
                 Ok(flags) => {
                     self.record_status_evidence(flags);
-                    if flags & current_loop_actionable_status_mask() != 0 {
+                    if flags & current_loop_actionable_status_mask(backend.feedback_config()) != 0 {
                         return self.fail(backend, ResistanceError::CriticalStatus);
                     }
                     Ok(())
@@ -321,7 +321,7 @@ impl ResistanceRunner {
             }
         };
         self.record_status_evidence(flags);
-        if flags & current_loop_actionable_status_mask() != 0 {
+        if flags & current_loop_actionable_status_mask(backend.feedback_config()) != 0 {
             return self.fail_window(backend, &capture, ResistanceError::CriticalStatus, false);
         }
         let io_done = backend.elapsed_us();
