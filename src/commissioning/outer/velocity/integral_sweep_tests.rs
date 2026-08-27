@@ -3024,3 +3024,52 @@ fn positive_observation_unconfirmed_rest_reports_its_diagnostic_owner() {
         RestSelectionOwner::StageCPositiveObservation
     );
 }
+
+#[test]
+fn integral_i_at_response_ladder_returns_the_half_octave_rung() {
+    let mut test_plan = plan();
+    test_plan.i_top_cap = 1_310;
+    test_plan.positive_rung_count = 13;
+    test_plan.acceptance_source = AcceptanceSource::ReproducedStageB;
+    test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::ResponseLadder;
+    // Rung index accounting: integral_i_at reserves index 0 and the final
+    // index for the zero-target opening/closing bookends (see its existing
+    // `rung_index == 0 || rung_index + 1 == total => Some(0)` branch), so
+    // positive rung `k` lives at accessor index `k + 1`.
+    for (positive_index, expected) in [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            integral_i_at(test_plan, positive_index as u8 + 1),
+            Some(*expected)
+        );
+    }
+}
+
+#[test]
+fn integral_i_at_breakaway_response_ladder_never_returns_724() {
+    let mut test_plan = plan();
+    test_plan.acceptance_source = AcceptanceSource::Breakaway;
+    test_plan.i_top_cap = 0;
+    test_plan.positive_rung_count = 12;
+    test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::ResponseLadder;
+    let total = integral_rung_count(test_plan).unwrap();
+    for index in 0..total {
+        assert_ne!(integral_i_at(test_plan, index), Some(724));
+    }
+}
+
+#[test]
+fn integral_i_at_acceptance_matrix_behavior_unchanged_by_i_top_cap_field() {
+    let mut test_plan = plan();
+    test_plan.i_start = 512;
+    test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    test_plan.i_top_cap = 0;
+    test_plan.positive_rung_count = 5;
+    test_plan.matrix_targets_rpm = [16, 33, 66, 132, 263];
+    let total = integral_rung_count(test_plan).unwrap();
+    for index in 0..total {
+        assert_eq!(integral_i_at(test_plan, index), Some(test_plan.i_start));
+    }
+}

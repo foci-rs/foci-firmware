@@ -50,7 +50,7 @@ use super::integral_evidence::{
 };
 use super::integral_plan::{
     AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
-    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, native_velocity_i_at,
+    VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, integral_gain_at,
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -116,7 +116,7 @@ pub(crate) fn integral_i_at(plan: VelocityIntegralExecutionPlan, rung_index: u8)
         Some(0)
     } else {
         let positive_index = rung_index - 1;
-        native_velocity_i_at(positive_index)
+        integral_gain_at(plan.i_top_cap, positive_index)
     }
 }
 
