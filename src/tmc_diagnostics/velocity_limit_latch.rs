@@ -87,16 +87,25 @@ fn elapsed_u32(start_us: u64, end_us: u64) -> u32 {
     end_us.wrapping_sub(start_us).min(u64::from(u32::MAX)) as u32
 }
 
-fn reject_actionable_status(flags: u32) -> Result<(), ()> {
-    if flags & crate::autotune::current_loop_actionable_status_mask() == 0 {
-        Ok(())
-    } else {
+fn reject_actionable_status(
+    flags: u32,
+    feedback_config: crate::config::FeedbackConfig,
+) -> Result<(), ()> {
+    if crate::autotune::is_actionable_status(
+        flags,
+        crate::autotune::current_loop_actionable_status_mask(feedback_config),
+    ) {
         Err(())
+    } else {
+        Ok(())
     }
 }
 
-fn reject_unexpected_stimulus_status(flags: u32) -> Result<(), ()> {
-    let actionable = flags & crate::autotune::current_loop_actionable_status_mask();
+fn reject_unexpected_stimulus_status(
+    flags: u32,
+    feedback_config: crate::config::FeedbackConfig,
+) -> Result<(), ()> {
+    let actionable = flags & crate::autotune::current_loop_actionable_status_mask(feedback_config);
     if actionable & !EXPECTED_STIMULUS_STATUS == 0 {
         Ok(())
     } else {
@@ -213,7 +222,7 @@ where
             .map_err(|_| ())?;
 
         let stale_flags = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-        reject_actionable_status(stale_flags)?;
+        reject_actionable_status(stale_flags, ctx.feedback_config)?;
 
         ctx.tmc
             .write_register(PID_VELOCITY_TARGET, 0)
@@ -252,7 +261,7 @@ where
         // pid_iq_target_limit (bit 12) to PID_TORQUE_FLUX_LIMITS (0x5E).
         // The two-count request against the one-count test limit deliberately
         // exercises both bounded limiters. No other actionable bit is allowed.
-        reject_unexpected_stimulus_status(report.active_status_flags)?;
+        reject_unexpected_stimulus_status(report.active_status_flags, ctx.feedback_config)?;
         report.pulse_elapsed_us = elapsed_u32(pulse_start_us, ctx.delay.now_us());
 
         ctx.tmc
@@ -261,12 +270,12 @@ where
             .map_err(|_| ())?;
         report.post_pulse_status_flags =
             ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-        reject_unexpected_stimulus_status(report.post_pulse_status_flags)?;
+        reject_unexpected_stimulus_status(report.post_pulse_status_flags, ctx.feedback_config)?;
 
         let delayed_start_us = ctx.delay.now_us();
         ctx.delay.delay_us(PERSISTENCE_DELAY_US).await;
         report.delayed_status_flags = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-        reject_unexpected_stimulus_status(report.delayed_status_flags)?;
+        reject_unexpected_stimulus_status(report.delayed_status_flags, ctx.feedback_config)?;
         report.delayed_read_elapsed_us = elapsed_u32(delayed_start_us, ctx.delay.now_us());
 
         ctx.tmc
@@ -275,7 +284,7 @@ where
             .map_err(|_| ())?;
         report.post_clear_status_flags =
             ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
-        reject_actionable_status(report.post_clear_status_flags)?;
+        reject_actionable_status(report.post_clear_status_flags, ctx.feedback_config)?;
         report.encoder_after = ctx
             .tmc
             .read_register(ABN_DECODER_COUNT)

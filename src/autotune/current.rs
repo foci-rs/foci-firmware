@@ -99,6 +99,11 @@ pub const fn current_loop_actionable_status_mask(
     }
 }
 
+/// Whether `flags` contains a bit that `mask` marks actionable.
+pub const fn is_actionable_status(flags: u32, mask: u32) -> bool {
+    flags & mask != 0
+}
+
 /// Retry action for one failed current-axis short-sample validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CurrentAxisRetryDecision {
@@ -1563,5 +1568,11 @@ mod tests {
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
+    }
+
+    #[test]
+    fn is_actionable_status_true_only_when_flags_intersect_mask() {
+        assert!(!is_actionable_status(0x0000_00ff, 0xffff_ff00));
+        assert!(is_actionable_status(0x0000_0100, 0xffff_ff00));
     }
 }

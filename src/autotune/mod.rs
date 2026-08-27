@@ -32,6 +32,7 @@ pub use buffer::{
 };
 pub use current::current_loop_actionable_status_mask;
 pub use current::estimate_electrical_delay;
+pub use current::is_actionable_status;
 pub use current::{
     CURRENT_AXIS_VALIDATION_CROSS_AXIS, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE,
     CURRENT_AXIS_VALIDATION_LOW_RESPONSE, CURRENT_AXIS_VALIDATION_MOTION,

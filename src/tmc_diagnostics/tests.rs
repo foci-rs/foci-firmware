@@ -326,6 +326,7 @@ fn current_step_not_ready_returns_status_without_writes() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -368,6 +369,7 @@ fn velocity_limit_latch_not_ready_returns_status_without_writes() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -435,6 +437,7 @@ fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
                 delay: &mut delay,
                 power_stage: &mut power_stage,
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -541,6 +544,7 @@ fn velocity_limit_latch_failures_disarm_and_attempt_every_saved_restore() {
                     delay: &mut delay,
                     power_stage: &mut power_stage,
                     tmc_config: &TEST_TMC_CONFIG,
+                    feedback_config: crate::config::FeedbackConfig::abn_abn(),
                     readiness: DiagnosticReadiness {
                         homing_active: false,
                         stepper_active: false,
@@ -608,6 +612,7 @@ fn current_vector_uses_vector_report_flag() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: true,
                     stepper_active: false,
@@ -658,6 +663,7 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -763,6 +769,7 @@ fn flux_current_step_drives_and_reports_flux_axis() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -807,6 +814,7 @@ fn torque_sample_not_ready_does_not_emit_detail() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -844,6 +852,7 @@ fn position_offset_rejects_non_position_mode() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -889,6 +898,7 @@ fn position_offset_spi_failure_attempts_offset_restore() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -944,6 +954,7 @@ fn voltage_step_rejects_non_position_mode() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -983,6 +994,7 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -1043,6 +1055,7 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
                 delay: &mut delay,
                 power_stage: &mut MockDiagnosticPowerStage::default(),
                 tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
                 readiness: DiagnosticReadiness {
                     homing_active: false,
                     stepper_active: false,
@@ -1129,6 +1142,7 @@ async fn resistance_test_request_dispatches_to_shared_runner() {
             delay: &mut delay,
             power_stage: &mut MockDiagnosticPowerStage::default(),
             tmc_config: &TEST_TMC_CONFIG,
+            feedback_config: crate::config::FeedbackConfig::abn_abn(),
             readiness: DiagnosticReadiness {
                 homing_active: false,
                 stepper_active: false,
@@ -1179,6 +1193,7 @@ fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
         delay: &mut delay,
         power_stage: &mut power_stage,
         tmc_config: &TEST_TMC_CONFIG,
+        feedback_config: crate::config::FeedbackConfig::abn_abn(),
         readiness: DiagnosticReadiness {
             homing_active: false,
             stepper_active: false,
@@ -1201,6 +1216,7 @@ fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
         delay: &mut delay,
         power_stage: &mut power_stage,
         tmc_config: &TEST_TMC_CONFIG,
+        feedback_config: crate::config::FeedbackConfig::abn_abn(),
         readiness: DiagnosticReadiness {
             homing_active: false,
             stepper_active: false,
@@ -1250,6 +1266,7 @@ async fn resistance_test_not_armed_reports_no_axes() {
             delay: &mut delay,
             power_stage: &mut MockDiagnosticPowerStage::default(),
             tmc_config: &TEST_TMC_CONFIG,
+            feedback_config: crate::config::FeedbackConfig::abn_abn(),
             readiness: DiagnosticReadiness {
                 homing_active: false,
                 stepper_active: false,
@@ -1319,6 +1336,7 @@ async fn resistance_test_uses_board_monotonic_for_sample_timing() {
             delay: &mut delay,
             power_stage: &mut MockDiagnosticPowerStage::default(),
             tmc_config: &TEST_TMC_CONFIG,
+            feedback_config: crate::config::FeedbackConfig::abn_abn(),
             readiness: DiagnosticReadiness {
                 homing_active: false,
                 stepper_active: false,
@@ -1376,6 +1394,7 @@ async fn resistance_test_rejects_during_homing_without_invoking_runner() {
             delay: &mut delay,
             power_stage: &mut MockDiagnosticPowerStage::default(),
             tmc_config: &TEST_TMC_CONFIG,
+            feedback_config: crate::config::FeedbackConfig::abn_abn(),
             readiness: DiagnosticReadiness {
                 homing_active: true,
                 stepper_active: false,

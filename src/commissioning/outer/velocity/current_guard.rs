@@ -7,7 +7,7 @@ use foci_tmc4671::registers::{
 use foci_tmc4671::{current_limit::PidTorqueFluxLimit, registers::StatusFlags};
 
 use super::sweep_plan::{CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM};
-use crate::commissioning::backend::CommissionRegisterIo;
+use crate::commissioning::backend::{CommissionRegisterIo, CommissioningBackend};
 
 /// Firmware's ability to prove whether the velocity-output clamp engaged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -364,14 +364,20 @@ pub(crate) async fn begin_velocity_current_primitive<B>(
     capability: VelocityLimitEvidenceCapability,
 ) -> Result<(), VelocityCurrentGuardError>
 where
-    B: CommissionRegisterIo,
+    B: CommissioningBackend,
 {
     observer.reset(clamp_limit, capability);
     let flags = backend
         .read_register(STATUS_FLAGS)
         .await
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
-    reject_actionable_status(flags)?;
+    let actionable_mask =
+        crate::autotune::current_loop_actionable_status_mask(backend.feedback_config());
+    if crate::autotune::is_actionable_status(flags, actionable_mask) {
+        return Err(VelocityCurrentGuardError::ActionableStatus(
+            flags & actionable_mask,
+        ));
+    }
     backend
         .write_register(STATUS_FLAGS, 0)
         .await
@@ -384,14 +390,20 @@ pub(crate) async fn restart_velocity_current_primitive<B>(
     backend: &mut B,
 ) -> Result<(), VelocityCurrentGuardError>
 where
-    B: CommissionRegisterIo,
+    B: CommissioningBackend,
 {
     observer.reset_existing_contract();
     let flags = backend
         .read_register(STATUS_FLAGS)
         .await
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
-    reject_actionable_status(flags)?;
+    let actionable_mask =
+        crate::autotune::current_loop_actionable_status_mask(backend.feedback_config());
+    if crate::autotune::is_actionable_status(flags, actionable_mask) {
+        return Err(VelocityCurrentGuardError::ActionableStatus(
+            flags & actionable_mask,
+        ));
+    }
     backend
         .write_register(STATUS_FLAGS, 0)
         .await
@@ -404,14 +416,21 @@ pub(crate) async fn finish_velocity_current_moving_phase<B>(
     backend: &mut B,
 ) -> Result<(), VelocityCurrentGuardError>
 where
-    B: CommissionRegisterIo,
+    B: CommissioningBackend,
 {
     let flags = backend
         .read_register(STATUS_FLAGS)
         .await
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
     observer.observe_moving_flags(flags);
-    reject_actionable_status(flags)
+    let actionable_mask =
+        crate::autotune::current_loop_actionable_status_mask(backend.feedback_config());
+    if crate::autotune::is_actionable_status(flags, actionable_mask) {
+        return Err(VelocityCurrentGuardError::ActionableStatus(
+            flags & actionable_mask,
+        ));
+    }
+    Ok(())
 }
 
 /// Read and retain the complete status word after confirmed zero-target rest.
@@ -420,14 +439,21 @@ pub(crate) async fn finish_velocity_current_zero_phase<B>(
     backend: &mut B,
 ) -> Result<(), VelocityCurrentGuardError>
 where
-    B: CommissionRegisterIo,
+    B: CommissioningBackend,
 {
     let flags = backend
         .read_register(STATUS_FLAGS)
         .await
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
     observer.observe_zero_flags(flags);
-    reject_actionable_status(flags)
+    let actionable_mask =
+        crate::autotune::current_loop_actionable_status_mask(backend.feedback_config());
+    if crate::autotune::is_actionable_status(flags, actionable_mask) {
+        return Err(VelocityCurrentGuardError::ActionableStatus(
+            flags & actionable_mask,
+        ));
+    }
+    Ok(())
 }
 
 /// Read one absolute velocity-PID output sample through the interim selector.
@@ -470,13 +496,4 @@ where
         .await
         .map(|value| (value as u16 as i16).unsigned_abs())
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)
-}
-
-fn reject_actionable_status(flags: u32) -> Result<(), VelocityCurrentGuardError> {
-    let actionable = flags & crate::autotune::current_loop_actionable_status_mask();
-    if actionable == 0 {
-        Ok(())
-    } else {
-        Err(VelocityCurrentGuardError::ActionableStatus(actionable))
-    }
 }

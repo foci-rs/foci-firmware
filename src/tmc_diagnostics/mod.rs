@@ -100,6 +100,9 @@ pub struct DiagnosticContext<'a, B, D> {
     /// Board-specific TMC4671 hardware configuration, used by the
     /// resistance-test diagnostic to build the board's resistance profile.
     pub tmc_config: &'static crate::config::TmcConfig,
+    /// This channel's feedback wiring, used by shared active-diagnostic
+    /// runners that check `STATUS_FLAGS` against the current-loop mask.
+    pub feedback_config: crate::config::FeedbackConfig,
 }
 
 /// Report produced by a handled active diagnostic request.
