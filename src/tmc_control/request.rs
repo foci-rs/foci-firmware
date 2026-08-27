@@ -1742,6 +1742,17 @@ mod tests {
         ) {
             self.diagnostic_calls = self.diagnostic_calls.saturating_add(1);
         }
+
+        #[cfg(feature = "dev")]
+        async fn run_dev_init(&mut self, _tmc: &mut Tmc4671Spi<RuntimeMockSpi>) {}
+
+        #[cfg(feature = "dev")]
+        async fn run_dev_test_spin(
+            &mut self,
+            _tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
+            _revolutions: u8,
+        ) {
+        }
     }
 
     impl CommissionBusyReplySink for RecordingBoard {
