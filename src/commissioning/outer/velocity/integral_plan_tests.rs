@@ -193,7 +193,7 @@ fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, Confirmati
 
 #[test]
 fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
+    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 17);
     assert_eq!(STAGE_C_MIN_POSITIVE_I, 1);
     assert_eq!(velocity_i_tau_us(1, 25_000), Some(41_943_040));
     assert_eq!(velocity_i_tau_us(1_024, 25_000), Some(40_960));
@@ -1102,24 +1102,26 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
 
 // --- Legacy replay compatibility ---------------------------------------------
 
-/// Pins `plan_velocity_integral_response`'s exact `ReproducedStageB` digest
-/// after this task's half-octave rung insertion. An earlier change altered this value
-/// deliberately in two ways: `build_features` (u16) replaced `build_revision`
-/// (u32) in the digest input, and the selected-response block now gates on
-/// `combined_selected_response.is_some()` instead of the schema number, so a
-/// standalone plan hashes the `is_some = 0` byte it previously skipped.
-/// A later change removed the `combined_selected_response` field from
-/// `VelocityIntegralPlan` entirely, but `digest()` still hashes a constant
-/// `0u8` in its place (see the comment in `digest()` itself), so neither of
-/// those refactors moved this value on their own. This task is the first
-/// deliberate change: inserting the half-octave rung changes
-/// `positive_rungs()`, an input to `digest()`, for every `ReproducedStageB`
-/// plan, so the literal below is the new post-insertion baseline, not the
-/// earlier value. Replay of older captures stays intact
-/// because the host recomputes their digest from what each capture recorded,
-/// not from current firmware. Any *other* change to this literal means a
-/// refactor silently altered the digest and broke in-boot authority retention
-/// or offline replay compatibility; do not update it to make a test pass.
+/// Pins `plan_velocity_integral_response`'s exact `ReproducedStageB` digest.
+/// An earlier change altered this value deliberately in two ways: `build_features`
+/// (u16) replaced `build_revision` (u32) in the digest input, and the
+/// selected-response block now gates on `combined_selected_response.is_some()`
+/// instead of the schema number, so a standalone plan hashes the `is_some =
+/// 0` byte it previously skipped. This change removed the
+/// `combined_selected_response` field from `VelocityIntegralPlan` entirely,
+/// but `digest()` still hashes a constant `0u8` in its place (see the
+/// comment in `digest()` itself), so neither of those refactors moved this
+/// value on their own. Two further deliberate changes moved it since: the
+/// half-octave rung insertion changed `positive_rungs()`, an input to
+/// `digest()`, for every `ReproducedStageB` plan, and the Stage-C schema bump
+/// to `STAGE_C_EVIDENCE_SCHEMA_REVISION == 17` then made `digest()`'s
+/// revision-conditional branch hash `i_top_cap` itself for the first time.
+/// The literal below is the post-schema-bump baseline. Replay of older
+/// captures stays intact because the host recomputes their digest from what
+/// each capture recorded, not from current firmware. Any *other* change to
+/// this literal means a refactor silently altered the digest and broke
+/// in-boot authority retention or offline replay compatibility; do not
+/// update it to make a test pass.
 #[test]
 fn reproduced_stage_b_plan_digest_pins_the_post_half_octave_value() {
     let stage_b = stage_b_plan();
@@ -1134,7 +1136,7 @@ fn reproduced_stage_b_plan_digest_pins_the_post_half_octave_value() {
     )
     .unwrap();
 
-    assert_eq!(plan.digest(), 8_248_226_623_803_483_938);
+    assert_eq!(plan.digest(), 16_592_268_946_659_389_569);
 }
 
 /// Pins a breakaway-sourced plan's exact digest -- the path this task's
@@ -1743,4 +1745,21 @@ fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() 
     // actually prevents a caller from ever reaching index 12 on a 12-rung
     // Breakaway plan.
     assert_eq!(integral_gain_at(0, 12), Some(2_048));
+}
+
+#[test]
+fn reproduced_stage_b_digest_at_schema_17_hashes_i_top_cap() {
+    let mut plan = build_test_reproduced_stage_b_plan();
+    assert_eq!(plan.schema_revision, 17);
+    let baseline = plan.digest();
+    plan.i_top_cap = plan.i_top_cap.wrapping_add(1);
+    assert_ne!(plan.digest(), baseline);
+}
+
+#[test]
+fn schema_16_plan_ignores_i_top_cap_changes_in_its_digest() {
+    let mut plan = build_test_breakaway_plan();
+    let baseline = plan.digest();
+    plan.i_top_cap = 12_345;
+    assert_eq!(plan.digest(), baseline);
 }

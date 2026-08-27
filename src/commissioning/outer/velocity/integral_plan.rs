@@ -18,7 +18,7 @@ use super::sweep_plan::{
 };
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 7;
+pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 17;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
 /// Minimum representable positive Q4.12 velocity-I gain.
@@ -523,6 +523,9 @@ impl VelocityIntegralPlan {
         if !matches!(self.slot_order, IntegralSlotOrder::ForwardFirst) {
             hash_value!(self.slot_order.report_code());
         }
+        if self.schema_revision >= 17 {
+            hash_value!(self.i_top_cap);
+        }
         hash
     }
 
@@ -764,7 +767,8 @@ impl VelocityIntegralExecutionPlan {
 /// Exact identity retained when Stage C has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageCFailedAdmission {
-    /// Digest of the rejected schema-7 authority and controller geometry.
+    /// Digest of the rejected authority and controller geometry, tagged with
+    /// [`STAGE_C_EVIDENCE_SCHEMA_REVISION`].
     pub plan_digest: u64,
     /// The commissioning probe clamp removed every Stage-B-operable rung.
     pub probe_constrained_test_point: bool,

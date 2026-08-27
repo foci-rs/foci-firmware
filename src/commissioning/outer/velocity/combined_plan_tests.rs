@@ -108,7 +108,7 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(STAGE_B_PLAN_SCHEMA_REVISION, 14);
     assert_eq!(STAGE_C_PLAN_SCHEMA_REVISION, 13);
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 7);
+    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 17);
     // The breakaway campaign is additive: it must not renumber or otherwise
     // disturb any historical Stage-B or Stage-C schema revision.
     assert_eq!(BREAKAWAY_STAGE_B_SCHEMA_REVISION, 17);

@@ -1,8 +1,8 @@
 use super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
 use super::integral_plan::StageCAcquisition;
 use super::integral_plan::{
-    StageCAuthority, VelocityIntegralPlanError, plan_velocity_integral_response,
-    transition_capable_stage_c_gain,
+    STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, VelocityIntegralPlanError,
+    plan_velocity_integral_response, transition_capable_stage_c_gain,
 };
 use super::reproduction::StageBDirectionalValidity;
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
@@ -78,7 +78,7 @@ fn stage_c_test_point_selection_uses_the_transition_capable_lower_prefix() {
     .unwrap();
 
     assert_eq!(plan.final_p, 724);
-    assert_eq!(plan.schema_revision, 7);
+    assert_eq!(plan.schema_revision, STAGE_C_EVIDENCE_SCHEMA_REVISION);
     assert_eq!(plan.authority.stage_b_joint_membership, 0x001c_0000);
     assert_eq!(plan.authority.joint_membership, 0x0004_0000);
     assert!(plan.authority.reduced_margin);
