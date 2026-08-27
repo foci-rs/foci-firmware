@@ -8,12 +8,12 @@ use super::{
     MIN_SETTLE_CAPTURE_US, MIN_STRUCTURAL_RUNGS, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     SWEEP_SLOT_COUNT, StrokeGeometry, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
-    build_gain_ladder, cap_safe_target_rpm, current_gain_span, envelope_cap, gain_at,
-    plan_historical_combined_velocity_sweep, plan_stage_b_velocity_sweep, plan_velocity_sweep,
-    representability_ceilings, travel_cap,
+    build_gain_ladder, build_gain_ladder_generic, cap_safe_target_rpm, current_gain_span,
+    envelope_cap, gain_at, half_octave_candidate, plan_historical_combined_velocity_sweep,
+    plan_stage_b_velocity_sweep, plan_velocity_sweep, representability_ceilings, travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
-use foci_tmc4671::pid::PidPGain;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 fn request() -> VelocitySweepRequest {
     VelocitySweepRequest {
@@ -573,4 +573,49 @@ fn centred_strokes_admit_twice_the_displacement_of_origin_anchored_ones() {
             Err(VelocityPlanError::InvalidRequest)
         );
     }
+}
+
+#[test]
+fn half_octave_candidate_uses_ceiling_rounding_not_truncation() {
+    // 4 * 181 = 724; 724 >> 7 truncates to 5, but the generator's ceiling
+    // rounding (+127 before the shift) yields 6.
+    assert_eq!(half_octave_candidate(4), Some(6));
+    // 512 * 181 = 92672, exactly divisible by 128, so ceiling and
+    // truncation agree here — this is today's real P=724 evidence value.
+    assert_eq!(half_octave_candidate(512), Some(724));
+}
+
+#[test]
+fn build_gain_ladder_generic_over_pid_i_gain_matches_p_gain_shape() {
+    let p_ladder: heapless::Vec<PidPGain, MAX_SWEEP_RUNGS> =
+        build_gain_ladder_generic(4, 1024, true).unwrap();
+    let i_ladder: heapless::Vec<PidIGain, MAX_SWEEP_RUNGS> =
+        build_gain_ladder_generic(4, 1024, true).unwrap();
+    let p_raw: heapless::Vec<u16, MAX_SWEEP_RUNGS> = p_ladder.iter().map(|g| g.raw()).collect();
+    let i_raw: heapless::Vec<u16, MAX_SWEEP_RUNGS> = i_ladder.iter().map(|g| g.raw()).collect();
+    assert_eq!(p_raw, i_raw);
+}
+
+#[test]
+fn build_gain_ladder_generic_include_exact_top_false_omits_non_octave_cap() {
+    // Mirrors today's I-ladder behavior: with a non-power-of-two top and
+    // include_exact_top=false, the exact top is never force-appended.
+    let ladder: heapless::Vec<PidPGain, MAX_SWEEP_RUNGS> =
+        build_gain_ladder_generic(4, 1310, false).unwrap();
+    assert_eq!(ladder.last().unwrap().raw(), 1024);
+    assert!(!ladder.iter().any(|g| g.raw() == 1310));
+}
+
+#[test]
+fn build_gain_ladder_p_wrapper_byte_identical_after_generify() {
+    // Regression: the existing public build_gain_ladder(p_start, p_top) name
+    // and behavior are completely unchanged by introducing the generic core.
+    let ladder = build_gain_ladder(4, 1024).unwrap();
+    let raw: heapless::Vec<u16, MAX_SWEEP_RUNGS> = ladder.iter().map(|g| g.raw()).collect();
+    assert_eq!(
+        raw.as_slice(),
+        &[
+            4, 6, 8, 12, 16, 23, 32, 46, 64, 91, 128, 181, 256, 362, 512, 724, 1024
+        ]
+    );
 }

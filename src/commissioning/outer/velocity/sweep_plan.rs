@@ -1,6 +1,6 @@
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-use foci_tmc4671::pid::PidPGain;
+use foci_tmc4671::pid::{PidPGain, RegisterGain};
 use heapless::Vec;
 
 use super::current_guard::{VelocityLimitEvidenceCapability, derive_probe_limit};
@@ -785,6 +785,20 @@ fn current_gain_span_with_limit(
     Ok((p_start, p_top, ceiling_binding_source))
 }
 
+/// Round a raw octave-aligned gain up to its geometric-mean half-octave
+/// point (`raw * sqrt(2)`, approximated as `raw * HALF_OCTAVE_NUM /
+/// 2^HALF_OCTAVE_DEN_SHIFT`, rounded up). Returns `None` on overflow.
+///
+/// No structural-minimum or family-size validation — a single-candidate
+/// primitive shared by [`build_gain_ladder`]'s per-octave loop and the
+/// velocity-I top-gap insertion (`integral_plan.rs`).
+pub(crate) fn half_octave_candidate(raw: u16) -> Option<u16> {
+    let numerator = u64::from(raw).checked_mul(u64::from(HALF_OCTAVE_NUM))?;
+    let rounding = (1_u64 << HALF_OCTAVE_DEN_SHIFT) - 1;
+    let candidate = numerator.checked_add(rounding)? >> HALF_OCTAVE_DEN_SHIFT;
+    u16::try_from(candidate).ok()
+}
+
 /// Build the anchored post-dedupe half-octave gain ladder between two raw gains.
 ///
 /// Reused by the breakaway probe planner (`breakaway_plan.rs`) to derive the
@@ -794,15 +808,26 @@ pub(crate) fn build_gain_ladder(
     p_start_raw: u16,
     p_top_raw: u16,
 ) -> Result<Vec<PidPGain, MAX_SWEEP_RUNGS>, VelocityPlanError> {
-    if p_start_raw == 0 || p_start_raw > p_top_raw || p_top_raw > PidPGain::MAX.raw() {
+    build_gain_ladder_generic(p_start_raw, p_top_raw, true)
+}
+
+/// Generic core of [`build_gain_ladder`], working over any [`RegisterGain`].
+///
+/// `include_exact_top` controls whether the exact `top_raw` value is
+/// force-appended when the half-octave progression does not land on it
+/// exactly; the P ladder always sets this `true`, while the I ladder's
+/// top-gap handling (`integral_plan.rs`) sets it `false` and inserts its own
+/// candidate via [`half_octave_candidate`].
+pub(crate) fn build_gain_ladder_generic<G: RegisterGain>(
+    start_raw: u16,
+    top_raw: u16,
+    include_exact_top: bool,
+) -> Result<Vec<G, MAX_SWEEP_RUNGS>, VelocityPlanError> {
+    if start_raw == 0 || start_raw > top_raw || top_raw > G::MAX.raw() {
         return Err(VelocityPlanError::InsufficientStructuralSpan);
     }
-    let start = u64::from(p_start_raw);
-    let top = u64::from(p_top_raw);
-    let odd_numerator = start
-        .checked_mul(u64::from(HALF_OCTAVE_NUM))
-        .ok_or(VelocityPlanError::Arithmetic)?;
-    let odd_rounding = (1_u64 << HALF_OCTAVE_DEN_SHIFT) - 1;
+    let start = u64::from(start_raw);
+    let top = u64::from(top_raw);
     let mut gains = Vec::new();
     let mut previous = 0_u64;
 
@@ -810,18 +835,17 @@ pub(crate) fn build_gain_ladder(
         let Some(even_candidate) = start.checked_shl(octave) else {
             continue;
         };
-        let Some(odd_candidate) = odd_numerator
-            .checked_shl(octave)
-            .and_then(|value| value.checked_add(odd_rounding))
-            .map(|value| value >> HALF_OCTAVE_DEN_SHIFT)
-        else {
+        let Some(even_raw) = u16::try_from(even_candidate).ok() else {
             continue;
         };
-        for candidate in [even_candidate, odd_candidate] {
+        let Some(odd_candidate) = half_octave_candidate(even_raw) else {
+            continue;
+        };
+        for candidate in [even_candidate, u64::from(odd_candidate)] {
             if candidate > top || candidate <= previous {
                 continue;
             }
-            let gain = PidPGain::new(candidate as u16)
+            let gain = G::new(candidate as u16)
                 .map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
             gains
                 .push(gain)
@@ -829,9 +853,9 @@ pub(crate) fn build_gain_ladder(
             previous = candidate;
         }
     }
-    if previous != top {
+    if include_exact_top && previous != top {
         let top_gain =
-            PidPGain::new(p_top_raw).map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
+            G::new(top_raw).map_err(|_| VelocityPlanError::InsufficientStructuralSpan)?;
         gains
             .push(top_gain)
             .map_err(|_| VelocityPlanError::ConfidenceFamilyTooLarge)?;
@@ -854,43 +878,49 @@ pub fn gain_at(
     rung_count: u8,
     rung_index: u8,
 ) -> Option<PidPGain> {
-    if rung_index >= rung_count
-        || p_start_raw == 0
-        || p_start_raw > p_top_raw
-        || p_top_raw > PidPGain::MAX.raw()
-    {
+    gain_at_generic(p_start_raw, p_top_raw, rung_count, rung_index, true)
+}
+
+/// Generic core of [`gain_at`], working over any [`RegisterGain`].
+///
+/// See [`build_gain_ladder_generic`] for the meaning of `include_exact_top`.
+pub(crate) fn gain_at_generic<G: RegisterGain>(
+    start_raw: u16,
+    top_raw: u16,
+    rung_count: u8,
+    rung_index: u8,
+    include_exact_top: bool,
+) -> Option<G> {
+    if rung_index >= rung_count || start_raw == 0 || start_raw > top_raw || top_raw > G::MAX.raw() {
         return None;
     }
-    let start = u64::from(p_start_raw);
-    let top = u64::from(p_top_raw);
-    let odd_numerator = start.checked_mul(u64::from(HALF_OCTAVE_NUM))?;
-    let odd_rounding = (1_u64 << HALF_OCTAVE_DEN_SHIFT) - 1;
+    let start = u64::from(start_raw);
+    let top = u64::from(top_raw);
     let mut previous = 0_u64;
     let mut emitted = 0_u8;
     for octave in 0..16 {
         let Some(even_candidate) = start.checked_shl(octave) else {
             continue;
         };
-        let Some(odd_candidate) = odd_numerator
-            .checked_shl(octave)
-            .and_then(|value| value.checked_add(odd_rounding))
-            .map(|value| value >> HALF_OCTAVE_DEN_SHIFT)
-        else {
+        let Some(even_raw) = u16::try_from(even_candidate).ok() else {
             continue;
         };
-        for candidate in [even_candidate, odd_candidate] {
+        let Some(odd_candidate) = half_octave_candidate(even_raw) else {
+            continue;
+        };
+        for candidate in [even_candidate, u64::from(odd_candidate)] {
             if candidate > top || candidate <= previous {
                 continue;
             }
             if emitted == rung_index {
-                return PidPGain::new(candidate as u16).ok();
+                return G::new(candidate as u16).ok();
             }
             previous = candidate;
             emitted = emitted.checked_add(1)?;
         }
     }
-    if previous != top && emitted == rung_index {
-        PidPGain::new(p_top_raw).ok()
+    if include_exact_top && previous != top && emitted == rung_index {
+        G::new(top_raw).ok()
     } else {
         None
     }
