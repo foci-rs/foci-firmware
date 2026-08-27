@@ -308,6 +308,9 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(plan.hard_torque_limit);
     core.push_u16(plan.usable_torque_limit);
     core.push_u8(plan.limit_evidence_capability as u8);
+    if plan.schema_revision >= 17 {
+        core.push_u16(plan.i_top_cap);
+    }
 
     let mut schedule = VelocitySweepCanonicalRecord::new();
     schedule.push_u8(0);
@@ -894,6 +897,92 @@ mod tests {
         assert_eq!(record.as_bytes(), &expected);
     }
 
+    #[test]
+    fn plan_trace_core_appends_i_top_cap_only_at_schema_17() {
+        let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
+        for (index, gain) in positive_i.iter_mut().enumerate() {
+            *gain = u16::try_from(index + 1).unwrap();
+        }
+        let mut plan = super::super::integral_plan::VelocityIntegralPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
+            build_features: 3,
+            schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
+            authority: super::super::integral_plan::StageCAuthority {
+                channel: 0,
+                acquisition: StageCAcquisition::ReproducedStageB(0xfedc_ba98_7654_3210),
+                directional_memberships: [0x0038_0000, 0x0038_0000],
+                stage_b_joint_membership: 0x0038_0000,
+                joint_membership: 0x0018_0000,
+                directional_validity: [
+                    super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                    2
+                ],
+                reduced_margin: false,
+                directional_pooled_intervals: [
+                    [17_000_000, 18_000_000],
+                    [-19_000_000, -18_000_000],
+                ],
+                confidence_q: 0,
+                band_position_q: 0,
+            },
+            final_p: 1_448,
+            planned_velocity_mrev_s: 4_394,
+            target_velocity_rpm: 264,
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+            positive_i,
+            positive_rung_count: 30,
+            i_top_cap: 0,
+            family_size: 128,
+            total_rung_count: 32,
+            expected_observations: 256,
+            moving_stroke_us: 512_000,
+            zero_settle_us: 500_000,
+            analysis_budget_us: 236_000,
+            nominal_workflow_ms: 82_607,
+            maximum_workflow_ms: 90_888,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 7,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+            limit_evidence_capability:
+                super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+            recovery_quantization_exposed: true,
+            probe_constrained_test_point: true,
+            motion_request: super::super::sweep_plan::VelocitySweepRequest {
+                requested_velocity_mrev_s: 4_394,
+                machine_velocity_ceiling_mrev_s: 10_000,
+                requested_velocity_source:
+                    super::super::sweep_plan::RequestedVelocitySource::Explicit,
+                max_stroke_travel_mrev: 10_000,
+                settle_travel_reserve_mrev: 100,
+                negative_position_headroom_mrev: 20_000,
+                positive_position_headroom_mrev: 20_000,
+                max_duration_ms: 60_000,
+            },
+        };
+
+        plan.schema_revision = 16;
+        plan.i_top_cap = 0;
+        let [core_16, ..] = encode_velocity_integral_plan_trace(1, plan);
+        let len_16 = core_16.as_bytes().len();
+
+        plan.schema_revision = 17;
+        plan.i_top_cap = 1_310;
+        let [core_17, ..] = encode_velocity_integral_plan_trace(1, plan);
+        let len_17 = core_17.as_bytes().len();
+
+        assert_eq!(
+            len_17,
+            len_16 + 2,
+            "schema 17 adds exactly one trailing u16"
+        );
+        let tail = &core_17.as_bytes()[len_17 - 2..];
+        assert_eq!(u16::from_le_bytes([tail[0], tail[1]]), 1_310);
+    }
+
     fn eligible_rung(direction: VelocityDirection) -> IntegralRungEvidence {
         let interval = ExactRateInterval::new(10, 20).unwrap();
         IntegralRungEvidence {
@@ -1044,7 +1133,7 @@ mod tests {
         assert_eq!(records[0].as_bytes()[15], 0);
         assert_eq!(records[1].as_bytes()[15], 1);
         assert_eq!(records[2].as_bytes()[15], 2);
-        assert_eq!(records[0].as_bytes().len(), 97);
+        assert_eq!(records[0].as_bytes().len(), 99);
         assert_eq!(
             &records[0].as_bytes()[43..47],
             &plan.authority.stage_b_joint_membership.to_le_bytes()
@@ -1062,6 +1151,10 @@ mod tests {
         assert_eq!(
             records[0].as_bytes()[96],
             super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u8
+        );
+        assert_eq!(
+            &records[0].as_bytes()[97..99],
+            &plan.i_top_cap.to_le_bytes()
         );
         assert_eq!(
             records[2].as_bytes()[29],
