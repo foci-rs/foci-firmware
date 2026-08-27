@@ -382,7 +382,9 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
             [i32::from(ascending.qualifier_bits), 0],
         ]
     );
-    assert_eq!(core::mem::size_of_val(&execution), 112);
+    // 112 -> 120: `i_top_cap: u16` grew `VelocityIntegralExecutionPlan` (see
+    // integral_plan.rs's own size assertion for why).
+    assert_eq!(core::mem::size_of_val(&execution), 120);
 }
 
 #[test]

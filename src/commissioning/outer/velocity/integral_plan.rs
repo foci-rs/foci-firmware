@@ -392,6 +392,10 @@ pub struct VelocityIntegralPlan {
     pub positive_i: [u16; STAGE_C_MAX_POSITIVE_RUNGS],
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
+    /// Largest native positive-I ladder cap the half-octave rung was derived
+    /// from, for a `ReproducedStageB` plan; `0` (not applicable) for
+    /// `Breakaway`- and matrix-sourced plans, which never regenerate one.
+    pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
     /// Opening anchor, positive rungs, and closing bookend.
@@ -535,6 +539,7 @@ impl VelocityIntegralPlan {
             encoder_counts_per_rev: self.encoder_counts_per_rev,
             i_start: self.positive_i[0],
             positive_rung_count: self.positive_rung_count,
+            i_top_cap: self.i_top_cap,
             family_size: self.family_size,
             moving_stroke_us: self.moving_stroke_us,
             zero_settle_us: self.zero_settle_us,
@@ -688,6 +693,10 @@ pub struct VelocityIntegralExecutionPlan {
     pub i_start: u16,
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
+    /// Largest native positive-I ladder cap the half-octave rung was derived
+    /// from, for a `ReproducedStageB` plan; `0` (not applicable) for
+    /// `Breakaway`- and matrix-sourced plans, which never regenerate one.
+    pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
     /// Fixed moving-capture duration.
@@ -733,8 +742,13 @@ pub struct VelocityIntegralExecutionPlan {
     pub slot_order: IntegralSlotOrder,
 }
 
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 112);
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 112);
+// 112 -> 120: `i_top_cap: u16` is needed so `ReproducedStageB` plans can
+// regenerate their half-octave rung during execution; unlike
+// `VelocityIntegralPlan`, this struct has no unused padding to absorb it
+// (its leading `u64` field forces 8-byte alignment, so the two extra bytes
+// push the total past the previous 112-byte boundary to the next multiple).
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 120);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 120);
 
 impl VelocityIntegralExecutionPlan {
     /// Whether a target-reaching run on this plan records a target terminus.
@@ -894,8 +908,6 @@ pub(crate) const fn native_velocity_i_at(index: u8) -> Option<u16> {
 }
 
 /// Count of [`native_velocity_i_at`] entries at or below `i_top_cap`.
-// No production caller yet; wiring lands in a later change.
-#[allow(dead_code)]
 pub(crate) fn native_rung_count(i_top_cap: u16) -> u8 {
     let mut index = 0_u8;
     while let Some(candidate) = native_velocity_i_at(index) {
@@ -918,8 +930,6 @@ pub(crate) fn native_rung_count(i_top_cap: u16) -> u8 {
 /// the pure-octave region (`lower_octave >= 4`), never inside the fixed
 /// `1, 2, 3` prefix. `i_top_cap = 0` (the not-applicable sentinel used by
 /// non-`ReproducedStageB` plans) always yields `None`.
-// No production caller yet; wiring lands in a later change.
-#[allow(dead_code)]
 pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
     let count = native_rung_count(i_top_cap);
     if count == 0 {
@@ -1698,7 +1708,7 @@ fn plan_velocity_integral_response_from_source(
     {
         return Err(VelocityIntegralPlanError::InvalidRequest);
     }
-    let ladder = if source.append_exact_cap {
+    let mut ladder = if source.append_exact_cap {
         super::combined_plan::build_combined_integral_ladder(
             pwm_hz,
             MOVING_STROKE_US,
@@ -1712,6 +1722,25 @@ fn plan_velocity_integral_response_from_source(
             MIN_SETTLE_CAPTURE_US,
             OUTER_MAX_VELOCITY_I,
         )?
+    };
+    let i_top_cap = if matches!(
+        source.authority.acquisition,
+        StageCAcquisition::ReproducedStageB(_)
+    ) {
+        if let Some(candidate) = integral_top_gap_candidate(ladder.i_top_cap) {
+            let insert_index = ladder
+                .rungs
+                .len()
+                .checked_sub(1)
+                .ok_or(VelocityIntegralPlanError::InsufficientStructuralSpan)?;
+            ladder
+                .rungs
+                .insert(insert_index, candidate)
+                .map_err(|_| VelocityIntegralPlanError::ConfidenceFamilyTooLarge)?;
+        }
+        ladder.i_top_cap
+    } else {
+        0
     };
     let positive_rung_count =
         u8::try_from(ladder.rungs.len()).map_err(|_| VelocityIntegralPlanError::Arithmetic)?;
@@ -1781,6 +1810,7 @@ fn plan_velocity_integral_response_from_source(
         encoder_counts_per_rev,
         positive_i,
         positive_rung_count,
+        i_top_cap,
         family_size: confidence_family_size(ladder.rungs.len())?,
         total_rung_count,
         expected_observations,

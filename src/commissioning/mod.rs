@@ -1846,9 +1846,13 @@ mod tests {
         // bool from the embedded execution plan (only the retired live
         // combined P-then-I workflow ever set it); the `AcceptanceSource`
         // discriminator added earlier stays.
+        // 2_944 -> 2_960: `i_top_cap: u16` grows the embedded
+        // `VelocityIntegralExecutionPlan` by 8 bytes (112 -> 120; see
+        // integral_plan.rs's own size assertion), needed so `ReproducedStageB`
+        // plans can regenerate their half-octave rung during execution.
         assert_eq!(
             size_of::<crate::commissioning::outer::VelocityIntegralData>(),
-            2_944
+            2_960
         );
         assert!(
             size_of::<crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan>(

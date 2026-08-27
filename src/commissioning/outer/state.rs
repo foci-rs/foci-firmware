@@ -465,6 +465,7 @@ mod tests {
             encoder_counts_per_rev: 4_000,
             i_start: 1,
             positive_rung_count: 5,
+            i_top_cap: 0,
             family_size: 28,
             moving_stroke_us: 512_000,
             zero_settle_us: 500_000,

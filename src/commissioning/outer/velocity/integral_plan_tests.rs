@@ -14,8 +14,8 @@ use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, BreakawayAuthorityBindingError,
     CommissioningWorkflowPlan, ConfirmedAcquisitionDigest, IntegralSlotOrder,
     STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I,
-    STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape, VelocityIntegralPlanError,
-    bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
+    STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape, VelocityIntegralPlan,
+    VelocityIntegralPlanError, bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms, native_rung_count,
@@ -346,20 +346,21 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     assert_eq!(plan.final_p, 512);
     assert_eq!(
         plan.positive_rungs(),
-        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
     );
-    assert_eq!(plan.family_size, 56);
-    assert_eq!(plan.total_rung_count, 14);
-    assert_eq!(plan.expected_observations, 112);
+    // family_size = confidence_family_size(13) = (13 + 2) * STAGE_C_OBSERVATIONS_PER_DIRECTION.
+    assert_eq!(plan.family_size, 60);
+    assert_eq!(plan.total_rung_count, 15);
+    assert_eq!(plan.expected_observations, 120);
     assert_eq!(plan.moving_stroke_us, 512_000);
     assert_eq!(plan.zero_settle_us, 500_000);
     assert_eq!(plan.analysis_budget_us, 236_000);
     assert_eq!(plan.recovery_origin_band_counts, 1_000);
     assert_eq!(plan.recovery_nominal_slot_us, 1_816_958);
     assert_eq!(plan.recovery_maximum_slot_us, 3_000_000);
-    assert_eq!(plan.recovery_slot_count, 14);
-    assert_eq!(plan.nominal_workflow_ms, 165_950);
-    assert_eq!(plan.maximum_workflow_ms, 182_512);
+    assert_eq!(plan.recovery_slot_count, 15);
+    assert_eq!(plan.nominal_workflow_ms, 177_751);
+    assert_eq!(plan.maximum_workflow_ms, 195_496);
     let base_us = u32::from(plan.total_rung_count)
         * STAGE_C_OBSERVATIONS_PER_RUNG
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
@@ -368,6 +369,72 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
         plan.nominal_workflow_ms,
         (base_us + recovery_us + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US).div_ceil(1_000)
     );
+}
+
+/// One genuine `ReproducedStageB` plan, built through the real
+/// [`plan_velocity_integral_response`] path used by
+/// [`stage_c_plan_freezes_geometry_and_conservative_duration`] above.
+fn build_test_reproduced_stage_b_plan() -> VelocityIntegralPlan {
+    let stage_b = stage_b_plan();
+    let mut authority = authority();
+    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
+    plan_velocity_integral_response(
+        authority,
+        stage_b.execution_plan(stage_b.digest()),
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .unwrap()
+}
+
+/// One genuine breakaway-schema plan, built through the real
+/// [`plan_breakaway_velocity_integral_response`] path used by the breakaway
+/// fixtures below (see [`breakaway_acquisition_context`]).
+fn build_test_breakaway_plan() -> VelocityIntegralPlan {
+    let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
+    plan_breakaway_velocity_integral_response(
+        breakaway_token_for(confirmation_plan),
+        confirmation_plan,
+        breakaway_acquisition_context(),
+        breakaway_intervals_for(confirmation_plan),
+        0,
+        0,
+        motion_budget(),
+        25_000,
+        4_000,
+    )
+    .expect("the campaign's own Stage-C plan")
+}
+
+#[test]
+fn reproduced_stage_b_plan_includes_the_half_octave_rung_and_real_cap() {
+    let plan = build_test_reproduced_stage_b_plan();
+    assert_eq!(plan.i_top_cap, 1_310);
+    assert_eq!(
+        plan.positive_rungs(),
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
+    );
+    assert_eq!(plan.positive_rung_count, 13);
+}
+
+#[test]
+fn breakaway_plan_i_top_cap_is_zero_and_rungs_are_unaugmented() {
+    let plan = build_test_breakaway_plan();
+    assert_eq!(plan.i_top_cap, 0);
+    assert_eq!(
+        plan.positive_rungs(),
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+    );
+    assert_eq!(plan.positive_rung_count, 12);
+}
+
+#[test]
+fn execution_plan_copies_i_top_cap_for_both_sources() {
+    let reproduced = build_test_reproduced_stage_b_plan().execution_plan();
+    assert_eq!(reproduced.i_top_cap, 1_310);
+    let breakaway = build_test_breakaway_plan().execution_plan();
+    assert_eq!(breakaway.i_top_cap, 0);
 }
 
 #[test]
@@ -405,8 +472,12 @@ fn workflow_shape_does_not_change_either_stage_identity() {
     .unwrap();
 
     assert_eq!(candidate.maximum_workflow_ms, 298_632);
-    assert_eq!(composite.maximum_workflow_ms, 481_144);
-    assert_eq!(resume.maximum_workflow_ms, 182_512);
+    // stage_c.maximum_workflow_ms grew from 182_512 to 195_496 (see
+    // stage_c_plan_freezes_geometry_and_conservative_duration): the half-octave
+    // rung adds one observation family member, so both the composite sum and
+    // the standalone resume figure below grow with it.
+    assert_eq!(composite.maximum_workflow_ms, 494_128);
+    assert_eq!(resume.maximum_workflow_ms, 195_496);
     assert_ne!(candidate.digest(), composite.digest());
     assert_ne!(composite.digest(), resume.digest());
     assert_eq!(StageCPlanShape::StageB as u8, 0);
@@ -1031,26 +1102,26 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
 
 // --- Legacy replay compatibility ---------------------------------------------
 
-/// Pins `plan_velocity_integral_response`'s exact digest. An earlier change altered this
-/// value deliberately in two ways: `build_features` (u16) replaced
-/// `build_revision` (u32) in the digest input, and the selected-response block
-/// now gates on `combined_selected_response.is_some()` instead of the schema
-/// number, so a standalone plan hashes the `is_some = 0` byte it previously
-/// skipped. A later change removed the `combined_selected_response` field
-/// from `VelocityIntegralPlan` entirely, but `digest()` still hashes a
-/// constant `0u8` in its place (see the comment in `digest()` itself) so this
-/// value is deliberately unchanged -- foci-trace's offline recomputation
-/// (`velocity_integral.py::integral_plan_digest`) independently hashes the
-/// same `combined_selected_response`-derived byte and was not updated in
-/// lockstep, so changing this digest would desync every new capture from
-/// offline replay. Replay of older captures stays intact because the
-/// host recomputes their digest from what each capture recorded (its
-/// `build_revision` and the old schema-gated rule), not from the current
-/// firmware. Any *other* change to this literal means a refactor silently
-/// altered the digest and broke in-boot authority retention or offline replay
-/// compatibility; do not update it to make a test pass.
+/// Pins `plan_velocity_integral_response`'s exact `ReproducedStageB` digest
+/// after this task's half-octave rung insertion. An earlier change altered this value
+/// deliberately in two ways: `build_features` (u16) replaced `build_revision`
+/// (u32) in the digest input, and the selected-response block now gates on
+/// `combined_selected_response.is_some()` instead of the schema number, so a
+/// standalone plan hashes the `is_some = 0` byte it previously skipped.
+/// A later change removed the `combined_selected_response` field from
+/// `VelocityIntegralPlan` entirely, but `digest()` still hashes a constant
+/// `0u8` in its place (see the comment in `digest()` itself), so neither of
+/// those refactors moved this value on their own. This task is the first
+/// deliberate change: inserting the half-octave rung changes
+/// `positive_rungs()`, an input to `digest()`, for every `ReproducedStageB`
+/// plan, so the literal below is the new post-insertion baseline, not the
+/// earlier value. Replay of older captures stays intact
+/// because the host recomputes their digest from what each capture recorded,
+/// not from current firmware. Any *other* change to this literal means a
+/// refactor silently altered the digest and broke in-boot authority retention
+/// or offline replay compatibility; do not update it to make a test pass.
 #[test]
-fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
+fn reproduced_stage_b_plan_digest_pins_the_post_half_octave_value() {
     let stage_b = stage_b_plan();
     let mut authority = authority();
     authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
@@ -1063,7 +1134,19 @@ fn legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor() {
     )
     .unwrap();
 
-    assert_eq!(plan.digest(), 13_608_396_835_480_267_211);
+    assert_eq!(plan.digest(), 8_248_226_623_803_483_938);
+}
+
+/// Pins a breakaway-sourced plan's exact digest -- the path this task's
+/// half-octave insertion never touches (gated on `ReproducedStageB` only).
+/// Preserves the regression coverage
+/// `legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor` gave
+/// the untouched path before this task renamed and repinned that test above
+/// for the `ReproducedStageB` value it does change.
+#[test]
+fn breakaway_plan_digest_is_unchanged_by_the_half_octave_insertion() {
+    let plan = build_test_breakaway_plan();
+    assert_eq!(plan.digest(), 6_592_327_821_066_853_852);
 }
 
 // --- Breakaway Stage-C constructor -------------------------------------------
