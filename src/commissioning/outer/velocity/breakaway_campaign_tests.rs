@@ -1280,12 +1280,95 @@ fn a_discovery_safety_fault_never_seeds_confirmation_from_a_retained_rung() {
                 campaign_terminal.terminal_cause,
                 BreakawayTerminalCause::DiscoverySafetyFault as u8
             );
+            assert_eq!(
+                campaign_terminal.error_code,
+                CommissionError::SafetyEnvelopeViolation.status_code()
+            );
         }
         EmitContinuation::EnterPhase(phase) => panic!(
             "a discovery safety fault must never enter a new phase -- retained rungs are \
              diagnostic only, got {phase:?}"
         ),
     }
+}
+
+#[test]
+fn a_discovery_internal_fault_carries_the_underlying_error_on_the_closure() {
+    let (_, session, _) = run_discovery(discovery_request(), 2_448, |_direction, rung_index| {
+        if rung_index == 0 {
+            5 // 75%: in band, retained.
+        } else {
+            8 // 120%: confidently above 80%, stopping exploration here.
+        }
+    });
+
+    // No safety fault attached: reported as an internal fault, not a safety event.
+    let outcome = AdditiveDiscoveryOutcome::SafetyFault {
+        error: CommissionError::Spi,
+        safety: None,
+    };
+    let inputs = stage_c_inputs(2_448);
+    let mut evidence_sequence = 3_u16;
+    let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
+    let CampaignAdvance::Emit { next, .. } = advance else {
+        panic!("expected an Emit advance");
+    };
+    let EmitContinuation::Terminal {
+        campaign_terminal,
+        done: BreakawayCampaignOutcome::Terminal { safety, .. },
+    } = next
+    else {
+        panic!("a discovery internal fault must close the campaign");
+    };
+    assert!(
+        safety.is_none(),
+        "an internal fault carries no safety fault"
+    );
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::DiscoveryInternalFault as u8
+    );
+    assert_eq!(
+        campaign_terminal.error_code,
+        CommissionError::Spi.status_code(),
+        "the closure must carry the underlying CommissionError so a \
+         *_internal_fault is attributable"
+    );
+}
+
+#[test]
+fn a_probe_internal_fault_carries_the_underlying_error_on_the_closure() {
+    let plan = test_plan();
+    let inputs = stage_c_inputs(2_448);
+    let mut evidence_sequence = 0_u16;
+
+    let advance = probe_failure_advance(
+        BreakawayProbeOutcome::SafetyFault {
+            error: CommissionError::Spi,
+            safety: None,
+        },
+        &plan,
+        &inputs,
+        &mut evidence_sequence,
+    );
+    let CampaignAdvance::Emit { next, .. } = advance else {
+        panic!("expected an Emit advance");
+    };
+    let EmitContinuation::Terminal {
+        campaign_terminal, ..
+    } = next
+    else {
+        panic!("a probe internal fault must close the campaign");
+    };
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::ProbeInternalFault as u8
+    );
+    assert_eq!(
+        campaign_terminal.error_code,
+        CommissionError::Spi.status_code(),
+        "the probe closure must carry the underlying CommissionError"
+    );
 }
 
 /// The walk enters `StreamMargins` on a target-band selection and emits one
@@ -3245,18 +3328,22 @@ fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
     assert_eq!(terminal.reverse_included_mask, 0);
 
     let EmitContinuation::Terminal {
+        campaign_terminal,
         done:
             BreakawayCampaignOutcome::Terminal {
                 error,
                 safety: safety_fault,
             },
-        ..
     } = next
     else {
         panic!("a non-accept confirmation outcome must be a Terminal step");
     };
     assert_eq!(error, CommissionError::SafetyEnvelopeViolation);
     assert_eq!(safety_fault, Some(fault));
+    assert_eq!(
+        campaign_terminal.error_code,
+        CommissionError::SafetyEnvelopeViolation.status_code()
+    );
 }
 
 // --- 6d routing: an impossible discovery outcome maps to band-not-selected ----
@@ -3277,14 +3364,19 @@ fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_band_not_select
         &mut evidence_sequence,
     );
     let EmitContinuation::Terminal {
+        campaign_terminal,
         done: BreakawayCampaignOutcome::Terminal { error, safety },
-        ..
     } = advance
     else {
         panic!("an impossible discovery outcome must be a Terminal step");
     };
     assert_eq!(error, CommissionError::DiscoveryBandNotSelected);
     assert!(safety.is_none());
+    assert_eq!(
+        campaign_terminal.error_code,
+        CommissionError::DiscoveryBandNotSelected.status_code(),
+        "a routed zero-stroke fault carries its CommissionError"
+    );
 }
 
 #[test]
@@ -3372,6 +3464,99 @@ fn plan_time_resolution_refusal_keeps_its_discovery_terminal_cause() {
         BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded as u8
     );
     assert_eq!(error, CommissionError::DiscoveryBandNotSelected);
+    // A soft, discovery-owned refusal is named by its terminal cause; error_code
+    // stays 0 (only fault terminals carry the underlying CommissionError).
+    assert_eq!(campaign_terminal.error_code, 0);
+}
+
+#[test]
+fn a_discovery_construction_fault_carries_an_error_code() {
+    let mut inputs = stage_c_inputs(2_448);
+    inputs.p_start = gain(1);
+    inputs.p_top = gain(7_456);
+    let probe_plan = plan_upward_breakaway_probe(
+        inputs.p_start,
+        inputs.p_top,
+        BreakawayProbeContext {
+            workflow_digest: 0x213,
+            target_velocity_rpm: inputs.target_velocity_rpm.raw(),
+            hard_torque_limit: inputs.hard_torque_limit,
+            usable_torque_limit: inputs.usable_torque_limit,
+            pwm_hz: inputs.pwm_hz,
+            encoder_counts_per_rev: inputs.encoder_counts_per_rev,
+        },
+    )
+    .expect("valid upward probe plan");
+    // An out-of-range breakaway index fails grid-floor resolution, so
+    // enter_discovery takes the construction-fault path before any motion.
+    let resolved = ResolvedUpwardBreakaway {
+        breakaway_index: u8::MAX,
+        observations: 32,
+    };
+    let mut evidence_sequence = 0_u16;
+
+    let continuation = enter_discovery(&resolved, &probe_plan, &inputs, &mut evidence_sequence);
+
+    let EmitContinuation::Terminal {
+        campaign_terminal, ..
+    } = continuation
+    else {
+        panic!("an out-of-range breakaway index must close the campaign");
+    };
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::DiscoveryInternalFault as u8
+    );
+    assert_eq!(
+        campaign_terminal.error_code,
+        CommissionError::DiscoveryBandNotSelected.status_code()
+    );
+}
+
+#[test]
+fn a_discovery_plan_structural_fault_carries_its_error_code() {
+    let mut inputs = stage_c_inputs(2_448);
+    inputs.p_start = gain(1);
+    inputs.p_top = gain(7_456);
+    // A workflow envelope too small for any discovery ladder: the plan builder
+    // refuses structurally (CampaignPlanInvalid) rather than with a discovery-
+    // owned soft cause, so the closure is an internal fault.
+    inputs.workflow_envelope_ms = 1;
+    let probe_plan = plan_upward_breakaway_probe(
+        inputs.p_start,
+        inputs.p_top,
+        BreakawayProbeContext {
+            workflow_digest: 0x213,
+            target_velocity_rpm: inputs.target_velocity_rpm.raw(),
+            hard_torque_limit: inputs.hard_torque_limit,
+            usable_torque_limit: inputs.usable_torque_limit,
+            pwm_hz: inputs.pwm_hz,
+            encoder_counts_per_rev: inputs.encoder_counts_per_rev,
+        },
+    )
+    .expect("valid upward probe plan");
+    let resolved = ResolvedUpwardBreakaway {
+        breakaway_index: 15,
+        observations: 32,
+    };
+    let mut evidence_sequence = 0_u16;
+
+    let continuation = enter_discovery(&resolved, &probe_plan, &inputs, &mut evidence_sequence);
+
+    let EmitContinuation::Terminal {
+        campaign_terminal, ..
+    } = continuation
+    else {
+        panic!("a structural plan refusal must close the campaign");
+    };
+    assert_eq!(
+        campaign_terminal.terminal_cause,
+        BreakawayTerminalCause::DiscoveryInternalFault as u8
+    );
+    assert_eq!(
+        campaign_terminal.error_code,
+        CommissionError::CampaignPlanInvalid.status_code()
+    );
 }
 
 // --- Accept hands off through the engine adapter into VelocityIntegral ---------
@@ -3763,6 +3948,11 @@ fn breakaway_campaign_fault_terminal_defers_a_campaign_closure_before_outer_fail
         BreakawayTerminalCause::ProbeSafetyFault as u8
     );
     assert_eq!(closure.accepted, 0);
+    assert_eq!(
+        closure.error_code,
+        CommissionError::SafetyEnvelopeViolation.status_code(),
+        "a boundary-detected safety fault still carries its CommissionError"
+    );
 
     // The tick after that resolves the deferred `Done`, carrying the original
     // error and safety fault through to the real `OuterFailed`/
@@ -4100,5 +4290,11 @@ fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
     assert_eq!(
         closure.terminal_cause,
         BreakawayTerminalCause::DiscoveryInternalFault as u8
+    );
+    assert_eq!(
+        closure.error_code,
+        CommissionError::Spi.status_code(),
+        "the closure must carry the underlying CommissionError so a discovery \
+         internal fault is attributable, not just named as an internal fault"
     );
 }

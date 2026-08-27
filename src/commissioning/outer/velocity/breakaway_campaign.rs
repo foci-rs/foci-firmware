@@ -4224,7 +4224,7 @@ pub(crate) fn breakaway_campaign_fault_terminal(
         terminal_cause,
         false,
         0,
-        0,
+        error.status_code(),
         &campaign.inputs,
         &mut campaign.evidence_sequence,
     );
@@ -4272,7 +4272,7 @@ fn discovery_construction_fault(
         super::breakaway_reporting::BreakawayTerminalCause::DiscoveryInternalFault,
         false,
         0,
-        0,
+        CommissionError::DiscoveryBandNotSelected.status_code(),
         inputs,
         evidence_sequence,
     );
@@ -4320,12 +4320,16 @@ fn route_discovery_outcome(
         }
         BandConfirmationEntry::Done(outcome) => {
             let cause = confirmation_zero_stroke_cause(&outcome).0;
+            let error_code = match &outcome {
+                BandConfirmationOutcome::SafetyFault { error, .. } => error.status_code(),
+                _ => 0,
+            };
             let campaign_terminal = campaign_terminal_event(
                 BreakawayPhase::Confirmation,
                 cause,
                 false,
                 0,
-                0,
+                error_code,
                 inputs,
                 evidence_sequence,
             );
@@ -4453,16 +4457,18 @@ fn enter_discovery(
             session,
         }),
         Err(outcome) => {
-            let (cause, error, safety) = match outcome {
+            let (cause, error, safety, error_code) = match outcome {
                 AdditiveDiscoveryOutcome::InsufficientAdditiveSpan => (
                     BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
                     CommissionError::DiscoveryBandNotSelected,
                     None,
+                    0,
                 ),
                 AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => (
                     BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded,
                     CommissionError::DiscoveryBandNotSelected,
                     None,
+                    0,
                 ),
                 AdditiveDiscoveryOutcome::SafetyFault { error, safety } => (
                     if safety.is_some() {
@@ -4472,6 +4478,7 @@ fn enter_discovery(
                     },
                     error,
                     safety,
+                    error.status_code(),
                 ),
                 AdditiveDiscoveryOutcome::TargetBandSelected(_)
                 | AdditiveDiscoveryOutcome::TargetBandSkipped
@@ -4480,6 +4487,7 @@ fn enter_discovery(
                     BreakawayTerminalCause::DiscoveryInternalFault,
                     CommissionError::DiscoveryBandNotSelected,
                     None,
+                    CommissionError::DiscoveryBandNotSelected.status_code(),
                 ),
             };
             let campaign_terminal = campaign_terminal_event(
@@ -4487,7 +4495,7 @@ fn enter_discovery(
                 cause,
                 false,
                 0,
-                0,
+                error_code,
                 inputs,
                 evidence_sequence,
             );
@@ -4533,13 +4541,17 @@ fn probe_failure_advance(
     let sequence = next_sequence(evidence_sequence);
     let terminal = probe_terminal_report(probe_plan, &outcome, inputs.run_sequence, sequence);
     let cause = probe_terminal_cause(&outcome).0;
+    let error_code = match &outcome {
+        BreakawayProbeOutcome::SafetyFault { error, .. } => error.status_code(),
+        _ => 0,
+    };
     let now = BreakawayCampaignEvent::ProbeTerminal(terminal);
     let campaign_terminal = campaign_terminal_event(
         BreakawayPhase::Probe,
         cause,
         false,
         0,
-        0,
+        error_code,
         inputs,
         evidence_sequence,
     );
@@ -4648,7 +4660,7 @@ fn discovery_done_advance(
                 },
                 false,
                 0,
-                0,
+                error.status_code(),
                 inputs,
                 evidence_sequence,
             );
@@ -4800,7 +4812,13 @@ fn confirmation_done_advance<B: CommissioningBackend>(
             };
             (done, campaign_cause, error_code)
         }
-        other => (confirmation_terminal(other), cause, 0),
+        other => {
+            let error_code = match &other {
+                BandConfirmationOutcome::SafetyFault { error, .. } => error.status_code(),
+                _ => 0,
+            };
+            (confirmation_terminal(other), cause, error_code)
+        }
     };
     let (accepted, stage_c_plan_digest) = match &done {
         BreakawayCampaignOutcome::StageCPlanReady(plan) => (true, plan.digest()),
