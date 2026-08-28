@@ -1784,10 +1784,6 @@ mod tests {
         }
     }
 
-    /// Mint one genuine breakaway acquisition through the real confirmation
-    /// gate. The `ConfirmedAcquisitionDigest` token cannot be fabricated, so
-    /// this walks the same `plan_band_confirmation` -> `evaluate_band_confirmation`
-    /// -> `bind_breakaway_stage_c_authority` chain a live campaign uses.
     fn breakaway_acquisition_for_test() -> StageCAcquisition {
         use crate::autotune::velocity_measurement::VelocityDirection;
         use crate::commissioning::outer::velocity::band_confirmation::{
@@ -2832,9 +2828,6 @@ mod tests {
         );
     }
 
-    /// Build the exact breakaway-sourced Stage-C plan a resume of
-    /// `velocity_sweep_request` reproduces. Mints its token through the real
-    /// confirmation gate, mirroring `stage_c_tests::breakaway_stage_c_plan`.
     fn resumable_stage_c_plan()
     -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
         use crate::autotune::velocity_measurement::VelocityDirection;

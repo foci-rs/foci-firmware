@@ -128,11 +128,6 @@ fn velocity_current_guard_contract() {
     assert_eq!(polled_quantized.contact, VelocityCurrentContact::None);
     assert!(polled_quantized.moving_clip_uncertain());
 
-    // The breakaway campaign measures `limit_evidence_capability` from the
-    // live current observer's clamp limit rather than deriving it from a
-    // Stage-B sweep (a breakaway campaign has no Stage-B phase), so this
-    // checks the same propagation property -- the plan and its digest track
-    // the capability the acquisition context carries -- through that path.
     let stage_c = breakaway_stage_c_plan(VelocityLimitEvidenceCapability::LatchedFlag);
     assert_eq!(
         stage_c.limit_evidence_capability,
@@ -151,8 +146,6 @@ fn velocity_current_guard_contract() {
     assert_ne!(stage_c.digest(), best_effort_stage_c.digest());
 }
 
-/// Mint one genuine breakaway Stage-C plan through the real confirmation
-/// gate, varying only `limit_evidence_capability`.
 fn breakaway_stage_c_plan(
     limit_evidence_capability: VelocityLimitEvidenceCapability,
 ) -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {

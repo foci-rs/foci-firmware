@@ -243,10 +243,6 @@ pub struct StageCPreflightConfig {
 
 /// Admit one resume against retained breakaway authority.
 ///
-/// A breakaway campaign has no Stage-B phase, so the plan is rebuilt from the
-/// retained authority alone rather than by recomputing and comparing a Stage-B
-/// sweep plan.
-///
 /// The torque limits and evidence capability come from the retained authority
 /// because the campaign measured its usable limit from the current observer, so
 /// recomputing them here could plan against a different boundary than the one
@@ -347,9 +343,6 @@ pub fn preflight_stage_c_request(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
     };
-    // A breakaway campaign has no Stage-B phase: every retained authority is a
-    // breakaway confirmation, so the plan is always rebuilt from retained
-    // authority rather than by recomputing and comparing a Stage-B sweep plan.
     let Some(token) = authority.acquisition.confirmed_breakaway() else {
         return Err(StageCPreflightRejection::InvalidPlan);
     };

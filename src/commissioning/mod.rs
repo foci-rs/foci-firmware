@@ -1830,26 +1830,8 @@ mod tests {
         let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
         let scheduled_step = size_of_val(&runtime.step_commissioning_scheduled(&mut backend));
 
-        // Outer safety retains independent local and asymmetric absolute travel
-        // bounds in the largest engine variant.
-        //
-        // 3_840 -> 5_744: un-gated `OuterPhase::VelocityIntegral`
-        // and `OuterPhase::BreakawayCampaign` -- previously gated behind the
-        // acceptance-matrix-only feature that was later removed -- so the
-        // immutable plan and engine-owned cooperative analysis state below are
-        // now compiled into every build and this is the sole size assertion.
-        // Resumable partial-block analysis reaches, but does not raise, the
-        // audited F407 ceiling.
         assert_eq!(size_of::<TraceRunState>(), 12);
         assert_eq!(size_of::<TraceSummarySeqs>(), 16);
-        // 2_960 -> 2_944: removes the `combined_workflow`
-        // bool from the embedded execution plan (only the retired live
-        // combined P-then-I workflow ever set it); the `AcceptanceSource`
-        // discriminator added earlier stays.
-        // 2_944 -> 2_960: `i_top_cap: u16` grows the embedded
-        // `VelocityIntegralExecutionPlan` by 8 bytes (112 -> 120; see
-        // integral_plan.rs's own size assertion), needed so response-ladder
-        // plans can regenerate their half-octave rung during execution.
         assert_eq!(
             size_of::<crate::commissioning::outer::VelocityIntegralData>(),
             2_960
@@ -2880,12 +2862,6 @@ mod tests {
     /// boundary, plus a matching terminal ready for
     /// [`CommissioningEngine::attach_stage_c_rest_boundary`] and the
     /// boundary the engine was seeded with.
-    ///
-    /// Follows the fixture construction used by the surrounding Stage-C
-    /// tests (`commission_dispatch::stage_c_tests` and
-    /// `commission_dispatch::replies` tests): mint one genuine breakaway
-    /// Stage-C plan through the real confirmation gate, then hand it to
-    /// [`CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight`].
     #[cfg(feature = "trace")]
     fn stage_c_engine_at_rest_boundary_for_test() -> (
         CommissioningEngine,

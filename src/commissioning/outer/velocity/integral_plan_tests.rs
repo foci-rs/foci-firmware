@@ -567,10 +567,6 @@ fn forward_first_preserves_the_historical_parity_mapping() {
 
 #[test]
 fn breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes() {
-    // Discriminants 0 and 1 belonged to the removed StageB and
-    // StageBThenStageC shapes; discriminant 3 belonged to a since-retired
-    // shape before them. Both are left unassigned rather than renumbering
-    // the shapes below them.
     assert_eq!(StageCPlanShape::StageCResume as u8, 2);
     assert_eq!(StageCPlanShape::AcceptanceMatrixAscending as u8, 4);
     assert_eq!(StageCPlanShape::AcceptanceMatrixDescending as u8, 5);

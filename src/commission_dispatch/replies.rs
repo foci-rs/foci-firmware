@@ -3926,11 +3926,6 @@ mod tests {
         );
     }
 
-    /// Mint one genuine breakaway acquisition through the real confirmation
-    /// gate. The `ConfirmedAcquisitionDigest` token cannot be fabricated, so
-    /// this walks the same `plan_band_confirmation` ->
-    /// `evaluate_band_confirmation` -> `bind_breakaway_stage_c_authority`
-    /// chain a live campaign uses.
     fn breakaway_acquisition_for_test()
     -> crate::commissioning::outer::velocity::integral_plan::StageCAcquisition {
         use crate::autotune::velocity_measurement::VelocityDirection;
@@ -3993,11 +3988,6 @@ mod tests {
         StageCAcquisition::ConfirmedBreakaway(token)
     }
 
-    /// A plan with both directions carrying an available cross-P model
-    /// interval, for tests that need to selectively withdraw one direction's
-    /// availability. `StageCAuthority::new_breakaway` always zeroes this
-    /// evidence, so it is set directly on the struct literal instead of
-    /// through any plan-building function.
     fn velocity_integral_plan_fixture()
     -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
         use crate::commissioning::outer::velocity::integral_plan::{

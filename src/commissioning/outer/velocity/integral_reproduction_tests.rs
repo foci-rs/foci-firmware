@@ -15,10 +15,6 @@ fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
     ExactRateInterval::new(low_q, high_q).unwrap()
 }
 
-/// Mint one genuine breakaway acquisition through the real confirmation
-/// gate. The `ConfirmedAcquisitionDigest` token cannot be fabricated, so this
-/// walks the same `plan_band_confirmation` -> `evaluate_band_confirmation` ->
-/// `bind_breakaway_stage_c_authority` chain a live campaign uses.
 fn breakaway_acquisition_for_test() -> StageCAcquisition {
     use crate::autotune::velocity_measurement::VelocityDirection;
     use crate::commissioning::outer::velocity::band_confirmation::{
@@ -177,8 +173,6 @@ fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authori
     assert_eq!(slot.acceptance_point(), Some(point));
     assert_eq!(slot.authority(), None);
     assert_eq!(slot.candidate(), None);
-    // 656 -> 648: removing `StageCAcquisition::ReproducedStageB(u64)` leaves
-    // a single-variant enum, which no longer needs a separate discriminant.
     assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
 }
 
@@ -561,29 +555,13 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // 216 -> 216 (unchanged): `i_top_cap: u16` is needed so response-ladder
     // plans can regenerate their half-octave rung during execution; existing
     // padding absorbed the two extra bytes, so the measured total did not grow.
-    // 216 -> 208: removing `StageCAcquisition::ReproducedStageB(u64)` leaves
-    // a single-variant enum, which no longer needs a separate discriminant --
-    // `StageCAuthority.acquisition` shrinks by 8 bytes.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
-    // 120 -> 112: removes the `combined_workflow` bool (only
-    // the retired live combined P-then-I workflow ever set it); the
-    // `AcceptanceSource` discriminator added earlier stays.
-    // 112 -> 120: `i_top_cap: u16` is needed so response-ladder plans can
-    // regenerate their half-octave rung during execution; this struct's
-    // leading `u64` field forces 8-byte alignment, so the two extra bytes push
-    // the total past the previous 112-byte boundary to the next multiple.
-    // No further change: this type carries no `StageCAcquisition`.
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 120);
-    // 104 -> 96: same `StageCAcquisition` discriminant removal as above.
     assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 96);
-    // Removes the `combined_workflow` bool entirely (only the
-    // retired live combined P-then-I workflow ever set it).
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
         640
     );
-    // 656 -> 648: same `StageCAcquisition` discriminant removal, carried
-    // through `RetainedStageC`'s `Candidate(StageCCandidateSummary)` variant.
     assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
     assert_eq!(
         core::mem::size_of::<super::integral_reproduction::StageCReproductionDelta>(),

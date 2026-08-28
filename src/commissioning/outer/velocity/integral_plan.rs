@@ -207,12 +207,8 @@ impl CommissioningWorkflowPlan {
 /// this replaced.
 ///
 /// The sole variant carries an unforgeable [`ConfirmedAcquisitionDigest`]
-/// rather than a bare `u64` so that "Stage C authorized by anything other than
-/// an accepted confirmation" stays a compile-time impossibility. A second
-/// variant, `ReproducedStageB(u64)`, once named a reproduced Stage-B sweep
-/// digest recomputable from a request; it had no live installer once a later
-/// change removed the only production code that ever built one, and was
-/// removed.
+/// rather than a bare `u64` so that "Stage C authorized by anything other
+/// than an accepted confirmation" stays a compile-time impossibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StageCAcquisition {
     /// Accepted breakaway confirmation, named by its unforgeable token.
@@ -533,8 +529,6 @@ impl VelocityIntegralPlan {
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
-            // `self.authority.acquisition` has exactly one variant, so a
-            // response-ladder plan's source is always a breakaway confirmation.
             acceptance_source: AcceptanceSource::Breakaway,
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q,
@@ -649,10 +643,8 @@ pub enum AcceptanceSource {
     // below it.
     /// Accepted breakaway-campaign confirmation.
     Breakaway = 1,
-    /// Any acceptance source that is not a breakaway confirmation: currently
-    /// the fixed-I acceptance matrix; historically also a reproduced Stage-B
-    /// response ladder (removed with `StageCAcquisition::ReproducedStageB`).
-    /// Neither carries target-reaching evidence.
+    /// Any acceptance source that is not a breakaway confirmation. Carries no
+    /// target-reaching evidence.
     NonBreakaway = 2,
 }
 
@@ -1276,12 +1268,8 @@ pub(crate) fn bind_breakaway_stage_c_authority(
 
 /// Explicit physical acquisition inputs the shared Stage-C tail needs.
 ///
-/// [`plan_velocity_integral_response_from_source`] used to take a full
-/// [`VelocitySweepExecutionPlan`] and read a handful of physical fields off
-/// it, which made a reproduced Stage-B sweep plan look load-bearing to the
-/// tail even though only these fields were ever consulted. The breakaway
-/// campaign ([`plan_breakaway_velocity_integral_response`]) has no Stage-B
-/// sweep plan at all and builds one directly from its own campaign
+/// The breakaway campaign ([`plan_breakaway_velocity_integral_response`]) has
+/// no Stage-B sweep plan at all and builds one directly from its own campaign
 /// parameters instead of fabricating a `VelocitySweepExecutionPlan`. The
 /// acceptance-matrix preflight (`commission_dispatch::acceptance`) still
 /// reconstructs a Stage-B sweep plan to source these physical fields, via

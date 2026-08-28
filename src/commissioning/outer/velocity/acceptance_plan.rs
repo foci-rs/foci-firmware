@@ -245,10 +245,6 @@ impl AcceptanceMatrixPlan {
                     VelocityIntegralAcquisitionKind::AcceptanceDescending
                 }
             },
-            // The fixed-I acceptance matrix tracks amplitude sufficiency, not a
-            // breakaway target terminus; `acquisition_kind` already
-            // distinguishes it from every `ResponseLadder` plan, so the
-            // non-terminus-recording source is correct here.
             acceptance_source: AcceptanceSource::NonBreakaway,
             matrix_targets_rpm: self.target_rpm,
             selected_response_intervals_q: [
