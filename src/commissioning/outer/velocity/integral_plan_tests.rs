@@ -398,25 +398,15 @@ fn execution_plan_copies_i_top_cap() {
     assert_eq!(breakaway.i_top_cap, 1_310);
 }
 
-/// `CommissioningWorkflowPlan`'s three fixed-command shapes compose distinct,
-/// non-colliding digests from the same duration arithmetic
-/// (`maximum_workflow_ms = stage_b_ms + stage_c_ms`), regardless of which
-/// acquisition produced the underlying Stage-C plan.
+/// `CommissioningWorkflowPlan::new` admits exactly `StageCResume`
+/// (`stage_b_ms == 0 && stage_c_ms != 0`); every other shape it can name is
+/// rejected -- the acceptance-matrix and breakaway shapes have their own
+/// dedicated constructors instead (see
+/// `breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes`).
 #[test]
-fn workflow_shape_composes_distinct_digests_from_duration_arithmetic() {
-    let stage_b = stage_b_plan();
+fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
     let stage_c = build_test_breakaway_plan();
 
-    let candidate =
-        CommissioningWorkflowPlan::new(7, StageCPlanShape::StageB, stage_b.maximum_workflow_ms, 0)
-            .unwrap();
-    let composite = CommissioningWorkflowPlan::new(
-        8,
-        StageCPlanShape::StageBThenStageC,
-        stage_b.maximum_workflow_ms,
-        stage_c.maximum_workflow_ms,
-    )
-    .unwrap();
     let resume = CommissioningWorkflowPlan::new(
         9,
         StageCPlanShape::StageCResume,
@@ -425,17 +415,30 @@ fn workflow_shape_composes_distinct_digests_from_duration_arithmetic() {
     )
     .unwrap();
 
-    assert_eq!(candidate.maximum_workflow_ms, stage_b.maximum_workflow_ms);
-    assert_eq!(
-        composite.maximum_workflow_ms,
-        stage_b.maximum_workflow_ms + stage_c.maximum_workflow_ms
-    );
     assert_eq!(resume.maximum_workflow_ms, stage_c.maximum_workflow_ms);
-    assert_ne!(candidate.digest(), composite.digest());
-    assert_ne!(composite.digest(), resume.digest());
-    assert_eq!(StageCPlanShape::StageB as u8, 0);
-    assert_eq!(StageCPlanShape::StageBThenStageC as u8, 1);
-    assert_eq!(StageCPlanShape::StageCResume as u8, 2);
+    assert_eq!(
+        CommissioningWorkflowPlan::new(
+            9,
+            StageCPlanShape::StageCResume,
+            1,
+            stage_c.maximum_workflow_ms,
+        ),
+        Err(VelocityIntegralPlanError::InvalidRequest),
+        "StageCResume names no Stage-B duration"
+    );
+    assert_eq!(
+        CommissioningWorkflowPlan::new(9, StageCPlanShape::StageCResume, 0, 0),
+        Err(VelocityIntegralPlanError::InvalidRequest),
+        "StageCResume must name a Stage-C duration"
+    );
+    let different_sequence = CommissioningWorkflowPlan::new(
+        10,
+        StageCPlanShape::StageCResume,
+        0,
+        stage_c.maximum_workflow_ms,
+    )
+    .unwrap();
+    assert_ne!(resume.digest(), different_sequence.digest());
 }
 
 #[test]
@@ -564,11 +567,11 @@ fn forward_first_preserves_the_historical_parity_mapping() {
 
 #[test]
 fn breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes() {
-    assert_eq!(StageCPlanShape::StageB as u8, 0);
-    assert_eq!(StageCPlanShape::StageBThenStageC as u8, 1);
+    // Discriminants 0 and 1 belonged to the removed StageB and
+    // StageBThenStageC shapes; discriminant 3 belonged to a since-retired
+    // shape before them. Both are left unassigned rather than renumbering
+    // the shapes below them.
     assert_eq!(StageCPlanShape::StageCResume as u8, 2);
-    // Discriminant 3 belonged to a since-retired shape; it is left unassigned
-    // rather than renumbering the shapes below it.
     assert_eq!(StageCPlanShape::AcceptanceMatrixAscending as u8, 4);
     assert_eq!(StageCPlanShape::AcceptanceMatrixDescending as u8, 5);
     assert_eq!(StageCPlanShape::BreakawaySeededPThenI as u8, 6);

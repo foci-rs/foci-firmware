@@ -34,13 +34,14 @@ const MICROS_PER_SECOND: u64 = 1_000_000;
 const CONFIDENCE_FAMILY_MAX: u16 = 128;
 
 /// Command-level acquisition shape disclosed before any motion.
+///
+/// Discriminants 0 (`StageB`) and 1 (`StageBThenStageC`) belonged to the
+/// combined Stage-B-then-Stage-C workflow; they are left unassigned rather
+/// than renumbering the variants below them, matching how discriminant 3
+/// (the workflow's own retired combined shape) was already left unassigned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum StageCPlanShape {
-    /// Run one Stage-B candidate without a possible continuation.
-    StageB = 0,
-    /// Run Stage-B reproduction and continue into Stage C on success.
-    StageBThenStageC = 1,
     /// Resume Stage C from retained firmware authority.
     StageCResume = 2,
     /// Run the retained fixed-I acceptance matrix from low to high amplitude.
@@ -78,8 +79,6 @@ impl CommissioningWorkflowPlan {
         stage_c_ms: u32,
     ) -> Result<Self, VelocityIntegralPlanError> {
         let valid = match shape {
-            StageCPlanShape::StageB => stage_b_ms != 0 && stage_c_ms == 0,
-            StageCPlanShape::StageBThenStageC => stage_b_ms != 0 && stage_c_ms != 0,
             StageCPlanShape::StageCResume => stage_b_ms == 0 && stage_c_ms != 0,
             StageCPlanShape::AcceptanceMatrixAscending
             | StageCPlanShape::AcceptanceMatrixDescending
