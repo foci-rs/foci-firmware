@@ -1146,7 +1146,7 @@ fn reproduced_stage_b_plan_digest_pins_the_post_half_octave_value() {
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 10_560_511_653_674_384_425);
+    assert_eq!(plan.digest(), 17_538_351_366_355_329_360);
 }
 
 // --- Breakaway Stage-C constructor -------------------------------------------
@@ -1756,8 +1756,18 @@ fn reproduced_stage_b_digest_at_schema_17_hashes_i_top_cap() {
 }
 
 #[test]
-fn schema_16_plan_ignores_i_top_cap_changes_in_its_digest() {
+fn schema_16_breakaway_plan_also_hashes_i_top_cap_changes_in_its_digest() {
     let mut plan = build_test_breakaway_plan();
+    assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
+    let baseline = plan.digest();
+    plan.i_top_cap = plan.i_top_cap.wrapping_add(1);
+    assert_ne!(plan.digest(), baseline);
+}
+
+#[test]
+fn other_schema_revisions_still_ignore_i_top_cap_changes_in_their_digest() {
+    let mut plan = build_test_breakaway_plan();
+    plan.schema_revision = 3;
     let baseline = plan.digest();
     plan.i_top_cap = 12_345;
     assert_eq!(plan.digest(), baseline);

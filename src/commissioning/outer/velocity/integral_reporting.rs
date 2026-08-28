@@ -308,7 +308,11 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(plan.hard_torque_limit);
     core.push_u16(plan.usable_torque_limit);
     core.push_u8(plan.limit_evidence_capability as u8);
-    if plan.schema_revision >= 17 {
+    if matches!(
+        plan.schema_revision,
+        super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION
+            | super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+    ) {
         core.push_u16(plan.i_top_cap);
     }
 
@@ -898,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_trace_core_appends_i_top_cap_only_at_schema_17() {
+    fn plan_trace_core_appends_i_top_cap_only_at_schema_sixteen_or_seventeen() {
         let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
         for (index, gain) in positive_i.iter_mut().enumerate() {
             *gain = u16::try_from(index + 1).unwrap();
@@ -964,8 +968,13 @@ mod tests {
             },
         };
 
-        plan.schema_revision = 16;
+        plan.schema_revision = 3;
         plan.i_top_cap = 0;
+        let [core_baseline, ..] = encode_velocity_integral_plan_trace(1, plan);
+        let len_baseline = core_baseline.as_bytes().len();
+
+        plan.schema_revision = 16;
+        plan.i_top_cap = 1_310;
         let [core_16, ..] = encode_velocity_integral_plan_trace(1, plan);
         let len_16 = core_16.as_bytes().len();
 
@@ -975,12 +984,20 @@ mod tests {
         let len_17 = core_17.as_bytes().len();
 
         assert_eq!(
+            len_16,
+            len_baseline + 2,
+            "schema 16 adds exactly one trailing u16"
+        );
+        assert_eq!(
             len_17,
-            len_16 + 2,
+            len_baseline + 2,
             "schema 17 adds exactly one trailing u16"
         );
-        let tail = &core_17.as_bytes()[len_17 - 2..];
-        assert_eq!(u16::from_le_bytes([tail[0], tail[1]]), 1_310);
+        for core in [&core_16, &core_17] {
+            let bytes = core.as_bytes();
+            let tail = &bytes[bytes.len() - 2..];
+            assert_eq!(u16::from_le_bytes([tail[0], tail[1]]), 1_310);
+        }
     }
 
     fn eligible_rung(direction: VelocityDirection) -> IntegralRungEvidence {

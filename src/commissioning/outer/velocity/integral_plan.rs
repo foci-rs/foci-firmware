@@ -523,7 +523,11 @@ impl VelocityIntegralPlan {
         if !matches!(self.slot_order, IntegralSlotOrder::ForwardFirst) {
             hash_value!(self.slot_order.report_code());
         }
-        if self.schema_revision >= 17 {
+        if matches!(
+            self.schema_revision,
+            STAGE_C_EVIDENCE_SCHEMA_REVISION
+                | super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        ) {
             hash_value!(self.i_top_cap);
         }
         hash
