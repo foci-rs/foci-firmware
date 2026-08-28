@@ -489,6 +489,9 @@ where
         } else {
             let _ = self.enable_pin.set_low();
         }
+        self.tmc_state()
+            .enable_pin_asserted
+            .store(state, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -953,6 +956,31 @@ mod tests {
         #[cfg(feature = "trace")]
         LAST_VELOCITY_DELTA.store(0, Relaxed);
         TEST_TMC_STATE.motor_sentinel.store(0, Relaxed);
+    }
+
+    #[fixture_test]
+    fn set_commission_enable_pin_updates_enable_pin_asserted() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+        TEST_TMC_STATE.enable_pin_asserted.store(false, Relaxed);
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let mut backend =
+            SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+                0,
+                &mut tmc,
+                &mut enable_pin,
+                &TEST_TMC_STATE,
+            );
+
+        backend.set_commission_enable_pin(true);
+        assert!(TEST_TMC_STATE.enable_pin_asserted.load(Relaxed));
+
+        backend.set_commission_enable_pin(false);
+        assert!(!TEST_TMC_STATE.enable_pin_asserted.load(Relaxed));
     }
 
     #[fixture_test]

@@ -71,6 +71,12 @@ pub struct TmcChannelState {
     current_limit_value: AtomicU16,
     /// Set by P1 after calibration, cleared on disable/fault.
     pub motor_armed: AtomicBool,
+    /// Mirrors the physical enable-pin GPIO level. Set only from
+    /// `SharedCommissioningBackend::set_commission_enable_pin`, the single
+    /// choke point that actually writes the pin in a production build —
+    /// covers both the runtime arm/disarm path and commissioning's direct
+    /// `set_enable_pin` calls.
+    pub enable_pin_asserted: AtomicBool,
     /// Captured at commission time from the actual `MOTOR_TYPE_N_POLE_PAIRS`
     /// write. Zero means "no commission has happened yet — sentinel check
     /// inactive". Used by `arm_motor_electrical` to detect silent chip
@@ -193,6 +199,7 @@ impl TmcChannelState {
         Self {
             current_limit_value: AtomicU16::new(PidTorqueFluxLimit::ZERO.raw()),
             motor_armed: AtomicBool::new(false),
+            enable_pin_asserted: AtomicBool::new(false),
             motor_sentinel: AtomicU32::new(0),
             pi_representation_established: AtomicBool::new(false),
             encoder_ppr: AtomicU32::new(0),
@@ -791,5 +798,11 @@ mod tests {
         state.clear_velocity_clamp_latch();
         assert!(!state.velocity_clamp_latched());
         assert_eq!(state.velocity_clamp_count(), 0);
+    }
+
+    #[test]
+    fn enable_pin_asserted_defaults_false() {
+        let ch = TmcChannelState::new();
+        assert!(!ch.enable_pin_asserted.load(Ordering::Relaxed));
     }
 }
