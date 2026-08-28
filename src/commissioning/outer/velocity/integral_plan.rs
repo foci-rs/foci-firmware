@@ -967,8 +967,6 @@ pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
 /// behavior those plans had before this function existed. It must be
 /// checked before `native_rung_count`, which treats `i_top_cap` as a real
 /// ceiling and would otherwise compute zero native rungs at cap zero.
-// No production caller yet; wiring lands in a later change.
-#[allow(dead_code)]
 pub(crate) fn integral_gain_at(i_top_cap: u16, positive_index: u8) -> Option<u16> {
     if i_top_cap == 0 {
         return native_velocity_i_at(positive_index);
