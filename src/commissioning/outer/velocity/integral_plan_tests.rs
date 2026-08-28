@@ -9,7 +9,6 @@ use super::breakaway_plan::{
     plan_upward_breakaway_probe, resolve_grid_floor,
 };
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
-use super::integral_plan::StageCAcquisition;
 use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, BreakawayAuthorityBindingError,
     CommissioningWorkflowPlan, ConfirmedAcquisitionDigest, IntegralSlotOrder,
@@ -53,9 +52,7 @@ fn stage_b_request() -> VelocitySweepRequest {
 fn authority() -> StageCAuthority {
     StageCAuthority {
         channel: 0,
-        acquisition: StageCAcquisition::ConfirmedBreakaway(breakaway_token_for(
-            breakaway_confirmation_plan(breakaway_gain(512)),
-        )),
+        acquisition: breakaway_token_for(breakaway_confirmation_plan(breakaway_gain(512))),
         directional_memberships: [0x0007_0000, 0x0007_0000],
         stage_b_joint_membership: 0x0007_0000,
         joint_membership: 0x0007_0000,
@@ -785,14 +782,8 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
         acceptance.confidence_q,
         acceptance.band_position_q,
     );
-    assert_eq!(
-        authority.acquisition,
-        StageCAcquisition::ConfirmedBreakaway(bound)
-    );
-    assert_eq!(
-        authority.acquisition.digest(),
-        confirmation_plan.plan_digest
-    );
+    assert_eq!(authority.acquisition, bound);
+    assert_eq!(authority.acquisition.get(), confirmation_plan.plan_digest);
     assert_eq!(authority.stage_b_joint_membership, 0);
     assert_eq!(authority.joint_membership, 0);
     // The digest chain also carries the held-out block's own pooled response
@@ -1173,19 +1164,16 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
 
     assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
     assert_eq!(plan.final_p, candidate_p.raw());
+    assert_eq!(plan.authority.acquisition, token);
     assert_eq!(
-        plan.authority.acquisition,
-        StageCAcquisition::ConfirmedBreakaway(token)
-    );
-    assert_eq!(
-        plan.authority.acquisition.digest(),
+        plan.authority.acquisition.get(),
         confirmation_plan.plan_digest
     );
     assert_eq!(plan.authority.stage_b_joint_membership, 0);
     assert_eq!(plan.authority.joint_membership, 0);
     assert!(!plan.probe_constrained_test_point);
-    // The existing non-combined ladder, not the exact-cap combined shape:
-    // `append_exact_cap: false` per the normative decision. Breakaway plans
+    // The existing non-combined ladder, not the exact-cap combined shape.
+    // Breakaway plans
     // now also receive the half-octave rung (724, between 512 and 1024).
     assert_eq!(
         plan.positive_rungs(),

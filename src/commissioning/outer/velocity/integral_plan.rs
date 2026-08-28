@@ -200,47 +200,16 @@ impl CommissioningWorkflowPlan {
     }
 }
 
-/// Which acquisition authorized one Stage-C plan.
-///
-/// [`Self::digest`] is what [`VelocityIntegralPlan::digest`] hashes and what
-/// the wire reports, so the bytes are identical to the single `u64` field
-/// this replaced.
-///
-/// The sole variant carries an unforgeable [`ConfirmedAcquisitionDigest`]
-/// rather than a bare `u64` so that "Stage C authorized by anything other
-/// than an accepted confirmation" stays a compile-time impossibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum StageCAcquisition {
-    /// Accepted breakaway confirmation, named by its unforgeable token.
-    ///
-    /// There is no Stage-B sweep plan behind this: the breakaway campaign has
-    /// no Stage-B phase, so nothing recomputes from the request.
-    ConfirmedBreakaway(ConfirmedAcquisitionDigest),
-}
-
-impl StageCAcquisition {
-    /// The acquisition digest, in the one u64 form the plan digest and wire use.
-    pub const fn digest(self) -> u64 {
-        match self {
-            Self::ConfirmedBreakaway(token) => token.get(),
-        }
-    }
-
-    /// The accepted confirmation token.
-    pub const fn confirmed_breakaway(self) -> Option<ConfirmedAcquisitionDigest> {
-        match self {
-            Self::ConfirmedBreakaway(token) => Some(token),
-        }
-    }
-}
-
 /// Reproduced Stage-B evidence that authorizes one fixed-P Stage-C plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageCAuthority {
     /// Physical firmware channel.
     pub channel: u8,
-    /// Which acquisition authorized this Stage-C plan, and its exact digest.
-    pub acquisition: StageCAcquisition,
+    /// The unforgeable token of the accepted breakaway confirmation that
+    /// authorized this Stage-C plan. There is no Stage-B sweep plan behind
+    /// it: the breakaway campaign has no Stage-B phase, so nothing
+    /// recomputes from the request.
+    pub acquisition: ConfirmedAcquisitionDigest,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
     /// Reproduced Stage-B joint-operability component before Stage-C filtering.
@@ -291,19 +260,6 @@ impl StageCAuthority {
     /// call to [`bind_breakaway_stage_c_authority`], so this constructor makes
     /// "Stage C authorized by anything other than an accepted confirmation"
     /// unrepresentable for every breakaway authority built this way.
-    ///
-    /// `StageCAuthority` is a `pub struct` with `pub` fields, so a `u64` CAN be
-    /// placed into `stage_b_plan_digest` by struct literal (the reproduced
-    /// Stage-B path in `integral_reproduction.rs` does exactly that, from real
-    /// reproduced evidence -- a separate authority model). The safety property
-    /// therefore does not rest on this constructor being the only writer of the
-    /// field. It rests on the breakaway Stage-C gate,
-    /// [`plan_breakaway_velocity_integral_response`], taking a
-    /// [`ConfirmedAcquisitionDigest`] token -- NOT a caller-supplied
-    /// `StageCAuthority` -- and building the authority itself via this
-    /// constructor. A forged `StageCAuthority` can no longer be handed to the
-    /// breakaway gate, and the token is unforgeable, so the breakaway path
-    /// cannot admit a gain without a genuine accepted confirmation.
     #[allow(dead_code)]
     pub(crate) const fn new_breakaway(
         channel: u8,
@@ -314,7 +270,7 @@ impl StageCAuthority {
     ) -> Self {
         Self {
             channel,
-            acquisition: StageCAcquisition::ConfirmedBreakaway(confirmed_digest),
+            acquisition: confirmed_digest,
             directional_memberships: [0; 2],
             stage_b_joint_membership: 0,
             joint_membership: 0,
@@ -424,7 +380,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.build_features);
         hash_value!(self.schema_revision);
         hash_value!(self.authority.channel);
-        hash_value!(self.authority.acquisition.digest());
+        hash_value!(self.authority.acquisition.get());
         hash_value!(self.final_p);
         for membership in self.authority.directional_memberships {
             hash_value!(membership);
@@ -814,15 +770,15 @@ pub enum BreakawayAuthorityBindingError {
 /// impossibility for every breakaway authority built through
 /// [`StageCAuthority::new_breakaway`], not merely an untested code path.
 ///
-/// The type is `pub` only so [`StageCAcquisition`] can name it. Its field is
-/// private and no public constructor exists, so the unforgeability above holds
-/// outside the crate as well.
+/// The type is `pub` only so [`StageCAuthority::acquisition`] can name it.
+/// Its field is private and no public constructor exists, so the
+/// unforgeability above holds outside the crate as well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ConfirmedAcquisitionDigest(u64);
 
 impl ConfirmedAcquisitionDigest {
     /// The validated digest, exactly as carried by
-    /// [`StageCAcquisition::ConfirmedBreakaway`].
+    /// [`StageCAuthority::acquisition`].
     pub const fn get(self) -> u64 {
         self.0
     }

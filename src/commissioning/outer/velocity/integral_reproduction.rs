@@ -34,7 +34,7 @@ pub struct StageCAuthoritySummary {
     /// Exact pre-motion identity.
     pub identity: StageCPlanIdentity,
     /// Which acquisition authorized this Stage-C plan, and its exact digest.
-    pub acquisition: super::integral_plan::StageCAcquisition,
+    pub acquisition: super::integral_plan::ConfirmedAcquisitionDigest,
     /// Firmware-authoritative fixed proportional gain.
     pub final_p: u16,
     /// Cross-run forward and reverse model-or-fragment intersections.
@@ -87,7 +87,7 @@ impl StageCAuthoritySummary {
         channel: u8,
         build_features: u16,
         schema_revision: u16,
-        acquisition: super::integral_plan::StageCAcquisition,
+        acquisition: super::integral_plan::ConfirmedAcquisitionDigest,
         plan: VelocityIntegralExecutionPlan,
         authority: super::integral_plan::StageCAuthority,
     ) -> Self {

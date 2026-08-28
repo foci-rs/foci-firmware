@@ -59,73 +59,14 @@ fn stage_b_plan() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
     .expect("valid Stage-B plan")
 }
 
-/// Mint one genuine breakaway Stage-C plan through the real confirmation gate.
-///
-/// The `ConfirmedAcquisitionDigest` token cannot be fabricated, so this walks
-/// the same `plan_band_confirmation` -> `evaluate_band_confirmation` ->
-/// `bind_breakaway_stage_c_authority` chain a live campaign uses (mirrors the
-/// `integral_plan_tests` fixtures), then plans the campaign's own Stage-C plan.
 fn breakaway_stage_c_plan()
 -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
-    use crate::autotune::velocity_measurement::VelocityDirection;
-    use crate::commissioning::outer::velocity::band_confirmation::{
-        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
-        plan_band_confirmation,
-    };
+    use crate::commission_dispatch::test_support::breakaway_confirmation_for_test;
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcquisitionContext, bind_breakaway_stage_c_authority,
-        plan_breakaway_velocity_integral_response,
+        AcquisitionContext, plan_breakaway_velocity_integral_response,
     };
-    use crate::commissioning::outer::velocity::sweep_consensus::{
-        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
-    };
-    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
-    use foci_tmc4671::pid::PidPGain;
 
-    let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
-    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
-        .expect("valid confirmation plan");
-
-    let consensus = || DirectionalConsensus {
-        classification: DirectionalConsensusClass::EligibleConsensus,
-        components: [[0, 0]; 2],
-        component_count: 1,
-        collected_mask: 0b1111,
-        eligible_mask: 0b1111,
-        included_mask: 0b1111,
-    };
-    let mean_rate_q: i64 = 750_000;
-    let variance_of_mean_q2: u128 = 58_752_225;
-    let target_rate_q: i64 = 1_000_000;
-    let forward = ConfirmationDirectionalInput {
-        consensus: consensus(),
-        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        observations: [Some(DiscoveryObservationAtom {
-            mean_rate_q,
-            variance_of_mean_q2,
-            target_rate_q,
-            direction: VelocityDirection::Forward,
-        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    };
-    let reverse = ConfirmationDirectionalInput {
-        consensus: consensus(),
-        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        observations: [Some(DiscoveryObservationAtom {
-            mean_rate_q: -mean_rate_q,
-            variance_of_mean_q2,
-            target_rate_q,
-            direction: VelocityDirection::Reverse,
-        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    };
-    let acceptance =
-        evaluate_band_confirmation(candidate_p, forward, reverse).expect("accepted confirmation");
-    let intervals = acceptance.held_out_response_intervals_q;
-    let token = bind_breakaway_stage_c_authority(
-        confirmation_plan.plan_digest,
-        confirmation_plan,
-        Ok(acceptance),
-    )
-    .expect("bound breakaway authority");
+    let confirmation = breakaway_confirmation_for_test();
 
     let stage_b = stage_b_plan();
     let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
@@ -134,12 +75,12 @@ fn breakaway_stage_c_plan()
 
     let request = request();
     plan_breakaway_velocity_integral_response(
-        token,
-        confirmation_plan,
+        confirmation.token,
+        confirmation.confirmation_plan,
         context,
-        intervals,
-        acceptance.confidence_q,
-        acceptance.band_position_q,
+        confirmation.held_out_response_intervals_q,
+        confirmation.confidence_q,
+        confirmation.band_position_q,
         OuterMotionBudget {
             requested_velocity_mrev_s: request.requested_velocity_mrev_s,
             machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
@@ -247,7 +188,7 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
         integral_i_at(execution, 3).expect("in range")
     );
     // The token is carried so the matrix preflight can reconstruct the plan.
-    assert_eq!(installed.token, authority.acquisition.confirmed_breakaway());
+    assert_eq!(installed.token, Some(authority.acquisition));
     assert!(installed.token.is_some());
 }
 

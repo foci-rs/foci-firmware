@@ -60,6 +60,92 @@ pub fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
     }
 }
 
+/// A genuine breakaway confirmation, minted through the real
+/// `plan_band_confirmation` -> `evaluate_band_confirmation` ->
+/// `bind_breakaway_stage_c_authority` chain a live campaign uses, plus the
+/// intermediate values a Stage-C plan builder needs alongside the token.
+pub struct BreakawayConfirmationForTest {
+    pub token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
+    pub confirmation_plan:
+        crate::commissioning::outer::velocity::band_confirmation::BandConfirmationPlan,
+    pub held_out_response_intervals_q: [[i32; 2]; 2],
+    pub confidence_q: u16,
+    pub band_position_q: u16,
+}
+
+pub fn breakaway_confirmation_for_test() -> BreakawayConfirmationForTest {
+    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::commissioning::outer::velocity::band_confirmation::{
+        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+        plan_band_confirmation,
+    };
+    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
+    use crate::commissioning::outer::velocity::sweep_consensus::{
+        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+    };
+    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+    use foci_tmc4671::pid::PidPGain;
+
+    let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+        .expect("valid confirmation plan");
+
+    let consensus = || DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let mean_rate_q: i64 = 750_000;
+    let variance_of_mean_q2: u128 = 58_752_225;
+    let target_rate_q: i64 = 1_000_000;
+    let forward = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let acceptance =
+        evaluate_band_confirmation(candidate_p, forward, reverse).expect("accepted confirmation");
+    let token = bind_breakaway_stage_c_authority(
+        confirmation_plan.plan_digest,
+        confirmation_plan,
+        Ok(acceptance),
+    )
+    .expect("bound breakaway authority");
+    BreakawayConfirmationForTest {
+        token,
+        confirmation_plan,
+        held_out_response_intervals_q: acceptance.held_out_response_intervals_q,
+        confidence_q: acceptance.confidence_q,
+        band_position_q: acceptance.band_position_q,
+    }
+}
+
+/// Mint one genuine breakaway confirmation token; see
+/// [`breakaway_confirmation_for_test`] for the fuller bundle a Stage-C plan
+/// builder needs.
+pub fn breakaway_acquisition_for_test()
+-> crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest {
+    breakaway_confirmation_for_test().token
+}
+
 /// Build a real admitted breakaway engine for cross-module lifecycle tests.
 pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine {
     use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;

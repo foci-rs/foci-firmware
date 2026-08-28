@@ -149,9 +149,8 @@ pub enum AcceptanceInstall {
 ///
 /// A breakaway point sources the token and signed recovery intervals from the
 /// run's breakaway authority; it cannot be reconstructed from the request
-/// alone. The token is extracted from `authority.acquisition` via
-/// [`crate::commissioning::outer::velocity::integral_plan::StageCAcquisition::confirmed_breakaway`],
-/// never constructed, so the confirmation's unforgeability is preserved.
+/// alone. The token is copied from `authority.acquisition`, never
+/// constructed, so the confirmation's unforgeability is preserved.
 ///
 /// `Err(())` is an evidence-integrity fault: a breakaway acceptance `Complete`
 /// whose recorded target status, plan digest, gain, or ladder index does not
@@ -197,8 +196,7 @@ pub(crate) fn breakaway_acceptance_point(
         return Err(());
     }
     let selected_i = integral_i_at(plan, positive_index.checked_add(1).ok_or(())?).ok_or(())?;
-    // Extracted, never constructed: preserves confirmation unforgeability.
-    let token = authority.acquisition.confirmed_breakaway();
+    let token = Some(authority.acquisition);
     let mut qualifier_bits = 0;
     if terminal.recovery_quantization_exposed {
         qualifier_bits |= ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED;
@@ -343,11 +341,8 @@ pub fn preflight_stage_c_request(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
     };
-    let Some(token) = authority.acquisition.confirmed_breakaway() else {
-        return Err(StageCPreflightRejection::InvalidPlan);
-    };
     preflight_retained_breakaway(
-        token,
+        authority.acquisition,
         authority,
         motion_budget,
         config,

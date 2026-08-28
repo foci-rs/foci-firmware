@@ -7,7 +7,9 @@ use super::current_guard::{
     derive_probe_limit,
 };
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
-use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+use crate::commission_dispatch::test_support::{
+    MockBackend, SpiOp, breakaway_confirmation_for_test,
+};
 use crate::commissioning::outer::OuterMotionBudget;
 use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
@@ -149,65 +151,11 @@ fn velocity_current_guard_contract() {
 fn breakaway_stage_c_plan(
     limit_evidence_capability: VelocityLimitEvidenceCapability,
 ) -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
-    use crate::autotune::velocity_measurement::VelocityDirection;
-    use crate::commissioning::outer::velocity::band_confirmation::{
-        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
-        plan_band_confirmation,
-    };
     use crate::commissioning::outer::velocity::integral_plan::{
-        AcquisitionContext, bind_breakaway_stage_c_authority,
-        plan_breakaway_velocity_integral_response,
+        AcquisitionContext, plan_breakaway_velocity_integral_response,
     };
-    use crate::commissioning::outer::velocity::sweep_consensus::{
-        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
-    };
-    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
-    use foci_tmc4671::pid::PidPGain;
 
-    let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
-    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
-        .expect("valid confirmation plan");
-
-    let consensus = || DirectionalConsensus {
-        classification: DirectionalConsensusClass::EligibleConsensus,
-        components: [[0, 0]; 2],
-        component_count: 1,
-        collected_mask: 0b1111,
-        eligible_mask: 0b1111,
-        included_mask: 0b1111,
-    };
-    let mean_rate_q: i64 = 750_000;
-    let variance_of_mean_q2: u128 = 58_752_225;
-    let target_rate_q: i64 = 1_000_000;
-    let forward = ConfirmationDirectionalInput {
-        consensus: consensus(),
-        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        observations: [Some(DiscoveryObservationAtom {
-            mean_rate_q,
-            variance_of_mean_q2,
-            target_rate_q,
-            direction: VelocityDirection::Forward,
-        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    };
-    let reverse = ConfirmationDirectionalInput {
-        consensus: consensus(),
-        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        observations: [Some(DiscoveryObservationAtom {
-            mean_rate_q: -mean_rate_q,
-            variance_of_mean_q2,
-            target_rate_q,
-            direction: VelocityDirection::Reverse,
-        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-    };
-    let acceptance =
-        evaluate_band_confirmation(candidate_p, forward, reverse).expect("accepted confirmation");
-    let intervals = acceptance.held_out_response_intervals_q;
-    let token = bind_breakaway_stage_c_authority(
-        confirmation_plan.plan_digest,
-        confirmation_plan,
-        Ok(acceptance),
-    )
-    .expect("bound breakaway authority");
+    let confirmation = breakaway_confirmation_for_test();
 
     let context = AcquisitionContext {
         planned_velocity_mrev_s: 2_929,
@@ -220,12 +168,12 @@ fn breakaway_stage_c_plan(
         plan_time_encoder_counts_per_rev: 4_000,
     };
     plan_breakaway_velocity_integral_response(
-        token,
-        confirmation_plan,
+        confirmation.token,
+        confirmation.confirmation_plan,
         context,
-        intervals,
-        acceptance.confidence_q,
-        acceptance.band_position_q,
+        confirmation.held_out_response_intervals_q,
+        confirmation.confidence_q,
+        confirmation.band_position_q,
         OuterMotionBudget {
             requested_velocity_mrev_s: 6_666,
             machine_velocity_ceiling_mrev_s: 10_000,

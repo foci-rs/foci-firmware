@@ -282,7 +282,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u32(BUILD_IDENTITY);
     core.push_u16(plan.schema_revision);
     core.push_u8(plan.authority.channel);
-    push_u64(&mut core, plan.authority.acquisition.digest());
+    push_u64(&mut core, plan.authority.acquisition.get());
     core.push_u16(plan.final_p);
     for membership in plan.authority.directional_memberships {
         core.push_u32(membership);
@@ -802,13 +802,13 @@ fn push_i64(record: &mut VelocitySweepCanonicalRecord, value: i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::integral_plan::StageCAcquisition;
     use super::*;
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
     use crate::autotune::velocity_measurement::{
         DyadicBlocker, PlateauSelection, RateBlock, RawVelocityObservation, StationarityWork,
         StationarityWorkPoll, StationarySuffix, SuffixDiagnostic, VelocityDirection,
     };
+    use crate::commission_dispatch::test_support::breakaway_acquisition_for_test;
     use crate::commissioning::outer::state::{
         PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
     };
@@ -827,62 +827,6 @@ mod tests {
     use crate::commissioning::types::VelocityIntegralObservation;
     use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
     use foci_tmc4671::pid::PidPGain;
-
-    fn breakaway_acquisition_for_test() -> StageCAcquisition {
-        use crate::commissioning::outer::velocity::band_confirmation::{
-            ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
-            plan_band_confirmation,
-        };
-        use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
-        use crate::commissioning::outer::velocity::sweep_consensus::{
-            CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
-        };
-
-        let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
-        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
-            .expect("valid confirmation plan");
-
-        let consensus = || DirectionalConsensus {
-            classification: DirectionalConsensusClass::EligibleConsensus,
-            components: [[0, 0]; 2],
-            component_count: 1,
-            collected_mask: 0b1111,
-            eligible_mask: 0b1111,
-            included_mask: 0b1111,
-        };
-        let mean_rate_q: i64 = 750_000;
-        let variance_of_mean_q2: u128 = 58_752_225;
-        let target_rate_q: i64 = 1_000_000;
-        let forward = ConfirmationDirectionalInput {
-            consensus: consensus(),
-            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-            observations: [Some(DiscoveryObservationAtom {
-                mean_rate_q,
-                variance_of_mean_q2,
-                target_rate_q,
-                direction: VelocityDirection::Forward,
-            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        };
-        let reverse = ConfirmationDirectionalInput {
-            consensus: consensus(),
-            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-            observations: [Some(DiscoveryObservationAtom {
-                mean_rate_q: -mean_rate_q,
-                variance_of_mean_q2,
-                target_rate_q,
-                direction: VelocityDirection::Reverse,
-            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-        };
-        let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
-            .expect("accepted confirmation");
-        let token = bind_breakaway_stage_c_authority(
-            confirmation_plan.plan_digest,
-            confirmation_plan,
-            Ok(acceptance),
-        )
-        .expect("bound breakaway authority");
-        StageCAcquisition::ConfirmedBreakaway(token)
-    }
 
     /// Byte offset of `drift_ratio_ppm` in an encoded Stage-C observation record.
     ///
