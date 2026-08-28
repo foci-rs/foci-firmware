@@ -182,9 +182,10 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 
 /// Apply the shared shutdown safe-state policy for one TMC channel.
 ///
-/// Restores phase advance, de-energizes the motor through [`disarm_motor`],
-/// then stops any active commissioning engine. A retained breakaway campaign
-/// is completed only after both safe-state operations succeed.
+/// De-energizes the motor through [`disarm_motor`] first, then restores
+/// phase advance, then stops any active commissioning engine. A retained
+/// breakaway campaign is completed only after both safe-state operations
+/// succeed.
 ///
 /// Returns `true` when the phase-advance restore either was unnecessary or
 /// succeeded. Returns `false` when restore failed; callers should keep retrying
@@ -195,12 +196,12 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     tmc: &'static crate::state::tmc::TmcChannelState,
     stepper: &'static crate::state::stepper::StepperChannelState,
 ) -> bool {
+    let mut state = runtime.dispatch_state(tmc, stepper);
+    disarm_motor(backend, &mut state).await;
     let phase_advance_restored = runtime.restore_phase_advance_via_backend(backend).await;
     if !phase_advance_restored {
         defmt::warn!("phase advance: failed to restore ABN offset on shutdown");
     }
-    let mut state = runtime.dispatch_state(tmc, stepper);
-    disarm_motor(backend, &mut state).await;
     if phase_advance_restored {
         runtime.take_commission_engine_after_handled_stop();
     } else {
@@ -632,6 +633,53 @@ mod tests {
             crate::state::stepper::stepper_channel0(),
         )));
         assert!(!runtime.is_commission_active());
+    }
+
+    #[test]
+    fn apply_shutdown_safe_state_lowers_gpio_before_phase_advance_write() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+
+            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+            runtime.set_phase_advance_for_test(true, 0, 0);
+
+            apply_shutdown_safe_state(
+                &mut runtime,
+                &mut backend,
+                tmc_state(),
+                crate::state::stepper::stepper_channel0(),
+            )
+            .await;
+
+            let mut enable_pin_false_index = None;
+            let mut phase_advance_write_index = None;
+            for (i, op) in backend.spi_log.iter().enumerate() {
+                match op {
+                    crate::commission_dispatch::test_support::SpiOp::EnablePin(false)
+                        if enable_pin_false_index.is_none() =>
+                    {
+                        enable_pin_false_index = Some(i);
+                    }
+                    crate::commission_dispatch::test_support::SpiOp::Write(addr, _)
+                        if *addr
+                            == foci_tmc4671::registers::ABN_DECODER_PHI_E_PHI_M_OFFSET.addr() =>
+                    {
+                        phase_advance_write_index.get_or_insert(i);
+                    }
+                    _ => {}
+                }
+            }
+
+            let enable_pin_false_index =
+                enable_pin_false_index.expect("EnablePin(false) must be logged");
+            let phase_advance_write_index = phase_advance_write_index
+                .expect("phase-advance write must be logged when phase_advance_was_active");
+            assert!(
+                enable_pin_false_index < phase_advance_write_index,
+                "GPIO must be lowered before the phase-advance SPI write: enable_pin_false_index={enable_pin_false_index}, phase_advance_write_index={phase_advance_write_index}"
+            );
+        });
     }
 
     #[fixture_test]
