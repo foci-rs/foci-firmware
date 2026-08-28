@@ -1279,13 +1279,13 @@ pub(crate) fn bind_breakaway_stage_c_authority(
 /// [`plan_velocity_integral_response_from_source`] used to take a full
 /// [`VelocitySweepExecutionPlan`] and read a handful of physical fields off
 /// it, which made a reproduced Stage-B sweep plan look load-bearing to the
-/// tail even though only these fields were ever consulted. The legacy
-/// reproduced-Stage-B caller ([`plan_velocity_integral_response`]) still
-/// builds this from its own `stage_b_plan` via [`From`], so its output is
-/// unchanged. The breakaway campaign
-/// ([`plan_breakaway_velocity_integral_response`]) has no Stage-B sweep plan
-/// at all and builds one directly from its own campaign parameters instead of
-/// fabricating a `VelocitySweepExecutionPlan`.
+/// tail even though only these fields were ever consulted. The breakaway
+/// campaign ([`plan_breakaway_velocity_integral_response`]) has no Stage-B
+/// sweep plan at all and builds one directly from its own campaign
+/// parameters instead of fabricating a `VelocitySweepExecutionPlan`. The
+/// acceptance-matrix preflight (`commission_dispatch::acceptance`) still
+/// reconstructs a Stage-B sweep plan to source these physical fields, via
+/// [`From`], then overwrites the breakaway-only fields below directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct AcquisitionContext {
     /// Frozen encoder-domain velocity amplitude.
@@ -1302,9 +1302,9 @@ pub(crate) struct AcquisitionContext {
     ///
     /// Consumed only by [`plan_breakaway_velocity_integral_response`], which
     /// builds its [`StageCAuthority`] internally from the confirmation token so
-    /// no forged authority can be passed in. The legacy [`From`] path leaves
-    /// this zero: it builds its own reproduced-Stage-B authority and never
-    /// routes through the breakaway gate.
+    /// no forged authority can be passed in. [`From`] leaves this zero; the
+    /// acceptance-matrix preflight overwrites it with the real channel
+    /// immediately after constructing from it.
     pub(crate) channel: u8,
     /// Plan-time PWM carrier frequency the confirmation evidence was gathered
     /// under, in Hz.
@@ -1312,24 +1312,26 @@ pub(crate) struct AcquisitionContext {
     /// The breakaway gate refuses if this does not match the live PWM frequency
     /// handed to it at Stage-C construction, so confirmation evidence measured
     /// under one physical timebase can never seed a Stage-C plan admitted under
-    /// another. Left zero by the legacy [`From`] path (fail-closed: zero never
-    /// matches a live frequency).
+    /// another. [`From`] leaves this zero (fail-closed: zero never matches a
+    /// live frequency); the acceptance-matrix preflight overwrites it with the
+    /// live value immediately after constructing from it.
     pub(crate) plan_time_pwm_hz: u32,
     /// Plan-time encoder counts per mechanical revolution the confirmation
     /// evidence was gathered under.
     ///
     /// Cross-checked against the live encoder resolution by the breakaway gate,
-    /// exactly like [`Self::plan_time_pwm_hz`]. Left zero by the legacy
-    /// [`From`] path.
+    /// exactly like [`Self::plan_time_pwm_hz`]. [`From`] leaves this zero; the
+    /// acceptance-matrix preflight overwrites it the same way.
     pub(crate) plan_time_encoder_counts_per_rev: u32,
 }
 
 impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
     /// Extract exactly the physical fields the shared Stage-C tail reads.
     ///
-    /// The breakaway-only `channel` and `plan_time_*` fields are left zero: the
-    /// reproduced-Stage-B caller builds its own authority and never invokes
-    /// the breakaway gate's token/physical-context guards.
+    /// The breakaway-only `channel` and `plan_time_*` fields are left zero:
+    /// every caller of this conversion overwrites them explicitly with its
+    /// own live values immediately afterward, rather than relying on this
+    /// impl to know them.
     fn from(plan: VelocitySweepExecutionPlan) -> Self {
         Self {
             planned_velocity_mrev_s: plan.planned_velocity_mrev_s,
@@ -1390,9 +1392,8 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// physical-context match; authority built from the token;
 /// [`transition_capable_stage_c_gain`] for the exact confirmed gain; then the
 /// shared tail's own recovery-geometry and duration admission. Emits schema
-/// [`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`] with
-/// `append_exact_cap: false`, using the existing non-combined integral ladder
-/// unchanged.
+/// [`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`], using the
+/// existing non-combined integral ladder unchanged.
 ///
 /// `confidence_q`/`band_position_q` are carried-through diagnostics only:
 /// unlike `held_out_response_intervals_q`, they are excluded from
@@ -1458,7 +1459,6 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
             authority,
             final_p: fixed_p,
             schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
-            append_exact_cap: false,
             probe_constrained_test_point: false,
         },
         context,
@@ -1542,7 +1542,6 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
             authority,
             final_p,
             schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
-            append_exact_cap: false,
             probe_constrained_test_point: false,
         },
         context,
@@ -1557,7 +1556,6 @@ struct IntegralPlanSource {
     authority: StageCAuthority,
     final_p: u16,
     schema_revision: u16,
-    append_exact_cap: bool,
     probe_constrained_test_point: bool,
 }
 
@@ -1589,21 +1587,12 @@ fn plan_velocity_integral_response_from_source(
     {
         return Err(VelocityIntegralPlanError::InvalidRequest);
     }
-    let mut ladder = if source.append_exact_cap {
-        super::combined_plan::build_combined_integral_ladder(
-            pwm_hz,
-            MOVING_STROKE_US,
-            MIN_SETTLE_CAPTURE_US,
-            OUTER_MAX_VELOCITY_I,
-        )?
-    } else {
-        build_integral_ladder(
-            pwm_hz,
-            MOVING_STROKE_US,
-            MIN_SETTLE_CAPTURE_US,
-            OUTER_MAX_VELOCITY_I,
-        )?
-    };
+    let mut ladder = build_integral_ladder(
+        pwm_hz,
+        MOVING_STROKE_US,
+        MIN_SETTLE_CAPTURE_US,
+        OUTER_MAX_VELOCITY_I,
+    )?;
     let i_top_cap = {
         if let Some(candidate) = integral_top_gap_candidate(ladder.i_top_cap) {
             let insert_index = ladder
