@@ -15,6 +15,69 @@ fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
     ExactRateInterval::new(low_q, high_q).unwrap()
 }
 
+/// Mint one genuine breakaway acquisition through the real confirmation
+/// gate. The `ConfirmedAcquisitionDigest` token cannot be fabricated, so this
+/// walks the same `plan_band_confirmation` -> `evaluate_band_confirmation` ->
+/// `bind_breakaway_stage_c_authority` chain a live campaign uses.
+fn breakaway_acquisition_for_test() -> StageCAcquisition {
+    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::commissioning::outer::velocity::band_confirmation::{
+        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+        plan_band_confirmation,
+    };
+    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
+    use crate::commissioning::outer::velocity::sweep_consensus::{
+        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+    };
+    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+    use foci_tmc4671::pid::PidPGain;
+
+    let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+        .expect("valid confirmation plan");
+
+    let consensus = || DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let mean_rate_q: i64 = 750_000;
+    let variance_of_mean_q2: u128 = 58_752_225;
+    let target_rate_q: i64 = 1_000_000;
+    let forward = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let acceptance =
+        evaluate_band_confirmation(candidate_p, forward, reverse).expect("accepted confirmation");
+    let token = bind_breakaway_stage_c_authority(
+        confirmation_plan.plan_digest,
+        confirmation_plan,
+        Ok(acceptance),
+    )
+    .expect("bound breakaway authority");
+    StageCAcquisition::ConfirmedBreakaway(token)
+}
+
 fn identity(channel: u8, digest: u64) -> StageCPlanIdentity {
     StageCPlanIdentity {
         channel,
@@ -27,7 +90,7 @@ fn identity(channel: u8, digest: u64) -> StageCPlanIdentity {
 fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
     StageCAuthoritySummary {
         identity: identity(channel, digest),
-        acquisition: StageCAcquisition::ReproducedStageB(0x0123_4567_89ab_cdef),
+        acquisition: breakaway_acquisition_for_test(),
         final_p: 1_448,
         directional_memberships: [0x0038_0000; 2],
         stage_b_joint_membership: 0x0038_0000,
@@ -114,7 +177,9 @@ fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authori
     assert_eq!(slot.acceptance_point(), Some(point));
     assert_eq!(slot.authority(), None);
     assert_eq!(slot.candidate(), None);
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 656);
+    // 656 -> 648: removing `StageCAcquisition::ReproducedStageB(u64)` leaves
+    // a single-variant enum, which no longer needs a separate discriminant.
+    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
 }
 
 #[test]
@@ -496,7 +561,10 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // 216 -> 216 (unchanged): `i_top_cap: u16` is needed so response-ladder
     // plans can regenerate their half-octave rung during execution; existing
     // padding absorbed the two extra bytes, so the measured total did not grow.
-    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 216);
+    // 216 -> 208: removing `StageCAcquisition::ReproducedStageB(u64)` leaves
+    // a single-variant enum, which no longer needs a separate discriminant --
+    // `StageCAuthority.acquisition` shrinks by 8 bytes.
+    assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
     // 120 -> 112: removes the `combined_workflow` bool (only
     // the retired live combined P-then-I workflow ever set it); the
     // `AcceptanceSource` discriminator added earlier stays.
@@ -504,15 +572,19 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // regenerate their half-octave rung during execution; this struct's
     // leading `u64` field forces 8-byte alignment, so the two extra bytes push
     // the total past the previous 112-byte boundary to the next multiple.
+    // No further change: this type carries no `StageCAcquisition`.
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 120);
-    assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 104);
+    // 104 -> 96: same `StageCAcquisition` discriminant removal as above.
+    assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 96);
     // Removes the `combined_workflow` bool entirely (only the
     // retired live combined P-then-I workflow ever set it).
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
         640
     );
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 656);
+    // 656 -> 648: same `StageCAcquisition` discriminant removal, carried
+    // through `RetainedStageC`'s `Candidate(StageCCandidateSummary)` variant.
+    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
     assert_eq!(
         core::mem::size_of::<super::integral_reproduction::StageCReproductionDelta>(),
         596

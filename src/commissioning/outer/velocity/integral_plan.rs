@@ -203,20 +203,19 @@ impl CommissioningWorkflowPlan {
 
 /// Which acquisition authorized one Stage-C plan.
 ///
-/// Both variants carry one u64 digest, and [`Self::digest`] is what
-/// [`VelocityIntegralPlan::digest`] hashes and what the wire reports, so the
-/// bytes are identical to the single `u64` field this replaced.
+/// [`Self::digest`] is what [`VelocityIntegralPlan::digest`] hashes and what
+/// the wire reports, so the bytes are identical to the single `u64` field
+/// this replaced.
 ///
-/// The variants exist because the two digests are not comparable. A reproduced
-/// Stage-B digest can be recomputed from a request; a confirmation token cannot,
-/// and naming one where the other is meant is the defect this type makes
-/// unrepresentable. Ask for [`Self::reproduced_stage_b`] when a Stage-B sweep
-/// plan is what must match, so a breakaway authority is refused by the type
-/// rather than by a comparison that can never succeed.
+/// The sole variant carries an unforgeable [`ConfirmedAcquisitionDigest`]
+/// rather than a bare `u64` so that "Stage C authorized by anything other than
+/// an accepted confirmation" stays a compile-time impossibility. A second
+/// variant, `ReproducedStageB(u64)`, once named a reproduced Stage-B sweep
+/// digest recomputable from a request; it had no live installer once a later
+/// change removed the only production code that ever built one, and was
+/// removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum StageCAcquisition {
-    /// Digest of the reproduced Stage-B sweep plan that authorized Stage C.
-    ReproducedStageB(u64),
     /// Accepted breakaway confirmation, named by its unforgeable token.
     ///
     /// There is no Stage-B sweep plan behind this: the breakaway campaign has
@@ -228,24 +227,14 @@ impl StageCAcquisition {
     /// The acquisition digest, in the one u64 form the plan digest and wire use.
     pub const fn digest(self) -> u64 {
         match self {
-            Self::ReproducedStageB(digest) => digest,
             Self::ConfirmedBreakaway(token) => token.get(),
         }
     }
 
-    /// The reproduced Stage-B sweep digest, or `None` for a confirmation.
-    pub const fn reproduced_stage_b(self) -> Option<u64> {
-        match self {
-            Self::ReproducedStageB(digest) => Some(digest),
-            Self::ConfirmedBreakaway(_) => None,
-        }
-    }
-
-    /// The accepted confirmation token, or `None` for a reproduced Stage B.
+    /// The accepted confirmation token.
     pub const fn confirmed_breakaway(self) -> Option<ConfirmedAcquisitionDigest> {
         match self {
             Self::ConfirmedBreakaway(token) => Some(token),
-            Self::ReproducedStageB(_) => None,
         }
     }
 }
@@ -343,21 +332,6 @@ impl StageCAuthority {
     }
 }
 
-/// Stage-C proportional test point derived from reproduced Stage-B operability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) struct StageCTestPointSelection {
-    /// Reproduced Stage-B joint-operability component before Stage-C filtering.
-    pub stage_b_joint_membership: u32,
-    /// Transition-capable subset used by Stage C.
-    pub joint_membership: u32,
-    /// Lower-middle proportional gain selected from the filtered component.
-    pub final_p: u16,
-    /// Whether fewer than three transition-capable rungs remain.
-    pub reduced_margin: bool,
-    /// Whether the probe clamp removed at least one Stage-B-operable rung.
-    pub probe_constrained_test_point: bool,
-}
-
 /// Exact positive-I acquisition geometry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VelocityIntegralLadder {
@@ -393,8 +367,8 @@ pub struct VelocityIntegralPlan {
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
-    /// from, for a `ReproducedStageB`- or `Breakaway`-sourced plan; `0` (not
-    /// applicable) for matrix-sourced plans, which never regenerate one.
+    /// from, for a `Breakaway`-sourced plan; `0` (not applicable) for
+    /// matrix-sourced plans, which never regenerate one.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -560,10 +534,9 @@ impl VelocityIntegralPlan {
             usable_torque_limit: self.usable_torque_limit,
             limit_evidence_capability: self.limit_evidence_capability,
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
-            acceptance_source: match self.authority.acquisition {
-                StageCAcquisition::ConfirmedBreakaway(_) => AcceptanceSource::Breakaway,
-                StageCAcquisition::ReproducedStageB(_) => AcceptanceSource::ReproducedStageB,
-            },
+            // `self.authority.acquisition` has exactly one variant, so a
+            // response-ladder plan's source is always a breakaway confirmation.
+            acceptance_source: AcceptanceSource::Breakaway,
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q,
             recovery_lower_rate_q: [0; 2],
@@ -664,11 +637,11 @@ pub enum VelocityIntegralAcquisitionKind {
 /// Which acquisition authorized one Stage-C execution plan.
 ///
 /// `acquisition_kind == ResponseLadder` alone cannot distinguish these: an
-/// accepted breakaway confirmation and a plain reproduced Stage-B response
-/// ladder both report that same acquisition kind. This discriminator isolates
+/// accepted breakaway confirmation and a fixed-I acceptance-matrix plan can
+/// both report that same acquisition kind. This discriminator isolates
 /// breakaway so [`VelocityIntegralExecutionPlan::records_target_terminus`]
-/// can admit it without over-admitting a reproduced Stage-B ladder, which
-/// carries no target evidence at all.
+/// can admit it without over-admitting a plan that carries no target evidence
+/// at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum AcceptanceSource {
@@ -677,8 +650,11 @@ pub enum AcceptanceSource {
     // below it.
     /// Accepted breakaway-campaign confirmation.
     Breakaway = 1,
-    /// Reproduced Stage-B response ladder; carries no target evidence.
-    ReproducedStageB = 2,
+    /// Any acceptance source that is not a breakaway confirmation: currently
+    /// the fixed-I acceptance matrix; historically also a reproduced Stage-B
+    /// response ladder (removed with `StageCAcquisition::ReproducedStageB`).
+    /// Neither carries target-reaching evidence.
+    NonBreakaway = 2,
 }
 
 /// Compact immutable Stage-C state retained after plan emission.
@@ -701,8 +677,8 @@ pub struct VelocityIntegralExecutionPlan {
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
-    /// from, for a `ReproducedStageB`- or `Breakaway`-sourced plan; `0` (not
-    /// applicable) for matrix-sourced plans, which never regenerate one.
+    /// from, for a `Breakaway`-sourced plan; `0` (not applicable) for
+    /// matrix-sourced plans, which never regenerate one.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -783,10 +759,6 @@ pub struct StageCFailedAdmission {
 pub enum VelocityIntegralPlanError {
     /// A required duration, scale, or workflow component was invalid.
     InvalidRequest,
-    /// Stage-B Complete authority was absent.
-    MissingAuthority,
-    /// The compact Stage-B motion plan was absent.
-    MissingStageBPlan,
     /// Stage-B authority does not belong to the supplied stage plan.
     MismatchedAuthority,
     /// Fewer than three positive-I rungs fit the acquisition geometry.
@@ -1257,102 +1229,6 @@ pub fn breakaway_workflow_envelope_ms(
         stage_c_maximum_us,
     )?;
     u32::try_from(total_us.div_ceil(1_000)).map_err(|_| VelocityIntegralPlanError::Arithmetic)
-}
-
-/// Construct one exact Stage-C stage plan from reproduced Stage-B authority.
-#[allow(dead_code)]
-pub(crate) fn plan_velocity_integral_response(
-    mut authority: StageCAuthority,
-    stage_b_plan: VelocitySweepExecutionPlan,
-    motion_budget: OuterMotionBudget,
-    pwm_hz: u32,
-    encoder_counts_per_rev: u32,
-) -> Result<VelocityIntegralPlan, VelocityIntegralPlanError> {
-    if !stage_b_plan.is_present() {
-        return Err(VelocityIntegralPlanError::MissingStageBPlan);
-    }
-    // A confirmation token names no Stage-B sweep plan, so it can never match
-    // here. Asking for the reproduced digest refuses that authority outright
-    // rather than comparing values from two different namespaces.
-    if authority.acquisition.reproduced_stage_b() != Some(stage_b_plan.plan_digest) {
-        return Err(VelocityIntegralPlanError::MismatchedAuthority);
-    }
-    if authority.stage_b_joint_membership == 0 {
-        return Err(VelocityIntegralPlanError::MissingAuthority);
-    }
-    let selection = select_stage_c_test_point(
-        authority.stage_b_joint_membership,
-        stage_b_plan,
-        pwm_hz,
-        encoder_counts_per_rev,
-    )?;
-    let Some(selection) = selection else {
-        return Err(
-            VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(StageCFailedAdmission {
-                plan_digest: failed_admission_digest(
-                    authority,
-                    stage_b_plan,
-                    pwm_hz,
-                    encoder_counts_per_rev,
-                ),
-                probe_constrained_test_point: true,
-            }),
-        );
-    };
-    let selected_rung = selection.joint_membership.trailing_zeros() as u8
-        + (selection.joint_membership.count_ones() as u8 - 1) / 2;
-    for direction in 0..authority.directional_validity.len() {
-        authority.directional_validity[direction] = match authority.directional_validity[direction]
-        {
-            StageBDirectionalValidity::ReproducedRegionCoversFinalP
-            | StageBDirectionalValidity::ReproducedRegionTransferred => {
-                if authority.directional_memberships[direction] & (1_u32 << selected_rung) != 0 {
-                    StageBDirectionalValidity::ReproducedRegionCoversFinalP
-                } else {
-                    StageBDirectionalValidity::ReproducedRegionTransferred
-                }
-            }
-            validity => validity,
-        };
-    }
-    authority.stage_b_joint_membership = selection.stage_b_joint_membership;
-    authority.joint_membership = selection.joint_membership;
-    authority.reduced_margin = selection.reduced_margin;
-    if authority.joint_membership == 0
-        || authority
-            .directional_pooled_intervals
-            .iter()
-            .enumerate()
-            .any(|(direction, interval)| {
-                let membership = authority.directional_memberships[direction];
-                match authority.directional_validity[direction] {
-                    StageBDirectionalValidity::NoRegion => membership != 0 || *interval != [0, 0],
-                    StageBDirectionalValidity::Fragment => {
-                        membership.count_ones() > 2 || *interval != [0, 0]
-                    }
-                    StageBDirectionalValidity::RegionNotReproduced => *interval != [0, 0],
-                    StageBDirectionalValidity::ReproducedRegionCoversFinalP
-                    | StageBDirectionalValidity::ReproducedRegionTransferred => {
-                        membership.count_ones() < 3 || interval[0] > interval[1]
-                    }
-                }
-            })
-    {
-        return Err(VelocityIntegralPlanError::InvalidRequest);
-    }
-    plan_velocity_integral_response_from_source(
-        IntegralPlanSource {
-            authority,
-            final_p: selection.final_p,
-            schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
-            append_exact_cap: false,
-            probe_constrained_test_point: selection.probe_constrained_test_point,
-        },
-        stage_b_plan.into(),
-        motion_budget,
-        pwm_hz,
-        encoder_counts_per_rev,
-    )
 }
 
 /// Validate and return the one token that may authorize Stage C for a
@@ -1833,51 +1709,6 @@ fn plan_velocity_integral_response_from_source(
     })
 }
 
-fn select_stage_c_test_point(
-    stage_b_joint_membership: u32,
-    stage_b_plan: VelocitySweepExecutionPlan,
-    pwm_hz: u32,
-    encoder_counts_per_rev: u32,
-) -> Result<Option<StageCTestPointSelection>, VelocityIntegralPlanError> {
-    let mut joint_membership = 0_u32;
-    for rung_index in 0..u32::BITS as u8 {
-        let rung_bit = 1_u32 << rung_index;
-        if stage_b_joint_membership & rung_bit == 0 {
-            continue;
-        }
-        let gain = stage_b_plan
-            .gain_at(rung_index)
-            .ok_or(VelocityIntegralPlanError::InvalidRequest)?;
-        if transition_capable_stage_c_gain(
-            gain.raw(),
-            stage_b_plan.target_velocity_rpm.raw(),
-            encoder_counts_per_rev,
-            pwm_hz,
-            MOVING_STROKE_US,
-            stage_b_plan.usable_torque_limit,
-        )? {
-            joint_membership |= rung_bit;
-        }
-    }
-    if joint_membership == 0 {
-        return Ok(None);
-    }
-    let first_rung = joint_membership.trailing_zeros() as u8;
-    let member_count = joint_membership.count_ones() as u8;
-    let selected_rung = first_rung + (member_count - 1) / 2;
-    let final_p = stage_b_plan
-        .gain_at(selected_rung)
-        .ok_or(VelocityIntegralPlanError::InvalidRequest)?
-        .raw();
-    Ok(Some(StageCTestPointSelection {
-        stage_b_joint_membership,
-        joint_membership,
-        final_p,
-        reduced_margin: member_count <= 2,
-        probe_constrained_test_point: stage_b_joint_membership != joint_membership,
-    }))
-}
-
 fn map_recovery_plan_error(error: RungOriginRecoveryPlanError) -> VelocityIntegralPlanError {
     match error {
         RungOriginRecoveryPlanError::InvalidRequest
@@ -1886,37 +1717,6 @@ fn map_recovery_plan_error(error: RungOriginRecoveryPlanError) -> VelocityIntegr
         }
         RungOriginRecoveryPlanError::Arithmetic => VelocityIntegralPlanError::Arithmetic,
     }
-}
-
-fn failed_admission_digest(
-    authority: StageCAuthority,
-    stage_b_plan: VelocitySweepExecutionPlan,
-    pwm_hz: u32,
-    encoder_counts_per_rev: u32,
-) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    macro_rules! hash_value {
-        ($value:expr) => {
-            for byte in $value.to_le_bytes() {
-                hash = fnv1a64_byte(hash, byte);
-            }
-        };
-    }
-    hash_value!(BUILD_FEATURES);
-    hash_value!(STAGE_C_EVIDENCE_SCHEMA_REVISION);
-    hash_value!(authority.channel);
-    hash_value!(authority.acquisition.digest());
-    hash_value!(authority.stage_b_joint_membership);
-    hash_value!(0_u32);
-    hash_value!(0_u16);
-    hash_value!(stage_b_plan.target_velocity_rpm.raw());
-    hash_value!(pwm_hz);
-    hash_value!(encoder_counts_per_rev);
-    hash_value!(MOVING_STROKE_US);
-    hash_value!(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR);
-    hash_value!(stage_b_plan.usable_torque_limit);
-    hash_value!(1_u8);
-    hash
 }
 
 pub(super) fn largest_i_for_tau(

@@ -1949,7 +1949,6 @@ fn commission_closed_loop_entry_report(oid: u8, inner: &InnerResult) -> ClosedLo
 
 #[cfg(test)]
 mod tests {
-    use crate::commissioning::outer::velocity::integral_plan::StageCAcquisition;
     use std::vec;
     use std::vec::Vec;
 
@@ -3927,45 +3926,103 @@ mod tests {
         );
     }
 
+    /// Mint one genuine breakaway acquisition through the real confirmation
+    /// gate. The `ConfirmedAcquisitionDigest` token cannot be fabricated, so
+    /// this walks the same `plan_band_confirmation` ->
+    /// `evaluate_band_confirmation` -> `bind_breakaway_stage_c_authority`
+    /// chain a live campaign uses.
+    fn breakaway_acquisition_for_test()
+    -> crate::commissioning::outer::velocity::integral_plan::StageCAcquisition {
+        use crate::autotune::velocity_measurement::VelocityDirection;
+        use crate::commissioning::outer::velocity::band_confirmation::{
+            ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+            plan_band_confirmation,
+        };
+        use crate::commissioning::outer::velocity::integral_plan::{
+            StageCAcquisition, bind_breakaway_stage_c_authority,
+        };
+        use crate::commissioning::outer::velocity::sweep_consensus::{
+            CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+        };
+        use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+        use foci_tmc4671::pid::PidPGain;
+
+        let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+            .expect("valid confirmation plan");
+
+        let consensus = || DirectionalConsensus {
+            classification: DirectionalConsensusClass::EligibleConsensus,
+            components: [[0, 0]; 2],
+            component_count: 1,
+            collected_mask: 0b1111,
+            eligible_mask: 0b1111,
+            included_mask: 0b1111,
+        };
+        let mean_rate_q: i64 = 750_000;
+        let variance_of_mean_q2: u128 = 58_752_225;
+        let target_rate_q: i64 = 1_000_000;
+        let forward = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Forward,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let reverse = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q: -mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Reverse,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+            .expect("accepted confirmation");
+        let token = bind_breakaway_stage_c_authority(
+            confirmation_plan.plan_digest,
+            confirmation_plan,
+            Ok(acceptance),
+        )
+        .expect("bound breakaway authority");
+        StageCAcquisition::ConfirmedBreakaway(token)
+    }
+
+    /// A plan with both directions carrying an available cross-P model
+    /// interval, for tests that need to selectively withdraw one direction's
+    /// availability. `StageCAuthority::new_breakaway` always zeroes this
+    /// evidence, so it is set directly on the struct literal instead of
+    /// through any plan-building function.
     fn velocity_integral_plan_fixture()
     -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
-        use crate::commissioning::outer::OuterMotionBudget;
         use crate::commissioning::outer::velocity::integral_plan::{
-            StageCAuthority, plan_velocity_integral_response,
+            IntegralSlotOrder, STAGE_C_MAX_POSITIVE_RUNGS, StageCAuthority,
         };
+        use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
         use crate::commissioning::outer::velocity::sweep_plan::{
-            RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
+            RequestedVelocitySource, VelocitySweepRequest,
         };
 
-        let request = VelocitySweepRequest {
-            requested_velocity_mrev_s: 2_929,
-            machine_velocity_ceiling_mrev_s: 10_000,
-            requested_velocity_source: RequestedVelocitySource::Defaulted,
-            max_stroke_travel_mrev: 2_000,
-            settle_travel_reserve_mrev: 250,
-            negative_position_headroom_mrev: 50_000,
-            positive_position_headroom_mrev: 50_000,
-            max_duration_ms: 60_000,
-        };
-        let stage_b = plan_velocity_sweep(
-            request,
-            4_000,
-            2_816,
-            crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-        )
-        .unwrap();
-        let digest = stage_b.digest();
-        plan_velocity_integral_response(
-            StageCAuthority {
+        let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
+        for (index, gain) in positive_i.iter_mut().enumerate() {
+            *gain = u16::try_from(index + 1).unwrap();
+        }
+        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
+            build_features: 3,
+            schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
+            authority: StageCAuthority {
                 channel: 0,
-                acquisition: StageCAcquisition::ReproducedStageB(digest),
+                acquisition: breakaway_acquisition_for_test(),
                 directional_memberships: [0x001c_0000; 2],
                 stage_b_joint_membership: 0x001c_0000,
                 joint_membership: 0x001c_0000,
-                directional_validity: [
-                    crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
-                    2
-                ],
+                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
                 reduced_margin: false,
                 directional_pooled_intervals: [
                     [17_000_000, 18_000_000],
@@ -3974,21 +4031,43 @@ mod tests {
                 confidence_q: 0,
                 band_position_q: 0,
             },
-            stage_b.execution_plan(digest),
-            OuterMotionBudget {
-                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-                requested_velocity_source: request.requested_velocity_source,
-                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-                max_duration_ms: request.max_duration_ms,
+            final_p: 1_448,
+            planned_velocity_mrev_s: 2_929,
+            target_velocity_rpm: 176,
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+            positive_i,
+            positive_rung_count: 15,
+            i_top_cap: 0,
+            family_size: 68,
+            total_rung_count: 17,
+            expected_observations: 136,
+            moving_stroke_us: 512_000,
+            zero_settle_us: 500_000,
+            analysis_budget_us: 236_000,
+            nominal_workflow_ms: 82_607,
+            maximum_workflow_ms: 90_888,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 7,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+            limit_evidence_capability:
+                crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+            recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
+            motion_request: VelocitySweepRequest {
+                requested_velocity_mrev_s: 2_929,
+                machine_velocity_ceiling_mrev_s: 10_000,
+                requested_velocity_source: RequestedVelocitySource::Defaulted,
+                max_stroke_travel_mrev: 2_000,
+                settle_travel_reserve_mrev: 250,
+                negative_position_headroom_mrev: 50_000,
+                positive_position_headroom_mrev: 50_000,
+                max_duration_ms: 60_000,
             },
-            25_000,
-            4_000,
-        )
-        .unwrap()
+        }
     }
 
     #[test]

@@ -599,8 +599,8 @@ impl CommissioningEngine {
     /// Return the live breakaway execution plan used by terminal retention.
     ///
     /// `Some` only for a breakaway acceptance run, so a `Some` return is itself
-    /// the "run is breakaway" discriminator the install site needs; a combined
-    /// or reproduced-Stage-B run returns `None`.
+    /// the "run is breakaway" discriminator the install site needs; any other
+    /// acceptance source returns `None`.
     pub(crate) fn breakaway_stage_c_execution_plan(
         &self,
     ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
@@ -620,7 +620,7 @@ impl CommissioningEngine {
     /// Trace diagnostic read at the acceptance-point install seam: the live
     /// velocity-integral plan's acceptance source and whether that phase is
     /// still resident. Returns `(source_code, phase_live)` with source_code
-    /// 1=Breakaway, 2=ReproducedStageB, 0=phase not resident. Lets a skipped
+    /// 1=Breakaway, 2=NonBreakaway, 0=phase not resident. Lets a skipped
     /// install be attributed to phase liveness versus plan source without
     /// re-deriving either from the terminal.
     #[cfg(feature = "trace")]
@@ -635,7 +635,7 @@ impl CommissioningEngine {
         };
         let code = match data.plan.acceptance_source {
             AcceptanceSource::Breakaway => 1,
-            AcceptanceSource::ReproducedStageB => 2,
+            AcceptanceSource::NonBreakaway => 2,
         };
         (code, true)
     }
@@ -1848,7 +1848,7 @@ mod tests {
         // discriminator added earlier stays.
         // 2_944 -> 2_960: `i_top_cap: u16` grows the embedded
         // `VelocityIntegralExecutionPlan` by 8 bytes (112 -> 120; see
-        // integral_plan.rs's own size assertion), needed so `ReproducedStageB`
+        // integral_plan.rs's own size assertion), needed so response-ladder
         // plans can regenerate their half-octave rung during execution.
         assert_eq!(
             size_of::<crate::commissioning::outer::VelocityIntegralData>(),
@@ -2883,8 +2883,8 @@ mod tests {
     ///
     /// Follows the fixture construction used by the surrounding Stage-C
     /// tests (`commission_dispatch::stage_c_tests` and
-    /// `commission_dispatch::replies` tests): build an exact Stage-C plan
-    /// directly through `plan_velocity_integral_response`, then hand it to
+    /// `commission_dispatch::replies` tests): mint one genuine breakaway
+    /// Stage-C plan through the real confirmation gate, then hand it to
     /// [`CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight`].
     #[cfg(feature = "trace")]
     fn stage_c_engine_at_rest_boundary_for_test() -> (
@@ -2892,9 +2892,14 @@ mod tests {
         crate::commissioning::types::VelocityIntegralTerminal,
         crate::commissioning::outer::PositiveIRestBoundary,
     ) {
-        use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
+        use crate::autotune::velocity_measurement::{
+            StationarityExclusion, StationarityResult, VelocityDirection,
+        };
         use crate::commission_dispatch::stage_c::StageCPreflight;
-        use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
+        use crate::commissioning::outer::velocity::band_confirmation::{
+            ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+            plan_band_confirmation,
+        };
         use crate::commissioning::outer::velocity::current_guard::{
             VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
         };
@@ -2902,64 +2907,94 @@ mod tests {
             ExactRateInterval, IntegralRunEvidence,
         };
         use crate::commissioning::outer::velocity::integral_plan::{
-            StageCAcquisition, StageCAuthority, plan_velocity_integral_response,
+            AcquisitionContext, bind_breakaway_stage_c_authority,
+            plan_breakaway_velocity_integral_response,
         };
         use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
-        use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
-        use crate::commissioning::outer::velocity::sweep_plan::{
-            RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
+        use crate::commissioning::outer::velocity::sweep_consensus::{
+            CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
         };
+        use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
         use crate::commissioning::outer::{
             OuterMotionBudget, PositiveIRestBoundary, VelocitySettleMetrics,
         };
         use crate::commissioning::types::{
             StageCCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
         };
+        use foci_tmc4671::pid::PidPGain;
 
-        let request = VelocitySweepRequest {
-            requested_velocity_mrev_s: 2_929,
-            machine_velocity_ceiling_mrev_s: 10_000,
-            requested_velocity_source: RequestedVelocitySource::Defaulted,
-            max_stroke_travel_mrev: 2_000,
-            settle_travel_reserve_mrev: 250,
-            negative_position_headroom_mrev: 50_000,
-            positive_position_headroom_mrev: 50_000,
-            max_duration_ms: 60_000,
+        let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+            .expect("valid confirmation plan");
+
+        let consensus = || DirectionalConsensus {
+            classification: DirectionalConsensusClass::EligibleConsensus,
+            components: [[0, 0]; 2],
+            component_count: 1,
+            collected_mask: 0b1111,
+            eligible_mask: 0b1111,
+            included_mask: 0b1111,
         };
-        let stage_b = plan_velocity_sweep(
-            request,
-            4_000,
-            2_816,
-            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        let mean_rate_q: i64 = 750_000;
+        let variance_of_mean_q2: u128 = 58_752_225;
+        let target_rate_q: i64 = 1_000_000;
+        let forward = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Forward,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let reverse = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q: -mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Reverse,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+            .expect("accepted confirmation");
+        let intervals = acceptance.held_out_response_intervals_q;
+        let token = bind_breakaway_stage_c_authority(
+            confirmation_plan.plan_digest,
+            confirmation_plan,
+            Ok(acceptance),
         )
-        .unwrap();
-        let digest = stage_b.digest();
-        let plan = plan_velocity_integral_response(
-            StageCAuthority {
-                channel: 0,
-                acquisition: StageCAcquisition::ReproducedStageB(digest),
-                directional_memberships: [0x001c_0000; 2],
-                stage_b_joint_membership: 0x001c_0000,
-                joint_membership: 0x001c_0000,
-                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
-                reduced_margin: false,
-                directional_pooled_intervals: [
-                    [17_000_000, 18_000_000],
-                    [-19_000_000, -18_000_000],
-                ],
-                confidence_q: 0,
-                band_position_q: 0,
-            },
-            stage_b.execution_plan(digest),
+        .expect("bound breakaway authority");
+
+        let context = AcquisitionContext {
+            planned_velocity_mrev_s: 2_929,
+            target_velocity_rpm: 176,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+            limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+            channel: 0,
+            plan_time_pwm_hz: 25_000,
+            plan_time_encoder_counts_per_rev: 4_000,
+        };
+        let plan = plan_breakaway_velocity_integral_response(
+            token,
+            confirmation_plan,
+            context,
+            intervals,
+            acceptance.confidence_q,
+            acceptance.band_position_q,
             OuterMotionBudget {
-                requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-                requested_velocity_source: request.requested_velocity_source,
-                max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-                settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-                negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-                positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-                max_duration_ms: request.max_duration_ms,
+                requested_velocity_mrev_s: 2_929,
+                machine_velocity_ceiling_mrev_s: 10_000,
+                requested_velocity_source:
+                    crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::Defaulted,
+                max_stroke_travel_mrev: 2_000,
+                settle_travel_reserve_mrev: 250,
+                negative_position_headroom_mrev: 50_000,
+                positive_position_headroom_mrev: 50_000,
+                max_duration_ms: 60_000,
             },
             25_000,
             4_000,

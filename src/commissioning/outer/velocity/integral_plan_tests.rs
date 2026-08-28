@@ -19,9 +19,8 @@ use super::integral_plan::{
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms, native_rung_count,
-    native_velocity_i_at, plan_breakaway_velocity_integral_response,
-    plan_velocity_integral_response, recovery_quantization_exposed, response_horizon,
-    velocity_i_tau_us,
+    native_velocity_i_at, plan_breakaway_velocity_integral_response, recovery_quantization_exposed,
+    response_horizon, velocity_i_tau_us,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -54,7 +53,9 @@ fn stage_b_request() -> VelocitySweepRequest {
 fn authority() -> StageCAuthority {
     StageCAuthority {
         channel: 0,
-        acquisition: StageCAcquisition::ReproducedStageB(0x0123_4567_89ab_cdef),
+        acquisition: StageCAcquisition::ConfirmedBreakaway(breakaway_token_for(
+            breakaway_confirmation_plan(breakaway_gain(512)),
+        )),
         directional_memberships: [0x0007_0000, 0x0007_0000],
         stage_b_joint_membership: 0x0007_0000,
         joint_membership: 0x0007_0000,
@@ -330,19 +331,9 @@ fn preflight_duration_reserves_the_fixed_cleanup_window() {
 
 #[test]
 fn stage_c_plan_freezes_geometry_and_conservative_duration() {
-    let stage_b = stage_b_plan();
-    let mut authority = authority();
-    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
-    let plan = plan_velocity_integral_response(
-        authority,
-        stage_b.execution_plan(stage_b.digest()),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .unwrap();
+    let plan = build_test_breakaway_plan();
 
-    assert_eq!(plan.schema_revision, STAGE_C_EVIDENCE_SCHEMA_REVISION);
+    assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
     assert_eq!(plan.final_p, 512);
     assert_eq!(
         plan.positive_rungs(),
@@ -371,23 +362,6 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     );
 }
 
-/// One genuine `ReproducedStageB` plan, built through the real
-/// [`plan_velocity_integral_response`] path used by
-/// [`stage_c_plan_freezes_geometry_and_conservative_duration`] above.
-fn build_test_reproduced_stage_b_plan() -> VelocityIntegralPlan {
-    let stage_b = stage_b_plan();
-    let mut authority = authority();
-    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
-    plan_velocity_integral_response(
-        authority,
-        stage_b.execution_plan(stage_b.digest()),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .unwrap()
-}
-
 /// One genuine breakaway-schema plan, built through the real
 /// [`plan_breakaway_velocity_integral_response`] path used by the breakaway
 /// fixtures below (see [`breakaway_acquisition_context`]).
@@ -408,18 +382,7 @@ fn build_test_breakaway_plan() -> VelocityIntegralPlan {
 }
 
 #[test]
-fn reproduced_stage_b_plan_includes_the_half_octave_rung_and_real_cap() {
-    let plan = build_test_reproduced_stage_b_plan();
-    assert_eq!(plan.i_top_cap, 1_310);
-    assert_eq!(
-        plan.positive_rungs(),
-        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
-    );
-    assert_eq!(plan.positive_rung_count, 13);
-}
-
-#[test]
-fn breakaway_plan_also_includes_the_half_octave_rung_and_real_cap() {
+fn breakaway_plan_includes_the_half_octave_rung_and_real_cap() {
     let plan = build_test_breakaway_plan();
     assert_eq!(plan.i_top_cap, 1_310);
     assert_eq!(
@@ -430,28 +393,19 @@ fn breakaway_plan_also_includes_the_half_octave_rung_and_real_cap() {
 }
 
 #[test]
-fn execution_plan_copies_i_top_cap_for_both_sources() {
-    let reproduced = build_test_reproduced_stage_b_plan().execution_plan();
-    assert_eq!(reproduced.i_top_cap, 1_310);
+fn execution_plan_copies_i_top_cap() {
     let breakaway = build_test_breakaway_plan().execution_plan();
     assert_eq!(breakaway.i_top_cap, 1_310);
 }
 
+/// `CommissioningWorkflowPlan`'s three fixed-command shapes compose distinct,
+/// non-colliding digests from the same duration arithmetic
+/// (`maximum_workflow_ms = stage_b_ms + stage_c_ms`), regardless of which
+/// acquisition produced the underlying Stage-C plan.
 #[test]
-fn workflow_shape_does_not_change_either_stage_identity() {
+fn workflow_shape_composes_distinct_digests_from_duration_arithmetic() {
     let stage_b = stage_b_plan();
-    let stage_b_digest = stage_b.digest();
-    let mut authority = authority();
-    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b_digest);
-    let stage_c = plan_velocity_integral_response(
-        authority,
-        stage_b.execution_plan(stage_b_digest),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .unwrap();
-    let stage_c_digest = stage_c.digest();
+    let stage_c = build_test_breakaway_plan();
 
     let candidate =
         CommissioningWorkflowPlan::new(7, StageCPlanShape::StageB, stage_b.maximum_workflow_ms, 0)
@@ -471,25 +425,21 @@ fn workflow_shape_does_not_change_either_stage_identity() {
     )
     .unwrap();
 
-    assert_eq!(candidate.maximum_workflow_ms, 298_632);
-    // stage_c.maximum_workflow_ms grew from 182_512 to 195_496 (see
-    // stage_c_plan_freezes_geometry_and_conservative_duration): the half-octave
-    // rung adds one observation family member, so both the composite sum and
-    // the standalone resume figure below grow with it.
-    assert_eq!(composite.maximum_workflow_ms, 494_128);
-    assert_eq!(resume.maximum_workflow_ms, 195_496);
+    assert_eq!(candidate.maximum_workflow_ms, stage_b.maximum_workflow_ms);
+    assert_eq!(
+        composite.maximum_workflow_ms,
+        stage_b.maximum_workflow_ms + stage_c.maximum_workflow_ms
+    );
+    assert_eq!(resume.maximum_workflow_ms, stage_c.maximum_workflow_ms);
     assert_ne!(candidate.digest(), composite.digest());
     assert_ne!(composite.digest(), resume.digest());
     assert_eq!(StageCPlanShape::StageB as u8, 0);
     assert_eq!(StageCPlanShape::StageBThenStageC as u8, 1);
     assert_eq!(StageCPlanShape::StageCResume as u8, 2);
-    assert_eq!(stage_b.digest(), stage_b_digest);
-    assert_eq!(stage_c.digest(), stage_c_digest);
-    assert_eq!(stage_c.execution_plan().plan_digest, stage_c_digest);
 }
 
 #[test]
-fn invalid_geometry_and_missing_authority_reject_before_motion() {
+fn invalid_geometry_rejects_before_motion() {
     assert_eq!(velocity_i_tau_us(0, 25_000), None);
     assert_eq!(velocity_i_tau_us(5, 0), None);
     assert_eq!(
@@ -507,86 +457,10 @@ fn invalid_geometry_and_missing_authority_reject_before_motion() {
         build_integral_ladder(1, 1_000_000, 2, u16::MAX),
         Err(VelocityIntegralPlanError::Arithmetic)
     );
-
-    let stage_b = stage_b_plan();
-    let digest = stage_b.digest();
-    let mut missing = authority();
-    missing.acquisition = StageCAcquisition::ReproducedStageB(digest);
-    missing.stage_b_joint_membership = 0;
-    missing.joint_membership = 0;
-    assert_eq!(
-        plan_velocity_integral_response(
-            missing,
-            stage_b.execution_plan(digest),
-            motion_budget(),
-            25_000,
-            4_000,
-        ),
-        Err(VelocityIntegralPlanError::MissingAuthority)
-    );
-    assert_eq!(
-        plan_velocity_integral_response(
-            authority(),
-            super::sweep_plan::VelocitySweepExecutionPlan::EMPTY,
-            motion_budget(),
-            25_000,
-            4_000,
-        ),
-        Err(VelocityIntegralPlanError::MissingStageBPlan)
-    );
-    let mut mismatched = authority();
-    mismatched.acquisition = StageCAcquisition::ReproducedStageB(digest.wrapping_add(1));
-    assert_eq!(
-        plan_velocity_integral_response(
-            mismatched,
-            stage_b.execution_plan(digest),
-            motion_budget(),
-            25_000,
-            4_000,
-        ),
-        Err(VelocityIntegralPlanError::MismatchedAuthority)
-    );
 }
 
 #[test]
-fn stage_c_accepts_local_authority_without_model() {
-    let stage_b = stage_b_plan();
-    let digest = stage_b.digest();
-    let mut local = authority();
-    local.acquisition = StageCAcquisition::ReproducedStageB(digest);
-    local.stage_b_joint_membership = 0x0003_0000;
-    local.joint_membership = 0x0003_0000;
-    local.directional_memberships = [0x0003_0000, 0];
-    local.directional_pooled_intervals = [[0, 0]; 2];
-    local.directional_validity = [
-        StageBDirectionalValidity::Fragment,
-        StageBDirectionalValidity::NoRegion,
-    ];
-    local.reduced_margin = true;
-
-    let plan = plan_velocity_integral_response(
-        local,
-        stage_b.execution_plan(digest),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .expect("joint operability authorizes Stage C without a cross-P model");
-
-    assert!(!plan.authority.model_interval_available(0));
-    assert!(!plan.authority.model_interval_available(1));
-    assert!(plan.authority.reduced_margin);
-    assert_eq!(
-        plan.authority.directional_validity,
-        [
-            StageBDirectionalValidity::Fragment,
-            StageBDirectionalValidity::NoRegion,
-        ]
-    );
-}
-
-#[test]
-fn stage_c_model_interval_availability_is_typed_and_hashed() {
+fn model_interval_availability_is_typed_by_directional_validity() {
     let availability = [
         (StageBDirectionalValidity::NoRegion, false),
         (StageBDirectionalValidity::Fragment, false),
@@ -603,46 +477,6 @@ fn stage_c_model_interval_availability_is_typed_and_hashed() {
         assert_eq!(value.model_interval_available(0), expected);
     }
     assert!(!value.model_interval_available(2));
-
-    let stage_b = stage_b_plan();
-    let digest = stage_b.digest();
-    let mut baseline = authority();
-    baseline.acquisition = StageCAcquisition::ReproducedStageB(digest);
-    let baseline = plan_velocity_integral_response(
-        baseline,
-        stage_b.execution_plan(digest),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .unwrap();
-
-    let mut transferred = authority();
-    transferred.acquisition = StageCAcquisition::ReproducedStageB(digest);
-    transferred.directional_memberships[0] = 0x001c_0000;
-    let transferred = plan_velocity_integral_response(
-        transferred,
-        stage_b.execution_plan(digest),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .unwrap();
-    assert_ne!(baseline.digest(), transferred.digest());
-
-    let mut reduced = authority();
-    reduced.acquisition = StageCAcquisition::ReproducedStageB(digest);
-    reduced.stage_b_joint_membership = 0x0003_0000;
-    reduced.joint_membership = 0x0003_0000;
-    let reduced = plan_velocity_integral_response(
-        reduced,
-        stage_b.execution_plan(digest),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .unwrap();
-    assert_ne!(baseline.digest(), reduced.digest());
 }
 
 const SLOT_COUNT: u8 = STAGE_C_OBSERVATIONS_PER_RUNG as u8;
@@ -960,8 +794,6 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
         authority.acquisition.digest(),
         confirmation_plan.plan_digest
     );
-    // It names no Stage-B sweep plan, so nothing can try to recompute one.
-    assert_eq!(authority.acquisition.reproduced_stage_b(), None);
     assert_eq!(authority.stage_b_joint_membership, 0);
     assert_eq!(authority.joint_membership, 0);
     // The digest chain also carries the held-out block's own pooled response
@@ -1101,43 +933,6 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
 }
 
 // --- Legacy replay compatibility ---------------------------------------------
-
-/// Pins `plan_velocity_integral_response`'s exact `ReproducedStageB` digest.
-/// An earlier change altered this value deliberately in two ways: `build_features`
-/// (u16) replaced `build_revision` (u32) in the digest input, and the
-/// selected-response block now gates on `combined_selected_response.is_some()`
-/// instead of the schema number, so a standalone plan hashes the `is_some =
-/// 0` byte it previously skipped. This change removed the
-/// `combined_selected_response` field from `VelocityIntegralPlan` entirely,
-/// but `digest()` still hashes a constant `0u8` in its place (see the
-/// comment in `digest()` itself), so neither of those refactors moved this
-/// value on their own. Two further deliberate changes moved it since: the
-/// half-octave rung insertion changed `positive_rungs()`, an input to
-/// `digest()`, for every `ReproducedStageB` plan, and the Stage-C schema bump
-/// to `STAGE_C_EVIDENCE_SCHEMA_REVISION == 17` then made `digest()`'s
-/// revision-conditional branch hash `i_top_cap` itself for the first time.
-/// The literal below is the post-schema-bump baseline. Replay of older
-/// captures stays intact because the host recomputes their digest from what
-/// each capture recorded, not from current firmware. Any *other* change to
-/// this literal means a refactor silently altered the digest and broke
-/// in-boot authority retention or offline replay compatibility; do not
-/// update it to make a test pass.
-#[test]
-fn reproduced_stage_b_plan_digest_pins_the_post_half_octave_value() {
-    let stage_b = stage_b_plan();
-    let mut authority = authority();
-    authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
-    let plan = plan_velocity_integral_response(
-        authority,
-        stage_b.execution_plan(stage_b.digest()),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .unwrap();
-
-    assert_eq!(plan.digest(), 16_592_268_946_659_389_569);
-}
 
 /// Pins a breakaway-sourced plan's exact digest. Breakaway plans now also
 /// receive the half-octave insertion, so this value changes whenever the
@@ -1400,11 +1195,13 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
 }
 
 /// `acquisition_kind == ResponseLadder` alone cannot isolate breakaway: a
-/// live combined workflow, an accepted breakaway confirmation, and a plain
-/// reproduced Stage-B response ladder all report that same kind. The
-/// `acceptance_source` discriminator, resolved from the Stage-C authority,
-/// is what `records_target_terminus` keys on instead -- and it must not
-/// over-admit a reproduced Stage-B ladder, which carries no target evidence.
+/// live combined workflow and an accepted breakaway confirmation both report
+/// that same kind. The `acceptance_source` discriminator, resolved from the
+/// Stage-C authority, is what `records_target_terminus` keys on instead. The
+/// non-breakaway half of the contract -- it must not over-admit a plan that
+/// carries no target evidence -- is covered by
+/// `non_breakaway_ladder_does_not_record_a_terminus` in
+/// `integral_sweep_tests`.
 #[test]
 fn execution_plan_reports_acceptance_source_from_authority() {
     let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
@@ -1424,25 +1221,6 @@ fn execution_plan_reports_acceptance_source_from_authority() {
     .execution_plan();
     assert_eq!(breakaway.acceptance_source, AcceptanceSource::Breakaway);
     assert!(breakaway.records_target_terminus());
-
-    let stage_b = stage_b_plan();
-    let mut reproduced_authority = authority();
-    reproduced_authority.acquisition = StageCAcquisition::ReproducedStageB(stage_b.digest());
-    let reproduced = plan_velocity_integral_response(
-        reproduced_authority,
-        stage_b.execution_plan(stage_b.digest()),
-        motion_budget(),
-        25_000,
-        4_000,
-    )
-    .expect("reproduced Stage-B plan")
-    .execution_plan();
-    assert_eq!(
-        reproduced.acceptance_source,
-        AcceptanceSource::ReproducedStageB
-    );
-    // Must NOT over-admit a plain response ladder.
-    assert!(!reproduced.records_target_terminus());
 }
 
 /// No reselection, no fallback: the constructor takes exactly one candidate
@@ -1737,7 +1515,7 @@ fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() 
     // positive_rung_count disagrees with what integral_gain_at can produce)
     // is Task 4's responsibility (the count and the accessor must be
     // derived from the same construction), checked by
-    // reproduced_stage_b_plan_includes_the_half_octave_rung_and_real_cap
+    // breakaway_plan_includes_the_half_octave_rung_and_real_cap
     // and breakaway_plan_i_top_cap_is_zero_and_rungs_are_unaugmented in
     // integral_plan_tests.rs, and by integral_i_at's own
     // `rung_index >= total` bound in integral_sweep.rs, which is what
@@ -1746,9 +1524,15 @@ fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() 
     assert_eq!(integral_gain_at(0, 12), Some(2_048));
 }
 
+/// Schema 17 no longer has a live producer (it was `plan_velocity_integral_response`'s
+/// exclusive schema, removed with `StageCAcquisition::ReproducedStageB`), but
+/// `digest()`'s schema-16-or-17 gate stays for historical trace-capture
+/// replay compatibility, so this checks the surviving `17` arm directly on a
+/// plan with the schema field overridden.
 #[test]
-fn reproduced_stage_b_digest_at_schema_17_hashes_i_top_cap() {
-    let mut plan = build_test_reproduced_stage_b_plan();
+fn schema_17_still_hashes_i_top_cap_in_its_digest() {
+    let mut plan = build_test_breakaway_plan();
+    plan.schema_revision = STAGE_C_EVIDENCE_SCHEMA_REVISION;
     assert_eq!(plan.schema_revision, 17);
     let baseline = plan.digest();
     plan.i_top_cap = plan.i_top_cap.wrapping_add(1);

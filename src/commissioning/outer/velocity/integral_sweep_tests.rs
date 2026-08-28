@@ -90,7 +90,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         usable_torque_limit: 2_534,
         limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
         acquisition_kind: super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
-        acceptance_source: super::integral_plan::AcceptanceSource::ReproducedStageB,
+        acceptance_source: super::integral_plan::AcceptanceSource::NonBreakaway,
         matrix_targets_rpm: [0; 5],
         selected_response_intervals_q: [[0; 2]; 2],
         recovery_lower_rate_q: [13_217_792, 12_827_648],
@@ -200,14 +200,14 @@ fn breakaway_leaves_terminus_none_on_sufficiency_without_target() {
 }
 
 /// The discriminator, not just the deficit math, gates terminus recording: a
-/// reproduced Stage-B response ladder must record no terminus even when
-/// handed intervals that would otherwise cross the target, proving this
-/// guards against over-admitting through the shared `ResponseLadder`
-/// acquisition kind.
+/// non-breakaway response ladder must record no terminus even when handed
+/// intervals that would otherwise cross the target, proving this guards
+/// against over-admitting through the shared `ResponseLadder` acquisition
+/// kind.
 #[test]
-fn reproduced_stage_b_ladder_does_not_record_a_terminus() {
+fn non_breakaway_ladder_does_not_record_a_terminus() {
     let mut plan = plan();
-    assert_eq!(plan.acceptance_source, AcceptanceSource::ReproducedStageB);
+    assert_eq!(plan.acceptance_source, AcceptanceSource::NonBreakaway);
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
@@ -3030,7 +3030,7 @@ fn integral_i_at_response_ladder_returns_the_half_octave_rung() {
     let mut test_plan = plan();
     test_plan.i_top_cap = 1_310;
     test_plan.positive_rung_count = 13;
-    test_plan.acceptance_source = AcceptanceSource::ReproducedStageB;
+    test_plan.acceptance_source = AcceptanceSource::NonBreakaway;
     test_plan.acquisition_kind = VelocityIntegralAcquisitionKind::ResponseLadder;
     // Rung index accounting: integral_i_at reserves index 0 and the final
     // index for the zero-target opening/closing bookends (see its existing

@@ -11,16 +11,10 @@ use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BE
 use crate::commissioning::outer::velocity::integral_evidence::{
     ExactRateInterval, IntegralRunEvidence,
 };
-use crate::commissioning::outer::velocity::integral_plan::StageCAcquisition;
-use crate::commissioning::outer::velocity::integral_plan::{
-    STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, plan_velocity_integral_response,
-};
 use crate::commissioning::outer::velocity::integral_reproduction::{
     StageCAuthoritySummary, StageCCandidateSlot, StageCSlotState,
 };
-use crate::commissioning::outer::velocity::reproduction::{
-    BUILD_FEATURES, StageBDirectionalValidity,
-};
+use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
 };
@@ -55,21 +49,6 @@ fn request() -> VelocitySweepRequest {
     }
 }
 
-fn authority() -> StageCAuthority {
-    StageCAuthority {
-        channel: CHANNEL,
-        acquisition: StageCAcquisition::ReproducedStageB(stage_b_plan().digest()),
-        directional_memberships: [0x000e_0000; 2],
-        stage_b_joint_membership: 0x000e_0000,
-        joint_membership: 0x000e_0000,
-        directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
-        reduced_margin: false,
-        directional_pooled_intervals: [[15_000_000, 17_000_000], [-19_000_000, -17_000_000]],
-        confidence_q: 0,
-        band_position_q: 0,
-    }
-}
-
 fn stage_b_plan() -> crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan {
     plan_velocity_sweep(
         request(),
@@ -78,28 +57,6 @@ fn stage_b_plan() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .expect("valid Stage-B plan")
-}
-
-fn stage_c_plan() -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
-    let stage_b = stage_b_plan();
-    let request = request();
-    plan_velocity_integral_response(
-        authority(),
-        stage_b.execution_plan(stage_b.digest()),
-        OuterMotionBudget {
-            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-            requested_velocity_source: request.requested_velocity_source,
-            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-            max_duration_ms: request.max_duration_ms,
-        },
-        PWM_HZ,
-        COUNTS_PER_REV,
-    )
-    .expect("valid Stage-C plan")
 }
 
 /// Mint one genuine breakaway Stage-C plan through the real confirmation gate.
@@ -333,15 +290,7 @@ fn breakaway_non_complete_terminal_is_not_an_acceptance_terminal() {
 }
 
 fn retained_authority() -> StageCAuthoritySummary {
-    let plan = stage_c_plan();
-    StageCAuthoritySummary::from_plan(
-        CHANNEL,
-        BUILD_FEATURES,
-        STAGE_C_EVIDENCE_SCHEMA_REVISION,
-        authority().acquisition,
-        plan.execution_plan(),
-        plan.authority,
-    )
+    breakaway_authority_summary(&breakaway_stage_c_plan())
 }
 
 fn sufficient_evidence(offset: i32) -> IntegralRunEvidence {
@@ -380,7 +329,7 @@ fn terminal(
     outcome: VelocityIntegralOutcome,
     evidence: IntegralRunEvidence,
 ) -> VelocityIntegralTerminal {
-    let plan = stage_c_plan();
+    let plan = breakaway_stage_c_plan();
     VelocityIntegralTerminal {
         run_sequence: 9,
         evidence_sequence: 57,
@@ -457,7 +406,7 @@ fn retained_authority_regenerates_the_exact_stage_c_plan_before_motion() {
         .expect("matching retained plan")
         .expect("nonempty Stage-C slot");
 
-    assert_eq!(preflight.plan, stage_c_plan());
+    assert_eq!(preflight.plan, breakaway_stage_c_plan());
     assert_eq!(preflight.identity, retained_authority().identity);
     assert_eq!(preflight.run_sequence, 7);
     assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
@@ -790,7 +739,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
     use crate::commissioning::types::StepResult;
 
-    let plan = stage_c_plan();
+    let plan = breakaway_stage_c_plan();
     let expected_authority = StageCAuthoritySummary::from_plan(
         CHANNEL,
         BUILD_FEATURES,
@@ -852,7 +801,7 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
     use crate::config::TmcConfig;
     use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
 
-    let plan = stage_c_plan();
+    let plan = breakaway_stage_c_plan();
     let expected_authority = retained_authority();
     let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
     runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(

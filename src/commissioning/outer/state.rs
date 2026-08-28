@@ -479,7 +479,7 @@ mod tests {
             usable_torque_limit: 2_534,
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
-            acceptance_source: AcceptanceSource::ReproducedStageB,
+            acceptance_source: AcceptanceSource::NonBreakaway,
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
             recovery_lower_rate_q: [13_217_792, 12_827_648],

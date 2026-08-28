@@ -247,11 +247,9 @@ impl AcceptanceMatrixPlan {
             },
             // The fixed-I acceptance matrix tracks amplitude sufficiency, not a
             // breakaway target terminus; `acquisition_kind` already
-            // distinguishes it from every `ResponseLadder` plan, so any
-            // non-terminus-recording source is correct here. `ReproducedStageB`
-            // is reused rather than adding another variant for a plan family
-            // `record_integral_target_if_reached` never observes.
-            acceptance_source: AcceptanceSource::ReproducedStageB,
+            // distinguishes it from every `ResponseLadder` plan, so the
+            // non-terminus-recording source is correct here.
+            acceptance_source: AcceptanceSource::NonBreakaway,
             matrix_targets_rpm: self.target_rpm,
             selected_response_intervals_q: [
                 [identity_low as i32, identity_high as i32],

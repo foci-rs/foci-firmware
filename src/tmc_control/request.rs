@@ -1784,6 +1784,69 @@ mod tests {
         }
     }
 
+    /// Mint one genuine breakaway acquisition through the real confirmation
+    /// gate. The `ConfirmedAcquisitionDigest` token cannot be fabricated, so
+    /// this walks the same `plan_band_confirmation` -> `evaluate_band_confirmation`
+    /// -> `bind_breakaway_stage_c_authority` chain a live campaign uses.
+    fn breakaway_acquisition_for_test() -> StageCAcquisition {
+        use crate::autotune::velocity_measurement::VelocityDirection;
+        use crate::commissioning::outer::velocity::band_confirmation::{
+            ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+            plan_band_confirmation,
+        };
+        use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
+        use crate::commissioning::outer::velocity::sweep_consensus::{
+            CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+        };
+        use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+        use foci_tmc4671::pid::PidPGain;
+
+        let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+            .expect("valid confirmation plan");
+
+        let consensus = || DirectionalConsensus {
+            classification: DirectionalConsensusClass::EligibleConsensus,
+            components: [[0, 0]; 2],
+            component_count: 1,
+            collected_mask: 0b1111,
+            eligible_mask: 0b1111,
+            included_mask: 0b1111,
+        };
+        let mean_rate_q: i64 = 750_000;
+        let variance_of_mean_q2: u128 = 58_752_225;
+        let target_rate_q: i64 = 1_000_000;
+        let forward = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Forward,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let reverse = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q: -mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Reverse,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+            .expect("accepted confirmation");
+        let token = bind_breakaway_stage_c_authority(
+            confirmation_plan.plan_digest,
+            confirmation_plan,
+            Ok(acceptance),
+        )
+        .expect("bound breakaway authority");
+        StageCAcquisition::ConfirmedBreakaway(token)
+    }
+
     fn retained_stage_c_authority()
     -> crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary {
         use crate::commissioning::outer::velocity::integral_reproduction::{
@@ -1797,7 +1860,7 @@ mod tests {
                 schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
                 plan_digest: 2,
             },
-            acquisition: StageCAcquisition::ReproducedStageB(3),
+            acquisition: breakaway_acquisition_for_test(),
             final_p: 724,
             directional_memberships: [0x001c_0000; 2],
             stage_b_joint_membership: 0x001c_0000,
@@ -2769,42 +2832,91 @@ mod tests {
         );
     }
 
-    /// Build the exact Stage-C plan a resume of `velocity_sweep_request` reproduces.
+    /// Build the exact breakaway-sourced Stage-C plan a resume of
+    /// `velocity_sweep_request` reproduces. Mints its token through the real
+    /// confirmation gate, mirroring `stage_c_tests::breakaway_stage_c_plan`.
     fn resumable_stage_c_plan()
     -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+        use crate::autotune::velocity_measurement::VelocityDirection;
         use crate::commissioning::outer::OuterMotionBudget;
-        use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
-        use crate::commissioning::outer::velocity::integral_plan::{
-            StageCAuthority, plan_velocity_integral_response,
+        use crate::commissioning::outer::velocity::band_confirmation::{
+            ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+            plan_band_confirmation,
         };
-        use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
-        use crate::commissioning::outer::velocity::sweep_plan::plan_velocity_sweep;
+        use crate::commissioning::outer::velocity::integral_plan::{
+            AcquisitionContext, bind_breakaway_stage_c_authority,
+            plan_breakaway_velocity_integral_response,
+        };
+        use crate::commissioning::outer::velocity::sweep_consensus::{
+            CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+        };
+        use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+        use foci_tmc4671::pid::PidPGain;
 
         let request = velocity_sweep_request();
-        let stage_b = plan_velocity_sweep(
-            request,
-            4_000,
-            2_816,
-            VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
+        let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+            .expect("valid confirmation plan");
+
+        let consensus = || DirectionalConsensus {
+            classification: DirectionalConsensusClass::EligibleConsensus,
+            components: [[0, 0]; 2],
+            component_count: 1,
+            collected_mask: 0b1111,
+            eligible_mask: 0b1111,
+            included_mask: 0b1111,
+        };
+        let mean_rate_q: i64 = 750_000;
+        let variance_of_mean_q2: u128 = 58_752_225;
+        let target_rate_q: i64 = 1_000_000;
+        let forward = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Forward,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let reverse = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q: -mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Reverse,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+            .expect("accepted confirmation");
+        let intervals = acceptance.held_out_response_intervals_q;
+        let token = bind_breakaway_stage_c_authority(
+            confirmation_plan.plan_digest,
+            confirmation_plan,
+            Ok(acceptance),
         )
-        .expect("valid Stage-B plan");
-        plan_velocity_integral_response(
-            StageCAuthority {
-                channel: 0,
-                acquisition: StageCAcquisition::ReproducedStageB(stage_b.digest()),
-                directional_memberships: [0x000e_0000; 2],
-                stage_b_joint_membership: 0x000e_0000,
-                joint_membership: 0x000e_0000,
-                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
-                reduced_margin: false,
-                directional_pooled_intervals: [
-                    [15_000_000, 17_000_000],
-                    [-19_000_000, -17_000_000],
-                ],
-                confidence_q: 0,
-                band_position_q: 0,
-            },
-            stage_b.execution_plan(stage_b.digest()),
+        .expect("bound breakaway authority");
+
+        let context = AcquisitionContext {
+            planned_velocity_mrev_s: request.requested_velocity_mrev_s,
+            target_velocity_rpm: 176,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+            limit_evidence_capability:
+                crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+            channel: 0,
+            plan_time_pwm_hz: 25_000,
+            plan_time_encoder_counts_per_rev: 4_000,
+        };
+        plan_breakaway_velocity_integral_response(
+            token,
+            confirmation_plan,
+            context,
+            intervals,
+            acceptance.confidence_q,
+            acceptance.band_position_q,
             OuterMotionBudget {
                 requested_velocity_mrev_s: request.requested_velocity_mrev_s,
                 machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,

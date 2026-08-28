@@ -1,19 +1,12 @@
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
+use super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentObserver,
     VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, classify_phase_evidence,
     derive_probe_limit,
 };
-use super::integral_plan::StageCAcquisition;
-use super::integral_plan::{
-    STAGE_C_EVIDENCE_SCHEMA_REVISION, StageCAuthority, plan_velocity_integral_response,
-};
-use super::reproduction::STAGE_B_EVIDENCE_SCHEMA_REVISION;
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
-use super::{
-    VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT, VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
-};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
 use crate::commissioning::outer::OuterMotionBudget;
 use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
@@ -135,75 +128,12 @@ fn velocity_current_guard_contract() {
     assert_eq!(polled_quantized.contact, VelocityCurrentContact::None);
     assert!(polled_quantized.moving_clip_uncertain());
 
-    let request = VelocitySweepRequest {
-        requested_velocity_mrev_s: 6_666,
-        machine_velocity_ceiling_mrev_s: 10_000,
-        requested_velocity_source: RequestedVelocitySource::Defaulted,
-        max_stroke_travel_mrev: 2_500,
-        settle_travel_reserve_mrev: 250,
-        negative_position_headroom_mrev: 7_025,
-        positive_position_headroom_mrev: 7_025,
-        max_duration_ms: 3_000,
-    };
-    let stage_b = plan_velocity_sweep(
-        request,
-        4_000,
-        2_816,
-        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG,
-    )
-    .unwrap();
-    assert_eq!(STAGE_B_EVIDENCE_SCHEMA_REVISION, 8);
-    assert_eq!(
-        stage_b.limit_evidence_capability,
-        VelocityLimitEvidenceCapability::LatchedFlag
-    );
-    assert_eq!(
-        stage_b
-            .execution_plan(stage_b.digest())
-            .limit_evidence_capability,
-        VelocityLimitEvidenceCapability::LatchedFlag
-    );
-    let best_effort_stage_b = plan_velocity_sweep(
-        request,
-        4_000,
-        2_816,
-        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-    assert_ne!(stage_b.digest(), best_effort_stage_b.digest());
-
-    let stage_c = plan_velocity_integral_response(
-        StageCAuthority {
-            channel: 0,
-            acquisition: StageCAcquisition::ReproducedStageB(stage_b.digest()),
-            directional_memberships: [0x001c_0000, 0x001c_0000],
-            stage_b_joint_membership: 0x001c_0000,
-            joint_membership: 0x001c_0000,
-            directional_validity: [
-                crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
-                2
-            ],
-            reduced_margin: false,
-            directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
-            confidence_q: 0,
-            band_position_q: 0,
-        },
-        stage_b.execution_plan(stage_b.digest()),
-        OuterMotionBudget {
-            requested_velocity_mrev_s: request.requested_velocity_mrev_s,
-            machine_velocity_ceiling_mrev_s: request.machine_velocity_ceiling_mrev_s,
-            requested_velocity_source: request.requested_velocity_source,
-            max_stroke_travel_mrev: request.max_stroke_travel_mrev,
-            settle_travel_reserve_mrev: request.settle_travel_reserve_mrev,
-            negative_position_headroom_mrev: request.negative_position_headroom_mrev,
-            positive_position_headroom_mrev: request.positive_position_headroom_mrev,
-            max_duration_ms: request.max_duration_ms,
-        },
-        25_000,
-        4_000,
-    )
-    .unwrap();
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 17);
+    // The breakaway campaign measures `limit_evidence_capability` from the
+    // live current observer's clamp limit rather than deriving it from a
+    // Stage-B sweep (a breakaway campaign has no Stage-B phase), so this
+    // checks the same propagation property -- the plan and its digest track
+    // the capability the acquisition context carries -- through that path.
+    let stage_c = breakaway_stage_c_plan(VelocityLimitEvidenceCapability::LatchedFlag);
     assert_eq!(
         stage_c.limit_evidence_capability,
         VelocityLimitEvidenceCapability::LatchedFlag
@@ -212,10 +142,111 @@ fn velocity_current_guard_contract() {
         stage_c.execution_plan().limit_evidence_capability,
         VelocityLimitEvidenceCapability::LatchedFlag
     );
-    let mut best_effort_stage_c = stage_c;
-    best_effort_stage_c.limit_evidence_capability =
-        VelocityLimitEvidenceCapability::BestEffortPolling;
+    let best_effort_stage_c =
+        breakaway_stage_c_plan(VelocityLimitEvidenceCapability::BestEffortPolling);
+    assert_eq!(
+        best_effort_stage_c.limit_evidence_capability,
+        VelocityLimitEvidenceCapability::BestEffortPolling
+    );
     assert_ne!(stage_c.digest(), best_effort_stage_c.digest());
+}
+
+/// Mint one genuine breakaway Stage-C plan through the real confirmation
+/// gate, varying only `limit_evidence_capability`.
+fn breakaway_stage_c_plan(
+    limit_evidence_capability: VelocityLimitEvidenceCapability,
+) -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
+    use crate::autotune::velocity_measurement::VelocityDirection;
+    use crate::commissioning::outer::velocity::band_confirmation::{
+        ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+        plan_band_confirmation,
+    };
+    use crate::commissioning::outer::velocity::integral_plan::{
+        AcquisitionContext, bind_breakaway_stage_c_authority,
+        plan_breakaway_velocity_integral_response,
+    };
+    use crate::commissioning::outer::velocity::sweep_consensus::{
+        CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+    };
+    use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+    use foci_tmc4671::pid::PidPGain;
+
+    let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+        .expect("valid confirmation plan");
+
+    let consensus = || DirectionalConsensus {
+        classification: DirectionalConsensusClass::EligibleConsensus,
+        components: [[0, 0]; 2],
+        component_count: 1,
+        collected_mask: 0b1111,
+        eligible_mask: 0b1111,
+        included_mask: 0b1111,
+    };
+    let mean_rate_q: i64 = 750_000;
+    let variance_of_mean_q2: u128 = 58_752_225;
+    let target_rate_q: i64 = 1_000_000;
+    let forward = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Forward,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let reverse = ConfirmationDirectionalInput {
+        consensus: consensus(),
+        classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        observations: [Some(DiscoveryObservationAtom {
+            mean_rate_q: -mean_rate_q,
+            variance_of_mean_q2,
+            target_rate_q,
+            direction: VelocityDirection::Reverse,
+        }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+    };
+    let acceptance =
+        evaluate_band_confirmation(candidate_p, forward, reverse).expect("accepted confirmation");
+    let intervals = acceptance.held_out_response_intervals_q;
+    let token = bind_breakaway_stage_c_authority(
+        confirmation_plan.plan_digest,
+        confirmation_plan,
+        Ok(acceptance),
+    )
+    .expect("bound breakaway authority");
+
+    let context = AcquisitionContext {
+        planned_velocity_mrev_s: 2_929,
+        target_velocity_rpm: 176,
+        hard_torque_limit: 2_816,
+        usable_torque_limit: 2_534,
+        limit_evidence_capability,
+        channel: 0,
+        plan_time_pwm_hz: 25_000,
+        plan_time_encoder_counts_per_rev: 4_000,
+    };
+    plan_breakaway_velocity_integral_response(
+        token,
+        confirmation_plan,
+        context,
+        intervals,
+        acceptance.confidence_q,
+        acceptance.band_position_q,
+        OuterMotionBudget {
+            requested_velocity_mrev_s: 6_666,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source: RequestedVelocitySource::Defaulted,
+            max_stroke_travel_mrev: 2_500,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 7_025,
+            positive_position_headroom_mrev: 7_025,
+            max_duration_ms: 3_000,
+        },
+        25_000,
+        4_000,
+    )
+    .unwrap()
 }
 
 #[test]

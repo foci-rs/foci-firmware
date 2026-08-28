@@ -360,10 +360,7 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
     );
     // The fixed-I acceptance matrix never records a target terminus; it is
     // distinguished from a response ladder by `acquisition_kind` alone.
-    assert_eq!(
-        execution.acceptance_source,
-        AcceptanceSource::ReproducedStageB
-    );
+    assert_eq!(execution.acceptance_source, AcceptanceSource::NonBreakaway);
     assert!(!execution.records_target_terminus());
     assert_eq!(execution.i_start, 1);
     assert_eq!(execution.matrix_targets_rpm, [16, 33, 66, 132, 263]);

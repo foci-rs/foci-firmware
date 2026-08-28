@@ -3,7 +3,6 @@
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::integral_plan::{
     StageCFailedAdmission, VelocityIntegralPlan, VelocityIntegralPlanError,
-    plan_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCAuthoritySummary, StageCCandidateSlot,
@@ -11,9 +10,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     StageCReproductionDelta, StageCRestBoundaryReference,
 };
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
-use crate::commissioning::outer::velocity::sweep_plan::{
-    VelocitySweepRequest, plan_velocity_sweep,
-};
+use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 use crate::commissioning::types::{
     StageCCause, VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
     VelocityIntegralTerminal,
@@ -104,8 +101,6 @@ pub enum StageCPreflightRejection {
     RejectedPlanMismatch {
         /// Exact retained Stage-C identity.
         retained: StageCPlanIdentity,
-        /// Current Stage-B plan digest, which prevented exact reconstruction.
-        requested_stage_b_plan_digest: u64,
     },
     /// The reproduced operating component contains no Stage-C-safe test point.
     NoTransitionCapableOperatingPoint(StageCFailedAdmission),
@@ -248,10 +243,9 @@ pub struct StageCPreflightConfig {
 
 /// Admit one resume against retained breakaway authority.
 ///
-/// Split out because it shares no reconstruction with the reproduced-Stage-B
-/// path: a breakaway campaign has no Stage-B phase, so the plan is rebuilt from
-/// the retained authority alone. Correspondingly there is no requested Stage-B
-/// digest to report on a mismatch, and the rejection carries zero.
+/// A breakaway campaign has no Stage-B phase, so the plan is rebuilt from the
+/// retained authority alone rather than by recomputing and comparing a Stage-B
+/// sweep plan.
 ///
 /// The torque limits and evidence capability come from the retained authority
 /// because the campaign measured its usable limit from the current observer, so
@@ -317,7 +311,6 @@ fn preflight_retained_breakaway(
     if stage_c_candidate.preflight(identity).is_some() {
         return Err(StageCPreflightRejection::RejectedPlanMismatch {
             retained: authority.identity,
-            requested_stage_b_plan_digest: 0,
         });
     }
     Ok(Some(StageCPreflight {
@@ -342,7 +335,6 @@ pub fn preflight_stage_c_request(
     if authority.identity.channel != config.channel {
         return Err(StageCPreflightRejection::RejectedPlanMismatch {
             retained: authority.identity,
-            requested_stage_b_plan_digest: 0,
         });
     }
     let motion_budget = OuterMotionBudget {
@@ -355,72 +347,20 @@ pub fn preflight_stage_c_request(
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
     };
-    // A breakaway campaign has no Stage-B phase, so there is no sweep plan to
-    // recompute and compare. Rebuild its Stage-C plan from the retained
-    // authority instead and let the plan-digest check below carry the whole
-    // burden of proving the request still reproduces what was retained.
-    if let Some(token) = authority.acquisition.confirmed_breakaway() {
-        return preflight_retained_breakaway(
-            token,
-            authority,
-            motion_budget,
-            config,
-            run_sequence,
-            stage_c_candidate,
-        );
-    }
-    let stage_b_plan = plan_velocity_sweep(
-        request,
-        config.encoder_counts_per_rev,
-        config.torque_limit,
-        config.limit_evidence_capability,
-    )
-    .map_err(|_| StageCPreflightRejection::InvalidPlan)?;
-    let stage_b_plan_digest = stage_b_plan.digest();
-    // Only a reproduced Stage-B authority names a sweep plan that can be
-    // recomputed from the request. A breakaway confirmation names none, so it
-    // is refused here by the type instead of by a comparison across namespaces
-    // that could never have succeeded.
-    if authority.acquisition.reproduced_stage_b() != Some(stage_b_plan_digest) {
-        return Err(StageCPreflightRejection::RejectedPlanMismatch {
-            retained: authority.identity,
-            requested_stage_b_plan_digest: stage_b_plan_digest,
-        });
-    }
-    let stage_b_execution = stage_b_plan.execution_plan(stage_b_plan_digest);
-    let plan_result = plan_velocity_integral_response(
-        authority.stage_c_authority(),
-        stage_b_execution,
+    // A breakaway campaign has no Stage-B phase: every retained authority is a
+    // breakaway confirmation, so the plan is always rebuilt from retained
+    // authority rather than by recomputing and comparing a Stage-B sweep plan.
+    let Some(token) = authority.acquisition.confirmed_breakaway() else {
+        return Err(StageCPreflightRejection::InvalidPlan);
+    };
+    preflight_retained_breakaway(
+        token,
+        authority,
         motion_budget,
-        config.pwm_hz,
-        config.encoder_counts_per_rev,
-    );
-    let plan = match plan_result {
-        Ok(plan) => plan,
-        Err(VelocityIntegralPlanError::NoTransitionCapableOperatingPoint(failure)) => {
-            return Err(StageCPreflightRejection::NoTransitionCapableOperatingPoint(
-                failure,
-            ));
-        }
-        Err(_) => return Err(StageCPreflightRejection::InvalidPlan),
-    };
-    let identity = StageCPlanIdentity {
-        channel: config.channel,
-        build_features: BUILD_FEATURES,
-        schema_revision: plan.schema_revision,
-        plan_digest: plan.digest(),
-    };
-    if stage_c_candidate.preflight(identity).is_some() {
-        return Err(StageCPreflightRejection::RejectedPlanMismatch {
-            retained: authority.identity,
-            requested_stage_b_plan_digest: stage_b_plan_digest,
-        });
-    }
-    Ok(Some(StageCPreflight {
-        plan,
-        identity,
+        config,
         run_sequence,
-    }))
+        stage_c_candidate,
+    )
 }
 
 /// Apply one Stage-C terminal to the authoritative RAM-only lifecycle.

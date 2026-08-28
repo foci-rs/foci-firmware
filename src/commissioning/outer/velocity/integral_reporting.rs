@@ -614,7 +614,7 @@ pub(crate) struct StageCPromotionDiagnostic {
     pub channel: u8,
     /// Terminal outcome code (`outcome_code`) at the seam.
     pub outcome: u8,
-    /// Live plan acceptance source: 1=Breakaway, 2=ReproducedStageB, 0=phase not resident.
+    /// Live plan acceptance source: 1=Breakaway, 2=NonBreakaway, 0=phase not resident.
     pub acceptance_source_code: u8,
     /// The velocity-integral phase was still resident when the plan was read.
     pub phase_live: bool,
@@ -828,6 +828,67 @@ mod tests {
     use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
     use foci_tmc4671::pid::PidPGain;
 
+    /// Mint one genuine breakaway acquisition through the real confirmation
+    /// gate. The `ConfirmedAcquisitionDigest` token cannot be fabricated, so
+    /// this walks the same `plan_band_confirmation` ->
+    /// `evaluate_band_confirmation` -> `bind_breakaway_stage_c_authority`
+    /// chain a live campaign uses.
+    fn breakaway_acquisition_for_test() -> StageCAcquisition {
+        use crate::commissioning::outer::velocity::band_confirmation::{
+            ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
+            plan_band_confirmation,
+        };
+        use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
+        use crate::commissioning::outer::velocity::sweep_consensus::{
+            CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
+        };
+
+        let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+            .expect("valid confirmation plan");
+
+        let consensus = || DirectionalConsensus {
+            classification: DirectionalConsensusClass::EligibleConsensus,
+            components: [[0, 0]; 2],
+            component_count: 1,
+            collected_mask: 0b1111,
+            eligible_mask: 0b1111,
+            included_mask: 0b1111,
+        };
+        let mean_rate_q: i64 = 750_000;
+        let variance_of_mean_q2: u128 = 58_752_225;
+        let target_rate_q: i64 = 1_000_000;
+        let forward = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Forward,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let reverse = ConfirmationDirectionalInput {
+            consensus: consensus(),
+            classes: [VelocityObservationClass::Eligible; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+            observations: [Some(DiscoveryObservationAtom {
+                mean_rate_q: -mean_rate_q,
+                variance_of_mean_q2,
+                target_rate_q,
+                direction: VelocityDirection::Reverse,
+            }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
+        };
+        let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+            .expect("accepted confirmation");
+        let token = bind_breakaway_stage_c_authority(
+            confirmation_plan.plan_digest,
+            confirmation_plan,
+            Ok(acceptance),
+        )
+        .expect("bound breakaway authority");
+        StageCAcquisition::ConfirmedBreakaway(token)
+    }
+
     /// Byte offset of `drift_ratio_ppm` in an encoded Stage-C observation record.
     ///
     /// Counted from the fixed prefix `encode_observation` pushes ahead of the
@@ -913,7 +974,7 @@ mod tests {
             schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
             authority: super::super::integral_plan::StageCAuthority {
                 channel: 0,
-                acquisition: StageCAcquisition::ReproducedStageB(0xfedc_ba98_7654_3210),
+                acquisition: breakaway_acquisition_for_test(),
                 directional_memberships: [0x0038_0000, 0x0038_0000],
                 stage_b_joint_membership: 0x0038_0000,
                 joint_membership: 0x0018_0000,
@@ -1084,7 +1145,7 @@ mod tests {
             schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
             authority: super::super::integral_plan::StageCAuthority {
                 channel: 0,
-                acquisition: StageCAcquisition::ReproducedStageB(0xfedc_ba98_7654_3210),
+                acquisition: breakaway_acquisition_for_test(),
                 directional_memberships: [0x0038_0000, 0x0038_0000],
                 stage_b_joint_membership: 0x0038_0000,
                 joint_membership: 0x0018_0000,
@@ -1212,7 +1273,7 @@ mod tests {
                 super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
             acquisition_kind:
                 super::super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
-            acceptance_source: super::super::integral_plan::AcceptanceSource::ReproducedStageB,
+            acceptance_source: super::super::integral_plan::AcceptanceSource::NonBreakaway,
             matrix_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
             recovery_lower_rate_q: [0; 2],
