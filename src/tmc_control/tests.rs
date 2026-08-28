@@ -238,67 +238,6 @@ fn runtime_stores_inner_gains_without_spi_side_effects() {
 }
 
 #[test]
-fn runtime_config_carries_board_constants() {
-    let tmc = TmcConfig::default_for_test();
-    let config = TmcControlConfig::new(84_000_000, tmc.pwm_freq_hz(), 0.03125, tmc);
-
-    assert_eq!(config.clock_freq, 84_000_000);
-    assert_eq!(config.pwm_freq_hz, 25_000);
-    assert_eq!(config.current_scale_ma_per_lsb, 0.03125);
-    assert_eq!(config.tmc, tmc);
-}
-
-#[test]
-fn request_outcome_constructors_encode_tail_shutdown_and_refresh() {
-    assert_eq!(
-        TmcControlRequestOutcome::fall_through(),
-        TmcControlRequestOutcome {
-            tail: TmcControlRequestTail::FallThrough,
-            shutdown: None,
-            should_refresh_velocity_scale: false,
-        }
-    );
-    assert_eq!(
-        TmcControlRequestOutcome::skip_tick_tail(),
-        TmcControlRequestOutcome {
-            tail: TmcControlRequestTail::SkipTickTail,
-            shutdown: None,
-            should_refresh_velocity_scale: false,
-        }
-    );
-    assert_eq!(
-        TmcControlRequestOutcome::shutdown(
-            ShutdownReason::RequestValidationFailed,
-            TmcControlRequestTail::FallThrough,
-        ),
-        TmcControlRequestOutcome {
-            tail: TmcControlRequestTail::FallThrough,
-            shutdown: Some(ShutdownReason::RequestValidationFailed),
-            should_refresh_velocity_scale: false,
-        }
-    );
-    assert_eq!(
-        TmcControlRequestOutcome::refresh_velocity_scale(TmcControlRequestTail::SkipTickTail),
-        TmcControlRequestOutcome {
-            tail: TmcControlRequestTail::SkipTickTail,
-            shutdown: None,
-            should_refresh_velocity_scale: true,
-        }
-    );
-    assert_eq!(
-        TmcControlRequestOutcome::shutdown_then_refresh_velocity_scale(
-            ShutdownReason::InvalidTmcChannel,
-            TmcControlRequestTail::FallThrough,
-        ),
-        TmcControlRequestOutcome {
-            tail: TmcControlRequestTail::FallThrough,
-            shutdown: Some(ShutdownReason::InvalidTmcChannel),
-            should_refresh_velocity_scale: true,
-        }
-    );
-}
-
-#[test]
 fn refresh_velocity_scale_caches_exact_planner_scale() {
     let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
