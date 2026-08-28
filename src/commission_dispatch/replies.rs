@@ -5,9 +5,6 @@
 //! commissioning payloads to reply events so boards cannot drift by dropping
 //! fields locally.
 
-use crate::ankyra::velocity_sweep_encoding::{
-    encode_rate_values, upper_bound_i64, upper_bound_u128,
-};
 use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, PhaseId};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
@@ -78,18 +75,6 @@ macro_rules! __commission_reply_manifest {
                 fields: { oid: u8, method: u8, status: u8, requested_period_us: u16, valid_samples: u16, missed_samples: u16, max_consecutive_misses: u8, max_lateness_us: u32, max_interval_us: u32, max_poll_wall_us: u32, max_spi_wall_us: u32 },
             }
             entry {
-                name: foci_rung_origin_recovery_summary,
-                doc: "Emit one compact rung-origin recovery summary.",
-                reply: foci_firmware::ankyra::replies::FociRungOriginRecoverySummary,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, stage: u8, rung_index: u8, p_raw: u16, binding_source: u8, outcome: u8 },
-            }
-            entry {
-                name: foci_velocity_primitive_current_evidence,
-                doc: "Emit causal current-limit evidence for one velocity primitive.",
-                reply: foci_firmware::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, stage: u8, rung_index: u8, slot: u8, clamp_limit: u16, clamp_readback: u16, moving_pid_output_peak: u16, zero_pid_output_peak: u16, moving_status_flags: u32, zero_status_flags: u32, capability: u8, contact: u8 },
-            }
-            entry {
                 name: foci_commissioning_workflow_plan,
                 doc: "Emit the command-level workflow envelope.",
                 reply: foci_firmware::ankyra::replies::FociCommissioningWorkflowPlan,
@@ -138,100 +123,10 @@ macro_rules! __commission_reply_manifest {
                 fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, rung_index: u8, i_raw: u16, tau_us: u32 },
             }
             entry {
-                name: foci_velocity_integral_observation_core,
-                doc: "Emit Stage-C observation identity.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralObservationCore,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, rung_index: u8, slot: u8, i_raw: u16, direction: u8, classification: u8, initial_lead_in: u8, peak_torque_target_abs: u16 },
-            }
-            entry {
-                name: foci_velocity_integral_observation_rate,
-                doc: "Emit Stage-C observation rate evidence.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralObservationRate,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, settled_low: i32, settled_mean: i32, settled_high: i32, settled_shift: u8, deficit_low_q: i32, deficit_high_q: i32 },
-            }
-            entry {
-                name: foci_velocity_integral_observation_quality,
-                doc: "Emit Stage-C observation stationarity quality.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralObservationQuality,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, suffix_len: u16, level_or_exclusion: u8, selected_blocks: u32, slope_mantissa: i32, slope_shift: u8, slope_half_width_mantissa: u32, slope_half_width_shift: u8, lag_one_q: i32, lag_one_half_width_q: u32, residual_mantissa: u32, residual_shift: u8, tested_suffixes: u8 },
-            }
-            entry {
-                name: foci_velocity_integral_rung_core,
-                doc: "Emit one Stage-C directional rung verdict.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralRungCore,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, rung_index: u8, i_raw: u16, direction: u8, kind: u8, classification: u8, component_count: u8, usable_mask: u8, included_mask: u8, observation_classes: u16 },
-            }
-            entry {
-                name: foci_velocity_integral_rung_component,
-                doc: "Emit one exact Stage-C consensus component.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralRungComponent,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, rung_index: u8, direction: u8, component: u8, low_q: i32, high_q: i32 },
-            }
-            entry {
-                name: foci_velocity_integral_run_summary,
-                doc: "Emit Stage-C run sufficiency and membership.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralRunSummary,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, forward_eligible_mask: u32, reverse_eligible_mask: u32, opening_available_mask: u8, bookend_available_mask: u8, current_terminus_plus_one: u8, sufficient_direction_mask: u8 },
-            }
-            entry {
-                name: foci_velocity_integral_curve_interval,
-                doc: "Emit one exact Stage-C curve interval.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralCurveInterval,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, kind: u8, direction: u8, rung_index: u8, low_q: i32, high_q: i32 },
-            }
-            entry {
-                name: foci_velocity_integral_drift,
-                doc: "Emit one direction's opening-to-bookend drift.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralDrift,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, available: u8, opening_low_q: i32, opening_high_q: i32, closing_low_q: i32, closing_high_q: i32 },
-            }
-            entry {
-                name: foci_velocity_integral_stage_b_comparison,
-                doc: "Emit fresh-anchor comparison with retained Stage-B disturbance.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralStageBComparison,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, available: u8, stage_b_low_q16: i32, stage_b_high_q16: i32, expected_low_q: i32, expected_high_q: i32, opening_low_q: i32, opening_high_q: i32 },
-            }
-            entry {
-                name: foci_velocity_integral_reproduction_core,
-                doc: "Emit the Stage-C reproduction class.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionCore,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, outcome: u8, direction_mask: u8 },
-            }
-            entry {
-                name: foci_velocity_integral_reproduction_mask,
-                doc: "Emit one direction's Stage-C reproduction masks.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionMask,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, previous_mask: u32, current_mask: u32, shared_mask: u32, reproduced_mask: u32, divergent_mask: u32, previous_only_mask: u32, current_only_mask: u32 },
-            }
-            entry {
-                name: foci_velocity_integral_reproduction_interval,
-                doc: "Emit one reproduced or divergent Stage-C interval comparison.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionInterval,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, rung_index: u8, kind: u8, previous_low_q: i32, previous_high_q: i32, current_low_q: i32, current_high_q: i32, result_low_or_gap_q: i32, result_high_q: i32 },
-            }
-            entry {
-                name: foci_velocity_integral_reproduction_digest,
-                doc: "Emit exact Stage-C reproduction run digests.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralReproductionDigest,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, previous_digest_low: u32, previous_digest_high: u32, current_digest_low: u32, current_digest_high: u32 },
-            }
-            entry {
-                name: foci_velocity_integral_terminal_core,
-                doc: "Emit the Stage-C terminal class and completeness.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminalCore,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, outcome: u8, cause: u8, cause_namespace: u8, recovery_flags: u8, rest_boundary_rung_plus_one: u8, rest_boundary_slot_plus_one: u8, expected_observations: u16, emitted_observations: u16, expected_rungs: u16, emitted_rungs: u16 },
-            }
-            entry {
-                name: foci_velocity_integral_terminal_identity,
-                doc: "Emit exact Stage-C terminal identity.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminalIdentity,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, digest_low: u32, digest_high: u32 },
-            }
-            entry {
-                name: foci_velocity_integral_terminal_timing,
-                doc: "Emit Stage-C terminal timing.",
-                reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminalTiming,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, started_low: u32, started_high: u32, completed_low: u32, completed_high: u32 },
+                name: foci_velocity_integral_terminal,
+                doc: "Emit the single compact Stage-C terminal reply.",
+                reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminal<'_>,
+                fields: { oid: u8, payload: &[u8] },
             }
             entry {
                 name: foci_acceptance_matrix_plan,
@@ -496,7 +391,7 @@ pub fn emit_breakaway_probe_terminal<S: CommissionReplySink>(
 
 /// Emit the additive discovery plan before the first discovery stroke, split
 /// into its identity and geometry fragments.
-pub fn emit_additive_discovery_plan<S: CommissionReplySink>(
+pub fn emit_breakaway_discovery_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     report: crate::commissioning::types::AdditiveDiscoveryPlanned,
@@ -551,7 +446,7 @@ pub fn emit_breakaway_rung_zero_diagnostic<S: CommissionReplySink>(
 }
 
 /// Emit a discovery-campaign terminal.
-pub fn emit_additive_discovery_terminal<S: CommissionReplySink>(
+pub fn emit_breakaway_discovery_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     report: crate::commissioning::types::AdditiveDiscoveryTerminal,
@@ -575,7 +470,7 @@ pub fn emit_additive_discovery_terminal<S: CommissionReplySink>(
 
 /// Emit the immutable held-out confirmation plan before the first
 /// confirmation stroke.
-pub fn emit_band_confirmation_plan<S: CommissionReplySink>(
+pub fn emit_breakaway_confirmation_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     report: crate::commissioning::types::BandConfirmationPlanned,
@@ -600,7 +495,7 @@ pub fn emit_band_confirmation_plan<S: CommissionReplySink>(
 }
 
 /// Emit a confirmation-block terminal, split into its identity and mask fragments.
-pub fn emit_band_confirmation_terminal<S: CommissionReplySink>(
+pub fn emit_breakaway_confirmation_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     report: crate::commissioning::types::BandConfirmationTerminal,
@@ -683,7 +578,7 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
             planned,
             ceiling_source,
         } => {
-            emit_additive_discovery_plan(sink, oid, planned);
+            emit_breakaway_discovery_plan(sink, oid, planned);
             emit_breakaway_ceiling_source(sink, oid, ceiling_source);
         }
         // Per-observation raw evidence and per-rung nomination margins are
@@ -700,10 +595,10 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
             if let Some(diagnostic) = rung_zero {
                 emit_breakaway_rung_zero_diagnostic(sink, oid, diagnostic);
             }
-            emit_additive_discovery_terminal(sink, oid, terminal);
+            emit_breakaway_discovery_terminal(sink, oid, terminal);
         }
         BreakawayCampaignEvent::ConfirmationPlanned(report) => {
-            emit_band_confirmation_plan(sink, oid, report);
+            emit_breakaway_confirmation_plan(sink, oid, report);
         }
         // The per-stroke confirmation observations are detailed trace-only
         // evidence; the ordinary reply carries the terminal (with its
@@ -714,7 +609,7 @@ pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
             forward: _,
             reverse: _,
         } => {
-            emit_band_confirmation_terminal(sink, oid, terminal);
+            emit_breakaway_confirmation_terminal(sink, oid, terminal);
         }
         BreakawayCampaignEvent::CampaignTerminal(report) => {
             emit_breakaway_campaign_terminal(sink, oid, report);
@@ -936,494 +831,54 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
 
 /// Emit one Stage-C observation or rung group.
 pub fn emit_velocity_integral_event<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
+    _sink: &mut S,
+    _oid: u8,
     event: crate::commissioning::types::VelocityIntegralEvent,
 ) {
     match event {
         crate::commissioning::types::VelocityIntegralEvent::Planned(_) => {}
-        crate::commissioning::types::VelocityIntegralEvent::Observation(report) => {
-            emit_velocity_integral_observation(sink, oid, report);
-        }
-        crate::commissioning::types::VelocityIntegralEvent::Rung(report) => {
-            emit_velocity_integral_rung(sink, oid, report);
-        }
-        crate::commissioning::types::VelocityIntegralEvent::Recovery(report) => {
-            emit_rung_origin_recovery(sink, oid, report);
-        }
+        crate::commissioning::types::VelocityIntegralEvent::Observation(_) => {}
+        crate::commissioning::types::VelocityIntegralEvent::Rung(_) => {}
+        crate::commissioning::types::VelocityIntegralEvent::Recovery(_) => {}
         crate::commissioning::types::VelocityIntegralEvent::RecoveryRest(_) => {}
         crate::commissioning::types::VelocityIntegralEvent::RestSelection(_) => {}
         crate::commissioning::types::VelocityIntegralEvent::Current(_) => {}
     }
 }
 
-fn emit_velocity_integral_observation<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: crate::commissioning::types::VelocityIntegralObservation,
-) {
-    use crate::ankyra::replies::{
-        FociVelocityIntegralObservationCore, FociVelocityIntegralObservationQuality,
-        FociVelocityIntegralObservationRate,
-    };
-    use crate::autotune::velocity_measurement::StationarityResult;
-    use crate::commissioning::outer::velocity::integral_reporting::{
-        direction_code, integral_observation_class, observation_class_code,
-        stationarity_exclusion_code,
-    };
-
-    sink.foci_velocity_integral_observation_core(FociVelocityIntegralObservationCore {
-        oid,
-        run_sequence: report.run_sequence,
-        evidence_sequence: report.evidence_sequence,
-        fragment: 0,
-        plan_digest_low: report.plan_digest as u32,
-        plan_digest_high: (report.plan_digest >> 32) as u32,
-        rung_index: report.rung_index,
-        slot: report.slot,
-        i_raw: report.i_raw,
-        direction: direction_code(report.summary.direction),
-        classification: observation_class_code(integral_observation_class(report)),
-        initial_lead_in: u8::from(report.summary.initial_lead_in),
-        peak_torque_target_abs: report.summary.predicted_torque_target_abs,
-    });
-    let (rates, shift) = encode_rate_values([
-        report.summary.settled_rate_interval_q[0],
-        report.summary.settled_rate_mean_q,
-        report.summary.settled_rate_interval_q[1],
-        0,
-        0,
-    ]);
-    sink.foci_velocity_integral_observation_rate(FociVelocityIntegralObservationRate {
-        oid,
-        run_sequence: report.run_sequence,
-        evidence_sequence: report.evidence_sequence,
-        fragment: 1,
-        settled_low: rates[0],
-        settled_mean: rates[1],
-        settled_high: rates[2],
-        settled_shift: shift,
-        deficit_low_q: i32::try_from(report.summary.deficit_interval_q[0])
-            .expect("Stage-C evidence gate narrows deficit bounds before reporting"),
-        deficit_high_q: i32::try_from(report.summary.deficit_interval_q[1])
-            .expect("Stage-C evidence gate narrows deficit bounds before reporting"),
-    });
-    let quality = match report.stationarity {
-        StationarityResult::Usable(suffix) => {
-            let (slope_mantissa, slope_shift) = upper_bound_i64(suffix.slope_q);
-            let (slope_half_width_mantissa, slope_half_width_shift) =
-                upper_bound_u128(u128::from(suffix.slope_half_width_q));
-            let (residual_mantissa, residual_shift) =
-                upper_bound_u128(suffix.residual_magnitude_q2);
-            FociVelocityIntegralObservationQuality {
-                oid,
-                run_sequence: report.run_sequence,
-                evidence_sequence: report.evidence_sequence,
-                fragment: 2,
-                suffix_len: suffix.suffix_len,
-                level_or_exclusion: suffix.selection.level,
-                selected_blocks: suffix.selection.block_count,
-                slope_mantissa,
-                slope_shift,
-                slope_half_width_mantissa,
-                slope_half_width_shift,
-                lag_one_q: suffix.lag_one_q,
-                lag_one_half_width_q: suffix.lag_one_half_width_q,
-                residual_mantissa,
-                residual_shift,
-                tested_suffixes: suffix.tested_suffixes,
-            }
-        }
-        StationarityResult::Excluded(exclusion) => FociVelocityIntegralObservationQuality {
-            oid,
-            run_sequence: report.run_sequence,
-            evidence_sequence: report.evidence_sequence,
-            fragment: 2,
-            suffix_len: 0,
-            level_or_exclusion: 0x80 | stationarity_exclusion_code(exclusion),
-            selected_blocks: 0,
-            slope_mantissa: 0,
-            slope_shift: 0,
-            slope_half_width_mantissa: 0,
-            slope_half_width_shift: 0,
-            lag_one_q: 0,
-            lag_one_half_width_q: 0,
-            residual_mantissa: 0,
-            residual_shift: 0,
-            tested_suffixes: 0,
-        },
-    };
-    sink.foci_velocity_integral_observation_quality(quality);
-}
-
-fn emit_velocity_integral_rung<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    report: crate::commissioning::types::VelocityIntegralRungReport,
-) {
-    use crate::commissioning::outer::velocity::integral_reporting::{
-        direction_code, observation_class_code, rung_class_code, rung_kind_code,
-    };
-
-    for direction in report.directions {
-        let packed_classes = direction.observation_classes.iter().enumerate().fold(
-            0_u16,
-            |packed, (index, class)| {
-                packed | (u16::from(observation_class_code(*class)) << (index * 3))
-            },
-        );
-        sink.foci_velocity_integral_rung_core(
-            crate::ankyra::replies::FociVelocityIntegralRungCore {
-                oid,
-                run_sequence: report.run_sequence,
-                evidence_sequence: report.evidence_sequence,
-                fragment: direction_code(direction.direction),
-                rung_index: report.rung_index,
-                i_raw: report.i_raw,
-                direction: direction_code(direction.direction),
-                kind: rung_kind_code(direction.kind),
-                classification: rung_class_code(direction.classification),
-                component_count: direction.component_count,
-                usable_mask: direction.usable_mask,
-                included_mask: direction.included_mask,
-                observation_classes: packed_classes,
-            },
-        );
-        for component in 0..usize::from(direction.component_count) {
-            let interval = direction.components[component];
-            sink.foci_velocity_integral_rung_component(
-                crate::ankyra::replies::FociVelocityIntegralRungComponent {
-                    oid,
-                    run_sequence: report.run_sequence,
-                    evidence_sequence: report.evidence_sequence,
-                    rung_index: report.rung_index,
-                    direction: direction_code(direction.direction),
-                    component: component as u8,
-                    low_q: interval.low_q,
-                    high_q: interval.high_q,
-                },
-            );
-        }
-    }
-}
-
-/// Emit Stage-C derived evidence, optional reproduction, and terminal fragments.
+/// Emit the single compact Stage-C terminal reply.
+///
+/// Carries only the fields the live host reads for status text and
+/// orchestration: outcome, cause, rest-rejection, eligibility/bookend
+/// masks, and the reproduced/divergent mask summary. The detailed
+/// observation/rung/curve/recovery evidence rides the canonical trace
+/// only, decoded independently by `foci-trace` (see
+/// `encode_velocity_integral_terminal` for that record).
 pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     terminal: crate::commissioning::types::VelocityIntegralTerminal,
     reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
-    authority: Option<
+    _authority: Option<
         crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
     >,
 ) {
-    use crate::ankyra::replies::{
-        FociVelocityIntegralCurveInterval, FociVelocityIntegralDrift,
-        FociVelocityIntegralReproductionCore, FociVelocityIntegralReproductionDigest,
-        FociVelocityIntegralReproductionInterval, FociVelocityIntegralReproductionMask,
-        FociVelocityIntegralRunSummary, FociVelocityIntegralStageBComparison,
-    };
-    use crate::commissioning::outer::velocity::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS;
-    use crate::commissioning::outer::velocity::integral_reporting::stage_b_deficit_bounds_q;
-    use crate::commissioning::outer::velocity::integral_reproduction::{
-        closed_intersection, delta_e, signed_divergence_gap,
+    use crate::commissioning::outer::velocity::integral_reporting::{
+        VelocityIntegralTerminalReproductionSummary, encode_velocity_integral_terminal_reply,
     };
 
-    let sequence = terminal.evidence_sequence;
-    let sufficient_direction_mask = terminal
-        .evidence
-        .eligible_masks
-        .iter()
-        .enumerate()
-        .fold(0_u8, |mask, (direction, members)| {
-            mask | (u8::from(members.count_ones() >= 3) << direction)
+    let reproduction_summary =
+        reproduction.map(|reproduction| VelocityIntegralTerminalReproductionSummary {
+            reproduced_masks: reproduction.delta.reproduced_masks,
+            divergent_masks: reproduction.delta.divergent_masks,
         });
-    let bookend_available_mask = terminal
-        .evidence
-        .bookend
-        .iter()
-        .enumerate()
-        .fold(0_u8, |mask, (direction, interval)| {
-            mask | (u8::from(interval.is_some()) << direction)
-        });
-    let opening_available_mask =
-        terminal
-            .evidence
-            .opening
-            .iter()
-            .enumerate()
-            .fold(0_u8, |mask, (direction, interval)| {
-                mask
-                    | (u8::from(
-                        *interval
-                            != crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval::EMPTY,
-                    ) << direction)
-            });
-    sink.foci_velocity_integral_run_summary(FociVelocityIntegralRunSummary {
-        oid,
-        run_sequence: terminal.run_sequence,
-        evidence_sequence: sequence,
-        fragment: 0,
-        forward_eligible_mask: terminal.evidence.eligible_masks[0],
-        reverse_eligible_mask: terminal.evidence.eligible_masks[1],
-        opening_available_mask,
-        bookend_available_mask,
-        current_terminus_plus_one: terminal
-            .evidence
-            .current_terminus
-            .map_or(0, |rung| rung + 1),
-        sufficient_direction_mask,
-    });
-    for direction in 0..2 {
-        let opening = terminal.evidence.opening[direction];
-        sink.foci_velocity_integral_curve_interval(FociVelocityIntegralCurveInterval {
-            oid,
-            run_sequence: terminal.run_sequence,
-            evidence_sequence: sequence,
-            kind: 0,
-            direction: direction as u8,
-            rung_index: 0,
-            low_q: opening.low_q,
-            high_q: opening.high_q,
-        });
-        for rung in 0..STAGE_C_MAX_POSITIVE_RUNGS {
-            if terminal.evidence.eligible_masks[direction] & (1_u32 << rung) == 0 {
-                continue;
-            }
-            let interval = terminal.evidence.positive[direction][rung];
-            sink.foci_velocity_integral_curve_interval(FociVelocityIntegralCurveInterval {
-                oid,
-                run_sequence: terminal.run_sequence,
-                evidence_sequence: sequence,
-                kind: 1,
-                direction: direction as u8,
-                rung_index: rung as u8,
-                low_q: interval.low_q,
-                high_q: interval.high_q,
-            });
-        }
-        let bookend = terminal.evidence.bookend[direction];
-        if let Some(interval) = bookend {
-            sink.foci_velocity_integral_curve_interval(FociVelocityIntegralCurveInterval {
-                oid,
-                run_sequence: terminal.run_sequence,
-                evidence_sequence: sequence,
-                kind: 2,
-                direction: direction as u8,
-                rung_index: 0,
-                low_q: interval.low_q,
-                high_q: interval.high_q,
-            });
-        }
-        sink.foci_velocity_integral_drift(FociVelocityIntegralDrift {
-            oid,
-            run_sequence: terminal.run_sequence,
-            evidence_sequence: sequence,
-            direction: direction as u8,
-            available: u8::from(bookend.is_some()),
-            opening_low_q: opening.low_q,
-            opening_high_q: opening.high_q,
-            closing_low_q: bookend.map_or(0, |interval| interval.low_q),
-            closing_high_q: bookend.map_or(0, |interval| interval.high_q),
-        });
-        let model_comparison = authority
-            .filter(|authority| authority.model_interval_available(direction))
-            .and_then(|authority| {
-                stage_b_deficit_bounds_q(
-                    authority.directional_pooled_intervals[direction],
-                    authority.final_p,
-                    authority.encoder_counts_per_rev,
-                )
-                .map(|expected| (authority, expected))
-            });
-        let (stage_b_interval, expected, available) =
-            model_comparison.map_or(([0; 2], [0; 2], 0), |(authority, expected)| {
-                (
-                    authority.directional_pooled_intervals[direction],
-                    expected,
-                    1,
-                )
-            });
-        sink.foci_velocity_integral_stage_b_comparison(FociVelocityIntegralStageBComparison {
-            oid,
-            run_sequence: terminal.run_sequence,
-            evidence_sequence: sequence,
-            direction: direction as u8,
-            available,
-            stage_b_low_q16: stage_b_interval[0],
-            stage_b_high_q16: stage_b_interval[1],
-            expected_low_q: expected[0],
-            expected_high_q: expected[1],
-            opening_low_q: opening.low_q,
-            opening_high_q: opening.high_q,
-        });
-    }
-    if let Some(reproduction) = reproduction {
-        let direction_mask =
-            reproduction.delta.reproduced_masks.iter().enumerate().fold(
-                0_u8,
-                |mask, (direction, members)| {
-                    mask | (u8::from(members.count_ones() >= 3) << direction)
-                },
-            );
-        sink.foci_velocity_integral_reproduction_core(FociVelocityIntegralReproductionCore {
-            oid,
-            run_sequence: terminal.run_sequence,
-            evidence_sequence: sequence,
-            outcome: reproduction.outcome,
-            direction_mask,
-        });
-        for direction in 0..2 {
-            sink.foci_velocity_integral_reproduction_mask(FociVelocityIntegralReproductionMask {
-                oid,
-                run_sequence: terminal.run_sequence,
-                evidence_sequence: sequence,
-                direction: direction as u8,
-                previous_mask: reproduction.delta.previous_masks[direction],
-                current_mask: reproduction.delta.current_masks[direction],
-                shared_mask: reproduction.delta.shared_masks[direction],
-                reproduced_mask: reproduction.delta.reproduced_masks[direction],
-                divergent_mask: reproduction.delta.divergent_masks[direction],
-                previous_only_mask: reproduction.delta.previous_only_masks[direction],
-                current_only_mask: reproduction.delta.current_only_masks[direction],
-            });
-            for rung in 0..STAGE_C_MAX_POSITIVE_RUNGS {
-                let bit = 1_u32 << rung;
-                let kind = if reproduction.delta.reproduced_masks[direction] & bit != 0 {
-                    1
-                } else if reproduction.delta.divergent_masks[direction] & bit != 0 {
-                    2
-                } else {
-                    continue;
-                };
-                let previous = delta_e(
-                    reproduction.delta.previous_evidence.positive[direction][rung],
-                    reproduction.delta.previous_evidence.opening[direction],
-                )
-                .expect("retained reproduction interval was validated before reporting");
-                let current = delta_e(
-                    terminal.evidence.positive[direction][rung],
-                    terminal.evidence.opening[direction],
-                )
-                .expect("current reproduction interval was validated before reporting");
-                let overlap = closed_intersection(previous, current);
-                let signed_gap = signed_divergence_gap(previous, current)
-                    .expect("reproduction gap was validated before reporting");
-                sink.foci_velocity_integral_reproduction_interval(
-                    FociVelocityIntegralReproductionInterval {
-                        oid,
-                        run_sequence: terminal.run_sequence,
-                        evidence_sequence: sequence,
-                        direction: direction as u8,
-                        rung_index: rung as u8,
-                        kind,
-                        previous_low_q: previous.low_q,
-                        previous_high_q: previous.high_q,
-                        current_low_q: current.low_q,
-                        current_high_q: current.high_q,
-                        result_low_or_gap_q: if kind == 1 {
-                            overlap
-                                .expect("reproduced mask requires a closed overlap")
-                                .low_q
-                        } else {
-                            signed_gap
-                        },
-                        result_high_q: overlap.map_or(0, |interval| interval.high_q),
-                    },
-                );
-            }
-        }
-        sink.foci_velocity_integral_reproduction_digest(FociVelocityIntegralReproductionDigest {
-            oid,
-            run_sequence: terminal.run_sequence,
-            evidence_sequence: sequence,
-            previous_digest_low: reproduction.previous_run_digest as u32,
-            previous_digest_high: (reproduction.previous_run_digest >> 32) as u32,
-            current_digest_low: reproduction.current_run_digest as u32,
-            current_digest_high: (reproduction.current_run_digest >> 32) as u32,
-        });
-    }
+    let payload = encode_velocity_integral_terminal_reply(&terminal, reproduction_summary);
     if let Some(fault) = terminal.safety_fault {
         sink.foci_outer_safety_fault(oid, fault);
     }
-    emit_velocity_integral_terminal_fragments(sink, oid, terminal);
-}
-
-/// Emit the three fragments that carry one Stage-C terminal itself.
-///
-/// Split from [`emit_velocity_integral_terminal`] so a request refused before
-/// any exact plan can report its terminal without the derived evidence
-/// fragments, which would otherwise describe a run that never happened.
-pub fn emit_velocity_integral_terminal_fragments<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    terminal: crate::commissioning::types::VelocityIntegralTerminal,
-) {
-    use crate::ankyra::replies::{
-        FociVelocityIntegralTerminalCore, FociVelocityIntegralTerminalIdentity,
-        FociVelocityIntegralTerminalTiming,
-    };
-    use crate::commissioning::outer::velocity::integral_reporting::outcome_code;
-
-    let sequence = terminal.evidence_sequence;
-    sink.foci_velocity_integral_terminal_core(FociVelocityIntegralTerminalCore {
+    sink.foci_velocity_integral_terminal(crate::ankyra::replies::FociVelocityIntegralTerminal {
         oid,
-        run_sequence: terminal.run_sequence,
-        evidence_sequence: sequence,
-        fragment: 0,
-        outcome: outcome_code(terminal.outcome),
-        cause: terminal.cause.raw_value(),
-        cause_namespace: terminal.cause.namespace_code(),
-        recovery_flags:
-            crate::commissioning::outer::velocity::integral_reporting::terminal_recovery_flags(
-                &terminal,
-            ),
-        rest_boundary_rung_plus_one: terminal.rest_boundary_rung_plus_one,
-        rest_boundary_slot_plus_one: terminal.rest_boundary_slot_plus_one,
-        expected_observations: terminal.expected_observations,
-        emitted_observations: terminal.emitted_observations,
-        expected_rungs: terminal.expected_rungs,
-        emitted_rungs: terminal.emitted_rungs,
-    });
-    sink.foci_velocity_integral_terminal_identity(FociVelocityIntegralTerminalIdentity {
-        oid,
-        run_sequence: terminal.run_sequence,
-        evidence_sequence: sequence,
-        fragment: 1,
-        plan_digest_low: terminal.plan_digest as u32,
-        plan_digest_high: (terminal.plan_digest >> 32) as u32,
-        digest_low: terminal.digest as u32,
-        digest_high: (terminal.digest >> 32) as u32,
-    });
-    sink.foci_velocity_integral_terminal_timing(FociVelocityIntegralTerminalTiming {
-        oid,
-        run_sequence: terminal.run_sequence,
-        evidence_sequence: sequence,
-        fragment: 2,
-        started_low: terminal.run_started_us as u32,
-        started_high: (terminal.run_started_us >> 32) as u32,
-        completed_low: terminal.run_completed_us as u32,
-        completed_high: (terminal.run_completed_us >> 32) as u32,
-    });
-}
-
-fn emit_rung_origin_recovery<S: CommissionReplySink>(
-    sink: &mut S,
-    oid: u8,
-    evidence: crate::commissioning::types::RungOriginRecoveryEvidence,
-) {
-    use crate::ankyra::replies::FociRungOriginRecoverySummary;
-
-    let report = evidence.report;
-    sink.foci_rung_origin_recovery_summary(FociRungOriginRecoverySummary {
-        oid,
-        run_sequence: evidence.run_sequence,
-        evidence_sequence: evidence.evidence_sequence,
-        stage: report.stage as u8,
-        rung_index: report.rung_index,
-        p_raw: report.p_raw,
-        binding_source: report.binding_source as u8,
-        outcome: report.outcome as u8,
+        payload: &payload,
     });
 }
 
@@ -1525,7 +980,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             authority,
         } => emit_velocity_integral_terminal(sink, oid, terminal, reproduction, authority),
         ReplyPayload::VelocityIntegralRefusal { oid, terminal } => {
-            emit_velocity_integral_terminal_fragments(sink, oid, terminal);
+            emit_velocity_integral_terminal(sink, oid, terminal, None, None);
         }
         ReplyPayload::AcceptanceMatrixPlan {
             oid,
@@ -1953,6 +1408,9 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+    use crate::ankyra::velocity_sweep_encoding::{
+        encode_rate_values, upper_bound_i64, upper_bound_u128,
+    };
     use crate::autotune::{
         AXIS_SPLIT_SOURCE_NONE, CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE,
         CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_SOURCE_MEASURED,
@@ -2214,25 +1672,7 @@ mod tests {
         WorkflowPlan,
         IntegralPlan(u8),
         IntegralPlanRecovery,
-        IntegralObservation(u8),
-        IntegralRung(u8),
-        PrimitiveCurrent,
-        Recovery {
-            oid: u8,
-            run_sequence: u32,
-            evidence_sequence: u16,
-            stage: u8,
-            rung_index: u8,
-            p_raw: u16,
-            binding_source: u8,
-            outcome: u8,
-        },
-        IntegralDerived(u8),
-        IntegralStageBComparison {
-            direction: u8,
-            available: u8,
-        },
-        IntegralTerminal(u8),
+        IntegralTerminal(usize),
         SelftestResult {
             oid: u8,
             stage: u8,
@@ -2248,7 +1688,6 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         events: Vec<Event>,
-        integral_rest_boundary: Option<[u8; 2]>,
         integral_plan_joint_memberships: [u32; 2],
         integral_plan_intervals: [[i32; 2]; 2],
     }
@@ -2555,29 +1994,6 @@ mod tests {
             });
         }
 
-        fn foci_rung_origin_recovery_summary(
-            &mut self,
-            report: crate::ankyra::replies::FociRungOriginRecoverySummary,
-        ) {
-            self.events.push(Event::Recovery {
-                oid: report.oid,
-                run_sequence: report.run_sequence,
-                evidence_sequence: report.evidence_sequence,
-                stage: report.stage,
-                rung_index: report.rung_index,
-                p_raw: report.p_raw,
-                binding_source: report.binding_source,
-                outcome: report.outcome,
-            });
-        }
-
-        fn foci_velocity_primitive_current_evidence(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityPrimitiveCurrentEvidence,
-        ) {
-            self.events.push(Event::PrimitiveCurrent);
-        }
-
         fn foci_commissioning_workflow_plan(
             &mut self,
             _report: crate::ankyra::replies::FociCommissioningWorkflowPlan,
@@ -2638,128 +2054,12 @@ mod tests {
             self.events.push(Event::IntegralPlan(6 + report.rung_index));
         }
 
-        fn foci_velocity_integral_observation_core(
+        fn foci_velocity_integral_terminal(
             &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralObservationCore,
+            report: crate::ankyra::replies::FociVelocityIntegralTerminal<'_>,
         ) {
             self.events
-                .push(Event::IntegralObservation(report.fragment));
-        }
-
-        fn foci_velocity_integral_observation_rate(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralObservationRate,
-        ) {
-            self.events
-                .push(Event::IntegralObservation(report.fragment));
-        }
-
-        fn foci_velocity_integral_observation_quality(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralObservationQuality,
-        ) {
-            self.events
-                .push(Event::IntegralObservation(report.fragment));
-        }
-
-        fn foci_velocity_integral_rung_core(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralRungCore,
-        ) {
-            self.events.push(Event::IntegralRung(report.fragment));
-        }
-
-        fn foci_velocity_integral_rung_component(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralRungComponent,
-        ) {
-            self.events.push(Event::IntegralRung(2 + report.direction));
-        }
-
-        fn foci_velocity_integral_run_summary(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralRunSummary,
-        ) {
-            self.events.push(Event::IntegralDerived(0));
-        }
-
-        fn foci_velocity_integral_curve_interval(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralCurveInterval,
-        ) {
-            self.events.push(Event::IntegralDerived(1));
-        }
-
-        fn foci_velocity_integral_drift(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralDrift,
-        ) {
-            self.events.push(Event::IntegralDerived(2));
-        }
-
-        fn foci_velocity_integral_stage_b_comparison(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralStageBComparison,
-        ) {
-            self.events.push(Event::IntegralStageBComparison {
-                direction: report.direction,
-                available: report.available,
-            });
-        }
-
-        fn foci_velocity_integral_reproduction_core(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralReproductionCore,
-        ) {
-            self.events.push(Event::IntegralDerived(4));
-        }
-
-        fn foci_velocity_integral_reproduction_mask(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralReproductionMask,
-        ) {
-            self.events.push(Event::IntegralDerived(5));
-        }
-
-        fn foci_velocity_integral_reproduction_interval(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralReproductionInterval,
-        ) {
-            self.events.push(Event::IntegralDerived(6));
-        }
-
-        fn foci_velocity_integral_reproduction_digest(
-            &mut self,
-            _report: crate::ankyra::replies::FociVelocityIntegralReproductionDigest,
-        ) {
-            self.events.push(Event::IntegralDerived(7));
-        }
-
-        fn foci_velocity_integral_terminal_core(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralTerminalCore,
-        ) {
-            if report.fragment == 0 {
-                self.integral_rest_boundary = Some([
-                    report.rest_boundary_rung_plus_one,
-                    report.rest_boundary_slot_plus_one,
-                ]);
-            }
-            self.events.push(Event::IntegralTerminal(report.fragment));
-        }
-
-        fn foci_velocity_integral_terminal_identity(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralTerminalIdentity,
-        ) {
-            self.events.push(Event::IntegralTerminal(report.fragment));
-        }
-
-        fn foci_velocity_integral_terminal_timing(
-            &mut self,
-            report: crate::ankyra::replies::FociVelocityIntegralTerminalTiming,
-        ) {
-            self.events.push(Event::IntegralTerminal(report.fragment));
+                .push(Event::IntegralTerminal(report.payload.len()));
         }
 
         fn foci_calibrate_result(&mut self, oid: u8, status: u8, result: &AdcCalResult) {
@@ -3926,78 +3226,6 @@ mod tests {
         );
     }
 
-    fn velocity_integral_plan_fixture()
-    -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
-        use crate::commissioning::outer::velocity::integral_plan::{
-            IntegralSlotOrder, STAGE_C_MAX_POSITIVE_RUNGS, StageCAuthority,
-        };
-        use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
-        use crate::commissioning::outer::velocity::sweep_plan::{
-            RequestedVelocitySource, VelocitySweepRequest,
-        };
-
-        let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
-        for (index, gain) in positive_i.iter_mut().enumerate() {
-            *gain = u16::try_from(index + 1).unwrap();
-        }
-        crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
-            slot_order: IntegralSlotOrder::ForwardFirst,
-            build_features: 3,
-            schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
-            authority: StageCAuthority {
-                channel: 0,
-                acquisition: crate::commission_dispatch::test_support::breakaway_acquisition_for_test(),
-                directional_memberships: [0x001c_0000; 2],
-                stage_b_joint_membership: 0x001c_0000,
-                joint_membership: 0x001c_0000,
-                directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
-                reduced_margin: false,
-                directional_pooled_intervals: [
-                    [17_000_000, 18_000_000],
-                    [-19_000_000, -18_000_000],
-                ],
-                confidence_q: 0,
-                band_position_q: 0,
-            },
-            final_p: 1_448,
-            planned_velocity_mrev_s: 2_929,
-            target_velocity_rpm: 176,
-            pwm_hz: 25_000,
-            encoder_counts_per_rev: 4_000,
-            positive_i,
-            positive_rung_count: 15,
-            i_top_cap: 0,
-            family_size: 68,
-            total_rung_count: 17,
-            expected_observations: 136,
-            moving_stroke_us: 512_000,
-            zero_settle_us: 500_000,
-            analysis_budget_us: 236_000,
-            nominal_workflow_ms: 82_607,
-            maximum_workflow_ms: 90_888,
-            recovery_origin_band_counts: 1_000,
-            recovery_nominal_slot_us: 1_816_958,
-            recovery_maximum_slot_us: 3_000_000,
-            recovery_slot_count: 7,
-            hard_torque_limit: 2_816,
-            usable_torque_limit: 2_534,
-            limit_evidence_capability:
-                crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
-            recovery_quantization_exposed: false,
-            probe_constrained_test_point: false,
-            motion_request: VelocitySweepRequest {
-                requested_velocity_mrev_s: 2_929,
-                machine_velocity_ceiling_mrev_s: 10_000,
-                requested_velocity_source: RequestedVelocitySource::Defaulted,
-                max_stroke_travel_mrev: 2_000,
-                settle_travel_reserve_mrev: 250,
-                negative_position_headroom_mrev: 50_000,
-                positive_position_headroom_mrev: 50_000,
-                max_duration_ms: 60_000,
-            },
-        }
-    }
-
     #[test]
     fn combined_velocity_flow_reuses_the_existing_reply_inventory() {
         let source = include_str!("replies.rs");
@@ -4005,7 +3233,7 @@ mod tests {
             "fn foci_commissioning_workflow_plan(",
             "fn foci_velocity_sweep_plan_core(",
             "fn foci_velocity_integral_plan_core(",
-            "fn foci_velocity_integral_terminal_core(",
+            "fn foci_velocity_integral_terminal(",
         ] {
             assert!(
                 source.contains(method),
@@ -4017,10 +3245,11 @@ mod tests {
     }
 
     #[test]
-    fn velocity_integral_reply_emits_derived_evidence_before_dedicated_terminal() {
+    fn velocity_integral_reply_emits_exactly_one_compact_terminal() {
         use crate::commissioning::outer::velocity::integral_evidence::{
             ExactRateInterval, IntegralRunEvidence,
         };
+        use crate::commissioning::outer::velocity::integral_reporting::VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES;
         use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
 
         let evidence = IntegralRunEvidence::new([
@@ -4065,34 +3294,18 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            sink.events.first(),
-            Some(Event::IntegralDerived(0))
-        ));
         assert_eq!(
-            &sink.events[sink.events.len() - 3..],
-            &[
-                Event::IntegralTerminal(0),
-                Event::IntegralTerminal(1),
-                Event::IntegralTerminal(2),
-            ]
+            sink.events,
+            std::vec![Event::IntegralTerminal(
+                VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES
+            )]
         );
-        assert!(
-            !sink
-                .events
-                .iter()
-                .any(|event| matches!(event, Event::Tune { .. }))
-        );
-        assert_eq!(sink.integral_rest_boundary, Some([5, 6]));
     }
 
     #[test]
-    fn a_refused_stage_c_admission_emits_no_evidence_ahead_of_its_terminal() {
-        // The ordinary terminal derives its leading fragments from run evidence.
-        // A refusal happens before any stroke, so those fragments would describe
-        // a run that never took place, and the host reads anything ahead of the
-        // terminal as motion evidence that arrived before its exact plan.
+    fn a_refused_stage_c_admission_emits_exactly_one_compact_terminal() {
         use crate::commission_dispatch::stage_c::missing_authority_stage_c_terminal;
+        use crate::commissioning::outer::velocity::integral_reporting::VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES;
 
         let mut sink = RecordingSink::default();
 
@@ -4106,89 +3319,10 @@ mod tests {
 
         assert_eq!(
             sink.events,
-            std::vec![
-                Event::IntegralTerminal(0),
-                Event::IntegralTerminal(1),
-                Event::IntegralTerminal(2),
-            ]
+            std::vec![Event::IntegralTerminal(
+                VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES
+            )]
         );
-    }
-
-    #[test]
-    fn velocity_integral_reply_labels_unavailable_model_comparison() {
-        use crate::commissioning::outer::velocity::integral_evidence::{
-            ExactRateInterval, IntegralRunEvidence,
-        };
-        use crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION;
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary;
-        use crate::commissioning::outer::velocity::reproduction::{
-            BUILD_FEATURES, StageBDirectionalValidity,
-        };
-        use crate::commissioning::types::{VelocityIntegralOutcome, VelocityIntegralTerminal};
-
-        let mut plan = velocity_integral_plan_fixture();
-        plan.authority.directional_memberships[1] = 0x0018_0000;
-        plan.authority.directional_validity[1] = StageBDirectionalValidity::Fragment;
-        plan.authority.directional_pooled_intervals[1] = [0, 0];
-        let authority = StageCAuthoritySummary::from_plan(
-            plan.authority.channel,
-            BUILD_FEATURES,
-            STAGE_C_EVIDENCE_SCHEMA_REVISION,
-            plan.authority.acquisition,
-            plan.execution_plan(),
-            plan.authority,
-        );
-        let evidence = IntegralRunEvidence::new([
-            ExactRateInterval::new(100, 120).unwrap(),
-            ExactRateInterval::new(-120, -100).unwrap(),
-        ]);
-        let terminal = VelocityIntegralTerminal {
-            run_sequence: 18,
-            evidence_sequence: 57,
-            plan_digest: plan.digest(),
-            digest: 0x5555_6666_7777_8888,
-            outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: crate::commissioning::types::StageCCause::Engine(7),
-            breakaway_acceptance: false,
-            final_p: 0,
-            recovery_unavailable: false,
-            recovered_with_current_headroom: false,
-            recovery_quantization_exposed: plan.recovery_quantization_exposed,
-            probe_constrained_test_point: plan.probe_constrained_test_point,
-            rest_boundary_rung_plus_one: 0,
-            rest_boundary_slot_plus_one: 0,
-            evidence,
-            expected_observations: 56,
-            emitted_observations: 56,
-            expected_rungs: 7,
-            emitted_rungs: 7,
-            run_started_us: 1_000,
-            run_completed_us: 2_000,
-            safety_fault: None,
-            rest_rejection_after_sufficiency: false,
-            rest_rejection_owner: None,
-        };
-        let mut sink = RecordingSink::default();
-
-        emit_terminal_reply(
-            &mut sink,
-            ReplyPayload::VelocityIntegralTerminal {
-                oid: 3,
-                terminal,
-                reproduction: None,
-                authority: Some(authority),
-            },
-        );
-
-        assert!(sink.events.contains(&Event::IntegralStageBComparison {
-            direction: 0,
-            available: 1,
-        }));
-        assert!(sink.events.contains(&Event::IntegralStageBComparison {
-            direction: 1,
-            available: 0,
-        }));
-        assert_eq!(sink.integral_rest_boundary, Some([0, 0]));
     }
 
     #[test]

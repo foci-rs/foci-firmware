@@ -354,6 +354,90 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     [core, schedule, recovery]
 }
 
+pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_SCHEMA_REVISION: u8 = 1;
+pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES: usize = 36;
+
+/// Cross-run reproduction summary carried on the compact terminal reply.
+///
+/// Absent for a `CompleteCandidate` (a first sufficient run has no prior run
+/// to compare against); present for every terminal that followed a second
+/// run.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct VelocityIntegralTerminalReproductionSummary {
+    /// Shared rungs whose anchor-relative intervals overlap, per direction.
+    pub reproduced_masks: [u32; 2],
+    /// Shared rungs whose anchor-relative intervals are disjoint, per direction.
+    pub divergent_masks: [u32; 2],
+}
+
+fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, value: &[u8]) {
+    destination[*offset..*offset + value.len()].copy_from_slice(value);
+    *offset += value.len();
+}
+
+/// Encode the single compact ordinary-reply Stage-C terminal.
+///
+/// Carries only the fields the live host reads for status text and
+/// orchestration; the detailed observation/rung/recovery evidence rides
+/// the canonical trace only (see [`encode_velocity_integral_terminal`]
+/// for that record).
+pub(crate) fn encode_velocity_integral_terminal_reply(
+    report: &VelocityIntegralTerminal,
+    reproduction: Option<VelocityIntegralTerminalReproductionSummary>,
+) -> [u8; VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES] {
+    let mut bytes = [0_u8; VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES];
+    let mut offset = 0;
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[VELOCITY_INTEGRAL_TERMINAL_REPLY_SCHEMA_REVISION],
+    );
+    push_reply(&mut bytes, &mut offset, &report.run_sequence.to_le_bytes());
+    push_reply(&mut bytes, &mut offset, &[outcome_code(report.outcome)]);
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[report.cause.raw_value(), report.cause.namespace_code()],
+    );
+    let rest_rejection_flags = terminal_recovery_flags(report)
+        & (TERMINAL_REST_REJECTION_AFTER_SUFFICIENCY | TERMINAL_REST_REJECTION_OWNER_MASK);
+    push_reply(&mut bytes, &mut offset, &[rest_rejection_flags]);
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &report.evidence.eligible_masks[0].to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &report.evidence.eligible_masks[1].to_le_bytes(),
+    );
+    let bookend_available_mask = u8::from(report.evidence.bookend[0].is_some())
+        | (u8::from(report.evidence.bookend[1].is_some()) << 1);
+    push_reply(&mut bytes, &mut offset, &[bookend_available_mask]);
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[report.evidence.current_terminus.map_or(0, |rung| rung + 1)],
+    );
+    push_reply(&mut bytes, &mut offset, &[u8::from(reproduction.is_some())]);
+    let reproduction = reproduction.unwrap_or_default();
+    for direction in 0..2 {
+        push_reply(
+            &mut bytes,
+            &mut offset,
+            &reproduction.reproduced_masks[direction].to_le_bytes(),
+        );
+        push_reply(
+            &mut bytes,
+            &mut offset,
+            &reproduction.divergent_masks[direction].to_le_bytes(),
+        );
+    }
+    debug_assert_eq!(offset, VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES);
+    bytes
+}
+
 /// Encode the detailed Stage-C terminal for trace-only parity.
 pub(crate) fn encode_velocity_integral_terminal(
     report: &VelocityIntegralTerminal,
@@ -749,46 +833,6 @@ pub(crate) const fn outcome_code(outcome: VelocityIntegralOutcome) -> u8 {
         VelocityIntegralOutcome::RejectedPlanMismatch => 4,
         VelocityIntegralOutcome::Failed => 5,
     }
-}
-
-/// Rate-invert one Stage-B Q16.16 disturbance interval into Stage-C deficit-Q units.
-pub(crate) fn stage_b_deficit_bounds_q(
-    disturbance_q16: [i32; 2],
-    p_raw: u16,
-    encoder_counts_per_rev: u32,
-) -> Option<[i32; 2]> {
-    if disturbance_q16[0] > disturbance_q16[1] || p_raw == 0 || encoder_counts_per_rev == 0 {
-        return None;
-    }
-    let scale = i128::from(256_u16)
-        .checked_mul(i128::from(encoder_counts_per_rev))?
-        .checked_mul(1_000)?;
-    let denominator = i128::from(p_raw).checked_mul(65_536)?.checked_mul(60)?;
-    let low = floor_ratio(
-        i128::from(disturbance_q16[0]).checked_mul(scale)?,
-        denominator,
-    )?;
-    let high = ceil_ratio(
-        i128::from(disturbance_q16[1]).checked_mul(scale)?,
-        denominator,
-    )?;
-    Some([i32::try_from(low).ok()?, i32::try_from(high).ok()?])
-}
-
-fn floor_ratio(numerator: i128, denominator: i128) -> Option<i128> {
-    if denominator <= 0 {
-        return None;
-    }
-    Some(numerator.div_euclid(denominator))
-}
-
-fn ceil_ratio(numerator: i128, denominator: i128) -> Option<i128> {
-    let floor = floor_ratio(numerator, denominator)?;
-    Some(if numerator.rem_euclid(denominator) == 0 {
-        floor
-    } else {
-        floor.checked_add(1)?
-    })
 }
 
 fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
@@ -1461,6 +1505,122 @@ mod tests {
     }
 
     #[test]
+    fn encode_velocity_integral_terminal_reply_is_stable_and_within_wire_budget() {
+        let mut terminal = VelocityIntegralTerminal {
+            run_sequence: 0x1122_3344,
+            evidence_sequence: 0,
+            plan_digest: 0,
+            digest: 0,
+            outcome: VelocityIntegralOutcome::Complete,
+            cause: StageCCause::Engine(0x2A),
+            breakaway_acceptance: false,
+            final_p: 0,
+            recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
+            evidence: super::super::integral_evidence::IntegralRunEvidence::new(
+                [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
+            ),
+            expected_observations: 0,
+            emitted_observations: 0,
+            expected_rungs: 0,
+            emitted_rungs: 0,
+            run_started_us: 0,
+            run_completed_us: 0,
+            safety_fault: None,
+            rest_rejection_after_sufficiency: true,
+            rest_rejection_owner: Some(RestSelectionOwner::StageCRecovery),
+        };
+        terminal.evidence.eligible_masks = [0x0000_0007, 0x0000_0003];
+        terminal.evidence.bookend = [
+            Some(super::super::integral_evidence::ExactRateInterval::new(1, 2).unwrap()),
+            None,
+        ];
+        terminal.evidence.current_terminus = Some(3);
+
+        let reproduction = VelocityIntegralTerminalReproductionSummary {
+            reproduced_masks: [0x0000_0005, 0x0000_0002],
+            divergent_masks: [0x0000_0002, 0x0000_0001],
+        };
+
+        let bytes = encode_velocity_integral_terminal_reply(&terminal, Some(reproduction));
+        assert_eq!(bytes.len(), VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES);
+
+        #[rustfmt::skip]
+        let expected: [u8; VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES] = [
+            0x01,
+            0x44, 0x33, 0x22, 0x11,
+            0x01,
+            0x2A, 0x00,
+            0x50,
+            0x07, 0x00, 0x00, 0x00,
+            0x03, 0x00, 0x00, 0x00,
+            0x01,
+            0x04,
+            0x01,
+            0x05, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(bytes, expected);
+
+        let bytes_no_reproduction = encode_velocity_integral_terminal_reply(&terminal, None);
+        assert_eq!(
+            bytes_no_reproduction[19], 0x00,
+            "reproduction_available clear"
+        );
+        assert_eq!(
+            &bytes_no_reproduction[20..36],
+            &[0_u8; 16],
+            "reproduction masks zeroed when absent"
+        );
+    }
+
+    #[test]
+    fn encode_velocity_integral_terminal_reply_masks_retired_recovery_state_bits() {
+        let mut terminal = VelocityIntegralTerminal {
+            run_sequence: 1,
+            evidence_sequence: 0,
+            plan_digest: 0,
+            digest: 0,
+            outcome: VelocityIntegralOutcome::Complete,
+            cause: StageCCause::Engine(0),
+            breakaway_acceptance: false,
+            final_p: 0,
+            recovery_unavailable: true,
+            recovered_with_current_headroom: true,
+            recovery_quantization_exposed: true,
+            probe_constrained_test_point: true,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
+            evidence: super::super::integral_evidence::IntegralRunEvidence::new(
+                [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
+            ),
+            expected_observations: 0,
+            emitted_observations: 0,
+            expected_rungs: 0,
+            emitted_rungs: 0,
+            run_started_us: 0,
+            run_completed_us: 0,
+            safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
+        };
+        terminal.evidence.bookend = [None, None];
+
+        let bytes = encode_velocity_integral_terminal_reply(&terminal, None);
+
+        assert_eq!(
+            bytes[8], 0x00,
+            "retired recovery-state bits must not appear on the compact reply"
+        );
+    }
+
+    #[test]
     fn stage_c_terminal_flags_are_packed_once() {
         let terminal = VelocityIntegralTerminal {
             run_sequence: 7,
@@ -1600,18 +1760,6 @@ mod tests {
             Some(CombinedTargetStatus::TargetReached)
         );
         assert_eq!(terminal_target_terminus(&terminal), Some(2));
-    }
-
-    #[test]
-    fn stage_b_rate_inversion_is_outward_and_sign_symmetric() {
-        assert_eq!(
-            stage_b_deficit_bounds_q([65_536, 65_536], 256, 4_000),
-            Some([66_666, 66_667])
-        );
-        assert_eq!(
-            stage_b_deficit_bounds_q([-65_536, -65_536], 256, 4_000),
-            Some([-66_667, -66_666])
-        );
     }
 
     fn excluded_observation(

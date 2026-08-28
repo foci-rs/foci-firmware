@@ -499,12 +499,12 @@ fn emit_breakaway_probe_result_forwards_resolved_rung() {
 }
 
 #[test]
-fn emit_additive_discovery_plan_emits_identity_then_geometry_fragments() {
-    use crate::commission_dispatch::replies::emit_additive_discovery_plan;
+fn emit_breakaway_discovery_plan_emits_identity_then_geometry_fragments() {
+    use crate::commission_dispatch::replies::emit_breakaway_discovery_plan;
     use crate::commissioning::types::AdditiveDiscoveryPlanned;
 
     let mut sink = ReplyRecorder::default();
-    emit_additive_discovery_plan(
+    emit_breakaway_discovery_plan(
         &mut sink,
         3,
         AdditiveDiscoveryPlanned {
@@ -545,12 +545,12 @@ fn emit_additive_discovery_plan_emits_identity_then_geometry_fragments() {
 }
 
 #[test]
-fn emit_band_confirmation_terminal_emits_identity_then_masks_fragments() {
-    use crate::commission_dispatch::replies::emit_band_confirmation_terminal;
+fn emit_breakaway_confirmation_terminal_emits_identity_then_masks_fragments() {
+    use crate::commission_dispatch::replies::emit_breakaway_confirmation_terminal;
     use crate::commissioning::types::BandConfirmationTerminal;
 
     let mut sink = ReplyRecorder::default();
-    emit_band_confirmation_terminal(
+    emit_breakaway_confirmation_terminal(
         &mut sink,
         3,
         BandConfirmationTerminal {
