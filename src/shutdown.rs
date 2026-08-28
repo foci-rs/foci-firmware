@@ -72,6 +72,7 @@ pub enum ShutdownReason {
     TmcDiagnosticLostQueueFull,
     Tmc4671ChipIdMismatch,
     Tmc4671SpiFailedAtBoot,
+    HostClockSyncExpired,
     TmcBootstrapCh0AdcVmLimitsWriteFailed,
     TmcBootstrapCh0StatusMaskWriteFailed,
     TmcBootstrapCh0StatusFlagsReadFailed,
@@ -127,6 +128,7 @@ impl ShutdownReason {
             Self::TmcDiagnosticLostQueueFull => "TMC diagnostic lost (queue full)",
             Self::Tmc4671ChipIdMismatch => "TMC4671 chip ID mismatch",
             Self::Tmc4671SpiFailedAtBoot => "TMC4671 SPI failed at boot",
+            Self::HostClockSyncExpired => "Host clock-sync expired",
             Self::TmcBootstrapCh0AdcVmLimitsWriteFailed => {
                 "TMC4671 ch0 bootstrap: ADC_VM_LIMITS write failed"
             }
@@ -332,6 +334,9 @@ macro_rules! dispatch_shutdown {
             $crate::shutdown::ShutdownReason::Tmc4671SpiFailedAtBoot => {
                 ::ankyra::klipper_shutdown_from!($sender, "TMC4671 SPI failed at boot", $clock);
             }
+            $crate::shutdown::ShutdownReason::HostClockSyncExpired => {
+                ::ankyra::klipper_shutdown_from!($sender, "Host clock-sync expired", $clock);
+            }
             $crate::shutdown::ShutdownReason::TmcBootstrapCh0AdcVmLimitsWriteFailed => {
                 ::ankyra::klipper_shutdown_from!(
                     $sender,
@@ -500,6 +505,7 @@ macro_rules! foci_ankyra_config {
                 "TMC4671: PLL not locked (clock lost)",
                 "TMC4671: ADC current clipped (overcurrent)",
                 "TMC4671 fault",
+                "Host clock-sync expired",
             ],
             app = $app,
             version = $version,
@@ -507,4 +513,17 @@ macro_rules! foci_ankyra_config {
             license = $license,
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_clock_sync_expired_has_a_message() {
+        assert_eq!(
+            ShutdownReason::HostClockSyncExpired.message(),
+            "Host clock-sync expired"
+        );
+    }
 }
