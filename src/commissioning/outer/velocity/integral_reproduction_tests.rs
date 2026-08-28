@@ -493,14 +493,14 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // 232 -> 216: removes the `combined_selected_response`
     // field entirely (only the retired live combined P-then-I workflow ever
     // populated it).
-    // 216 -> 216 (unchanged): `i_top_cap: u16` is needed so `ReproducedStageB`
+    // 216 -> 216 (unchanged): `i_top_cap: u16` is needed so response-ladder
     // plans can regenerate their half-octave rung during execution; existing
     // padding absorbed the two extra bytes, so the measured total did not grow.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 216);
     // 120 -> 112: removes the `combined_workflow` bool (only
     // the retired live combined P-then-I workflow ever set it); the
     // `AcceptanceSource` discriminator added earlier stays.
-    // 112 -> 120: `i_top_cap: u16` is needed so `ReproducedStageB` plans can
+    // 112 -> 120: `i_top_cap: u16` is needed so response-ladder plans can
     // regenerate their half-octave rung during execution; this struct's
     // leading `u64` field forces 8-byte alignment, so the two extra bytes push
     // the total past the previous 112-byte boundary to the next multiple.

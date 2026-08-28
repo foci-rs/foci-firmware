@@ -216,9 +216,9 @@ impl AcceptanceMatrixPlan {
             encoder_counts_per_rev: self.encoder_counts_per_rev,
             i_start: self.selected_i,
             positive_rung_count: self.amplitude_count,
-            // Not applicable to a fixed-I acceptance-matrix acquisition; only a
-            // `ReproducedStageB` response-ladder plan regenerates a half-octave
-            // rung from this field.
+            // Not applicable to a fixed-I acceptance-matrix acquisition;
+            // only a response-ladder plan regenerates a half-octave rung
+            // from this field.
             i_top_cap: 0,
             family_size: self.family_size,
             moving_stroke_us: self.moving_stroke_us,

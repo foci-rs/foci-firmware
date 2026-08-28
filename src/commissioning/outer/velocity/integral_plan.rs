@@ -393,8 +393,8 @@ pub struct VelocityIntegralPlan {
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
-    /// from, for a `ReproducedStageB` plan; `0` (not applicable) for
-    /// `Breakaway`- and matrix-sourced plans, which never regenerate one.
+    /// from, for a `ReproducedStageB`- or `Breakaway`-sourced plan; `0` (not
+    /// applicable) for matrix-sourced plans, which never regenerate one.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -697,8 +697,8 @@ pub struct VelocityIntegralExecutionPlan {
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
-    /// from, for a `ReproducedStageB` plan; `0` (not applicable) for
-    /// `Breakaway`- and matrix-sourced plans, which never regenerate one.
+    /// from, for a `ReproducedStageB`- or `Breakaway`-sourced plan; `0` (not
+    /// applicable) for matrix-sourced plans, which never regenerate one.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -745,7 +745,7 @@ pub struct VelocityIntegralExecutionPlan {
     pub slot_order: IntegralSlotOrder,
 }
 
-// 112 -> 120: `i_top_cap: u16` is needed so `ReproducedStageB` plans can
+// 112 -> 120: `i_top_cap: u16` is needed so response-ladder plans can
 // regenerate their half-octave rung during execution; unlike
 // `VelocityIntegralPlan`, this struct has no unused padding to absorb it
 // (its leading `u64` field forces 8-byte alignment, so the two extra bytes
@@ -933,7 +933,7 @@ pub(crate) fn native_rung_count(i_top_cap: u16) -> u8 {
 /// (`upper_octave`, `lower_octave = upper_octave / 2`) is entirely within
 /// the pure-octave region (`lower_octave >= 4`), never inside the fixed
 /// `1, 2, 3` prefix. `i_top_cap = 0` (the not-applicable sentinel used by
-/// non-`ReproducedStageB` plans) always yields `None`.
+/// matrix-sourced plans) always yields `None`.
 pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
     let count = native_rung_count(i_top_cap);
     if count == 0 {
@@ -960,13 +960,13 @@ pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
 /// the native fixed-prefix/octave sequence, with the half-octave candidate
 /// (if any) inserted immediately before the final native rung.
 ///
-/// `i_top_cap == 0` is the not-applicable sentinel (`Breakaway`- and
-/// matrix-sourced plans, per `VelocityIntegralPlan`/`VelocityIntegralExecutionPlan`
-/// doc comments) and always delegates straight to [`native_velocity_i_at`]
-/// with no augmentation and no bound -- this is the exact pre-existing
-/// behavior those plans had before this function existed. It must be
-/// checked before `native_rung_count`, which treats `i_top_cap` as a real
-/// ceiling and would otherwise compute zero native rungs at cap zero.
+/// `i_top_cap == 0` is the not-applicable sentinel (matrix-sourced plans,
+/// per `VelocityIntegralPlan`/`VelocityIntegralExecutionPlan` doc comments)
+/// and always delegates straight to [`native_velocity_i_at`] with no
+/// augmentation and no bound -- this is the exact pre-existing behavior
+/// those plans had before this function existed. It must be checked before
+/// `native_rung_count`, which treats `i_top_cap` as a real ceiling and
+/// would otherwise compute zero native rungs at cap zero.
 pub(crate) fn integral_gain_at(i_top_cap: u16, positive_index: u8) -> Option<u16> {
     if i_top_cap == 0 {
         return native_velocity_i_at(positive_index);
@@ -1725,10 +1725,7 @@ fn plan_velocity_integral_response_from_source(
             OUTER_MAX_VELOCITY_I,
         )?
     };
-    let i_top_cap = if matches!(
-        source.authority.acquisition,
-        StageCAcquisition::ReproducedStageB(_)
-    ) {
+    let i_top_cap = {
         if let Some(candidate) = integral_top_gap_candidate(ladder.i_top_cap) {
             let insert_index = ladder
                 .rungs
@@ -1741,8 +1738,6 @@ fn plan_velocity_integral_response_from_source(
                 .map_err(|_| VelocityIntegralPlanError::ConfidenceFamilyTooLarge)?;
         }
         ladder.i_top_cap
-    } else {
-        0
     };
     let positive_rung_count =
         u8::try_from(ladder.rungs.len()).map_err(|_| VelocityIntegralPlanError::Arithmetic)?;

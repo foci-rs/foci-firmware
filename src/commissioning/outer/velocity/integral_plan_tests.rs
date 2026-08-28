@@ -419,14 +419,14 @@ fn reproduced_stage_b_plan_includes_the_half_octave_rung_and_real_cap() {
 }
 
 #[test]
-fn breakaway_plan_i_top_cap_is_zero_and_rungs_are_unaugmented() {
+fn breakaway_plan_also_includes_the_half_octave_rung_and_real_cap() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.i_top_cap, 0);
+    assert_eq!(plan.i_top_cap, 1_310);
     assert_eq!(
         plan.positive_rungs(),
-        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
     );
-    assert_eq!(plan.positive_rung_count, 12);
+    assert_eq!(plan.positive_rung_count, 13);
 }
 
 #[test]
@@ -434,7 +434,7 @@ fn execution_plan_copies_i_top_cap_for_both_sources() {
     let reproduced = build_test_reproduced_stage_b_plan().execution_plan();
     assert_eq!(reproduced.i_top_cap, 1_310);
     let breakaway = build_test_breakaway_plan().execution_plan();
-    assert_eq!(breakaway.i_top_cap, 0);
+    assert_eq!(breakaway.i_top_cap, 1_310);
 }
 
 #[test]
@@ -1139,16 +1139,14 @@ fn reproduced_stage_b_plan_digest_pins_the_post_half_octave_value() {
     assert_eq!(plan.digest(), 16_592_268_946_659_389_569);
 }
 
-/// Pins a breakaway-sourced plan's exact digest -- the path this task's
-/// half-octave insertion never touches (gated on `ReproducedStageB` only).
-/// Preserves the regression coverage
-/// `legacy_stage_c_plan_digest_is_unchanged_by_the_shared_tail_refactor` gave
-/// the untouched path before this task renamed and repinned that test above
-/// for the `ReproducedStageB` value it does change.
+/// Pins a breakaway-sourced plan's exact digest. Breakaway plans now also
+/// receive the half-octave insertion, so this value changes whenever the
+/// ladder generation changes -- unlike the earlier ReproducedStageB-only
+/// gating, there is no longer an untouched path to separately pin.
 #[test]
-fn breakaway_plan_digest_is_unchanged_by_the_half_octave_insertion() {
+fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 6_592_327_821_066_853_852);
+    assert_eq!(plan.digest(), 10_560_511_653_674_384_425);
 }
 
 // --- Breakaway Stage-C constructor -------------------------------------------
@@ -1393,10 +1391,11 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
     assert_eq!(plan.authority.joint_membership, 0);
     assert!(!plan.probe_constrained_test_point);
     // The existing non-combined ladder, not the exact-cap combined shape:
-    // `append_exact_cap: false` per the normative decision.
+    // `append_exact_cap: false` per the normative decision. Breakaway plans
+    // now also receive the half-octave rung (724, between 512 and 1024).
     assert_eq!(
         plan.positive_rungs(),
-        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
+        &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
     );
 }
 
