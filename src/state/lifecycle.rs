@@ -13,6 +13,17 @@ pub static STATS_SEND_TIME_HIGH: AtomicU32 = AtomicU32::new(0);
 /// Checked by tmc_control to perform one-shot motor safe-state on first tick.
 pub static SHUTDOWN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Tick of the most recently received valid `get_clock` request. Updated
+/// only by the `get_clock` handler (P2); read by the P1 tmc_control loop's
+/// host-liveness deadman.
+pub static LAST_HOST_LIVENESS_TICKS: AtomicU32 = AtomicU32::new(0);
+
+/// Whether at least one `get_clock` has ever been received. Distinguishes
+/// "genuinely recent" from "boot-time timestamp that happens to look
+/// recent" — a channel enabled before any get_clock has been seen is
+/// treated as an immediate lease expiry, not granted a fresh grace window.
+pub static HAS_RECEIVED_VALID_CLOCK: AtomicBool = AtomicBool::new(false);
+
 /// Set by fault EXTI, cleared by P1 fault handler after cleanup.
 pub static FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 

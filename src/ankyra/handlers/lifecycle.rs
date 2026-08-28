@@ -19,7 +19,8 @@ use crate::ankyra::replies::{Clock, Config, Uptime};
 use crate::context::{ClockSource, LifecycleReset, ShutdownRecovery, StateAccess};
 use crate::shutdown::ShutdownReason;
 use crate::state::lifecycle::{
-    REPORT_PENDING, SHUTDOWN_ACTIVE, STATS_SEND_TIME, STATS_SEND_TIME_HIGH,
+    HAS_RECEIVED_VALID_CLOCK, LAST_HOST_LIVENESS_TICKS, REPORT_PENDING, SHUTDOWN_ACTIVE,
+    STATS_SEND_TIME, STATS_SEND_TIME_HIGH,
 };
 use crate::state::stepper::reset_all_stepper_channels;
 use crate::state::tmc::{TMC_QUEUE_FLUSH, reset_all_tmc_channels};
@@ -27,7 +28,11 @@ use crate::state::trsync::{ENDSTOP_PIN_IDS, HOMING_STATE, HOMING_TRIGGERED};
 
 #[klipper_command(in_shutdown)]
 pub fn get_clock(ctx: &mut dyn ClockSource) {
+    use core::sync::atomic::Ordering::Relaxed;
+
     let clock = ctx.now();
+    LAST_HOST_LIVENESS_TICKS.store(clock, Relaxed);
+    HAS_RECEIVED_VALID_CLOCK.store(true, Relaxed);
     ::ankyra::klipper_reply!(Clock, clock: u32 = clock);
 }
 
@@ -162,6 +167,12 @@ mod tests {
         last_shutdown: Option<ShutdownReason>,
     }
 
+    struct MockSender;
+
+    impl ::ankyra::SendReply<Clock> for MockSender {
+        fn send(&mut self, _payload: Clock) {}
+    }
+
     impl MockCtx {
         fn new() -> Self {
             Self {
@@ -233,5 +244,19 @@ mod tests {
         assert!(!ctx.state.mcu_state.is_shutdown());
         assert_eq!(ctx.last_shutdown, None);
         assert!(!SHUTDOWN_ACTIVE.load(Relaxed));
+    }
+
+    #[test]
+    fn get_clock_records_liveness_and_receipt() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        LAST_HOST_LIVENESS_TICKS.store(0, Relaxed);
+        HAS_RECEIVED_VALID_CLOCK.store(false, Relaxed);
+
+        let mut ctx = MockCtx::new();
+        let mut sender = MockSender;
+        get_clock(&mut ctx, &mut sender);
+
+        assert_eq!(LAST_HOST_LIVENESS_TICKS.load(Relaxed), 123); // MockCtx::now() == 123
+        assert!(HAS_RECEIVED_VALID_CLOCK.load(Relaxed));
     }
 }
