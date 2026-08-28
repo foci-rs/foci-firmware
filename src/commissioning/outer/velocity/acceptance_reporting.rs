@@ -21,7 +21,7 @@ pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES: usize = 33;
 #[cfg(test)]
 pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENTS: usize = 2;
 /// Bytes in the compact ordinary matrix-terminal reply payload.
-pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 37;
+pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 39;
 
 /// Largest byte-array payload an ordinary reply can carry in one message.
 ///
@@ -99,6 +99,11 @@ pub(crate) fn encode_acceptance_terminal_reply(
         &mut bytes,
         &mut offset,
         &terminal.run_sequence.to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &terminal.evidence_sequence.to_le_bytes(),
     );
     push_reply(
         &mut bytes,
@@ -631,6 +636,38 @@ mod tests {
                 .windows(2)
                 .any(|bytes| bytes == [0x34, 0x12])
         );
+    }
+
+    #[test]
+    fn compact_terminal_reply_carries_evidence_sequence() {
+        let terminal = AcceptanceMatrixTerminal {
+            schema_revision:
+                crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+            run_sequence: 7,
+            evidence_sequence: 43,
+            acceptance_plan_digest: 0x1111_2222_3333_4444,
+            plan_digest: 0x5555_6666_7777_8888,
+            digest: 0x9999_aaaa_bbbb_cccc,
+            outcome: AcceptanceMatrixOutcome::Inconclusive,
+            cause: AcceptanceMatrixCause::VelocityRestNotConfirmed,
+            attempted_masks: [0b11111; 2],
+            eligible_masks: [0b11110, 0b11100],
+            current_terminus_masks: [0, 0b10000],
+            unattempted_masks: [0; 2],
+            expected_observations: 40,
+            emitted_observations: 40,
+            expected_amplitudes: 5,
+            emitted_amplitudes: 5,
+            qualifier_bits: 0x1234,
+            run_started_us: 100,
+            run_completed_us: 200,
+            safety_fault: None,
+        };
+
+        let payload = super::encode_acceptance_terminal_reply(terminal);
+
+        assert_eq!(payload.len(), 39);
+        assert_eq!(&payload[6..8], &43_u16.to_le_bytes());
     }
 }
 
