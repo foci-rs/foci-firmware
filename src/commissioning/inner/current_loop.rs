@@ -4236,13 +4236,6 @@ mod tests {
 
     #[test]
     fn cross_axis_permille_saturates_at_u16_max_instead_of_wrapping() {
-        // CurrentAxisSample::cross_axis_actual is i16 (autotune/current.rs),
-        // not i32 -- the largest value it can hold is i16::MAX. At target=1,
-        // i16::MAX.unsigned_abs() as u32 * 1000 = 32_767_000, which is nowhere
-        // near u32::MAX (~4.29e9): the multiply cannot overflow with an
-        // i16-bounded input. This test only proves the existing `.min(u16::MAX)`
-        // saturation still applies once the arithmetic itself moves to
-        // Permille::checked_ratio, not that an overflow bug is being fixed.
         let sample = CurrentAxisSample {
             target: 1,
             same_axis_actual: 0,

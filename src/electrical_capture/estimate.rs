@@ -1257,9 +1257,6 @@ mod tests {
 
     #[test]
     fn saliency_at_the_amplitude_equals_average_boundary_is_full_scale() {
-        // amplitude == average is the domain's own upper edge (the function
-        // returns None just past it), so this must resolve to the maximum
-        // in-domain saliency: 2 * amplitude / average == 2000 permille.
         let input = SaliencySecondHarmonicInput {
             x_average_count_ratio_milli: 1_000,
             cos2_milli: 1_000,

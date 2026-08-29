@@ -506,9 +506,6 @@ mod tests {
 
     #[test]
     fn signed_anchor_drift_saturates_instead_of_capping_at_100_percent() {
-        // positive=10_000, repeated=-100: abs_diff=10_100, denom=pos_abs.max(1)=10_000.
-        // True ratio = 10_100 * 1000 / 10_000 = 1010, which the old `.min(1_000)` cap
-        // would have reported as exactly 1000.
         let anchor = build_signed_anchor(10_000, -1_000, -100, 960);
 
         assert_eq!(anchor.drift_permille.raw(), 1010);
@@ -516,8 +513,6 @@ mod tests {
 
     #[test]
     fn signed_anchor_asymmetry_is_bounded_by_1000_and_unaffected_by_the_migration() {
-        // pos_abs.abs_diff(neg_abs) <= pos_abs.max(neg_abs) always, so asymmetry
-        // can never exceed 1000 permille under either the old or new computation.
         let anchor = build_signed_anchor(10_000, -100, 10_000, 960);
 
         assert_eq!(anchor.asymmetry_permille.raw(), 990);

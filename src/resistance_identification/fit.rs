@@ -417,17 +417,12 @@ mod tests {
     #[test]
     fn rmse_permille_saturates_instead_of_capping_at_100_percent() {
         let profile = ResistanceProfile {
-            // Raised so this test's deliberately large residual does not trip
-            // HighResidual before fit_resistance_axis returns — this test is
-            // about what value is computed, not about the fail gate.
             high_residual_warn_permille: 64_000,
             high_residual_fail_permille: 65_000,
             ..ResistanceProfile::standard()
         };
         let mut points =
             synthetic_axis_points([800, 900, 1000, 1100, 1200, 1300, 1400, 1500], 1000, 0);
-        // Perturb selected points to create high residual variance while maintaining
-        // positive slope: add noise to middle points that mostly cancels out.
         points[2].voltage_delta_count -= 4000;
         points[3].voltage_delta_count -= 4000;
         points[4].voltage_delta_count += 4000;
