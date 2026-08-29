@@ -1079,6 +1079,52 @@ async fn inner_failed_selftest_restores_stored_current_gains() {
 }
 
 #[fixture_test]
+async fn inner_failed_calibrate_restores_stored_current_gains() {
+    use foci_tmc4671::registers::{PID_FLUX_P_FLUX_I, PID_TORQUE_P_TORQUE_I};
+
+    tmc_state()
+        .commission_in_flight
+        .store(true, core::sync::atomic::Ordering::Relaxed);
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, _) = fresh_state_locals();
+    let stored = crate::pid::InnerLoopGains {
+        flux_p: crate::pid::p_gain(100),
+        flux_i: crate::pid::i_gain(10),
+        torque_p: crate::pid::p_gain(200),
+        torque_i: crate::pid::i_gain(20),
+    };
+    let (flux_reg, torque_reg) = stored.to_registers();
+    let mut gains = Some(stored);
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_calibrate(8));
+    let err = crate::autotune::CommissionError::Spi;
+    let _outcome = drive_commission_result(
+        crate::commissioning::types::StepResult::InnerFailed(err),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+    assert!(
+        backend
+            .spi_log
+            .iter()
+            .any(|op| matches!(op, SpiOp::Write(addr, val)
+                if *addr == PID_FLUX_P_FLUX_I.addr() && *val == flux_reg)),
+        "expected PID_FLUX_P_FLUX_I restored to the pre-run stored value on calibrate failure"
+    );
+    assert!(
+        backend
+            .spi_log
+            .iter()
+            .any(|op| matches!(op, SpiOp::Write(addr, val)
+                if *addr == PID_TORQUE_P_TORQUE_I.addr() && *val == torque_reg)),
+        "expected PID_TORQUE_P_TORQUE_I restored to the pre-run stored value on calibrate failure"
+    );
+}
+
+#[fixture_test]
 async fn calibrate_done_preserves_step_epoch_after_gain_restore() {
     use core::sync::atomic::Ordering;
     let mut backend = MockBackend::new();

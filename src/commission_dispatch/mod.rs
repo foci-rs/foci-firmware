@@ -686,12 +686,12 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 .commission_in_flight
                 .store(false, core::sync::atomic::Ordering::Relaxed);
             crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
-            if kind == EngineKind::Selftest
+            if matches!(kind, EngineKind::Selftest | EngineKind::Calibrate)
                 && restore::restore_calibrate_gains(backend, state.tmc, *state.stored_gains)
                     .await
                     .is_err()
             {
-                defmt::error!("InnerFailed(Selftest): saved gain restore SPI failed");
+                defmt::error!("InnerFailed: saved gain restore SPI failed");
             }
 
             let reply = match kind {
