@@ -1536,6 +1536,73 @@ pub const fn stepper_event_pairs_perf_snapshot(reason: StepperEventReason) -> bo
     )
 }
 
+/// Diagnostic counter for the suspected P1/P2 reply
+/// reordering race.
+///
+/// `tmc_control` (P1) brackets its terminal-reply construction window with
+/// `mark_p1_start`/`mark_p1_end`; a `usb_task` (P2) reply call site checks
+/// `record_p2_send` at its own point of send. A nonzero `overlap_count` is
+/// direct evidence P2 sent a reply while P1's window was open -- the
+/// suspected preemption actually occurring, not just theoretically
+/// possible. Counters only: never `defmt::info!` at these call sites, since
+/// logging at a preemption-prone boundary risks the reentrant
+/// `RttEncoder::acquire` panic already documented as a known issue.
+struct ReplyOverlapCounters {
+    p1_in_flight: AtomicBool,
+    overlap_count: AtomicU32,
+}
+
+impl ReplyOverlapCounters {
+    const fn new() -> Self {
+        Self {
+            p1_in_flight: AtomicBool::new(false),
+            overlap_count: AtomicU32::new(0),
+        }
+    }
+
+    fn mark_p1_start(&self) {
+        self.p1_in_flight.store(true, Ordering::Release);
+    }
+
+    fn mark_p1_end(&self) {
+        self.p1_in_flight.store(false, Ordering::Release);
+    }
+
+    fn record_p2_send(&self) {
+        if self.p1_in_flight.load(Ordering::Acquire) {
+            self.overlap_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn overlap_count(&self) -> u32 {
+        self.overlap_count.load(Ordering::Relaxed)
+    }
+}
+
+static REPLY_OVERLAP: ReplyOverlapCounters = ReplyOverlapCounters::new();
+
+/// Mark the start of `tmc_control`'s (P1) terminal-reply construction window.
+pub fn mark_p1_reply_construction_start() {
+    REPLY_OVERLAP.mark_p1_start();
+}
+
+/// Mark the end of `tmc_control`'s (P1) terminal-reply construction window.
+pub fn mark_p1_reply_construction_end() {
+    REPLY_OVERLAP.mark_p1_end();
+}
+
+/// Record a `usb_task` (P2) reply send, checking whether it landed inside
+/// P1's reply-construction window.
+pub fn record_p2_reply_send() {
+    REPLY_OVERLAP.record_p2_send();
+}
+
+/// Current count of P2 reply sends observed inside P1's reply-construction
+/// window.
+pub fn p1_p2_reply_overlap_count() -> u32 {
+    REPLY_OVERLAP.overlap_count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2035,5 +2102,45 @@ mod tests {
         assert_eq!(after_clear.scheduler_full_count, 0);
         assert_eq!(after_clear.stepper_load_lateness_max_ticks, 0);
         assert!(!after_clear.build_trace_enabled);
+    }
+
+    #[test]
+    fn reply_overlap_counters_start_at_zero() {
+        let counters = ReplyOverlapCounters::new();
+        assert_eq!(counters.overlap_count(), 0);
+    }
+
+    #[test]
+    fn reply_overlap_counters_ignore_a_send_outside_the_p1_window() {
+        let counters = ReplyOverlapCounters::new();
+        counters.record_p2_send();
+        assert_eq!(counters.overlap_count(), 0);
+    }
+
+    #[test]
+    fn reply_overlap_counters_count_a_send_inside_the_p1_window() {
+        let counters = ReplyOverlapCounters::new();
+        counters.mark_p1_start();
+        counters.record_p2_send();
+        assert_eq!(counters.overlap_count(), 1);
+    }
+
+    #[test]
+    fn reply_overlap_counters_ignore_a_send_after_the_p1_window_closes() {
+        let counters = ReplyOverlapCounters::new();
+        counters.mark_p1_start();
+        counters.mark_p1_end();
+        counters.record_p2_send();
+        assert_eq!(counters.overlap_count(), 0);
+    }
+
+    #[test]
+    fn reply_overlap_counters_accumulate_across_multiple_overlapping_sends() {
+        let counters = ReplyOverlapCounters::new();
+        counters.mark_p1_start();
+        counters.record_p2_send();
+        counters.record_p2_send();
+        counters.record_p2_send();
+        assert_eq!(counters.overlap_count(), 3);
     }
 }
