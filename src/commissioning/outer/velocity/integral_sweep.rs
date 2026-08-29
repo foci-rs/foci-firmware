@@ -417,18 +417,10 @@ fn acceptance_target_rate_q(
 }
 
 fn acceptance_identity_and_qualifiers(plan: VelocityIntegralExecutionPlan) -> Option<(u64, u16)> {
-    if !is_acceptance_matrix(plan)
-        || !(0..=i32::from(u16::MAX)).contains(&plan.selected_response_intervals_q[1][0])
-        || plan.selected_response_intervals_q[1][1] != 0
-    {
+    if !is_acceptance_matrix(plan) {
         return None;
     }
-    let low = plan.selected_response_intervals_q[0][0] as u32;
-    let high = plan.selected_response_intervals_q[0][1] as u32;
-    Some((
-        u64::from(low) | (u64::from(high) << 32),
-        plan.selected_response_intervals_q[1][0] as u16,
-    ))
+    Some((plan.acceptance_plan_digest, plan.qualifier_bits))
 }
 
 pub(super) fn acceptance_amplitude_report(

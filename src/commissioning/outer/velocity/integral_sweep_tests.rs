@@ -758,7 +758,8 @@ fn matrix_recovery_uses_the_retained_top_point_after_a_low_amplitude_precision_f
 fn matrix_terminals_distinguish_sufficiency_recovery_and_integrity() {
     let mut matrix = plan();
     matrix.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
-    matrix.selected_response_intervals_q = [[0x1234, 0], [0x55aa, 0]];
+    matrix.acceptance_plan_digest = 0x1234;
+    matrix.qualifier_bits = 0x55aa;
     matrix.positive_rung_count = 5;
     matrix.matrix_targets_rpm = [16, 33, 66, 132, 263];
     let mut data = VelocityIntegralData::new(1, matrix);
@@ -806,6 +807,22 @@ fn matrix_terminals_distinguish_sufficiency_recovery_and_integrity() {
     let fault = acceptance_terminal(&data, true, None);
     assert_eq!(fault.outcome, AcceptanceMatrixOutcome::Fault);
     assert_eq!(fault.cause, AcceptanceMatrixCause::EvidenceIntegrity);
+}
+
+#[test]
+fn non_matrix_plan_faults_on_evidence_integrity() {
+    let mut data = VelocityIntegralData::new(1, plan());
+    data.opening_direction_mask = 0b11111;
+    data.bookend_available_mask = 0b11111;
+    data.eligible_masks = [0b00111; 2];
+    data.emitted_observations = 40;
+    data.emitted_rungs = 5;
+
+    let terminal = acceptance_terminal(&data, false, None);
+    assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Fault);
+    assert_eq!(terminal.cause, AcceptanceMatrixCause::EvidenceIntegrity);
+    assert_eq!(terminal.acceptance_plan_digest, 0);
+    assert_eq!(terminal.qualifier_bits, 0);
 }
 
 #[test]
