@@ -1,10 +1,11 @@
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, MotionMode, PID_ERROR_PID_VELOCITY_ERROR_SUM,
-    PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET, PidGains, Register,
-    STATUS_FLAGS,
+    ABN_DECODER_COUNT, ABN_DECODER_PPR, MODE_RAMP_MODE_MOTION, MotionMode,
+    PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_P_VELOCITY_I,
+    PID_VELOCITY_TARGET, PidGains, Register, STATUS_FLAGS,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
+use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::tmc::{TmcRequest, TmcRequestKind};
 
 use super::{
@@ -220,6 +221,12 @@ where
             .read_register(ABN_DECODER_COUNT)
             .await
             .map_err(|_| ())?;
+        let encoder_counts_per_rev = ctx
+            .tmc
+            .read_register(ABN_DECODER_PPR)
+            .await
+            .map_err(|_| ())?;
+        let encoder_domain = EncoderDomain::new(encoder_counts_per_rev).map_err(|_| ())?;
 
         let stale_flags = ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
         reject_actionable_status(stale_flags, ctx.feedback_config)?;
@@ -290,7 +297,13 @@ where
             .read_register(ABN_DECODER_COUNT)
             .await
             .map_err(|_| ())?;
-        report.encoder_delta = report.encoder_after.wrapping_sub(report.encoder_before) as i32;
+        report.encoder_delta = encoder_domain
+            .delta(
+                encoder_domain.count(report.encoder_before),
+                encoder_domain.count(report.encoder_after),
+            )
+            .map_err(|_| ())?
+            .signed_counts();
         Ok(())
     }
     .await;

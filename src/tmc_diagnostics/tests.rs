@@ -398,6 +398,7 @@ fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
             .with_read(SAVED_GAINS)
             .with_read(0)
             .with_read(100)
+            .with_read(1_000)
             .with_read(0)
             .with_read(1)
             .with_read(TEST_GAINS)
@@ -505,6 +506,7 @@ fn velocity_limit_latch_register_mock() -> DiagnosticMockSpi {
         .with_register(PID_VELOCITY_P_VELOCITY_I.addr(), 0x0100_0002)
         .with_register(PID_VELOCITY_TARGET.addr(), 7)
         .with_register(ABN_DECODER_COUNT.addr(), 100)
+        .with_register(ABN_DECODER_PPR.addr(), 1_000)
         .with_register(STATUS_FLAGS.addr(), 0)
 }
 
@@ -584,6 +586,191 @@ fn velocity_limit_latch_failures_disarm_and_attempt_every_saved_restore() {
                 }
             }
         }
+    });
+}
+
+#[cfg(feature = "trace-velocity-limit-latch-test")]
+#[test]
+fn velocity_limit_latch_encoder_delta_wraps_across_domain_origin() {
+    pollster::block_on(async {
+        const SAVED_MODE: u32 = 0x8000_0003;
+        const SAVED_LIMIT: u32 = 2_816;
+        const SAVED_GAINS: u32 = 0x0100_0002;
+        const TEST_GAINS: u32 = 0x0200_0000;
+        const VELOCITY_MODE: u32 = 0x8000_0002;
+        const EXPECTED_LIMIT_FLAGS: u32 = (1 << 7) | (1 << 12);
+        const ENCODER_PPR: u32 = 1_000;
+        const ENCODER_BEFORE: u32 = 990;
+        const ENCODER_AFTER: u32 = 10;
+
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(SAVED_MODE)
+            .with_read(SAVED_LIMIT)
+            .with_read(SAVED_GAINS)
+            .with_read(0)
+            .with_read(ENCODER_BEFORE)
+            .with_read(ENCODER_PPR)
+            .with_read(0)
+            .with_read(1)
+            .with_read(TEST_GAINS)
+            .with_read(VELOCITY_MODE)
+            .with_read(1)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(0)
+            .with_read(ENCODER_AFTER)
+            .with_read(0)
+            .with_read(SAVED_GAINS)
+            .with_read(SAVED_LIMIT)
+            .with_read(SAVED_MODE);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay {
+            advance_on_delay: true,
+            ..MockDelay::default()
+        };
+        let mut power_stage = MockDiagnosticPowerStage::default();
+
+        let outcome = run_velocity_limit_latch_request(
+            crate::tmc::tmc_velocity_limit_latch_test(0, 7),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut power_stage,
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 999,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VelocityLimitLatch(report)) = outcome
+        else {
+            panic!("expected velocity-limit latch report");
+        };
+        assert_eq!(report.status, 0);
+        assert_eq!(
+            (
+                report.encoder_before,
+                report.encoder_after,
+                report.encoder_delta
+            ),
+            (ENCODER_BEFORE, ENCODER_AFTER, 20)
+        );
+    });
+}
+
+#[cfg(feature = "trace-velocity-limit-latch-test")]
+#[test]
+fn velocity_limit_latch_invalid_ppr_aborts_before_stimulus() {
+    pollster::block_on(async {
+        let raw_spi = velocity_limit_latch_register_mock().with_register(ABN_DECODER_PPR.addr(), 0);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let mut power_stage = MockDiagnosticPowerStage::default();
+
+        let outcome = run_velocity_limit_latch_request(
+            crate::tmc::tmc_velocity_limit_latch_test(0, 7),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut power_stage,
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 999,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VelocityLimitLatch(report)) = outcome
+        else {
+            panic!("expected velocity-limit latch report");
+        };
+        assert_eq!(report.status, VELOCITY_LIMIT_LATCH_STATUS_SPI);
+        let raw_spi = tmc.into_inner();
+        assert!(
+            !raw_spi
+                .write_attempts
+                .contains(&(PID_VELOCITY_TARGET.addr(), 1))
+        );
+    });
+}
+
+#[cfg(feature = "trace-velocity-limit-latch-test")]
+#[test]
+fn velocity_limit_latch_exact_half_turn_aborts_via_post_measurement_error() {
+    pollster::block_on(async {
+        const SAVED_MODE: u32 = 0x8000_0003;
+        const SAVED_LIMIT: u32 = 2_816;
+        const SAVED_GAINS: u32 = 0x0100_0002;
+        const TEST_GAINS: u32 = 0x0200_0000;
+        const VELOCITY_MODE: u32 = 0x8000_0002;
+        const EXPECTED_LIMIT_FLAGS: u32 = (1 << 7) | (1 << 12);
+
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(SAVED_MODE)
+            .with_read(SAVED_LIMIT)
+            .with_read(SAVED_GAINS)
+            .with_read(0)
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1_000) // ABN_DECODER_PPR
+            .with_read(0)
+            .with_read(1)
+            .with_read(TEST_GAINS)
+            .with_read(VELOCITY_MODE)
+            .with_read(1)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(EXPECTED_LIMIT_FLAGS)
+            .with_read(0)
+            .with_read(600) // ABN_DECODER_COUNT after -- exact half turn from 100 at ppr 1000
+            .with_read(0)
+            .with_read(SAVED_GAINS)
+            .with_read(SAVED_LIMIT)
+            .with_read(SAVED_MODE);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay {
+            advance_on_delay: true,
+            ..MockDelay::default()
+        };
+        let mut power_stage = MockDiagnosticPowerStage::default();
+
+        let outcome = run_velocity_limit_latch_request(
+            crate::tmc::tmc_velocity_limit_latch_test(0, 7),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut power_stage,
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 999,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VelocityLimitLatch(report)) = outcome
+        else {
+            panic!("expected velocity-limit latch report");
+        };
+        assert_eq!(report.status, VELOCITY_LIMIT_LATCH_STATUS_SPI);
     });
 }
 
