@@ -12,7 +12,7 @@ use crate::autotune::{
     CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopEntryState,
     CommissionError, CommissionProfile, CommissionStatus, CurrentAxisGate, CurrentAxisGateResult,
     CurrentAxisRetryDecision, CurrentAxisSample, CurrentGainSynthesisInput, CurrentGains,
-    CurrentLoopEvidence, ElectricalModel, InnerSequence, PhaseId, TransientBuffer,
+    CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, PhaseId, TransientBuffer,
     classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
 };
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
@@ -373,9 +373,13 @@ fn axis_sample_from_registers(
 }
 
 fn cross_axis_permille(sample: &CurrentAxisSample) -> u16 {
-    let target_abs = sample.target.unsigned_abs().max(1) as u32;
-    ((sample.cross_axis_actual.unsigned_abs() as u32 * 1000) / target_abs).min(u16::MAX as u32)
-        as u16
+    let target_abs = u64::from(sample.target.unsigned_abs().max(1));
+    Permille::checked_ratio(
+        u64::from(sample.cross_axis_actual.unsigned_abs()),
+        target_abs,
+    )
+    .expect("target_abs is at least 1 via .max(1)")
+    .raw()
 }
 
 fn current_validation_axis_code(axis: CurrentValidationAxis) -> u8 {
@@ -599,7 +603,7 @@ fn bidirectional_pair_response_permille(
     positive: &AxisDirectionalEvidence,
     negative: &AxisDirectionalEvidence,
 ) -> u16 {
-    let target_abs = target.unsigned_abs().max(1) as u64;
+    let target_abs = u64::from(target.unsigned_abs().max(1));
     let Some((numerator, denominator)) = bidirectional_pair_response_parts(positive, negative)
     else {
         return positive
@@ -607,7 +611,12 @@ fn bidirectional_pair_response_permille(
             .response_permille
             .max(negative.gate.response_permille);
     };
-    ((numerator * 1000) / (denominator * target_abs)).min(u64::from(u16::MAX)) as u16
+    Permille::checked_ratio(numerator, denominator * target_abs)
+        .expect(
+            "bidirectional_pair_response_parts only returns Some when both sample counts \
+             are >0, so denominator is at least 2; target_abs is at least 1 via .max(1)",
+        )
+        .raw()
 }
 
 fn bidirectional_pair_response_error_count(
@@ -651,7 +660,7 @@ fn bidirectional_pair_cross_axis_permille(
     positive: &AxisDirectionalEvidence,
     negative: &AxisDirectionalEvidence,
 ) -> u16 {
-    let target_abs = target.unsigned_abs().max(1) as u64;
+    let target_abs = u64::from(target.unsigned_abs().max(1));
     let Some((numerator, denominator)) = bidirectional_pair_cross_axis_parts(positive, negative)
     else {
         return positive
@@ -659,7 +668,12 @@ fn bidirectional_pair_cross_axis_permille(
             .cross_axis_permille
             .max(negative.gate.cross_axis_permille);
     };
-    ((numerator * 1000) / (denominator * target_abs)).min(u64::from(u16::MAX)) as u16
+    Permille::checked_ratio(numerator, denominator * target_abs)
+        .expect(
+            "bidirectional_pair_cross_axis_parts only returns Some when both sample counts \
+             are >0, so denominator is at least 2; target_abs is at least 1 via .max(1)",
+        )
+        .raw()
 }
 
 fn bidirectional_pair_cross_axis_count(
@@ -4218,6 +4232,47 @@ mod tests {
             settled_samples: [CurrentValidationSettledSampleEvidence::EMPTY;
                 SETTLED_FLUX_AVERAGE_SAMPLES],
         }
+    }
+
+    #[test]
+    fn cross_axis_permille_saturates_at_u16_max_instead_of_wrapping() {
+        // CurrentAxisSample::cross_axis_actual is i16 (autotune/current.rs),
+        // not i32 -- the largest value it can hold is i16::MAX. At target=1,
+        // i16::MAX.unsigned_abs() as u32 * 1000 = 32_767_000, which is nowhere
+        // near u32::MAX (~4.29e9): the multiply cannot overflow with an
+        // i16-bounded input. This test only proves the existing `.min(u16::MAX)`
+        // saturation still applies once the arithmetic itself moves to
+        // Permille::checked_ratio, not that an overflow bug is being fixed.
+        let sample = CurrentAxisSample {
+            target: 1,
+            same_axis_actual: 0,
+            cross_axis_actual: i16::MAX,
+            output_limited: 0,
+            output_limit: 0,
+            encoder_delta_counts: 0,
+            status_flags: 0,
+        };
+
+        assert_eq!(cross_axis_permille(&sample), u16::MAX);
+    }
+
+    #[test]
+    fn bidirectional_pair_response_permille_saturates_at_u16_max_instead_of_wrapping() {
+        let positive = AxisDirectionalEvidence {
+            same_axis_total: i32::MAX,
+            same_axis_sample_count: 1,
+            ..axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS)
+        };
+        let negative = AxisDirectionalEvidence {
+            same_axis_total: i32::MIN,
+            same_axis_sample_count: 1,
+            ..axis_directional_evidence(crate::autotune::CURRENT_AXIS_VALIDATION_PASS)
+        };
+
+        assert_eq!(
+            bidirectional_pair_response_permille(1, &positive, &negative),
+            u16::MAX
+        );
     }
 
     fn axis_validation_evidence(status: u8) -> CurrentValidationAxisEvidence {
