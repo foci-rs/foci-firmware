@@ -673,23 +673,6 @@ fn inductance_encoder_delta(
         })
 }
 
-fn permille_delta(a: u32, b: u32) -> Option<u16> {
-    let base = a.max(b);
-    if base == 0 {
-        return Some(0);
-    }
-    let delta = a.abs_diff(b) as u64;
-    u16::try_from((delta * 1000 / u64::from(base)).min(u64::from(u16::MAX))).ok()
-}
-
-fn ratio_permille(numerator: u32, denominator: u32) -> Option<u16> {
-    if denominator == 0 {
-        return None;
-    }
-    u16::try_from((u64::from(numerator) * 1000 / u64::from(denominator)).min(u64::from(u16::MAX)))
-        .ok()
-}
-
 fn selected_resistance_count_slope(data: &ElectricalIdData) -> Option<i32> {
     Some(data.resistance_result?.selected_r_count_slope_milli)
 }
@@ -1244,11 +1227,26 @@ fn finish_inductance_evidence(
         r_count_slope_milli,
     )
     .ok_or(InductanceReject::Drift)?;
-    let drift_permille = permille_delta(
-        first_reactance.x_quad_count_ratio_milli,
-        second_reactance.x_quad_count_ratio_milli,
-    )
-    .ok_or(InductanceReject::Drift)?;
+    let drift_permille = if first_reactance.x_quad_count_ratio_milli == 0
+        && second_reactance.x_quad_count_ratio_milli == 0
+    {
+        0
+    } else {
+        Permille::checked_ratio(
+            u64::from(
+                first_reactance
+                    .x_quad_count_ratio_milli
+                    .abs_diff(second_reactance.x_quad_count_ratio_milli),
+            ),
+            u64::from(
+                first_reactance
+                    .x_quad_count_ratio_milli
+                    .max(second_reactance.x_quad_count_ratio_milli),
+            ),
+        )
+        .ok_or(InductanceReject::Drift)?
+        .raw()
+    };
 
     let saliency = match saliency_accumulator
         .finish(phi_delta_counts)
@@ -1266,11 +1264,12 @@ fn finish_inductance_evidence(
     }
 
     let mut warning_flags = 0u16;
-    let iq_rms_permille = ratio_permille(
-        frame.iq_rms_milli_count,
-        frame.iq_mean_milli_count.unsigned_abs(),
+    let iq_rms_permille = Permille::checked_ratio(
+        u64::from(frame.iq_rms_milli_count),
+        u64::from(frame.iq_mean_milli_count.unsigned_abs()),
     )
-    .ok_or(InductanceReject::LowQuadratureSignal)?;
+    .ok_or(InductanceReject::LowQuadratureSignal)?
+    .raw();
     if iq_rms_permille > INDUCTANCE_MAX_IQ_RMS_WARN_PERMILLE {
         warning_flags |= INDUCTANCE_WARN_HIGH_RMS;
     }
