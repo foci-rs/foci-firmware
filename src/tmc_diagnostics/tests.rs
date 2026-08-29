@@ -199,15 +199,6 @@ fn ready_runtime() -> TmcControlRuntime {
 }
 
 #[test]
-fn current_step_encoder_delta_wraps_by_counts_per_rev() {
-    assert_eq!(current_step_encoder_delta(90, 10, 100), 20);
-    assert_eq!(current_step_encoder_delta(10, 90, 100), -20);
-    assert_eq!(current_step_encoder_delta(10, 40, 100), 30);
-    assert_eq!(current_step_encoder_delta(40, 10, 100), -30);
-    assert_eq!(current_step_encoder_delta(10, 90, 0), 80);
-}
-
-#[test]
 fn pack_voltage_ext_preserves_signed_halves() {
     assert_eq!(pack_voltage_ext(0x1234, -2), 0x1234_fffe);
     assert_eq!(pack_voltage_ext(-1, 0x4567), 0xffff_4567);
@@ -800,6 +791,93 @@ fn flux_current_step_drives_and_reports_flux_axis() {
 }
 
 #[test]
+fn current_step_invalid_ppr_aborts_before_excitation() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0) // saved MODE_RAMP_MODE_MOTION
+            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(0); // ABN_DECODER_PPR -- invalid
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_current_step_request(
+            tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 20, 3, 555),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { report, .. }) = outcome
+        else {
+            panic!("expected current step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+        let raw_spi = tmc.into_inner();
+        assert!(!raw_spi.write_attempts.contains(&(
+            PID_TORQUE_FLUX_TARGET.addr(),
+            crate::tmc::pack_torque_flux_target(20, 0),
+        )));
+    });
+}
+
+#[test]
+fn current_step_exact_half_turn_aborts_via_post_measurement_error() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0) // saved MODE_RAMP_MODE_MOTION
+            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1000) // ABN_DECODER_PPR
+            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
+            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL during
+            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
+            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD_LIMITED
+            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
+            .with_read(600); // ABN_DECODER_COUNT after -- exact half turn from 100 at ppr 1000
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_current_step_request(
+            tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 20, 3, 555),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { report, .. }) = outcome
+        else {
+            panic!("expected current step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+    });
+}
+
+#[test]
 fn torque_sample_not_ready_does_not_emit_detail() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -833,6 +911,101 @@ fn torque_sample_not_ready_does_not_emit_detail() {
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
         assert!(!emit_detail);
+    });
+}
+
+#[test]
+fn current_torque_sample_invalid_ppr_aborts_before_excitation() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0) // saved MODE_RAMP_MODE_MOTION
+            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(0); // ABN_DECODER_PPR -- invalid
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_current_torque_sample_request(
+            tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+        let raw_spi = tmc.into_inner();
+        assert!(!raw_spi.write_attempts.contains(&(
+            PID_TORQUE_FLUX_TARGET.addr(),
+            crate::tmc::pack_torque_flux_target(22, 0),
+        )));
+    });
+}
+
+#[test]
+fn current_torque_sample_exact_half_turn_aborts_via_post_measurement_error() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0) // saved MODE_RAMP_MODE_MOTION
+            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1000) // ABN_DECODER_PPR
+            .with_read(0) // PID_TORQUE_FLUX_ACTUAL before
+            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
+            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
+            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
+            .with_read(0) // STATUS_FLAGS
+            .with_read(600); // ABN_DECODER_COUNT sample -- exact half turn from 100 at ppr 1000
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_current_torque_sample_request(
+            tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
     });
 }
 
@@ -939,6 +1112,103 @@ fn position_offset_spi_failure_attempts_offset_restore() {
 }
 
 #[test]
+fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(0x1234_5678) // saved offset
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(0); // ABN_DECODER_PPR -- invalid
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_position_torque_offset_sample_request(
+            tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected position offset report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+        let raw_spi = tmc.into_inner();
+        let offset_reg = u32::from(33i16 as u16) << 16;
+        assert!(
+            !raw_spi
+                .write_attempts
+                .contains(&(PID_TORQUE_FLUX_OFFSET.addr(), offset_reg))
+        );
+    });
+}
+
+#[test]
+fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_error() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(0x1234_5678) // saved offset
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1000) // ABN_DECODER_PPR
+            .with_read(0) // PID_TORQUE_FLUX_ACTUAL before
+            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
+            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
+            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
+            .with_read(0) // STATUS_FLAGS
+            .with_read(600); // ABN_DECODER_COUNT sample -- exact half turn from 100 at ppr 1000
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_position_torque_offset_sample_request(
+            tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected position offset report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+    });
+}
+
+#[test]
 fn voltage_step_rejects_non_position_mode() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default().with_read(0x8000_0001);
@@ -1036,6 +1306,86 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
                 PID_TORQUE_FLUX_ACTUAL.addr(),
             ]
         );
+    });
+}
+
+#[test]
+fn voltage_step_invalid_ppr_aborts_before_excitation() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(100) // encoder before
+            .with_read(0); // ppr -- invalid
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_voltage_step_request(
+            tmc_voltage_step_test(0, 3, 44, -55, 6),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VoltageStep(report)) = outcome else {
+            panic!("expected voltage step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+        let raw_spi = tmc.into_inner();
+        assert!(
+            !raw_spi
+                .write_attempts
+                .contains(&(UQ_UD_EXT.addr(), pack_voltage_ext(44, -55)))
+        );
+    });
+}
+
+#[test]
+fn voltage_step_exact_half_turn_aborts_via_post_measurement_error() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(100) // encoder before
+            .with_read(1000) // ppr
+            .with_read(0x0001_0000) // torque before
+            .with_read(600); // encoder sample -- exact half turn from 100 at ppr 1000
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_voltage_step_request(
+            tmc_voltage_step_test(0, 3, 44, -55, 6),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VoltageStep(report)) = outcome else {
+            panic!("expected voltage step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
     });
 }
 

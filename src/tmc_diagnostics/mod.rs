@@ -18,7 +18,7 @@ mod voltage_step;
 mod tests;
 
 pub use current_step::run_current_step_request;
-pub use helpers::{current_step_encoder_delta, pack_voltage_ext};
+pub use helpers::pack_voltage_ext;
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     AdcResidualReport, CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI,

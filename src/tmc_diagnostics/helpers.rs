@@ -14,27 +14,6 @@ pub fn pack_voltage_ext(uq_ext: i16, ud_ext: i16) -> u32 {
     (u32::from(uq_ext as u16) << 16) | u32::from(ud_ext as u16)
 }
 
-/// Compute the signed encoder delta between two raw position readings.
-///
-/// Wraps into `[-counts_per_rev/2, counts_per_rev/2]` when `counts_per_rev`
-/// is positive, matching the original OpenFFBoard diagnostic helper.
-pub fn current_step_encoder_delta(before: u32, after: u32, counts_per_rev: u32) -> i32 {
-    let raw = (after as i32).wrapping_sub(before as i32);
-    let counts_per_rev = counts_per_rev as i32;
-    if counts_per_rev <= 0 {
-        return raw;
-    }
-
-    let half = counts_per_rev / 2;
-    if raw > half {
-        raw - counts_per_rev
-    } else if raw < -half {
-        raw + counts_per_rev
-    } else {
-        raw
-    }
-}
-
 #[allow(dead_code)]
 pub(crate) async fn write_current_step_sub_register<B>(
     tmc: &mut Tmc4671Spi<B>,

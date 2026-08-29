@@ -1,6 +1,7 @@
+use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::tmc::{TmcRequest, TmcRequestKind};
 
-use super::helpers::{current_step_encoder_delta, pack_voltage_ext, split_signed_halves};
+use super::helpers::{pack_voltage_ext, split_signed_halves};
 use super::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, DiagnosticContext, DiagnosticDelay,
     DiagnosticOutcome, DiagnosticReport, empty_voltage_step_report,
@@ -101,6 +102,7 @@ where
                     tmc.read_register(ABN_DECODER_COUNT).await.map_err(|_| ())?;
                 let encoder_counts_per_rev =
                     tmc.read_register(ABN_DECODER_PPR).await.map_err(|_| ())?;
+                let encoder_domain = EncoderDomain::new(encoder_counts_per_rev).map_err(|_| ())?;
 
                 let before = tmc
                     .read_register(PID_TORQUE_FLUX_ACTUAL)
@@ -120,11 +122,13 @@ where
 
                 report.encoder_sample =
                     tmc.read_register(ABN_DECODER_COUNT).await.map_err(|_| ())?;
-                report.encoder_delta_sample = current_step_encoder_delta(
-                    report.encoder_before,
-                    report.encoder_sample,
-                    encoder_counts_per_rev,
-                );
+                report.encoder_delta_sample = encoder_domain
+                    .delta(
+                        encoder_domain.count(report.encoder_before),
+                        encoder_domain.count(report.encoder_sample),
+                    )
+                    .map_err(|_| ())?
+                    .signed_counts();
 
                 let actual = tmc
                     .read_register(PID_TORQUE_FLUX_ACTUAL)
@@ -204,11 +208,13 @@ where
 
                 report.encoder_after =
                     tmc.read_register(ABN_DECODER_COUNT).await.map_err(|_| ())?;
-                report.encoder_delta_after = current_step_encoder_delta(
-                    report.encoder_before,
-                    report.encoder_after,
-                    encoder_counts_per_rev,
-                );
+                report.encoder_delta_after = encoder_domain
+                    .delta(
+                        encoder_domain.count(report.encoder_before),
+                        encoder_domain.count(report.encoder_after),
+                    )
+                    .map_err(|_| ())?
+                    .signed_counts();
 
                 let after = tmc
                     .read_register(PID_TORQUE_FLUX_ACTUAL)

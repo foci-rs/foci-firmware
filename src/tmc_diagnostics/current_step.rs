@@ -1,8 +1,7 @@
+use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::tmc::{CurrentStepAxis, TmcRequest, TmcRequestKind};
 
-use super::helpers::{
-    clear_current_step_integrators, current_step_encoder_delta, split_signed_halves,
-};
+use super::helpers::{clear_current_step_integrators, split_signed_halves};
 use super::{
     CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI, CurrentStepReport, DiagnosticContext,
     DiagnosticDelay, DiagnosticOutcome, DiagnosticReport,
@@ -251,6 +250,7 @@ where
                 encoder_before = tmc.read_register(ABN_DECODER_COUNT).await.map_err(|_| ())?;
                 let encoder_counts_per_rev =
                     tmc.read_register(ABN_DECODER_PPR).await.map_err(|_| ())?;
+                let encoder_domain = EncoderDomain::new(encoder_counts_per_rev).map_err(|_| ())?;
 
                 let before = tmc
                     .read_register(PID_TORQUE_FLUX_ACTUAL)
@@ -304,11 +304,13 @@ where
                 delay.delay_ms(CURRENT_STEP_SETTLE_MS).await;
 
                 encoder_after = tmc.read_register(ABN_DECODER_COUNT).await.map_err(|_| ())?;
-                encoder_delta = current_step_encoder_delta(
-                    encoder_before,
-                    encoder_after,
-                    encoder_counts_per_rev,
-                );
+                encoder_delta = encoder_domain
+                    .delta(
+                        encoder_domain.count(encoder_before),
+                        encoder_domain.count(encoder_after),
+                    )
+                    .map_err(|_| ())?
+                    .signed_counts();
 
                 let after = tmc
                     .read_register(PID_TORQUE_FLUX_ACTUAL)
