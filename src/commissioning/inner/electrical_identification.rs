@@ -2512,9 +2512,9 @@ mod tests {
                 positive_current_count: 900,
                 negative_current_count: -900,
                 signed_count_slope_milli: slope_milli,
-                asymmetry_permille: 0,
+                asymmetry_permille: Permille::ZERO,
                 repeated_positive_current_count: 900,
-                drift_permille: 0,
+                drift_permille: Permille::ZERO,
             }),
             warning_flags: ResistanceWarningFlags::NONE,
         }

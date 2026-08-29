@@ -98,13 +98,13 @@ pub fn fit_resistance_axis(
         if anchor.signed_count_slope_milli <= 0 {
             return Err(ResistanceError::NonPositiveSlope);
         }
-        if anchor.drift_permille >= profile.thermal_drift_fail_permille {
+        if anchor.drift_permille.raw() >= profile.thermal_drift_fail_permille {
             return Err(ResistanceError::ThermalDrift);
         }
-        if anchor.drift_permille >= profile.thermal_drift_warn_permille {
+        if anchor.drift_permille.raw() >= profile.thermal_drift_warn_permille {
             warning_flags.insert(ResistanceWarningFlags::THERMAL_DRIFT);
         }
-        if anchor.asymmetry_permille >= profile.signed_asymmetry_warn_permille {
+        if anchor.asymmetry_permille.raw() >= profile.signed_asymmetry_warn_permille {
             warning_flags.insert(ResistanceWarningFlags::SIGNED_CURRENT_ASYMMETRY);
         }
     }
@@ -277,9 +277,9 @@ mod tests {
             positive_current_count: 900,
             negative_current_count: -880,
             signed_count_slope_milli: -1070,
-            asymmetry_permille: 10,
+            asymmetry_permille: Permille::new(10),
             repeated_positive_current_count: 900,
-            drift_permille: 10,
+            drift_permille: Permille::new(10),
         };
 
         let err = fit_resistance_axis(ElectricalAxis::PHASE0, &profile, &points, Some(anchor))
@@ -327,9 +327,9 @@ mod tests {
             positive_current_count: 900,
             negative_current_count: -880,
             signed_count_slope_milli: 1070,
-            asymmetry_permille: 20,
+            asymmetry_permille: Permille::new(20),
             repeated_positive_current_count: 960,
-            drift_permille: 66,
+            drift_permille: Permille::new(66),
         };
 
         let err = fit_resistance_axis(ElectricalAxis::PHASE0, &profile, &points, Some(anchor))
@@ -346,9 +346,9 @@ mod tests {
             positive_current_count: 900,
             negative_current_count: -650,
             signed_count_slope_milli: 1200,
-            asymmetry_permille: 320,
+            asymmetry_permille: Permille::new(320),
             repeated_positive_current_count: 910,
-            drift_permille: 11,
+            drift_permille: Permille::new(11),
         };
 
         let result =

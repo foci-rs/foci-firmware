@@ -5,6 +5,7 @@ use core::sync::atomic::Ordering::Relaxed;
 
 use foci_tmc4671::registers::Register;
 
+use crate::autotune::Permille;
 use crate::resistance_identification::{
     ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceCurrentEvidence,
     ResistanceProfile, ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
@@ -133,7 +134,7 @@ fn axis_report(oid: u8, axis: &ResistanceAxisResult) -> ResistanceAxisReport {
                 anchor.drift_permille,
             )
         })
-        .unwrap_or((0, 0, 0));
+        .unwrap_or((0, Permille::ZERO, Permille::ZERO));
 
     ResistanceAxisReport {
         oid,
@@ -146,8 +147,8 @@ fn axis_report(oid: u8, axis: &ResistanceAxisResult) -> ResistanceAxisReport {
         excluded_point_mask: axis.excluded_point_mask,
         selected_count: axis.selected_count,
         signed_count_slope_milli,
-        signed_asymmetry_permille,
-        drift_permille,
+        signed_asymmetry_permille: signed_asymmetry_permille.raw(),
+        drift_permille: drift_permille.raw(),
         warning_flags: axis.warning_flags.0,
     }
 }

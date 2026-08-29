@@ -9,6 +9,7 @@ use super::types::{
     ElectricalAxis, ResistanceAxisResult, ResistanceCurrentEvidence, ResistanceError,
     ResistancePoint, ResistanceRunResult, ResistanceWarningFlags, SignedAnchorEvidence,
 };
+use crate::autotune::Permille;
 use crate::commissioning::capture_timing::CaptureTiming;
 
 const SAMPLES_PER_WINDOW: u8 = 8;
@@ -479,11 +480,16 @@ fn build_signed_anchor(
     };
     let pos_abs = positive.unsigned_abs();
     let neg_abs = negative.unsigned_abs();
-    let asymmetry = (u64::from(pos_abs.abs_diff(neg_abs)) * 1_000
-        / u64::from(pos_abs.max(neg_abs).max(1)))
-    .min(1_000) as u16;
-    let drift = (u64::from(positive.abs_diff(repeated)) * 1_000 / u64::from(pos_abs.max(1)))
-        .min(1_000) as u16;
+    let asymmetry = Permille::checked_ratio(
+        u64::from(pos_abs.abs_diff(neg_abs)),
+        u64::from(pos_abs.max(neg_abs).max(1)),
+    )
+    .expect("denominator is at least 1 via .max(1)");
+    let drift = Permille::checked_ratio(
+        u64::from(positive.abs_diff(repeated)),
+        u64::from(pos_abs.max(1)),
+    )
+    .expect("denominator is at least 1 via .max(1)");
     SignedAnchorEvidence {
         positive_current_count: positive,
         negative_current_count: negative,
@@ -491,5 +497,37 @@ fn build_signed_anchor(
         asymmetry_permille: asymmetry,
         repeated_positive_current_count: repeated,
         drift_permille: drift,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signed_anchor_drift_saturates_instead_of_capping_at_100_percent() {
+        // positive=10_000, repeated=-100: abs_diff=10_100, denom=pos_abs.max(1)=10_000.
+        // True ratio = 10_100 * 1000 / 10_000 = 1010, which the old `.min(1_000)` cap
+        // would have reported as exactly 1000.
+        let anchor = build_signed_anchor(10_000, -1_000, -100, 960);
+
+        assert_eq!(anchor.drift_permille.raw(), 1010);
+    }
+
+    #[test]
+    fn signed_anchor_asymmetry_is_bounded_by_1000_and_unaffected_by_the_migration() {
+        // pos_abs.abs_diff(neg_abs) <= pos_abs.max(neg_abs) always, so asymmetry
+        // can never exceed 1000 permille under either the old or new computation.
+        let anchor = build_signed_anchor(10_000, -100, 10_000, 960);
+
+        assert_eq!(anchor.asymmetry_permille.raw(), 990);
+    }
+
+    #[test]
+    fn signed_anchor_reports_zero_for_perfectly_repeated_symmetric_current() {
+        let anchor = build_signed_anchor(1_000, -1_000, 1_000, 960);
+
+        assert_eq!(anchor.asymmetry_permille.raw(), 0);
+        assert_eq!(anchor.drift_permille.raw(), 0);
     }
 }

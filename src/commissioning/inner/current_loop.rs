@@ -1973,16 +1973,16 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .map_or(0, |anchor| anchor.signed_count_slope_milli),
                 resistance_axis0_signed_asymmetry_permille: axis0
                     .signed_anchor
-                    .map_or(0, |anchor| anchor.asymmetry_permille),
+                    .map_or(0, |anchor| anchor.asymmetry_permille.raw()),
                 resistance_axis1_signed_asymmetry_permille: axis1
                     .signed_anchor
-                    .map_or(0, |anchor| anchor.asymmetry_permille),
+                    .map_or(0, |anchor| anchor.asymmetry_permille.raw()),
                 resistance_axis0_drift_permille: axis0
                     .signed_anchor
-                    .map_or(0, |anchor| anchor.drift_permille),
+                    .map_or(0, |anchor| anchor.drift_permille.raw()),
                 resistance_axis1_drift_permille: axis1
                     .signed_anchor
-                    .map_or(0, |anchor| anchor.drift_permille),
+                    .map_or(0, |anchor| anchor.drift_permille.raw()),
                 resistance_status_flags_or: resistance.status_flags_or,
                 resistance_warning_flags: resistance.warning_flags.0,
                 resistance_peak_abs_current_count: resistance.current.peak_abs_current_count(),

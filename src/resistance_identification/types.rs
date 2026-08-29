@@ -70,9 +70,9 @@ pub struct SignedAnchorEvidence {
     pub positive_current_count: i32,
     pub negative_current_count: i32,
     pub signed_count_slope_milli: i32,
-    pub asymmetry_permille: u16,
+    pub asymmetry_permille: Permille,
     pub repeated_positive_current_count: i32,
-    pub drift_permille: u16,
+    pub drift_permille: Permille,
 }
 
 /// Fitted result for one electrical axis.
