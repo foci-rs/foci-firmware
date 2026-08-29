@@ -677,7 +677,9 @@ pub struct VelocityIntegralExecutionPlan {
     pub acceptance_source: AcceptanceSource,
     /// Exact fixed targets for a matrix acquisition; zero for response ladders.
     pub matrix_targets_rpm: [i16; 5],
-    /// Selected Stage-B intervals or exact matrix identity/qualifier storage.
+    /// Selected Stage-B response intervals; zero for a matrix acquisition,
+    /// which carries its identity and qualifiers in `acceptance_plan_digest`
+    /// and `qualifier_bits` instead.
     pub selected_response_intervals_q: [[i32; 2]; 2],
     /// Conservative top-point settled-rate bounds used only for matrix recovery deadlines.
     pub recovery_lower_rate_q: [u64; 2],
