@@ -1320,7 +1320,9 @@ pub struct BreakawayDiscoveryRungMargin {
     /// `(U_i - L_i) / 2`, in percent * 1000.
     pub half_width_percent_milli: i32,
     /// Achieved rate step from the previous collected in-band rung's own
-    /// midpoint response, in percent * 1000; zero for the first collected rung.
+    /// midpoint response, in percent * 1000 -- the same encoding as the
+    /// `_percent_milli` fields above, despite the `_permille` suffix; zero for
+    /// the first collected rung.
     pub adjacent_rate_step_permille: i32,
 }
 
