@@ -370,18 +370,15 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
     assert_eq!(execution.planned_velocity_mrev_s, 6_666);
     assert_eq!(execution.recovery_lower_rate_q, [725_648, 725_648]);
     assert_eq!(
-        execution.selected_response_intervals_q,
-        [
-            [
-                ascending.acceptance_identity.plan_digest as u32 as i32,
-                (ascending.acceptance_identity.plan_digest >> 32) as u32 as i32,
-            ],
-            [i32::from(ascending.qualifier_bits), 0],
-        ]
+        execution.acceptance_plan_digest,
+        ascending.acceptance_identity.plan_digest
     );
-    // 112 -> 120: `i_top_cap: u16` grew `VelocityIntegralExecutionPlan` (see
-    // integral_plan.rs's own size assertion for why).
-    assert_eq!(core::mem::size_of_val(&execution), 120);
+    assert_eq!(execution.qualifier_bits, ascending.qualifier_bits);
+    assert_eq!(execution.selected_response_intervals_q, [[0, 0], [0, 0]]);
+    // 120 -> 128: `acceptance_plan_digest: u64` and `qualifier_bits: u16`
+    // replaced the tunnel through `selected_response_intervals_q`; see
+    // integral_plan.rs's own size assertion for the exact byte count.
+    assert_eq!(core::mem::size_of_val(&execution), 128);
 }
 
 #[test]

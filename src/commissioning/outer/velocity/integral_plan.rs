@@ -464,6 +464,8 @@ impl VelocityIntegralPlan {
         VelocityIntegralExecutionPlan {
             slot_order: self.slot_order,
             plan_digest: self.digest(),
+            acceptance_plan_digest: 0,
+            qualifier_bits: 0,
             final_p: self.final_p,
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
             target_velocity_rpm: self.target_velocity_rpm,
@@ -609,6 +611,21 @@ pub enum AcceptanceSource {
 pub struct VelocityIntegralExecutionPlan {
     /// Exact complete-plan digest.
     pub plan_digest: u64,
+    /// Retained acceptance-plan identity digest for a matrix-sourced plan,
+    /// matched against dispatches that resume it; `0` off the matrix path
+    /// (`acceptance_source != AcceptanceSource::NonBreakaway` implies this
+    /// acquisition never carries one). Copied verbatim from
+    /// `AcceptanceMatrixPlan.acceptance_identity.plan_digest`, never
+    /// recomputed.
+    pub acceptance_plan_digest: u64,
+    /// Packed operating-point, model-validity, and evidence-quality
+    /// qualifiers for a matrix-sourced plan, frozen at the original
+    /// breakaway-acceptance install; `0` off the matrix path. Copied
+    /// verbatim from `AcceptanceMatrixPlan.qualifier_bits` — this is a
+    /// distinct, earlier snapshot from this struct's own
+    /// `recovery_quantization_exposed`/`probe_constrained_test_point`
+    /// fields below, which reflect the *current* run instead.
+    pub qualifier_bits: u16,
     /// Fixed proportional gain.
     pub final_p: u16,
     /// Frozen encoder-domain amplitude.
@@ -677,8 +694,11 @@ pub struct VelocityIntegralExecutionPlan {
 // `VelocityIntegralPlan`, this struct has no unused padding to absorb it
 // (its leading `u64` field forces 8-byte alignment, so the two extra bytes
 // push the total past the previous 112-byte boundary to the next multiple).
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 120);
-const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 120);
+// 120 -> 128: `acceptance_plan_digest: u64` and `qualifier_bits: u16`
+// replaced a tunnel through `selected_response_intervals_q`, adding real
+// storage instead of reusing the existing array.
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 128);
+const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 128);
 
 impl VelocityIntegralExecutionPlan {
     /// Whether a target-reaching run on this plan records a target terminus.

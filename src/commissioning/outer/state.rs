@@ -458,6 +458,8 @@ mod tests {
         VelocityIntegralExecutionPlan {
             slot_order: IntegralSlotOrder::ForwardFirst,
             plan_digest: 7,
+            acceptance_plan_digest: 0,
+            qualifier_bits: 0,
             final_p: 1_448,
             planned_velocity_mrev_s: 2_929,
             target_velocity_rpm: 176,

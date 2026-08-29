@@ -496,8 +496,11 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // 216 -> 216 (unchanged): `i_top_cap: u16` is needed so response-ladder
     // plans can regenerate their half-octave rung during execution; existing
     // padding absorbed the two extra bytes, so the measured total did not grow.
+    // 120 -> 128: `acceptance_plan_digest: u64` and `qualifier_bits: u16`
+    // replaced a tunnel through `selected_response_intervals_q`; see
+    // integral_plan.rs's own size assertion for the rationale.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
-    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 120);
+    assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 128);
     assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 96);
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),

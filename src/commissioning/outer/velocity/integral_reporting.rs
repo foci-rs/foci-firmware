@@ -548,10 +548,10 @@ fn encode_velocity_integral_plan_marker(
             | VelocityIntegralAcquisitionKind::AcceptanceDescending
     ) {
         record.push_u8(1);
-        for interval in plan.selected_response_intervals_q {
-            record.push_i32(interval[0]);
-            record.push_i32(interval[1]);
-        }
+        record.push_i32(plan.acceptance_plan_digest as u32 as i32);
+        record.push_i32((plan.acceptance_plan_digest >> 32) as u32 as i32);
+        record.push_i32(i32::from(plan.qualifier_bits));
+        record.push_i32(0);
         for lower_rate_q in plan.recovery_lower_rate_q {
             push_u64(&mut record, lower_rate_q);
         }
@@ -1233,6 +1233,8 @@ mod tests {
         VelocityIntegralExecutionPlan {
             slot_order: IntegralSlotOrder::ForwardFirst,
             plan_digest: 0x0123_4567_89ab_cdef,
+            acceptance_plan_digest: 0,
+            qualifier_bits: 0,
             final_p: 1_448,
             planned_velocity_mrev_s: 4_394,
             target_velocity_rpm: 264,
@@ -1270,15 +1272,19 @@ mod tests {
         let mut plan = plan();
         plan.acquisition_kind =
             super::super::integral_plan::VelocityIntegralAcquisitionKind::AcceptanceAscending;
-        plan.selected_response_intervals_q = [
-            [0x1234_5678_u32 as i32, 0x89ab_cdef_u32 as i32],
-            [0x55aa, 0],
-        ];
+        plan.acceptance_plan_digest = 0x1234_5678_89ab_cdef;
+        plan.qualifier_bits = 0x55aa;
         plan.recovery_lower_rate_q = [13_217_792, 12_827_648];
 
         let marker = super::encode_velocity_integral_plan_marker(7, plan);
 
         assert_eq!(marker.as_bytes().len(), 98);
+        let identity_low = 0x89ab_cdef_u32 as i32;
+        let identity_high = 0x1234_5678_u32 as i32;
+        assert_eq!(&marker.as_bytes()[66..70], &identity_low.to_le_bytes());
+        assert_eq!(&marker.as_bytes()[70..74], &identity_high.to_le_bytes());
+        assert_eq!(&marker.as_bytes()[74..78], &0x55aa_i32.to_le_bytes());
+        assert_eq!(&marker.as_bytes()[78..82], &0_i32.to_le_bytes());
         assert_eq!(&marker.as_bytes()[82..90], &13_217_792_u64.to_le_bytes());
         assert_eq!(&marker.as_bytes()[90..98], &12_827_648_u64.to_le_bytes());
     }
