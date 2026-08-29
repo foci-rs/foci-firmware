@@ -2458,7 +2458,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::autotune::TransientBuffer;
+    use crate::autotune::{Permille, TransientBuffer};
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::backend::CommissionBoardConfig;
     use crate::commissioning::inner::ElectricalIdData;
@@ -2504,7 +2504,7 @@ mod tests {
             slope_num: i64::from(slope_milli),
             slope_den: 1000,
             intercept_count: 0,
-            rmse_permille: 0,
+            rmse_permille: Permille::ZERO,
             selected_mask: 0b1111_1000,
             excluded_point_mask: 0b0000_0111,
             selected_count: 5,

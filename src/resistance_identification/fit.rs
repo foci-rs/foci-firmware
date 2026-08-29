@@ -5,6 +5,7 @@ use super::types::{
     ElectricalAxis, ResistanceAxisResult, ResistanceCurrentEvidence, ResistanceError,
     ResistancePoint, ResistanceRunResult, ResistanceWarningFlags, SignedAnchorEvidence,
 };
+use crate::autotune::Permille;
 
 /// Fits a single electrical axis to a count-space line using ordinary least
 /// squares restricted to the high-current linear region, then applies the
@@ -82,13 +83,14 @@ pub fn fit_resistance_axis(
     }
     let mean_abs_y = (selected_abs_y / n).max(1);
     let rmse_count = int_sqrt((residual_sq / n) as u64) as i64;
-    let rmse_permille = ((rmse_count * 1000 / mean_abs_y) as u16).min(1000);
+    let rmse_permille = Permille::checked_ratio(rmse_count as u64, mean_abs_y as u64)
+        .expect("mean_abs_y is at least 1 via .max(1)");
 
     let mut warning_flags = ResistanceWarningFlags::NONE;
-    if rmse_permille >= profile.high_residual_fail_permille {
+    if rmse_permille.raw() >= profile.high_residual_fail_permille {
         return Err(ResistanceError::HighResidual);
     }
-    if rmse_permille >= profile.high_residual_warn_permille {
+    if rmse_permille.raw() >= profile.high_residual_warn_permille {
         warning_flags.insert(ResistanceWarningFlags::HIGH_RESIDUAL);
     }
 
@@ -146,7 +148,9 @@ pub fn evaluate_resistance_result(
     let avg =
         ((axis0.r_count_slope_milli.unsigned_abs() + axis1.r_count_slope_milli.unsigned_abs()) / 2)
             .max(1);
-    let mismatch_permille = (diff * 1000 / avg) as u16;
+    let mismatch_permille = Permille::checked_ratio(u64::from(diff), u64::from(avg))
+        .expect("avg is at least 1 via .max(1)")
+        .raw();
     if mismatch_permille >= profile.electrical_axis_mismatch_permille {
         return Err(ResistanceError::ElectricalAxisMismatch);
     }
@@ -194,6 +198,7 @@ mod tests {
         ResistanceWarningFlags, SignedAnchorEvidence,
     };
     use super::{evaluate_resistance_result, fit_resistance_axis};
+    use crate::autotune::Permille;
 
     fn synthetic_axis_points(
         currents: [i32; 8],
@@ -219,7 +224,7 @@ mod tests {
             slope_num: i64::from(slope_milli),
             slope_den: 1000,
             intercept_count: 0,
-            rmse_permille: 0,
+            rmse_permille: Permille::ZERO,
             selected_mask: 0xff,
             excluded_point_mask: 0,
             selected_count: 8,
@@ -396,5 +401,44 @@ mod tests {
         assert_eq!(result.baseline_flags, baseline);
         assert_eq!(result.status_flags_or, run);
         assert_eq!(result.new_flags, 1 << 9);
+    }
+
+    #[test]
+    fn evaluate_resistance_result_rejects_extreme_axis_mismatch_without_overflow() {
+        let profile = ResistanceProfile::standard();
+        let axis0 = axis_result_for_test(ElectricalAxis::PHASE0, i32::MAX);
+        let axis1 = axis_result_for_test(ElectricalAxis::PHASE90, 0);
+
+        let err = evaluate_resistance_result(&profile, axis0, axis1, 0, 0).unwrap_err();
+
+        assert_eq!(err, ResistanceError::ElectricalAxisMismatch);
+    }
+
+    #[test]
+    fn rmse_permille_saturates_instead_of_capping_at_100_percent() {
+        let profile = ResistanceProfile {
+            // Raised so this test's deliberately large residual does not trip
+            // HighResidual before fit_resistance_axis returns — this test is
+            // about what value is computed, not about the fail gate.
+            high_residual_warn_permille: 64_000,
+            high_residual_fail_permille: 65_000,
+            ..ResistanceProfile::standard()
+        };
+        let mut points =
+            synthetic_axis_points([800, 900, 1000, 1100, 1200, 1300, 1400, 1500], 1000, 0);
+        // Perturb selected points to create high residual variance while maintaining
+        // positive slope: add noise to middle points that mostly cancels out.
+        points[2].voltage_delta_count -= 4000;
+        points[3].voltage_delta_count -= 4000;
+        points[4].voltage_delta_count += 4000;
+        points[5].voltage_delta_count += 4000;
+
+        let result = fit_resistance_axis(ElectricalAxis::PHASE0, &profile, &points, None).unwrap();
+
+        assert!(
+            result.rmse_permille.raw() > 1000,
+            "{:?}",
+            result.rmse_permille
+        );
     }
 }

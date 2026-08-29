@@ -1,5 +1,7 @@
 //! Public data types for the resistance-identification engine.
 
+use crate::autotune::Permille;
+
 /// Electrical axis sampled by the resistance-identification profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ElectricalAxis {
@@ -81,7 +83,7 @@ pub struct ResistanceAxisResult {
     pub slope_num: i64,
     pub slope_den: i64,
     pub intercept_count: i32,
-    pub rmse_permille: u16,
+    pub rmse_permille: Permille,
     pub selected_mask: u16,
     pub excluded_point_mask: u16,
     pub selected_count: u8,

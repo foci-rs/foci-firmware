@@ -1961,8 +1961,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 resistance_axis1_count_slope_milli: axis1.r_count_slope_milli,
                 resistance_axis0_intercept_count: axis0.intercept_count,
                 resistance_axis1_intercept_count: axis1.intercept_count,
-                resistance_axis0_rmse_permille: axis0.rmse_permille,
-                resistance_axis1_rmse_permille: axis1.rmse_permille,
+                resistance_axis0_rmse_permille: axis0.rmse_permille.raw(),
+                resistance_axis1_rmse_permille: axis1.rmse_permille.raw(),
                 resistance_selected_mask_axis0: axis0.selected_mask,
                 resistance_selected_mask_axis1: axis1.selected_mask,
                 resistance_axis0_signed_count_slope_milli: axis0
@@ -2136,7 +2136,7 @@ mod tests {
         CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, CURRENT_LOOP_FAILURE_NONE,
         CURRENT_LOOP_FAILURE_RETRY_EXHAUSTED, CURRENT_LOOP_FAILURE_STATUS_FLAGS,
         CURRENT_LOOP_FAILURE_TORQUE_VALIDATION, CURRENT_VALIDATION_AXIS_FLUX,
-        CURRENT_VALIDATION_AXIS_TORQUE,
+        CURRENT_VALIDATION_AXIS_TORQUE, Permille,
     };
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::backend::CommissionMotorControl;
@@ -4578,7 +4578,7 @@ mod tests {
                 slope_num: 1000,
                 slope_den: 1000,
                 intercept_count: 0,
-                rmse_permille: 0,
+                rmse_permille: Permille::ZERO,
                 selected_mask: 0b1111_1000,
                 excluded_point_mask: 0,
                 selected_count: 5,

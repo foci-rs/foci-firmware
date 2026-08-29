@@ -141,7 +141,7 @@ fn axis_report(oid: u8, axis: &ResistanceAxisResult) -> ResistanceAxisReport {
         phi_e_ext: axis.axis.phi_e_ext,
         r_count_slope_milli: axis.r_count_slope_milli,
         intercept_count: axis.intercept_count,
-        rmse_permille: axis.rmse_permille,
+        rmse_permille: axis.rmse_permille.raw(),
         selected_mask: axis.selected_mask,
         excluded_point_mask: axis.excluded_point_mask,
         selected_count: axis.selected_count,
