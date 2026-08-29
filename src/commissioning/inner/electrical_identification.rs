@@ -10,8 +10,8 @@ use super::{
     InductanceCaptureState, InductanceRestoreOperation, InnerPhase,
 };
 use crate::autotune::{
-    CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, PhaseId,
-    TransientBuffer,
+    CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, Permille,
+    PhaseId, TransientBuffer,
 };
 use crate::commissioning::backend::{timed_read_capture_register, timed_read_register_pair};
 use crate::commissioning::capture_timing::{
@@ -1317,7 +1317,7 @@ fn finish_inductance_evidence(
             x_d_count_ratio_milli: saliency.x_d_count_ratio_milli,
             x_q_count_ratio_milli: saliency.x_q_count_ratio_milli,
             saliency_status: saliency.status,
-            saliency_permille: saliency.saliency_permille,
+            saliency_permille: saliency.saliency_permille.raw(),
             x_mag_nominal_count_ratio_milli: reactance.x_mag_nominal_count_ratio_milli,
             x_mag_shift_minus_permille: reactance.x_mag_shift_minus_permille,
             x_mag_shift_plus_permille: reactance.x_mag_shift_plus_permille,
@@ -1988,7 +1988,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         x_average_count_ratio_milli: evidence.estimate.x_average_count_ratio_milli,
                         x_d_count_ratio_milli: evidence.estimate.x_d_count_ratio_milli,
                         x_q_count_ratio_milli: evidence.estimate.x_q_count_ratio_milli,
-                        saliency_permille: evidence.estimate.saliency_permille,
+                        saliency_permille: Permille::new(evidence.estimate.saliency_permille),
                     };
                     match saliency_for_frame_average(
                         evidence.estimate.x_average_count_ratio_milli,
@@ -2000,7 +2000,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                             evidence.estimate.x_q_count_ratio_milli =
                                 saliency.x_q_count_ratio_milli;
                             evidence.estimate.saliency_status = saliency.status;
-                            evidence.estimate.saliency_permille = saliency.saliency_permille;
+                            evidence.estimate.saliency_permille = saliency.saliency_permille.raw();
                             begin_inductance_restore(
                                 electrical_id_state,
                                 backend,
@@ -3169,7 +3169,7 @@ mod tests {
                 x_average_count_ratio_milli: 8_834,
                 x_d_count_ratio_milli: 8_936,
                 x_q_count_ratio_milli: 8_732,
-                saliency_permille: 23,
+                saliency_permille: Permille::new(23),
             },
         )
         .expect("small below-bracket miss should keep average L");
@@ -3180,7 +3180,7 @@ mod tests {
                 x_average_count_ratio_milli: 8_586,
                 x_d_count_ratio_milli: 8_629,
                 x_q_count_ratio_milli: 8_543,
-                saliency_permille: 10,
+                saliency_permille: Permille::new(10),
             },
         )
         .expect("small above-bracket miss should keep average L");
@@ -3191,7 +3191,7 @@ mod tests {
                 x_average_count_ratio_milli: 8_586,
                 x_d_count_ratio_milli: 8_629,
                 x_q_count_ratio_milli: 8_543,
-                saliency_permille: 10,
+                saliency_permille: Permille::new(10),
             },
         )
         .expect("p95-scale benign mismatch should keep average L");
@@ -3219,7 +3219,7 @@ mod tests {
                 x_average_count_ratio_milli: 8_586,
                 x_d_count_ratio_milli: 8_629,
                 x_q_count_ratio_milli: 8_543,
-                saliency_permille: 10,
+                saliency_permille: Permille::new(10),
             },
         );
 
@@ -3233,7 +3233,7 @@ mod tests {
             x_average_count_ratio_milli: 8_600,
             x_d_count_ratio_milli: 8_900,
             x_q_count_ratio_milli: 8_300,
-            saliency_permille: 70,
+            saliency_permille: Permille::new(70),
         };
 
         let result =

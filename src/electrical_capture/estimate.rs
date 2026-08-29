@@ -1,4 +1,5 @@
 use super::{ElectricalCaptureSample, R_SENSITIVITY_MAX_L_SHIFT_PERMILLE};
+use crate::autotune::Permille;
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
 const TAU_MILLIRADIANS: u128 = 6_283;
@@ -143,7 +144,7 @@ pub struct AcSaliencyEvidence {
     /// Q-axis reactance ratio in milli count-ratio units, valid when determinable.
     pub x_q_count_ratio_milli: u32,
     /// `abs(Ld - Lq) / average(Ld, Lq)` in permille, valid when determinable.
-    pub saliency_permille: u16,
+    pub saliency_permille: Permille,
 }
 
 impl AcSaliencyEvidence {
@@ -154,7 +155,7 @@ impl AcSaliencyEvidence {
             x_average_count_ratio_milli,
             x_d_count_ratio_milli: 0,
             x_q_count_ratio_milli: 0,
-            saliency_permille: 0,
+            saliency_permille: Permille::ZERO,
         }
     }
 
@@ -321,14 +322,16 @@ pub fn extract_saliency_from_second_harmonic(
 
     let x_d = average.checked_add(amplitude)?;
     let x_q = average.checked_sub(amplitude)?;
-    let saliency_permille = amplitude.checked_mul(2_000)?.checked_div(average)?;
+    let amplitude_u64 = u64::try_from(amplitude).ok()?;
+    let average_u64 = u64::try_from(average).ok()?;
+    let saliency_permille = Permille::checked_ratio(amplitude_u64.checked_mul(2)?, average_u64)?;
 
     Some(AcSaliencyEvidence {
         status: AC_SALIENCY_DETERMINABLE,
         x_average_count_ratio_milli: input.x_average_count_ratio_milli,
         x_d_count_ratio_milli: u32::try_from(x_d).ok()?,
         x_q_count_ratio_milli: u32::try_from(x_q).ok()?,
-        saliency_permille: u16::try_from(saliency_permille).ok()?,
+        saliency_permille,
     })
 }
 
@@ -1190,7 +1193,7 @@ mod tests {
             x_average_count_ratio_milli: 8_600,
             x_d_count_ratio_milli: 9_200,
             x_q_count_ratio_milli: 8_000,
-            saliency_permille: 140,
+            saliency_permille: Permille::new(140),
         };
 
         assert!(evidence.brackets_average());
@@ -1203,7 +1206,7 @@ mod tests {
             x_average_count_ratio_milli: 9_500,
             x_d_count_ratio_milli: 9_200,
             x_q_count_ratio_milli: 8_000,
-            saliency_permille: 140,
+            saliency_permille: Permille::new(140),
         };
 
         assert!(!evidence.brackets_average());
@@ -1235,7 +1238,7 @@ mod tests {
         assert_eq!(evidence.x_average_count_ratio_milli, 8_600);
         assert_eq!(evidence.x_d_count_ratio_milli, 9_600);
         assert_eq!(evidence.x_q_count_ratio_milli, 7_600);
-        assert_eq!(evidence.saliency_permille, 232);
+        assert_eq!(evidence.saliency_permille.raw(), 232);
         assert!(evidence.brackets_average());
     }
 
@@ -1250,6 +1253,24 @@ mod tests {
         });
 
         assert!(evidence.is_none());
+    }
+
+    #[test]
+    fn saliency_at_the_amplitude_equals_average_boundary_is_full_scale() {
+        // amplitude == average is the domain's own upper edge (the function
+        // returns None just past it), so this must resolve to the maximum
+        // in-domain saliency: 2 * amplitude / average == 2000 permille.
+        let input = SaliencySecondHarmonicInput {
+            x_average_count_ratio_milli: 1_000,
+            cos2_milli: 1_000,
+            sin2_milli: 0,
+            sample_count: MIN_SALIENCY_SAMPLE_COUNT,
+            phi_delta_counts: ELECTRICAL_TURN_COUNTS,
+        };
+
+        let evidence = extract_saliency_from_second_harmonic(input).unwrap();
+
+        assert_eq!(evidence.saliency_permille.raw(), 2_000);
     }
 
     #[test]
