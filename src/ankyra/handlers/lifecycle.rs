@@ -256,7 +256,7 @@ mod tests {
         let mut sender = MockSender;
         get_clock(&mut ctx, &mut sender);
 
-        assert_eq!(LAST_HOST_LIVENESS_TICKS.load(Relaxed), 123); // MockCtx::now() == 123
+        assert_eq!(LAST_HOST_LIVENESS_TICKS.load(Relaxed), 123);
         assert!(HAS_RECEIVED_VALID_CLOCK.load(Relaxed));
     }
 }
