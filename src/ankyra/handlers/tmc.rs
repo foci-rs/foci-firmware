@@ -955,6 +955,10 @@ mod tests {
             Ok(())
         }
 
+        fn motion_quiescent(&self) -> bool {
+            self.motion_scale_idle(0).is_ok()
+        }
+
         fn report_motion_scale_rejection(
             &mut self,
             _oid: u8,

@@ -14,6 +14,14 @@ pub trait TmcHost: StateAccess {
         channel: u8,
     ) -> Result<(), crate::motion_scale::MotionScaleRejection>;
 
+    /// Report whether no channel is armed, queued, or stepping.
+    ///
+    /// Board-implemented because only the board knows its channel count and
+    /// owns its step queues. Gates work that must not run while interrupt-driven
+    /// motion is live, so an implementation that cannot tell must answer
+    /// `false`.
+    fn motion_quiescent(&self) -> bool;
+
     /// Emit a host-visible reason before rejecting motion-scale configuration.
     fn report_motion_scale_rejection(
         &mut self,
@@ -32,6 +40,10 @@ impl<T: ?Sized + TmcHost> TmcHost for &mut T {
         channel: u8,
     ) -> Result<(), crate::motion_scale::MotionScaleRejection> {
         (**self).motion_scale_idle(channel)
+    }
+
+    fn motion_quiescent(&self) -> bool {
+        (**self).motion_quiescent()
     }
 
     fn report_motion_scale_rejection(

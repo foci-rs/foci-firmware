@@ -19,7 +19,7 @@
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering::Relaxed;
 
-use crate::context::{ShutdownRecovery, StateAccess, TmcHost};
+use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::TmcChannelState;
 
@@ -29,6 +29,7 @@ const ADC_VM_OFFSET_STATUS_NOT_READY: u8 = 1;
 const STACK_WATERMARK_STATUS_OK: u8 = 0;
 const STACK_WATERMARK_STATUS_NOT_PAINTED: u8 = 1;
 const STACK_WATERMARK_STATUS_LOWER_BOUND: u8 = 2;
+const STACK_WATERMARK_STATUS_MOTION_ACTIVE: u8 = 3;
 
 /// Trigger TMC4671 self-test diagnostic via the commissioning engine.
 ///
@@ -199,12 +200,27 @@ pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
 /// rather than sampled automatically. The scan masks interrupts, so this is not
 /// something to poll and not something to issue during motion.
 ///
-/// `status` is 0 when the scan reached the first overwritten word, 1 on a board
-/// that never painted, and 2 when the scan window ran out with every word still
-/// holding the sentinel, which makes `stack_unused_bytes` a lower bound on
-/// headroom rather than a measurement of it. See [`crate::stack_watermark`].
+/// The scan masks interrupts, which would delay the step timer and the position
+/// tick, so it is refused with `status = 3` unless every channel is disarmed,
+/// its step queue empty, and its step timer idle.
+///
+/// `status` is otherwise 0 when the scan reached the first overwritten word, 1
+/// on a board that never painted, and 2 when the scan window ran out with every
+/// word still holding the sentinel, which makes `stack_unused_bytes` a lower
+/// bound on headroom rather than a measurement of it. See
+/// [`crate::stack_watermark`].
 #[klipper_command]
-pub fn foci_stack_watermark(_ctx: &mut dyn StateAccess, oid: u8) {
+pub fn foci_stack_watermark(ctx: &mut dyn TmcHost, oid: u8) {
+    if !ctx.motion_quiescent() {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociStackWatermarkResult,
+            oid: u8 = oid,
+            stack_unused_bytes: u32 = 0,
+            painted_bytes: u32 = 0,
+            status: u8 = STACK_WATERMARK_STATUS_MOTION_ACTIVE
+        );
+        return;
+    }
     let Some(usage) = crate::stack_watermark::stack_usage() else {
         ::ankyra::klipper_reply!(
             crate::ankyra::replies::FociStackWatermarkResult,
@@ -312,6 +328,7 @@ mod tests {
         channel_count: u8,
         last_request: RefCell<Option<crate::tmc::TmcRequest>>,
         last_shutdown: Option<ShutdownReason>,
+        motion_quiescent: bool,
     }
 
     impl MockCtx {
@@ -321,6 +338,7 @@ mod tests {
                 channel_count,
                 last_request: RefCell::new(None),
                 last_shutdown: None,
+                motion_quiescent: true,
             }
         }
     }
@@ -380,6 +398,10 @@ mod tests {
             _channel: u8,
         ) -> Result<(), crate::motion_scale::MotionScaleRejection> {
             Ok(())
+        }
+
+        fn motion_quiescent(&self) -> bool {
+            self.motion_quiescent
         }
 
         fn report_motion_scale_rejection(
@@ -612,6 +634,10 @@ mod tests {
     /// field-type drift fails here, where calling the handler directly and
     /// reading the Rust struct back would not notice.
     fn dispatch_stack_watermark_over_the_wire(oid: u8) -> StackWatermarkReply {
+        dispatch_stack_watermark_with_motion(oid, true)
+    }
+
+    fn dispatch_stack_watermark_with_motion(oid: u8, quiescent: bool) -> StackWatermarkReply {
         use ankyra::encoding::{Readable, Writable};
 
         let mut request = ankyra::ScratchOutput::<8>::new();
@@ -619,6 +645,7 @@ mod tests {
         let request = request.result().to_vec();
 
         let mut ctx = MockCtx::new(2);
+        ctx.motion_quiescent = quiescent;
         let mut sender = MockSender::new();
         let mut frame: &[u8] = &request;
         super::__ankyra_dispatch_foci_stack_watermark(&mut frame, &mut ctx, &mut sender)
@@ -697,6 +724,25 @@ mod tests {
                 stack_unused_bytes: 12,
                 painted_bytes: 12,
                 status: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn foci_stack_watermark_refuses_to_mask_interrupts_while_motion_is_live() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let sentinel = crate::stack_watermark::STACK_PAINT_SENTINEL;
+        let words: &'static [u32] = std::vec::Vec::leak(std::vec![sentinel, 0xDEAD_BEEF]);
+        // SAFETY: the span is leaked, so it outlives every later read.
+        unsafe { crate::stack_watermark::set_painted_region_for_test(words) };
+
+        assert_eq!(
+            dispatch_stack_watermark_with_motion(12, false),
+            StackWatermarkReply {
+                oid: 12,
+                stack_unused_bytes: 0,
+                painted_bytes: 0,
+                status: 3,
             }
         );
     }

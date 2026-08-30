@@ -619,7 +619,8 @@ pub struct FociDumpValue {
 /// word and the figure is a measurement, while 2 means the scan window ran out
 /// with every word still holding the sentinel, making the figure a lower bound.
 /// A lower bound still settles a `>=` check it already clears; it cannot settle
-/// one it fails.
+/// one it fails. Status 3 means the scan never ran because motion was live, and
+/// the counters carry nothing.
 ///
 /// Wire name: `foci_stack_watermark_result`.
 #[klipper_reply]
@@ -630,7 +631,8 @@ pub struct FociStackWatermarkResult {
     pub stack_unused_bytes: u32,
     /// Total span painted at startup.
     pub painted_bytes: u32,
-    /// Status code (0 = measured, 1 = board never painted, 2 = lower bound).
+    /// Status code (0 = measured, 1 = never painted, 2 = lower bound,
+    /// 3 = refused because motion was active).
     pub status: u8,
 }
 
