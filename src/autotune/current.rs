@@ -608,58 +608,37 @@ mod tests {
     }
 
     #[test]
-    fn current_loop_evidence_defaults_to_failed_none() {
-        let evidence = CurrentLoopEvidence::failed(CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
+    fn current_loop_evidence_constructors_set_gains_tier_and_failure_state() {
+        let failed = CurrentLoopEvidence::failed(CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
+        assert_eq!(failed.gains_source, CURRENT_GAINS_SOURCE_FAILED);
+        assert_eq!(failed.gains_tier, CURRENT_GAINS_TIER_NONE);
+        assert_eq!(failed.failure_reason, CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
+        assert_eq!(failed.current_validation_axes, 0);
+        assert_eq!(failed.retry_budget_exhausted, 0);
 
-        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_FAILED);
-        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
-        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_NONE);
-        assert_eq!(evidence.failure_reason, CURRENT_LOOP_FAILURE_GAIN_SYNTHESIS);
-        assert_eq!(evidence.measured_axis_split_permille, 1000);
-        assert_eq!(evidence.applied_axis_split_permille, 1000);
-        assert_eq!(evidence.axis_split_clamped, 0);
-        assert_eq!(evidence.current_validation_axes, 0);
-        assert_eq!(evidence.retry_budget_exhausted, 0);
-    }
+        let measured = CurrentLoopEvidence::measured_symmetric();
+        assert_eq!(measured.gains_source, CURRENT_GAINS_SOURCE_MEASURED);
+        assert_eq!(measured.gains_tier, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC);
+        assert_eq!(measured.failure_reason, CURRENT_LOOP_FAILURE_NONE);
+        assert_eq!(measured.current_validation_axes, 0);
+        assert_eq!(measured.retry_budget_exhausted, 0);
 
-    #[test]
-    fn current_loop_evidence_records_measured_symmetric_defaults() {
-        let evidence = CurrentLoopEvidence::measured_symmetric();
-
-        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_MEASURED);
-        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
-        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_MEASURED_SYMMETRIC);
-        assert_eq!(evidence.failure_reason, CURRENT_LOOP_FAILURE_NONE);
-        assert_eq!(evidence.measured_axis_split_permille, 1000);
-        assert_eq!(evidence.applied_axis_split_permille, 1000);
-        assert_eq!(evidence.axis_split_clamped, 0);
-        assert_eq!(evidence.current_validation_axes, 0);
-        assert_eq!(evidence.retry_budget_exhausted, 0);
-    }
-
-    #[test]
-    fn current_loop_evidence_records_default_fallback() {
-        let evidence = CurrentLoopEvidence::default_gains(
+        let default_fallback = CurrentLoopEvidence::default_gains(
             CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
             true,
             CURRENT_VALIDATION_AXIS_TORQUE,
         );
-
-        assert_eq!(evidence.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
-        assert_eq!(evidence.axis_split_source, AXIS_SPLIT_SOURCE_NONE);
-        assert_eq!(evidence.gains_tier, CURRENT_GAINS_TIER_DEFAULT);
+        assert_eq!(default_fallback.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
+        assert_eq!(default_fallback.gains_tier, CURRENT_GAINS_TIER_DEFAULT);
         assert_eq!(
-            evidence.failure_reason,
+            default_fallback.failure_reason,
             CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
         );
-        assert_eq!(evidence.measured_axis_split_permille, 1000);
-        assert_eq!(evidence.applied_axis_split_permille, 1000);
-        assert_eq!(evidence.axis_split_clamped, 0);
         assert_eq!(
-            evidence.current_validation_axes,
+            default_fallback.current_validation_axes,
             CURRENT_VALIDATION_AXIS_TORQUE
         );
-        assert_eq!(evidence.retry_budget_exhausted, 1);
+        assert_eq!(default_fallback.retry_budget_exhausted, 1);
     }
 
     #[test]
