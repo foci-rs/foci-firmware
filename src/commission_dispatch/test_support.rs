@@ -291,9 +291,9 @@ pub struct MockBackend {
     pub fail_on_write_occurrence: Option<(u8, usize)>,
     /// If `Some(addr)`, `read_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_read: Option<u8>,
-    /// Suspend the next register read or write exactly once, so a manually
-    /// polled test can observe a caller while its future is genuinely in
-    /// flight.
+    /// Suspend the next verified register write exactly once, after its write
+    /// has landed and before its verifying read-back, so a manually polled test
+    /// can drop a caller while a real backend operation is genuinely half done.
     pub pend_next_op: bool,
     /// Transient write failures as `(address, remaining failures)`.
     pub fail_writes_remaining: Option<(u8, u8)>,
@@ -735,15 +735,22 @@ impl CommissionRegisterIo for MockBackend {
         reg: Register,
         val: u32,
     ) -> Result<(), Self::Error> {
-        if core::mem::take(&mut self.pend_next_op) {
-            YieldOnce::default().await;
-        }
         let max_attempts = foci_tmc4671::spi::RetryPolicy::production()
             .max_attempts
             .max(1);
         for attempt in 0..max_attempts {
             let result = async {
                 self.write_register(reg, val).await?;
+                // Suspends *between* the register write and its verifying
+                // read-back, so a test that drops here interrupts a
+                // half-completed verified write rather than gating entry to
+                // one. Deliberately not on `write_register`/`read_register`
+                // themselves: the engine-step future contains those, and the
+                // extra suspension state would inflate the F407 stack-budget
+                // gates in `commissioning::tests::size_regression_gates`.
+                if core::mem::take(&mut self.pend_next_op) {
+                    YieldOnce::default().await;
+                }
                 self.read_register(reg).await
             }
             .await;

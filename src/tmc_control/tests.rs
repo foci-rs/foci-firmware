@@ -1,7 +1,7 @@
 use super::*;
 use crate::commission_dispatch::test_support::breakaway_campaign_engine;
 use crate::commission_dispatch::test_support::{
-    MockBackend, accepted_commission_result, current_limit,
+    MockBackend, SpiOp, accepted_commission_result, current_limit,
 };
 use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::CommissioningEngine;
@@ -3596,6 +3596,22 @@ fn request_restore_cancel_without_a_restore_is_inert() {
     assert!(!runtime.is_restore_pending());
 }
 
+/// Assert the drop landed inside a real backend operation: the verified write
+/// that was in flight had already pushed its register write, and its verifying
+/// read-back had not run yet.
+fn assert_dropped_mid_operation(backend: &MockBackend, ops_before: usize) {
+    assert!(
+        backend.spi_log.len() > ops_before,
+        "the suspension must interrupt a real backend operation, not gate entry to one"
+    );
+    assert!(
+        matches!(backend.spi_log.last(), Some(SpiOp::Write(_, _))),
+        "the interrupted verified write must have landed its write and not yet read back, \
+         got {:?}",
+        backend.spi_log.last()
+    );
+}
+
 /// A waker that does nothing; the tests below poll a future by hand exactly
 /// once and never wait for a wake-up.
 struct NoopWake;
@@ -3647,6 +3663,7 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
     );
 
     backend.pend_next_op = true;
+    let ops_before = backend.spi_log.len();
     let suspended = {
         let mut retention = crate::commission_dispatch::CommissionRetention::new(&mut slot);
         let mut future = std::boxed::Box::pin(runtime.poll_commissioning_terminal(
@@ -3665,6 +3682,7 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
         suspended,
         "the mock must suspend so the poll is genuinely in flight when dropped"
     );
+    assert_dropped_mid_operation(&backend, ops_before);
     assert!(
         runtime.is_restore_pending(),
         "a torn-down poll must not lose the restore machine"
@@ -3695,6 +3713,7 @@ fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
     runtime.request_restore_cancel();
 
     backend.pend_next_op = true;
+    let ops_before = backend.spi_log.len();
     let suspended = {
         let mut future =
             std::boxed::Box::pin(runtime.drive_restore_cancel(&mut backend, tmc, stepper));
@@ -3707,6 +3726,7 @@ fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
         suspended,
         "the mock must suspend so the drain is genuinely in flight when dropped"
     );
+    assert_dropped_mid_operation(&backend, ops_before);
     assert!(
         runtime.is_restore_pending(),
         "a torn-down drain must not lose the restore machine"
