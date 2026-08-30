@@ -503,43 +503,8 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::VelocityIntegralTerminal(mut terminal) => {
-            use core::sync::atomic::Ordering::Relaxed;
-
-            if let Some(record) = engine
-                .as_ref()
-                .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
-            {
-                #[cfg(feature = "trace")]
-                backend.record_velocity_sweep_trace_record(record);
-                #[cfg(not(feature = "trace"))]
-                let _ = record;
-            }
-            if !disarm_velocity_workflow(engine, backend, state).await {
-                terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
-                terminal.cause = crate::commissioning::types::StageCCause::Error(
-                    crate::autotune::CommissionError::Spi.status_code(),
-                );
-                terminal.recovery_unavailable = true;
-                terminal.safety_fault = None;
-            }
-            let consumed = engine
-                .take()
-                .expect("engine slot is None on VelocityIntegralTerminal");
-            let oid = consumed.oid();
-            state.tmc.commission_in_flight.store(false, Relaxed);
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::VelocityIntegralTerminal {
-                    oid,
-                    terminal,
-                    reproduction: None,
-                    authority: None,
-                },
-                actions: PostActions {
-                    stop_trace: true,
-                    stepper: StepperPostAction::Stop,
-                },
-            }
+        StepResult::VelocityIntegralTerminal(terminal) => {
+            dispatch_velocity_integral_terminal(terminal, engine, backend, state).await
         }
         StepResult::AcceptanceMatrixEvent(_) => CommissionOutcome::Continue,
         StepResult::BreakawayCampaignEvent(event) => {
@@ -572,85 +537,10 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
         }
         StepResult::AcceptanceMatrixTerminal(terminal) => {
-            use core::sync::atomic::Ordering::Relaxed;
-
-            let consumed = engine
-                .take()
-                .expect("engine slot is None on AcceptanceMatrixTerminal");
-            let oid = consumed.oid();
-            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-            state.tmc.commission_in_flight.store(false, Relaxed);
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::AcceptanceMatrixTerminal { oid, terminal },
-                actions: PostActions {
-                    stop_trace: true,
-                    stepper: StepperPostAction::Stop,
-                },
-            }
+            dispatch_acceptance_matrix_terminal(terminal, engine, backend, state).await
         }
-        StepResult::RobustnessReversalTerminal(mut terminal) => {
-            use core::sync::atomic::Ordering::Relaxed;
-
-            let consumed = engine
-                .take()
-                .expect("engine slot is None on RobustnessReversalTerminal");
-            let oid = consumed.oid();
-            // Every non-`Complete` outcome (`Rejected`, `Inconclusive`, `Failed`)
-            // leaves the live registers holding the probed candidate; restore
-            // the operator's Stage 2 baseline before disarm so a non-passing
-            // probe never leaves the wrong gains armed. A `Complete` outcome
-            // deploys instead (staged wrapper), so it never reaches here with
-            // the entry snapshot still needed.
-            if terminal.outcome != crate::commissioning::types::RobustnessOutcome::Complete {
-                let restored = match consumed.entry_snapshot() {
-                    Some(snapshot) => {
-                        match restore::restore_entry_snapshot_to_registers(backend, &snapshot).await
-                        {
-                            Ok(()) => true,
-                            Err(err) => {
-                                // `restore::RestoreError` is generic over the
-                                // backend's SPI error type, which is not
-                                // `defmt::Format`-bound here; log the variant
-                                // instead of the whole error so a transport
-                                // failure is still distinguishable from a
-                                // readback mismatch or an invalid-gains
-                                // rejection.
-                                let variant = match err {
-                                    restore::RestoreError::Spi(_) => "spi",
-                                    restore::RestoreError::InvalidGains => "invalid_gains",
-                                    restore::RestoreError::PiRepresentation => "pi_representation",
-                                    restore::RestoreError::VelocityClamp => "velocity_clamp",
-                                    restore::RestoreError::Readback => "readback",
-                                };
-                                defmt::error!(
-                                    "robustness terminal: baseline restore failed: {}",
-                                    variant
-                                );
-                                false
-                            }
-                        }
-                    }
-                    None => {
-                        defmt::error!(
-                            "robustness terminal: no entry snapshot to restore baseline from"
-                        );
-                        false
-                    }
-                };
-                if !restored {
-                    terminal.outcome = crate::commissioning::types::RobustnessOutcome::Failed;
-                    terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
-                }
-            }
-            crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-            state.tmc.commission_in_flight.store(false, Relaxed);
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::RobustnessReversalTerminal { oid, terminal },
-                actions: PostActions {
-                    stop_trace: true,
-                    stepper: StepperPostAction::Stop,
-                },
-            }
+        StepResult::RobustnessReversalTerminal(terminal) => {
+            dispatch_robustness_reversal_terminal(terminal, engine, backend, state).await
         }
         StepResult::SelftestDone => {
             let mut consumed = engine.take().expect("engine slot None on SelftestDone");
@@ -977,136 +867,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
         }
         StepResult::OuterDone(outer) => {
-            use core::sync::atomic::Ordering::Relaxed;
-            let consumed = engine.take().expect("engine slot None on OuterDone");
-            let oid = consumed.oid();
-            state.tmc.motor_armed.store(false, Relaxed);
-
-            // SPI restore — enter position mode with the tuned gains.
-            let restored_gains = match restore::restore_position_mode_after_outer(
-                backend, state.tmc, &outer,
-            )
-            .await
-            {
-                Ok(gains) => gains,
-                Err(error) => {
-                    let status = match error {
-                        restore::RestoreError::Spi(_)
-                        | restore::RestoreError::VelocityClamp
-                        | restore::RestoreError::Readback => crate::autotune::CommissionError::Spi,
-                        restore::RestoreError::PiRepresentation => {
-                            crate::autotune::CommissionError::ChipResetDetected
-                        }
-                        restore::RestoreError::InvalidGains => {
-                            crate::autotune::CommissionError::VelocityValidationFailed
-                        }
-                    };
-                    defmt::error!("OuterDone: position-mode restore failed");
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-                    state.tmc.commission_in_flight.store(false, Relaxed);
-                    return CommissionOutcome::Terminal {
-                        reply: ReplyPayload::TuneResult {
-                            oid,
-                            status: status.status_code(),
-                            result: zero_outer_result(),
-                            safety_fault: None,
-                        },
-                        actions: PostActions {
-                            stop_trace: true,
-                            stepper: StepperPostAction::Stop,
-                        },
-                    };
-                }
-            };
-
-            if crate::tmc_control::filters::apply_outer_result_filters_via_backend(
-                backend, &outer, pwm_maxcnt,
-            )
-            .await
-            .is_err()
-            {
-                defmt::error!("OuterDone: candidate filter apply SPI failed");
-                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-                state.tmc.commission_in_flight.store(false, Relaxed);
-                return CommissionOutcome::Terminal {
-                    reply: ReplyPayload::TuneResult {
-                        oid,
-                        status: crate::autotune::CommissionError::Spi.status_code(),
-                        result: zero_outer_result(),
-                        safety_fault: None,
-                    },
-                    actions: PostActions {
-                        stop_trace: true,
-                        stepper: StepperPostAction::Stop,
-                    },
-                };
-            }
-
-            *state.calibrated = true;
-            if let Err(error) =
-                crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
-            {
-                defmt::error!("OuterDone: arm sentinel verify failed: {}", error);
-                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-                state.tmc.commission_in_flight.store(false, Relaxed);
-                return CommissionOutcome::Terminal {
-                    reply: ReplyPayload::TuneResult {
-                        oid,
-                        status: error.status_code(),
-                        result: outer,
-                        safety_fault: None,
-                    },
-                    actions: PostActions {
-                        stop_trace: true,
-                        stepper: StepperPostAction::Stop,
-                    },
-                };
-            }
-
-            // Publish the completed result only after terminal restore,
-            // candidate filter application, and sentinel verification succeed.
-            state.tmc.store_outer_gains(restored_gains, Relaxed);
-            state
-                .tmc
-                .velocity_limit_cfg
-                .store(outer.velocity_limit, Relaxed);
-            state
-                .tmc
-                .velocity_filter_hz
-                .store(Some(outer.velocity_filter_hz), Relaxed);
-            state
-                .tmc
-                .torque_filter_hz
-                .store(Some(outer.torque_filter_hz), Relaxed);
-            state
-                .tmc
-                .position_filter_hz
-                .store(Some(outer.position_filter_hz), Relaxed);
-            state
-                .tmc
-                .flux_filter_hz
-                .store(Some(outer.flux_filter_hz), Relaxed);
-
-            state.tmc.commission_in_flight.store(false, Relaxed);
-
-            let status = match outer.status {
-                crate::autotune::CommissionStatus::Accepted => 0u8,
-                crate::autotune::CommissionStatus::AcceptedWithWarnings => 1,
-                crate::autotune::CommissionStatus::InnerOnly => 2,
-                crate::autotune::CommissionStatus::Failed(e) => e.status_code(),
-            };
-            CommissionOutcome::Terminal {
-                reply: ReplyPayload::TuneResult {
-                    oid,
-                    status,
-                    result: outer,
-                    safety_fault: None,
-                },
-                actions: PostActions {
-                    stop_trace: true,
-                    stepper: StepperPostAction::ArmPreservePosition,
-                },
-            }
+            dispatch_outer_done(outer, engine, backend, state, pwm_maxcnt).await
         }
         StepResult::OuterFailed(error) => {
             use crate::autotune::CommissionError as CE;
@@ -1261,6 +1022,284 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
     }
 }
 
+/// Dispatch `StepResult::VelocityIntegralTerminal` directly, without routing
+/// through the multi-variant [`drive_commission_result`] dispatcher.
+///
+/// Extracted so a caller that already knows the variant (the Stage-C staged
+/// wrapper) embeds only this frame instead of the full dispatcher's; the
+/// dispatcher still delegates here for its own callers, so behavior for every
+/// existing call path is unchanged.
+async fn dispatch_velocity_integral_terminal<B: CommissioningBackend>(
+    mut terminal: crate::commissioning::types::VelocityIntegralTerminal,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+) -> CommissionOutcome {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    if let Some(record) = engine
+        .as_ref()
+        .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
+    {
+        #[cfg(feature = "trace")]
+        backend.record_velocity_sweep_trace_record(record);
+        #[cfg(not(feature = "trace"))]
+        let _ = record;
+    }
+    if !disarm_velocity_workflow(engine, backend, state).await {
+        terminal.outcome = crate::commissioning::types::VelocityIntegralOutcome::Fault;
+        terminal.cause = crate::commissioning::types::StageCCause::Error(
+            crate::autotune::CommissionError::Spi.status_code(),
+        );
+        terminal.recovery_unavailable = true;
+        terminal.safety_fault = None;
+    }
+    let consumed = engine
+        .take()
+        .expect("engine slot is None on VelocityIntegralTerminal");
+    let oid = consumed.oid();
+    state.tmc.commission_in_flight.store(false, Relaxed);
+    CommissionOutcome::Terminal {
+        reply: ReplyPayload::VelocityIntegralTerminal {
+            oid,
+            terminal,
+            reproduction: None,
+            authority: None,
+        },
+        actions: PostActions {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+        },
+    }
+}
+
+/// Dispatch `StepResult::AcceptanceMatrixTerminal` directly; see
+/// [`dispatch_velocity_integral_terminal`] for why this is extracted.
+async fn dispatch_acceptance_matrix_terminal<B: CommissioningBackend>(
+    terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+) -> CommissionOutcome {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    let consumed = engine
+        .take()
+        .expect("engine slot is None on AcceptanceMatrixTerminal");
+    let oid = consumed.oid();
+    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+    state.tmc.commission_in_flight.store(false, Relaxed);
+    CommissionOutcome::Terminal {
+        reply: ReplyPayload::AcceptanceMatrixTerminal { oid, terminal },
+        actions: PostActions {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+        },
+    }
+}
+
+/// Dispatch `StepResult::RobustnessReversalTerminal` directly; see
+/// [`dispatch_velocity_integral_terminal`] for why this is extracted.
+async fn dispatch_robustness_reversal_terminal<B: CommissioningBackend>(
+    mut terminal: crate::commissioning::types::RobustnessReversalTerminal,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+) -> CommissionOutcome {
+    use core::sync::atomic::Ordering::Relaxed;
+
+    let consumed = engine
+        .take()
+        .expect("engine slot is None on RobustnessReversalTerminal");
+    let oid = consumed.oid();
+    // Every non-`Complete` outcome (`Rejected`, `Inconclusive`, `Failed`)
+    // leaves the live registers holding the probed candidate; restore
+    // the operator's Stage 2 baseline before disarm so a non-passing
+    // probe never leaves the wrong gains armed. A `Complete` outcome
+    // deploys instead (staged wrapper), so it never reaches here with
+    // the entry snapshot still needed.
+    if terminal.outcome != crate::commissioning::types::RobustnessOutcome::Complete {
+        let restored = match consumed.entry_snapshot() {
+            Some(snapshot) => {
+                match restore::restore_entry_snapshot_to_registers(backend, &snapshot).await {
+                    Ok(()) => true,
+                    Err(err) => {
+                        // `restore::RestoreError` is generic over the
+                        // backend's SPI error type, which is not
+                        // `defmt::Format`-bound here; log the variant
+                        // instead of the whole error so a transport
+                        // failure is still distinguishable from a
+                        // readback mismatch or an invalid-gains
+                        // rejection.
+                        let variant = match err {
+                            restore::RestoreError::Spi(_) => "spi",
+                            restore::RestoreError::InvalidGains => "invalid_gains",
+                            restore::RestoreError::PiRepresentation => "pi_representation",
+                            restore::RestoreError::VelocityClamp => "velocity_clamp",
+                            restore::RestoreError::Readback => "readback",
+                        };
+                        defmt::error!("robustness terminal: baseline restore failed: {}", variant);
+                        false
+                    }
+                }
+            }
+            None => {
+                defmt::error!("robustness terminal: no entry snapshot to restore baseline from");
+                false
+            }
+        };
+        if !restored {
+            terminal.outcome = crate::commissioning::types::RobustnessOutcome::Failed;
+            terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
+        }
+    }
+    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+    state.tmc.commission_in_flight.store(false, Relaxed);
+    CommissionOutcome::Terminal {
+        reply: ReplyPayload::RobustnessReversalTerminal { oid, terminal },
+        actions: PostActions {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+        },
+    }
+}
+
+/// Dispatch `StepResult::OuterDone` directly; see
+/// [`dispatch_velocity_integral_terminal`] for why this is extracted.
+async fn dispatch_outer_done<B: CommissioningBackend>(
+    outer: OuterResult,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+    pwm_maxcnt: u16,
+) -> CommissionOutcome {
+    use core::sync::atomic::Ordering::Relaxed;
+    let consumed = engine.take().expect("engine slot None on OuterDone");
+    let oid = consumed.oid();
+    state.tmc.motor_armed.store(false, Relaxed);
+
+    // SPI restore — enter position mode with the tuned gains.
+    let restored_gains =
+        match restore::restore_position_mode_after_outer(backend, state.tmc, &outer).await {
+            Ok(gains) => gains,
+            Err(error) => {
+                let status = match error {
+                    restore::RestoreError::Spi(_)
+                    | restore::RestoreError::VelocityClamp
+                    | restore::RestoreError::Readback => crate::autotune::CommissionError::Spi,
+                    restore::RestoreError::PiRepresentation => {
+                        crate::autotune::CommissionError::ChipResetDetected
+                    }
+                    restore::RestoreError::InvalidGains => {
+                        crate::autotune::CommissionError::VelocityValidationFailed
+                    }
+                };
+                defmt::error!("OuterDone: position-mode restore failed");
+                crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                state.tmc.commission_in_flight.store(false, Relaxed);
+                return CommissionOutcome::Terminal {
+                    reply: ReplyPayload::TuneResult {
+                        oid,
+                        status: status.status_code(),
+                        result: zero_outer_result(),
+                        safety_fault: None,
+                    },
+                    actions: PostActions {
+                        stop_trace: true,
+                        stepper: StepperPostAction::Stop,
+                    },
+                };
+            }
+        };
+
+    if crate::tmc_control::filters::apply_outer_result_filters_via_backend(
+        backend, &outer, pwm_maxcnt,
+    )
+    .await
+    .is_err()
+    {
+        defmt::error!("OuterDone: candidate filter apply SPI failed");
+        crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+        state.tmc.commission_in_flight.store(false, Relaxed);
+        return CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult {
+                oid,
+                status: crate::autotune::CommissionError::Spi.status_code(),
+                result: zero_outer_result(),
+                safety_fault: None,
+            },
+            actions: PostActions {
+                stop_trace: true,
+                stepper: StepperPostAction::Stop,
+            },
+        };
+    }
+
+    *state.calibrated = true;
+    if let Err(error) = crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await {
+        defmt::error!("OuterDone: arm sentinel verify failed: {}", error);
+        crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+        state.tmc.commission_in_flight.store(false, Relaxed);
+        return CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult {
+                oid,
+                status: error.status_code(),
+                result: outer,
+                safety_fault: None,
+            },
+            actions: PostActions {
+                stop_trace: true,
+                stepper: StepperPostAction::Stop,
+            },
+        };
+    }
+
+    // Publish the completed result only after terminal restore,
+    // candidate filter application, and sentinel verification succeed.
+    state.tmc.store_outer_gains(restored_gains, Relaxed);
+    state
+        .tmc
+        .velocity_limit_cfg
+        .store(outer.velocity_limit, Relaxed);
+    state
+        .tmc
+        .velocity_filter_hz
+        .store(Some(outer.velocity_filter_hz), Relaxed);
+    state
+        .tmc
+        .torque_filter_hz
+        .store(Some(outer.torque_filter_hz), Relaxed);
+    state
+        .tmc
+        .position_filter_hz
+        .store(Some(outer.position_filter_hz), Relaxed);
+    state
+        .tmc
+        .flux_filter_hz
+        .store(Some(outer.flux_filter_hz), Relaxed);
+
+    state.tmc.commission_in_flight.store(false, Relaxed);
+
+    let status = match outer.status {
+        crate::autotune::CommissionStatus::Accepted => 0u8,
+        crate::autotune::CommissionStatus::AcceptedWithWarnings => 1,
+        crate::autotune::CommissionStatus::InnerOnly => 2,
+        crate::autotune::CommissionStatus::Failed(e) => e.status_code(),
+    };
+    CommissionOutcome::Terminal {
+        reply: ReplyPayload::TuneResult {
+            oid,
+            status,
+            result: outer,
+            safety_fault: None,
+        },
+        actions: PostActions {
+            stop_trace: true,
+            stepper: StepperPostAction::ArmPreservePosition,
+        },
+    }
+}
+
 /// Dispatch one Stage-C terminal while applying its retained-evidence lifecycle.
 pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
     mut terminal: crate::commissioning::types::VelocityIntegralTerminal,
@@ -1271,6 +1310,7 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     channel: u8,
     retention: CommissionRetention<'_>,
 ) -> CommissionOutcome {
+    let _ = pwm_maxcnt; // dispatch_velocity_integral_terminal does not need it
     if let Some(record) = engine
         .as_ref()
         .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
@@ -1409,15 +1449,7 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
         .as_mut()
         .expect("engine slot is None on VelocityIntegralTerminal")
         .emit_stage_c_terminal_trace(backend, &dispatch.terminal, dispatch.reproduction);
-    match drive_commission_result(
-        StepResult::VelocityIntegralTerminal(dispatch.terminal),
-        engine,
-        backend,
-        state,
-        pwm_maxcnt,
-    )
-    .await
-    {
+    match dispatch_velocity_integral_terminal(dispatch.terminal, engine, backend, state).await {
         CommissionOutcome::Terminal {
             reply: ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. },
             actions,
@@ -1476,14 +1508,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                 .as_mut()
                 .expect("engine slot is None on AcceptanceMatrixTerminal")
                 .emit_acceptance_matrix_terminal_trace(backend, terminal);
-            drive_commission_result(
-                StepResult::AcceptanceMatrixTerminal(terminal),
-                engine,
-                backend,
-                state,
-                pwm_maxcnt,
-            )
-            .await
+            dispatch_acceptance_matrix_terminal(terminal, engine, backend, state).await
         }
         StepResult::RobustnessReversalTerminal(terminal) => {
             // The robustness probe reads the retained accepted point read-only,
@@ -1514,14 +1539,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                         &entry,
                         &point,
                     );
-                    drive_commission_result(
-                        StepResult::OuterDone(result),
-                        engine,
-                        backend,
-                        state,
-                        pwm_maxcnt,
-                    )
-                    .await
+                    dispatch_outer_done(result, engine, backend, state, pwm_maxcnt).await
                 }
                 None => {
                     // A `Complete` outcome that could not be joined (missing
@@ -1536,27 +1554,22 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
                         terminal.outcome = crate::commissioning::types::RobustnessOutcome::Failed;
                         terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
                     }
-                    drive_commission_result(
-                        StepResult::RobustnessReversalTerminal(terminal),
-                        engine,
-                        backend,
-                        state,
-                        pwm_maxcnt,
-                    )
-                    .await
+                    dispatch_robustness_reversal_terminal(terminal, engine, backend, state).await
                 }
             }
         }
         StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
             stage_c::install_authority_from_plan(channel, retention.stage_c, plan);
-            drive_commission_result(
-                StepResult::BreakawayStageCPlanReady { run_sequence, plan },
-                engine,
-                backend,
-                state,
-                pwm_maxcnt,
-            )
-            .await
+            let engine_ref = engine
+                .as_ref()
+                .expect("engine slot is None on BreakawayStageCPlanReady");
+            CommissionOutcome::Evidence {
+                reply: ReplyPayload::VelocityIntegralPlan {
+                    oid: engine_ref.oid(),
+                    run_sequence,
+                    plan,
+                },
+            }
         }
         StepResult::VelocityIntegralTerminal(_) => {
             unreachable!("Stage-C terminals use their stage-owned dispatcher")
