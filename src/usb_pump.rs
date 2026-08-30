@@ -33,6 +33,7 @@ pub struct UsbPumpSnapshot {
 }
 
 impl UsbPumpCounters {
+    /// Construct a zeroed counters instance.
     pub const fn new() -> Self {
         Self {
             activation_count: AtomicU32::new(0),
@@ -53,6 +54,7 @@ impl UsbPumpCounters {
             .fetch_max(activation_bytes, Relaxed);
     }
 
+    /// Take a point-in-time snapshot of the counters. See [`UsbPumpSnapshot`] for the tearing caveat.
     pub fn snapshot(&self) -> UsbPumpSnapshot {
         UsbPumpSnapshot {
             activation_count: self.activation_count.load(Relaxed),
@@ -170,7 +172,7 @@ pub async fn run_once<B: UsbPumpBackend>(backend: &mut B, counters: &UsbPumpCoun
     backend.final_poll();
     backend.on_drain_complete();
     // Only count quanta that consumed RX; a TX/EP0-only wake consumes nothing
-    // and must not inflate activation_count (spec: activations that consumed RX).
+    // and must not inflate activation_count.
     if activation_bytes > 0 {
         counters.record(activation_bytes, exhausted);
     }
