@@ -202,7 +202,10 @@ pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
 ///
 /// The scan masks interrupts, which would delay the step timer and the position
 /// tick, so it is refused with `status = 3` unless every channel is disarmed,
-/// its step queue empty, and its step timer idle.
+/// its step queue empty, and its step timer idle. That quiescence check is
+/// handed to the scan rather than made here, so it runs inside the same
+/// critical section that masks the walk; deciding it out here would leave a
+/// window for an interrupt to start motion between the answer and the mask.
 ///
 /// `status` is otherwise 0 when the scan reached the first overwritten word, 1
 /// on a board that never painted, and 2 when the scan window ran out with every
@@ -211,42 +214,32 @@ pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
 /// [`crate::stack_watermark`].
 #[klipper_command]
 pub fn foci_stack_watermark(ctx: &mut dyn TmcHost, oid: u8) {
-    if !ctx.motion_quiescent() {
-        ::ankyra::klipper_reply!(
-            crate::ankyra::replies::FociStackWatermarkResult,
-            oid: u8 = oid,
-            stack_unused_bytes: u32 = 0,
-            painted_bytes: u32 = 0,
-            status: u8 = STACK_WATERMARK_STATUS_MOTION_ACTIVE
-        );
-        return;
-    }
-    let Some(usage) = crate::stack_watermark::stack_usage() else {
-        ::ankyra::klipper_reply!(
-            crate::ankyra::replies::FociStackWatermarkResult,
-            oid: u8 = oid,
-            stack_unused_bytes: u32 = 0,
-            painted_bytes: u32 = 0,
-            status: u8 = STACK_WATERMARK_STATUS_NOT_PAINTED
-        );
-        return;
-    };
-    let status = if usage.watermark_found {
-        STACK_WATERMARK_STATUS_OK
-    } else {
-        STACK_WATERMARK_STATUS_LOWER_BOUND
-    };
-    defmt::info!(
-        "stack_unused_bytes={=u32} painted_bytes={=u32} status={=u8}",
-        usage.unused_bytes,
-        usage.painted_bytes,
-        status
-    );
+    use crate::stack_watermark::StackScan;
+
+    let (unused_bytes, painted_bytes, status) =
+        match crate::stack_watermark::scan_admitted_by(|| ctx.motion_quiescent()) {
+            StackScan::Refused => (0, 0, STACK_WATERMARK_STATUS_MOTION_ACTIVE),
+            StackScan::NotPainted => (0, 0, STACK_WATERMARK_STATUS_NOT_PAINTED),
+            StackScan::Measured(usage) => {
+                let status = if usage.watermark_found {
+                    STACK_WATERMARK_STATUS_OK
+                } else {
+                    STACK_WATERMARK_STATUS_LOWER_BOUND
+                };
+                defmt::info!(
+                    "stack_unused_bytes={=u32} painted_bytes={=u32} status={=u8}",
+                    usage.unused_bytes,
+                    usage.painted_bytes,
+                    status
+                );
+                (usage.unused_bytes, usage.painted_bytes, status)
+            }
+        };
     ::ankyra::klipper_reply!(
         crate::ankyra::replies::FociStackWatermarkResult,
         oid: u8 = oid,
-        stack_unused_bytes: u32 = usage.unused_bytes,
-        painted_bytes: u32 = usage.painted_bytes,
+        stack_unused_bytes: u32 = unused_bytes,
+        painted_bytes: u32 = painted_bytes,
         status: u8 = status
     );
 }

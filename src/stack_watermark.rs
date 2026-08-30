@@ -18,6 +18,12 @@
 //! as under-report it. To keep the masked window bounded the walk stops after
 //! [`MAX_SCAN_WORDS`], reporting a lower bound rather than an exact watermark
 //! when it runs out of window.
+//!
+//! Masking that long is only tolerable while nothing time-critical is running,
+//! so the readout is admitted by a caller-supplied predicate. That predicate
+//! runs inside the same critical section as the walk, ahead of the first read:
+//! checked outside it, an interrupt could start the very work the predicate
+//! screens for after it answered, and the walk would mask straight through it.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -55,6 +61,17 @@ pub struct StackUsage {
     pub watermark_found: bool,
 }
 
+/// Outcome of an admitted readout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StackScan {
+    /// The span was walked.
+    Measured(StackUsage),
+    /// The admission predicate declined, so nothing was read.
+    Refused,
+    /// No board ever registered a painted span.
+    NotPainted,
+}
+
 /// Record the bounds of the span a board painted with [`STACK_PAINT_SENTINEL`].
 ///
 /// # Safety
@@ -62,7 +79,7 @@ pub struct StackUsage {
 /// `base` must be 4-byte aligned and `[base, base + len_words * 4)` must be a
 /// span the caller has just painted with [`STACK_PAINT_SENTINEL`] that stays
 /// readable for the rest of the program's life. Registering any other range
-/// makes [`stack_usage`] read unrelated memory.
+/// makes [`scan_admitted_by`] read unrelated memory.
 pub unsafe fn register_painted_region(base: usize, len_words: usize) {
     PAINT_LEN_WORDS.store(len_words, Ordering::Relaxed);
     PAINT_BASE.store(base, Ordering::Relaxed);
@@ -75,20 +92,28 @@ fn intact_prefix_words(len_words: usize, mut read_word: impl FnMut(usize) -> u32
         .count()
 }
 
-/// Measure the registered span, or `None` on a board that never painted.
+/// Measure the registered span, if `admit` allows the masked walk to run.
 ///
-/// Masks interrupts for the walk, so it is a host-triggered diagnostic rather
-/// than something to poll: see [`MAX_SCAN_WORDS`] for the window it holds.
-pub fn stack_usage() -> Option<StackUsage> {
-    let base = PAINT_BASE.load(Ordering::Relaxed);
-    if base == 0 {
-        return None;
-    }
-    let len_words = PAINT_LEN_WORDS.load(Ordering::Relaxed);
-    let scan_words = len_words.min(MAX_SCAN_WORDS);
+/// This is the only way to read the span, and `admit` is how a caller keeps the
+/// walk away from work it must not delay. The predicate is evaluated inside the
+/// critical section that masks the walk and before the first read, so a
+/// predicate over interrupt-driven state stays true for as long as it gates:
+/// there is no window between deciding and masking for an interrupt to slip
+/// through. `admit` therefore runs with interrupts masked and must be short and
+/// non-blocking; see [`MAX_SCAN_WORDS`] for the window the walk itself holds.
+pub fn scan_admitted_by(admit: impl FnOnce() -> bool) -> StackScan {
+    critical_section::with(|_| {
+        if !admit() {
+            return StackScan::Refused;
+        }
+        let base = PAINT_BASE.load(Ordering::Relaxed);
+        if base == 0 {
+            return StackScan::NotPainted;
+        }
+        let len_words = PAINT_LEN_WORDS.load(Ordering::Relaxed);
+        let scan_words = len_words.min(MAX_SCAN_WORDS);
 
-    let intact = critical_section::with(|_| {
-        intact_prefix_words(scan_words, |index| {
+        let intact = intact_prefix_words(scan_words, |index| {
             // SAFETY: two obligations, exclusion and validity.
             //
             // Exclusion: this runs with interrupts masked on a single-core MCU
@@ -107,13 +132,13 @@ pub fn stack_usage() -> Option<StackUsage> {
             // The pointer is derived and discarded per word, so no reference
             // into the span outlives the load.
             unsafe { (base as *const u32).add(index).read_volatile() }
-        })
-    });
+        });
 
-    Some(StackUsage {
-        unused_bytes: (intact * size_of::<u32>()) as u32,
-        painted_bytes: (len_words * size_of::<u32>()) as u32,
-        watermark_found: intact < scan_words,
+        StackScan::Measured(StackUsage {
+            unused_bytes: (intact * size_of::<u32>()) as u32,
+            painted_bytes: (len_words * size_of::<u32>()) as u32,
+            watermark_found: intact < scan_words,
+        })
     })
 }
 
@@ -127,8 +152,8 @@ pub(crate) fn clear_painted_region_for_test() {
 ///
 /// # Safety
 ///
-/// `words` must outlive every later [`stack_usage`] call, so callers pass a
-/// leaked allocation.
+/// `words` must outlive every later [`scan_admitted_by`] call, so callers pass
+/// a leaked allocation.
 #[cfg(test)]
 pub(crate) unsafe fn set_painted_region_for_test(words: &'static [u32]) {
     unsafe { register_painted_region(words.as_ptr() as usize, words.len()) }
@@ -177,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn stack_usage_reads_the_registered_span_through_raw_pointers() {
+    fn an_admitted_scan_reads_the_registered_span_through_raw_pointers() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         register_leaked(std::vec![
             STACK_PAINT_SENTINEL,
@@ -188,8 +213,8 @@ mod tests {
         ]);
 
         assert_eq!(
-            stack_usage(),
-            Some(StackUsage {
+            scan_admitted_by(|| true),
+            StackScan::Measured(StackUsage {
                 unused_bytes: 12,
                 painted_bytes: 20,
                 watermark_found: true,
@@ -203,8 +228,8 @@ mod tests {
         register_leaked(std::vec![STACK_PAINT_SENTINEL; 6]);
 
         assert_eq!(
-            stack_usage(),
-            Some(StackUsage {
+            scan_admitted_by(|| true),
+            StackScan::Measured(StackUsage {
                 unused_bytes: 24,
                 painted_bytes: 24,
                 watermark_found: false,
@@ -219,7 +244,9 @@ mod tests {
         words[MAX_SCAN_WORDS + 8] = 0xDEAD_BEEF;
         register_leaked(words);
 
-        let usage = stack_usage().expect("registered span");
+        let StackScan::Measured(usage) = scan_admitted_by(|| true) else {
+            panic!("expected a measured scan");
+        };
 
         assert_eq!(
             usage,
@@ -233,10 +260,60 @@ mod tests {
     }
 
     #[test]
-    fn stack_usage_is_none_before_any_board_registers() {
+    fn an_admitted_scan_reports_not_painted_before_any_board_registers() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         clear_painted_region_for_test();
 
-        assert_eq!(stack_usage(), None);
+        assert_eq!(scan_admitted_by(|| true), StackScan::NotPainted);
+    }
+
+    #[test]
+    fn a_declining_predicate_refuses_before_the_span_is_consulted() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        register_leaked(std::vec![STACK_PAINT_SENTINEL; 4]);
+        let mut calls = 0;
+
+        let scan = scan_admitted_by(|| {
+            calls += 1;
+            false
+        });
+
+        assert_eq!(scan, StackScan::Refused);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn a_declining_predicate_outranks_an_unregistered_span() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        clear_painted_region_for_test();
+
+        assert_eq!(scan_admitted_by(|| false), StackScan::Refused);
+    }
+
+    /// The walk must not begin until the predicate has admitted it, or a
+    /// predicate over interrupt-driven state gates nothing. Writing the span
+    /// from inside the predicate makes that ordering observable: the write is
+    /// visible to the scan only if the scan reads after the predicate answers.
+    #[test]
+    fn the_span_is_read_only_after_the_predicate_admits_the_scan() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let words: &'static mut [u32] = std::vec::Vec::leak(std::vec![STACK_PAINT_SENTINEL; 4]);
+        let base = words.as_ptr() as usize;
+        // SAFETY: the span is leaked, so it outlives every later read.
+        unsafe { register_painted_region(base, words.len()) };
+
+        let scan = scan_admitted_by(|| {
+            words[2] = 0xDEAD_BEEF;
+            true
+        });
+
+        assert_eq!(
+            scan,
+            StackScan::Measured(StackUsage {
+                unused_bytes: 8,
+                painted_bytes: 16,
+                watermark_found: true,
+            })
+        );
     }
 }
