@@ -604,7 +604,7 @@ pub(crate) fn discovery_rung_margin_report(
     let margin_percent_milli =
         (lower_percent_milli - lower_band_milli).min(upper_band_milli - upper_percent_milli);
     let half_width_percent_milli = (upper_percent_milli - lower_percent_milli) / 2;
-    let adjacent_rate_step_permille = if collected_index == 0 {
+    let adjacent_rate_step_percent_milli = if collected_index == 0 {
         0
     } else {
         match bounds.get(usize::from(collected_index) - 1) {
@@ -628,7 +628,7 @@ pub(crate) fn discovery_rung_margin_report(
         upper_percent_milli,
         margin_percent_milli,
         half_width_percent_milli,
-        adjacent_rate_step_permille,
+        adjacent_rate_step_percent_milli,
     })
 }
 

@@ -1321,7 +1321,7 @@ pub struct BreakawayDiscoveryRungMargin {
     pub half_width_percent_milli: i32,
     /// Achieved rate step from the previous collected in-band rung's own
     /// midpoint response, in percent * 1000; zero for the first collected rung.
-    pub adjacent_rate_step_permille: i32,
+    pub adjacent_rate_step_percent_milli: i32,
 }
 
 /// Diagnostic evidence for whether the additive ladder's rung zero (the

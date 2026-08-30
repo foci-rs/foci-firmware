@@ -461,7 +461,7 @@ fn discovery_rung_margin_report_computes_margin_and_half_width() {
     assert_eq!(report.margin_percent_milli, 1_000);
     // half-width = (79 - 71) / 2 = 4 percent
     assert_eq!(report.half_width_percent_milli, 4_000);
-    assert_eq!(report.adjacent_rate_step_permille, 0);
+    assert_eq!(report.adjacent_rate_step_percent_milli, 0);
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn discovery_rung_margin_report_computes_adjacent_step_from_previous_midpoint() 
 
     let second = discovery_rung_margin_report(&bounds, 1, 0x11, 3, 2).expect("nominatable rung");
 
-    assert_eq!(second.adjacent_rate_step_permille, 0);
+    assert_eq!(second.adjacent_rate_step_percent_milli, 0);
 
     let bounds_shifted = [
         nominatable_bounds(362, 71.0, 79.0), // midpoint 75.0
@@ -481,7 +481,7 @@ fn discovery_rung_margin_report_computes_adjacent_step_from_previous_midpoint() 
     ];
     let shifted =
         discovery_rung_margin_report(&bounds_shifted, 1, 0x11, 3, 2).expect("nominatable rung");
-    assert_eq!(shifted.adjacent_rate_step_permille, 3_000);
+    assert_eq!(shifted.adjacent_rate_step_percent_milli, 3_000);
 }
 
 #[test]

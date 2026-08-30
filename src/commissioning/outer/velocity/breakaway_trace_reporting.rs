@@ -231,7 +231,7 @@ pub(crate) fn encode_discovery_rung_margin(
     record.push_i32(report.upper_percent_milli);
     record.push_i32(report.margin_percent_milli);
     record.push_i32(report.half_width_percent_milli);
-    record.push_i32(report.adjacent_rate_step_permille);
+    record.push_i32(report.adjacent_rate_step_percent_milli);
     record
 }
 
