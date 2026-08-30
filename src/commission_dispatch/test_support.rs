@@ -291,6 +291,10 @@ pub struct MockBackend {
     pub fail_on_write_occurrence: Option<(u8, usize)>,
     /// If `Some(addr)`, `read_register` returns `Err(MockSpiError)` for that address.
     pub fail_on_read: Option<u8>,
+    /// Suspend the next register read or write exactly once, so a manually
+    /// polled test can observe a caller while its future is genuinely in
+    /// flight.
+    pub pend_next_op: bool,
     /// Transient write failures as `(address, remaining failures)`.
     pub fail_writes_remaining: Option<(u8, u8)>,
     /// Transient read failures as `(address, remaining failures)`.
@@ -408,6 +412,7 @@ impl MockBackend {
             fail_on_write: None,
             fail_on_write_occurrence: None,
             fail_on_read: None,
+            pend_next_op: false,
             fail_writes_remaining: None,
             fail_reads_remaining: None,
             last_motor_sentinel_stored: core::cell::Cell::new(None),
@@ -512,6 +517,29 @@ impl MockBackend {
         self.spi_log
             .iter()
             .any(|op| matches!(op, SpiOp::Write(written, val) if *written == addr && *val == 0x8000_0003))
+    }
+}
+
+/// Returns `Pending` once, then `Ready`. Lets a test drive a caller's future to
+/// a real suspension point instead of running it straight to completion.
+#[derive(Default)]
+struct YieldOnce {
+    yielded: bool,
+}
+
+impl core::future::Future for YieldOnce {
+    type Output = ();
+
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<()> {
+        if self.yielded {
+            return core::task::Poll::Ready(());
+        }
+        self.yielded = true;
+        cx.waker().wake_by_ref();
+        core::task::Poll::Pending
     }
 }
 
@@ -707,6 +735,9 @@ impl CommissionRegisterIo for MockBackend {
         reg: Register,
         val: u32,
     ) -> Result<(), Self::Error> {
+        if core::mem::take(&mut self.pend_next_op) {
+            YieldOnce::default().await;
+        }
         let max_attempts = foci_tmc4671::spi::RetryPolicy::production()
             .max_attempts
             .max(1);

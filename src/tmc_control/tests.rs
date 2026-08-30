@@ -3331,16 +3331,11 @@ fn zero_cal_result() -> crate::commissioning::types::AdcCalResult {
     }
 }
 
-/// Install an armed motor with a terminal restore stopped part-way through.
-async fn armed_runtime_mid_restore(
-    runtime: &mut TmcControlRuntime,
-    backend: &mut MockBackend,
-    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
-) {
+/// Install an armed motor with a terminal restore started but not yet advanced.
+fn armed_runtime_with_restore_started(runtime: &mut TmcControlRuntime, backend: &mut MockBackend) {
     use crate::commissioning::backend::CommissionMotorControl;
 
     let tmc = crate::state::tmc::tmc_channel0();
-    let stepper = crate::state::stepper::stepper_channel0();
     tmc.mark_pi_representation_established();
     tmc.motor_armed.store(true, Relaxed);
     tmc.commission_in_flight.store(true, Relaxed);
@@ -3353,6 +3348,20 @@ async fn armed_runtime_mid_restore(
         crate::commissioning::schedule::CommissionTerminal::CalibrateDone(zero_cal_result()),
         &commissioning_runtime_config(),
     );
+    assert!(runtime.is_restore_pending());
+    assert!(runtime.is_commission_active());
+}
+
+/// Install an armed motor with a terminal restore stopped part-way through.
+async fn armed_runtime_mid_restore(
+    runtime: &mut TmcControlRuntime,
+    backend: &mut MockBackend,
+    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+) {
+    let tmc = crate::state::tmc::tmc_channel0();
+    let stepper = crate::state::stepper::stepper_channel0();
+    armed_runtime_with_restore_started(runtime, backend);
+
     let mut retention = crate::commission_dispatch::CommissionRetention::new(slot);
     assert!(
         runtime
@@ -3585,4 +3594,135 @@ fn request_restore_cancel_without_a_restore_is_inert() {
     runtime.request_restore_cancel();
     assert!(!runtime.restore_cancel_pending());
     assert!(!runtime.is_restore_pending());
+}
+
+/// A waker that does nothing; the tests below poll a future by hand exactly
+/// once and never wait for a wake-up.
+struct NoopWake;
+
+impl std::task::Wake for NoopWake {
+    fn wake(self: std::sync::Arc<Self>) {}
+}
+
+fn noop_waker() -> std::task::Waker {
+    std::task::Waker::from(std::sync::Arc::new(NoopWake))
+}
+
+/// Acquire the shared-state guard and reset the channel atomics without an
+/// enclosing `block_on`, so the caller can poll futures by hand afterwards.
+fn lock_and_reset_shared_state()
+-> impl core::ops::Deref<Target = ()> + core::ops::DerefMut + 'static {
+    let guard =
+        pollster::block_on(crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.lock());
+    crate::state::tmc::reset_all_tmc_channels();
+    crate::state::stepper::reset_all_stepper_channels();
+    guard
+}
+
+#[test]
+fn a_torn_down_restore_poll_keeps_both_slots_installed() {
+    // The restore machine must live in the runtime slot for every suspension
+    // point of a poll, not in a local moved out of it. Dropping an in-flight
+    // poll is the observable form of that: with the machine moved into the
+    // future, the drop would destroy it and the runtime would report no
+    // pending restore while the motor is still mid-sequence.
+    let _guard = lock_and_reset_shared_state();
+    let tmc = crate::state::tmc::tmc_channel0();
+    let stepper = crate::state::stepper::stepper_channel0();
+    let mut slot =
+        crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let mut backend = MockBackend::new();
+    armed_runtime_with_restore_started(&mut runtime, &mut backend);
+    // Restart as an InnerFailed terminal: its first step is the safe-state
+    // sequence, whose verified writes are where the mock can suspend.
+    runtime.request_restore_cancel();
+    pollster::block_on(runtime.drive_restore_cancel(&mut backend, tmc, stepper));
+    runtime.set_commission_engine(CommissioningEngine::new_calibrate(0));
+    runtime.begin_commissioning_terminal(
+        crate::commissioning::schedule::CommissionTerminal::InnerFailed(
+            crate::autotune::CommissionError::EncoderFault,
+        ),
+        &commissioning_runtime_config(),
+    );
+
+    backend.pend_next_op = true;
+    let suspended = {
+        let mut retention = crate::commission_dispatch::CommissionRetention::new(&mut slot);
+        let mut future = std::boxed::Box::pin(runtime.poll_commissioning_terminal(
+            &mut backend,
+            &mut retention,
+            tmc,
+            stepper,
+        ));
+        let waker = noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+        matches!(future.as_mut().poll(&mut context), std::task::Poll::Pending)
+        // The future is dropped here, mid-await.
+    };
+
+    assert!(
+        suspended,
+        "the mock must suspend so the poll is genuinely in flight when dropped"
+    );
+    assert!(
+        runtime.is_restore_pending(),
+        "a torn-down poll must not lose the restore machine"
+    );
+    assert!(
+        runtime.is_commission_active(),
+        "a torn-down poll must not lose the engine"
+    );
+}
+
+#[test]
+fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
+    // Same ownership contract for the cancel drain, which runs the mandatory
+    // safe-state sequence: neither slot nor the latch may be retired until
+    // that sequence has actually run, and a torn-down drain must be resumable.
+    let _guard = lock_and_reset_shared_state();
+    let tmc = crate::state::tmc::tmc_channel0();
+    let stepper = crate::state::stepper::stepper_channel0();
+    let mut slot =
+        crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    let mut backend = MockBackend::new();
+    pollster::block_on(armed_runtime_mid_restore(
+        &mut runtime,
+        &mut backend,
+        &mut slot,
+    ));
+    runtime.request_restore_cancel();
+
+    backend.pend_next_op = true;
+    let suspended = {
+        let mut future =
+            std::boxed::Box::pin(runtime.drive_restore_cancel(&mut backend, tmc, stepper));
+        let waker = noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+        matches!(future.as_mut().poll(&mut context), std::task::Poll::Pending)
+    };
+
+    assert!(
+        suspended,
+        "the mock must suspend so the drain is genuinely in flight when dropped"
+    );
+    assert!(
+        runtime.is_restore_pending(),
+        "a torn-down drain must not lose the restore machine"
+    );
+    assert!(
+        runtime.is_commission_active(),
+        "a torn-down drain must not lose the engine"
+    );
+    assert!(
+        runtime.restore_cancel_pending(),
+        "a torn-down drain must leave the cancel latched so it is retried"
+    );
+    // The retry the latch guarantees still reaches safe state.
+    pollster::block_on(assert_drain_reaches_safe_state(
+        &mut runtime,
+        &mut backend,
+        &mut slot,
+    ));
 }

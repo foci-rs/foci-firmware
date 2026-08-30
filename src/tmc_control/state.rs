@@ -621,8 +621,11 @@ impl TmcControlRuntime {
     where
         B: CommissioningBackend,
     {
-        let mut machine = self.restore_machine.take()?;
+        // The machine is advanced in place, never moved into a local across the
+        // await: the slot must read `Some` for every suspension point of the
+        // poll, so a torn-down poll cannot lose the machine that owns the motor.
         let step = {
+            let machine = self.restore_machine.as_mut()?;
             let mut dispatch = crate::commission_dispatch::DispatchState::new(
                 self.channel,
                 tmc,
@@ -641,11 +644,9 @@ impl TmcControlRuntime {
                 .await
         };
         match step {
-            crate::commission_dispatch::RestoreStep::Pending => {
-                self.restore_machine = Some(machine);
-                None
-            }
+            crate::commission_dispatch::RestoreStep::Pending => None,
             crate::commission_dispatch::RestoreStep::Done(outcome) => {
+                self.restore_machine = None;
                 self.applied_velocity_offset = None;
                 self.applied_torque_flux_offset = None;
                 Some(outcome)
@@ -703,14 +704,22 @@ impl TmcControlRuntime {
                 crate::commission_dispatch::CommissionOutcome::Continue,
             );
         }
-        let Some(mut machine) = self.restore_machine.take() else {
+        if self.restore_machine.is_none() {
             self.commission_engine = None;
             self.restore_cancel_requested = false;
             return crate::commission_dispatch::RestoreStep::Done(
                 crate::commission_dispatch::CommissionOutcome::Continue,
             );
-        };
+        }
+        // Driven in place, never moved into a local across the await: both the
+        // machine slot and the latch must still read "restore in progress" at
+        // every suspension point of the safe-state sequence, and are retired
+        // only once it has actually run.
         let outcome = {
+            let machine = self
+                .restore_machine
+                .as_mut()
+                .expect("restore machine checked present above");
             let mut dispatch = crate::commission_dispatch::DispatchState::new(
                 self.channel,
                 tmc,
@@ -723,6 +732,7 @@ impl TmcControlRuntime {
                 .force_safe_terminal(&mut self.commission_engine, backend, &mut dispatch)
                 .await
         };
+        self.restore_machine = None;
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
         self.restore_cancel_requested = false;
