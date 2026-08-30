@@ -176,6 +176,18 @@ pub trait CommissionMotorControl {
 
     /// Set the TMC4671 enable pin state.
     fn set_enable_pin(&mut self, state: bool);
+
+    /// Record a motor lifecycle flag transition at the exact mutation site.
+    ///
+    /// Default no-op: production backends do not need an interleaved
+    /// lifecycle log. Test backends override this to capture the relative
+    /// order of lifecycle transitions against SPI/GPIO effects.
+    fn record_lifecycle(
+        &mut self,
+        _flag: crate::tmc_control::lifecycle::LifecycleFlag,
+        _value: bool,
+    ) {
+    }
 }
 
 /// Encoder sampling capability used by inner and outer commissioning.

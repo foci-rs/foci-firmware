@@ -5,6 +5,22 @@ use crate::commissioning::types::CommissioningBackend;
 
 const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 
+/// A motor lifecycle flag transitioned by [`arm_motor_electrical`],
+/// [`arm_motor_for_steps`], or [`disarm_motor`].
+///
+/// Recorded through `CommissionMotorControl::record_lifecycle` at the exact
+/// mutation site so a test backend can observe these transitions
+/// interleaved with SPI/GPIO ordering, not just their final values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum LifecycleFlag {
+    /// `DispatchState::motor_enabled` (electrical arm/disarm).
+    MotorEnabled,
+    /// `TmcChannelState::motor_armed` (step-timer processing arm/disarm).
+    MotorArmed,
+    /// `DispatchState::calibrated`.
+    Calibrated,
+}
+
 pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<(), crate::autotune::CommissionError> {
@@ -113,6 +129,7 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
 
     backend.set_enable_pin(true);
     *state.motor_enabled = true;
+    backend.record_lifecycle(LifecycleFlag::MotorEnabled, true);
     Ok(())
 }
 
@@ -174,10 +191,12 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
         .tmc
         .motor_armed
         .store(false, core::sync::atomic::Ordering::Relaxed);
+    backend.record_lifecycle(LifecycleFlag::MotorArmed, false);
     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     state.tmc.clear_velocity_clamp_latch();
     *state.calibrated = false;
     *state.motor_enabled = false;
+    backend.record_lifecycle(LifecycleFlag::MotorEnabled, false);
 }
 
 /// Apply the shared shutdown safe-state policy for one TMC channel.

@@ -7,6 +7,7 @@ use crate::commissioning::backend::{
     CommissionTiming, CommissionTrace,
 };
 use crate::config::TmcConfig;
+use crate::tmc_control::lifecycle::LifecycleFlag;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::registers::Register;
 use heapless::Vec;
@@ -219,7 +220,7 @@ pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine
 }
 
 /// A single SPI operation recorded by `MockBackend`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpiOp {
     Read,
     Write(u8, u32),
@@ -227,6 +228,14 @@ pub enum SpiOp {
     /// writes so tests can assert relative ordering (e.g. a register must be
     /// written before the enable pin is asserted).
     EnablePin(bool),
+    /// A motor lifecycle flag transition, recorded at its exact mutation
+    /// site (see `CommissionMotorControl::record_lifecycle`) so tests can
+    /// assert its relative order against SPI writes and `EnablePin` calls
+    /// in the same interleaved log.
+    Lifecycle {
+        flag: LifecycleFlag,
+        value: bool,
+    },
 }
 
 /// Mock implementation of `CommissioningBackend` for host-side unit tests.
@@ -745,6 +754,10 @@ impl CommissionMotorControl for MockBackend {
     fn set_enable_pin(&mut self, state: bool) {
         self.enable_pin = state;
         self.spi_log.push(SpiOp::EnablePin(state)).ok();
+    }
+
+    fn record_lifecycle(&mut self, flag: LifecycleFlag, value: bool) {
+        self.spi_log.push(SpiOp::Lifecycle { flag, value }).ok();
     }
 }
 

@@ -13,6 +13,8 @@ pub mod acceptance;
 #[cfg(test)]
 mod acceptance_tests;
 #[cfg(test)]
+mod characterization_tests;
+#[cfg(test)]
 mod manifest_completeness_tests;
 pub mod post_actions;
 pub mod replies;
