@@ -19,12 +19,15 @@
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering::Relaxed;
 
-use crate::context::{ShutdownRecovery, TmcHost};
+use crate::context::{ShutdownRecovery, StateAccess, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::TmcChannelState;
 
 const ADC_VM_OFFSET_STATUS_OK: u8 = 0;
 const ADC_VM_OFFSET_STATUS_NOT_READY: u8 = 1;
+
+const STACK_WATERMARK_STATUS_OK: u8 = 0;
+const STACK_WATERMARK_STATUS_NOT_PAINTED: u8 = 1;
 
 /// Trigger TMC4671 self-test diagnostic via the commissioning engine.
 ///
@@ -185,6 +188,38 @@ pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
         offset_raw: u16 = offset.offset_raw,
         sample_count: u8 = offset.sample_count,
         status: u8 = ADC_VM_OFFSET_STATUS_OK
+    );
+}
+
+/// Report the MSP stack high-water mark from the boot-time sentinel paint.
+///
+/// Host-triggered by design: the reply describes the deepest point the stack
+/// has reached since boot, so it must be issued after the workload under test
+/// rather than sampled automatically. Boards that never painted reply with
+/// `status = 1` and zeroed counters. See [`crate::stack_watermark`].
+#[klipper_command]
+pub fn foci_stack_watermark(_ctx: &mut dyn StateAccess, oid: u8) {
+    let Some(usage) = crate::stack_watermark::stack_usage() else {
+        ::ankyra::klipper_reply!(
+            crate::ankyra::replies::FociStackWatermarkResult,
+            oid: u8 = oid,
+            stack_unused_bytes: u32 = 0,
+            painted_bytes: u32 = 0,
+            status: u8 = STACK_WATERMARK_STATUS_NOT_PAINTED
+        );
+        return;
+    };
+    defmt::info!(
+        "stack_unused_bytes={=u32} painted_bytes={=u32}",
+        usage.unused_bytes,
+        usage.painted_bytes
+    );
+    ::ankyra::klipper_reply!(
+        crate::ankyra::replies::FociStackWatermarkResult,
+        oid: u8 = oid,
+        stack_unused_bytes: u32 = usage.unused_bytes,
+        painted_bytes: u32 = usage.painted_bytes,
+        status: u8 = STACK_WATERMARK_STATUS_OK
     );
 }
 
@@ -351,9 +386,18 @@ mod tests {
         status: u8,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct StackWatermarkReply {
+        oid: u8,
+        stack_unused_bytes: u32,
+        painted_bytes: u32,
+        status: u8,
+    }
+
     struct MockSender {
         adc_vm_offsets: std::vec::Vec<AdcVmOffsetReply>,
         last_boot_diagnostics: std::vec::Vec<crate::ankyra::replies::FociLastBootDiagnostic>,
+        stack_watermark_payloads: std::vec::Vec<crate::ankyra::replies::FociStackWatermarkResult>,
     }
 
     impl MockSender {
@@ -361,6 +405,7 @@ mod tests {
             Self {
                 adc_vm_offsets: std::vec::Vec::new(),
                 last_boot_diagnostics: std::vec::Vec::new(),
+                stack_watermark_payloads: std::vec::Vec::new(),
             }
         }
     }
@@ -379,6 +424,12 @@ mod tests {
     impl ::ankyra::SendReply<crate::ankyra::replies::FociLastBootDiagnostic> for MockSender {
         fn send(&mut self, payload: crate::ankyra::replies::FociLastBootDiagnostic) {
             self.last_boot_diagnostics.push(payload);
+        }
+    }
+
+    impl ::ankyra::SendReply<crate::ankyra::replies::FociStackWatermarkResult> for MockSender {
+        fn send(&mut self, payload: crate::ankyra::replies::FociStackWatermarkResult) {
+            self.stack_watermark_payloads.push(payload);
         }
     }
 
@@ -540,5 +591,98 @@ mod tests {
         );
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
+    }
+
+    /// Drive `foci_stack_watermark` the way the transport does: encode `oid`
+    /// as Klipper VLQ, hand the bytes to the generated dispatch wrapper so the
+    /// argument is decoded off the wire, then re-decode the emitted reply's
+    /// encoded payload field by field. A descriptor typo or a field-order or
+    /// field-type drift fails here, where calling the handler directly and
+    /// reading the Rust struct back would not notice.
+    fn dispatch_stack_watermark_over_the_wire(oid: u8) -> StackWatermarkReply {
+        use ankyra::encoding::{Readable, Writable};
+
+        let mut request = ankyra::ScratchOutput::<8>::new();
+        oid.write(&mut request);
+        let request = request.result().to_vec();
+
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+        let mut frame: &[u8] = &request;
+        super::__ankyra_dispatch_foci_stack_watermark(&mut frame, &mut ctx, &mut sender)
+            .expect("dispatch must decode the request");
+        assert!(frame.is_empty(), "dispatch left request bytes unread");
+
+        let [reply] = sender.stack_watermark_payloads.as_slice() else {
+            panic!("expected exactly one reply");
+        };
+        let mut payload = ankyra::ScratchOutput::<64>::new();
+        reply.write(&mut payload);
+        let payload = payload.result().to_vec();
+
+        let mut cursor: &[u8] = &payload;
+        let decoded = StackWatermarkReply {
+            oid: u8::read(&mut cursor).expect("oid"),
+            stack_unused_bytes: u32::read(&mut cursor).expect("stack_unused_bytes"),
+            painted_bytes: u32::read(&mut cursor).expect("painted_bytes"),
+            status: u8::read(&mut cursor).expect("status"),
+        };
+        assert!(cursor.is_empty(), "reply carried unexpected trailing bytes");
+        decoded
+    }
+
+    #[test]
+    fn foci_stack_watermark_wire_formats_match_the_klipper_dictionary() {
+        assert_eq!(
+            super::__ANKYRA_FORMAT_command_foci_stack_watermark,
+            "foci_stack_watermark oid=%c"
+        );
+        let reply = crate::ankyra::replies::__ankyra_descriptor_FociStackWatermarkResult();
+        assert_eq!(reply.protocol_name(), "foci_stack_watermark_result");
+        assert_eq!(
+            reply.message_format(),
+            "foci_stack_watermark_result oid=%c stack_unused_bytes=%u painted_bytes=%u status=%c"
+        );
+    }
+
+    #[test]
+    fn foci_stack_watermark_round_trips_the_surviving_sentinel_run() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let sentinel = crate::stack_watermark::STACK_PAINT_SENTINEL;
+        let words: &'static [u32] = std::vec::Vec::leak(std::vec![
+            sentinel,
+            sentinel,
+            sentinel,
+            0xDEAD_BEEF,
+            sentinel,
+        ]);
+        // SAFETY: the span is leaked, so it outlives every later read.
+        unsafe { crate::stack_watermark::set_painted_region_for_test(words) };
+
+        assert_eq!(
+            dispatch_stack_watermark_over_the_wire(10),
+            StackWatermarkReply {
+                oid: 10,
+                stack_unused_bytes: 12,
+                painted_bytes: 20,
+                status: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn foci_stack_watermark_round_trips_an_unpainted_board() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        crate::stack_watermark::clear_painted_region_for_test();
+
+        assert_eq!(
+            dispatch_stack_watermark_over_the_wire(7),
+            StackWatermarkReply {
+                oid: 7,
+                stack_unused_bytes: 0,
+                painted_bytes: 0,
+                status: 1,
+            }
+        );
     }
 }

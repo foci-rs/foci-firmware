@@ -36,6 +36,7 @@ pub mod resistance_identification;
 pub mod sample_timing;
 pub mod selftest;
 pub mod shutdown;
+pub mod stack_watermark;
 pub mod state;
 pub mod step_pulse;
 pub mod stepper_runtime;
