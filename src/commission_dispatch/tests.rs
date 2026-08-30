@@ -17,6 +17,7 @@ fn dispatch_state<'a>(
 ) -> DispatchState<'a> {
     crate::state::tmc::tmc_channel0().mark_pi_representation_established();
     DispatchState::new(
+        0,
         crate::state::tmc::tmc_channel0(),
         crate::state::stepper::stepper_channel0(),
         calibrated,

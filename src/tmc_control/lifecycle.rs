@@ -215,6 +215,15 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     tmc: &'static crate::state::tmc::TmcChannelState,
     stepper: &'static crate::state::stepper::StepperChannelState,
 ) -> bool {
+    // A terminal restore caught mid-sequence is driven to safe state here,
+    // before the disarm and engine take below clear the state it depends on.
+    // Both boards funnel their shutdown path through this helper.
+    if runtime.is_restore_pending() {
+        runtime.request_restore_cancel();
+    }
+    while runtime.restore_cancel_pending() {
+        let _ = runtime.drive_restore_cancel(backend, tmc, stepper).await;
+    }
     let mut state = runtime.dispatch_state(tmc, stepper);
     disarm_motor(backend, &mut state).await;
     let phase_advance_restored = runtime.restore_phase_advance_via_backend(backend).await;
@@ -243,6 +252,7 @@ mod tests {
     ) -> DispatchState<'a> {
         crate::state::tmc::tmc_channel0().mark_pi_representation_established();
         DispatchState::new(
+            0,
             crate::state::tmc::tmc_channel0(),
             crate::state::stepper::stepper_channel0(),
             calibrated,

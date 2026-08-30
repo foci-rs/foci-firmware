@@ -2,7 +2,7 @@
 
 use core::sync::atomic::Ordering::Relaxed;
 
-use crate::commission_dispatch::DispatchState;
+use crate::commission_dispatch::{DispatchState, TerminalRestoreMachine};
 use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionEvent;
 use crate::commissioning::schedule::{CommissionPoll, CommissionTerminal, adapt_step_result};
@@ -109,6 +109,8 @@ pub struct TmcControlRuntime {
     calibrated: bool,
     stored_gains: Option<InnerLoopGains>,
     commission_engine: Option<CommissioningEngine>,
+    restore_machine: Option<TerminalRestoreMachine>,
+    restore_cancel_requested: bool,
     shutdown_handled: bool,
     planner_velocity_scale: Option<crate::motion_scale::PlannerVelocityScale>,
     planner_rpm_scale: Option<crate::motion_scale::PlannerRpmScale>,
@@ -150,6 +152,8 @@ impl TmcControlRuntime {
             calibrated: false,
             stored_gains: None,
             commission_engine: None,
+            restore_machine: None,
+            restore_cancel_requested: false,
             shutdown_handled: false,
             planner_velocity_scale: None,
             planner_rpm_scale: None,
@@ -224,6 +228,7 @@ impl TmcControlRuntime {
         stepper: &'static StepperChannelState,
     ) -> DispatchState<'a> {
         DispatchState::new(
+            self.channel,
             tmc,
             stepper,
             &mut self.calibrated,
@@ -240,7 +245,7 @@ impl TmcControlRuntime {
         self.motor_enabled = false;
         self.calibrated = false;
         self.stored_gains = None;
-        self.commission_engine = None;
+        self.clear_or_cancel_commission();
         self.shutdown_handled = false;
         self.planner_velocity_scale = None;
         self.planner_rpm_scale = None;
@@ -339,7 +344,7 @@ impl TmcControlRuntime {
     /// pins before any awaited SPI safe-state cleanup.
     pub fn prepare_shutdown_quiesce(&mut self) -> BoardActions {
         let mut actions = BoardActions::new();
-        self.commission_engine = None;
+        self.clear_or_cancel_commission();
         self.motor_enabled = false;
         self.calibrated = false;
         self.feedforward_was_active = false;
@@ -362,7 +367,7 @@ impl TmcControlRuntime {
         let mut actions = BoardActions::new();
         if signals.shutdown_active.load(Relaxed) {
             if !self.shutdown_handled {
-                self.commission_engine = None;
+                self.clear_or_cancel_commission();
                 self.applied_velocity_offset = None;
                 self.applied_torque_flux_offset = None;
                 push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
@@ -547,7 +552,188 @@ impl TmcControlRuntime {
         }
     }
 
+    /// Clear the commissioning engine, unless a terminal restore is mid-flight.
+    ///
+    /// A pending restore owns the motor: dropping its bookkeeping here would
+    /// strand a half-armed motor with no record that a restore was running.
+    /// Latch a cancel request instead and let `drive_restore_cancel` retire
+    /// both slots once the safe-state sequence has actually run.
+    fn clear_or_cancel_commission(&mut self) {
+        if self.restore_machine.is_some() {
+            self.restore_cancel_requested = true;
+        } else {
+            self.commission_engine = None;
+        }
+    }
+
+    /// Begin a poll-driven terminal restore for one commissioning terminal.
+    ///
+    /// The restore is advanced by [`Self::poll_commissioning_terminal`], one
+    /// backend operation per call, until it reports its terminal action.
+    pub fn begin_commissioning_terminal(
+        &mut self,
+        result: CommissionTerminal,
+        config: &TmcControlConfig,
+    ) {
+        debug_assert!(
+            self.restore_machine.is_none(),
+            "a terminal restore is already in flight on this channel"
+        );
+        self.restore_machine = Some(TerminalRestoreMachine::start_staged(
+            result,
+            self.channel,
+            config.tmc.pwm_maxcnt,
+        ));
+    }
+
+    /// Returns true while a terminal restore still owns this channel.
+    pub const fn is_restore_pending(&self) -> bool {
+        self.restore_machine.is_some()
+    }
+
+    /// Latch a cancel request for a pending terminal restore.
+    ///
+    /// Synchronous, so any exit path — including the sync quiesce helpers —
+    /// can mark the restore doomed. The slots stay populated until
+    /// [`Self::drive_restore_cancel`] has run the safe-state sequence.
+    pub fn request_restore_cancel(&mut self) {
+        if self.restore_machine.is_some() {
+            self.restore_cancel_requested = true;
+        }
+    }
+
+    /// Returns true while a latched cancel still needs draining.
+    pub const fn restore_cancel_pending(&self) -> bool {
+        self.restore_cancel_requested
+    }
+
+    /// Advance a pending terminal restore by one backend operation.
+    ///
+    /// Returns `None` while the restore still has work left, and the outcome
+    /// once it reaches its terminal.
+    async fn poll_restore_outcome<B>(
+        &mut self,
+        backend: &mut B,
+        retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+    ) -> Option<crate::commission_dispatch::CommissionOutcome>
+    where
+        B: CommissioningBackend,
+    {
+        let mut machine = self.restore_machine.take()?;
+        let step = {
+            let mut dispatch = crate::commission_dispatch::DispatchState::new(
+                self.channel,
+                tmc,
+                stepper,
+                &mut self.calibrated,
+                &mut self.motor_enabled,
+                &mut self.stored_gains,
+            );
+            machine
+                .poll_step(
+                    &mut self.commission_engine,
+                    backend,
+                    &mut dispatch,
+                    Some(retention),
+                )
+                .await
+        };
+        match step {
+            crate::commission_dispatch::RestoreStep::Pending => {
+                self.restore_machine = Some(machine);
+                None
+            }
+            crate::commission_dispatch::RestoreStep::Done(outcome) => {
+                self.applied_velocity_offset = None;
+                self.applied_torque_flux_offset = None;
+                Some(outcome)
+            }
+        }
+    }
+
+    /// Advance a pending terminal restore and map a completed one to the
+    /// board-facing action.
+    ///
+    /// Returns `None` while the restore is still in flight; the caller must
+    /// poll again rather than stepping the engine.
+    pub async fn poll_commissioning_terminal<B>(
+        &mut self,
+        backend: &mut B,
+        retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+    ) -> Option<ScheduledCommissionTickAction>
+    where
+        B: CommissioningBackend,
+    {
+        let outcome = self
+            .poll_restore_outcome(backend, retention, tmc, stepper)
+            .await?;
+        match outcome {
+            crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
+                Some(ScheduledCommissionTickAction::Terminal { reply, actions })
+            }
+            crate::commission_dispatch::CommissionOutcome::Continue
+            | crate::commission_dispatch::CommissionOutcome::Evidence { .. }
+            | crate::commission_dispatch::CommissionOutcome::PhaseChanged { .. } => {
+                unreachable!("terminal restore produced a nonterminal dispatch action")
+            }
+        }
+    }
+
+    /// Drive a latched cancel to safe state, then retire both slots.
+    ///
+    /// Runs the mandatory disarm/safe-state sequence with the caller's backend
+    /// and only then clears `restore_machine`, consumes the engine, and drops
+    /// the latch, so an interrupted teardown never leaves cleared bookkeeping
+    /// behind a half-restored motor.
+    pub async fn drive_restore_cancel<B>(
+        &mut self,
+        backend: &mut B,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+    ) -> crate::commission_dispatch::RestoreStep
+    where
+        B: CommissioningBackend,
+    {
+        if !self.restore_cancel_requested {
+            return crate::commission_dispatch::RestoreStep::Done(
+                crate::commission_dispatch::CommissionOutcome::Continue,
+            );
+        }
+        let Some(mut machine) = self.restore_machine.take() else {
+            self.commission_engine = None;
+            self.restore_cancel_requested = false;
+            return crate::commission_dispatch::RestoreStep::Done(
+                crate::commission_dispatch::CommissionOutcome::Continue,
+            );
+        };
+        let outcome = {
+            let mut dispatch = crate::commission_dispatch::DispatchState::new(
+                self.channel,
+                tmc,
+                stepper,
+                &mut self.calibrated,
+                &mut self.motor_enabled,
+                &mut self.stored_gains,
+            );
+            machine
+                .force_safe_terminal(&mut self.commission_engine, backend, &mut dispatch)
+                .await
+        };
+        self.applied_velocity_offset = None;
+        self.applied_torque_flux_offset = None;
+        self.restore_cancel_requested = false;
+        crate::commission_dispatch::RestoreStep::Done(outcome)
+    }
+
     /// Dispatch a terminal commissioning result into the board-facing action.
+    ///
+    /// Drives the restore machine to completion in one call. Boards poll
+    /// [`Self::poll_commissioning_terminal`] instead so a shutdown or lease
+    /// expiry can interrupt the restore between backend operations.
     pub async fn drive_commissioning_terminal_with_stages<B, E>(
         &mut self,
         result: CommissionTerminal,
@@ -563,77 +749,16 @@ impl TmcControlRuntime {
     {
         self.commission_engine.as_ref()?;
         let crate::commission_dispatch::CommissionTerminalContext {
-            retention,
+            mut retention,
             emit_evidence,
         } = context;
-        let mut dispatch = crate::commission_dispatch::DispatchState::new(
-            tmc,
-            stepper,
-            &mut self.calibrated,
-            &mut self.motor_enabled,
-            &mut self.stored_gains,
-        );
-        let outcome = match result {
-            CommissionTerminal::VelocityIntegral(terminal) => {
-                crate::commission_dispatch::drive_velocity_integral_terminal_with_stages(
-                    terminal,
-                    &mut self.commission_engine,
-                    backend,
-                    &mut dispatch,
-                    config.tmc.pwm_maxcnt,
-                    self.channel,
-                    retention,
-                )
+        self.begin_commissioning_terminal(result, config);
+        let outcome = loop {
+            if let Some(outcome) = self
+                .poll_restore_outcome(backend, &mut retention, tmc, stepper)
                 .await
-            }
-            CommissionTerminal::AcceptanceMatrix(terminal) => {
-                crate::commission_dispatch::drive_commission_result_with_stages(
-                    crate::commissioning::types::StepResult::AcceptanceMatrixTerminal(terminal),
-                    &mut self.commission_engine,
-                    backend,
-                    &mut dispatch,
-                    config.tmc.pwm_maxcnt,
-                    self.channel,
-                    retention,
-                )
-                .await
-            }
-            CommissionTerminal::RobustnessReversal(terminal) => {
-                crate::commission_dispatch::drive_commission_result_with_stages(
-                    crate::commissioning::types::StepResult::RobustnessReversalTerminal(terminal),
-                    &mut self.commission_engine,
-                    backend,
-                    &mut dispatch,
-                    config.tmc.pwm_maxcnt,
-                    self.channel,
-                    retention,
-                )
-                .await
-            }
-            // Listed explicitly rather than caught by `_` so that a new terminal
-            // variant needing staged handling is a compile error instead of a
-            // silent bypass of its retained-state policy and trace record.
-            other @ (CommissionTerminal::InnerFailed(_)
-            | CommissionTerminal::OuterDone(_)
-            | CommissionTerminal::OuterFailed(_)
-            | CommissionTerminal::CalibrateDone(_)
-            | CommissionTerminal::SelftestDone
-            | CommissionTerminal::CommissionDone(_)) => {
-                let other = other.into_step_result();
-                #[cfg(feature = "trace")]
-                crate::commission_dispatch::emit_outer_safety_timing_before_failure(
-                    &other,
-                    &mut self.commission_engine,
-                    backend,
-                );
-                crate::commission_dispatch::drive_commission_result(
-                    other,
-                    &mut self.commission_engine,
-                    backend,
-                    &mut dispatch,
-                    config.tmc.pwm_maxcnt,
-                )
-                .await
+            {
+                break outcome;
             }
         };
         match outcome {
@@ -659,6 +784,41 @@ impl TmcControlRuntime {
             }),
             crate::commission_dispatch::CommissionOutcome::Continue => {
                 unreachable!("terminal poll produced a nonterminal dispatch action")
+            }
+        }
+    }
+
+    /// Classify one explicit poll, starting a terminal restore when the poll is
+    /// terminal.
+    ///
+    /// Returns `None` when a restore was started (or when no engine is
+    /// installed); the caller then polls [`Self::poll_commissioning_terminal`]
+    /// until it reports the terminal action.
+    pub fn begin_commissioning_poll_with_stages(
+        &mut self,
+        poll: CommissionPoll,
+        retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
+        config: &TmcControlConfig,
+    ) -> Option<ScheduledCommissionTickAction> {
+        match poll {
+            CommissionPoll::ReadyNow { event } => {
+                Self::retain_stage_c_authority_from_event(self.channel, &event, retention);
+                self.classify_commission_poll(CommissionPoll::ReadyNow { event })
+            }
+            CommissionPoll::At {
+                timestamp_us,
+                event,
+            } => {
+                Self::retain_stage_c_authority_from_event(self.channel, &event, retention);
+                self.classify_commission_poll(CommissionPoll::At {
+                    timestamp_us,
+                    event,
+                })
+            }
+            CommissionPoll::Terminal { result } => {
+                self.commission_engine.as_ref()?;
+                self.begin_commissioning_terminal(result, config);
+                None
             }
         }
     }

@@ -74,6 +74,7 @@ fn dispatch_state<'a>(
 ) -> DispatchState<'a> {
     crate::state::tmc::tmc_channel0().mark_pi_representation_established();
     DispatchState::new(
+        0,
         crate::state::tmc::tmc_channel0(),
         crate::state::stepper::stepper_channel0(),
         calibrated,
@@ -1089,5 +1090,412 @@ fn sample_velocity_integral_terminal() -> crate::commissioning::types::VelocityI
         safety_fault: None,
         rest_rejection_after_sufficiency: false,
         rest_rejection_owner: None,
+    }
+}
+
+// --- poll-driven equivalence -------------------------------------------------
+//
+// The terminal dispatch is one poll-driven machine. `drive_commission_result`
+// drives it in a tight loop with one long-lived `DispatchState`; the board
+// instead polls it once per tick, rebuilding the borrowed dispatch view every
+// time. These two drive modes must produce byte-identical traces, or the
+// machine is smuggling state through a borrow that does not survive a tick
+// boundary. The table below enumerates every terminal variant of the golden
+// table above, including its failure sub-cases.
+
+/// One enumerated terminal variant plus the fixture it needs.
+struct TerminalVariant {
+    name: &'static str,
+    result: fn() -> StepResult,
+    engine: fn() -> CommissioningEngine,
+    prepare: fn(&mut MockBackend),
+    seed_sentinel: bool,
+    entry_calibrated: bool,
+    entry_motor_enabled: bool,
+    stored_gains: fn() -> Option<crate::pid::InnerLoopGains>,
+}
+
+fn no_gains() -> Option<crate::pid::InnerLoopGains> {
+    None
+}
+
+fn saved_gains() -> Option<crate::pid::InnerLoopGains> {
+    Some(crate::pid::InnerLoopGains {
+        flux_p: crate::pid::p_gain(100),
+        flux_i: crate::pid::i_gain(10),
+        torque_p: crate::pid::p_gain(200),
+        torque_i: crate::pid::i_gain(20),
+    })
+}
+
+fn no_prepare(_: &mut MockBackend) {}
+
+fn sample_adc_cal_result() -> crate::commissioning::types::AdcCalResult {
+    zero_adc_cal_result()
+}
+
+fn calibrate_engine() -> CommissioningEngine {
+    CommissioningEngine::new_calibrate(0)
+}
+
+fn selftest_engine() -> CommissioningEngine {
+    CommissioningEngine::new_selftest(3)
+}
+
+fn commission_engine() -> CommissioningEngine {
+    CommissioningEngine::new_commission(0, CommissionProfile::Balanced)
+}
+
+fn failed_commission_result() -> StepResult {
+    let mut result = accepted_commission_result();
+    result.inner.status = crate::autotune::CommissionStatus::Failed(
+        crate::autotune::CommissionError::CurrentValidationFailed,
+    );
+    StepResult::CommissionDone(result)
+}
+
+fn rejected_robustness_terminal() -> StepResult {
+    let mut terminal = robustness::failed_robustness_terminal(
+        1,
+        robustness::RobustnessPreflightRejection::NoAcceptedCandidate,
+    );
+    terminal.outcome = RobustnessOutcome::Rejected;
+    terminal.cause = robustness::ROBUSTNESS_CAUSE_IAE_EXCEEDED;
+    StepResult::RobustnessReversalTerminal(terminal)
+}
+
+fn complete_robustness_terminal() -> StepResult {
+    let mut terminal = robustness::failed_robustness_terminal(
+        1,
+        robustness::RobustnessPreflightRejection::NoAcceptedCandidate,
+    );
+    terminal.outcome = RobustnessOutcome::Complete;
+    terminal.cause = robustness::ROBUSTNESS_CAUSE_PASS;
+    StepResult::RobustnessReversalTerminal(terminal)
+}
+
+fn fail_flux_gain_write(backend: &mut MockBackend) {
+    backend.fail_writes_remaining = Some((foci_tmc4671::registers::PID_FLUX_P_FLUX_I.addr(), 1));
+}
+
+fn fail_velocity_gain_write(backend: &mut MockBackend) {
+    backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr());
+}
+
+fn fail_velocity_target_write(backend: &mut MockBackend) {
+    backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_TARGET.addr());
+}
+
+fn all_terminal_variants() -> [TerminalVariant; 20] {
+    const BASE: TerminalVariant = TerminalVariant {
+        name: "",
+        result: || StepResult::SelftestDone,
+        engine: selftest_engine,
+        prepare: no_prepare,
+        seed_sentinel: false,
+        entry_calibrated: false,
+        entry_motor_enabled: false,
+        stored_gains: no_gains,
+    };
+    [
+        TerminalVariant {
+            name: "calibrate_done_success",
+            result: || StepResult::CalibrateDone(sample_adc_cal_result()),
+            engine: calibrate_engine,
+            seed_sentinel: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "calibrate_done_gain_restore_failure",
+            result: || StepResult::CalibrateDone(sample_adc_cal_result()),
+            engine: calibrate_engine,
+            prepare: fail_flux_gain_write,
+            seed_sentinel: true,
+            stored_gains: saved_gains,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "calibrate_done_arm_failure",
+            result: || StepResult::CalibrateDone(sample_adc_cal_result()),
+            engine: calibrate_engine,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "inner_failed_calibrate",
+            result: || StepResult::InnerFailed(crate::autotune::CommissionError::EncoderFault),
+            engine: || CommissioningEngine::new_calibrate(2),
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "inner_failed_selftest",
+            result: || StepResult::InnerFailed(crate::autotune::CommissionError::Spi),
+            engine: selftest_engine,
+            stored_gains: saved_gains,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "inner_failed_commission",
+            result: || StepResult::InnerFailed(crate::autotune::CommissionError::NoCurrent),
+            engine: commission_engine,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "selftest_done",
+            result: || StepResult::SelftestDone,
+            engine: selftest_engine,
+            stored_gains: saved_gains,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "selftest_done_gain_restore_failure",
+            result: || StepResult::SelftestDone,
+            engine: selftest_engine,
+            prepare: fail_flux_gain_write,
+            stored_gains: saved_gains,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "commission_done_success",
+            result: || StepResult::CommissionDone(accepted_commission_result()),
+            engine: commission_engine,
+            seed_sentinel: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "commission_done_failed_status",
+            result: failed_commission_result,
+            engine: commission_engine,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "commission_done_arm_failure",
+            result: || StepResult::CommissionDone(accepted_commission_result()),
+            engine: commission_engine,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "outer_done_success",
+            result: || StepResult::OuterDone(sample_outer_result()),
+            engine: commission_engine,
+            seed_sentinel: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "outer_done_restore_failure",
+            result: || StepResult::OuterDone(sample_outer_result()),
+            engine: commission_engine,
+            prepare: fail_velocity_gain_write,
+            seed_sentinel: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "outer_failed_safety_fault",
+            result: || {
+                StepResult::OuterFailed(crate::autotune::CommissionError::SafetyEnvelopeViolation)
+            },
+            engine: robustness_reversal_engine,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "outer_failed_soft_failure",
+            result: || StepResult::OuterFailed(crate::autotune::CommissionError::NoCurrent),
+            engine: robustness_reversal_engine,
+            seed_sentinel: true,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "robustness_reversal_complete",
+            result: complete_robustness_terminal,
+            engine: robustness_reversal_engine,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "robustness_reversal_rejected",
+            result: rejected_robustness_terminal,
+            engine: robustness_reversal_engine,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "acceptance_matrix_terminal",
+            result: || StepResult::AcceptanceMatrixTerminal(zero_acceptance_matrix_terminal()),
+            engine: commission_engine,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "velocity_integral_terminal",
+            result: || StepResult::VelocityIntegralTerminal(sample_velocity_integral_terminal()),
+            engine: commission_engine,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "velocity_integral_terminal_restore_failure",
+            result: || StepResult::VelocityIntegralTerminal(sample_velocity_integral_terminal()),
+            engine: breakaway_campaign_engine,
+            prepare: fail_velocity_target_write,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+    ]
+}
+
+/// Clear the shared channel-0 atomics so two runs of the same variant start
+/// from identical global state.
+fn reset_channel0() {
+    crate::state::tmc::tmc_channel0().reset();
+    crate::state::stepper::stepper_channel0().reset();
+}
+
+/// Takes `&mut` rather than returning the backend: `MockBackend` embeds an
+/// 8 KiB inline op log, and moving one out of an async fn puts that log in the
+/// caller's future frame.
+async fn prepare_backend(variant: &TerminalVariant, backend: &mut MockBackend) {
+    reset_channel0();
+    (variant.prepare)(backend);
+    if variant.seed_sentinel {
+        seed_motor_sentinel(backend).await;
+    }
+}
+
+/// Same content as [`OpTrace`], with the event log on the heap so a pair of
+/// traces can be compared without two 8 KiB inline vectors on the stack.
+#[derive(Debug, PartialEq, Eq)]
+struct TraceSummary {
+    events: std::vec::Vec<SpiOp>,
+    outcome_tag: OutcomeTag,
+    terminal_cause: Option<u16>,
+    engine_consumed: bool,
+}
+
+fn trace_of(
+    outcome: &CommissionOutcome,
+    backend: &MockBackend,
+    engine: &Option<CommissioningEngine>,
+) -> TraceSummary {
+    let (outcome_tag, terminal_cause) = match outcome {
+        CommissionOutcome::Continue => (OutcomeTag::Continue, None),
+        CommissionOutcome::PhaseChanged { .. } => (OutcomeTag::PhaseChanged, None),
+        CommissionOutcome::Evidence { .. } => (OutcomeTag::Evidence, None),
+        CommissionOutcome::Terminal { reply, actions } => {
+            let (outcome_class, cause) = terminal_shape(reply);
+            (
+                OutcomeTag::Terminal {
+                    stop_trace: actions.stop_trace,
+                    stepper: actions.stepper,
+                    outcome_class,
+                },
+                cause,
+            )
+        }
+    };
+    TraceSummary {
+        events: backend.spi_log.iter().copied().collect(),
+        outcome_tag,
+        terminal_cause,
+        engine_consumed: engine.is_none(),
+    }
+}
+
+fn apply_post_actions(
+    outcome: &CommissionOutcome,
+    backend: &mut MockBackend,
+    state: &mut DispatchState<'_>,
+) {
+    if let CommissionOutcome::Terminal { actions, .. } = outcome {
+        let _ = apply_stepper_post_action_state(actions.stepper, state);
+        if matches!(
+            actions.stepper,
+            StepperPostAction::ArmZeroPosition | StepperPostAction::ArmPreservePosition
+        ) {
+            backend.record_lifecycle(LifecycleFlag::MotorArmed, true);
+        }
+    }
+}
+
+/// Drive one variant through the tight-loop driver.
+async fn run_variant_via_driver(variant: &TerminalVariant) -> TraceSummary {
+    let mut backend = MockBackend::new();
+    prepare_backend(variant, &mut backend).await;
+    let mut calibrated = variant.entry_calibrated;
+    let mut motor_enabled = variant.entry_motor_enabled;
+    let mut gains = (variant.stored_gains)();
+    let mut engine = Some((variant.engine)());
+
+    let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+    let outcome = drive_commission_result(
+        (variant.result)(),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+    apply_post_actions(&outcome, &mut backend, &mut state);
+    trace_of(&outcome, &backend, &engine)
+}
+
+/// Drive one variant the way the board does: one `poll_step` per tick, with the
+/// borrowed dispatch view rebuilt from scratch before every poll.
+async fn run_variant_via_machine(variant: &TerminalVariant) -> TraceSummary {
+    let mut backend = MockBackend::new();
+    prepare_backend(variant, &mut backend).await;
+    let mut calibrated = variant.entry_calibrated;
+    let mut motor_enabled = variant.entry_motor_enabled;
+    let mut gains = (variant.stored_gains)();
+    let mut engine = Some((variant.engine)());
+
+    let mut machine = TerminalRestoreMachine::start((variant.result)(), 0, 4095);
+    let mut polls = 0usize;
+    let outcome = loop {
+        polls += 1;
+        assert!(
+            polls < 64,
+            "{}: restore machine did not terminate",
+            variant.name
+        );
+        assert!(
+            machine.is_pending(),
+            "{}: machine stopped early",
+            variant.name
+        );
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        match machine
+            .poll_step(&mut engine, &mut backend, &mut state, None)
+            .await
+        {
+            RestoreStep::Pending => {}
+            RestoreStep::Done(outcome) => break outcome,
+        }
+    };
+    assert!(
+        !machine.is_pending(),
+        "{}: machine still pending after Done",
+        variant.name
+    );
+    let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+    apply_post_actions(&outcome, &mut backend, &mut state);
+    trace_of(&outcome, &backend, &engine)
+}
+
+#[fixture_test]
+async fn machine_matches_async_trace_for_every_variant() {
+    for variant in &all_terminal_variants() {
+        let golden = run_variant_via_driver(variant).await;
+        let via_machine = run_variant_via_machine(variant).await;
+        assert_eq!(golden, via_machine, "variant {} diverged", variant.name);
     }
 }

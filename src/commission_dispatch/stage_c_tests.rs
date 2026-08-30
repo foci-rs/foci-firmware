@@ -695,6 +695,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
     let mut calibrated = true;
     let mut enabled = true;
     let mut state = super::DispatchState::new(
+        0,
         crate::state::tmc::tmc_channel0(),
         crate::state::stepper::stepper_channel0(),
         &mut calibrated,
@@ -849,6 +850,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         let mut calibrated = true;
         let mut enabled = true;
         let mut state = super::DispatchState::new(
+            0,
             crate::state::tmc::tmc_channel0(),
             crate::state::stepper::stepper_channel0(),
             &mut calibrated,
@@ -994,6 +996,7 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
         let mut calibrated = true;
         let mut enabled = true;
         let mut state = super::DispatchState::new(
+            0,
             crate::state::tmc::tmc_channel0(),
             crate::state::stepper::stepper_channel0(),
             &mut calibrated,
@@ -1133,6 +1136,7 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
     let mut calibrated = true;
     let mut enabled = true;
     let mut state = super::DispatchState::new(
+        0,
         crate::state::tmc::tmc_channel0(),
         crate::state::stepper::stepper_channel0(),
         &mut calibrated,
@@ -1326,6 +1330,7 @@ async fn complete_candidate_still_emits_report_only_terminal() {
     let mut calibrated = true;
     let mut enabled = true;
     let mut state = super::DispatchState::new(
+        0,
         crate::state::tmc::tmc_channel0(),
         crate::state::stepper::stepper_channel0(),
         &mut calibrated,

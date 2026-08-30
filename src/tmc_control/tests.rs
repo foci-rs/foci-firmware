@@ -211,15 +211,19 @@ fn channel_runtime_size_stays_bounded() {
     // it into existing padding.
     // 5_872 -> 5_888: the trace-only runtime state gains a per-sample velocity
     // feedforward clamp-engaged flag.
+    // 5_888 -> 7_552 / 5_856 -> 7_520: the runtime now embeds the poll-driven
+    // terminal restore machine. Its owned terminal payload used to live in the
+    // `tmc_control` task future for the duration of the awaited restore, so
+    // this is a move out of that future's frame, not new state.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_888);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_552);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 5_856);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_520);
 }
 
 #[test]
@@ -3302,4 +3306,283 @@ fn trace_tick_does_not_emit_periodic_phase_advance_when_zero() {
 
     assert_eq!(tick.control_tick, 10);
     assert!(!tick.phase_advance_due);
+}
+
+// --- terminal-restore cancellation ------------------------------------------
+//
+// A terminal restore survives across ticks, so a shutdown, queue flush,
+// emergency disable, or host-lease expiry arriving mid-restore must drive the
+// motor to safe state rather than dropping the machine on a half-armed motor.
+// One test per exit source, plus the shared invariant that the slots stay
+// populated until the drain has actually run.
+
+fn zero_cal_result() -> crate::commissioning::types::AdcCalResult {
+    crate::commissioning::types::AdcCalResult {
+        adc_i0: 0,
+        adc_i1: 0,
+        encoder_count: 0,
+        encoder_alignment_electrical_residual_counts: 0,
+        encoder_alignment_stability_counts: 0,
+        encoder_alignment_movement_counts: 0,
+        encoder_alignment_min_movement_counts: 0,
+        encoder_alignment_counts_per_electrical_rev: 0,
+        adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+        adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+    }
+}
+
+/// Install an armed motor with a terminal restore stopped part-way through.
+async fn armed_runtime_mid_restore(
+    runtime: &mut TmcControlRuntime,
+    backend: &mut MockBackend,
+    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+) {
+    use crate::commissioning::backend::CommissionMotorControl;
+
+    let tmc = crate::state::tmc::tmc_channel0();
+    let stepper = crate::state::stepper::stepper_channel0();
+    tmc.mark_pi_representation_established();
+    tmc.motor_armed.store(true, Relaxed);
+    tmc.commission_in_flight.store(true, Relaxed);
+    backend.set_enable_pin(true);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_commission_engine(CommissioningEngine::new_calibrate(0));
+
+    runtime.begin_commissioning_terminal(
+        crate::commissioning::schedule::CommissionTerminal::CalibrateDone(zero_cal_result()),
+        &commissioning_runtime_config(),
+    );
+    let mut retention = crate::commission_dispatch::CommissionRetention::new(slot);
+    assert!(
+        runtime
+            .poll_commissioning_terminal(backend, &mut retention, tmc, stepper)
+            .await
+            .is_none(),
+        "the calibrate restore must need more than one poll"
+    );
+    assert!(runtime.is_restore_pending());
+    assert!(runtime.is_commission_active());
+}
+
+/// Drain a latched cancel and assert the motor reached safe state with both
+/// slots retired and no further restore work left to do.
+async fn assert_drain_reaches_safe_state(
+    runtime: &mut TmcControlRuntime,
+    backend: &mut MockBackend,
+    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+) {
+    let tmc = crate::state::tmc::tmc_channel0();
+    let stepper = crate::state::stepper::stepper_channel0();
+
+    assert!(
+        runtime.restore_cancel_pending(),
+        "the exit must latch a cancel before the drain runs"
+    );
+    assert!(
+        runtime.is_restore_pending() && runtime.is_commission_active(),
+        "both slots must survive until the drain has run"
+    );
+
+    let _ = runtime.drive_restore_cancel(backend, tmc, stepper).await;
+
+    assert!(!backend.enable_pin, "the motor must be de-energized");
+    assert!(!tmc.motor_armed.load(Relaxed));
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+    assert!(!tmc.commission_in_flight.load(Relaxed));
+    assert!(
+        !runtime.is_restore_pending(),
+        "restore machine must be gone"
+    );
+    assert!(!runtime.is_commission_active(), "engine slot must be gone");
+    assert!(!runtime.restore_cancel_pending());
+
+    // A later tick must not advance any restore or re-assert the enable pin.
+    let before = backend.spi_log.len();
+    let mut retention = crate::commission_dispatch::CommissionRetention::new(slot);
+    assert!(
+        runtime
+            .poll_commissioning_terminal(backend, &mut retention, tmc, stepper)
+            .await
+            .is_none()
+    );
+    assert_eq!(backend.spi_log.len(), before, "a later tick must be inert");
+    assert!(!backend.enable_pin);
+}
+
+fn cancel_test_signals<'a>(
+    shutdown_active: &'a AtomicBool,
+    queue_flush: &'a AtomicBool,
+    fault_active: &'a AtomicBool,
+    disable_signal: &'a Signal<CriticalSectionRawMutex, ()>,
+) -> TmcControlSignals<'a> {
+    TmcControlSignals::new(shutdown_active, queue_flush, fault_active, disable_signal)
+}
+
+#[test]
+fn shutdown_mid_restore_drains_to_safe_state_before_clearing_slots() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+        let mut slot =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
+
+        let shutdown_active = AtomicBool::new(true);
+        let queue_flush = AtomicBool::new(false);
+        let fault_active = AtomicBool::new(false);
+        let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+        let signals = cancel_test_signals(
+            &shutdown_active,
+            &queue_flush,
+            &fault_active,
+            &disable_signal,
+        );
+        let _ = runtime.poll_shutdown(&signals);
+
+        assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
+    });
+}
+
+#[test]
+fn shutdown_safe_state_drains_a_pending_restore_before_disarming() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+        let mut slot =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
+
+        // The board's shutdown chokepoint: it must drain the restore itself,
+        // without any board-side cancel request.
+        assert!(!runtime.restore_cancel_pending());
+        crate::tmc_control::lifecycle::apply_shutdown_safe_state(
+            &mut runtime,
+            &mut backend,
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+        )
+        .await;
+
+        assert!(!backend.enable_pin);
+        assert!(!crate::state::tmc::tmc_channel0().motor_armed.load(Relaxed));
+        assert!(!runtime.is_motor_enabled());
+        assert!(!runtime.is_restore_pending());
+        assert!(!runtime.is_commission_active());
+        assert!(!runtime.restore_cancel_pending());
+    });
+}
+
+#[test]
+fn queue_flush_mid_restore_drains_to_safe_state_before_clearing_slots() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+        let mut slot =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
+
+        let shutdown_active = AtomicBool::new(false);
+        let queue_flush = AtomicBool::new(true);
+        let fault_active = AtomicBool::new(false);
+        let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+        let signals = cancel_test_signals(
+            &shutdown_active,
+            &queue_flush,
+            &fault_active,
+            &disable_signal,
+        );
+        let _ = runtime.poll_queue_flush(
+            &signals,
+            crate::state::tmc::tmc_channel0(),
+            crate::state::stepper::stepper_channel0(),
+        );
+
+        assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
+    });
+}
+
+#[test]
+fn emergency_disable_mid_restore_drains_to_safe_state_before_clearing_slots() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+        let mut slot =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
+
+        let shutdown_active = AtomicBool::new(false);
+        let queue_flush = AtomicBool::new(false);
+        let fault_active = AtomicBool::new(false);
+        let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+        disable_signal.signal(());
+        let signals = cancel_test_signals(
+            &shutdown_active,
+            &queue_flush,
+            &fault_active,
+            &disable_signal,
+        );
+        // `poll_emergency_disable` never owned the engine slot; the board's exit
+        // path latches the cancel, exactly as the commissioning loop does.
+        let _ = runtime.poll_emergency_disable(&signals, 0);
+        runtime.request_restore_cancel();
+
+        assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
+    });
+}
+
+#[test]
+fn lease_expiry_mid_restore_drains_to_safe_state_before_clearing_slots() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+        let mut slot =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
+
+        // Host-lease expiry is a board-side classification with no runtime
+        // helper of its own; its only obligation is the latch.
+        runtime.request_restore_cancel();
+
+        assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
+    });
+}
+
+#[test]
+fn request_restore_cancel_without_a_restore_is_inert() {
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.request_restore_cancel();
+    assert!(!runtime.restore_cancel_pending());
+    assert!(!runtime.is_restore_pending());
 }

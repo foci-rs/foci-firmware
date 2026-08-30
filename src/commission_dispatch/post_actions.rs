@@ -58,6 +58,7 @@ mod tests {
         stored_gains: &'a mut Option<crate::pid::InnerLoopGains>,
     ) -> DispatchState<'a> {
         DispatchState::new(
+            0,
             crate::state::tmc::tmc_channel0(),
             crate::state::stepper::stepper_channel0(),
             calibrated,
