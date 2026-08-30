@@ -15,6 +15,7 @@ trace-velocity-limit-latch-test = ["trace"]
 ankyra = { git = "https://github.com/foci-rs/ankyra" }
 ankyra-macros = { git = "https://github.com/foci-rs/ankyra" }
 cortex-m = "0.7"
+critical-section = "1.2"
 defmt = "1.0"
 embassy-sync = "0.6"
 embedded-hal = "1.0"

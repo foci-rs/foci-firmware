@@ -613,9 +613,13 @@ pub struct FociDumpValue {
 /// Reports the surviving run of the boot-time sentinel paint described in
 /// [`crate::stack_watermark`]. `stack_unused_bytes` is headroom the stack never
 /// consumed since boot, so the value is only meaningful once the workload under
-/// test has run. `painted_bytes` bounds it: the two being equal means the stack
-/// never entered the painted span at all, making the reading a lower bound
-/// rather than a measured depth.
+/// test has run.
+///
+/// `status` says how to read it: 0 means the scan reached the first overwritten
+/// word and the figure is a measurement, while 2 means the scan window ran out
+/// with every word still holding the sentinel, making the figure a lower bound.
+/// A lower bound still settles a `>=` check it already clears; it cannot settle
+/// one it fails.
 ///
 /// Wire name: `foci_stack_watermark_result`.
 #[klipper_reply]
@@ -626,7 +630,7 @@ pub struct FociStackWatermarkResult {
     pub stack_unused_bytes: u32,
     /// Total span painted at startup.
     pub painted_bytes: u32,
-    /// Status code (0 = painted span available, 1 = board never painted).
+    /// Status code (0 = measured, 1 = board never painted, 2 = lower bound).
     pub status: u8,
 }
 

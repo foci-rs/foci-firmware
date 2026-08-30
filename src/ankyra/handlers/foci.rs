@@ -28,6 +28,7 @@ const ADC_VM_OFFSET_STATUS_NOT_READY: u8 = 1;
 
 const STACK_WATERMARK_STATUS_OK: u8 = 0;
 const STACK_WATERMARK_STATUS_NOT_PAINTED: u8 = 1;
+const STACK_WATERMARK_STATUS_LOWER_BOUND: u8 = 2;
 
 /// Trigger TMC4671 self-test diagnostic via the commissioning engine.
 ///
@@ -195,8 +196,13 @@ pub fn foci_adc_vm_offset(ctx: &mut dyn FociRuntimeHost, oid: u8) {
 ///
 /// Host-triggered by design: the reply describes the deepest point the stack
 /// has reached since boot, so it must be issued after the workload under test
-/// rather than sampled automatically. Boards that never painted reply with
-/// `status = 1` and zeroed counters. See [`crate::stack_watermark`].
+/// rather than sampled automatically. The scan masks interrupts, so this is not
+/// something to poll and not something to issue during motion.
+///
+/// `status` is 0 when the scan reached the first overwritten word, 1 on a board
+/// that never painted, and 2 when the scan window ran out with every word still
+/// holding the sentinel, which makes `stack_unused_bytes` a lower bound on
+/// headroom rather than a measurement of it. See [`crate::stack_watermark`].
 #[klipper_command]
 pub fn foci_stack_watermark(_ctx: &mut dyn StateAccess, oid: u8) {
     let Some(usage) = crate::stack_watermark::stack_usage() else {
@@ -209,17 +215,23 @@ pub fn foci_stack_watermark(_ctx: &mut dyn StateAccess, oid: u8) {
         );
         return;
     };
+    let status = if usage.watermark_found {
+        STACK_WATERMARK_STATUS_OK
+    } else {
+        STACK_WATERMARK_STATUS_LOWER_BOUND
+    };
     defmt::info!(
-        "stack_unused_bytes={=u32} painted_bytes={=u32}",
+        "stack_unused_bytes={=u32} painted_bytes={=u32} status={=u8}",
         usage.unused_bytes,
-        usage.painted_bytes
+        usage.painted_bytes,
+        status
     );
     ::ankyra::klipper_reply!(
         crate::ankyra::replies::FociStackWatermarkResult,
         oid: u8 = oid,
         stack_unused_bytes: u32 = usage.unused_bytes,
         painted_bytes: u32 = usage.painted_bytes,
-        status: u8 = STACK_WATERMARK_STATUS_OK
+        status: u8 = status
     );
 }
 
@@ -666,6 +678,25 @@ mod tests {
                 stack_unused_bytes: 12,
                 painted_bytes: 20,
                 status: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn foci_stack_watermark_round_trips_a_lower_bound() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let sentinel = crate::stack_watermark::STACK_PAINT_SENTINEL;
+        let words: &'static [u32] = std::vec::Vec::leak(std::vec![sentinel; 3]);
+        // SAFETY: the span is leaked, so it outlives every later read.
+        unsafe { crate::stack_watermark::set_painted_region_for_test(words) };
+
+        assert_eq!(
+            dispatch_stack_watermark_over_the_wire(11),
+            StackWatermarkReply {
+                oid: 11,
+                stack_unused_bytes: 12,
+                painted_bytes: 12,
+                status: 2,
             }
         );
     }
