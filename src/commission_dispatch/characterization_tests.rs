@@ -141,30 +141,114 @@ fn zero_acceptance_matrix_terminal() -> AcceptanceMatrixTerminal {
     }
 }
 
-/// One characterization run's interleaved ordered event log plus whether the
-/// dispatch consumed the engine slot.
+/// What kind of `CommissionOutcome` a run produced, independent of the full
+/// `ReplyPayload` so an equivalence check can `assert_eq!` two traces
+/// without needing `PartialEq`/`Debug` on `CommissionOutcome` itself (its
+/// nested evidence types make that impractical).
+///
+/// `outcome_class` carries the reply's own semantic outcome discriminant
+/// (`RobustnessOutcome`, `AcceptanceMatrixOutcome`, `VelocityIntegralOutcome`)
+/// as its `u8` value, for the three reply families that separate "what
+/// class of result" from "what caused it". It is `None` for the flat-status
+/// replies (`CalibrateResult`, `CommissionResult`, `TuneResult`, `Selftest`,
+/// `CommissionPhase`), where the status code alone is the whole story.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutcomeTag {
+    Continue,
+    PhaseChanged,
+    Evidence,
+    Terminal {
+        stop_trace: bool,
+        stepper: StepperPostAction,
+        outcome_class: Option<u8>,
+    },
+}
+
+/// One characterization run's interleaved ordered event log, outcome shape,
+/// terminal cause, and whether the dispatch consumed the engine slot.
 ///
 /// This is the equivalence helper a future restructuring of
 /// `drive_commission_result` is checked against: run the same `StepResult`
-/// through both implementations and diff `events`/`engine_consumed`.
+/// through both implementations and `assert_eq!` the two `OpTrace` values.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct OpTrace {
     events: heapless::Vec<SpiOp, 8_192>,
+    outcome_tag: OutcomeTag,
+    terminal_cause: Option<u16>,
     engine_consumed: bool,
+}
+
+/// Pack a `StageCCause`'s namespace and raw value into one `u16` so the two
+/// namespaces (`Engine`/`Error`/`Dispatch`) never alias each other.
+fn stage_c_cause_code(cause: crate::commissioning::types::StageCCause) -> u16 {
+    (u16::from(cause.namespace_code()) << 8) | u16::from(cause.raw_value())
+}
+
+/// Extract `(outcome_class, terminal_cause)` from one terminal `ReplyPayload`.
+fn terminal_shape(reply: &ReplyPayload) -> (Option<u8>, Option<u16>) {
+    match reply {
+        ReplyPayload::CommissionPhase { status, .. } => (None, Some(u16::from(*status))),
+        ReplyPayload::CommissionResult { status, .. } => (None, Some(u16::from(*status))),
+        ReplyPayload::TuneResult { status, .. } => (None, Some(u16::from(*status))),
+        ReplyPayload::CalibrateResult { status, .. } => (None, Some(u16::from(*status))),
+        ReplyPayload::Selftest { done_status, .. } => (None, Some(u16::from(*done_status))),
+        ReplyPayload::VelocityIntegralTerminal { terminal, .. }
+        | ReplyPayload::VelocityIntegralRefusal { terminal, .. } => (
+            Some(terminal.outcome as u8),
+            Some(stage_c_cause_code(terminal.cause)),
+        ),
+        ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } => {
+            (Some(terminal.outcome as u8), Some(terminal.cause as u16))
+        }
+        ReplyPayload::RobustnessReversalTerminal { terminal, .. } => (
+            Some(terminal.outcome as u8),
+            Some(u16::from(terminal.cause)),
+        ),
+        _ => (None, None),
+    }
 }
 
 /// Drive one `StepResult` through `drive_commission_result`, then -- for a
 /// terminal outcome -- simulate the board's follow-up
 /// `apply_stepper_post_action_state` call so `arm_motor_for_steps` (which
 /// never runs inside `drive_commission_result` itself) appears in the same
-/// ordered trace. Returns both the raw `CommissionOutcome` (for per-test
-/// reply/status assertions) and the `OpTrace`.
-async fn run_variant(
+/// ordered trace. Returns both the raw `CommissionOutcome` (for goldens that
+/// need to inspect reply fields `OpTrace` does not carry, e.g.
+/// `recovery_unavailable`) and the derived `OpTrace`.
+///
+/// Takes `engine`/`backend`/`state` rather than constructing them from
+/// `result` alone: `StepResult::InnerFailed` carries no `EngineKind`, so a
+/// single-`StepResult`-argument helper cannot pick between a Calibrate,
+/// Selftest, or Commission engine for it, and several goldens below need
+/// backend failure injection (`fail_writes_remaining`, `fail_on_write`) that
+/// no `StepResult` value encodes either. `run_variant` below is the
+/// single-purpose oracle entry point that returns bare `OpTrace`; call this
+/// directly only when a test needs the full `CommissionOutcome` too.
+async fn drive_and_trace(
     result: StepResult,
     engine: &mut Option<CommissioningEngine>,
     backend: &mut MockBackend,
     state: &mut DispatchState<'_>,
 ) -> (CommissionOutcome, OpTrace) {
     let outcome = drive_commission_result(result, engine, backend, state, 4095).await;
+
+    let (outcome_tag, terminal_cause) = match &outcome {
+        CommissionOutcome::Continue => (OutcomeTag::Continue, None),
+        CommissionOutcome::PhaseChanged { .. } => (OutcomeTag::PhaseChanged, None),
+        CommissionOutcome::Evidence { .. } => (OutcomeTag::Evidence, None),
+        CommissionOutcome::Terminal { reply, actions } => {
+            let (outcome_class, cause) = terminal_shape(reply);
+            (
+                OutcomeTag::Terminal {
+                    stop_trace: actions.stop_trace,
+                    stepper: actions.stepper,
+                    outcome_class,
+                },
+                cause,
+            )
+        }
+    };
+
     if let CommissionOutcome::Terminal { actions, .. } = &outcome {
         let _ = apply_stepper_post_action_state(actions.stepper, state);
         if matches!(
@@ -174,11 +258,27 @@ async fn run_variant(
             backend.record_lifecycle(LifecycleFlag::MotorArmed, true);
         }
     }
+
     let trace = OpTrace {
         events: backend.spi_log.clone(),
+        outcome_tag,
+        terminal_cause,
         engine_consumed: engine.is_none(),
     };
     (outcome, trace)
+}
+
+/// The equivalence-check entry point: run one `StepResult` and return only
+/// the `OpTrace` a future implementation is diffed against via `assert_eq!`.
+/// See [`drive_and_trace`] for the parameter-shape rationale and for goldens
+/// that need the full `CommissionOutcome` as well.
+async fn run_variant(
+    result: StepResult,
+    engine: &mut Option<CommissioningEngine>,
+    backend: &mut MockBackend,
+    state: &mut DispatchState<'_>,
+) -> OpTrace {
+    drive_and_trace(result, engine, backend, state).await.1
 }
 
 fn index_of(events: &[SpiOp], target: SpiOp) -> Option<usize> {
@@ -211,7 +311,7 @@ async fn calibrate_done_success_arms_electrical_before_steps() {
         adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
     };
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::CalibrateDone(cal_result),
         &mut engine,
         &mut backend,
@@ -220,12 +320,15 @@ async fn calibrate_done_success_arms_electrical_before_steps() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal { actions, .. } => {
-            assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: false,
+            stepper: StepperPostAction::ArmPreservePosition,
+            outcome_class: None,
         }
-        _ => panic!("expected Terminal"),
-    }
+    );
+    assert_eq!(trace.terminal_cause, Some(0));
 
     let enabled_index = index_of(
         &trace.events,
@@ -280,7 +383,7 @@ async fn calibrate_done_gain_restore_failure_disarms_without_arming() {
         adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
     };
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::CalibrateDone(cal_result),
         &mut engine,
         &mut backend,
@@ -289,19 +392,20 @@ async fn calibrate_done_gain_restore_failure_disarms_without_arming() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::CalibrateResult { status, .. },
-            actions,
-        } => {
-            assert_eq!(
-                status,
-                crate::calibration::CalibrationError::SpiError.status_code()
-            );
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: false,
+            stepper: StepperPostAction::Stop,
+            outcome_class: None,
         }
-        _ => panic!("expected failed CalibrateResult"),
-    }
+    );
+    assert_eq!(
+        trace.terminal_cause,
+        Some(u16::from(
+            crate::calibration::CalibrationError::SpiError.status_code()
+        ))
+    );
     assert!(
         !contains(
             &trace.events,
@@ -329,7 +433,7 @@ async fn inner_failed_calibrate_uses_safe_state_restore_not_disarm_motor() {
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(CommissioningEngine::new_calibrate(2));
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::InnerFailed(crate::autotune::CommissionError::EncoderFault),
         &mut engine,
         &mut backend,
@@ -338,20 +442,20 @@ async fn inner_failed_calibrate_uses_safe_state_restore_not_disarm_motor() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::CalibrateResult { status, .. },
-            actions,
-        } => {
-            assert_eq!(
-                status,
-                crate::calibration::CalibrationError::EncoderFault.status_code()
-            );
-            assert!(actions.stop_trace);
-            assert_eq!(actions.stepper, StepperPostAction::None);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::None,
+            outcome_class: None,
         }
-        _ => panic!("expected CalibrateResult"),
-    }
+    );
+    assert_eq!(
+        trace.terminal_cause,
+        Some(u16::from(
+            crate::calibration::CalibrationError::EncoderFault.status_code()
+        ))
+    );
     // GPIO restored low via restore_safe_state_via_backend...
     assert!(!backend.enable_pin);
     // ...but the dispatch-local flags are untouched: this path never calls
@@ -368,6 +472,68 @@ async fn inner_failed_calibrate_uses_safe_state_restore_not_disarm_motor() {
     assert!(*state.motor_enabled);
 }
 
+// --- selftest --------------------------------------------------------------
+
+#[fixture_test]
+async fn selftest_done_restores_gains_without_lifecycle_events() {
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, _) = fresh_state_locals();
+    let mut gains = Some(crate::pid::InnerLoopGains {
+        flux_p: crate::pid::p_gain(100),
+        flux_i: crate::pid::i_gain(10),
+        torque_p: crate::pid::p_gain(200),
+        torque_i: crate::pid::i_gain(20),
+    });
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_selftest(3));
+
+    let (outcome, trace) = drive_and_trace(
+        StepResult::SelftestDone,
+        &mut engine,
+        &mut backend,
+        &mut state,
+    )
+    .await;
+
+    assert!(trace.engine_consumed);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: false,
+            stepper: StepperPostAction::None,
+            outcome_class: None,
+        }
+    );
+    assert_eq!(trace.terminal_cause, Some(0));
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::Selftest { oid, .. },
+            ..
+        } => assert_eq!(oid, 3),
+        _ => panic!("expected Selftest"),
+    }
+    // restore_calibrate_gains writes the stored current-loop gains -- the
+    // "restore, log-only on failure, no disarm/arm" row of the table.
+    assert!(trace.events.iter().any(|op| matches!(
+        op,
+        SpiOp::Write(addr, _) if *addr == foci_tmc4671::registers::PID_FLUX_P_FLUX_I.addr()
+    )));
+    assert!(!contains(
+        &trace.events,
+        SpiOp::Lifecycle {
+            flag: LifecycleFlag::MotorEnabled,
+            value: true,
+        },
+    ));
+    assert!(!contains(
+        &trace.events,
+        SpiOp::Lifecycle {
+            flag: LifecycleFlag::MotorArmed,
+            value: true,
+        },
+    ));
+}
+
 // --- commission (Stage 1) ------------------------------------------------
 
 #[fixture_test]
@@ -381,7 +547,7 @@ async fn commission_done_success_arms_electrical_before_zero_position_arm() {
     ));
     seed_motor_sentinel(&mut backend).await;
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::CommissionDone(accepted_commission_result()),
         &mut engine,
         &mut backend,
@@ -390,12 +556,14 @@ async fn commission_done_success_arms_electrical_before_zero_position_arm() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal { actions, .. } => {
-            assert_eq!(actions.stepper, StepperPostAction::ArmZeroPosition);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::ArmZeroPosition,
+            outcome_class: None,
         }
-        _ => panic!("expected Terminal"),
-    }
+    );
     let enabled_index = index_of(
         &trace.events,
         SpiOp::Lifecycle {
@@ -429,7 +597,7 @@ async fn commission_done_failed_status_skips_disarm_motor_and_lifecycle_events()
         crate::autotune::CommissionError::CurrentValidationFailed,
     );
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::CommissionDone(commission_result),
         &mut engine,
         &mut backend,
@@ -438,19 +606,20 @@ async fn commission_done_failed_status_skips_disarm_motor_and_lifecycle_events()
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::CommissionResult { status, .. },
-            actions,
-        } => {
-            assert_eq!(
-                status,
-                crate::autotune::CommissionError::CurrentValidationFailed.status_code()
-            );
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+            outcome_class: None,
         }
-        _ => panic!("expected failed CommissionResult"),
-    }
+    );
+    assert_eq!(
+        trace.terminal_cause,
+        Some(u16::from(
+            crate::autotune::CommissionError::CurrentValidationFailed.status_code()
+        ))
+    );
     // The Failed-status branch clears flags directly, never through
     // `lifecycle::disarm_motor` -- so the interleaved log carries no SPI,
     // no EnablePin, and no Lifecycle events at all.
@@ -471,7 +640,7 @@ async fn commission_done_arm_failure_disarms_without_reaching_arm_for_steps() {
         CommissionProfile::Balanced,
     ));
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::CommissionDone(accepted_commission_result()),
         &mut engine,
         &mut backend,
@@ -480,12 +649,14 @@ async fn commission_done_arm_failure_disarms_without_reaching_arm_for_steps() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal { actions, .. } => {
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+            outcome_class: None,
         }
-        _ => panic!("expected Terminal"),
-    }
+    );
     assert!(!contains(
         &trace.events,
         SpiOp::Lifecycle {
@@ -516,7 +687,7 @@ async fn outer_done_success_arms_electrical_before_preserve_position_arm() {
     ));
     seed_motor_sentinel(&mut backend).await;
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::OuterDone(sample_outer_result()),
         &mut engine,
         &mut backend,
@@ -525,12 +696,14 @@ async fn outer_done_success_arms_electrical_before_preserve_position_arm() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal { actions, .. } => {
-            assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::ArmPreservePosition,
+            outcome_class: None,
         }
-        _ => panic!("expected Terminal"),
-    }
+    );
     let enabled_index = index_of(
         &trace.events,
         SpiOp::Lifecycle {
@@ -560,7 +733,7 @@ async fn outer_failed_safety_fault_disarms_without_restore_attempt() {
     let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::SafetyEnvelopeViolation;
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::OuterFailed(err),
         &mut engine,
         &mut backend,
@@ -569,16 +742,15 @@ async fn outer_failed_safety_fault_disarms_without_restore_attempt() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::TuneResult { status, .. },
-            actions,
-        } => {
-            assert_eq!(status, err.status_code());
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+            outcome_class: None,
         }
-        _ => panic!("expected TuneResult"),
-    }
+    );
+    assert_eq!(trace.terminal_cause, Some(u16::from(err.status_code())));
     // A safety fault skips the restore-stability check entirely -- no
     // stability-window register reads before the disarm.
     assert!(backend.delay_us_log.is_empty());
@@ -596,7 +768,7 @@ async fn outer_failed_soft_failure_arms_electrical_and_holds_position() {
     let err = crate::autotune::CommissionError::NoCurrent;
     seed_motor_sentinel(&mut backend).await;
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::OuterFailed(err),
         &mut engine,
         &mut backend,
@@ -605,18 +777,17 @@ async fn outer_failed_soft_failure_arms_electrical_and_holds_position() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::TuneResult { status, .. },
-            actions,
-        } => {
-            // The soft-failure path still reports the original upstream
-            // error even though the motor stays armed.
-            assert_eq!(status, err.status_code());
-            assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::ArmPreservePosition,
+            outcome_class: None,
         }
-        _ => panic!("expected TuneResult"),
-    }
+    );
+    // The soft-failure path still reports the original upstream error even
+    // though the motor stays armed.
+    assert_eq!(trace.terminal_cause, Some(u16::from(err.status_code())));
     let enabled_index = index_of(
         &trace.events,
         SpiOp::Lifecycle {
@@ -657,7 +828,7 @@ async fn robustness_reversal_terminal_never_arms_even_on_complete_outcome() {
     terminal.outcome = RobustnessOutcome::Complete;
     terminal.cause = robustness::ROBUSTNESS_CAUSE_PASS;
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::RobustnessReversalTerminal(terminal),
         &mut engine,
         &mut backend,
@@ -666,16 +837,14 @@ async fn robustness_reversal_terminal_never_arms_even_on_complete_outcome() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::RobustnessReversalTerminal { terminal, .. },
-            actions,
-        } => {
-            assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+            outcome_class: Some(RobustnessOutcome::Complete as u8),
         }
-        _ => panic!("expected RobustnessReversalTerminal"),
-    }
+    );
     assert!(!contains(
         &trace.events,
         SpiOp::Lifecycle {
@@ -701,7 +870,7 @@ async fn robustness_reversal_terminal_restores_baseline_before_disarm_on_reject(
     terminal.outcome = RobustnessOutcome::Rejected;
     terminal.cause = robustness::ROBUSTNESS_CAUSE_IAE_EXCEEDED;
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::RobustnessReversalTerminal(terminal),
         &mut engine,
         &mut backend,
@@ -710,15 +879,10 @@ async fn robustness_reversal_terminal_restores_baseline_before_disarm_on_reject(
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::RobustnessReversalTerminal { terminal, .. },
-            ..
-        } => {
-            assert_eq!(terminal.outcome, RobustnessOutcome::Rejected);
-        }
-        _ => panic!("expected RobustnessReversalTerminal"),
-    }
+    let OutcomeTag::Terminal { outcome_class, .. } = trace.outcome_tag else {
+        panic!("expected Terminal");
+    };
+    assert_eq!(outcome_class, Some(RobustnessOutcome::Rejected as u8));
     let velocity_gain_index = trace
         .events
         .iter()
@@ -758,7 +922,7 @@ async fn acceptance_matrix_terminal_disarms_unconditionally() {
         CommissionProfile::Balanced,
     ));
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::AcceptanceMatrixTerminal(zero_acceptance_matrix_terminal()),
         &mut engine,
         &mut backend,
@@ -767,16 +931,14 @@ async fn acceptance_matrix_terminal_disarms_unconditionally() {
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::AcceptanceMatrixTerminal { terminal, .. },
-            actions,
-        } => {
-            assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Complete);
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+            outcome_class: Some(AcceptanceMatrixOutcome::Complete as u8),
         }
-        _ => panic!("expected AcceptanceMatrixTerminal"),
-    }
+    );
     assert!(contains(
         &trace.events,
         SpiOp::Lifecycle {
@@ -803,7 +965,7 @@ async fn velocity_integral_terminal_without_operational_limit_disarms_directly()
         CommissionProfile::Balanced,
     ));
 
-    let (outcome, trace) = run_variant(
+    let trace = run_variant(
         StepResult::VelocityIntegralTerminal(sample_velocity_integral_terminal()),
         &mut engine,
         &mut backend,
@@ -812,20 +974,18 @@ async fn velocity_integral_terminal_without_operational_limit_disarms_directly()
     .await;
 
     assert!(trace.engine_consumed);
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::VelocityIntegralTerminal { terminal, .. },
-            actions,
-        } => {
-            assert_eq!(
-                terminal.outcome,
-                crate::commissioning::types::VelocityIntegralOutcome::Inconclusive,
-                "the disarm path must not have rewritten a healthy terminal's outcome"
-            );
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+            // The disarm path must not have rewritten a healthy terminal's
+            // outcome away from the `Inconclusive` it was built with.
+            outcome_class: Some(
+                crate::commissioning::types::VelocityIntegralOutcome::Inconclusive as u8
+            ),
         }
-        _ => panic!("expected VelocityIntegralTerminal"),
-    }
+    );
     assert!(contains(
         &trace.events,
         SpiOp::Lifecycle {
@@ -851,7 +1011,10 @@ async fn velocity_integral_terminal_restore_failure_skips_disarm_leaving_motor_a
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(breakaway_campaign_engine());
 
-    let (outcome, trace) = run_variant(
+    // `drive_and_trace`, not `run_variant`: this golden needs
+    // `recovery_unavailable`/`safety_fault`, reply fields `OpTrace` does not
+    // carry.
+    let (outcome, trace) = drive_and_trace(
         StepResult::VelocityIntegralTerminal(sample_velocity_integral_terminal()),
         &mut engine,
         &mut backend,
@@ -860,18 +1023,21 @@ async fn velocity_integral_terminal_restore_failure_skips_disarm_leaving_motor_a
     .await;
 
     assert!(trace.engine_consumed);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: true,
+            stepper: StepperPostAction::Stop,
+            outcome_class: Some(crate::commissioning::types::VelocityIntegralOutcome::Fault as u8),
+        }
+    );
     match outcome {
         CommissionOutcome::Terminal {
             reply: ReplyPayload::VelocityIntegralTerminal { terminal, .. },
-            actions,
+            ..
         } => {
-            assert_eq!(
-                terminal.outcome,
-                crate::commissioning::types::VelocityIntegralOutcome::Fault
-            );
             assert!(terminal.recovery_unavailable);
             assert!(terminal.safety_fault.is_none());
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
         }
         _ => panic!("expected VelocityIntegralTerminal"),
     }
