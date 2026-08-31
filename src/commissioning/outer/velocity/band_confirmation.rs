@@ -569,6 +569,11 @@ where
 {
     let mut best: Option<NominatedConfirmationCandidate> = None;
     for (p, margin_percent) in candidates {
+        defmt::info!(
+            "nomination screen: p_raw={} margin_percent={}",
+            p.raw(),
+            margin_percent,
+        );
         if margin_percent < 0.0 {
             continue;
         }
