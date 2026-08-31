@@ -3,11 +3,11 @@ use super::current_guard::{
     VelocityLimitEvidenceCapability,
 };
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
-    RungOriginRecoveryOutcome, RungOriginRecoveryPlanError, RungOriginRecoveryResources,
-    RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
-    plan_rung_origin_recovery, recovery_moving_target_counts, recovery_return_distance_counts,
-    recovery_runtime_us, step_rung_origin_recovery,
+    RECOVERY_STABILIZATION_US, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
+    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryPlanError,
+    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
+    commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_moving_target_counts,
+    recovery_return_distance_counts, recovery_runtime_us, step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -131,16 +131,17 @@ fn runtime_uses_outward_rate_rounding_and_fixed_allowances() {
 #[test]
 fn recovery_slot_includes_settle_tail() {
     let runtime_us = recovery_runtime_us(834, 9_174_528, 3_000_000).unwrap();
-    let reserved_settle_analysis_us = ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
+    let reserved_settle_analysis_us =
+        RECOVERY_STABILIZATION_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US;
     let moving_budget_us = runtime_us.checked_sub(reserved_settle_analysis_us).unwrap();
     let maximum_moving_budget_us = 3_000_000_u32
         .checked_sub(reserved_settle_analysis_us)
         .unwrap();
 
     assert_eq!(runtime_us, 1_838_904);
-    assert_eq!(reserved_settle_analysis_us, 736_000);
-    assert_eq!(moving_budget_us, 1_102_904);
-    assert_eq!(maximum_moving_budget_us, 2_264_000);
+    assert_eq!(reserved_settle_analysis_us, 1_236_000);
+    assert_eq!(moving_budget_us, 602_904);
+    assert_eq!(maximum_moving_budget_us, 1_764_000);
     assert_eq!(
         maximum_moving_budget_us + reserved_settle_analysis_us,
         3_000_000
