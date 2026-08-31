@@ -1343,6 +1343,12 @@ impl TerminalRestoreMachine {
 
         #[cfg(feature = "trace")]
         let mut promotion_installer_result: u8 = 0;
+        defmt::info!(
+            "stage_c promotion check: outcome={} execution_plan_present={} authority_present={}",
+            dispatch.terminal.outcome,
+            breakaway_execution_plan.is_some(),
+            dispatch.authority.is_some(),
+        );
         if dispatch.terminal.outcome == VelocityIntegralOutcome::Complete
             && let (Some(execution_plan), Some(authority)) =
                 (breakaway_execution_plan, dispatch.authority)
@@ -1354,6 +1360,7 @@ impl TerminalRestoreMachine {
                 &dispatch.terminal,
             ) {
                 Ok(stage_c::AcceptanceInstall::Installed(point)) => {
+                    defmt::info!("stage_c promotion: acceptance point installed");
                     retention.stage_c.install_acceptance_point(point);
                     #[cfg(feature = "trace")]
                     {
@@ -1361,6 +1368,7 @@ impl TerminalRestoreMachine {
                     }
                 }
                 Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
+                    defmt::warn!("stage_c promotion: missing target terminus");
                     dispatch.terminal.cause =
                         StageCCause::Dispatch(stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS);
                     #[cfg(feature = "trace")]
@@ -1369,12 +1377,14 @@ impl TerminalRestoreMachine {
                     }
                 }
                 Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {
+                    defmt::info!("stage_c promotion: not an acceptance terminal");
                     #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 3;
                     }
                 }
                 Err(()) => {
+                    defmt::warn!("stage_c promotion: evidence integrity fault");
                     retention.stage_c.observe_fault();
                     dispatch.terminal.outcome = VelocityIntegralOutcome::Fault;
                     dispatch.terminal.cause =
