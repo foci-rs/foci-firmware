@@ -371,6 +371,7 @@ fn fault(error: CommissionError) -> BreakawayProbeStep {
 }
 
 fn safety_fault(safety: OuterSafetyFault, error: CommissionError) -> BreakawayProbeStep {
+    defmt::warn!("probe safety fault: {}", safety);
     BreakawayProbeStep::Done(BreakawayProbeOutcome::SafetyFault {
         error,
         safety: Some(safety),
