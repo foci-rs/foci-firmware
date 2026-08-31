@@ -527,6 +527,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 CaptureAdvance::Exhausted => {
                     // I3: the establish leg never confirmed a settle within the
                     // budget; retry from a fresh entry rather than proceed.
+                    defmt::info!(
+                        "robustness_reversal establish leg exhausted: dir={} slot={} elapsed_us={} retries_used={}",
+                        session.direction,
+                        session.cycle_cursor[session.direction],
+                        elapsed_us,
+                        session.ledgers[session.direction].inconclusive_retries_used()
+                    );
                     retry_or_finalize_inconclusive(state, session);
                     StepResult::ReadyNow
                 }
@@ -623,6 +630,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 CaptureAdvance::Exhausted => {
                     // I1: no band entry within the full budget is the
                     // inconclusive signal; retry from the establish leg.
+                    defmt::info!(
+                        "robustness_reversal reverse leg exhausted: dir={} slot={} elapsed_us={} retries_used={}",
+                        session.direction,
+                        session.cycle_cursor[session.direction],
+                        elapsed_us,
+                        session.ledgers[session.direction].inconclusive_retries_used()
+                    );
                     retry_or_finalize_inconclusive(state, session);
                     StepResult::ReadyNow
                 }
