@@ -4058,6 +4058,18 @@ fn rest_rejected_input(
 ) -> Option<RecoveryRestRejectedInput> {
     use crate::autotune::velocity_measurement::RestSelectionDisposition;
 
+    if decision.disposition == RestSelectionDisposition::Rejected {
+        defmt::warn!(
+            "recovery rest rejected: stage={} rung={} slot={} dir={} p_raw={} decision={}",
+            stage,
+            rung_index,
+            slot_index,
+            direction,
+            p_raw,
+            decision,
+        );
+    }
+
     (decision.disposition == RestSelectionDisposition::Rejected).then_some(
         RecoveryRestRejectedInput {
             decision,
