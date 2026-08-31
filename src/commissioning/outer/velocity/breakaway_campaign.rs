@@ -117,7 +117,7 @@ use super::integral_plan::{
 };
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryOriginMismatchEvidence,
-    RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryResources,
+    RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryResources,
     RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
     plan_rung_origin_recovery, step_rung_origin_recovery,
 };
@@ -924,7 +924,6 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     lower_rate_q,
                     authority_source,
                     current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
-                    rest_schedule: RecoveryRestSchedule::ImmediateScored,
                 },
                 recovery_plan,
             ) {
@@ -2338,7 +2337,6 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     lower_rate_q,
                     authority_source,
                     current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
-                    rest_schedule: RecoveryRestSchedule::ImmediateScored,
                 },
                 recovery_plan,
             ) {
@@ -3371,7 +3369,6 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     lower_rate_q,
                     authority_source,
                     current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
-                    rest_schedule: RecoveryRestSchedule::ImmediateScored,
                 },
                 recovery_plan,
             ) {

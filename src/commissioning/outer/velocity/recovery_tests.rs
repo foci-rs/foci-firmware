@@ -3,12 +3,11 @@ use super::current_guard::{
     VelocityLimitEvidenceCapability,
 };
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestSchedule, RecoveryStage,
-    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryPlanError,
-    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
-    commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_moving_target_counts,
-    recovery_return_distance_counts, recovery_runtime_us, recovery_runtime_us_with_schedule,
-    step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
+    RungOriginRecoveryOutcome, RungOriginRecoveryPlanError, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
+    plan_rung_origin_recovery, recovery_moving_target_counts, recovery_return_distance_counts,
+    recovery_runtime_us, step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -124,7 +123,7 @@ fn runtime_uses_outward_rate_rounding_and_fixed_allowances() {
     let runtime = recovery_runtime_us(7_458, 14_000_000, 3_000_000).unwrap();
     let measured = (7_458_u128 * 1_000_000 * RATE_Q).div_ceil(14_000_000);
 
-    assert_eq!(runtime, u32::try_from(measured).unwrap() + 1_248_000);
+    assert_eq!(runtime, u32::try_from(measured).unwrap() + 1_748_000);
     assert!(recovery_runtime_us(7_458, 3_150_000, 3_000_000).is_err());
     assert!(recovery_runtime_us(1, 0, 3_000_000).is_err());
 }
@@ -138,9 +137,9 @@ fn recovery_slot_includes_settle_tail() {
         .checked_sub(reserved_settle_analysis_us)
         .unwrap();
 
-    assert_eq!(runtime_us, 1_338_904);
+    assert_eq!(runtime_us, 1_838_904);
     assert_eq!(reserved_settle_analysis_us, 736_000);
-    assert_eq!(moving_budget_us, 602_904);
+    assert_eq!(moving_budget_us, 1_102_904);
     assert_eq!(maximum_moving_budget_us, 2_264_000);
     assert_eq!(
         maximum_moving_budget_us + reserved_settle_analysis_us,
@@ -151,30 +150,15 @@ fn recovery_slot_includes_settle_tail() {
 #[test]
 fn selected_recovery_reserves_one_fixed_lead_in() {
     assert_eq!(
-        recovery_runtime_us_with_schedule(
-            2_500,
-            4_394_000,
-            3_000_000,
-            RecoveryRestSchedule::Stabilized,
-        ),
+        recovery_runtime_us(2_500, 4_394_000, 3_000_000),
         Ok(2_316_958)
     );
     assert_eq!(
-        recovery_runtime_us_with_schedule(
-            9_000,
-            13_257_728,
-            3_000_000,
-            RecoveryRestSchedule::Stabilized,
-        ),
+        recovery_runtime_us(9_000, 13_257_728, 3_000_000),
         Ok(2_426_850)
     );
     assert_eq!(
-        recovery_runtime_us_with_schedule(
-            9_000,
-            12_901_376,
-            3_000_000,
-            RecoveryRestSchedule::Stabilized,
-        ),
+        recovery_runtime_us(9_000, 12_901_376, 3_000_000),
         Ok(2_445_601)
     );
 }
@@ -246,22 +230,6 @@ fn runtime_with_policy(
     authority_source: RecoveryBindingSource,
     current_contact_policy: RecoveryCurrentContactPolicy,
 ) -> RungOriginRecoveryRuntime {
-    runtime_with_schedule(
-        start_offset_counts,
-        lower_rate_q,
-        authority_source,
-        current_contact_policy,
-        RecoveryRestSchedule::ImmediateScored,
-    )
-}
-
-fn runtime_with_schedule(
-    start_offset_counts: i32,
-    lower_rate_q: Option<u64>,
-    authority_source: RecoveryBindingSource,
-    current_contact_policy: RecoveryCurrentContactPolicy,
-    rest_schedule: RecoveryRestSchedule,
-) -> RungOriginRecoveryRuntime {
     RungOriginRecoveryRuntime::new(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Proportional,
@@ -273,7 +241,6 @@ fn runtime_with_schedule(
             lower_rate_q,
             authority_source,
             current_contact_policy,
-            rest_schedule,
         },
         plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap(),
     )
@@ -322,22 +289,6 @@ impl RecoveryFixture {
         authority_source: RecoveryBindingSource,
         current_contact_policy: RecoveryCurrentContactPolicy,
     ) -> Self {
-        Self::new_with_schedule(
-            start_offset_counts,
-            lower_rate_q,
-            authority_source,
-            current_contact_policy,
-            RecoveryRestSchedule::ImmediateScored,
-        )
-    }
-
-    fn new_with_schedule(
-        start_offset_counts: i32,
-        lower_rate_q: Option<u64>,
-        authority_source: RecoveryBindingSource,
-        current_contact_policy: RecoveryCurrentContactPolicy,
-        rest_schedule: RecoveryRestSchedule,
-    ) -> Self {
         let mut backend = MockBackend::new();
         backend.current_limit_value = current_limit(2_816);
         backend.mechanical_encoder_position_counts_value =
@@ -349,12 +300,11 @@ impl RecoveryFixture {
             100,
         );
         Self {
-            runtime: runtime_with_schedule(
+            runtime: runtime_with_policy(
                 start_offset_counts,
                 lower_rate_q,
                 authority_source,
                 current_contact_policy,
-                rest_schedule,
             ),
             safety: configured_safety(start_offset_counts),
             observations: VelocityObservationRing::new(),
@@ -471,12 +421,11 @@ impl RecoveryFixture {
 
 #[test]
 fn selected_recovery_discards_lead_in_before_scoring_rest() {
-    let mut fixture = RecoveryFixture::new_with_schedule(
+    let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
         RecoveryBindingSource::SettledRate,
         RecoveryCurrentContactPolicy::StopImmediately,
-        RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
     let handover_us = fixture.arrive_at_moving_target(1_040);
@@ -556,12 +505,11 @@ fn selected_recovery_discards_lead_in_before_scoring_rest() {
 
 #[test]
 fn selected_recovery_reports_completed_unconfirmed_rest_without_a_fault() {
-    let mut fixture = RecoveryFixture::new_with_schedule(
+    let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
         RecoveryBindingSource::SettledRate,
         RecoveryCurrentContactPolicy::StopImmediately,
-        RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
     let handover_us = fixture.arrive_at_moving_target(1_040);
@@ -738,8 +686,20 @@ fn recovery_controller_releases_contained_primitive() {
         RungOriginRecoveryStep::At(deadline) if deadline == settle_first_sample * 1_000
     ));
 
-    let settle_last_sample = settle_first_sample + 499;
-    for sample in settle_first_sample..=settle_last_sample {
+    let lead_in_last_sample = settle_first_sample + 499;
+    for sample in settle_first_sample..=lead_in_last_sample {
+        let result = fixture.sample(sample * 1_000, 1_001);
+        if sample < lead_in_last_sample {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(
+                result,
+                RungOriginRecoveryStep::At((lead_in_last_sample + 1) * 1_000)
+            );
+        }
+    }
+    let settle_last_sample = lead_in_last_sample + 500;
+    for sample in lead_in_last_sample + 1..=settle_last_sample {
         let result = fixture.sample(sample * 1_000, 1_001);
         if sample < settle_last_sample {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
@@ -748,15 +708,17 @@ fn recovery_controller_releases_contained_primitive() {
         }
     }
 
-    let report = loop {
+    loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
             RungOriginRecoveryStep::RestSelection { .. } => {}
-            RungOriginRecoveryStep::Contained(report) => break report,
-            other => panic!("out-of-band rest must remain contained: {other:?}"),
+            RungOriginRecoveryStep::RestAnalysis(_) => {}
+            RungOriginRecoveryStep::RestUnconfirmed => break,
+            other => panic!(
+                "out-of-band settle must report unconfirmed rest, not fault or contain: {other:?}"
+            ),
         }
-    };
-    assert_eq!(report.outcome, RungOriginRecoveryOutcome::ContainedDeadline);
+    }
     assert!(
         fixture
             .safety
@@ -894,6 +856,14 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
         if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
+        }
+    }
+    for sample in first + 500..=first + 999 {
+        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
+        if sample < first + 999 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
         }
     }
@@ -901,6 +871,7 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
             RungOriginRecoveryStep::RestSelection { .. } => {}
+            RungOriginRecoveryStep::RestAnalysis(_) => {}
             RungOriginRecoveryStep::Finished(report) => break report,
             other => panic!("fixed rest should recover: {other:?}"),
         }
@@ -912,8 +883,8 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
     assert_eq!(report.origin_band_counts, 1_000);
     assert_eq!(report.lower_rate_q.to_u64(), 14_000_000);
     assert_eq!(u64::from(report.moving_duration_us), handover_us);
-    assert_eq!(report.settle_duration_us, 500_000);
-    assert_eq!(u64::from(report.total_duration_us), handover_us + 500_000);
+    assert_eq!(report.settle_duration_us, 1_000_000);
+    assert_eq!(u64::from(report.total_duration_us), handover_us + 1_000_000);
     assert_eq!(report.peak_torque_target_abs, 100);
     assert!(fixture.safety.primitive_start_us.is_none());
     assert_eq!(fixture.observations.len(), 0);
@@ -994,6 +965,14 @@ fn recovery_contact_passive_settle_proves_an_in_band_origin() {
         if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
+        }
+    }
+    for sample in first + 500..=first + 999 {
+        let result = fixture.sample(sample * 1_000, 998);
+        if sample < first + 999 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
         }
     }
@@ -1062,6 +1041,14 @@ fn recovery_contact_passive_settle_rejects_an_out_of_band_origin() {
     for sample in 2..=501 {
         let result = fixture.sample(sample * 1_000, 1_001);
         if sample < 501 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::At(502 * 1_000));
+        }
+    }
+    for sample in 502..=1_001 {
+        let result = fixture.sample(sample * 1_000, 1_001);
+        if sample < 1_001 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1279,7 +1266,6 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
             lower_rate_q: Some(14_000_000),
             authority_source: RecoveryBindingSource::SettledRate,
             current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
-            rest_schedule: RecoveryRestSchedule::ImmediateScored,
         },
         super::recovery::RungOriginRecoveryPlan {
             origin_band_counts: 10,
@@ -1307,10 +1293,10 @@ fn recovery_safety_rejects_unconfirmed_rest() {
     let handover_us = fixture.arrive_at_moving_target(1_040);
     let first = handover_us / 1_000 + 1;
     assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
-    for sample in first..=first + 499 {
+    for sample in first..=first + 999 {
         let offset = moving_arrival_counts() - (sample as i32 - first as i32);
         let result = fixture.sample(sample * 1_000, offset);
-        if sample < first + 499 {
+        if sample < first + 999 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1322,10 +1308,13 @@ fn recovery_safety_rejects_unconfirmed_rest() {
             RungOriginRecoveryStep::RestSelection { decision, .. } => {
                 assert_eq!(decision.disposition, RestSelectionDisposition::Rejected);
             }
-            RungOriginRecoveryStep::Fault {
-                error: crate::autotune::CommissionError::VelocityRestNotConfirmed,
-                safety: None,
-            } => break,
+            RungOriginRecoveryStep::RestAnalysis(analysis) => {
+                assert_eq!(
+                    analysis.disposition, 1,
+                    "unconfirmed rest reports disposition 1"
+                );
+            }
+            RungOriginRecoveryStep::RestUnconfirmed => break,
             other => panic!("creeping settle must fail confirmation: {other:?}"),
         }
     }
@@ -1446,9 +1435,10 @@ fn origin_band_counts() -> u32 {
 // `step_rung_origin_recovery` returns a recovery-owned diagnostic at exactly
 // two sites, both inside `RecoveryState::AnalyzeSettle`
 // (`recovery/controller.rs`): `RestSelection` when `poll_scored_rest_confirmation`
-// yields `Diagnostic`, and `RestAnalysis`, guarded by `runtime.uses_stabilization()`,
-// immediately after. Every other return site yields `ReadyNow`, `At`,
-// `OriginMismatch`, `Finished`, `Contained`, `RestUnconfirmed`, or a
+// yields `Diagnostic`, and `RestAnalysis` immediately after (guarded by
+// `!runtime.current_contact_detected()` — if contact is detected, we return early
+// with `Finished` or `Contained` instead). Every other return site yields `ReadyNow`,
+// `At`, `OriginMismatch`, `Finished`, `Contained`, `RestUnconfirmed`, or a
 // `recovery_fault`, none of which commits a recovery-owned trace record.
 //
 // The count is bounded by 2 because each site fires at most once per
@@ -1566,13 +1556,12 @@ fn recovery_diagnostic_count_current_contact_before_settle_poll() {
 }
 
 #[test]
-fn recovery_diagnostic_count_current_contact_after_settle_poll_immediate() {
+fn recovery_diagnostic_count_current_contact_after_settle_poll() {
     // Same timeline as `recovery_controller_confirms_fixed_settle_and_reports_complete_geometry`
-    // (a normal, immediate-schedule completion), but the velocity-output
-    // clamp status flag is only raised once the scored settle capture has
-    // finished. `recovery_safety_sample` never reads `STATUS_FLAGS`, so this
-    // register never trips contact detection during `CaptureSettle`; contact
-    // is discovered only when `AnalyzeSettle` calls
+    // (a normal recovery completion), but the velocity-output clamp status flag is
+    // only raised once the scored settle capture has finished. `recovery_safety_sample`
+    // never reads `STATUS_FLAGS`, so this register never trips contact detection during
+    // `CaptureSettle`; contact is discovered only when `AnalyzeSettle` calls
     // `finish_velocity_current_zero_phase` after `poll_scored_rest_confirmation`
     // has already produced its one `RestSelection`.
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
@@ -1584,6 +1573,14 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll_immediate() {
     for sample in first..=first + 499 {
         let result = fixture.sample(sample * 1_000, moving_arrival_counts());
         if sample < first + 499 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
+        }
+    }
+    for sample in first + 500..=first + 999 {
+        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
+        if sample < first + 999 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
@@ -1603,7 +1600,7 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll_immediate() {
         RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
     );
     assert_eq!(selections, 1);
-    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
+    assert_eq!(analyses, 0);
     assert!(selections + analyses <= 2);
 }
 
@@ -1611,8 +1608,9 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll_immediate() {
 fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
     // Same setup as `recovery_contact_passive_settle_proves_an_in_band_origin`:
     // `ProvePassiveSettle` marks contact detected in `Observe`, then still
-    // runs the ordinary scored settle in `AnalyzeSettle`, so the run commits
-    // one `RestSelection` but skips `RestAnalysis` (`ImmediateScored`).
+    // runs the ordinary scored settle in `CaptureSettle`. But in `AnalyzeSettle`,
+    // the current-contact check returns early with `Finished`, so the run commits
+    // one `RestSelection` and returns `Finished` without `RestAnalysis`.
     let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
@@ -1646,6 +1644,14 @@ fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
         if sample < first + 499 {
             assert!(matches!(result, RungOriginRecoveryStep::At(_)));
         } else {
+            assert_eq!(result, RungOriginRecoveryStep::At((first + 500) * 1_000));
+        }
+    }
+    for sample in first + 500..=first + 999 {
+        let result = fixture.sample(sample * 1_000, 998);
+        if sample < first + 999 {
+            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
+        } else {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
         }
     }
@@ -1659,7 +1665,7 @@ fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
         RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
     );
     assert_eq!(selections, 1);
-    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
+    assert_eq!(analyses, 0);
     assert!(selections + analyses <= 2);
     assert!(
         selections + analyses >= 1,
@@ -1668,51 +1674,12 @@ fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
 }
 
 #[test]
-fn recovery_diagnostic_count_normal_completion_immediate() {
-    // Same timeline as `recovery_controller_confirms_fixed_settle_and_reports_complete_geometry`.
-    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
-    fixture.command_motion();
-    let handover_us = fixture.arrive_at_moving_target(1_040);
-    let first = handover_us / 1_000 + 1;
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
-
-    for sample in first..=first + 499 {
-        let result = fixture.sample(sample * 1_000, moving_arrival_counts());
-        if sample < first + 499 {
-            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
-        } else {
-            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
-        }
-    }
-    let (terminal, selections, analyses) = fixture.drive_to_terminal();
-
-    let RungOriginRecoveryStep::Finished(report) = terminal else {
-        panic!("fixed rest should recover: {terminal:?}");
-    };
-    assert_eq!(report.outcome, RungOriginRecoveryOutcome::Recovered);
-    assert_eq!(selections, 1);
-    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
-    assert!(selections + analyses <= 2);
-    assert!(
-        selections + analyses >= 1,
-        "outcome 1 must commit at least one diagnostic"
-    );
-}
-
-/// Pins the Step-3 structural argument: a `Stabilized` recovery that
-/// completes normally commits exactly one `RestSelection` and one
-/// `RestAnalysis`, never more.
-///
-/// Same timeline as `selected_recovery_discards_lead_in_before_scoring_rest`,
-/// carried through to a confirmed, in-band completion.
-#[test]
-fn recovery_diagnostic_count_normal_completion_stabilized() {
-    let mut fixture = RecoveryFixture::new_with_schedule(
+fn recovery_diagnostic_count_normal_completion() {
+    let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
         RecoveryBindingSource::SettledRate,
         RecoveryCurrentContactPolicy::StopImmediately,
-        RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
     let handover_us = fixture.arrive_at_moving_target(1_040);
@@ -1761,45 +1728,13 @@ fn recovery_diagnostic_count_normal_completion_stabilized() {
 }
 
 #[test]
-fn recovery_diagnostic_count_scored_rest_rejected_immediate() {
-    // Same timeline as `recovery_safety_rejects_unconfirmed_rest`.
-    let mut fixture = RecoveryFixture::new(1_020, Some(14_000_000));
-    fixture.command_motion();
-    let handover_us = fixture.arrive_at_moving_target(1_040);
-    let first = handover_us / 1_000 + 1;
-    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first * 1_000));
-    for sample in first..=first + 499 {
-        let offset = moving_arrival_counts() - (sample as i32 - first as i32);
-        let result = fixture.sample(sample * 1_000, offset);
-        if sample < first + 499 {
-            assert!(matches!(result, RungOriginRecoveryStep::At(_)));
-        } else {
-            assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
-        }
-    }
-    let (terminal, selections, analyses) = fixture.drive_to_terminal();
-
-    assert_eq!(
-        terminal,
-        RungOriginRecoveryStep::Fault {
-            error: crate::autotune::CommissionError::VelocityRestNotConfirmed,
-            safety: None,
-        }
-    );
-    assert_eq!(selections, 1);
-    assert_eq!(analyses, 0, "ImmediateScored never yields RestAnalysis");
-    assert!(selections + analyses <= 2);
-}
-
-#[test]
-fn recovery_diagnostic_count_scored_rest_rejected_stabilized() {
+fn recovery_diagnostic_count_scored_rest_rejected() {
     // Same timeline as `selected_recovery_reports_completed_unconfirmed_rest_without_a_fault`.
-    let mut fixture = RecoveryFixture::new_with_schedule(
+    let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
         RecoveryBindingSource::SettledRate,
         RecoveryCurrentContactPolicy::StopImmediately,
-        RecoveryRestSchedule::Stabilized,
     );
     fixture.command_motion();
     let handover_us = fixture.arrive_at_moving_target(1_040);

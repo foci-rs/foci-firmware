@@ -62,15 +62,6 @@ pub(crate) enum RecoveryCurrentContactPolicy {
     ProvePassiveSettle,
 }
 
-/// Zero-target rest schedule following one origin return.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) enum RecoveryRestSchedule {
-    /// Score the first fixed settle window.
-    ImmediateScored,
-    /// Discard one fixed lead-in before scoring a separate settle window.
-    Stabilized,
-}
-
 /// Exact reason that bounded or authorized the recovery attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
@@ -291,7 +282,6 @@ pub(crate) struct RungOriginRecoveryConfig {
     pub(crate) lower_rate_q: Option<u64>,
     pub(crate) authority_source: RecoveryBindingSource,
     pub(crate) current_contact_policy: RecoveryCurrentContactPolicy,
-    pub(crate) rest_schedule: RecoveryRestSchedule,
 }
 
 impl RungOriginRecoveryRuntime {
@@ -299,7 +289,6 @@ impl RungOriginRecoveryRuntime {
     const PROVE_PASSIVE_SETTLE: u8 = 1 << 1;
     const CURRENT_CONTACT_DETECTED: u8 = 1 << 2;
     const SETTLE_INTEGRATOR_CLEARED: u8 = 1 << 3;
-    const STABILIZED: u8 = 1 << 4;
 
     /// Construct one checked recovery attempt without touching hardware.
     pub(crate) fn new(
@@ -332,12 +321,7 @@ impl RungOriginRecoveryRuntime {
                 0,
             )
         } else if let Some(rate) = lower_rate_q {
-            match recovery_runtime_us_with_schedule(
-                return_distance,
-                rate,
-                plan.maximum_slot_us,
-                config.rest_schedule,
-            ) {
+            match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
                 Ok(runtime_us) => (RecoveryState::WriteGains, runtime_us, rate),
                 Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
                     RecoveryState::Terminal {
@@ -371,11 +355,9 @@ impl RungOriginRecoveryRuntime {
             authority_source: config.authority_source,
             plan,
             runtime_us,
-            flags: (u8::from(
+            flags: u8::from(
                 config.current_contact_policy == RecoveryCurrentContactPolicy::ProvePassiveSettle,
-            ) * Self::PROVE_PASSIVE_SETTLE)
-                | (u8::from(config.rest_schedule == RecoveryRestSchedule::Stabilized)
-                    * Self::STABILIZED),
+            ) * Self::PROVE_PASSIVE_SETTLE,
             recovery_started_us: ExactU64Parts::ZERO,
             zero_commanded_us: ExactU64Parts::ZERO,
             first_in_band_offset_counts: 0,
@@ -426,10 +408,6 @@ impl RungOriginRecoveryRuntime {
         self.flags & Self::SETTLE_INTEGRATOR_CLEARED != 0
     }
 
-    fn uses_stabilization(&self) -> bool {
-        self.flags & Self::STABILIZED != 0
-    }
-
     /// Raw velocity P gain this recovery is running under.
     ///
     /// Exposed so a phase driver can name the gain on a diagnostic record
@@ -439,13 +417,7 @@ impl RungOriginRecoveryRuntime {
     }
 
     fn rest_allowance_us(&self) -> u32 {
-        ZERO_SETTLE_US
-            + SETTLE_ANALYSIS_BUDGET_US
-            + if self.uses_stabilization() {
-                RECOVERY_STABILIZATION_US
-            } else {
-                0
-            }
+        RECOVERY_STABILIZATION_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US
     }
 
     fn report(
@@ -596,27 +568,10 @@ pub(crate) const fn recovery_return_distance_counts(
 }
 
 /// Derive the runtime deadline from a measured settled-rate lower bound.
-#[allow(dead_code)]
 pub(crate) fn recovery_runtime_us(
     return_distance_counts: u32,
     lower_rate_q: u64,
     primitive_cap_us: u32,
-) -> Result<u32, RungOriginRecoveryPlanError> {
-    recovery_runtime_us_with_schedule(
-        return_distance_counts,
-        lower_rate_q,
-        primitive_cap_us,
-        RecoveryRestSchedule::ImmediateScored,
-    )
-}
-
-/// Derive a schedule-specific runtime deadline from a settled-rate lower bound.
-#[allow(dead_code)]
-pub(crate) fn recovery_runtime_us_with_schedule(
-    return_distance_counts: u32,
-    lower_rate_q: u64,
-    primitive_cap_us: u32,
-    rest_schedule: RecoveryRestSchedule,
 ) -> Result<u32, RungOriginRecoveryPlanError> {
     if lower_rate_q == 0 || primitive_cap_us == 0 {
         return Err(RungOriginRecoveryPlanError::InvalidRequest);
@@ -629,10 +584,7 @@ pub(crate) fn recovery_runtime_us_with_schedule(
         .ok_or(RungOriginRecoveryPlanError::Arithmetic)?
         .div_ceil(u128::from(lower_rate_q));
     let runtime_us = recovery_allowance_us(measured_return_us)?
-        .checked_add(match rest_schedule {
-            RecoveryRestSchedule::ImmediateScored => 0,
-            RecoveryRestSchedule::Stabilized => u128::from(RECOVERY_STABILIZATION_US),
-        })
+        .checked_add(u128::from(RECOVERY_STABILIZATION_US))
         .ok_or(RungOriginRecoveryPlanError::Arithmetic)?;
     if runtime_us > u128::from(primitive_cap_us) {
         return Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap);

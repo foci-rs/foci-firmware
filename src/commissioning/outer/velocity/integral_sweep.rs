@@ -53,10 +53,10 @@ use super::integral_plan::{
     VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, integral_gain_at,
 };
 use super::recovery::{
-    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
-    RecoveryRestSchedule, RecoveryStage, RungOriginRecoveryConfig, RungOriginRecoveryOutcome,
-    RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
-    plan_rung_origin_recovery, step_rung_origin_recovery,
+    RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis, RecoveryStage,
+    RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, plan_rung_origin_recovery,
+    step_rung_origin_recovery,
 };
 use super::sweep_analysis::{
     ScoredRestPoll, bounded_rest_displacement, deficit_interval_q, poll_scored_rest_confirmation,
@@ -393,7 +393,7 @@ fn set_acceptance_current(data: &mut VelocityIntegralData, direction: usize, bit
     *value = Some(value.unwrap_or(0) | bit);
 }
 
-fn is_acceptance_matrix(plan: VelocityIntegralExecutionPlan) -> bool {
+pub(super) fn is_acceptance_matrix(plan: VelocityIntegralExecutionPlan) -> bool {
     matches!(
         plan.acquisition_kind,
         VelocityIntegralAcquisitionKind::AcceptanceAscending
@@ -746,20 +746,9 @@ pub(super) fn plan_integral_recovery(
                 RecoveryBindingSource::MissingRate
             },
             current_contact_policy: integral_recovery_current_contact_policy(data),
-            rest_schedule: integral_recovery_rest_schedule(data.plan),
         },
         recovery_plan,
     )
-}
-
-pub(super) fn integral_recovery_rest_schedule(
-    plan: VelocityIntegralExecutionPlan,
-) -> RecoveryRestSchedule {
-    if is_acceptance_matrix(plan) {
-        RecoveryRestSchedule::Stabilized
-    } else {
-        RecoveryRestSchedule::ImmediateScored
-    }
 }
 
 pub(super) fn record_integral_recovery_rest(
@@ -2475,11 +2464,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 RungOriginRecoveryStep::RestAnalysis(analysis) => {
                     record_integral_recovery_rest(data, analysis)
                 }
-                // Only an acceptance-matrix plan's Stabilized schedule reaches this state.
                 RungOriginRecoveryStep::RestUnconfirmed => {
-                    debug_assert!(is_acceptance_matrix(data.plan));
                     data.rest_unconfirmed = true;
-                    data.rest_unconfirmed_owner = Some(RestSelectionOwner::MatrixRecovery);
+                    data.rest_unconfirmed_owner = Some(if is_acceptance_matrix(data.plan) {
+                        RestSelectionOwner::MatrixRecovery
+                    } else {
+                        RestSelectionOwner::StageCRecovery
+                    });
                     *state = VelocityIntegralState::Terminal;
                     StepResult::ReadyNow
                 }

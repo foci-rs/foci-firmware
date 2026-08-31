@@ -9,8 +9,8 @@ use super::integral_sweep::{
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
     acceptance_amplitude_report, acceptance_terminal, advance_integral_cursor, analyze_rung,
     apply_integral_current_headroom, combined_slot_transition_us, integral_fault_terminal,
-    integral_i_at, integral_recovery_current_contact_policy, integral_recovery_rest_schedule,
-    integral_rung_count, integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
+    integral_i_at, integral_recovery_current_contact_policy, integral_rung_count,
+    integral_rung_kind, integral_slot_direction, integral_target_rpm_at, is_acceptance_matrix,
     matrix_rung_mean, opening_recovery_lower_rate_q, positive_directional_floors_exist,
     record_integral_observation_rest_selection, record_integral_recovery_rest,
     record_integral_recovery_rest_selection, record_integral_target_if_reached,
@@ -18,7 +18,7 @@ use super::integral_sweep::{
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
-    RecoveryRestSchedule, RecoveryStabilizationSummary, RecoveryStage, RungOriginRecoveryConfig,
+    RecoveryStabilizationSummary, RecoveryStage, RungOriginRecoveryConfig,
     RungOriginRecoveryOutcome, RungOriginRecoveryReport, RungOriginRecoveryRuntime,
     plan_rung_origin_recovery,
 };
@@ -267,10 +267,6 @@ fn response_and_matrix_plans_expose_distinct_exact_schedules() {
     ascending.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
     ascending.i_start = 1_024;
     ascending.matrix_targets_rpm = [16, 33, 66, 132, 263];
-    assert_eq!(
-        integral_recovery_rest_schedule(ascending),
-        RecoveryRestSchedule::Stabilized
-    );
     assert_eq!(integral_rung_count(ascending), Some(5));
     assert_eq!(
         core::array::from_fn::<_, 5, _>(|rung| integral_i_at(ascending, rung as u8).unwrap()),
@@ -298,11 +294,6 @@ fn response_and_matrix_plans_expose_distinct_exact_schedules() {
     );
     assert_eq!(integral_i_at(descending, 5), None);
     assert_eq!(integral_target_rpm_at(descending, 5), None);
-
-    assert_eq!(
-        integral_recovery_rest_schedule(response),
-        RecoveryRestSchedule::ImmediateScored
-    );
 }
 
 fn completed_recovery_rest_analysis() -> RecoveryRestAnalysis {
@@ -2956,7 +2947,6 @@ fn recovery_rest_rejection_records_the_matrix_owner() {
             lower_rate_q: Some(14_000_000),
             authority_source: RecoveryBindingSource::SettledRate,
             current_contact_policy: integral_recovery_current_contact_policy(data),
-            rest_schedule: RecoveryRestSchedule::Stabilized,
         },
         recovery_plan,
     )
@@ -2999,6 +2989,84 @@ fn recovery_rest_rejection_records_the_matrix_owner() {
             StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
         );
     }
+}
+
+#[test]
+fn non_matrix_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_matrix() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    assert!(!is_acceptance_matrix(data.plan));
+    data.rung_index = 1;
+
+    let start_offset_counts = 1_500_i32;
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    safety.configure_velocity_envelope(4_394).unwrap();
+    let raw = start_offset_counts.rem_euclid(4_000) as u32;
+    safety.set_encoder_baseline(raw).unwrap();
+    safety.unwrapped_position = start_offset_counts;
+    safety.arm_safety_observation(0).unwrap();
+
+    let recovery_plan =
+        plan_rung_origin_recovery(safety.budget, safety.counts_per_rev(), 4_394).unwrap();
+    let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.usable_torque_limit)).unwrap();
+    data.current_observer
+        .reset(clamp_limit, data.plan.limit_evidence_capability);
+    let runtime = RungOriginRecoveryRuntime::new(
+        RungOriginRecoveryConfig {
+            stage: RecoveryStage::Integral,
+            rung_index: data.rung_index,
+            p: PidPGain::new(data.plan.final_p).unwrap(),
+            target_velocity_rpm: TmcMechanicalRpm::from_register(264),
+            planned_velocity_mrev_s: 4_394,
+            start_offset_counts,
+            lower_rate_q: Some(14_000_000),
+            authority_source: RecoveryBindingSource::SettledRate,
+            current_contact_policy: integral_recovery_current_contact_policy(data),
+        },
+        recovery_plan,
+    )
+    .unwrap();
+    *state = VelocityIntegralState::RecoverRung(runtime);
+
+    let mut backend = MockBackend::new();
+    backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
+    backend.mechanical_encoder_position_counts_value = raw;
+
+    let terminal = loop {
+        match step(&mut phase, &mut workspace, &mut backend) {
+            StepResult::ReadyNow => {}
+            StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+            StepResult::VelocityIntegralEvent(_) => {}
+            StepResult::VelocityIntegralTerminal(terminal) => break terminal,
+            other => {
+                panic!("non-matrix plan must never produce an AcceptanceMatrix result: {other:?}")
+            }
+        }
+    };
+
+    let OuterPhase::VelocityIntegral { data, .. } = &phase else {
+        unreachable!()
+    };
+    assert!(data.rest_unconfirmed);
+    assert_eq!(
+        data.rest_unconfirmed_owner,
+        Some(RestSelectionOwner::StageCRecovery)
+    );
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
+    assert_eq!(
+        terminal.cause,
+        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+    );
 }
 
 #[test]

@@ -264,7 +264,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 runtime.state = RecoveryState::ClearSettleIntegrator {
                     settle_started_us: runtime.zero_commanded_us,
                     contained: deadline_reached && !in_band,
-                    lead_in: runtime.uses_stabilization(),
+                    lead_in: true,
                 };
                 RungOriginRecoveryStep::ReadyNow
             } else {
@@ -432,7 +432,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
         }
         RecoveryState::AnalyzeSettle {
             analysis_deadline_us,
-            contained,
+            contained: _,
         } => {
             let analysis_deadline_us = analysis_deadline_us.to_u64();
             if backend.elapsed_us() >= analysis_deadline_us {
@@ -469,60 +469,9 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             resources.observations.clear();
             let final_offset = resources.safety.unwrapped_position;
             let in_band = final_offset.unsigned_abs() <= runtime.plan.origin_band_counts;
-            if runtime.uses_stabilization() {
+            if runtime.current_contact_detected() {
                 resources.safety.end_primitive();
-                let confirmed = confirmation.confirmed_rest && in_band;
-                runtime.state = RecoveryState::RestTerminal { confirmed };
-                let exact_velocity_interval_q =
-                    confirmation.exact_velocity_interval_q.unwrap_or([0; 2]);
-                let interval_present = u8::from(confirmation.exact_velocity_interval_q.is_some());
-                let current_contact_code = resources
-                    .current_observer
-                    .evidence(VelocityCurrentZeroPhase::Recovery)
-                    .map_or(VelocityCurrentContact::None as u8, |evidence| {
-                        evidence.contact as u8
-                    });
-                return RungOriginRecoveryStep::RestAnalysis(RecoveryRestAnalysis {
-                    exact_velocity_interval_q,
-                    start_offset_counts: runtime.start_offset_counts,
-                    closest_offset_counts: runtime.closest_offset_counts,
-                    final_offset_counts: final_offset,
-                    planned_return_distance_counts: recovery_return_distance_counts(
-                        runtime.start_offset_counts,
-                        runtime.plan.origin_band_counts,
-                    )
-                    .unwrap_or(0),
-                    first_in_band_offset_counts: runtime.first_in_band_offset_counts,
-                    displacement_to_band_counts: runtime
-                        .first_in_band_offset_counts
-                        .saturating_sub(runtime.start_offset_counts),
-                    entry_to_band_duration_us: runtime.entry_to_band_duration_us,
-                    lead_in: RecoveryStabilizationSummary {
-                        net_displacement_counts: runtime.lead_in_first_or_net_counts,
-                        displacement_span_counts: runtime.lead_in_min_or_span_counts.unsigned_abs(),
-                    },
-                    scored_net_displacement_counts: i32::from(
-                        *resources.settle_displacement_counts,
-                    ),
-                    scored_min_displacement_counts: i32::from(
-                        *resources.settle_min_displacement_counts,
-                    ),
-                    scored_max_displacement_counts: i32::from(
-                        *resources.settle_max_displacement_counts,
-                    ),
-                    p_raw: runtime.p.raw(),
-                    peak_torque_target_abs: resources.current_observer.peak_pid_output_abs(),
-                    stage: runtime.stage,
-                    rung_index: runtime.rung_index,
-                    stationarity_code: confirmation.recent_structural_code as u8,
-                    interval_present,
-                    current_contact_code,
-                    disposition: u8::from(!confirmed),
-                });
-            }
-            let (outcome, binding_source) = if runtime.current_contact_detected() {
-                resources.safety.end_primitive();
-                if confirmation.confirmed_rest && in_band {
+                let (outcome, binding_source) = if confirmation.confirmed_rest && in_band {
                     (
                         RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom,
                         RecoveryBindingSource::CurrentHeadroom,
@@ -532,42 +481,74 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                         RungOriginRecoveryOutcome::RecoveryCurrentHeadroom,
                         RecoveryBindingSource::CurrentHeadroom,
                     )
-                }
-            } else if !confirmation.confirmed_rest {
-                return recovery_fault(CommissionError::VelocityRestNotConfirmed, None);
-            } else if contained || !in_band {
-                resources.safety.end_primitive();
-                (
-                    RungOriginRecoveryOutcome::ContainedDeadline,
-                    RecoveryBindingSource::Deadline,
-                )
-            } else {
-                resources.safety.end_primitive();
-                (
-                    RungOriginRecoveryOutcome::Recovered,
-                    runtime.authority_source,
-                )
-            };
-            runtime.state = RecoveryState::Terminal {
-                outcome,
-                binding_source,
-            };
-            let report = runtime.report(
-                outcome,
-                binding_source,
-                final_offset,
-                backend.elapsed_us(),
-                resources.current_observer.peak_pid_output_abs(),
-            );
-            if matches!(
-                outcome,
-                RungOriginRecoveryOutcome::Recovered
-                    | RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
-            ) {
-                RungOriginRecoveryStep::Finished(report)
-            } else {
-                RungOriginRecoveryStep::Contained(report)
+                };
+                runtime.state = RecoveryState::Terminal {
+                    outcome,
+                    binding_source,
+                };
+                let report = runtime.report(
+                    outcome,
+                    binding_source,
+                    final_offset,
+                    backend.elapsed_us(),
+                    resources.current_observer.peak_pid_output_abs(),
+                );
+                return if matches!(
+                    outcome,
+                    RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
+                ) {
+                    RungOriginRecoveryStep::Finished(report)
+                } else {
+                    RungOriginRecoveryStep::Contained(report)
+                };
             }
+            resources.safety.end_primitive();
+            let confirmed = confirmation.confirmed_rest && in_band;
+            runtime.state = RecoveryState::RestTerminal { confirmed };
+            let exact_velocity_interval_q =
+                confirmation.exact_velocity_interval_q.unwrap_or([0; 2]);
+            let interval_present = u8::from(confirmation.exact_velocity_interval_q.is_some());
+            let current_contact_code = resources
+                .current_observer
+                .evidence(VelocityCurrentZeroPhase::Recovery)
+                .map_or(VelocityCurrentContact::None as u8, |evidence| {
+                    evidence.contact as u8
+                });
+            RungOriginRecoveryStep::RestAnalysis(RecoveryRestAnalysis {
+                exact_velocity_interval_q,
+                start_offset_counts: runtime.start_offset_counts,
+                closest_offset_counts: runtime.closest_offset_counts,
+                final_offset_counts: final_offset,
+                planned_return_distance_counts: recovery_return_distance_counts(
+                    runtime.start_offset_counts,
+                    runtime.plan.origin_band_counts,
+                )
+                .unwrap_or(0),
+                first_in_band_offset_counts: runtime.first_in_band_offset_counts,
+                displacement_to_band_counts: runtime
+                    .first_in_band_offset_counts
+                    .saturating_sub(runtime.start_offset_counts),
+                entry_to_band_duration_us: runtime.entry_to_band_duration_us,
+                lead_in: RecoveryStabilizationSummary {
+                    net_displacement_counts: runtime.lead_in_first_or_net_counts,
+                    displacement_span_counts: runtime.lead_in_min_or_span_counts.unsigned_abs(),
+                },
+                scored_net_displacement_counts: i32::from(*resources.settle_displacement_counts),
+                scored_min_displacement_counts: i32::from(
+                    *resources.settle_min_displacement_counts,
+                ),
+                scored_max_displacement_counts: i32::from(
+                    *resources.settle_max_displacement_counts,
+                ),
+                p_raw: runtime.p.raw(),
+                peak_torque_target_abs: resources.current_observer.peak_pid_output_abs(),
+                stage: runtime.stage,
+                rung_index: runtime.rung_index,
+                stationarity_code: confirmation.recent_structural_code as u8,
+                interval_present,
+                current_contact_code,
+                disposition: u8::from(!confirmed),
+            })
         }
     }
 }
@@ -653,7 +634,7 @@ async fn recovery_current_headroom<B: CommissioningBackend>(
             runtime.state = RecoveryState::ClearSettleIntegrator {
                 settle_started_us: runtime.zero_commanded_us,
                 contained: false,
-                lead_in: false,
+                lead_in: true,
             };
             return RungOriginRecoveryStep::ReadyNow;
         }
