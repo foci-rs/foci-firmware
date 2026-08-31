@@ -528,9 +528,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     // I3: the establish leg never confirmed a settle within the
                     // budget; retry from a fresh entry rather than proceed.
                     defmt::info!(
-                        "robustness_reversal establish leg exhausted: dir={} slot={} elapsed_us={} retries_used={}",
+                        "robustness_reversal establish leg exhausted: dir={} slot={} read_us={} budget_deadline_us={} elapsed_us={} retries_used={}",
                         session.direction,
                         session.cycle_cursor[session.direction],
+                        read_us,
+                        budget_deadline_us,
                         elapsed_us,
                         session.ledgers[session.direction].inconclusive_retries_used()
                     );
@@ -631,9 +633,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     // I1: no band entry within the full budget is the
                     // inconclusive signal; retry from the establish leg.
                     defmt::info!(
-                        "robustness_reversal reverse leg exhausted: dir={} slot={} elapsed_us={} retries_used={}",
+                        "robustness_reversal reverse leg exhausted: dir={} slot={} read_us={} budget_deadline_us={} elapsed_us={} retries_used={}",
                         session.direction,
                         session.cycle_cursor[session.direction],
+                        read_us,
+                        budget_deadline_us,
                         elapsed_us,
                         session.ledgers[session.direction].inconclusive_retries_used()
                     );
