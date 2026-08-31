@@ -2298,6 +2298,10 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             workspace.observations.clear();
             safety.end_primitive();
             if !confirmation.confirmed_rest {
+                defmt::warn!(
+                    "settle rest excluded: discovery evidence excluded at rung={} (retry exhausted, velocity rest not confirmed)",
+                    session.rung_index,
+                );
                 return AdditiveDiscoveryStep::Done(
                     AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
                         error: CommissionError::VelocityRestNotConfirmed,
