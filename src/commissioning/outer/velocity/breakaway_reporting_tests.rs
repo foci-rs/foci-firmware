@@ -906,6 +906,10 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
             BreakawayTerminalCause::ConfirmationTargetBandUnconfirmableFromDiscovery,
         ),
         (
+            BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate,
+            BreakawayTerminalCause::ConfirmationNoTransitionCapableCandidate,
+        ),
+        (
             BandConfirmationOutcome::TargetBandNotReachedAtAuthority,
             BreakawayTerminalCause::ConfirmationTargetBandNotReachedAtAuthority,
         ),
@@ -919,6 +923,12 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
         assert_eq!(cause, expected, "{outcome:?}");
         assert_eq!(has_fault, 0);
     }
+
+    // The wire value the host cause-name maps (klipper-foci, foci-trace) key on.
+    assert_eq!(
+        BreakawayTerminalCause::ConfirmationNoTransitionCapableCandidate as u8,
+        27
+    );
 
     for (failure, expected) in [
         (

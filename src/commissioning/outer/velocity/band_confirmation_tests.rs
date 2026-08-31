@@ -18,10 +18,11 @@ use super::{
     CONFIRMATION_CAPTURE_PROFILE_EXISTING, CONFIRMATION_FAMILY_SIZE,
     CONFIRMATION_OBSERVATIONS_PER_DIRECTION, CONFIRMATION_SLOT_ORDER, ConfirmationDirectionalInput,
     DiscoveryObservationAtom, DiscoveryRungNominationBounds, DiscoveryRungNominationInput,
-    NOMINATION_SCREEN_C_SIGMA, TargetBandConfirmationInconclusive,
+    NOMINATION_SCREEN_C_SIGMA, NominationRejection, TargetBandConfirmationInconclusive,
     TargetBandUnconfirmableFromDiscovery, commanded_side_mean_rate_q, evaluate_band_confirmation,
     nominate_confirmation_candidate, nominate_confirmation_candidate_from_bounds,
-    observation_statistic, plan_band_confirmation, rung_confirmable_margin_percent,
+    nominate_transition_capable_candidate_from_bounds, observation_statistic,
+    plan_band_confirmation, rung_confirmable_margin_percent,
     rung_directional_pooled_bounds_percent, rung_nomination_bounds, rung_response_bounds_percent,
     validate_fixed_contract,
 };
@@ -329,6 +330,86 @@ fn nomination_selects_highest_band_admissible_rung_not_best_margin() {
     let nominated = nominate_confirmation_candidate_from_bounds(&[center, top, out_of_band])
         .expect("a band-admissible rung exists");
     assert_eq!(nominated.p, gain(480));
+}
+
+/// Two in-band rungs, but the highest-P one (925) is above the
+/// transition-capability ceiling (897) and Stage C would refuse it. Nomination
+/// must fall to the highest capable in-band rung (863), which prior tunes
+/// accepted, instead of nominating a gain doomed at admission.
+#[test]
+fn transition_ceiling_excludes_the_over_ceiling_top_rung() {
+    let capable = DiscoveryRungNominationBounds {
+        p: gain(863),
+        nominatable: true,
+        lower_percent: 72.0,
+        upper_percent: 78.0,
+    };
+    let over_ceiling = DiscoveryRungNominationBounds {
+        p: gain(925),
+        nominatable: true,
+        lower_percent: 72.0,
+        upper_percent: 78.0,
+    };
+    let nominated =
+        nominate_transition_capable_candidate_from_bounds(&[capable, over_ceiling], 897)
+            .expect("a transition-capable in-band rung exists");
+    assert_eq!(nominated.p, gain(863));
+}
+
+/// When every band-admissible rung is above the ceiling, nomination refuses
+/// before motion with the distinct `NoTransitionCapableCandidate` reason --
+/// separable from an empty band.
+#[test]
+fn transition_ceiling_rejects_when_every_in_band_rung_is_over_ceiling() {
+    let over_ceiling = DiscoveryRungNominationBounds {
+        p: gain(925),
+        nominatable: true,
+        lower_percent: 72.0,
+        upper_percent: 78.0,
+    };
+    assert_eq!(
+        nominate_transition_capable_candidate_from_bounds(&[over_ceiling], 897),
+        Err(NominationRejection::NoTransitionCapableCandidate)
+    );
+}
+
+/// A rung whose response is below 70% is not band-admissible at all, so the
+/// refusal reason is band emptiness (`Unconfirmable`), not the transition
+/// ceiling -- the two causes stay distinct.
+#[test]
+fn transition_ceiling_reports_unconfirmable_when_no_rung_is_band_admissible() {
+    let out_of_band = DiscoveryRungNominationBounds {
+        p: gain(863),
+        nominatable: true,
+        lower_percent: 69.0,
+        upper_percent: 78.0,
+    };
+    assert_eq!(
+        nominate_transition_capable_candidate_from_bounds(&[out_of_band], 897),
+        Err(NominationRejection::Unconfirmable)
+    );
+}
+
+/// An unconstrained ceiling reproduces the primitive exactly: the highest
+/// band-admissible rung wins, so the wrapper adds no behavior when no gain is
+/// over the ceiling.
+#[test]
+fn an_unconstrained_ceiling_nominates_the_highest_rung_like_the_primitive() {
+    let lower = DiscoveryRungNominationBounds {
+        p: gain(863),
+        nominatable: true,
+        lower_percent: 72.0,
+        upper_percent: 78.0,
+    };
+    let top = DiscoveryRungNominationBounds {
+        p: gain(925),
+        nominatable: true,
+        lower_percent: 72.0,
+        upper_percent: 78.0,
+    };
+    let nominated = nominate_transition_capable_candidate_from_bounds(&[lower, top], u16::MAX)
+        .expect("the highest in-band rung");
+    assert_eq!(nominated.p, gain(925));
 }
 
 // --- Rungs that cannot nominate ---------------------------------------------

@@ -633,6 +633,63 @@ pub fn nominate_confirmation_candidate_from_bounds(
     )
 }
 
+/// Why nomination spent zero confirmation strokes.
+///
+/// Distinguishes "the discovery band held no admissible rung at all" from "the
+/// band held admissible rungs, but every one exceeds the Stage-C
+/// transition-capability ceiling", so a refusal names its own reason instead of
+/// collapsing into one generic terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum NominationRejection {
+    /// No discovery rung's response was band-admissible (`M_i >= 0`).
+    Unconfirmable,
+    /// Band-admissible rungs existed, but every one's proportional gain exceeds
+    /// the Stage-C transition-capability ceiling, so admitting any would clip the
+    /// current clamp during Stage C. Refused before motion.
+    NoTransitionCapableCandidate,
+}
+
+/// Nominate the highest band-admissible rung whose proportional gain is also
+/// transition-capable (`p <= transition_ceiling`), so nomination never selects a
+/// gain that Stage-C admission would later refuse without motion.
+///
+/// `transition_ceiling` is [`super::integral_plan::max_transition_capable_p`]
+/// for the campaign's live acquisition context -- the exact monotone inverse of
+/// [`super::integral_plan::transition_capable_stage_c_gain`], so filtering by
+/// `p <= transition_ceiling` admits exactly the gains that gate would admit.
+/// Wraps the unconstrained [`nominate_confirmation_candidate_from_bounds`]
+/// primitive rather than reimplementing selection, so the two cannot diverge.
+pub fn nominate_transition_capable_candidate_from_bounds(
+    bounds: &[DiscoveryRungNominationBounds],
+    transition_ceiling: u16,
+) -> Result<NominatedConfirmationCandidate, NominationRejection> {
+    let capable = select_nominated_candidate(
+        bounds
+            .iter()
+            .filter(|entry| entry.nominatable && entry.p.raw() <= transition_ceiling)
+            .map(|entry| {
+                (
+                    entry.p,
+                    margin_percent_from_bounds(entry.lower_percent, entry.upper_percent),
+                )
+            }),
+    );
+    match capable {
+        Ok(candidate) => Ok(candidate),
+        // No transition-capable band rung. Distinguish "the band held an
+        // admissible rung, but all are above the ceiling" from "the band was
+        // empty", by asking the unconstrained primitive over the same bounds.
+        Err(TargetBandUnconfirmableFromDiscovery) => {
+            match nominate_confirmation_candidate_from_bounds(bounds) {
+                Ok(_) => Err(NominationRejection::NoTransitionCapableCandidate),
+                Err(TargetBandUnconfirmableFromDiscovery) => {
+                    Err(NominationRejection::Unconfirmable)
+                }
+            }
+        }
+    }
+}
+
 /// Frozen fresh evidence for one direction of the held-out confirmation block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct ConfirmationDirectionalInput {

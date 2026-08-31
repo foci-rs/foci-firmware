@@ -1905,6 +1905,43 @@ fn confirmable_discovery_rungs(p_raw: u16) -> CollectedInBandRungs {
     collected
 }
 
+/// The band holds one in-band rung at P=925, above the live
+/// transition-capability ceiling (897). `begin_band_confirmation` must refuse
+/// before any stroke with the distinct `TargetBandNoTransitionCapableCandidate`
+/// terminal, rather than nominating a gain `route_confirmed_accept` would then
+/// reject without motion.
+#[test]
+fn begin_band_confirmation_refuses_when_the_only_in_band_rung_is_over_ceiling() {
+    let entry = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(925)),
+        42,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        897,
+    );
+    assert!(matches!(
+        entry,
+        BandConfirmationEntry::Done(
+            BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate
+        )
+    ));
+}
+
+/// The ceiling is inclusive: an in-band rung whose gain equals the ceiling is
+/// admitted and confirmation begins, so a capable candidate is never spuriously
+/// refused.
+#[test]
+fn begin_band_confirmation_admits_an_in_band_rung_at_the_ceiling() {
+    let entry = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(925)),
+        42,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        925,
+    );
+    assert!(matches!(entry, BandConfirmationEntry::Ready(_)));
+}
+
 /// Drive a complete confirmation campaign against a scripted `MockBackend`,
 /// starting from [`begin_band_confirmation`] (so nomination and plan-freeze
 /// are exercised too, not just the stroke loop).
@@ -1930,7 +1967,8 @@ fn run_confirmation(
     std::vec::Vec<VelocityDirection>,
 ) {
     let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
-    let entry = begin_band_confirmation(discovery_outcome, 42, target_velocity_rpm, 4_394);
+    let entry =
+        begin_band_confirmation(discovery_outcome, 42, target_velocity_rpm, 4_394, u16::MAX);
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
         BandConfirmationEntry::Done(outcome) => {
@@ -2025,6 +2063,7 @@ fn confirmation_retains_inherited_safety_contract_through_recovery() {
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        u16::MAX,
     );
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
@@ -2111,6 +2150,7 @@ fn target_band_unconfirmable_from_discovery_spends_zero_confirmation_strokes() {
         42,
         target_velocity_rpm,
         4_394,
+        u16::MAX,
     );
 
     // `begin_band_confirmation` never takes a backend parameter at all, so
@@ -2134,6 +2174,7 @@ fn target_band_not_reached_at_authority_consumes_current_headroom_before_band() 
         42,
         target_velocity_rpm,
         4_394,
+        u16::MAX,
     );
 
     assert!(matches!(
@@ -2320,6 +2361,7 @@ fn wrong_direction_short_circuits_confirmation_without_recovering() {
         42,
         target_velocity_rpm,
         4_394,
+        u16::MAX,
     );
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
@@ -2414,6 +2456,7 @@ fn an_unconfirmed_settle_reports_confirmation_evidence_excluded() {
         42,
         target_velocity_rpm,
         4_394,
+        u16::MAX,
     );
     let mut session = match entry {
         BandConfirmationEntry::Ready(session) => session,
@@ -3586,6 +3629,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        u16::MAX,
     ) else {
         panic!("the crafted discovery rungs must nominate a confirmable candidate");
     };
@@ -3734,6 +3778,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
         42,
         TmcMechanicalRpm::from_register(100),
         4_394,
+        u16::MAX,
     ) else {
         panic!("the crafted discovery rungs must nominate a confirmable candidate");
     };

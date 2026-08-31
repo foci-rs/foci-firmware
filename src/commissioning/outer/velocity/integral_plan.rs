@@ -1067,6 +1067,61 @@ pub(crate) fn transition_capable_stage_c_gain(
     Ok(lhs < rhs)
 }
 
+/// Largest proportional gain that still satisfies [`transition_capable_stage_c_gain`]
+/// for one physical acquisition context, or `0` when not even `p = 1` is capable.
+///
+/// [`transition_capable_stage_c_gain`] is strictly monotone increasing in
+/// `p_raw` (the gain appears only on the left of a `lhs < rhs` comparison whose
+/// right side is P-independent), so a single ceiling is exactly equivalent to
+/// testing every candidate individually: `p <= max_transition_capable_p(..)`
+/// iff the gate admits `p`. Nomination uses this to refuse a gain the Stage-C
+/// admission would later reject, before any stroke is planned.
+pub(crate) fn max_transition_capable_p(
+    target_rpm: i32,
+    counts_per_rev: u32,
+    pwm_hz: u32,
+    moving_stroke_us: u32,
+    probe_limit: u16,
+) -> Result<u16, VelocityIntegralPlanError> {
+    if counts_per_rev == 0 || pwm_hz == 0 || moving_stroke_us == 0 || probe_limit == 0 {
+        return Err(VelocityIntegralPlanError::InvalidRequest);
+    }
+    let target_rpm = target_rpm
+        .checked_abs()
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let stroke_cycles = u128::from(pwm_hz)
+        .checked_mul(u128::from(moving_stroke_us))
+        .and_then(|value| value.checked_add(u128::from(MICROS_PER_SECOND - 1)))
+        .map(|value| value / u128::from(MICROS_PER_SECOND))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let error_num = u128::from(target_rpm as u32)
+        .checked_mul(u128::from(counts_per_rev))
+        .and_then(|value| value.checked_add(60_u128 * u128::from(pwm_hz)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let prefix_scale = u128::from(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR)
+        .checked_add(
+            stroke_cycles
+                .checked_mul(3)
+                .ok_or(VelocityIntegralPlanError::Arithmetic)?,
+        )
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let denominator = error_num
+        .checked_mul(prefix_scale)
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    let rhs = 256_u128
+        .checked_mul(u128::from(counts_per_rev))
+        .and_then(|value| {
+            value.checked_mul(u128::from(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR))
+        })
+        .and_then(|value| value.checked_mul(u128::from(probe_limit)))
+        .ok_or(VelocityIntegralPlanError::Arithmetic)?;
+    // Largest integer P with `P * denominator < rhs`, mirroring the strict
+    // `lhs < rhs` in `transition_capable_stage_c_gain`. `rhs >= 1` and
+    // `denominator >= 1` always hold, so `(rhs - 1) / denominator` is exact.
+    let max_p = (rhs - 1) / denominator;
+    Ok(u16::try_from(max_p.min(u128::from(u16::MAX))).unwrap_or(u16::MAX))
+}
+
 /// Derive the conservative fixed Stage-C duration for one frozen PWM rate.
 pub fn integral_workflow_maximum_ms(
     pwm_hz: u32,

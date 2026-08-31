@@ -122,6 +122,11 @@ pub(crate) enum BreakawayTerminalCause {
     /// Stage-C plan-buildability -- the two are deliberately separate,
     /// stacked admission gates.
     ConfirmationStageCPlanRefused = 26,
+    /// [`BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate`]:
+    /// discovery selected a band, but every band-admissible rung's gain exceeds
+    /// the Stage-C transition-capability ceiling, so nomination refused before
+    /// motion rather than seeding a plan Stage-C admission would reject.
+    ConfirmationNoTransitionCapableCandidate = 27,
 }
 
 /// Relative standard error above which no achievable response location could
@@ -245,6 +250,10 @@ pub(crate) fn confirmation_zero_stroke_cause(
         BandConfirmationOutcome::Accepted { .. } => (BreakawayTerminalCause::Accepted, 0),
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery => (
             BreakawayTerminalCause::ConfirmationTargetBandUnconfirmableFromDiscovery,
+            0,
+        ),
+        BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate => (
+            BreakawayTerminalCause::ConfirmationNoTransitionCapableCandidate,
             0,
         ),
         BandConfirmationOutcome::TargetBandNotReachedAtAuthority => (

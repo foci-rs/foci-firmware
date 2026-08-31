@@ -17,9 +17,10 @@ use super::integral_plan::{
     VelocityIntegralPlanError, bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
-    integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms, native_rung_count,
-    native_velocity_i_at, plan_breakaway_velocity_integral_response, recovery_quantization_exposed,
-    response_horizon, velocity_i_tau_us,
+    integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms,
+    max_transition_capable_p, native_rung_count, native_velocity_i_at,
+    plan_breakaway_velocity_integral_response, recovery_quantization_exposed, response_horizon,
+    transition_capable_stage_c_gain, velocity_i_tau_us,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -1244,6 +1245,67 @@ fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_a
                 confirmation_plan.plan_digest
             )
         )
+    );
+}
+
+/// The nomination ceiling is the exact monotone inverse of the Stage-C
+/// admission gate: the returned P passes `transition_capable_stage_c_gain` and
+/// the next-higher P fails it. Values are a live acquisition context
+/// (322 RPM, usable torque 2534, 4000 cpr, 25 kHz), where the ceiling is 897 --
+/// below the confirmed P=925 that discovery nominated and Stage C refused.
+#[test]
+fn max_transition_capable_p_is_the_inverse_of_the_admission_gate() {
+    let ceiling = max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
+        .expect("valid acquisition context");
+    assert_eq!(ceiling, 897);
+    assert!(
+        transition_capable_stage_c_gain(ceiling, 322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
+            .expect("valid inputs")
+    );
+    assert!(
+        !transition_capable_stage_c_gain(ceiling + 1, 322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
+            .expect("valid inputs")
+    );
+}
+
+/// The ceiling tracks the acquisition context: a lower target RPM raises it.
+/// At 264 RPM the largest transition-capable P is 979, matching the Stage-C
+/// admission audit's worked example.
+#[test]
+fn max_transition_capable_p_rises_as_target_rpm_falls() {
+    assert_eq!(
+        max_transition_capable_p(264, 4_000, 25_000, MOVING_STROKE_US, 2_534)
+            .expect("valid acquisition context"),
+        979
+    );
+}
+
+/// An invalid acquisition context is a hard error, not a `0` ceiling: the
+/// caller must be able to tell "no gain is capable" (ceiling 0) apart from
+/// "the context is malformed" (Err), so a should-never planning failure is
+/// reported as an internal fault rather than masked as a legitimate refusal.
+#[test]
+fn max_transition_capable_p_rejects_an_invalid_context() {
+    assert_eq!(
+        max_transition_capable_p(322, 0, 25_000, MOVING_STROKE_US, 2_534),
+        Err(VelocityIntegralPlanError::InvalidRequest)
+    );
+    assert_eq!(
+        max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 0),
+        Err(VelocityIntegralPlanError::InvalidRequest)
+    );
+}
+
+/// When even `p = 1` would clip the probe clamp, no gain is transition-capable
+/// and the ceiling is 0, so nomination has nothing to nominate.
+#[test]
+fn max_transition_capable_p_is_zero_when_nothing_is_capable() {
+    let ceiling = max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 1)
+        .expect("valid acquisition context");
+    assert_eq!(ceiling, 0);
+    assert!(
+        !transition_capable_stage_c_gain(1, 322, 4_000, 25_000, MOVING_STROKE_US, 1)
+            .expect("valid inputs")
     );
 }
 

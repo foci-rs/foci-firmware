@@ -79,10 +79,9 @@ use super::band_confirmation::{
     CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT, CONFIRMATION_FAMILY_SIZE,
     CONFIRMATION_SLOT_ORDER, ConfirmationDirectionalInput, DiscoveryObservationAtom,
     DiscoveryRungNominationBounds, DiscoveryRungNominationInput, NominatedConfirmationCandidate,
-    TargetBandConfirmationInconclusive, TargetBandUnconfirmableFromDiscovery,
-    evaluate_band_confirmation, nominate_confirmation_candidate_from_bounds,
-    plan_band_confirmation, rung_directional_pooled_bounds_percent, rung_nomination_bounds,
-    validate_fixed_contract,
+    NominationRejection, TargetBandConfirmationInconclusive, evaluate_band_confirmation,
+    nominate_transition_capable_candidate_from_bounds, plan_band_confirmation,
+    rung_directional_pooled_bounds_percent, rung_nomination_bounds, validate_fixed_contract,
 };
 use super::breakaway_excursion::{ProbeExcursionCapture, ProbeExcursionError, ProbeMotionClass};
 use super::breakaway_plan::{
@@ -113,7 +112,7 @@ use super::current_guard::{
 };
 use super::integral_plan::{
     AcquisitionContext, CommissioningWorkflowPlan, VelocityIntegralPlan,
-    bind_breakaway_stage_c_authority, breakaway_workflow_envelope_ms,
+    bind_breakaway_stage_c_authority, breakaway_workflow_envelope_ms, max_transition_capable_p,
     plan_breakaway_velocity_integral_response,
 };
 use super::recovery::{
@@ -2592,6 +2591,13 @@ pub(crate) enum BandConfirmationOutcome {
     /// No discovery rung's own margin reached zero (spec section 7); zero
     /// confirmation strokes were spent.
     TargetBandUnconfirmableFromDiscovery,
+    /// Discovery selected a band, but every band-admissible rung's proportional
+    /// gain exceeds the Stage-C transition-capability ceiling, so nominating any
+    /// would seed a plan Stage-C admission must refuse. Refused before motion;
+    /// zero confirmation strokes were spent. Distinct from
+    /// [`Self::TargetBandUnconfirmableFromDiscovery`] (an empty band) so the
+    /// refusal names its own reason on the wire.
+    TargetBandNoTransitionCapableCandidate,
     /// Current authority bound before discovery ever collected an in-band
     /// rung (spec section 9). Consumed directly from
     /// [`AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand`] rather than
@@ -2654,6 +2660,7 @@ pub(crate) fn begin_band_confirmation(
     discovery_plan_digest: u64,
     target_velocity_rpm: TmcMechanicalRpm,
     planned_velocity_mrev_s: u32,
+    transition_ceiling: u16,
 ) -> BandConfirmationEntry {
     let rungs = match discovery_outcome {
         AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand => {
@@ -2678,11 +2685,19 @@ pub(crate) fn begin_band_confirmation(
             });
         }
     };
-    let candidate = match nominate_confirmation_candidate_from_bounds(rungs.as_slice()) {
+    let candidate = match nominate_transition_capable_candidate_from_bounds(
+        rungs.as_slice(),
+        transition_ceiling,
+    ) {
         Ok(candidate) => candidate,
-        Err(TargetBandUnconfirmableFromDiscovery) => {
+        Err(NominationRejection::Unconfirmable) => {
             return BandConfirmationEntry::Done(
                 BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
+            );
+        }
+        Err(NominationRejection::NoTransitionCapableCandidate) => {
+            return BandConfirmationEntry::Done(
+                BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate,
             );
         }
     };
@@ -3927,6 +3942,7 @@ fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignO
             BreakawayCampaignOutcome::Terminal { error, safety }
         }
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
+        | BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate
         | BandConfirmationOutcome::TargetBandNotReachedAtAuthority
         | BandConfirmationOutcome::TargetBandConfirmationInconclusive(_)
         | BandConfirmationOutcome::ConfirmationEvidenceExcluded => {
@@ -4306,12 +4322,32 @@ fn route_discovery_outcome(
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> EmitContinuation {
-    match begin_band_confirmation(
-        outcome,
-        discovery_plan_digest,
-        inputs.target_velocity_rpm,
-        inputs.planned_velocity_mrev_s,
+    // The Stage-C transition-capability ceiling for the live acquisition
+    // context. Nomination refuses any candidate above it, so a confirmed gain
+    // can never reach `route_confirmed_accept` only to be refused without
+    // motion. The acquisition context is validated upstream, so an error here
+    // is a should-never; report it as an internal planning fault rather than
+    // masking it as a legitimate no-transition-capable-candidate refusal.
+    let entry = match max_transition_capable_p(
+        inputs.target_velocity_rpm.raw(),
+        inputs.encoder_counts_per_rev,
+        inputs.pwm_hz,
+        MOVING_STROKE_US,
+        inputs.usable_torque_limit,
     ) {
+        Ok(transition_ceiling) => begin_band_confirmation(
+            outcome,
+            discovery_plan_digest,
+            inputs.target_velocity_rpm,
+            inputs.planned_velocity_mrev_s,
+            transition_ceiling,
+        ),
+        Err(_) => BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
+            error: CommissionError::CampaignPlanInvalid,
+            safety: None,
+        }),
+    };
+    match entry {
         BandConfirmationEntry::Ready(session) => {
             EmitContinuation::EnterPhase(BreakawayCampaignPhase::Confirmation {
                 state: BandConfirmationState::PlannedConfirmation,
@@ -4779,6 +4815,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
             (terminal, forward, reverse)
         }
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery
+        | BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate
         | BandConfirmationOutcome::TargetBandNotReachedAtAuthority => {
             let terminal = confirmation_zero_stroke_terminal_report(
                 session.plan.plan_digest,
