@@ -2259,7 +2259,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 &workspace.observations,
                 &mut workspace.blocker,
             ) {
-                Ok(ScoredRestPoll::Pending | ScoredRestPoll::Diagnostic(_)) => {
+                Ok(ScoredRestPoll::Pending) => return AdditiveDiscoveryStep::ReadyNow,
+                Ok(ScoredRestPoll::Diagnostic(decision)) => {
+                    settle_rest_rejected_input(decision, session.rung_index, *retry_available);
                     return AdditiveDiscoveryStep::ReadyNow;
                 }
                 Ok(ScoredRestPoll::Complete(confirmation)) => confirmation,
@@ -4080,6 +4082,34 @@ fn rest_rejected_input(
             scored_max_displacement_counts: settle.2,
         },
     )
+}
+
+/// Log a rejected scored-rest decision from the per-observation zero-target
+/// settle check (`BeginSettleCapture`/`AnalyzeSettle` in
+/// [`AdditiveDiscoveryState`]).
+///
+/// This is a structurally separate rest check from the one
+/// [`rest_rejected_input`] covers: it runs inline in the discovery ladder's
+/// own per-observation settle, never through the recovery module, and (unlike
+/// the recovery module's own instrumentation) previously discarded its
+/// [`RestSelectionDecision`] on rejection with no evidence at all -- the only
+/// signal was the generic `VelocityRestNotConfirmed` soft-failure line, wire-
+/// indistinguishable from the recovery-module path's own rejections.
+fn settle_rest_rejected_input(
+    decision: crate::autotune::velocity_measurement::RestSelectionDecision,
+    rung_index: u8,
+    retry_available: bool,
+) {
+    use crate::autotune::velocity_measurement::RestSelectionDisposition;
+
+    if decision.disposition == RestSelectionDisposition::Rejected {
+        defmt::warn!(
+            "settle rest rejected: rung={} retry_available={} decision={}",
+            rung_index,
+            retry_available,
+            decision,
+        );
+    }
 }
 
 fn probe_decision_step(
