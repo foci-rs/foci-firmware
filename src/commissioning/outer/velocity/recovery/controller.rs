@@ -58,9 +58,23 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 RungOriginRecoveryStep::Contained(report)
             }
         }
-        RecoveryState::RestTerminal { confirmed } => {
-            if !confirmed {
+        RecoveryState::RestTerminal {
+            confirmed_rest,
+            in_band,
+            contained,
+        } => {
+            if !confirmed_rest {
                 return RungOriginRecoveryStep::RestUnconfirmed;
+            }
+            if contained || !in_band {
+                let report = runtime.report(
+                    RungOriginRecoveryOutcome::ContainedDeadline,
+                    RecoveryBindingSource::Deadline,
+                    resources.safety.unwrapped_position,
+                    backend.elapsed_us(),
+                    resources.current_observer.peak_pid_output_abs(),
+                );
+                return RungOriginRecoveryStep::Contained(report);
             }
             let report = runtime.report(
                 RungOriginRecoveryOutcome::Recovered,
@@ -432,7 +446,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
         }
         RecoveryState::AnalyzeSettle {
             analysis_deadline_us,
-            contained: _,
+            contained,
         } => {
             let analysis_deadline_us = analysis_deadline_us.to_u64();
             if backend.elapsed_us() >= analysis_deadline_us {
@@ -504,7 +518,11 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             }
             resources.safety.end_primitive();
             let confirmed = confirmation.confirmed_rest && in_band;
-            runtime.state = RecoveryState::RestTerminal { confirmed };
+            runtime.state = RecoveryState::RestTerminal {
+                confirmed_rest: confirmation.confirmed_rest,
+                in_band,
+                contained,
+            };
             let exact_velocity_interval_q =
                 confirmation.exact_velocity_interval_q.unwrap_or([0; 2]);
             let interval_present = u8::from(confirmation.exact_velocity_interval_q.is_some());

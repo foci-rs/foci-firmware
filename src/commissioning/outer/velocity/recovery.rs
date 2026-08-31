@@ -194,7 +194,9 @@ enum RecoveryState {
         contained: bool,
     },
     RestTerminal {
-        confirmed: bool,
+        confirmed_rest: bool,
+        in_band: bool,
+        contained: bool,
     },
     Terminal {
         outcome: RungOriginRecoveryOutcome,

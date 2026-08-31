@@ -2955,17 +2955,17 @@ fn recovery_rest_rejection_records_the_matrix_owner() {
 
     let mut backend = MockBackend::new();
     backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
-    // Never move the mock encoder: the axis stays exactly where it
-    // started, well outside the origin band, so `in_band` is false at
-    // the settle check regardless of the settle displacement itself --
-    // `confirmed = confirmation.confirmed_rest && in_band` is false either
-    // way, without needing to also force the settle analysis unstable.
     backend.mechanical_encoder_position_counts_value = raw;
 
     let terminal = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
-            StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+            StepResult::At(deadline_us) => {
+                backend.elapsed_us_value = deadline_us;
+                let drift = i32::try_from(deadline_us / 1_000).unwrap_or(i32::MAX);
+                let offset = start_offset_counts.saturating_sub(drift);
+                backend.mechanical_encoder_position_counts_value = offset.rem_euclid(4_000) as u32;
+            }
             StepResult::VelocityIntegralEvent(_) => {}
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::VelocityIntegralTerminal(terminal) => break Some(terminal),
@@ -3045,7 +3045,12 @@ fn non_matrix_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_matrix(
     let terminal = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
-            StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
+            StepResult::At(deadline_us) => {
+                backend.elapsed_us_value = deadline_us;
+                let drift = i32::try_from(deadline_us / 1_000).unwrap_or(i32::MAX);
+                let offset = start_offset_counts.saturating_sub(drift);
+                backend.mechanical_encoder_position_counts_value = offset.rem_euclid(4_000) as u32;
+            }
             StepResult::VelocityIntegralEvent(_) => {}
             StepResult::VelocityIntegralTerminal(terminal) => break terminal,
             other => {

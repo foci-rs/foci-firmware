@@ -708,17 +708,16 @@ fn recovery_controller_releases_contained_primitive() {
         }
     }
 
-    loop {
+    let report = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
             RungOriginRecoveryStep::RestSelection { .. } => {}
             RungOriginRecoveryStep::RestAnalysis(_) => {}
-            RungOriginRecoveryStep::RestUnconfirmed => break,
-            other => panic!(
-                "out-of-band settle must report unconfirmed rest, not fault or contain: {other:?}"
-            ),
+            RungOriginRecoveryStep::Contained(report) => break report,
+            other => panic!("out-of-band rest must remain contained: {other:?}"),
         }
-    }
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::ContainedDeadline);
     assert!(
         fixture
             .safety
