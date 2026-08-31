@@ -2957,6 +2957,8 @@ fn recovery_rest_rejection_records_the_matrix_owner() {
     backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
     backend.mechanical_encoder_position_counts_value = raw;
 
+    let mut saw_rest_selection = false;
+    let mut saw_recovery_rest = false;
     let terminal = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
@@ -2967,12 +2969,24 @@ fn recovery_rest_rejection_records_the_matrix_owner() {
                 backend.mechanical_encoder_position_counts_value = offset.rem_euclid(4_000) as u32;
             }
             StepResult::VelocityIntegralEvent(_) => {}
+            StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RestSelection(_)) => {
+                assert!(
+                    !saw_recovery_rest,
+                    "RestSelection must be observed before RecoveryRest"
+                );
+                saw_rest_selection = true;
+            }
+            StepResult::AcceptanceMatrixEvent(AcceptanceMatrixEvent::RecoveryRest(_)) => {
+                saw_recovery_rest = true;
+            }
             StepResult::AcceptanceMatrixEvent(_) => {}
             StepResult::VelocityIntegralTerminal(terminal) => break Some(terminal),
             StepResult::AcceptanceMatrixTerminal(_) => break None,
             other => panic!("unexpected recovery rest result: {other:?}"),
         }
     };
+    assert!(saw_rest_selection, "RestSelection event was never emitted");
+    assert!(saw_recovery_rest, "RecoveryRest event was never emitted");
 
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         unreachable!()
@@ -3042,6 +3056,8 @@ fn non_matrix_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_matrix(
     backend.current_limit_value = current_limit(u32::from(data.plan.usable_torque_limit));
     backend.mechanical_encoder_position_counts_value = raw;
 
+    let mut saw_rest_selection = false;
+    let mut saw_recovery_rest = false;
     let terminal = loop {
         match step(&mut phase, &mut workspace, &mut backend) {
             StepResult::ReadyNow => {}
@@ -3051,6 +3067,16 @@ fn non_matrix_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_matrix(
                 let offset = start_offset_counts.saturating_sub(drift);
                 backend.mechanical_encoder_position_counts_value = offset.rem_euclid(4_000) as u32;
             }
+            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(_)) => {
+                assert!(
+                    !saw_recovery_rest,
+                    "RestSelection must be observed before RecoveryRest"
+                );
+                saw_rest_selection = true;
+            }
+            StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RecoveryRest(_)) => {
+                saw_recovery_rest = true;
+            }
             StepResult::VelocityIntegralEvent(_) => {}
             StepResult::VelocityIntegralTerminal(terminal) => break terminal,
             other => {
@@ -3058,6 +3084,8 @@ fn non_matrix_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_matrix(
             }
         }
     };
+    assert!(saw_rest_selection, "RestSelection event was never emitted");
+    assert!(saw_recovery_rest, "RecoveryRest event was never emitted");
 
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         unreachable!()
