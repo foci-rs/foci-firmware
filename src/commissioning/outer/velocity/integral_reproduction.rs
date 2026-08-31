@@ -153,6 +153,17 @@ pub struct StageCCandidateSummary {
     pub evidence: IntegralRunEvidence,
     /// Optional response-boundary location; never part of reproduction authority.
     pub rest_boundary: Option<StageCRestBoundaryReference>,
+    /// One-based breakaway target-terminus rung, or `0` when this run's own
+    /// sweep did not record one.
+    ///
+    /// Distinct from `rest_boundary`: a breakaway target terminus is encoded
+    /// on the wire as `rest_boundary_rung_plus_one` alone, with
+    /// `rest_boundary_slot_plus_one == 0` (see `terminal_target_terminus`),
+    /// which `rest_boundary`'s pairwise decode cannot represent. Retained so a
+    /// reproduced `Complete` promotion can fall back to the terminus already
+    /// proven by the first sufficient run when the confirmation run's own
+    /// terminus check did not re-trip.
+    pub target_terminus_rung_plus_one: u8,
     /// Run-completion time retained as non-gating context.
     pub run_completed_us: u64,
     /// Exact digest of the emitted run evidence.

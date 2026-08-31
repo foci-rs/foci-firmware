@@ -83,6 +83,7 @@ fn candidate(
         authority,
         evidence,
         rest_boundary: None,
+        target_terminus_rung_plus_one: 0,
         run_completed_us: run * 1_000_000,
         run_digest: run,
     }

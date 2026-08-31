@@ -392,13 +392,38 @@ pub fn apply_stage_c_terminal(
                         positive_rung_index,
                         slot,
                     }),
+                // The breakaway target-terminus wire encoding
+                // (`terminal_target_terminus`) is `rest_boundary_slot_plus_one
+                // == 0`, disjoint from the current-headroom encoding `rest_boundary`
+                // above requires (both fields nonzero), so it is retained here
+                // in its own raw field rather than lost to that field's `.zip()`.
+                target_terminus_rung_plus_one: if terminal.rest_boundary_slot_plus_one == 0 {
+                    terminal.rest_boundary_rung_plus_one
+                } else {
+                    0
+                },
                 run_completed_us: terminal.run_completed_us,
                 run_digest: terminal.digest,
             };
+            let previous_target_terminus_rung_plus_one = stage_c_candidate
+                .candidate()
+                .map_or(0, |candidate| candidate.target_terminus_rung_plus_one);
             match stage_c_candidate.observe_sufficient(current) {
                 StageCReproductionDecision::CompleteCandidate(_) => None,
                 StageCReproductionDecision::Complete(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Complete;
+                    // The confirmation run's own terminus check need not
+                    // re-trip for reproduction to succeed (a breakaway target
+                    // terminus is not part of reproduction authority), so fall
+                    // back to the terminus already proven by the first
+                    // sufficient run rather than losing it on promotion.
+                    if terminal.rest_boundary_rung_plus_one == 0
+                        && terminal.rest_boundary_slot_plus_one == 0
+                        && previous_target_terminus_rung_plus_one != 0
+                    {
+                        terminal.rest_boundary_rung_plus_one =
+                            previous_target_terminus_rung_plus_one;
+                    }
                     Some(StageCReproductionReport {
                         delta,
                         outcome: 1,

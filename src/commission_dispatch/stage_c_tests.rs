@@ -444,6 +444,54 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     assert_eq!(slot.state(), StageCSlotState::Empty);
 }
 
+/// A reproduced confirmation run that does not itself re-cross the
+/// target-reaching threshold must still install, using the terminus already
+/// proven by the first sufficient run: a breakaway target terminus is not
+/// part of reproduction authority, so a `Complete` promotion cannot require
+/// the second run to redetect it.
+#[test]
+fn reproduced_complete_without_current_terminus_still_installs() {
+    let plan = breakaway_stage_c_plan();
+    let authority = breakaway_authority_summary(&plan);
+    let execution = plan.execution_plan();
+
+    let mut slot = StageCCandidateSlot::new();
+    slot.install_authority(authority);
+
+    let mut first_terminal = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(0),
+    );
+    first_terminal.rest_boundary_rung_plus_one = 3;
+    apply_stage_c_terminal(first_terminal, &mut slot);
+
+    let mut second_terminal = breakaway_terminal(
+        &plan,
+        &authority,
+        VelocityIntegralOutcome::CompleteCandidate,
+        sufficient_evidence(2),
+    );
+    second_terminal.rest_boundary_rung_plus_one = 0;
+    second_terminal.rest_boundary_slot_plus_one = 0;
+    let dispatch = apply_stage_c_terminal(second_terminal, &mut slot);
+    assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Complete);
+
+    let installed = match super::stage_c::breakaway_acceptance_point(
+        CHANNEL,
+        &authority,
+        execution,
+        &dispatch.terminal,
+    )
+    .expect("no fault")
+    {
+        super::stage_c::AcceptanceInstall::Installed(point) => point,
+        other => panic!("expected install, got {other:?}"),
+    };
+    assert_eq!(installed.selected_p, authority.final_p);
+}
+
 #[test]
 fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
     let mut slot = StageCCandidateSlot::new();
