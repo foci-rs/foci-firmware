@@ -62,7 +62,35 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             confirmed_rest,
             in_band,
             contained,
+            current_contact,
         } => {
+            // Clamp contact binds the outcome ahead of the rest verdict: it is
+            // the reason the return stopped, so an unconfirmed rest under
+            // contact is the contained headroom outcome rather than a fault.
+            // Only a policy that set out to prove passive settle can upgrade to
+            // the recovered variant, and only on a confirmed in-band rest.
+            if current_contact {
+                let outcome = if runtime.proves_passive_settle() && confirmed_rest && in_band {
+                    RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
+                } else {
+                    RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
+                };
+                let report = runtime.report(
+                    outcome,
+                    RecoveryBindingSource::CurrentHeadroom,
+                    resources.safety.unwrapped_position,
+                    backend.elapsed_us(),
+                    resources.current_observer.peak_pid_output_abs(),
+                );
+                return if matches!(
+                    outcome,
+                    RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
+                ) {
+                    RungOriginRecoveryStep::Finished(report)
+                } else {
+                    RungOriginRecoveryStep::Contained(report)
+                };
+            }
             if !confirmed_rest {
                 return RungOriginRecoveryStep::RestUnconfirmed;
             }
@@ -474,54 +502,32 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             {
                 return current_guard_fault(runtime, resources, backend, error);
             }
-            if recovery_current_contact(resources.current_observer)
-                && !runtime.current_contact_detected()
-            {
-                return recovery_current_headroom(runtime, resources, backend).await;
-            }
+            // The scored rest has completed and already committed its selection,
+            // so its evidence exists and is reported before any terminal binds --
+            // contact included. Contact discovered only now still needs the same
+            // zero-target hold the earlier detection points apply; only the
+            // terminal resolution waits, and `RestTerminal` performs it.
+            let current_contact = if runtime.current_contact_detected() {
+                true
+            } else if recovery_current_contact(resources.current_observer) {
+                if let Some(fault) = hold_zero_for_current_contact(backend).await {
+                    return fault;
+                }
+                true
+            } else {
+                false
+            };
             resources.analysis.reset();
             resources.observations.clear();
             let final_offset = resources.safety.unwrapped_position;
             let in_band = final_offset.unsigned_abs() <= runtime.plan.origin_band_counts;
-            if runtime.current_contact_detected() {
-                resources.safety.end_primitive();
-                let (outcome, binding_source) = if confirmation.confirmed_rest && in_band {
-                    (
-                        RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom,
-                        RecoveryBindingSource::CurrentHeadroom,
-                    )
-                } else {
-                    (
-                        RungOriginRecoveryOutcome::RecoveryCurrentHeadroom,
-                        RecoveryBindingSource::CurrentHeadroom,
-                    )
-                };
-                runtime.state = RecoveryState::Terminal {
-                    outcome,
-                    binding_source,
-                };
-                let report = runtime.report(
-                    outcome,
-                    binding_source,
-                    final_offset,
-                    backend.elapsed_us(),
-                    resources.current_observer.peak_pid_output_abs(),
-                );
-                return if matches!(
-                    outcome,
-                    RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
-                ) {
-                    RungOriginRecoveryStep::Finished(report)
-                } else {
-                    RungOriginRecoveryStep::Contained(report)
-                };
-            }
             resources.safety.end_primitive();
             let confirmed = confirmation.confirmed_rest && in_band;
             runtime.state = RecoveryState::RestTerminal {
                 confirmed_rest: confirmation.confirmed_rest,
                 in_band,
                 contained,
+                current_contact,
             };
             let exact_velocity_interval_q =
                 confirmation.exact_velocity_interval_q.unwrap_or([0; 2]);
@@ -628,22 +634,35 @@ async fn recovery_safety_sample<B: CommissioningBackend>(
     None
 }
 
-async fn recovery_current_headroom<B: CommissioningBackend>(
-    runtime: &mut RungOriginRecoveryRuntime,
-    resources: &mut RungOriginRecoveryResources<'_>,
+/// Hold zero velocity target on clamp contact, returning any fault step.
+///
+/// This is the safety response every contact path shares, independent of which
+/// terminal the contact eventually binds.
+async fn hold_zero_for_current_contact<B: CommissioningBackend>(
     backend: &mut B,
-) -> RungOriginRecoveryStep {
+) -> Option<RungOriginRecoveryStep> {
     checkpoint(BreakawayCheckpoint::RecoveryZeroTargetWrite);
     if backend
         .write_register(PID_VELOCITY_TARGET, 0)
         .await
         .is_err()
     {
-        return recovery_fault(CommissionError::Spi, None);
+        return Some(recovery_fault(CommissionError::Spi, None));
     }
     checkpoint(BreakawayCheckpoint::RecoverySettleIntegratorClear);
     if clear_velocity_integrator(backend).await.is_err() {
-        return recovery_fault(CommissionError::Spi, None);
+        return Some(recovery_fault(CommissionError::Spi, None));
+    }
+    None
+}
+
+async fn recovery_current_headroom<B: CommissioningBackend>(
+    runtime: &mut RungOriginRecoveryRuntime,
+    resources: &mut RungOriginRecoveryResources<'_>,
+    backend: &mut B,
+) -> RungOriginRecoveryStep {
+    if let Some(fault) = hold_zero_for_current_contact(backend).await {
+        return fault;
     }
     if runtime.proves_passive_settle() {
         runtime.mark_current_contact_detected();

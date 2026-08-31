@@ -976,15 +976,21 @@ fn recovery_contact_passive_settle_proves_an_in_band_origin() {
             assert_eq!(result, RungOriginRecoveryStep::ReadyNow);
         }
     }
+    let mut rest_analyses = 0u32;
     let report = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
             RungOriginRecoveryStep::RestSelection { .. } => {}
+            RungOriginRecoveryStep::RestAnalysis(_) => rest_analyses += 1,
             RungOriginRecoveryStep::Finished(report) => break report,
             other => panic!("passive in-band rest should recover: {other:?}"),
         }
     };
 
+    assert_eq!(
+        rest_analyses, 1,
+        "the passive rest outcome 5 rests on must be reported before the terminal"
+    );
     assert_eq!(
         report.outcome,
         RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
@@ -1055,15 +1061,21 @@ fn recovery_contact_passive_settle_rejects_an_out_of_band_origin() {
         }
     }
 
+    let mut rest_analyses = 0u32;
     let report = loop {
         match fixture.step() {
             RungOriginRecoveryStep::ReadyNow => {}
             RungOriginRecoveryStep::RestSelection { .. } => {}
+            RungOriginRecoveryStep::RestAnalysis(_) => rest_analyses += 1,
             RungOriginRecoveryStep::Contained(report) => break report,
             other => panic!("out-of-band rest must remain contained: {other:?}"),
         }
     };
 
+    assert_eq!(
+        rest_analyses, 1,
+        "a scored rest that completed reports its evidence even when contact contains it"
+    );
     assert_eq!(
         report.outcome,
         RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
@@ -1563,7 +1575,9 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll() {
     // never reads `STATUS_FLAGS`, so this register never trips contact detection during
     // `CaptureSettle`; contact is discovered only when `AnalyzeSettle` calls
     // `finish_velocity_current_zero_phase` after `poll_scored_rest_confirmation`
-    // has already produced its one `RestSelection`.
+    // has already produced its one `RestSelection`. The scored rest completed,
+    // so its evidence is reported before the clamp-bound outcome resolves: the
+    // selection is followed by `RestAnalysis`, then the contained terminal.
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
     let handover_us = fixture.arrive_at_moving_target(1_040);
@@ -1600,7 +1614,7 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll() {
         RungOriginRecoveryOutcome::RecoveryCurrentHeadroom
     );
     assert_eq!(selections, 1);
-    assert_eq!(analyses, 0);
+    assert_eq!(analyses, 1);
     assert!(selections + analyses <= 2);
 }
 
@@ -1608,9 +1622,9 @@ fn recovery_diagnostic_count_current_contact_after_settle_poll() {
 fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
     // Same setup as `recovery_contact_passive_settle_proves_an_in_band_origin`:
     // `ProvePassiveSettle` marks contact detected in `Observe`, then still
-    // runs the ordinary scored settle in `CaptureSettle`. But in `AnalyzeSettle`,
-    // the current-contact check returns early with `Finished`, so the run commits
-    // one `RestSelection` and returns `Finished` without `RestAnalysis`.
+    // runs the ordinary scored settle in `CaptureSettle`. The proven passive
+    // rest is the evidence outcome 5 rests on, so `AnalyzeSettle` reports it as
+    // `RestAnalysis` before the clamp-bound terminal resolves.
     let mut fixture = RecoveryFixture::new_with_policy(
         1_040,
         Some(14_000_000),
@@ -1665,7 +1679,7 @@ fn recovery_diagnostic_count_passive_settle_proven_after_contact() {
         RungOriginRecoveryOutcome::RecoveredWithCurrentHeadroom
     );
     assert_eq!(selections, 1);
-    assert_eq!(analyses, 0);
+    assert_eq!(analyses, 1);
     assert!(selections + analyses <= 2);
     assert!(
         selections + analyses >= 1,

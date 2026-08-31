@@ -197,6 +197,7 @@ enum RecoveryState {
         confirmed_rest: bool,
         in_band: bool,
         contained: bool,
+        current_contact: bool,
     },
     Terminal {
         outcome: RungOriginRecoveryOutcome,
