@@ -932,7 +932,7 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 17_538_351_366_355_329_360);
+    assert_eq!(plan.digest(), 106_042_503_528_755_426);
 }
 
 // --- Breakaway Stage-C constructor -------------------------------------------

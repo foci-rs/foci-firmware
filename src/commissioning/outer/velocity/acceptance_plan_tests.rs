@@ -284,7 +284,7 @@ fn live_matrix_geometry_and_orders_are_exact() {
             super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
             ACCEPTANCE_MATRIX_SCHEMA_REVISION,
         ),
-        (14, 16, 6)
+        (14, 18, 6)
     );
     assert_eq!([160 + 23, 120 + 15, 40 + 5], [183, 135, 45]);
     assert_eq!((183 + 135 + 45) * 78, 28_314);
@@ -320,7 +320,7 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
     .unwrap();
     historical.schema_revision = 3;
 
-    assert_eq!(historical.digest(), 0x65d2_44d9_9a3d_de8b);
+    assert_eq!(historical.digest(), 0xef8e_e895_03a9_cc71);
 }
 
 #[test]

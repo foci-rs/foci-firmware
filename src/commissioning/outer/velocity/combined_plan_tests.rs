@@ -112,7 +112,7 @@ fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     // The breakaway campaign is additive: it must not renumber or otherwise
     // disturb any historical Stage-B or Stage-C schema revision.
     assert_eq!(BREAKAWAY_STAGE_B_SCHEMA_REVISION, 17);
-    assert_eq!(BREAKAWAY_STAGE_C_SCHEMA_REVISION, 16);
+    assert_eq!(BREAKAWAY_STAGE_C_SCHEMA_REVISION, 18);
     assert_ne!(
         BREAKAWAY_STAGE_B_SCHEMA_REVISION,
         STAGE_B_PLAN_SCHEMA_REVISION

@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_trace_core_appends_i_top_cap_only_at_schema_sixteen_or_seventeen() {
+    fn plan_trace_core_appends_i_top_cap_only_at_schema_seventeen_or_eighteen() {
         let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
         for (index, gain) in positive_i.iter_mut().enumerate() {
             *gain = u16::try_from(index + 1).unwrap();
@@ -1017,27 +1017,27 @@ mod tests {
         let [core_baseline, ..] = encode_velocity_integral_plan_trace(1, plan);
         let len_baseline = core_baseline.as_bytes().len();
 
-        plan.schema_revision = 16;
-        plan.i_top_cap = 1_310;
-        let [core_16, ..] = encode_velocity_integral_plan_trace(1, plan);
-        let len_16 = core_16.as_bytes().len();
-
         plan.schema_revision = 17;
         plan.i_top_cap = 1_310;
         let [core_17, ..] = encode_velocity_integral_plan_trace(1, plan);
         let len_17 = core_17.as_bytes().len();
 
-        assert_eq!(
-            len_16,
-            len_baseline + 2,
-            "schema 16 adds exactly one trailing u16"
-        );
+        plan.schema_revision = 18;
+        plan.i_top_cap = 1_310;
+        let [core_18, ..] = encode_velocity_integral_plan_trace(1, plan);
+        let len_18 = core_18.as_bytes().len();
+
         assert_eq!(
             len_17,
             len_baseline + 2,
             "schema 17 adds exactly one trailing u16"
         );
-        for core in [&core_16, &core_17] {
+        assert_eq!(
+            len_18,
+            len_baseline + 2,
+            "schema 18 adds exactly one trailing u16"
+        );
+        for core in [&core_17, &core_18] {
             let bytes = core.as_bytes();
             let tail = &bytes[bytes.len() - 2..];
             assert_eq!(u16::from_le_bytes([tail[0], tail[1]]), 1_310);
