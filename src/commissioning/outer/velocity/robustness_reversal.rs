@@ -972,6 +972,13 @@ fn record_cycle(
     let direction = session.direction;
     let cursor = session.cycle_cursor[direction];
     let action = session.ledgers[direction].record(record);
+    defmt::info!(
+        "robustness reversal cycle: dir={} cursor={} record={} action={}",
+        direction,
+        cursor,
+        record,
+        action,
+    );
     let filled =
         matches!(record, CycleRecord::Conclusive(_)) && !matches!(action, LedgerAction::RetryTail);
     if filled {
