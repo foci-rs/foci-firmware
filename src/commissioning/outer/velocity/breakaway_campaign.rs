@@ -2498,13 +2498,26 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         reverse_observations: session.reverse.atoms,
                     };
                     let verdict = classify_rung_band(&rung_input, session.own_multiplier);
-                    // Per-rung band classification: the only signal that shows why a
-                    // campaign ends in TargetBandSkipped (no rung ever InBand).
+                    // Per-rung band classification plus the +/-1 sigma response-percent
+                    // bounds it turns on. The verdict alone shows a campaign ended with
+                    // no in-band rung; the bounds show why -- whether each direction's
+                    // interval straddles the 70-80% band (too wide / off-center) or is
+                    // cleanly outside it.
+                    let [(fwd_lo, fwd_hi), (rev_lo, rev_hi)] = rung_directional_pooled_bounds_percent(
+                        &rung_input,
+                        session.own_multiplier,
+                        DISCOVERY_CONTAINMENT_C_SIGMA,
+                    )
+                    .unwrap_or([(f32::NAN, f32::NAN), (f32::NAN, f32::NAN)]);
                     defmt::info!(
-                        "discovery rung classified: rung={} p={} verdict={}",
+                        "discovery rung classified: rung={} p={} verdict={} fwd_pct=[{},{}] rev_pct=[{},{}]",
                         session.rung_index,
                         p.raw(),
                         verdict,
+                        fwd_lo,
+                        fwd_hi,
+                        rev_lo,
+                        rev_hi,
                     );
                     // Retain rung zero's own per-direction motion classification before
                     // its accumulators reset below, regardless of `verdict`: rung zero
