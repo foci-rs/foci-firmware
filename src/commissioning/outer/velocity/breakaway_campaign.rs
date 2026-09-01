@@ -1786,7 +1786,7 @@ const DISCOVERY_CONTAINMENT_C_SIGMA: f32 = 1.0;
 /// One rung's classification against the 70-80% target band, judged entirely on
 /// its own containment -- no interval-separation or response-model requirement
 /// against neighboring rungs (spec section 6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 enum RungBandVerdict {
     /// Both directions' own pooled response intervals are wholly contained in
     /// 70-80%.
@@ -2498,6 +2498,14 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         reverse_observations: session.reverse.atoms,
                     };
                     let verdict = classify_rung_band(&rung_input, session.own_multiplier);
+                    // Per-rung band classification: the only signal that shows why a
+                    // campaign ends in TargetBandSkipped (no rung ever InBand).
+                    defmt::info!(
+                        "discovery rung classified: rung={} p={} verdict={}",
+                        session.rung_index,
+                        p.raw(),
+                        verdict,
+                    );
                     // Retain rung zero's own per-direction motion classification before
                     // its accumulators reset below, regardless of `verdict`: rung zero
                     // (the diagnostic floor, expected inert) is never pushed into
