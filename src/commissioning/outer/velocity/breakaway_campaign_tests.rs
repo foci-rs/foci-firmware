@@ -1029,6 +1029,73 @@ fn an_in_band_rung_produces_target_band_selected() {
     assert_eq!(collected.as_slice()[0].p.raw(), 181);
 }
 
+// --- Cluster-1a: a settle failure at a high rung, after an in-band rung was ----
+// --- already collected, caps the ladder and nominates instead of discarding ---
+// --- the whole campaign (the over-band over-climb ring seen on hardware) ------
+
+#[test]
+fn settle_failure_after_in_band_rung_caps_and_nominates() {
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    safety.torque_cap = u16::try_from(2_448).expect("test limit fits u16");
+    let mut backend = test_backend();
+    backend.current_limit_value = current_limit(2_448);
+
+    let mut encoder_count: i32 = 0;
+    let mut stroke_numerator = 0_i32;
+    let mut stroke_sign = 1_i32;
+
+    let mut outcome = None;
+    for _ in 0..1_000_000 {
+        if matches!(state, AdditiveDiscoveryState::CommandTarget) {
+            // Every rung's own response is in band (75%), so the ladder keeps
+            // climbing; rung 0 is fully collected before rung 1's settle fails.
+            stroke_numerator = 5;
+            stroke_sign = direction_sign(session.direction);
+        }
+        let is_capture_phase = matches!(state, AdditiveDiscoveryState::Capture { .. });
+        // Ring the axis during rung 1's zero-target settle so rest is never
+        // confirmed, without perturbing rung 0's own settle.
+        let drift_settle = matches!(state, AdditiveDiscoveryState::SettleCapture { .. })
+            && session.rung_index >= 1;
+        let result = pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+        match result {
+            AdditiveDiscoveryStep::At(deadline) => {
+                backend.elapsed_us_value = deadline;
+                if is_capture_phase {
+                    encoder_count += stroke_sign * stroke_numerator;
+                } else if drift_settle {
+                    encoder_count += 1;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            AdditiveDiscoveryStep::Done(done) => {
+                outcome = Some(done);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let outcome = outcome.expect("discovery run exceeded its bounded step budget");
+    let AdditiveDiscoveryOutcome::TargetBandSelected(collected) = outcome else {
+        panic!("expected TargetBandSelected (ladder capped at the ringing rung), got {outcome:?}");
+    };
+    assert_eq!(collected.count(), 1);
+    assert_eq!(collected.as_slice()[0].p.raw(), 181);
+}
+
 // --- Raw evidence streams one observation per tick, at collection time --------
 
 #[test]

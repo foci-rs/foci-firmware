@@ -2299,10 +2299,18 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             safety.end_primitive();
             if !confirmation.confirmed_rest {
                 defmt::warn!(
-                    "settle rest excluded: discovery evidence excluded at rung={} (retry exhausted, velocity rest not confirmed)",
+                    "settle rest not confirmed at rung={} (capping ladder from collected evidence if any)",
                     session.rung_index,
                 );
-                return AdditiveDiscoveryStep::Done(
+                // A rung's return-to-rest that rings above the usable band must
+                // not discard the whole campaign: cap the ladder and nominate
+                // from the in-band rungs already collected, exactly as a ceiling
+                // or budget stop does. finish_discovery_walk still excludes when
+                // no in-band rung has been found, so an under-characterized band
+                // cannot be nominated.
+                return finish_discovery_walk(
+                    state,
+                    session.in_band.count(),
                     AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
                         error: CommissionError::VelocityRestNotConfirmed,
                     },
@@ -2415,7 +2423,9 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                         None => AdditiveDiscoveryStep::ReadyNow,
                     }
                 }
-                RungOriginRecoveryStep::RestUnconfirmed => AdditiveDiscoveryStep::Done(
+                RungOriginRecoveryStep::RestUnconfirmed => finish_discovery_walk(
+                    state,
+                    session.in_band.count(),
                     AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
                         error: CommissionError::VelocityRestNotConfirmed,
                     },
