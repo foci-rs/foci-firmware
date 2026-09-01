@@ -382,7 +382,10 @@ fn current_guard_fault(error: VelocityCurrentGuardError) -> BreakawayProbeStep {
     fault(match error {
         VelocityCurrentGuardError::InvalidLimit => CommissionError::InvalidCurrentLimit,
         VelocityCurrentGuardError::RegisterIo => CommissionError::Spi,
-        VelocityCurrentGuardError::ActionableStatus(_) => CommissionError::SafetyEnvelopeViolation,
+        VelocityCurrentGuardError::ActionableStatus(status) => {
+            defmt::warn!("probe current guard actionable status: {:#x}", status);
+            CommissionError::SafetyEnvelopeViolation
+        }
     })
 }
 
@@ -695,6 +698,15 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             );
             session.pending_result = Some(
                 if input.predicted_torque_target_abs >= input.hard_torque_limit {
+                    defmt::warn!(
+                        "probe torque prediction fault: dir={} p={} predicted_torque_target_abs={} usable_torque_limit={} hard_torque_limit={} moving_pid_output_peak={}",
+                        input.direction,
+                        input.p.raw(),
+                        input.predicted_torque_target_abs,
+                        input.usable_torque_limit,
+                        input.hard_torque_limit,
+                        workspace.current_observer.moving_pid_output_peak()
+                    );
                     Err(BreakawayProbeOutcome::SafetyFault {
                         error: CommissionError::SafetyEnvelopeViolation,
                         safety: None,
