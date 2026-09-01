@@ -1330,7 +1330,10 @@ fn tick_fault_terminal<B: CommissioningBackend>(
 ) -> StepResult {
     match fault {
         TickFault::Io => fault_terminal(session, backend, None, counts_per_rev),
-        TickFault::Safety(report) => fault_terminal(session, backend, Some(report), counts_per_rev),
+        TickFault::Safety(report) => {
+            defmt::warn!("robustness safety fault (tick): {}", report);
+            fault_terminal(session, backend, Some(report), counts_per_rev)
+        }
     }
 }
 
@@ -1353,6 +1356,9 @@ pub(crate) fn robustness_reversal_fault_terminal(
         return StepResult::OuterFailed(error);
     };
     let _ = error;
+    if let Some(report) = &safety_fault {
+        defmt::warn!("robustness safety fault (dispatch): {}", report);
+    }
     let cause = if safety_fault.is_some() {
         ROBUSTNESS_CAUSE_SAFETY_FAULT
     } else {
