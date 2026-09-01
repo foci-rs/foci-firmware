@@ -2503,12 +2503,13 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     // no in-band rung; the bounds show why -- whether each direction's
                     // interval straddles the 70-80% band (too wide / off-center) or is
                     // cleanly outside it.
-                    let [(fwd_lo, fwd_hi), (rev_lo, rev_hi)] = rung_directional_pooled_bounds_percent(
-                        &rung_input,
-                        session.own_multiplier,
-                        DISCOVERY_CONTAINMENT_C_SIGMA,
-                    )
-                    .unwrap_or([(f32::NAN, f32::NAN), (f32::NAN, f32::NAN)]);
+                    let [(fwd_lo, fwd_hi), (rev_lo, rev_hi)] =
+                        rung_directional_pooled_bounds_percent(
+                            &rung_input,
+                            session.own_multiplier,
+                            DISCOVERY_CONTAINMENT_C_SIGMA,
+                        )
+                        .unwrap_or([(f32::NAN, f32::NAN), (f32::NAN, f32::NAN)]);
                     defmt::info!(
                         "discovery rung classified: rung={} p={} verdict={} fwd_pct=[{},{}] rev_pct=[{},{}]",
                         session.rung_index,
