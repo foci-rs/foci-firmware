@@ -2354,10 +2354,11 @@ mod tests {
                         if tick == 0 {
                             attempt[dir] += 1;
                         }
-                        // The first four reverse legs never enter the band: two
-                        // spend the retry budget on slot 0, the next leaves slot 1
-                        // unfilled, leaving three valid cycles below the floor.
-                        if attempt[dir] <= 4 {
+                        // The first six reverse legs never enter the band: the
+                        // first five spend the per-direction retry budget on slot
+                        // 0, the sixth leaves slot 1 unfilled, leaving three valid
+                        // cycles below the floor.
+                        if attempt[dir] <= 6 {
                             jitter = !jitter;
                             if jitter { 300 } else { -300 }
                         } else {

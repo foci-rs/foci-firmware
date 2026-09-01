@@ -353,12 +353,12 @@ mod tests {
 
     #[test]
     fn worst_case_run_duration_fits_the_u16_budget_field() {
-        // Per direction: 5 measurement slots + 2 bounded inconclusive
-        // retries + 1 tail-grace re-run = 8 cycles; both directions = 16.
+        // Per direction: 5 measurement slots + 4 bounded inconclusive
+        // retries + 1 tail-grace re-run = 10 cycles; both directions = 20.
         // Each cycle budgets 4 legs (establish, reversal, rest, and the one
         // re-opened rest) at the 500 ms measurement budget apiece:
-        // 16 * 4 * 500 = 32_000 ms.
-        let expected_ms: u32 = 32_000;
+        // 20 * 4 * 500 = 40_000 ms.
+        let expected_ms: u32 = 40_000;
 
         let duration_ms = robustness_worst_case_duration_ms();
 

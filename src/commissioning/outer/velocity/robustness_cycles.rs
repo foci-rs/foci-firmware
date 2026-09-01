@@ -409,19 +409,21 @@ mod tests {
     #[test]
     fn inconclusive_retries_are_bounded_and_only_inconclusive_draws_them() {
         let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
-        assert_eq!(
-            ledger.record(CycleRecord::Inconclusive),
-            LedgerAction::RetryInconclusive
-        );
-        assert_eq!(
-            ledger.record(CycleRecord::Inconclusive),
-            LedgerAction::RetryInconclusive
-        );
+        // Band-entry measurement is stochastic and occasionally misses within a
+        // leg's budget; a cycle gets four fresh retries before its slot is
+        // consumed inconclusive, so a single slow cycle cannot fail the
+        // direction on its own.
+        for _ in 0..4 {
+            assert_eq!(
+                ledger.record(CycleRecord::Inconclusive),
+                LedgerAction::RetryInconclusive
+            );
+        }
         assert_eq!(
             ledger.record(CycleRecord::Inconclusive),
             LedgerAction::NextCycle
         );
-        assert_eq!(ledger.inconclusive_retries_used(), 2);
+        assert_eq!(ledger.inconclusive_retries_used(), 4);
         assert_eq!(ledger.cycles()[0], None);
     }
 
@@ -535,14 +537,12 @@ mod tests {
         let mut ledger = CycleLedger::new(NON_TAIL_IAE_MAX_Q);
         // Slot 0 spends the entire per-direction retry budget and is still
         // abandoned.
-        assert_eq!(
-            ledger.record(CycleRecord::Inconclusive),
-            LedgerAction::RetryInconclusive
-        );
-        assert_eq!(
-            ledger.record(CycleRecord::Inconclusive),
-            LedgerAction::RetryInconclusive
-        );
+        for _ in 0..4 {
+            assert_eq!(
+                ledger.record(CycleRecord::Inconclusive),
+                LedgerAction::RetryInconclusive
+            );
+        }
         assert_eq!(
             ledger.record(CycleRecord::Inconclusive),
             LedgerAction::NextCycle

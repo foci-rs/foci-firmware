@@ -365,8 +365,13 @@ pub(crate) const ROBUSTNESS_BAND_DWELL_US: u32 = 48_000;
 /// within this budget is inconclusive.
 pub(crate) const ROBUSTNESS_MEASUREMENT_BUDGET_US: u32 = 500_000;
 
-/// Bounded retry count for an inconclusive probe leg.
-pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 2;
+/// Bounded retry count for an inconclusive probe leg. Band entry is stochastic
+/// and occasionally misses within a single leg's budget; each retry re-runs a
+/// fresh leg within that same budget, so a slow cycle gets four independent
+/// attempts before its slot is consumed inconclusive. Prefer more retries over a
+/// longer per-leg budget: extending the budget lengthens each leg's spin and
+/// risks tripping the outer-safety travel envelope, whereas a retry does not.
+pub(crate) const ROBUSTNESS_MAX_RETRIES: u8 = 4;
 
 /// Number of `ROBUSTNESS_MEASUREMENT_BUDGET_US`-sized legs run per probe
 /// cycle: the establish settle (`begin_capture` in the establish state), the
