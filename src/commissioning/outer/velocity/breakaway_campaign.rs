@@ -53,7 +53,8 @@
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_VELOCITY_ACTUAL, PID_VELOCITY_OFFSET,
+    PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 use crate::autotune::velocity_measurement::{
@@ -1910,6 +1911,23 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             crate::diagnostic::checkpoint_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::GainProgramming,
             );
+            if session.rung_index == 0 {
+                let velocity_offset = backend
+                    .read_register(PID_VELOCITY_OFFSET)
+                    .await
+                    .map(|value| value as i32)
+                    .unwrap_or(i32::MIN);
+                let velocity_actual = backend
+                    .read_capture_register(PID_VELOCITY_ACTUAL)
+                    .await
+                    .map(|value| value as i32)
+                    .unwrap_or(i32::MIN);
+                defmt::info!(
+                    "ladder start: velocity_offset={} velocity_actual={}",
+                    velocity_offset,
+                    velocity_actual,
+                );
+            }
             let p = match session.current_gain() {
                 Ok(p) => p,
                 Err(error) => return discovery_fault(error),
@@ -2274,7 +2292,27 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             ) {
                 Ok(ScoredRestPoll::Pending) => return AdditiveDiscoveryStep::ReadyNow,
                 Ok(ScoredRestPoll::Diagnostic(decision)) => {
-                    settle_rest_rejected_input(decision, session.rung_index, *retry_available);
+                    let velocity_offset = backend
+                        .read_register(PID_VELOCITY_OFFSET)
+                        .await
+                        .map(|value| value as i32)
+                        .unwrap_or(i32::MIN);
+                    let velocity_actual = backend
+                        .read_capture_register(PID_VELOCITY_ACTUAL)
+                        .await
+                        .map(|value| value as i32)
+                        .unwrap_or(i32::MIN);
+                    settle_rest_rejected_input(
+                        decision,
+                        session.rung_index,
+                        *retry_available,
+                        (velocity_offset, velocity_actual),
+                        (
+                            workspace.settle_displacement_counts,
+                            workspace.settle_min_displacement_counts,
+                            workspace.settle_max_displacement_counts,
+                        ),
+                    );
                     return AdditiveDiscoveryStep::ReadyNow;
                 }
                 Ok(ScoredRestPoll::Complete(confirmation)) => confirmation,
@@ -4148,14 +4186,21 @@ fn settle_rest_rejected_input(
     decision: crate::autotune::velocity_measurement::RestSelectionDecision,
     rung_index: u8,
     retry_available: bool,
+    velocity_bias: (i32, i32),
+    settle: (i8, i8, i8),
 ) {
     use crate::autotune::velocity_measurement::RestSelectionDisposition;
 
     if decision.disposition == RestSelectionDisposition::Rejected {
         defmt::warn!(
-            "settle rest rejected: rung={} retry_available={} decision={}",
+            "settle rest rejected: rung={} retry_available={} velocity_offset={} velocity_actual={} net_counts={} min_counts={} max_counts={} decision={}",
             rung_index,
             retry_available,
+            velocity_bias.0,
+            velocity_bias.1,
+            settle.0,
+            settle.1,
+            settle.2,
             decision,
         );
     }
