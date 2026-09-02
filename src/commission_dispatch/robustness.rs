@@ -13,7 +13,6 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, StageCCandidateSlot,
 };
 use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
-use crate::commissioning::outer::velocity::sweep_plan::ZERO_SETTLE_US;
 use crate::commissioning::outer::velocity::robustness_evidence::{
     RobustnessDirectionSummary, RobustnessEvidence,
 };
@@ -21,6 +20,7 @@ use crate::commissioning::outer::velocity::robustness_metrics::{
     ROBUSTNESS_LEGS_PER_CYCLE, ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_MEASUREMENT_BUDGET_US,
 };
 use crate::commissioning::outer::velocity::robustness_reporting::ROBUSTNESS_SCHEMA_REVISION;
+use crate::commissioning::outer::velocity::sweep_plan::ZERO_SETTLE_US;
 use crate::commissioning::types::{RobustnessOutcome, RobustnessReversalTerminal};
 
 /// Reversal directions probed per run: forward->reverse and

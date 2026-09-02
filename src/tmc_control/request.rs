@@ -98,9 +98,11 @@ fn build_stage_c_resume_workflow_plan(
     recovery_maximum_slot_us: u32,
 ) -> crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan {
     let maximum_workflow_ms = reproduce_ms
-        .checked_add(crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
-            recovery_maximum_slot_us,
-        ))
+        .checked_add(
+            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
+                recovery_maximum_slot_us,
+            ),
+        )
         .expect("resume reproduce budget plus robustness worst case fits u32");
     crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new(
         run_sequence,
