@@ -149,6 +149,9 @@ pub(crate) struct RobustnessReversalSession {
     pending_forward_settle_us: u32,
     /// The conclusive cycle awaiting the between-cycles rest confirmation.
     pending_cycle: Option<PendingCycle>,
+    /// The ledger action held while the loop comes to rest after a leg that
+    /// produced no conclusive cycle.
+    held_route: Option<LedgerAction>,
 }
 
 impl RobustnessReversalSession {
@@ -169,6 +172,7 @@ impl RobustnessReversalSession {
             cycle_cursor: [0; DIRECTION_COUNT],
             pending_forward_settle_us: 0,
             pending_cycle: None,
+            held_route: None,
         }
     }
 }
@@ -836,11 +840,10 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                                 CycleRecord::Conclusive(pending.metrics),
                                 Some(pending.wire),
                             );
+                        } else if let Some(action) = session.held_route.take() {
+                            route_action(state, session, action);
                         } else {
-                            // The rested cycle was a slot-consuming inconclusive
-                            // one, already recorded before the rest; perform the
-                            // held routing now that the loop has come to rest.
-                            route_after_consumed_slot(state, session);
+                            return fault_terminal(session, backend, None, counts_per_rev);
                         }
                         StepResult::ReadyNow
                     } else if retry_available {
@@ -993,33 +996,19 @@ fn advance_capture(
     }
 }
 
-/// Report an inconclusive cycle into the current direction's ledger and route.
-///
-/// A granted retry (`RetryInconclusive`) re-enters the establish leg
-/// immediately, exactly as a retry did before any between-cycles rest existed.
-/// A slot-consuming outcome (`NextCycle`/`DirectionDone`) instead brings the
-/// machine to rest first: the probe just failed to converge, so the rest
-/// confirms the loop can still come to a stop -- and faults the run with the
-/// rest cause if it cannot -- before handing off to the next cycle or
-/// direction. The record happens here so the ledger can classify the outcome;
-/// the held routing runs from the rest-confirmed arm.
+/// Report an inconclusive cycle into the current direction's ledger, hold
+/// the routing it returned, and bring the loop to rest. The record happens
+/// here so the ledger can classify the outcome; the held route is applied
+/// from the rest-confirmed arm.
 fn retry_or_finalize_inconclusive(
     state: &mut RobustnessReversalState,
     session: &mut RobustnessReversalSession,
 ) {
-    match record_cycle(session, CycleRecord::Inconclusive, None) {
-        LedgerAction::RetryInconclusive => {
-            *state = RobustnessReversalState::EstablishWriteGain;
-        }
-        // NextCycle / DirectionDone consumed the slot; rest before the held
-        // routing. An inconclusive record never yields a tail action, so any
-        // other variant is treated as slot-consuming as a safe default.
-        _ => {
-            *state = RobustnessReversalState::ZeroCommand {
-                retry_available: true,
-            };
-        }
-    }
+    let action = record_cycle(session, CycleRecord::Inconclusive, None);
+    session.held_route = Some(action);
+    *state = RobustnessReversalState::ZeroCommand {
+        retry_available: true,
+    };
 }
 
 /// Fold one cycle record into the current direction's ledger, keep the
@@ -1104,21 +1093,6 @@ fn apply_cycle_record(
     wire: Option<CycleWire>,
 ) {
     let action = record_cycle(session, record, wire);
-    route_action(state, session, action);
-}
-
-/// Route a slot-consuming inconclusive cycle after its rest confirmed. The
-/// cursor already advanced when the slot was consumed, so its position selects
-/// between the next cycle and finishing the direction.
-fn route_after_consumed_slot(
-    state: &mut RobustnessReversalState,
-    session: &mut RobustnessReversalSession,
-) {
-    let action = if session.cycle_cursor[session.direction] >= ROBUSTNESS_CYCLES_PER_DIRECTION {
-        LedgerAction::DirectionDone
-    } else {
-        LedgerAction::NextCycle
-    };
     route_action(state, session, action);
 }
 
@@ -1590,39 +1564,77 @@ mod tests {
         }
     }
 
-    /// Drive one full run to its terminal against a scripted `MockBackend`.
+    /// Everything one scripted run owns, so a test can step the machine by
+    /// hand between `Setup` and the terminal, or hand it to `drive_parts`.
+    struct RunParts {
+        state: RobustnessReversalState,
+        workspace: RobustnessReversalWorkspace,
+        session: RobustnessReversalSession,
+        safety: OuterSafetyLimits,
+        backend: MockBackend,
+        /// Every `PID_VELOCITY_TARGET` write, in order, as signed RPM. Kept
+        /// by the driver because the mock's SPI log (8_192 entries, reads
+        /// included) fills before a long run ends.
+        targets: heapless::Vec<i32, 512>,
+        log_cursor: usize,
+    }
+
+    impl RunParts {
+        fn new(point: AcceptancePoint) -> Self {
+            Self {
+                state: RobustnessReversalState::Setup,
+                workspace: RobustnessReversalWorkspace::new(),
+                session: RobustnessReversalSession::new(point, 7, COUNTS_PER_REV),
+                safety: test_safety(),
+                backend: test_backend(),
+                targets: heapless::Vec::new(),
+                log_cursor: 0,
+            }
+        }
+
+        fn step(&mut self) -> StepResult {
+            pollster::block_on(step_robustness_reversal(
+                &mut self.state,
+                &mut self.workspace,
+                &mut self.session,
+                &mut self.safety,
+                &mut self.backend,
+            ))
+        }
+
+        fn harvest_targets(&mut self) {
+            let target_addr = PID_VELOCITY_TARGET.addr();
+            for op in &self.backend.spi_log[self.log_cursor..] {
+                if let SpiOp::Write(addr, value) = op
+                    && *addr == target_addr
+                {
+                    self.targets
+                        .push(*value as i32)
+                        .expect("target log holds every write of one run");
+                }
+            }
+            self.log_cursor = self.backend.spi_log.len();
+        }
+    }
+
+    /// Drive `parts` to its terminal against a scripted `MockBackend`.
     ///
     /// `motion` returns the per-tick encoder delta for the sample now being
     /// scheduled, given the capture phase, the tick index within the current
     /// leg (reset to 0 whenever a fresh capture leg begins, so retries restart
     /// the script), and the commanded velocity target.
-    fn drive_scripted(
-        point: AcceptancePoint,
+    fn drive_parts(
+        mut parts: RunParts,
         mut motion: impl FnMut(CapturePhase, u32, i32) -> i32,
-    ) -> (
-        RobustnessReversalTerminal,
-        MockBackend,
-        RobustnessReversalSession,
-    ) {
-        let mut state = RobustnessReversalState::Setup;
-        let mut workspace = RobustnessReversalWorkspace::new();
-        let mut session = RobustnessReversalSession::new(point, 7, COUNTS_PER_REV);
-        let mut safety = test_safety();
-        let mut backend = test_backend();
-
+    ) -> (RobustnessReversalTerminal, RunParts) {
         let mut encoder_count: i32 = 0;
         let mut was_in_capture = false;
         let mut leg_tick: u32 = 0;
 
         for _ in 0..STEP_BUDGET {
-            let result = pollster::block_on(step_robustness_reversal(
-                &mut state,
-                &mut workspace,
-                &mut session,
-                &mut safety,
-                &mut backend,
-            ));
-            let phase = capture_phase(&state);
+            let result = parts.step();
+            parts.harvest_targets();
+            let phase = capture_phase(&parts.state);
             if phase.is_some() && !was_in_capture {
                 leg_tick = 0;
             }
@@ -1630,8 +1642,9 @@ mod tests {
             match result {
                 StepResult::ReadyNow => {}
                 StepResult::At(deadline) => {
-                    backend.elapsed_us_value = deadline;
-                    let target = *backend
+                    parts.backend.elapsed_us_value = deadline;
+                    let target = *parts
+                        .backend
                         .registers
                         .get(&PID_VELOCITY_TARGET.addr())
                         .unwrap_or(&0) as i32;
@@ -1640,16 +1653,31 @@ mod tests {
                     // Model the TMC4671 decoder register, which wraps within
                     // [0, counts_per_rev); feeding raw signed counts would alias
                     // against EncoderDomain's u32 modulo at the 2^32 boundary.
-                    backend.set_abn_decoder_count(encoder_count.rem_euclid(4_000));
+                    parts
+                        .backend
+                        .set_abn_decoder_count(encoder_count.rem_euclid(4_000));
                     leg_tick += 1;
                 }
                 StepResult::RobustnessReversalTerminal(terminal) => {
-                    return (terminal, backend, session);
+                    return (terminal, parts);
                 }
                 other => panic!("unexpected step result: {other:?}"),
             }
         }
         panic!("robustness reversal run exceeded its bounded step budget");
+    }
+
+    /// Drive one full run to its terminal against a scripted `MockBackend`.
+    fn drive_scripted(
+        point: AcceptancePoint,
+        motion: impl FnMut(CapturePhase, u32, i32) -> i32,
+    ) -> (
+        RobustnessReversalTerminal,
+        MockBackend,
+        RobustnessReversalSession,
+    ) {
+        let (terminal, parts) = drive_parts(RunParts::new(point), motion);
+        (terminal, parts.backend, parts.session)
     }
 
     /// Drive a run where establish and zero legs behave, and the measured
@@ -2568,12 +2596,10 @@ mod tests {
         }
     }
 
-    /// A granted inconclusive retry routes straight back to the establish leg
-    /// with no rest, while the slot-consuming inconclusive that exhausts the
-    /// budget rests first (enters `ZeroCommand`) so the loop's ability to stop
-    /// is confirmed before the run moves on.
+    /// Every inconclusive record, retry or slot-consume, holds the ledger's
+    /// action and brings the loop to rest before it is applied.
     #[test]
-    fn inconclusive_retry_routes_immediately_but_slot_consume_rests() {
+    fn every_inconclusive_holds_its_route_and_rests_first() {
         let mut state = RobustnessReversalState::EstablishWriteGain;
         let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
 
@@ -2581,32 +2607,99 @@ mod tests {
             retry_or_finalize_inconclusive(&mut state, &mut session);
             assert_eq!(
                 state,
-                RobustnessReversalState::EstablishWriteGain,
-                "a granted retry re-enters establish with no rest"
+                RobustnessReversalState::ZeroCommand {
+                    retry_available: true
+                },
+                "a granted retry rests before re-entering establish"
+            );
+            assert_eq!(
+                session.held_route.take(),
+                Some(LedgerAction::RetryInconclusive)
             );
             assert_eq!(
                 session.cycle_cursor[0], 0,
                 "a granted retry does not consume a slot"
             );
+            state = RobustnessReversalState::EstablishWriteGain;
         }
 
-        // The retry budget is now spent; the next inconclusive consumes the slot
-        // and must rest before the held routing.
         retry_or_finalize_inconclusive(&mut state, &mut session);
-        assert!(
-            matches!(
-                state,
-                RobustnessReversalState::ZeroCommand {
-                    retry_available: true
-                }
-            ),
-            "an exhausted-inconclusive slot-consume rests before routing"
+        assert_eq!(
+            state,
+            RobustnessReversalState::ZeroCommand {
+                retry_available: true
+            }
         );
+        assert_eq!(session.held_route.take(), Some(LedgerAction::NextCycle));
         assert_eq!(
             session.cycle_cursor[0], 1,
             "the exhausted inconclusive consumed the slot"
         );
         assert_eq!(session.ledgers[0].valid_cycles(), 0);
+    }
+
+    /// An exhausted establish leg rests at zero before its retry re-establishes;
+    /// it never re-commands the cruise target straight from cruise.
+    #[test]
+    fn exhausted_establish_rests_before_its_retry() {
+        let mut establish_legs = 0u32;
+        let (terminal, parts) =
+            drive_parts(RunParts::new(test_point()), move |phase, tick, target| {
+                if phase == CapturePhase::Establish && tick == 0 {
+                    establish_legs += 1;
+                }
+                if target == 0 {
+                    return 0;
+                }
+                match phase {
+                    // Half the cruise rate sits outside the 5% band, so the first
+                    // establish leg never enters it and exhausts its budget.
+                    CapturePhase::Establish if establish_legs == 1 => {
+                        target.signum() * STEADY_DELTA / 2
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            });
+        assert_eq!(&parts.targets[..3], &[176, 0, 176]);
+        assert_eq!(terminal.evidence.directions[0].retry_count, 1);
+        assert!(terminal.safety_fault.is_none());
+        assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
+    }
+
+    /// The conclusive path is untouched: establish, reverse, rest per cycle,
+    /// and every slot fills without a retry.
+    #[test]
+    fn conclusive_cycles_keep_their_target_sequence() {
+        let (terminal, parts) =
+            drive_parts(RunParts::new(test_point()), |_phase, _tick, target| {
+                if target == 0 {
+                    0
+                } else {
+                    target.signum() * STEADY_DELTA
+                }
+            });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        let mut expected: heapless::Vec<i32, 64> = heapless::Vec::new();
+        for direction in 0..DIRECTION_COUNT {
+            let establish = establish_target_rpm(&test_point(), direction);
+            for _ in 0..ROBUSTNESS_CYCLES_PER_DIRECTION {
+                expected
+                    .extend_from_slice(&[establish, -establish, 0])
+                    .expect("expected sequence fits");
+            }
+        }
+        assert_eq!(parts.targets.as_slice(), expected.as_slice());
+        assert_eq!(
+            parts.backend.pid_velocity_error_sum_clears,
+            ROBUSTNESS_CYCLES_PER_DIRECTION * DIRECTION_COUNT
+        );
+        for direction in terminal.evidence.directions {
+            assert_eq!(
+                direction.valid_cycles,
+                ROBUSTNESS_CYCLES_PER_DIRECTION as u8
+            );
+            assert_eq!(direction.retry_count, 0);
+        }
     }
 
     /// A run whose probe never converges AND whose between-cycles rest never
