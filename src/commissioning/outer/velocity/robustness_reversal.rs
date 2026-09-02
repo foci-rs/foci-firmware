@@ -930,43 +930,19 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     if confirmation.confirmed_rest {
                         safety.end_primitive();
                         if let Some(pending) = session.pending_cycle.take() {
-                            // A conclusive cycle rested; record it into the
-                            // ledger now and route the next cycle or direction.
                             apply_cycle_record(
                                 state,
                                 session,
                                 CycleRecord::Conclusive(pending.metrics),
                                 Some(pending.wire),
                             );
+                            StepResult::ReadyNow
                         } else if session.held_route.is_some() {
-                            match build_origin_recovery(session, safety) {
-                                Ok(runtime) => {
-                                    defmt::info!(
-                                        "robustness origin recovery: dir={} slot={} route={} start_offset={}",
-                                        session.direction,
-                                        session.cycle_cursor[session.direction],
-                                        session.held_route,
-                                        safety.unwrapped_position
-                                    );
-                                    *state = RobustnessReversalState::RecoverOrigin(runtime);
-                                }
-                                Err(error) => {
-                                    defmt::warn!(
-                                        "robustness origin recovery cannot be built: {}",
-                                        error
-                                    );
-                                    return fault_terminal(session, backend, None, counts_per_rev);
-                                }
-                            }
+                            enter_origin_recovery(state, session, safety, backend, counts_per_rev)
                         } else {
-                            return fault_terminal(session, backend, None, counts_per_rev);
+                            fault_terminal(session, backend, None, counts_per_rev)
                         }
-                        StepResult::ReadyNow
                     } else if retry_available {
-                        // I4: a rejected rest re-opens one fresh bounded rest
-                        // window before faulting (integral_plan.rs precedent);
-                        // it neither silently proceeds nor immediately kills the
-                        // run.
                         match open_zero_window(session, workspace, backend, counts_per_rev).await {
                             Ok((next_sample_us, deadline_us)) => {
                                 *state = RobustnessReversalState::ZeroCapture {
@@ -978,11 +954,19 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                             }
                             Err(step) => step,
                         }
+                    } else if session.held_route.is_some() {
+                        defmt::warn!(
+                            "robustness between-cycles rest not confirmed: dir={} disposition={} recent_structural_code={} selected_suffix_len={} conditioned_rest_evidence={} route={} proceeding to origin recovery",
+                            session.direction,
+                            confirmation.disposition,
+                            confirmation.recent_structural_code,
+                            confirmation.selected_suffix_len,
+                            confirmation.conditioned_rest_evidence,
+                            session.held_route
+                        );
+                        safety.end_primitive();
+                        enter_origin_recovery(state, session, safety, backend, counts_per_rev)
                     } else {
-                        // I4: the between-legs rest never confirmed even after the
-                        // one bounded re-open. This is a specific, operator-
-                        // actionable condition, not the generic internal-fault
-                        // bucket, so it gets its own cause.
                         defmt::warn!(
                             "robustness between-cycles rest not confirmed: dir={} disposition={} recent_structural_code={} selected_suffix_len={} conditioned_rest_evidence={}",
                             session.direction,
@@ -1160,6 +1144,32 @@ fn build_origin_recovery(
         },
         plan,
     )
+}
+
+fn enter_origin_recovery<B: CommissioningBackend>(
+    state: &mut RobustnessReversalState,
+    session: &RobustnessReversalSession,
+    safety: &OuterSafetyLimits,
+    backend: &B,
+    counts_per_rev: u32,
+) -> StepResult {
+    match build_origin_recovery(session, safety) {
+        Ok(runtime) => {
+            defmt::info!(
+                "robustness origin recovery: dir={} slot={} route={} start_offset={}",
+                session.direction,
+                session.cycle_cursor[session.direction],
+                session.held_route,
+                safety.unwrapped_position
+            );
+            *state = RobustnessReversalState::RecoverOrigin(runtime);
+            StepResult::ReadyNow
+        }
+        Err(error) => {
+            defmt::warn!("robustness origin recovery cannot be built: {}", error);
+            fault_terminal(session, backend, None, counts_per_rev)
+        }
+    }
 }
 
 /// Command a signed cruise target and open a fresh capture window.
@@ -3033,29 +3043,42 @@ mod tests {
         }
     }
 
-    /// A run whose probe never converges AND whose between-cycles rest never
-    /// settles faults with the dedicated rest cause -- not a soft Inconclusive.
-    /// This is the schema-1 fault check the ledger rework must preserve for the
-    /// exact misbehaving runs it exists to catch.
+    /// A run whose reversal never converges AND whose between-cycles rest never
+    /// settles no longer dies on the rest: every inconclusive cycle recovers
+    /// to the origin and the ledger's own inconclusive terminal ends the run.
     #[test]
-    fn exhausted_inconclusive_that_cannot_rest_faults_with_rest_cause() {
+    fn exhausted_inconclusive_that_cannot_rest_recovers_and_ends_by_the_ledger() {
         let mut jitter_high = false;
-        let (terminal, _backend, _session) =
-            drive_scripted(test_point(), move |phase, _tick, target| match phase {
-                // The reversal never enters the band: inconclusive cycles.
+        let (terminal, parts) = drive_parts(
+            RunParts::new(test_point()),
+            Envelope::Untracked,
+            move |phase, _tick, target| match phase {
                 CapturePhase::Reverse => {
                     jitter_high = !jitter_high;
                     if jitter_high { 300 } else { -300 }
                 }
-                // The between-cycles rest never settles: sustained drift.
                 CapturePhase::Zero => 8,
-                // The establish leg converges cleanly.
+                _ if target == 0 => 0,
                 _ => target.signum() * STEADY_DELTA,
-            });
-
-        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
-        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
+            },
+        );
+        assert_eq!(terminal.outcome, RobustnessOutcome::Inconclusive);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE);
         assert!(terminal.safety_fault.is_none());
+        assert_eq!(
+            parts.recoveries,
+            u32::try_from(
+                (ROBUSTNESS_CYCLES_PER_DIRECTION + usize::from(ROBUSTNESS_MAX_RETRIES))
+                    * DIRECTION_COUNT
+            )
+            .expect("recovery count fits u32"),
+            "every rejected rest still reaches a recovery: retries and slot-consumes alike"
+        );
+        assert!(parts.session.held_route.is_none());
+        for direction in terminal.evidence.directions {
+            assert_eq!(direction.retry_count, ROBUSTNESS_MAX_RETRIES);
+            assert_eq!(direction.valid_cycles, 0);
+        }
     }
 
     fn leg_travel(point: &AcceptancePoint) -> i32 {
@@ -3199,6 +3222,148 @@ mod tests {
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
         assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
+    }
+
+    /// A rest that is rejected twice after an exhausted establish leg still
+    /// reaches the origin recovery; the recovery's own rest is the gate.
+    #[test]
+    fn rejected_rest_after_exhausted_establish_proceeds_to_origin_recovery() {
+        let mut establish_legs = 0u32;
+        let mut zero_windows = 0u32;
+        let (terminal, parts) = drive_parts(
+            RunParts::new(recovery_point()),
+            Envelope::Tracked,
+            move |phase, tick, target| {
+                if phase == CapturePhase::Establish && tick == 0 {
+                    establish_legs += 1;
+                }
+                if phase == CapturePhase::Zero && tick == 0 {
+                    zero_windows += 1;
+                }
+                match phase {
+                    // The rest after the exhausted leg and its re-open both creep.
+                    CapturePhase::Zero if zero_windows <= 2 => 8,
+                    _ if target == 0 => 0,
+                    CapturePhase::Establish if establish_legs == 1 => {
+                        target.signum() * STEADY_DELTA / 2
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            },
+        );
+        assert_eq!(&parts.targets[..5], &[176, 0, -176, 0, 176]);
+        assert_eq!(parts.recoveries, 1);
+        assert_eq!(terminal.evidence.directions[0].retry_count, 1);
+        assert!(terminal.safety_fault.is_none());
+        assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_ne!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
+    }
+
+    /// An inconclusive reverse leg whose following rest is rejected twice
+    /// takes the same recovery route as one whose rest confirms, and the
+    /// recovery commands real return motion from the offset the two legs left.
+    #[test]
+    fn rejected_rest_after_inconclusive_reverse_leg_proceeds_to_origin_recovery() {
+        let mut reverse_legs = 0u32;
+        let mut zero_windows = 0u32;
+        let (terminal, parts) = drive_parts(
+            RunParts::new(recovery_point()),
+            Envelope::Tracked,
+            move |phase, tick, target| {
+                if phase == CapturePhase::Reverse && tick == 0 {
+                    reverse_legs += 1;
+                }
+                if phase == CapturePhase::Zero && tick == 0 {
+                    zero_windows += 1;
+                }
+                match phase {
+                    CapturePhase::Zero if zero_windows <= 2 => 8,
+                    _ if target == 0 => 0,
+                    // The first reverse leg cruises at half speed and never
+                    // enters the band: an exhausted, inconclusive reverse leg.
+                    CapturePhase::Reverse if reverse_legs == 1 => {
+                        target.signum() * STEADY_DELTA / 2
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            },
+        );
+        assert_eq!(&parts.targets[..3], &[176, -176, 0]);
+        assert_eq!(
+            parts.targets[3].abs(),
+            176,
+            "the recovery commands a return leg"
+        );
+        assert_eq!(parts.targets[4], 0);
+        assert_eq!(parts.targets[5], 176);
+        assert_eq!(parts.recoveries, 1);
+        assert_eq!(terminal.evidence.directions[0].retry_count, 1);
+        assert!(terminal.safety_fault.is_none());
+        assert_ne!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
+    }
+
+    /// A rest rejected after an inconclusive leg, followed by a recovery whose
+    /// own rest at the origin is also rejected, ends with the recovery's cause
+    /// after exactly one recovery and no further motion command.
+    #[test]
+    fn rejected_rest_then_unconfirmed_recovery_rest_terminates_with_origin_cause() {
+        let mut establish_legs = 0u32;
+        let (terminal, parts) = drive_parts(
+            RunParts::new(recovery_point()),
+            Envelope::Tracked,
+            move |phase, tick, target| {
+                if phase == CapturePhase::Establish && tick == 0 {
+                    establish_legs += 1;
+                }
+                match phase {
+                    // Every zero-target window creeps, inside the recovery too.
+                    CapturePhase::Zero => 8,
+                    CapturePhase::Recover if target == 0 => 8,
+                    _ if target == 0 => 0,
+                    CapturePhase::Establish if establish_legs == 1 => {
+                        target.signum() * STEADY_DELTA / 2
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            },
+        );
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(parts.recoveries, 1);
+        assert_eq!(parts.targets.last(), Some(&0));
+        assert_eq!(&parts.targets[..3], &[176, 0, -176]);
+    }
+
+    /// If the recovery cannot be built after a rejected rest, the run ends
+    /// with the internal-fault cause and commands no motion after the
+    /// rejection: the failure path of the new branch is the existing one.
+    #[test]
+    fn rejected_rest_with_unbuildable_recovery_faults_without_motion() {
+        let mut establish_legs = 0u32;
+        let mut parts = RunParts::new(recovery_point());
+        assert!(matches!(parts.step(), StepResult::ReadyNow));
+        assert_eq!(parts.state, RobustnessReversalState::EstablishWriteGain);
+        parts.session.recovery_plan = None;
+        let (terminal, parts) =
+            drive_parts(parts, Envelope::Tracked, move |phase, tick, target| {
+                if phase == CapturePhase::Establish && tick == 0 {
+                    establish_legs += 1;
+                }
+                match phase {
+                    CapturePhase::Zero => 8,
+                    _ if target == 0 => 0,
+                    CapturePhase::Establish if establish_legs == 1 => {
+                        target.signum() * STEADY_DELTA / 2
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_INTERNAL_FAULT);
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(parts.recoveries, 0);
+        assert_eq!(parts.targets.as_slice(), &[176, 0]);
     }
 
     #[test]
