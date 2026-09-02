@@ -181,8 +181,8 @@ pub fn apply_robustness_terminal(
 /// return to the origin twice: once before its establish leg when the
 /// headroom precondition refuses the leg, and once after the leg when it ends
 /// inconclusive. Each unwind is one recovery slot (`recovery_maximum_slot_us`,
-/// the host-declared per-primitive cap the recovery plan carries) plus one
-/// `ZERO_SETTLE_US` rest.
+/// the host-declared per-primitive cap the recovery plan carries) plus two
+/// `ZERO_SETTLE_US` rest windows, since a rejected re-opened rest no longer ends the run before the return.
 pub(crate) fn robustness_worst_case_duration_ms(recovery_maximum_slot_us: u32) -> u32 {
     let cycles_per_direction = ROBUSTNESS_CYCLES_PER_DIRECTION as u32
         + u32::from(ROBUSTNESS_MAX_RETRIES)
@@ -193,7 +193,7 @@ pub(crate) fn robustness_worst_case_duration_ms(recovery_maximum_slot_us: u32) -
     let probe_ms = u64::from(worst_case_cycles) * u64::from(per_cycle_envelope_ms);
 
     let unwinds = u64::from(worst_case_cycles) * 2;
-    let unwind_slot_ms = (u64::from(recovery_maximum_slot_us) + u64::from(ZERO_SETTLE_US))
+    let unwind_slot_ms = (u64::from(recovery_maximum_slot_us) + 2 * u64::from(ZERO_SETTLE_US))
         .div_ceil(u64::from(MICROS_PER_MILLI));
 
     u32::try_from(probe_ms + unwinds * unwind_slot_ms).unwrap_or(u32::MAX)
@@ -358,8 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn worst_case_run_duration_reserves_one_unwind_per_retry_and_direction() {
-        assert_eq!(robustness_worst_case_duration_ms(3_000_000), 180_000);
+    fn worst_case_run_duration_reserves_one_unwind_and_two_rests_per_retry_and_direction() {
+        // 20 worst-case cycles x 4 legs x 500 ms = 40 s of probing, plus 40
+        // unwinds x (3 s slot + 2 x 0.5 s rest) = 160 s of return.
+        assert_eq!(robustness_worst_case_duration_ms(3_000_000), 200_000);
         assert!(robustness_nominal_duration_ms() <= robustness_worst_case_duration_ms(0));
     }
 }
