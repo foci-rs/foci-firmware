@@ -33,6 +33,8 @@ pub(crate) enum RecoveryStage {
     Proportional = 0,
     /// Integral-response characterization.
     Integral = 1,
+    /// Reversal-robustness origin return between probe legs.
+    Robustness = 2,
 }
 
 /// Terminal classification for one bounded recovery attempt.
