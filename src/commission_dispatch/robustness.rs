@@ -74,6 +74,13 @@ pub const ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED: u8 = 9;
 /// (a slow per-direction median) so the host can tell a slow center from a
 /// heavy tail. Set at terminal assembly; never returned by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_TAIL_REPEATED: u8 = 10;
+/// The origin recovery that precedes an establish retry did not leave the
+/// axis where the next leg fits: the recovery ended unconfirmed, or the
+/// headroom precondition failed again immediately after it. A non-safety
+/// `Failed` cause (no inhibit, gains retained), distinct from
+/// `ROBUSTNESS_CAUSE_SAFETY_FAULT`. Set at the fault terminal, never by
+/// `summary_cause`.
+pub const ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED: u8 = 11;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

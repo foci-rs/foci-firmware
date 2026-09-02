@@ -17,13 +17,15 @@
 
 use crate::autotune::CommissionError;
 use crate::autotune::CommissionStatus;
+use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork};
 use crate::autotune::velocity_measurement::{
     StationarityResult, VELOCITY_RATE_Q_SCALE, estimate_confidence,
 };
 use crate::commission_dispatch::robustness::{
-    ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
-    ROBUSTNESS_CAUSE_SAFETY_FAULT, ROBUSTNESS_CAUSE_TAIL_REPEATED,
+    ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
+    ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_SAFETY_FAULT,
+    ROBUSTNESS_CAUSE_TAIL_REPEATED,
 };
 use crate::commissioning::EntrySnapshot;
 use crate::commissioning::backend::CommissioningBackend;
@@ -44,6 +46,9 @@ use foci_tmc4671::registers::{
 use super::band_confirmation::{CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT};
 use super::clear_velocity_integrator;
 use super::integral_reproduction::AcceptancePoint;
+use super::recovery::{
+    RungOriginRecoveryPlan, commanded_side_lower_rate_q, plan_rung_origin_recovery,
+};
 use super::robustness_cycles::{
     CycleLedger, CycleRecord, LedgerAction, ROBUSTNESS_CYCLES_PER_DIRECTION,
 };
@@ -127,6 +132,17 @@ struct PendingCycle {
     wire: CycleWire,
 }
 
+/// What the phase does once the loop has rested after a leg that produced no
+/// conclusive cycle, or after an establish leg that was refused before it ran.
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+enum HeldRoute {
+    /// Apply the routing the ledger returned when the leg was recorded.
+    Ledger(LedgerAction),
+    /// Re-enter the current slot's establish leg; no leg ran, so the ledger
+    /// recorded nothing and no retry was consumed.
+    ReenterEstablish,
+}
+
 /// Frozen accepted point plus the mutable per-direction robustness progress.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct RobustnessReversalSession {
@@ -149,9 +165,11 @@ pub(crate) struct RobustnessReversalSession {
     pending_forward_settle_us: u32,
     /// The conclusive cycle awaiting the between-cycles rest confirmation.
     pending_cycle: Option<PendingCycle>,
-    /// The ledger action held while the loop comes to rest after a leg that
-    /// produced no conclusive cycle.
-    held_route: Option<LedgerAction>,
+    /// The routing held while the loop comes to rest and returns to origin.
+    held_route: Option<HeldRoute>,
+    /// Whether an origin recovery has run since the last commanded establish
+    /// leg. Bounds the precondition to one recovery per failure.
+    origin_recovered: bool,
 }
 
 impl RobustnessReversalSession {
@@ -173,6 +191,7 @@ impl RobustnessReversalSession {
             pending_forward_settle_us: 0,
             pending_cycle: None,
             held_route: None,
+            origin_recovered: false,
         }
     }
 }
@@ -263,7 +282,6 @@ const ESTABLISH_LEG_WINDOW_US: u32 =
     ROBUSTNESS_MEASUREMENT_BUDGET_US + ROBUSTNESS_SETTLE_TAIL_US + SETTLE_ANALYSIS_BUDGET_US;
 
 /// Establish-cruise magnitude in encoder counts per millisecond, rounded up.
-#[allow(dead_code)]
 fn establish_rate_counts_per_ms(point: &AcceptancePoint, counts_per_rev: u32) -> u32 {
     let counts_per_minute = u64::from(amplitude_rpm(point).unsigned_abs())
         .saturating_mul(u64::from(counts_per_rev));
@@ -296,7 +314,6 @@ fn remaining_headroom_counts(
 
 /// Whether one establish leg at `rate_counts_per_ms` fits inside the absolute
 /// headroom remaining in `direction` from `unwrapped_position`.
-#[allow(dead_code)]
 fn establish_leg_fits(
     rate_counts_per_ms: u32,
     unwrapped_position: i32,
@@ -493,10 +510,67 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             session.run_started_us = now_us;
             workspace.previous_encoder_raw = baseline;
             workspace.previous_read_us = now_us;
+            let plan = match robustness_recovery_plan(&session.point, safety) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    defmt::warn!("robustness recovery cannot be planned: {}", error);
+                    return fault_terminal(session, backend, None, counts_per_rev);
+                }
+            };
+            let leg_travel = establish_leg_travel_counts(establish_rate_counts_per_ms(
+                &session.point,
+                counts_per_rev,
+            ));
+            let usable = safety
+                .negative_position_window
+                .min(safety.positive_position_window)
+                .saturating_sub(plan.origin_band_counts);
+            if leg_travel > usable {
+                defmt::warn!(
+                    "robustness schedule cannot fit from origin: leg_travel={} usable={} windows=-{}/+{} band={}",
+                    leg_travel,
+                    usable,
+                    safety.negative_position_window,
+                    safety.positive_position_window,
+                    plan.origin_band_counts
+                );
+                return fault_terminal(session, backend, None, counts_per_rev);
+            }
             *state = RobustnessReversalState::EstablishWriteGain;
             StepResult::ReadyNow
         }
         RobustnessReversalState::EstablishWriteGain => {
+            let rate = establish_rate_counts_per_ms(&session.point, counts_per_rev);
+            if !establish_leg_fits(
+                rate,
+                safety.unwrapped_position,
+                safety.negative_position_window,
+                safety.positive_position_window,
+                session.direction,
+            ) {
+                defmt::warn!(
+                    "robustness establish leg does not fit: dir={} slot={} position={} remaining={} leg_travel={} origin_recovered={}",
+                    session.direction,
+                    session.cycle_cursor[session.direction],
+                    safety.unwrapped_position,
+                    remaining_headroom_counts(
+                        safety.unwrapped_position,
+                        safety.negative_position_window,
+                        safety.positive_position_window,
+                        session.direction,
+                    ),
+                    establish_leg_travel_counts(rate),
+                    session.origin_recovered
+                );
+                if session.origin_recovered {
+                    return origin_not_recovered_terminal(session, backend, counts_per_rev);
+                }
+                session.held_route = Some(HeldRoute::ReenterEstablish);
+                *state = RobustnessReversalState::ZeroCommand {
+                    retry_available: true,
+                };
+                return StepResult::ReadyNow;
+            }
             let (p, i) = match accepted_gains(&session.point) {
                 Ok(pair) => pair,
                 Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
@@ -520,6 +594,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         RobustnessReversalState::EstablishCommandTarget => {
+            session.origin_recovered = false;
             let target = establish_target_rpm(&session.point, session.direction);
             match begin_capture(session, workspace, safety, backend, target, true).await {
                 Ok((next_sample_us, budget_deadline_us)) => {
@@ -840,8 +915,8 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                                 CycleRecord::Conclusive(pending.metrics),
                                 Some(pending.wire),
                             );
-                        } else if let Some(action) = session.held_route.take() {
-                            route_action(state, session, action);
+                        } else if session.held_route.is_some() {
+                            apply_held_route(state, session);
                         } else {
                             return fault_terminal(session, backend, None, counts_per_rev);
                         }
@@ -894,6 +969,48 @@ fn accepted_gains(point: &AcceptancePoint) -> Result<(PidPGain, PidIGain), Commi
     let p = PidPGain::new(point.selected_p).map_err(|_| CommissionError::InvalidSchedule)?;
     let i = PidIGain::new(point.selected_i).map_err(|_| CommissionError::InvalidSchedule)?;
     Ok((p, i))
+}
+
+/// Planned recovery velocity for the accepted point, in milli-revolutions per
+/// second, derived from its RPM target exactly as the Stage-C sweep does for
+/// a non-matrix plan.
+fn planned_velocity_mrev_s(point: &AcceptancePoint) -> Result<u32, CommissionError> {
+    u32::try_from(amplitude_rpm(point))
+        .ok()
+        .and_then(|target| target.checked_mul(1_000))
+        .map(|target| target / 60)
+        .filter(|velocity| *velocity != 0)
+        .ok_or(CommissionError::InvalidSchedule)
+}
+
+/// Commanded-side settled-rate authority for a return in `direction`, from
+/// the point's response intervals (index 0 forward, index 1 reverse).
+fn return_lower_rate_q(point: &AcceptancePoint, direction: VelocityDirection) -> Option<u64> {
+    let [low_q, high_q] = match direction {
+        VelocityDirection::Forward => point.selected_response_intervals_q[0],
+        VelocityDirection::Reverse => point.selected_response_intervals_q[1],
+    };
+    commanded_side_lower_rate_q(direction, i64::from(low_q), i64::from(high_q))
+}
+
+/// Recovery geometry for this run. A point that carries no settled-rate
+/// authority for either return direction cannot be recovered and is an
+/// invalid schedule, the same guard the Stage-C sweep applies.
+fn robustness_recovery_plan(
+    point: &AcceptancePoint,
+    safety: &OuterSafetyLimits,
+) -> Result<RungOriginRecoveryPlan, CommissionError> {
+    if return_lower_rate_q(point, VelocityDirection::Forward).is_none()
+        || return_lower_rate_q(point, VelocityDirection::Reverse).is_none()
+    {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    plan_rung_origin_recovery(
+        safety.budget,
+        safety.counts_per_rev(),
+        planned_velocity_mrev_s(point)?,
+    )
+    .map_err(|_| CommissionError::InvalidSchedule)
 }
 
 /// Command a signed cruise target and open a fresh capture window.
@@ -1005,7 +1122,7 @@ fn retry_or_finalize_inconclusive(
     session: &mut RobustnessReversalSession,
 ) {
     let action = record_cycle(session, CycleRecord::Inconclusive, None);
-    session.held_route = Some(action);
+    session.held_route = Some(HeldRoute::Ledger(action));
     *state = RobustnessReversalState::ZeroCommand {
         retry_available: true,
     };
@@ -1094,6 +1211,17 @@ fn apply_cycle_record(
 ) {
     let action = record_cycle(session, record, wire);
     route_action(state, session, action);
+}
+
+/// Apply the route held across the rest (and origin return) that followed a
+/// leg without a conclusive cycle.
+fn apply_held_route(state: &mut RobustnessReversalState, session: &mut RobustnessReversalSession) {
+    match session.held_route.take() {
+        Some(HeldRoute::Ledger(action)) => route_action(state, session, action),
+        Some(HeldRoute::ReenterEstablish) | None => {
+            *state = RobustnessReversalState::EstablishWriteGain;
+        }
+    }
 }
 
 /// Open a fresh zero-target rest capture window without re-commanding the
@@ -1357,6 +1485,23 @@ fn rest_not_confirmed_terminal<B: CommissioningBackend>(
     )
 }
 
+/// Build a `Failed` terminal for an origin return that did not leave the axis
+/// where the next establish leg fits: an unconfirmed recovery rest, or a
+/// headroom precondition that failed again right after a recovery.
+fn origin_not_recovered_terminal<B: CommissioningBackend>(
+    session: &RobustnessReversalSession,
+    backend: &B,
+    counts_per_rev: u32,
+) -> StepResult {
+    failed_terminal(
+        session,
+        backend,
+        ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
+        None,
+        counts_per_rev,
+    )
+}
+
 /// Resolve a per-tick fault into the owning `Failed` terminal.
 fn tick_fault_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
@@ -1467,6 +1612,7 @@ pub(crate) fn robustness_pass_outer_result(
 mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
+        ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
         ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
         ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
         ROBUSTNESS_CAUSE_TAIL_REPEATED,
@@ -1494,8 +1640,8 @@ mod tests {
             requested_velocity_source: RequestedVelocitySource::Defaulted,
             max_stroke_travel_mrev: 2_000,
             settle_travel_reserve_mrev: 100,
-            negative_position_headroom_mrev: 2_000,
-            positive_position_headroom_mrev: 2_000,
+            negative_position_headroom_mrev: 5_000,
+            positive_position_headroom_mrev: 5_000,
             max_duration_ms: 60_000,
         }
     }
@@ -1503,7 +1649,7 @@ mod tests {
     fn test_safety() -> OuterSafetyLimits {
         let mut safety = OuterSafetyLimits::new(current_limit(2_448).raw(), test_budget());
         safety
-            .configure_velocity_sweep_encoder_resolution(4_000)
+            .configure_robustness_encoder_resolution(4_000)
             .expect("valid encoder resolution");
         safety.set_encoder_baseline(0).expect("baseline configured");
         safety
@@ -2614,7 +2760,7 @@ mod tests {
             );
             assert_eq!(
                 session.held_route.take(),
-                Some(LedgerAction::RetryInconclusive)
+                Some(HeldRoute::Ledger(LedgerAction::RetryInconclusive))
             );
             assert_eq!(
                 session.cycle_cursor[0], 0,
@@ -2630,7 +2776,10 @@ mod tests {
                 retry_available: true
             }
         );
-        assert_eq!(session.held_route.take(), Some(LedgerAction::NextCycle));
+        assert_eq!(
+            session.held_route.take(),
+            Some(HeldRoute::Ledger(LedgerAction::NextCycle))
+        );
         assert_eq!(
             session.cycle_cursor[0], 1,
             "the exhausted inconclusive consumed the slot"
@@ -2725,5 +2874,123 @@ mod tests {
         assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
         assert!(terminal.safety_fault.is_none());
+    }
+
+    /// Worst-case travel of one establish leg for `point` at the test encoder.
+    fn leg_travel(point: &AcceptancePoint) -> i32 {
+        establish_leg_travel_counts(establish_rate_counts_per_ms(point, COUNTS_PER_REV)) as i32
+    }
+
+    fn nonzero_target_writes(backend: &MockBackend) -> usize {
+        let target_addr = PID_VELOCITY_TARGET.addr();
+        backend
+            .spi_log
+            .iter()
+            .filter(
+                |op| matches!(op, SpiOp::Write(addr, value) if *addr == target_addr && *value != 0),
+            )
+            .count()
+    }
+
+    #[test]
+    fn precondition_failure_rests_and_holds_a_reentry_route() {
+        let mut parts = RunParts::new(test_point());
+        assert!(matches!(parts.step(), StepResult::ReadyNow));
+        assert_eq!(parts.state, RobustnessReversalState::EstablishWriteGain);
+
+        parts.safety.unwrapped_position =
+            parts.safety.positive_position_window as i32 - leg_travel(&test_point()) + 1;
+        assert!(matches!(parts.step(), StepResult::ReadyNow));
+
+        assert_eq!(
+            parts.state,
+            RobustnessReversalState::ZeroCommand {
+                retry_available: true
+            }
+        );
+        assert_eq!(parts.session.held_route, Some(HeldRoute::ReenterEstablish));
+        assert_eq!(nonzero_target_writes(&parts.backend), 0);
+    }
+
+    #[test]
+    fn precondition_passes_exactly_at_the_boundary_in_both_directions() {
+        for direction in 0..DIRECTION_COUNT {
+            let leg = leg_travel(&test_point());
+            let fits = |parts: &RunParts| {
+                if direction == 0 {
+                    parts.safety.positive_position_window as i32 - leg
+                } else {
+                    -(parts.safety.negative_position_window as i32 - leg)
+                }
+            };
+
+            let mut parts = RunParts::new(test_point());
+            assert!(matches!(parts.step(), StepResult::ReadyNow));
+            parts.session.direction = direction;
+            parts.safety.unwrapped_position = fits(&parts);
+            assert!(matches!(parts.step(), StepResult::ReadyNow));
+            assert_eq!(parts.state, RobustnessReversalState::EstablishCommandTarget);
+            assert_eq!(parts.session.held_route, None);
+
+            let mut parts = RunParts::new(test_point());
+            assert!(matches!(parts.step(), StepResult::ReadyNow));
+            parts.session.direction = direction;
+            parts.safety.unwrapped_position = if direction == 0 {
+                fits(&parts) + 1
+            } else {
+                fits(&parts) - 1
+            };
+            assert!(matches!(parts.step(), StepResult::ReadyNow));
+            assert_eq!(
+                parts.state,
+                RobustnessReversalState::ZeroCommand {
+                    retry_available: true
+                }
+            );
+            assert_eq!(parts.session.held_route, Some(HeldRoute::ReenterEstablish));
+        }
+    }
+
+    #[test]
+    fn precondition_failure_after_a_recovery_terminates_with_origin_cause() {
+        let mut parts = RunParts::new(test_point());
+        assert!(matches!(parts.step(), StepResult::ReadyNow));
+        parts.session.origin_recovered = true;
+        parts.safety.unwrapped_position =
+            parts.safety.positive_position_window as i32 - leg_travel(&test_point()) + 1;
+
+        let StepResult::RobustnessReversalTerminal(terminal) = parts.step() else {
+            panic!("a refused leg right after a recovery must terminate");
+        };
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(nonzero_target_writes(&parts.backend), 0);
+    }
+
+    #[test]
+    fn setup_rejects_a_schedule_that_cannot_fit_from_the_origin() {
+        let mut parts = RunParts::new(test_point());
+        // The origin band is the settle reserve in counts (100 mrev of
+        // 4_000 = 400), so a window equal to the leg travel is 400 short.
+        parts.safety.positive_position_window = leg_travel(&test_point()) as u32;
+
+        let StepResult::RobustnessReversalTerminal(terminal) = parts.step() else {
+            panic!("an unplannable schedule must fail at setup");
+        };
+
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_INTERNAL_FAULT);
+        assert!(terminal.safety_fault.is_none());
+        let target_addr = PID_VELOCITY_TARGET.addr();
+        assert!(
+            !parts
+                .backend
+                .spi_log
+                .iter()
+                .any(|op| matches!(op, SpiOp::Write(addr, _) if *addr == target_addr)),
+            "setup rejection happens before any target write"
+        );
     }
 }
