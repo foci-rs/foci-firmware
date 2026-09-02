@@ -3054,9 +3054,6 @@ mod tests {
         }
     }
 
-    /// A run whose reversal never converges AND whose between-cycles rest never
-    /// settles no longer dies on the rest: every inconclusive cycle recovers
-    /// to the origin and the ledger's own inconclusive terminal ends the run.
     #[test]
     fn exhausted_inconclusive_that_cannot_rest_recovers_and_ends_by_the_ledger() {
         let mut jitter_high = false;
@@ -3235,8 +3232,6 @@ mod tests {
         assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
     }
 
-    /// A rest that is rejected twice after an exhausted establish leg still
-    /// reaches the origin recovery; the recovery's own rest is the gate.
     #[test]
     fn rejected_rest_after_exhausted_establish_proceeds_to_origin_recovery() {
         let mut establish_legs = 0u32;
@@ -3252,7 +3247,6 @@ mod tests {
                     zero_windows += 1;
                 }
                 match phase {
-                    // The rest after the exhausted leg and its re-open both creep.
                     CapturePhase::Zero if zero_windows <= 2 => 8,
                     _ if target == 0 => 0,
                     CapturePhase::Establish if establish_legs == 1 => {
@@ -3270,9 +3264,6 @@ mod tests {
         assert_ne!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
     }
 
-    /// An inconclusive reverse leg whose following rest is rejected twice
-    /// takes the same recovery route as one whose rest confirms, and the
-    /// recovery commands real return motion from the offset the two legs left.
     #[test]
     fn rejected_rest_after_inconclusive_reverse_leg_proceeds_to_origin_recovery() {
         let mut reverse_legs = 0u32;
@@ -3290,8 +3281,6 @@ mod tests {
                 match phase {
                     CapturePhase::Zero if zero_windows <= 2 => 8,
                     _ if target == 0 => 0,
-                    // The first reverse leg cruises at half speed and never
-                    // enters the band: an exhausted, inconclusive reverse leg.
                     CapturePhase::Reverse if reverse_legs == 1 => {
                         target.signum() * STEADY_DELTA / 2
                     }
@@ -3313,9 +3302,6 @@ mod tests {
         assert_ne!(terminal.cause, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED);
     }
 
-    /// A rest rejected after an inconclusive leg, followed by a recovery whose
-    /// own rest at the origin is also rejected, ends with the recovery's cause
-    /// after exactly one recovery and no further motion command.
     #[test]
     fn rejected_rest_then_unconfirmed_recovery_rest_terminates_with_origin_cause() {
         let mut establish_legs = 0u32;
@@ -3327,7 +3313,6 @@ mod tests {
                     establish_legs += 1;
                 }
                 match phase {
-                    // Every zero-target window creeps, inside the recovery too.
                     CapturePhase::Zero => 8,
                     CapturePhase::Recover if target == 0 => 8,
                     _ if target == 0 => 0,
@@ -3346,9 +3331,6 @@ mod tests {
         assert_eq!(&parts.targets[..3], &[176, 0, -176]);
     }
 
-    /// If the recovery cannot be built after a rejected rest, the run ends
-    /// with the internal-fault cause and commands no motion after the
-    /// rejection: the failure path of the new branch is the existing one.
     #[test]
     fn rejected_rest_with_unbuildable_recovery_faults_without_motion() {
         let mut establish_legs = 0u32;
@@ -3515,9 +3497,6 @@ mod tests {
         assert_eq!(parts.targets.as_slice(), &[176, 0, -176, 0]);
     }
 
-    /// A recovery that the current guard contains (the velocity-output clamp
-    /// engaged during the return) ends the run with the recovery's cause
-    /// instead of re-establishing on the far side of a contact.
     #[test]
     fn current_clamp_contained_recovery_terminates_with_origin_cause() {
         let mut establish_legs = 0u32;
