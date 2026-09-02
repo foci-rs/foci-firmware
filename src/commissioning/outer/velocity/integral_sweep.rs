@@ -26,8 +26,8 @@ use crate::commissioning::types::{
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_P_VELOCITY_I,
-    PID_VELOCITY_TARGET,
+    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_ACTUAL,
+    PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 use super::acceptance_evidence::{
@@ -1405,6 +1405,21 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.run_started_us = run_started_us;
             data.previous_read_us = run_started_us;
+            let velocity_offset = backend
+                .read_register(PID_VELOCITY_OFFSET)
+                .await
+                .map(|value| value as i32)
+                .unwrap_or(i32::MIN);
+            let velocity_actual = backend
+                .read_capture_register(PID_VELOCITY_ACTUAL)
+                .await
+                .map(|value| value as i32)
+                .unwrap_or(i32::MIN);
+            defmt::info!(
+                "integral sweep start: velocity_offset={} velocity_actual={}",
+                velocity_offset,
+                velocity_actual,
+            );
             *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
             StepResult::ReadyNow
         }
