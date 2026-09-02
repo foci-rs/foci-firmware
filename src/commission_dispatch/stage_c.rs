@@ -434,6 +434,15 @@ pub fn apply_stage_c_terminal(
                 StageCReproductionDecision::InconclusiveReproductionMismatch(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Inconclusive;
                     terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH);
+                    // The sole defmt signal for why a resume came back Inconclusive:
+                    // which shared rungs reproduced vs diverged, per direction.
+                    defmt::warn!(
+                        "stage_c reproduction mismatch: reproduced=[{=u32:#x}, {=u32:#x}] divergent=[{=u32:#x}, {=u32:#x}]",
+                        delta.reproduced_masks[0],
+                        delta.reproduced_masks[1],
+                        delta.divergent_masks[0],
+                        delta.divergent_masks[1],
+                    );
                     Some(StageCReproductionReport {
                         delta,
                         outcome: 2,
