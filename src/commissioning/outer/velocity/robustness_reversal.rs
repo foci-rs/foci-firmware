@@ -50,9 +50,9 @@ use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapabil
 use super::integral_reproduction::AcceptancePoint;
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
-    RungOriginRecoveryPlan, RungOriginRecoveryResources, RungOriginRecoveryRuntime,
-    RungOriginRecoveryStep, commanded_side_lower_rate_q, plan_rung_origin_recovery,
-    step_rung_origin_recovery,
+    RungOriginRecoveryOutcome, RungOriginRecoveryPlan, RungOriginRecoveryResources,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, commanded_side_lower_rate_q,
+    plan_rung_origin_recovery, step_rung_origin_recovery,
 };
 use super::robustness_cycles::{
     CycleLedger, CycleRecord, LedgerAction, ROBUSTNESS_CYCLES_PER_DIRECTION,
@@ -1018,6 +1018,17 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         analysis.disposition
                     );
                     StepResult::ReadyNow
+                }
+                RungOriginRecoveryStep::Contained(report)
+                    if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom =>
+                {
+                    defmt::warn!(
+                        "robustness origin recovery contained by the current clamp: dir={} outcome={} final_offset={}",
+                        session.direction,
+                        report.outcome,
+                        report.final_offset_counts
+                    );
+                    origin_not_recovered_terminal(session, backend, counts_per_rev)
                 }
                 RungOriginRecoveryStep::Finished(report)
                 | RungOriginRecoveryStep::Contained(report) => {
@@ -3497,6 +3508,41 @@ mod tests {
                 }
             },
         );
+        assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
+        assert!(terminal.safety_fault.is_none());
+        assert_eq!(parts.recoveries, 1);
+        assert_eq!(parts.targets.as_slice(), &[176, 0, -176, 0]);
+    }
+
+    /// A recovery that the current guard contains (the velocity-output clamp
+    /// engaged during the return) ends the run with the recovery's cause
+    /// instead of re-establishing on the far side of a contact.
+    #[test]
+    fn current_clamp_contained_recovery_terminates_with_origin_cause() {
+        let mut establish_legs = 0u32;
+        let mut parts = RunParts::new(recovery_point());
+        let _ = parts.backend.registers.insert(
+            foci_tmc4671::registers::INTERIM_PIDOUT_TARGET_TORQUE
+                .data
+                .addr(),
+            2_448,
+        );
+        let (terminal, parts) =
+            drive_parts(parts, Envelope::Tracked, move |phase, tick, target| {
+                if phase == CapturePhase::Establish && tick == 0 {
+                    establish_legs += 1;
+                }
+                if target == 0 {
+                    return 0;
+                }
+                match phase {
+                    CapturePhase::Establish if establish_legs == 1 => {
+                        target.signum() * STEADY_DELTA / 2
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            });
         assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
         assert!(terminal.safety_fault.is_none());
