@@ -270,6 +270,21 @@ impl ReversalOnlineAccumulator {
     pub(crate) fn reversal_overshoot_counts(&self) -> u16 {
         u16::try_from(self.peak_excess_q / OVERSHOOT_SCALE_Q).unwrap_or(u16::MAX)
     }
+
+    /// Whole-leg mean velocity-to-target ratio in percent: accumulated signed
+    /// displacement as a fraction of the ideal constant-target-rate
+    /// displacement. Around 100 tracked the commanded rate; below 100 ran
+    /// behind (sat below the band); above 100 with a nonzero
+    /// [`Self::reversal_overshoot_counts`] ran ahead (hunted across). Zero
+    /// before any target displacement accrues.
+    pub(crate) fn velocity_to_target_pct(&self) -> i32 {
+        if self.expected_position_q == 0 {
+            return 0;
+        }
+        let actual_q = i128::from(self.actual_position_counts) * i128::from(OVERSHOOT_SCALE_Q);
+        let ratio = actual_q.saturating_mul(100) / i128::from(self.expected_position_q);
+        i32::try_from(ratio).unwrap_or(i32::MAX)
+    }
 }
 
 /// Absolute per-direction gate thresholds for one reversal-robustness probe.
