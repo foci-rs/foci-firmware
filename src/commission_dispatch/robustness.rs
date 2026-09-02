@@ -359,12 +359,6 @@ mod tests {
 
     #[test]
     fn worst_case_run_duration_reserves_one_unwind_per_retry_and_direction() {
-        // Probe legs: 5 slots + 4 retries + 1 tail grace = 10 cycles per
-        // direction, 20 total, at 4 legs x 500 ms = 40_000 ms. Unwinds: up
-        // to two per cycle (a precondition unwind before the establish leg,
-        // an inconclusive unwind after it) = 20 per direction, each one
-        // recovery slot (3_000 ms here) plus one 500 ms rest
-        // = 2 x 20 x 3_500 = 140_000 ms.
         assert_eq!(robustness_worst_case_duration_ms(3_000_000), 180_000);
         assert!(robustness_nominal_duration_ms() <= robustness_worst_case_duration_ms(0));
     }

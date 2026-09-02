@@ -101,7 +101,6 @@ pub(crate) struct RobustnessReversalWorkspace {
     capture: ReversalOnlineAccumulator,
     previous_encoder_raw: u32,
     previous_read_us: u64,
-    /// Velocity-output clamp evidence borrowed by the origin recovery.
     current_observer: VelocityCurrentObserver,
     settle_displacement_counts: i8,
     settle_min_displacement_counts: i8,
@@ -123,6 +122,19 @@ impl RobustnessReversalWorkspace {
             settle_min_displacement_counts: 0,
             settle_max_displacement_counts: 0,
         }
+    }
+
+    /// Arm the current observer against the operational limit: this phase
+    /// installs no probe clamp of its own, so the limit already mirrored
+    /// into `torque_cap` by setup is the one in force.
+    fn reset_current_observer_from_operational_limit<B: CommissioningBackend>(
+        &mut self,
+        backend: &B,
+    ) {
+        self.current_observer.reset(
+            backend.current_limit(),
+            VelocityLimitEvidenceCapability::BestEffortPolling,
+        );
     }
 }
 
@@ -146,14 +158,9 @@ struct PendingCycle {
     wire: CycleWire,
 }
 
-/// What the phase does once the loop has rested after a leg that produced no
-/// conclusive cycle, or after an establish leg that was refused before it ran.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 enum HeldRoute {
-    /// Apply the routing the ledger returned when the leg was recorded.
     Ledger(LedgerAction),
-    /// Re-enter the current slot's establish leg; no leg ran, so the ledger
-    /// recorded nothing and no retry was consumed.
     ReenterEstablish,
 }
 
@@ -179,12 +186,8 @@ pub(crate) struct RobustnessReversalSession {
     pending_forward_settle_us: u32,
     /// The conclusive cycle awaiting the between-cycles rest confirmation.
     pending_cycle: Option<PendingCycle>,
-    /// The routing held while the loop comes to rest and returns to origin.
     held_route: Option<HeldRoute>,
-    /// Whether an origin recovery has run since the last commanded establish
-    /// leg. Bounds the precondition to one recovery per failure.
     origin_recovered: bool,
-    /// Recovery geometry planned at setup.
     recovery_plan: Option<RungOriginRecoveryPlan>,
 }
 
@@ -230,7 +233,9 @@ pub(crate) enum RobustnessReversalState {
         settle_deadline_us: Option<u64>,
     },
     /// Analyze the establish capture until it yields a Usable stationary settle.
-    EstablishAnalyze { analysis_deadline_us: u64 },
+    EstablishAnalyze {
+        analysis_deadline_us: u64,
+    },
     /// Reverse the commanded target WITHOUT clearing the integrator.
     ReverseCommandTarget,
     /// Collect the measured reversal capture: search for band entry up to the
@@ -241,10 +246,14 @@ pub(crate) enum RobustnessReversalState {
         settle_deadline_us: Option<u64>,
     },
     /// Analyze the reversal capture for band-entry reconvergence.
-    ReverseAnalyze { analysis_deadline_us: u64 },
+    ReverseAnalyze {
+        analysis_deadline_us: u64,
+    },
     /// Command zero and open the between-legs rest window. `retry_available`
     /// tracks whether one rejected-rest re-open remains.
-    ZeroCommand { retry_available: bool },
+    ZeroCommand {
+        retry_available: bool,
+    },
     /// Collect the zero-target rest capture until its window elapses.
     ZeroCapture {
         next_sample_us: u64,
@@ -256,8 +265,6 @@ pub(crate) enum RobustnessReversalState {
         analysis_deadline_us: u64,
         retry_available: bool,
     },
-    /// Return to the phase origin after an inconclusive or refused establish
-    /// leg has rested, using the shared rung-origin recovery.
     RecoverOrigin(RungOriginRecoveryRuntime),
     /// Assemble evidence and emit the terminal.
     Assemble,
@@ -293,30 +300,20 @@ fn reverse_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
     -establish_target_rpm(point, direction)
 }
 
-/// Longest interval during which the establish cruise target stays written
-/// before the reverse target replaces it: the band-entry search budget, the
-/// in-band settle tail, and the stationarity analysis after a converged
-/// capture. An exhausted leg is bounded by the first term alone; a converged
-/// leg keeps cruising through the other two.
 const ESTABLISH_LEG_WINDOW_US: u32 =
     ROBUSTNESS_MEASUREMENT_BUDGET_US + ROBUSTNESS_SETTLE_TAIL_US + SETTLE_ANALYSIS_BUDGET_US;
 
-/// Establish-cruise magnitude in encoder counts per millisecond, rounded up.
 fn establish_rate_counts_per_ms(point: &AcceptancePoint, counts_per_rev: u32) -> u32 {
     let counts_per_minute =
         u64::from(amplitude_rpm(point).unsigned_abs()).saturating_mul(u64::from(counts_per_rev));
     u32::try_from(counts_per_minute.div_ceil(60_000)).unwrap_or(u32::MAX)
 }
 
-/// Worst-case one-way travel of one establish leg, in encoder counts.
 fn establish_leg_travel_counts(rate_counts_per_ms: u32) -> u32 {
     let window_ms = u64::from(ESTABLISH_LEG_WINDOW_US).div_ceil(1_000);
     u32::try_from(u64::from(rate_counts_per_ms).saturating_mul(window_ms)).unwrap_or(u32::MAX)
 }
 
-/// Absolute headroom left in the establish sense of `direction`, saturating
-/// at zero: the positive window ahead of a forward establish (direction 0),
-/// the negative window ahead of a reverse one (direction 1).
 fn remaining_headroom_counts(
     unwrapped_position: i32,
     negative_window: u32,
@@ -332,8 +329,6 @@ fn remaining_headroom_counts(
     u32::try_from(remaining.max(0)).unwrap_or(u32::MAX)
 }
 
-/// Whether one establish leg at `rate_counts_per_ms` fits inside the absolute
-/// headroom remaining in `direction` from `unwrapped_position`.
 fn establish_leg_fits(
     rate_counts_per_ms: u32,
     unwrapped_position: i32,
@@ -560,12 +555,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 );
                 return fault_terminal(session, backend, None, counts_per_rev);
             }
-            // No probe clamp is installed in this phase, so the limit in force
-            // is the operational one the setup already mirrored into torque_cap.
-            workspace.current_observer.reset(
-                backend.current_limit(),
-                VelocityLimitEvidenceCapability::BestEffortPolling,
-            );
+            workspace.reset_current_observer_from_operational_limit(backend);
             session.recovery_plan = Some(plan);
             *state = RobustnessReversalState::EstablishWriteGain;
             StepResult::ReadyNow
@@ -1095,9 +1085,6 @@ fn accepted_gains(point: &AcceptancePoint) -> Result<(PidPGain, PidIGain), Commi
     Ok((p, i))
 }
 
-/// Planned recovery velocity for the accepted point, in milli-revolutions per
-/// second, derived from its RPM target exactly as the Stage-C sweep does for
-/// a non-matrix plan.
 fn planned_velocity_mrev_s(point: &AcceptancePoint) -> Result<u32, CommissionError> {
     u32::try_from(amplitude_rpm(point))
         .ok()
@@ -1107,8 +1094,6 @@ fn planned_velocity_mrev_s(point: &AcceptancePoint) -> Result<u32, CommissionErr
         .ok_or(CommissionError::InvalidSchedule)
 }
 
-/// Commanded-side settled-rate authority for a return in `direction`, from
-/// the point's response intervals (index 0 forward, index 1 reverse).
 fn return_lower_rate_q(point: &AcceptancePoint, direction: VelocityDirection) -> Option<u64> {
     let [low_q, high_q] = match direction {
         VelocityDirection::Forward => point.selected_response_intervals_q[0],
@@ -1117,9 +1102,6 @@ fn return_lower_rate_q(point: &AcceptancePoint, direction: VelocityDirection) ->
     commanded_side_lower_rate_q(direction, i64::from(low_q), i64::from(high_q))
 }
 
-/// Recovery geometry for this run. A point that carries no settled-rate
-/// authority for either return direction cannot be recovered and is an
-/// invalid schedule, the same guard the Stage-C sweep applies.
 fn robustness_recovery_plan(
     point: &AcceptancePoint,
     safety: &OuterSafetyLimits,
@@ -1137,10 +1119,18 @@ fn robustness_recovery_plan(
     .map_err(|_| CommissionError::InvalidSchedule)
 }
 
-/// Build the origin-recovery runtime from the accepted point and the live
-/// position. The return direction and its settled-rate authority follow the
-/// sign of the current offset, not the direction being probed: an
-/// inconclusive reverse leg can leave the axis on either side of the origin.
+/// The return direction after an inconclusive or refused leg: back toward
+/// the origin from wherever the axis currently sits, not the direction the
+/// probe was establishing — an inconclusive reverse leg can leave the axis
+/// on either side of the origin.
+fn return_direction_from_offset(start_offset_counts: i32) -> VelocityDirection {
+    if start_offset_counts > 0 {
+        VelocityDirection::Reverse
+    } else {
+        VelocityDirection::Forward
+    }
+}
+
 fn build_origin_recovery(
     session: &RobustnessReversalSession,
     safety: &OuterSafetyLimits,
@@ -1149,11 +1139,7 @@ fn build_origin_recovery(
         .recovery_plan
         .ok_or(CommissionError::InvalidSchedule)?;
     let start_offset_counts = safety.unwrapped_position;
-    let return_direction = if start_offset_counts > 0 {
-        VelocityDirection::Reverse
-    } else {
-        VelocityDirection::Forward
-    };
+    let return_direction = return_direction_from_offset(start_offset_counts);
     let lower_rate_q = return_lower_rate_q(&session.point, return_direction)
         .ok_or(CommissionError::InvalidSchedule)?;
     let p =
@@ -1274,10 +1260,6 @@ fn advance_capture(
     }
 }
 
-/// Report an inconclusive cycle into the current direction's ledger, hold
-/// the routing it returned, and bring the loop to rest. The record happens
-/// here so the ledger can classify the outcome; the held route is applied
-/// from the rest-confirmed arm.
 fn retry_or_finalize_inconclusive(
     state: &mut RobustnessReversalState,
     session: &mut RobustnessReversalSession,
@@ -1374,8 +1356,6 @@ fn apply_cycle_record(
     route_action(state, session, action);
 }
 
-/// Apply the route held across the rest (and origin return) that followed a
-/// leg without a conclusive cycle.
 fn apply_held_route(state: &mut RobustnessReversalState, session: &mut RobustnessReversalSession) {
     match session.held_route.take() {
         Some(HeldRoute::Ledger(action)) => route_action(state, session, action),
@@ -1646,9 +1626,6 @@ fn rest_not_confirmed_terminal<B: CommissioningBackend>(
     )
 }
 
-/// Build a `Failed` terminal for an origin return that did not leave the axis
-/// where the next establish leg fits: an unconfirmed recovery rest, or a
-/// headroom precondition that failed again right after a recovery.
 fn origin_not_recovered_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
@@ -1862,10 +1839,6 @@ mod tests {
         Recover,
     }
 
-    /// Classify a post-step state as a capture leg, if any. `At` results are
-    /// only ever scheduled from these states (the recovery runtime schedules
-    /// its own moving and settle samples), so the driver reads the phase from
-    /// the state the step transitioned into.
     fn capture_phase(state: &RobustnessReversalState) -> Option<CapturePhase> {
         match state {
             RobustnessReversalState::EstablishCapture { .. } => Some(CapturePhase::Establish),
@@ -1876,31 +1849,20 @@ mod tests {
         }
     }
 
-    /// Whether the driver mirrors the outer engine's between-tick safety
-    /// sample. Tracked runs keep `safety.unwrapped_position` live (the
-    /// precondition and the recovery read it) at the cost of the envelope's
-    /// velocity cap (24 counts/ms here) applying to the script; the legacy
-    /// jitter scripts stay untracked.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Envelope {
         Untracked,
         Tracked,
     }
 
-    /// Everything one scripted run owns, so a test can step the machine by
-    /// hand between `Setup` and the terminal, or hand it to `drive_parts`.
     struct RunParts {
         state: RobustnessReversalState,
         workspace: RobustnessReversalWorkspace,
         session: RobustnessReversalSession,
         safety: OuterSafetyLimits,
         backend: MockBackend,
-        /// Every `PID_VELOCITY_TARGET` write, in order, as signed RPM. Kept
-        /// by the driver because the mock's SPI log (8_192 entries, reads
-        /// included) fills before a long run ends.
         targets: heapless::Vec<i32, 512>,
         log_cursor: usize,
-        /// Entries into RecoverOrigin.
         recoveries: u32,
     }
 
@@ -1943,12 +1905,6 @@ mod tests {
         }
     }
 
-    /// Drive `parts` to its terminal against a scripted `MockBackend`.
-    ///
-    /// `motion` returns the per-tick encoder delta for the sample now being
-    /// scheduled, given the capture phase, the tick index within the current
-    /// leg (reset to 0 whenever a fresh capture leg begins, so retries restart
-    /// the script), and the commanded velocity target.
     fn drive_parts(
         mut parts: RunParts,
         envelope: Envelope,
@@ -1963,8 +1919,6 @@ mod tests {
             let result = parts.step();
             parts.harvest_targets();
             if envelope == Envelope::Tracked {
-                // The mock's SPI log fills long before a tracked run ends;
-                // every target write is already in `parts.targets`.
                 parts.backend.spi_log.clear();
                 parts.log_cursor = 0;
             }
@@ -2028,7 +1982,6 @@ mod tests {
         panic!("robustness reversal run exceeded its bounded step budget");
     }
 
-    /// Drive one full run to its terminal against a scripted `MockBackend`.
     fn drive_scripted(
         point: AcceptancePoint,
         motion: impl FnMut(CapturePhase, u32, i32) -> i32,
@@ -2041,9 +1994,6 @@ mod tests {
         (terminal, parts.backend, parts.session)
     }
 
-    /// An accepted point whose settled-rate intervals match `STEADY_DELTA`
-    /// (12 counts/ms = 12_000_000 rate-Q), so an origin recovery planned from
-    /// them runs at the rate the scripted motion delivers.
     fn recovery_point() -> AcceptancePoint {
         AcceptancePoint {
             selected_response_intervals_q: [[12_000_000, 13_000_000], [-13_000_000, -12_000_000]],
@@ -2131,9 +2081,7 @@ mod tests {
     #[test]
     fn establish_leg_travel_covers_budget_settle_tail_and_analysis() {
         let rate = establish_rate_counts_per_ms(&test_point(), COUNTS_PER_REV);
-        // 176 rpm * 4_000 counts/rev / 60_000 ms/min = 11.73, rounded up.
         assert_eq!(rate, 12);
-        // 500 ms search budget + 80 ms settle tail + 236 ms analysis.
         assert_eq!(ESTABLISH_LEG_WINDOW_US, 816_000);
         assert_eq!(establish_leg_travel_counts(rate), 12 * 816);
     }
@@ -2143,13 +2091,10 @@ mod tests {
         let leg = establish_leg_travel_counts(12) as i32;
         let window: u32 = 20_000;
         let edge = window as i32 - leg;
-        // Direction 0 establishes forward against the positive window.
         assert!(establish_leg_fits(12, edge, window, window, 0));
         assert!(!establish_leg_fits(12, edge + 1, window, window, 0));
-        // Direction 1 establishes reverse against the negative window.
         assert!(establish_leg_fits(12, -edge, window, window, 1));
         assert!(!establish_leg_fits(12, -(edge + 1), window, window, 1));
-        // Beyond the window the remaining headroom saturates at zero.
         assert_eq!(
             remaining_headroom_counts(window as i32 + 5, window, window, 0),
             0
@@ -2979,8 +2924,6 @@ mod tests {
         }
     }
 
-    /// Every inconclusive record, retry or slot-consume, holds the ledger's
-    /// action and brings the loop to rest before it is applied.
     #[test]
     fn every_inconclusive_holds_its_route_and_rests_first() {
         let mut state = RobustnessReversalState::EstablishWriteGain;
@@ -3024,8 +2967,6 @@ mod tests {
         assert_eq!(session.ledgers[0].valid_cycles(), 0);
     }
 
-    /// An exhausted establish leg rests at zero before its retry re-establishes;
-    /// it never re-commands the cruise target straight from cruise.
     #[test]
     fn exhausted_establish_rests_before_its_retry() {
         let mut establish_legs = 0u32;
@@ -3040,8 +2981,6 @@ mod tests {
                     return 0;
                 }
                 match phase {
-                    // Half the cruise rate sits outside the 5% band, so the first
-                    // establish leg never enters it and exhausts its budget.
                     CapturePhase::Establish if establish_legs == 1 => {
                         target.signum() * STEADY_DELTA / 2
                     }
@@ -3055,8 +2994,6 @@ mod tests {
         assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
     }
 
-    /// The conclusive path is untouched: establish, reverse, rest per cycle,
-    /// and every slot fills without a retry.
     #[test]
     fn conclusive_cycles_keep_their_target_sequence() {
         let (terminal, parts) = drive_parts(
@@ -3119,7 +3056,6 @@ mod tests {
         assert!(terminal.safety_fault.is_none());
     }
 
-    /// Worst-case travel of one establish leg for `point` at the test encoder.
     fn leg_travel(point: &AcceptancePoint) -> i32 {
         establish_leg_travel_counts(establish_rate_counts_per_ms(point, COUNTS_PER_REV)) as i32
     }
@@ -3215,8 +3151,6 @@ mod tests {
     #[test]
     fn setup_rejects_a_schedule_that_cannot_fit_from_the_origin() {
         let mut parts = RunParts::new(test_point());
-        // The origin band is the settle reserve in counts (100 mrev of
-        // 4_000 = 400), so a window equal to the leg travel is 400 short.
         parts.safety.positive_position_window = leg_travel(&test_point()) as u32;
 
         let StepResult::RobustnessReversalTerminal(terminal) = parts.step() else {
@@ -3237,8 +3171,6 @@ mod tests {
         );
     }
 
-    /// Establish exhausted -> rest -> return to origin -> retry establish in the
-    /// same direction: `+v, 0, -v (recovery), 0, +v`, one retry recorded.
     #[test]
     fn exhausted_establish_unwinds_to_origin_before_its_retry() {
         let mut establish_legs = 0u32;
@@ -3267,7 +3199,6 @@ mod tests {
         assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
     }
 
-    /// An Excluded reverse leg takes the same rest -> recovery -> retry path.
     #[test]
     fn excluded_reverse_leg_unwinds_before_its_retry() {
         let mut reverse_legs = 0u32;
@@ -3282,8 +3213,6 @@ mod tests {
                     return 0;
                 }
                 match phase {
-                    // In band long enough for band entry, then a clear drift so
-                    // the settled tail resolves a slope and is Excluded.
                     CapturePhase::Reverse if reverse_legs == 1 => {
                         if tick < 50 {
                             target.signum() * STEADY_DELTA
@@ -3295,16 +3224,12 @@ mod tests {
                 }
             },
         );
-        // Untracked: the position reads as origin, so the recovery is
-        // AlreadyCentered and commands no return motion.
         assert_eq!(&parts.targets[..4], &[176, -176, 0, 176]);
         assert_eq!(parts.recoveries, 1);
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
     }
 
-    /// Slot-consuming inconclusives also rest and recover, and the ledger's
-    /// NextCycle / DirectionDone routing still reaches assembly.
     #[test]
     fn slot_consuming_inconclusive_unwinds_then_routes() {
         let mut jitter_high = false;
@@ -3341,15 +3266,9 @@ mod tests {
         }
     }
 
-    /// Precondition fails -> rest -> AlreadyCentered recovery -> precondition
-    /// fails again -> cause 11, exactly one recovery, no motion commanded.
     #[test]
     fn precondition_failure_then_centered_recovery_terminates_after_one_recovery() {
         let mut parts = RunParts::new(test_point());
-        // The first step is Setup: the schedule guard passes against the
-        // fixture's full windows. Shrinking the window only afterwards
-        // stands in for a drifted origin so the precondition, not Setup,
-        // is what refuses the leg.
         assert!(matches!(parts.step(), StepResult::ReadyNow));
         parts.safety.positive_position_window = leg_travel(&test_point()) as u32 - 1;
 
@@ -3366,7 +3285,6 @@ mod tests {
         );
     }
 
-    /// A deadline-contained return that still leaves headroom continues.
     #[test]
     fn contained_recovery_with_headroom_continues() {
         let mut establish_legs = 0u32;
@@ -3378,7 +3296,6 @@ mod tests {
                     establish_legs += 1;
                 }
                 match phase {
-                    // The return stalls: the moving deadline contains it.
                     CapturePhase::Recover => 0,
                     _ if target == 0 => 0,
                     CapturePhase::Establish if establish_legs == 1 => {
@@ -3395,7 +3312,6 @@ mod tests {
         assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
     }
 
-    /// A contained return that leaves too little headroom is cause 11.
     #[test]
     fn contained_recovery_without_headroom_terminates_with_origin_cause() {
         let mut establish_legs = 0u32;
@@ -3409,9 +3325,6 @@ mod tests {
                 match phase {
                     CapturePhase::Recover => 0,
                     _ if target == 0 => 0,
-                    // 22 counts/ms: outside the band (exhausts) and under the
-                    // 24 counts/ms envelope; 500 ms lands at 11_000 counts,
-                    // leaving 9_400 of the 20_400 window -- less than one leg.
                     CapturePhase::Establish if establish_legs == 1 => target.signum() * 22,
                     _ => target.signum() * STEADY_DELTA,
                 }
@@ -3424,7 +3337,6 @@ mod tests {
         assert_eq!(parts.targets.as_slice(), &[176, 0, -176, 0]);
     }
 
-    /// A recovery whose scored rest never confirms is cause 11.
     #[test]
     fn unconfirmed_recovery_rest_terminates_with_origin_cause() {
         let mut establish_legs = 0u32;
@@ -3436,8 +3348,6 @@ mod tests {
                     establish_legs += 1;
                 }
                 match phase {
-                    // The return arrives, then creeps one count per sample
-                    // through the whole settle so the scored rest rejects.
                     CapturePhase::Recover if target == 0 => -1,
                     CapturePhase::Recover => target.signum() * STEADY_DELTA,
                     _ if target == 0 => 0,
@@ -3454,7 +3364,6 @@ mod tests {
         assert_eq!(parts.recoveries, 1);
     }
 
-    /// A recovery safety fault keeps the envelope cause and its report.
     #[test]
     fn recovery_safety_fault_reports_envelope_cause() {
         use crate::commission_dispatch::robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
@@ -3468,7 +3377,6 @@ mod tests {
                     establish_legs += 1;
                 }
                 match phase {
-                    // The return drives away from the origin: wrong-way fault.
                     CapturePhase::Recover if target != 0 => -target.signum() * STEADY_DELTA,
                     _ if target == 0 => 0,
                     CapturePhase::Establish if establish_legs == 1 => {
