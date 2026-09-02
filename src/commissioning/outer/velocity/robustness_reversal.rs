@@ -41,7 +41,8 @@ use crate::commissioning::types::{
 };
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
-    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_VELOCITY_ACTUAL, PID_VELOCITY_OFFSET,
+    PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 use super::band_confirmation::{CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT};
@@ -681,8 +682,18 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 CaptureAdvance::Exhausted => {
                     // I3: the establish leg never confirmed a settle within the
                     // budget; retry from a fresh entry rather than proceed.
+                    let velocity_offset = backend
+                        .read_register(PID_VELOCITY_OFFSET)
+                        .await
+                        .map(|value| value as i32)
+                        .unwrap_or(i32::MIN);
+                    let velocity_actual = backend
+                        .read_capture_register(PID_VELOCITY_ACTUAL)
+                        .await
+                        .map(|value| value as i32)
+                        .unwrap_or(i32::MIN);
                     defmt::info!(
-                        "robustness_reversal establish leg exhausted: dir={} slot={} read_us={} budget_deadline_us={} elapsed_us={} retries_used={} vel_to_target_pct={} peak_band_excess={}",
+                        "robustness_reversal establish leg exhausted: dir={} slot={} read_us={} budget_deadline_us={} elapsed_us={} retries_used={} vel_to_target_pct={} peak_band_excess={} velocity_offset={} velocity_actual={}",
                         session.direction,
                         session.cycle_cursor[session.direction],
                         read_us,
@@ -691,6 +702,8 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         session.ledgers[session.direction].inconclusive_retries_used(),
                         workspace.capture.velocity_to_target_pct(),
                         workspace.capture.reversal_overshoot_counts(),
+                        velocity_offset,
+                        velocity_actual,
                     );
                     retry_or_finalize_inconclusive(state, session);
                     StepResult::ReadyNow
