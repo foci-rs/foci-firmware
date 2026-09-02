@@ -250,6 +250,60 @@ fn reverse_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
     -establish_target_rpm(point, direction)
 }
 
+/// Longest interval during which the establish cruise target stays written
+/// before the reverse target replaces it: the band-entry search budget, the
+/// in-band settle tail, and the stationarity analysis after a converged
+/// capture. An exhausted leg is bounded by the first term alone; a converged
+/// leg keeps cruising through the other two.
+const ESTABLISH_LEG_WINDOW_US: u32 =
+    ROBUSTNESS_MEASUREMENT_BUDGET_US + ROBUSTNESS_SETTLE_TAIL_US + SETTLE_ANALYSIS_BUDGET_US;
+
+/// Establish-cruise magnitude in encoder counts per millisecond, rounded up.
+#[allow(dead_code)]
+fn establish_rate_counts_per_ms(point: &AcceptancePoint, counts_per_rev: u32) -> u32 {
+    let counts_per_minute = u64::from(amplitude_rpm(point).unsigned_abs())
+        .saturating_mul(u64::from(counts_per_rev));
+    u32::try_from(counts_per_minute.div_ceil(60_000)).unwrap_or(u32::MAX)
+}
+
+/// Worst-case one-way travel of one establish leg, in encoder counts.
+fn establish_leg_travel_counts(rate_counts_per_ms: u32) -> u32 {
+    let window_ms = u64::from(ESTABLISH_LEG_WINDOW_US).div_ceil(1_000);
+    u32::try_from(u64::from(rate_counts_per_ms).saturating_mul(window_ms)).unwrap_or(u32::MAX)
+}
+
+/// Absolute headroom left in the establish sense of `direction`, saturating
+/// at zero: the positive window ahead of a forward establish (direction 0),
+/// the negative window ahead of a reverse one (direction 1).
+fn remaining_headroom_counts(
+    unwrapped_position: i32,
+    negative_window: u32,
+    positive_window: u32,
+    direction: usize,
+) -> u32 {
+    let position = i64::from(unwrapped_position);
+    let remaining = if direction == 0 {
+        i64::from(positive_window) - position
+    } else {
+        position + i64::from(negative_window)
+    };
+    u32::try_from(remaining.max(0)).unwrap_or(u32::MAX)
+}
+
+/// Whether one establish leg at `rate_counts_per_ms` fits inside the absolute
+/// headroom remaining in `direction` from `unwrapped_position`.
+#[allow(dead_code)]
+fn establish_leg_fits(
+    rate_counts_per_ms: u32,
+    unwrapped_position: i32,
+    negative_window: u32,
+    positive_window: u32,
+    direction: usize,
+) -> bool {
+    remaining_headroom_counts(unwrapped_position, negative_window, positive_window, direction)
+        >= establish_leg_travel_counts(rate_counts_per_ms)
+}
+
 /// Per-tick rate-Q value corresponding to a signed RPM target, in the same
 /// fixed-point convention as [`per_tick_rate_q`]
 /// (`VELOCITY_RATE_Q_SCALE`, counts per second scaled by 1000).
@@ -1673,6 +1727,33 @@ mod tests {
         }
         assert_eq!(evidence.residual_medians_q, [0, 0]);
         assert_eq!(evidence.iae_medians_qs, [0, 0]);
+    }
+
+    #[test]
+    fn establish_leg_travel_covers_budget_settle_tail_and_analysis() {
+        let rate = establish_rate_counts_per_ms(&test_point(), COUNTS_PER_REV);
+        // 176 rpm * 4_000 counts/rev / 60_000 ms/min = 11.73, rounded up.
+        assert_eq!(rate, 12);
+        // 500 ms search budget + 80 ms settle tail + 236 ms analysis.
+        assert_eq!(ESTABLISH_LEG_WINDOW_US, 816_000);
+        assert_eq!(establish_leg_travel_counts(rate), 12 * 816);
+    }
+
+    #[test]
+    fn establish_leg_fits_exactly_at_the_remaining_headroom_boundary() {
+        let leg = establish_leg_travel_counts(12) as i32;
+        let window: u32 = 20_000;
+        let edge = window as i32 - leg;
+        // Direction 0 establishes forward against the positive window.
+        assert!(establish_leg_fits(12, edge, window, window, 0));
+        assert!(!establish_leg_fits(12, edge + 1, window, window, 0));
+        // Direction 1 establishes reverse against the negative window.
+        assert!(establish_leg_fits(12, -edge, window, window, 1));
+        assert!(!establish_leg_fits(12, -(edge + 1), window, window, 1));
+        // Beyond the window the remaining headroom saturates at zero.
+        assert_eq!(remaining_headroom_counts(window as i32 + 5, window, window, 0), 0);
+        assert_eq!(remaining_headroom_counts(-(window as i32) - 5, window, window, 1), 0);
+        assert!(!establish_leg_fits(12, window as i32 + 5, window, window, 0));
     }
 
     /// A recorded cycle with extreme values must saturate, not wrap or panic,
