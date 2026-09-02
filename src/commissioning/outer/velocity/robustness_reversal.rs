@@ -810,6 +810,14 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         // one bounded re-open. This is a specific, operator-
                         // actionable condition, not the generic internal-fault
                         // bucket, so it gets its own cause.
+                        defmt::warn!(
+                            "robustness between-cycles rest not confirmed: dir={} disposition={} recent_structural_code={} selected_suffix_len={} conditioned_rest_evidence={}",
+                            session.direction,
+                            confirmation.disposition,
+                            confirmation.recent_structural_code,
+                            confirmation.selected_suffix_len,
+                            confirmation.conditioned_rest_evidence
+                        );
                         rest_not_confirmed_terminal(session, backend, counts_per_rev)
                     }
                 }
