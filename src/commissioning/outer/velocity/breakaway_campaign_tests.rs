@@ -895,6 +895,52 @@ fn no_discovery_motion_happens_before_the_planned_discovery_state_advances() {
 }
 
 #[test]
+fn discovery_zeros_a_stale_velocity_feedforward_offset_at_ladder_start() {
+    // The runtime STEP/DIR velocity feedforward can leave a nonzero
+    // PID_VELOCITY_OFFSET residual from the pre-autotune homing move, and the
+    // autotune calibrate path never clears it. A nonzero offset biases the
+    // I=0 discovery ladder so every rung reads ambiguous. The ladder must zero
+    // it before the first gain program.
+    let request = discovery_request();
+    let target_velocity_rpm = TmcMechanicalRpm::from_register(100);
+    let mut session = AdditiveDiscoverySession::new(request, false, target_velocity_rpm, 4_394)
+        .expect("valid discovery session");
+    let mut workspace = BreakawayProbeWorkspace::new();
+    let mut state = AdditiveDiscoveryState::PlannedDiscovery;
+    let mut safety = test_safety();
+    let mut backend = test_backend();
+    let _ = backend
+        .registers
+        .insert(PID_VELOCITY_OFFSET.addr(), (-55_i32) as u32);
+
+    // PlannedDiscovery -> WriteGain, then execute WriteGain.
+    for _ in 0..2 {
+        pollster::block_on(step_additive_discovery(
+            &mut state,
+            &mut workspace,
+            &mut session,
+            &mut safety,
+            &mut backend,
+        ));
+    }
+
+    let offset_zero = backend.spi_log.iter().position(
+        |op| matches!(op, SpiOp::Write(addr, val) if *addr == PID_VELOCITY_OFFSET.addr() && *val == 0),
+    );
+    let first_gain = backend.spi_log.iter().position(
+        |op| matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_P_VELOCITY_I.addr()),
+    );
+    assert!(
+        offset_zero.is_some(),
+        "ladder start must zero a stale PID_VELOCITY_OFFSET"
+    );
+    assert!(
+        matches!((offset_zero, first_gain), (Some(z), Some(g)) if z < g),
+        "the offset must be zeroed before the first gain program"
+    );
+}
+
+#[test]
 fn discovery_retains_inherited_safety_contract_through_recovery() {
     // Starting at the driver's real initial state is the narrowest boundary that
     // avoids fabricating a statistically valid probe terminal merely to enter

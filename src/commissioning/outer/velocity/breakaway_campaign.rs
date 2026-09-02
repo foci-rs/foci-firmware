@@ -1927,6 +1927,18 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     velocity_offset,
                     velocity_actual,
                 );
+                // The runtime STEP/DIR feedforward can leave a nonzero
+                // PID_VELOCITY_OFFSET residual from the pre-autotune homing
+                // move; the autotune calibrate path never clears it, and a
+                // nonzero offset biases the I=0 ladder so every rung reads
+                // ambiguous. Zero it once here, before any gain program.
+                if backend
+                    .write_register(PID_VELOCITY_OFFSET, 0)
+                    .await
+                    .is_err()
+                {
+                    return discovery_fault(CommissionError::Spi);
+                }
             }
             let p = match session.current_gain() {
                 Ok(p) => p,
