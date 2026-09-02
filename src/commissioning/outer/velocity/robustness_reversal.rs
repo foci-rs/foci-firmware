@@ -1023,10 +1023,11 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     if report.outcome == RungOriginRecoveryOutcome::RecoveryCurrentHeadroom =>
                 {
                     defmt::warn!(
-                        "robustness origin recovery contained by the current clamp: dir={} outcome={} final_offset={}",
+                        "robustness origin recovery done: dir={} outcome={} final_offset={} runtime_us={}",
                         session.direction,
                         report.outcome,
-                        report.final_offset_counts
+                        report.final_offset_counts,
+                        report.total_duration_us
                     );
                     origin_not_recovered_terminal(session, backend, counts_per_rev)
                 }
