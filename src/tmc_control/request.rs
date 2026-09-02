@@ -95,9 +95,12 @@ fn stage_c_resume_rejection_terminal(
 fn build_stage_c_resume_workflow_plan(
     run_sequence: u32,
     reproduce_ms: u32,
+    recovery_maximum_slot_us: u32,
 ) -> crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan {
     let maximum_workflow_ms = reproduce_ms
-        .checked_add(crate::commission_dispatch::robustness::robustness_worst_case_duration_ms())
+        .checked_add(crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
+            recovery_maximum_slot_us,
+        ))
         .expect("resume reproduce budget plus robustness worst case fits u32");
     crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new(
         run_sequence,
@@ -931,6 +934,7 @@ where
                     let workflow = build_stage_c_resume_workflow_plan(
                         run_sequence,
                         preflight.plan.maximum_workflow_ms,
+                        preflight.plan.recovery_maximum_slot_us,
                     );
                     board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
                         oid,
@@ -1012,7 +1016,9 @@ where
                         CommissioningWorkflowPlan::new_robustness(
                             run_sequence,
                             crate::commission_dispatch::robustness::robustness_nominal_duration_ms(),
-                            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(),
+                            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
+                                u32::from(request.max_duration_ms).saturating_mul(1_000),
+                            ),
                         )
                         .expect("robustness workflow envelope is always valid");
                     board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
@@ -2747,7 +2753,7 @@ mod tests {
         );
         assert_eq!(
             workflow.maximum_workflow_ms,
-            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms()
+            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(3_000_000)
         );
         assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
         // Exactly one workflow plan is emitted.
@@ -2857,7 +2863,9 @@ mod tests {
         assert_eq!(
             workflow.maximum_workflow_ms,
             plan.maximum_workflow_ms
-                + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms()
+                + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
+                    plan.recovery_maximum_slot_us
+                )
         );
         // The exact plan, not just the envelope: motion evidence that reaches
         // the host before this reply has no plan to be assembled against.
@@ -2883,12 +2891,14 @@ mod tests {
     fn resume_workflow_plan_budget_covers_robustness() {
         let reproduce_ms = 12_000;
 
-        let plan = build_stage_c_resume_workflow_plan(0, reproduce_ms);
+        let plan = build_stage_c_resume_workflow_plan(0, reproduce_ms, 3_000_000);
 
         assert!(
             plan.maximum_workflow_ms
                 >= reproduce_ms
-                    + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(),
+                    + crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
+                        3_000_000
+                    ),
             "resume plan must bound reproduce + inline robustness"
         );
     }

@@ -13,6 +13,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, StageCCandidateSlot,
 };
 use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
+use crate::commissioning::outer::velocity::sweep_plan::ZERO_SETTLE_US;
 use crate::commissioning::outer::velocity::robustness_evidence::{
     RobustnessDirectionSummary, RobustnessEvidence,
 };
@@ -171,33 +172,31 @@ pub fn apply_robustness_terminal(
 /// Worst-case wall-clock duration of a full reversal-robustness run, in
 /// milliseconds.
 ///
-/// Bounds the run at 16 total probe cycles: per direction, the
+/// Bounds the run at 20 total probe cycles: per direction, the
 /// `ROBUSTNESS_CYCLES_PER_DIRECTION` measurement slots plus
 /// `ROBUSTNESS_MAX_RETRIES` bounded inconclusive retries plus the single
 /// tail-grace re-run, doubled for both reversal directions. Each cycle
-/// budgets `ROBUSTNESS_LEGS_PER_CYCLE` legs (establish, reversal, rest, and
-/// the one re-opened rest a rejected rest is granted) at
-/// `ROBUSTNESS_MEASUREMENT_BUDGET_US` apiece -- the same budget
-/// `robustness_reversal::open_zero_window` uses for each rest window, so all
-/// four legs share one constant. This is a conservative envelope: a cycle
-/// that reaches band entry early finishes a leg well under its full budget.
-/// The result is asserted inside the u16 millisecond field the host's
-/// duration-budget wire format supplies.
-pub(crate) fn robustness_worst_case_duration_ms() -> u32 {
+/// budgets `ROBUSTNESS_LEGS_PER_CYCLE` legs at
+/// `ROBUSTNESS_MEASUREMENT_BUDGET_US` apiece. On top of that, every cycle can
+/// return to the origin twice: once before its establish leg when the
+/// headroom precondition refuses the leg, and once after the leg when it ends
+/// inconclusive. Each unwind is one recovery slot (`recovery_maximum_slot_us`,
+/// the host-declared per-primitive cap the recovery plan carries) plus one
+/// `ZERO_SETTLE_US` rest.
+pub(crate) fn robustness_worst_case_duration_ms(recovery_maximum_slot_us: u32) -> u32 {
     let cycles_per_direction = ROBUSTNESS_CYCLES_PER_DIRECTION as u32
         + u32::from(ROBUSTNESS_MAX_RETRIES)
         + ROBUSTNESS_TAIL_GRACE_CYCLES;
     let worst_case_cycles = cycles_per_direction * ROBUSTNESS_DIRECTION_COUNT;
-
     let per_cycle_envelope_ms =
         (ROBUSTNESS_MEASUREMENT_BUDGET_US / MICROS_PER_MILLI) * ROBUSTNESS_LEGS_PER_CYCLE;
+    let probe_ms = u64::from(worst_case_cycles) * u64::from(per_cycle_envelope_ms);
 
-    let worst_case_duration_ms = worst_case_cycles * per_cycle_envelope_ms;
-    assert!(
-        worst_case_duration_ms <= u32::from(u16::MAX),
-        "robustness worst-case duration must fit the host's u16 duration-budget field"
-    );
-    worst_case_duration_ms
+    let unwinds = u64::from(worst_case_cycles) * 2;
+    let unwind_slot_ms = (u64::from(recovery_maximum_slot_us) + u64::from(ZERO_SETTLE_US))
+        .div_ceil(u64::from(MICROS_PER_MILLI));
+
+    u32::try_from(probe_ms + unwinds * unwind_slot_ms).unwrap_or(u32::MAX)
 }
 
 /// Clean-run duration estimate of a full reversal-robustness run, in
@@ -359,17 +358,14 @@ mod tests {
     }
 
     #[test]
-    fn worst_case_run_duration_fits_the_u16_budget_field() {
-        // Per direction: 5 measurement slots + 4 bounded inconclusive
-        // retries + 1 tail-grace re-run = 10 cycles; both directions = 20.
-        // Each cycle budgets 4 legs (establish, reversal, rest, and the one
-        // re-opened rest) at the 500 ms measurement budget apiece:
-        // 20 * 4 * 500 = 40_000 ms.
-        let expected_ms: u32 = 40_000;
-
-        let duration_ms = robustness_worst_case_duration_ms();
-
-        assert_eq!(duration_ms, expected_ms);
-        assert!(duration_ms <= u32::from(u16::MAX));
+    fn worst_case_run_duration_reserves_one_unwind_per_retry_and_direction() {
+        // Probe legs: 5 slots + 4 retries + 1 tail grace = 10 cycles per
+        // direction, 20 total, at 4 legs x 500 ms = 40_000 ms. Unwinds: up
+        // to two per cycle (a precondition unwind before the establish leg,
+        // an inconclusive unwind after it) = 20 per direction, each one
+        // recovery slot (3_000 ms here) plus one 500 ms rest
+        // = 2 x 20 x 3_500 = 140_000 ms.
+        assert_eq!(robustness_worst_case_duration_ms(3_000_000), 180_000);
+        assert!(robustness_nominal_duration_ms() <= robustness_worst_case_duration_ms(0));
     }
 }
