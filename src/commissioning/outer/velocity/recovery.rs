@@ -317,11 +317,12 @@ impl RungOriginRecoveryRuntime {
             (None, RecoveryBindingSource::MissingRate) => None,
             _ => return Err(CommissionError::InvalidSchedule),
         };
-        let return_distance =
-            recovery_return_distance_counts(config.start_offset_counts, plan.origin_band_counts)
-                .ok_or(CommissionError::InvalidSchedule)?;
-        let moving_target_counts = recovery_moving_target_counts(plan.origin_band_counts);
-        let (state, runtime_us, lower_rate_q, moving_target_counts) = if return_distance == 0 {
+        let offset_abs = config.start_offset_counts.unsigned_abs();
+        let recenter_target = recovery_recenter_target_counts(plan.origin_band_counts);
+        let (state, runtime_us, lower_rate_q, moving_target_counts) = if offset_abs
+            <= recenter_target
+        {
+            // Zone 1: already within the tight recenter target -- no motion.
             (
                 RecoveryState::Terminal {
                     outcome: RungOriginRecoveryOutcome::AlreadyCentered,
@@ -329,34 +330,76 @@ impl RungOriginRecoveryRuntime {
                 },
                 0,
                 0,
-                moving_target_counts,
+                recenter_target,
             )
-        } else if let Some(rate) = lower_rate_q {
-            match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
-                Ok(runtime_us) => {
-                    (RecoveryState::WriteGains, runtime_us, rate, moving_target_counts)
+        } else if offset_abs <= plan.origin_band_counts {
+            // Zone 2: dormant-but-drifted. Re-center toward origin when the
+            // settled-rate authority to move inward is held. Without a rate the
+            // primitive cannot move at all, so report a surfaced containment
+            // rather than a false AlreadyCentered -- an in-band offset above the
+            // recenter target is drift by definition, and reporting it centered
+            // would silently preserve the accumulation this zone exists to bound.
+            match lower_rate_q {
+                Some(rate) => {
+                    // Fail-fast: refuse at construction if even the worst-case
+                    // Zone-2 move cannot fit this rate, so the fallback can
+                    // never defer to a runtime deadline. The actual return is no
+                    // larger, so this also proves the actual move fits.
+                    let worst_case = plan.origin_band_counts - recenter_target;
+                    recovery_runtime_us(worst_case, rate, plan.maximum_slot_us)
+                        .map_err(|_| CommissionError::InvalidSchedule)?;
+                    let return_distance = offset_abs - recenter_target;
+                    let runtime_us =
+                        recovery_runtime_us(return_distance, rate, plan.maximum_slot_us)
+                            .map_err(|_| CommissionError::InvalidSchedule)?;
+                    (RecoveryState::WriteGains, runtime_us, rate, recenter_target)
                 }
-                Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
+                None => (
                     RecoveryState::Terminal {
-                        outcome: RungOriginRecoveryOutcome::ContainedDeadline,
-                        binding_source: RecoveryBindingSource::Deadline,
+                        outcome: RungOriginRecoveryOutcome::ContainedNoRate,
+                        binding_source: RecoveryBindingSource::MissingRate,
                     },
                     0,
-                    rate,
-                    moving_target_counts,
+                    0,
+                    recenter_target,
                 ),
-                Err(_) => return Err(CommissionError::InvalidSchedule),
             }
         } else {
-            (
-                RecoveryState::Terminal {
-                    outcome: RungOriginRecoveryOutcome::ContainedNoRate,
-                    binding_source: RecoveryBindingSource::MissingRate,
-                },
-                0,
-                0,
-                moving_target_counts,
+            // Zone 3: existing absolute-band moving recovery -- unchanged.
+            let return_distance = recovery_return_distance_counts(
+                config.start_offset_counts,
+                plan.origin_band_counts,
             )
+            .ok_or(CommissionError::InvalidSchedule)?;
+            let moving_target = recovery_moving_target_counts(plan.origin_band_counts);
+            match lower_rate_q {
+                Some(rate) => {
+                    match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
+                        Ok(runtime_us) => {
+                            (RecoveryState::WriteGains, runtime_us, rate, moving_target)
+                        }
+                        Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
+                            RecoveryState::Terminal {
+                                outcome: RungOriginRecoveryOutcome::ContainedDeadline,
+                                binding_source: RecoveryBindingSource::Deadline,
+                            },
+                            0,
+                            rate,
+                            moving_target,
+                        ),
+                        Err(_) => return Err(CommissionError::InvalidSchedule),
+                    }
+                }
+                None => (
+                    RecoveryState::Terminal {
+                        outcome: RungOriginRecoveryOutcome::ContainedNoRate,
+                        binding_source: RecoveryBindingSource::MissingRate,
+                    },
+                    0,
+                    0,
+                    moving_target,
+                ),
+            }
         };
         Ok(Self {
             stage: config.stage,

@@ -14,7 +14,7 @@ use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     ZERO_SETTLE_US,
 };
-use crate::autotune::TmcMechanicalRpm;
+use crate::autotune::{CommissionError, TmcMechanicalRpm};
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RestSelectionDisposition, StationarityWork, VelocityDirection,
 };
@@ -571,7 +571,7 @@ fn recovery_binding_source_codes_are_unique_and_stable() {
 #[test]
 fn recovery_controller_contained_paths_never_write_a_nonzero_target() {
     for (start, lower_rate, expected) in [
-        (1_000, None, RungOriginRecoveryOutcome::AlreadyCentered),
+        (1_000, None, RungOriginRecoveryOutcome::ContainedNoRate),
         (8_458, None, RungOriginRecoveryOutcome::ContainedNoRate),
         (
             -8_458,
@@ -1423,24 +1423,29 @@ fn recovery_reports_and_contains_on_drift_beyond_the_band() {
     assert_eq!(report.final_offset_counts, observed);
 }
 
-/// A drift that crosses zero is necessarily already inside the band.
+/// A drift that crosses zero is necessarily already inside the recenter target.
 ///
-/// This is why tolerating band-sized drift is safe with respect to direction.
-/// Commanding on a stale sign would drive the motor away from the origin, so
-/// the question is whether a tolerated drift can flip the sign while motion is
-/// still required. It cannot: crossing zero within a drift of at most `band`
-/// forces `|captured| + |live| <= band`, hence `|live| < band`, and a position
-/// inside the band is `AlreadyCentered` with no motion commanded at all.
+/// This is why tolerating recenter-target-sized drift is safe with respect to
+/// direction. Commanding on a stale sign would drive the motor away from the
+/// origin, so the question is whether a tolerated drift can flip the sign
+/// while motion is still required. It cannot: crossing zero within a drift of
+/// at most `recenter` forces `|captured| + |live| <= recenter`, hence
+/// `|live| < recenter`, and a position inside the recenter target is
+/// `AlreadyCentered` with no motion commanded at all.
 ///
 /// The controller reads the live position for its direction regardless, so the
 /// hazard stays closed if this tolerance is ever widened.
 #[test]
 fn a_sign_flip_within_the_drift_tolerance_needs_no_motion() {
-    let band = i32::try_from(origin_band_counts()).unwrap();
+    let recenter = i32::try_from(recovery_recenter_target_counts(origin_band_counts())).unwrap();
 
-    for (captured, live) in [(band - 1, -1), (1, -(band - 1)), (-(band - 1), 1)] {
+    for (captured, live) in [
+        (recenter - 1, -1),
+        (1, -(recenter - 1)),
+        (-(recenter - 1), 1),
+    ] {
         assert!(
-            (live - captured).abs() <= band,
+            (live - captured).abs() <= recenter,
             "fixture must stay inside the tolerance"
         );
         let mut fixture = RecoveryFixture::new(captured, Some(14_000_000));
@@ -1513,7 +1518,7 @@ fn origin_band_counts() -> u32 {
 
 #[test]
 fn recovery_diagnostic_count_already_centered() {
-    let mut fixture = RecoveryFixture::new(1_000, None);
+    let mut fixture = RecoveryFixture::new(100, None);
     let (terminal, selections, analyses) = fixture.drive_to_terminal();
 
     let RungOriginRecoveryStep::Finished(report) = terminal else {
@@ -1833,5 +1838,121 @@ fn geometry_rejects_a_band_too_small_to_derive_a_recenter_target() {
     assert_eq!(
         plan_rung_origin_recovery(budget, 4_000, 4_394),
         Err(RungOriginRecoveryPlanError::InvalidRequest)
+    );
+}
+
+// A dormant-but-drifted entry inside the band now re-centers toward origin and
+// hands over at or inside the recenter target, not the 875 Zone-3 target.
+#[test]
+fn zone_two_recenters_a_drifted_axis_toward_origin() {
+    let recenter = i32::try_from(recovery_recenter_target_counts(origin_band_counts())).unwrap();
+    // 500 is inside the band (1000) and above the recenter target (166): Zone 2.
+    let mut fixture = RecoveryFixture::new(500, Some(14_000_000));
+    fixture.command_motion();
+
+    let mut handover = None;
+    for sample in 1..=40 {
+        let offset = 500 - sample as i32 * 20;
+        match fixture.sample(sample * 1_000, offset) {
+            RungOriginRecoveryStep::At(_) => {}
+            RungOriginRecoveryStep::ReadyNow => {
+                handover = Some(offset);
+                break;
+            }
+            other => panic!("Zone 2 must drive toward the origin: {other:?}"),
+        }
+    }
+    let handover = handover.expect("the Zone-2 moving phase completes");
+    assert!(
+        handover <= recenter && handover >= 0,
+        "Zone 2 stops at or inside the recenter target ({recenter}); handed over at {handover}"
+    );
+}
+
+// A Zone-2 magnitude with no settled-rate authority cannot move inward, so it
+// is a surfaced containment -- ContainedNoRate, mirroring Zone 3's rate-less
+// path -- not a false AlreadyCentered claim.
+#[test]
+fn zone_two_without_rate_is_contained_no_rate() {
+    let (terminal, _, _) = {
+        let mut fixture = RecoveryFixture::new(500, None);
+        fixture.drive_to_terminal()
+    };
+    let report = match terminal {
+        RungOriginRecoveryStep::Finished(report) | RungOriginRecoveryStep::Contained(report) => {
+            report
+        }
+        other => panic!("a rate-less Zone-2 entry must terminate without motion: {other:?}"),
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::ContainedNoRate);
+    assert_eq!(report.binding_source, RecoveryBindingSource::MissingRate);
+    assert_eq!(report.moving_duration_us, 0);
+    assert_eq!(report.total_duration_us, 0);
+}
+
+// An offset at or inside the recenter target stays a no-op.
+#[test]
+fn zone_one_offset_stays_already_centered() {
+    let mut fixture = RecoveryFixture::new(120, Some(14_000_000));
+    let (terminal, _, _) = fixture.drive_to_terminal();
+    let report = match terminal {
+        RungOriginRecoveryStep::Finished(report) | RungOriginRecoveryStep::Contained(report) => {
+            report
+        }
+        other => panic!("a Zone-1 entry must terminate without motion: {other:?}"),
+    };
+    assert_eq!(report.outcome, RungOriginRecoveryOutcome::AlreadyCentered);
+    assert_eq!(report.moving_duration_us, 0);
+}
+
+// An above-band entry still faults an outward excursion during the move.
+#[test]
+fn zone_three_still_faults_a_wrong_way_excursion() {
+    let mut fixture = RecoveryFixture::new(1_400, Some(14_000_000));
+    fixture.command_motion();
+    // Drive outward past start + band -> wrong_way must fault.
+    let step = fixture.sample(1_000, 1_400 + i32::try_from(origin_band_counts()).unwrap() + 1);
+    assert!(matches!(
+        step,
+        RungOriginRecoveryStep::Fault {
+            error: CommissionError::SafetyEnvelopeViolation,
+            ..
+        }
+    ));
+}
+
+// The worst-case Zone-2 return fits the deployed slot, and a plan whose rate
+// would overrun it is rejected at construction rather than deferred to a
+// runtime ContainedDeadline.
+#[test]
+fn zone_two_budget_fits_and_rejects_an_overrunning_rate_at_construction() {
+    let band = origin_band_counts();
+    let recenter = recovery_recenter_target_counts(band);
+    let worst_case = band - recenter; // 834 on the live geometry
+    // Deployed maximum slot admits the worst-case Zone-2 move with margin.
+    assert!(recovery_runtime_us(worst_case, 14_000_000, 3_000_000).is_ok());
+
+    // A rate so slow the worst-case move overruns the cap: new() must refuse a
+    // Zone-2 attempt rather than hand back a moving runtime that would time out.
+    // 834 counts at 500_000 q/s needs ~1.67 s of measured travel plus the fixed
+    // 1.748 s allowance = ~3.42 s > the 3.0 s cap. (3_150_000 -- the rate the
+    // existing 7_458-count test overruns -- does NOT overrun at 834 counts.)
+    let overrunning_rate = 500_000_u64;
+    assert!(recovery_runtime_us(worst_case, overrunning_rate, 3_000_000).is_err());
+    let config = RungOriginRecoveryConfig {
+        stage: RecoveryStage::Proportional,
+        rung_index: 3,
+        p: PidPGain::new(1_448).unwrap(),
+        target_velocity_rpm: TmcMechanicalRpm::from_register(264),
+        planned_velocity_mrev_s: 4_394,
+        start_offset_counts: 500,
+        lower_rate_q: Some(overrunning_rate),
+        authority_source: RecoveryBindingSource::SettledRate,
+        current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
+    };
+    let plan = plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap();
+    assert_eq!(
+        RungOriginRecoveryRuntime::new(config, plan),
+        Err(CommissionError::InvalidSchedule)
     );
 }
