@@ -598,12 +598,20 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
             };
             if backend
-                .write_register(
-                    PID_VELOCITY_P_VELOCITY_I,
-                    PidGainPair::new(p, i).register_value(),
-                )
+                // clear_velocity_integrator zeroes only the velocity error sum,
+                // not PID_VELOCITY_OFFSET, so a residual offset would bias the
+                // establish leg; clear it here, as the discovery ladder start
+                // and integral sweep entry do.
+                .write_register(PID_VELOCITY_OFFSET, 0)
                 .await
                 .is_err()
+                || backend
+                    .write_register(
+                        PID_VELOCITY_P_VELOCITY_I,
+                        PidGainPair::new(p, i).register_value(),
+                    )
+                    .await
+                    .is_err()
                 || backend
                     .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
                     .await
@@ -2235,6 +2243,26 @@ mod tests {
             noisy_backend.pid_velocity_error_sum_clears,
             attempts_per_direction * DIRECTION_COUNT,
             "each establish attempt clears once; reversals never clear"
+        );
+    }
+
+    /// Every establish leg zeroes PID_VELOCITY_OFFSET; clear_velocity_integrator
+    /// clears only the velocity error sum, so a stale offset would bias the leg.
+    #[test]
+    fn establish_leg_clears_the_velocity_offset() {
+        let (_terminal, backend, _session) = drive(test_point(), false);
+        let offset_addr = PID_VELOCITY_OFFSET.addr();
+        let offset_clears = backend
+            .spi_log
+            .iter()
+            .filter(
+                |op| matches!(op, SpiOp::Write(addr, value) if *addr == offset_addr && *value == 0),
+            )
+            .count();
+        assert_eq!(
+            offset_clears,
+            ROBUSTNESS_CYCLES_PER_DIRECTION * DIRECTION_COUNT,
+            "each establish leg zeroes the velocity offset"
         );
     }
 
