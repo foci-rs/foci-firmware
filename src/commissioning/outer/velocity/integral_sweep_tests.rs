@@ -53,7 +53,7 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
     MODE_RAMP_MODE_MOTION, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_LIMITS,
-    PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
+    PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
 #[test]
@@ -2360,6 +2360,35 @@ fn every_moving_slot_entry_zeroes_clears_and_reprograms_the_declared_i() {
             (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0002),
         ]
     );
+}
+
+#[test]
+fn sweep_start_clears_the_velocity_offset() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let mut backend = MockBackend::new();
+    backend.current_limit_value = current_limit(2_816);
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::ReadyNow
+    ));
+
+    assert!(
+        backend.spi_log.iter().any(|operation| matches!(
+            operation,
+            SpiOp::Write(address, value)
+                if *address == PID_VELOCITY_OFFSET.addr() && *value == 0
+        )),
+        "sweep start must write PID_VELOCITY_OFFSET=0"
+    );
+    assert!(matches!(
+        phase,
+        OuterPhase::VelocityIntegral {
+            state: VelocityIntegralState::PrepareMovingSlot { reset_rung: true },
+            ..
+        }
+    ));
 }
 
 #[test]

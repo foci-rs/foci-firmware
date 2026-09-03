@@ -1420,6 +1420,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 velocity_offset,
                 velocity_actual,
             );
+            // clear_velocity_integrator zeroes only the velocity error sum, not
+            // PID_VELOCITY_OFFSET, so a residual offset would bias the sweep;
+            // clear it explicitly here, as the discovery ladder start does.
+            if backend
+                .write_register(PID_VELOCITY_OFFSET, 0)
+                .await
+                .is_err()
+            {
+                return integral_fault_terminal(phase, CommissionError::Spi, None);
+            }
             *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
             StepResult::ReadyNow
         }
