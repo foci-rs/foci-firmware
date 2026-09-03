@@ -7,7 +7,8 @@ use super::recovery::{
     RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryPlanError,
     RungOriginRecoveryResources, RungOriginRecoveryRuntime, RungOriginRecoveryStep,
     commanded_side_lower_rate_q, plan_rung_origin_recovery, recovery_moving_target_counts,
-    recovery_return_distance_counts, recovery_runtime_us, step_rung_origin_recovery,
+    recovery_recenter_target_counts, recovery_return_distance_counts, recovery_runtime_us,
+    step_rung_origin_recovery,
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
@@ -1777,4 +1778,30 @@ fn recovery_diagnostic_count_scored_rest_rejected() {
     assert_eq!(selections, 1);
     assert_eq!(analyses, 1);
     assert!(selections + analyses <= 2);
+}
+
+#[test]
+fn recenter_target_is_a_sixth_of_the_band_and_strictly_inside_it() {
+    // Live geometry: band 1000 -> recenter target 166 (floor of 1000/6).
+    let band = origin_band_counts();
+    assert_eq!(band, 1_000);
+    let recenter = recovery_recenter_target_counts(band);
+    assert_eq!(recenter, 166);
+    assert!(
+        0 < recenter && recenter < band,
+        "the recenter target must be a nonzero offset strictly inside the band"
+    );
+}
+
+#[test]
+fn geometry_rejects_a_band_too_small_to_derive_a_recenter_target() {
+    // A settle reserve of one mrev floors the band to 4 counts, whose sixth is
+    // 0: recovery could not re-center inward, so the plan is refused rather than
+    // admitted with a degenerate zone.
+    let mut budget = live_budget();
+    budget.settle_travel_reserve_mrev = 1;
+    assert_eq!(
+        plan_rung_origin_recovery(budget, 4_000, 4_394),
+        Err(RungOriginRecoveryPlanError::InvalidRequest)
+    );
 }

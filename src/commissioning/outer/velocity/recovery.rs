@@ -513,8 +513,13 @@ pub(crate) fn plan_rung_origin_recovery(
         return Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap);
     }
 
+    let origin_band_counts = checked_u32(origin_band_counts)?;
+    if recovery_recenter_target_counts(origin_band_counts) == 0 {
+        return Err(RungOriginRecoveryPlanError::InvalidRequest);
+    }
+
     Ok(RungOriginRecoveryPlan {
-        origin_band_counts: checked_u32(origin_band_counts)?,
+        origin_band_counts,
         nominal_slot_us: checked_u32(nominal_slot_us)?,
         maximum_slot_us: checked_u32(maximum_slot_us)?,
     })
@@ -554,6 +559,23 @@ pub(crate) const RECOVERY_BAND_MARGIN_DIVISOR: u32 = 8;
 #[allow(dead_code)]
 pub(crate) const fn recovery_moving_target_counts(origin_band_counts: u32) -> u32 {
     origin_band_counts - origin_band_counts / RECOVERY_BAND_MARGIN_DIVISOR
+}
+
+/// Fraction of the origin band a dormant-but-drifted axis is re-centered to.
+///
+/// The middle recovery zone pulls an axis resting between this target and the
+/// band back toward origin, bounding cumulative per-rung drift that the
+/// absolute-band check alone leaves unbounded. `/6` keeps the target well below
+/// the measured single-rung drift envelope while leaving margin to the band.
+pub(crate) const RECOVERY_RECENTER_DIVISOR: u32 = 6;
+
+/// Return the offset the middle recovery zone re-centers a drifted axis to.
+///
+/// Floor division scales with band and encoder resolution. It is strictly
+/// inside the band for any band `>= RECOVERY_RECENTER_DIVISOR`; a smaller band
+/// floors to 0 and is rejected at plan construction.
+pub(crate) const fn recovery_recenter_target_counts(origin_band_counts: u32) -> u32 {
+    origin_band_counts / RECOVERY_RECENTER_DIVISOR
 }
 
 /// Return the distance that must be traversed before entering the inclusive band.
