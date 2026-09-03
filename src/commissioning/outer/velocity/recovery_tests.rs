@@ -1937,9 +1937,7 @@ fn zone_two_budget_fits_and_rejects_an_overrunning_rate_at_construction() {
 
     // A rate so slow the worst-case move overruns the cap: new() must refuse a
     // Zone-2 attempt rather than hand back a moving runtime that would time out.
-    // 834 counts at 500_000 q/s needs ~1.67 s of measured travel plus the fixed
-    // 1.748 s allowance = ~3.42 s > the 3.0 s cap. (3_150_000 -- the rate the
-    // existing 7_458-count test overruns -- does NOT overrun at 834 counts.)
+    // 834 counts at 500_000 q/s plus the fixed allowance exceeds the cap.
     let overrunning_rate = 500_000_u64;
     assert!(recovery_runtime_us(worst_case, overrunning_rate, 3_000_000).is_err());
     let config = RungOriginRecoveryConfig {

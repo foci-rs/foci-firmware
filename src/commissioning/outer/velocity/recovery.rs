@@ -619,7 +619,7 @@ pub(crate) const fn recovery_moving_target_counts(origin_band_counts: u32) -> u3
 /// The middle recovery zone pulls an axis resting between this target and the
 /// band back toward origin, bounding cumulative per-rung drift that the
 /// absolute-band check alone leaves unbounded. `/6` keeps the target well below
-/// the measured single-rung drift envelope while leaving margin to the band.
+/// a single rung's drift while leaving margin to the band.
 pub(crate) const RECOVERY_RECENTER_DIVISOR: u32 = 6;
 
 /// Return the offset the middle recovery zone re-centers a drifted axis to.
