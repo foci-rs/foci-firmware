@@ -35,7 +35,6 @@ use super::acceptance_evidence::{
     AcceptanceDirectionInput, AcceptanceRunMasks, acceptance_run_sufficient,
     classify_acceptance_amplitude,
 };
-use super::clear_velocity_integrator;
 use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
@@ -68,6 +67,7 @@ use super::sweep_evidence::{
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MIN_SETTLE_CAPTURE_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
 };
+use super::{clear_velocity_error_sum, clear_velocity_offset};
 
 const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 #[cfg(feature = "trace")]
@@ -1420,14 +1420,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 velocity_offset,
                 velocity_actual,
             );
-            // clear_velocity_integrator zeroes only the velocity error sum, not
-            // PID_VELOCITY_OFFSET, so a residual offset would bias the sweep;
-            // clear it explicitly here, as the discovery ladder start does.
-            if backend
-                .write_register(PID_VELOCITY_OFFSET, 0)
-                .await
-                .is_err()
-            {
+            if clear_velocity_offset(backend).await.is_err() {
                 return integral_fault_terminal(phase, CommissionError::Spi, None);
             }
             *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
@@ -1460,7 +1453,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 )
                 .await
                 .is_err()
-                || clear_velocity_integrator(backend).await.is_err()
+                || clear_velocity_error_sum(backend).await.is_err()
                 || backend
                     .write_register(
                         PID_VELOCITY_P_VELOCITY_I,
@@ -1708,7 +1701,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     .write_register(PID_VELOCITY_TARGET, 0)
                     .await
                     .is_err()
-                || clear_velocity_integrator(backend).await.is_err()
+                || clear_velocity_error_sum(backend).await.is_err()
             {
                 return fail_integral(phase, backend, CommissionError::Spi).await;
             }
@@ -2160,7 +2153,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 )
                 .await
                 .is_err()
-                || clear_velocity_integrator(backend).await.is_err()
+                || clear_velocity_error_sum(backend).await.is_err()
                 || backend
                     .write_register(PID_VELOCITY_TARGET, 0)
                     .await

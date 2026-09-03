@@ -103,7 +103,6 @@ use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchError, ProbeStrokeRole, UpwardBreakawayCursor,
     UpwardProbeStep,
 };
-use super::clear_velocity_integrator;
 use super::combined_plan::stage_c_continuation_geometry;
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
@@ -140,6 +139,7 @@ use super::sweep_plan::{
     VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
     plan_stage_b_velocity_sweep,
 };
+use super::{clear_velocity_error_sum, clear_velocity_offset};
 
 /// Outer velocity ramp mode written to `MODE_RAMP_MODE_MOTION`. Shared by the
 /// probe, the additive discovery driver, and the held-out confirmation driver:
@@ -477,7 +477,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 return fault(CommissionError::Spi);
             }
             checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeGainIntegratorClear);
-            if clear_velocity_integrator(backend).await.is_err() {
+            if clear_velocity_error_sum(backend).await.is_err() {
                 return fault(CommissionError::Spi);
             }
             *state = BreakawayProbeState::CommandTarget;
@@ -621,7 +621,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                 return current_guard_fault(error);
             }
             checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeZeroIntegratorClear);
-            if clear_velocity_integrator(backend).await.is_err() {
+            if clear_velocity_error_sum(backend).await.is_err() {
                 return fault(CommissionError::Spi);
             }
             let now_us = backend.elapsed_us();
@@ -1927,16 +1927,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     velocity_offset,
                     velocity_actual,
                 );
-                // The runtime STEP/DIR feedforward can leave a nonzero
-                // PID_VELOCITY_OFFSET residual from the pre-autotune homing
-                // move; the autotune calibrate path never clears it, and a
-                // nonzero offset biases the I=0 ladder so every rung reads
-                // ambiguous. Zero it once here, before any gain program.
-                if backend
-                    .write_register(PID_VELOCITY_OFFSET, 0)
-                    .await
-                    .is_err()
-                {
+                if clear_velocity_offset(backend).await.is_err() {
                     return discovery_fault(CommissionError::Spi);
                 }
             }
@@ -1955,7 +1946,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                     .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
                     .await
                     .is_err()
-                || clear_velocity_integrator(backend).await.is_err()
+                || clear_velocity_error_sum(backend).await.is_err()
             {
                 return discovery_fault(CommissionError::Spi);
             }
@@ -2083,7 +2074,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             if let Err(error) = boundary {
                 return discovery_current_guard_fault(error);
             }
-            if clear_velocity_integrator(backend).await.is_err() {
+            if clear_velocity_error_sum(backend).await.is_err() {
                 return discovery_fault(CommissionError::Spi);
             }
             let now_us = backend.elapsed_us();
@@ -3077,7 +3068,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                     .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
                     .await
                     .is_err()
-                || clear_velocity_integrator(backend).await.is_err()
+                || clear_velocity_error_sum(backend).await.is_err()
             {
                 return confirmation_fault(CommissionError::Spi);
             }
@@ -3205,7 +3196,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             if let Err(error) = boundary {
                 return confirmation_current_guard_fault(error);
             }
-            if clear_velocity_integrator(backend).await.is_err() {
+            if clear_velocity_error_sum(backend).await.is_err() {
                 return confirmation_fault(CommissionError::Spi);
             }
             let now_us = backend.elapsed_us();

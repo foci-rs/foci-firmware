@@ -76,17 +76,18 @@ pub(crate) use integral_sweep::{
     integral_fault_terminal, integral_i_at, step_velocity_integral_with_trace,
 };
 
-/// Zero the TMC4671 velocity-loop integral accumulator.
+/// Zero the TMC4671 velocity-loop integral error sum.
 ///
 /// Writes `PID_ERROR_PID_VELOCITY_ERROR_SUM = 0` so a fresh velocity command
-/// starts from a clean integrator. Shared by the breakaway campaign, the
-/// Stage-C integral sweep, and origin recovery; self-contained with no
-/// dependency on any commissioning phase state.
+/// starts from a clean integrator. This clears only the error-sum accumulator;
+/// it does not touch `PID_VELOCITY_OFFSET` (see [`clear_velocity_offset`]).
+/// Shared by the breakaway campaign, the Stage-C integral sweep, and origin
+/// recovery; self-contained with no dependency on any commissioning phase state.
 ///
 /// # Errors
 ///
 /// Returns [`CommissionError::Spi`] when the register write fails.
-pub(crate) async fn clear_velocity_integrator<B>(
+pub(crate) async fn clear_velocity_error_sum<B>(
     backend: &mut B,
 ) -> Result<(), crate::autotune::CommissionError>
 where
@@ -99,4 +100,27 @@ where
     )
     .await
     .map_err(|_| crate::autotune::CommissionError::Spi)
+}
+
+/// Zero the TMC4671 velocity feedforward offset.
+///
+/// The runtime STEP/DIR feedforward can leave a nonzero `PID_VELOCITY_OFFSET`
+/// residual from a homing move; [`clear_velocity_error_sum`] does not clear it.
+/// Called at each commissioning velocity-phase entry (discovery ladder start,
+/// Stage-C integral sweep, robustness establish) so a residual offset does not
+/// bias the leg into creep.
+///
+/// # Errors
+///
+/// Returns [`CommissionError::Spi`] when the register write fails.
+pub(crate) async fn clear_velocity_offset<B>(
+    backend: &mut B,
+) -> Result<(), crate::autotune::CommissionError>
+where
+    B: crate::commissioning::backend::CommissioningBackend,
+{
+    backend
+        .write_register(foci_tmc4671::registers::PID_VELOCITY_OFFSET, 0)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::Spi)
 }

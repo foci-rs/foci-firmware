@@ -46,7 +46,6 @@ use foci_tmc4671::registers::{
 };
 
 use super::band_confirmation::{CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT};
-use super::clear_velocity_integrator;
 use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::integral_reproduction::AcceptancePoint;
 use super::recovery::{
@@ -70,6 +69,7 @@ use super::sweep_analysis::{ScoredRestPoll, deficit_interval_q, poll_scored_rest
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
 };
+use super::{clear_velocity_error_sum, clear_velocity_offset};
 
 /// Outer velocity ramp mode: single-direction velocity ramp, I applied through
 /// the gain pair. Matches the shared outer-velocity mode used by the Stage-C
@@ -597,14 +597,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Ok(pair) => pair,
                 Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
             };
-            if backend
-                // clear_velocity_integrator zeroes only the velocity error sum,
-                // not PID_VELOCITY_OFFSET, so a residual offset would bias the
-                // establish leg; clear it here, as the discovery ladder start
-                // and integral sweep entry do.
-                .write_register(PID_VELOCITY_OFFSET, 0)
-                .await
-                .is_err()
+            if clear_velocity_offset(backend).await.is_err()
                 || backend
                     .write_register(
                         PID_VELOCITY_P_VELOCITY_I,
@@ -616,7 +609,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
                     .await
                     .is_err()
-                || clear_velocity_integrator(backend).await.is_err()
+                || clear_velocity_error_sum(backend).await.is_err()
             {
                 return fault_terminal(session, backend, None, counts_per_rev);
             }
@@ -749,7 +742,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         }
         RobustnessReversalState::ReverseCommandTarget => {
             let target = reverse_target_rpm(&session.point, session.direction);
-            // Deliberately no clear_velocity_integrator here: the reversal is
+            // Deliberately no clear_velocity_error_sum here: the reversal is
             // measured against the integrator state established by the entry leg.
             match begin_capture(session, workspace, safety, backend, target, false).await {
                 Ok((next_sample_us, budget_deadline_us)) => {
@@ -2246,7 +2239,7 @@ mod tests {
         );
     }
 
-    /// Every establish leg zeroes PID_VELOCITY_OFFSET; clear_velocity_integrator
+    /// Every establish leg zeroes PID_VELOCITY_OFFSET; clear_velocity_error_sum
     /// clears only the velocity error sum, so a stale offset would bias the leg.
     #[test]
     fn establish_leg_clears_the_velocity_offset() {

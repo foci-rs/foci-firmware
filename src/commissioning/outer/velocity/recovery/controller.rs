@@ -8,7 +8,7 @@ use crate::diagnostic::BreakawayCheckpoint;
 use foci_tmc4671::pid::{PidGainPair, PidIGain};
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
-use super::super::clear_velocity_integrator;
+use super::super::clear_velocity_error_sum;
 use super::super::current_guard::{
     VelocityCurrentContact, VelocityCurrentGuardError, VelocityCurrentZeroPhase,
     finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
@@ -189,7 +189,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
         }
         RecoveryState::ClearMovingIntegrator => {
             checkpoint(BreakawayCheckpoint::RecoveryMovingIntegratorClear);
-            if clear_velocity_integrator(backend).await.is_err() {
+            if clear_velocity_error_sum(backend).await.is_err() {
                 return recovery_fault(CommissionError::Spi, None);
             }
             runtime.state = RecoveryState::CommandTowardOrigin;
@@ -325,7 +325,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
         } => {
             if !runtime.settle_integrator_cleared() {
                 checkpoint(BreakawayCheckpoint::RecoverySettleIntegratorClear);
-                if clear_velocity_integrator(backend).await.is_err() {
+                if clear_velocity_error_sum(backend).await.is_err() {
                     return recovery_fault(CommissionError::Spi, None);
                 }
             }
@@ -650,7 +650,7 @@ async fn hold_zero_for_current_contact<B: CommissioningBackend>(
         return Some(recovery_fault(CommissionError::Spi, None));
     }
     checkpoint(BreakawayCheckpoint::RecoverySettleIntegratorClear);
-    if clear_velocity_integrator(backend).await.is_err() {
+    if clear_velocity_error_sum(backend).await.is_err() {
         return Some(recovery_fault(CommissionError::Spi, None));
     }
     None
