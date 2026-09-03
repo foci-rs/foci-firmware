@@ -2060,6 +2060,54 @@ async fn outer_failed_safety_envelope_violation_full_disarm() {
 }
 
 #[fixture_test]
+async fn outer_failed_safety_envelope_restores_entry_gains() {
+    use core::sync::atomic::Ordering;
+    use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS};
+    let mut backend = MockBackend::new();
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut cal = true;
+    let mut en = true; // simulate motor was previously armed
+    tmc_state().motor_armed.store(true, Ordering::Relaxed);
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(robustness_reversal_engine());
+    let err = crate::autotune::CommissionError::SafetyEnvelopeViolation;
+    seed_motor_sentinel(&mut backend).await;
+
+    let _ = drive_commission_result(
+        StepResult::OuterFailed(err),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+
+    // The motor is still fully disarmed after a safety-envelope fault ...
+    assert!(!*state.motor_enabled);
+    assert!(!backend.enable_pin);
+    assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
+    // ... but the operational velocity gains and voltage limit ARE reloaded, so
+    // the next enable/homing does not inherit the tune's mid-ladder gains
+    // (velocity I=0) left in the TMC.
+    assert!(
+        backend.spi_log.iter().any(
+            |op| matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_P_VELOCITY_I.addr())
+        ),
+        "safety-fault teardown must reload PID_VELOCITY_P_VELOCITY_I"
+    );
+    assert!(
+        backend
+            .spi_log
+            .iter()
+            .any(|op| matches!(op, SpiOp::Write(addr, _) if *addr == PIDOUT_UQ_UD_LIMITS.addr())),
+        "safety-fault teardown must reload PIDOUT_UQ_UD_LIMITS"
+    );
+
+    tmc_state().motor_armed.store(false, Ordering::Relaxed);
+    clear_motor_sentinel();
+}
+
+#[fixture_test]
 async fn outer_failed_soft_failure_holds_motor() {
     use core::sync::atomic::Ordering;
     let mut backend = MockBackend::new();

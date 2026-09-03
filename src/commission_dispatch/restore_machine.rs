@@ -123,6 +123,7 @@ enum RestoreCursor {
     OuterFailedDisarmVelocity,
     OuterFailedClassify,
     OuterFailedRestoreEntryGains,
+    OuterFailedSafetyRestore,
     OuterFailedStability,
     OuterFailedModeRamp,
     OuterFailedFaultDisarm,
@@ -801,7 +802,18 @@ impl TerminalRestoreMachine {
                     );
                     if self.terminal.is_safety_fault {
                         self.terminal.outer_restore_failure = Some(error);
-                        self.cursor = RestoreCursor::OuterFailedModeRamp;
+                        // A SafetyEnvelopeViolation is a motion-envelope trip on a
+                        // healthy chip: still reload the operational gains/limits so
+                        // the next enable/homing does not inherit the tune's
+                        // mid-ladder gains (velocity I=0). Spi/Shutdown cannot
+                        // reliably write, so they keep the bare disarm.
+                        if matches!(error, CommissionError::SafetyEnvelopeViolation)
+                            && self.entry_snapshot(engine).is_some()
+                        {
+                            self.cursor = RestoreCursor::OuterFailedSafetyRestore;
+                        } else {
+                            self.cursor = RestoreCursor::OuterFailedModeRamp;
+                        }
                     } else if self.entry_snapshot(engine).is_some() {
                         self.cursor = RestoreCursor::OuterFailedRestoreEntryGains;
                     } else {
@@ -827,6 +839,23 @@ impl TerminalRestoreMachine {
                             self.cursor = RestoreCursor::OuterFailedModeRamp;
                         }
                     }
+                    return RestoreStep::Pending;
+                }
+                RestoreCursor::OuterFailedSafetyRestore => {
+                    let snapshot = self
+                        .entry_snapshot(engine)
+                        .expect("entry snapshot disappeared during safety-fault restore");
+                    if let Err(restore_err) = crate::commissioning::inner::restore_entry_gains(
+                        &snapshot, backend, state.tmc,
+                    )
+                    .await
+                    {
+                        defmt::error!(
+                            "OuterFailed: safety-fault gain restore failed: {}",
+                            restore_err
+                        );
+                    }
+                    self.cursor = RestoreCursor::OuterFailedModeRamp;
                     return RestoreStep::Pending;
                 }
                 RestoreCursor::OuterFailedStability => {
