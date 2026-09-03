@@ -22,8 +22,7 @@ use super::{
     ExactU64Parts, RECOVERY_STABILIZATION_US, RecoveryBindingSource,
     RecoveryOriginMismatchEvidence, RecoveryRestAnalysis, RecoveryStabilizationSummary,
     RecoveryState, RungOriginRecoveryOutcome, RungOriginRecoveryResources,
-    RungOriginRecoveryRuntime, RungOriginRecoveryStep, recovery_moving_target_counts,
-    recovery_return_distance_counts,
+    RungOriginRecoveryRuntime, RungOriginRecoveryStep, recovery_return_distance_counts,
 };
 
 /// Advance one bounded unit of shared rung-origin recovery work.
@@ -274,8 +273,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             // Stop inside the band, not on its edge: position moves outward
             // between here and the post-settle acceptance test. Containment
             // still judges against the band itself.
-            let reached_target = offset.unsigned_abs()
-                <= recovery_moving_target_counts(runtime.plan.origin_band_counts);
+            let reached_target = offset.unsigned_abs() <= runtime.moving_target_counts;
             let deadline_reached = backend.elapsed_us() >= moving_deadline_us;
             if reached_target || deadline_reached {
                 runtime.first_in_band_offset_counts = offset;

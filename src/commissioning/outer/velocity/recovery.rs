@@ -265,6 +265,10 @@ pub(crate) struct RungOriginRecoveryRuntime {
     authority_source: RecoveryBindingSource,
     plan: RungOriginRecoveryPlan,
     runtime_us: u32,
+    /// Offset the moving phase drives to before commanding zero: the Zone-3
+    /// target for an above-band return, the recenter target for a Zone-2
+    /// return. Carried per attempt so `Observe` does not assume a single zone.
+    moving_target_counts: u32,
     flags: u8,
     recovery_started_us: ExactU64Parts,
     zero_commanded_us: ExactU64Parts,
@@ -316,7 +320,8 @@ impl RungOriginRecoveryRuntime {
         let return_distance =
             recovery_return_distance_counts(config.start_offset_counts, plan.origin_band_counts)
                 .ok_or(CommissionError::InvalidSchedule)?;
-        let (state, runtime_us, lower_rate_q) = if return_distance == 0 {
+        let moving_target_counts = recovery_moving_target_counts(plan.origin_band_counts);
+        let (state, runtime_us, lower_rate_q, moving_target_counts) = if return_distance == 0 {
             (
                 RecoveryState::Terminal {
                     outcome: RungOriginRecoveryOutcome::AlreadyCentered,
@@ -324,10 +329,13 @@ impl RungOriginRecoveryRuntime {
                 },
                 0,
                 0,
+                moving_target_counts,
             )
         } else if let Some(rate) = lower_rate_q {
             match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
-                Ok(runtime_us) => (RecoveryState::WriteGains, runtime_us, rate),
+                Ok(runtime_us) => {
+                    (RecoveryState::WriteGains, runtime_us, rate, moving_target_counts)
+                }
                 Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
                     RecoveryState::Terminal {
                         outcome: RungOriginRecoveryOutcome::ContainedDeadline,
@@ -335,6 +343,7 @@ impl RungOriginRecoveryRuntime {
                     },
                     0,
                     rate,
+                    moving_target_counts,
                 ),
                 Err(_) => return Err(CommissionError::InvalidSchedule),
             }
@@ -346,6 +355,7 @@ impl RungOriginRecoveryRuntime {
                 },
                 0,
                 0,
+                moving_target_counts,
             )
         };
         Ok(Self {
@@ -360,6 +370,7 @@ impl RungOriginRecoveryRuntime {
             authority_source: config.authority_source,
             plan,
             runtime_us,
+            moving_target_counts,
             flags: u8::from(
                 config.current_contact_policy == RecoveryCurrentContactPolicy::ProvePassiveSettle,
             ) * Self::PROVE_PASSIVE_SETTLE,

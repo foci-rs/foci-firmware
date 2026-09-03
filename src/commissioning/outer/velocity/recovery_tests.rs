@@ -667,6 +667,36 @@ fn moving_phase_drives_inside_the_band_before_settling() {
 }
 
 #[test]
+fn moving_recovery_hands_over_at_the_carried_zone_three_target() {
+    let band = i32::try_from(origin_band_counts()).unwrap();
+    let zone_three_target =
+        i32::try_from(recovery_moving_target_counts(origin_band_counts())).unwrap();
+    let recenter = i32::try_from(recovery_recenter_target_counts(origin_band_counts())).unwrap();
+
+    let mut fixture = RecoveryFixture::new(1_400, Some(14_000_000));
+    fixture.command_motion();
+
+    let mut handover = None;
+    for sample in 1..=40 {
+        let offset = 1_400 - sample as i32 * 20;
+        match fixture.sample(sample * 1_000, offset) {
+            RungOriginRecoveryStep::At(_) => {}
+            RungOriginRecoveryStep::ReadyNow => {
+                handover = Some(offset);
+                break;
+            }
+            other => panic!("recovery must drive toward the origin: {other:?}"),
+        }
+    }
+    let handover = handover.expect("the moving phase completes");
+    assert!(
+        handover <= zone_three_target && handover > recenter,
+        "an above-band recovery stops at the Zone-3 target ({zone_three_target}), \
+         not the recenter target ({recenter}); band {band}, handed over at {handover}"
+    );
+}
+
+#[test]
 fn recovery_controller_releases_contained_primitive() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();
