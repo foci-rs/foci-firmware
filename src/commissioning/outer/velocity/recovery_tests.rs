@@ -14,10 +14,10 @@ use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     ZERO_SETTLE_US,
 };
-use crate::autotune::{CommissionError, TmcMechanicalRpm};
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RestSelectionDisposition, StationarityWork, VelocityDirection,
 };
+use crate::autotune::{CommissionError, TmcMechanicalRpm};
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
@@ -1911,7 +1911,10 @@ fn zone_three_still_faults_a_wrong_way_excursion() {
     let mut fixture = RecoveryFixture::new(1_400, Some(14_000_000));
     fixture.command_motion();
     // Drive outward past start + band -> wrong_way must fault.
-    let step = fixture.sample(1_000, 1_400 + i32::try_from(origin_band_counts()).unwrap() + 1);
+    let step = fixture.sample(
+        1_000,
+        1_400 + i32::try_from(origin_band_counts()).unwrap() + 1,
+    );
     assert!(matches!(
         step,
         RungOriginRecoveryStep::Fault {
