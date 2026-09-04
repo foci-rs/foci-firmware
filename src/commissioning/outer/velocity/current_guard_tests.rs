@@ -5,7 +5,7 @@ use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentObserver, VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability,
     begin_velocity_current_primitive, classify_phase_evidence, derive_probe_limit,
-    restart_velocity_current_primitive,
+    finish_velocity_current_moving_phase, restart_velocity_current_primitive,
 };
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
 use crate::commission_dispatch::test_support::{
@@ -586,4 +586,22 @@ fn restart_faults_on_genuine_fault_bit() {
             VelocityLimitEvidenceCapability::BestEffortPolling);
     let r = pollster::block_on(restart_velocity_current_primitive(&mut observer, &mut backend));
     assert!(matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << 26)));
+}
+
+#[test]
+fn finish_moving_still_faults_on_demoted_bit_set_during_stroke() {
+    // A demoted bit that appears DURING the commanded target must still fault at
+    // the finish check (full mask), incl. a ref_sw bit — demotion is entry-only.
+    for bit in [16u32, 17, 18, 20, 21, 22, 24, 25] {
+        let mut backend = MockBackend::new();
+        let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << bit);
+        let mut observer =
+            VelocityCurrentObserver::new(PidTorqueFluxLimit::new(2_534).unwrap(),
+                VelocityLimitEvidenceCapability::BestEffortPolling);
+        let r = pollster::block_on(finish_velocity_current_moving_phase(&mut observer, &mut backend));
+        assert!(
+            matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << bit)),
+            "finish_moving must fault on bit {bit} set during the stroke"
+        );
+    }
 }
