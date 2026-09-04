@@ -99,6 +99,23 @@ pub const fn current_loop_actionable_status_mask(
     }
 }
 
+/// Status bits set by normal prior motion, an active hold, or homing that must
+/// not gate the primitive-start check (they are still full-mask actionable on
+/// the finish-phase checks). Exact set fixed by the datasheet audit
+/// (docs/notes/2026-09-03-foci-305-entry-mask-audit.md).
+const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = 0x0377_0000;
+
+/// Actionable status the guard checks at primitive start, before commanding
+/// motion. Narrower than [`current_loop_actionable_status_mask`]: it demotes the
+/// transition/limiter bits a preceding phase legitimately leaves set, so the
+/// entry check fails closed only on genuine pre-motion faults. The finish-phase
+/// checks keep the full mask.
+pub const fn current_loop_entry_actionable_status_mask(
+    feedback_config: crate::config::FeedbackConfig,
+) -> u32 {
+    current_loop_actionable_status_mask(feedback_config) & !CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK
+}
+
 /// Whether `flags` contains a bit that `mask` marks actionable.
 pub const fn is_actionable_status(flags: u32, mask: u32) -> bool {
     flags & mask != 0
@@ -1553,5 +1570,25 @@ mod tests {
     fn is_actionable_status_true_only_when_flags_intersect_mask() {
         assert!(!is_actionable_status(0x0000_00ff, 0xffff_ff00));
         assert!(is_actionable_status(0x0000_0100, 0xffff_ff00));
+    }
+
+    #[test]
+    fn entry_mask_demotes_transition_bits_but_keeps_faults() {
+        use crate::config::FeedbackConfig;
+        let full = current_loop_actionable_status_mask(FeedbackConfig::abn_abn());
+        let entry = current_loop_entry_actionable_status_mask(FeedbackConfig::abn_abn());
+
+        // Entry gate is a strict subset of the full mask.
+        assert_eq!(entry & !full, 0, "entry mask must not add bits");
+
+        // Every demoted bit (ipark 16-18, ref_sw 20-22, pwm 24/25) is absent at entry
+        // but present in the full (finish) mask.
+        for bit in [16u32, 17, 18, 20, 21, 22, 24, 25] {
+            assert_eq!(entry & (1 << bit), 0, "bit {bit} must be demoted at entry");
+            assert_ne!(full & (1 << bit), 0, "bit {bit} must stay in the full mask");
+        }
+
+        // A genuine-fault bit (adc_i_clipped, 26) stays in the entry gate.
+        assert_ne!(entry & (1 << 26), 0, "adc_i_clipped must remain entry-actionable");
     }
 }
