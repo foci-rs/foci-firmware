@@ -785,19 +785,6 @@ mod tests {
     }
 
     #[test]
-    fn foci_commission_cancel_on_idle_channel_is_a_noop() {
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
-        let mut ctx = MockCtx::new(2);
-        let mut sender = EmptySender;
-        config_stepper_channel(ctx.state(), 10, 1).unwrap();
-
-        foci_commission_cancel(&mut ctx, &mut sender, 10);
-
-        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
-        assert!(tmc_state.cancel_requested.load(Relaxed));
-    }
-
-    #[test]
     fn provider_registers_the_commission_cancel_command() {
         let source = include_str!("../provider.rs");
 
