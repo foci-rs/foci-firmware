@@ -351,6 +351,10 @@ where
                         defmt::warn!("Auto-calibrate skipped: commission in flight");
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }
+                    board
+                        .tmc_state()
+                        .cancel_requested
+                        .store(false, core::sync::atomic::Ordering::Relaxed);
                     defmt::info!("Auto-calibrating on enable");
                     // A routine same-channel re-enable may auto-calibrate after the
                     // required disarm/cooling interval; preserve that channel's
@@ -455,6 +459,10 @@ where
             // alignment lifecycle.
             stage_c_candidate.preserve_for_same_channel_calibration(board.channel());
             runtime.clear_calibrated();
+            board
+                .tmc_state()
+                .cancel_requested
+                .store(false, core::sync::atomic::Ordering::Relaxed);
             runtime.set_commission_engine(
                 CommissioningEngine::new_calibrate_for_tmc_with_gains_and_trace_seq(
                     oid,
@@ -715,6 +723,10 @@ where
             }
             stage_c_candidate.invalidate_for_unrelated_commissioning();
             runtime.clear_calibrated();
+            board
+                .tmc_state()
+                .cancel_requested
+                .store(false, core::sync::atomic::Ordering::Relaxed);
             runtime.set_commission_engine(
                 CommissioningEngine::new_commission_for_tmc_with_trace_seq(
                     oid,
@@ -1096,6 +1108,9 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
+            tmc_state
+                .cancel_requested
+                .store(false, core::sync::atomic::Ordering::Relaxed);
             let outer_params = OuterTuneParams {
                 slot_order: req.autotune_action.slot_order(),
                 profile: CommissionProfile::from_u8(profile),
@@ -1222,6 +1237,10 @@ where
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
             stage_c_candidate.invalidate_for_unrelated_commissioning();
+            board
+                .tmc_state()
+                .cancel_requested
+                .store(false, core::sync::atomic::Ordering::Relaxed);
             runtime.set_commission_engine(
                 CommissioningEngine::new_selftest_for_tmc_with_trace_seq(
                     oid,
@@ -2370,6 +2389,53 @@ mod tests {
         let spi = tmc.into_inner();
         assert!(spi.write_attempts.is_empty());
         assert!(spi.read_requests.is_empty());
+    }
+
+    #[fixture_test]
+    async fn commission_admission_resets_a_stale_cancel_requested() {
+        use crate::commission_dispatch::test_support::MockBackend;
+
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut board = RecordingBoard::skip_tick_tail();
+        board
+            .tmc_state()
+            .store_current_limit(current_limit(2_816), Relaxed);
+        // Simulate a race with a just-finished previous run on this channel:
+        // a cancel latched against its tail end, with no run currently in
+        // flight.
+        board.tmc_state().cancel_requested.store(true, Relaxed);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let outcome = handle_tmc_control_request(
+            TmcRequest::new(0, TmcRequestKind::Commission { oid: 2, profile: 0 }),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
+        assert_eq!(
+            runtime.pending_commission_kind(),
+            Some(EngineKind::Commission),
+            "the request must actually admit a new Commission engine"
+        );
+        assert!(
+            !tmc_channel0().cancel_requested.load(Relaxed),
+            "a fresh admission must clear a stale cancel_requested"
+        );
+
+        // The freshly admitted engine must not be immediately cancelled by
+        // the stale flag at its first operator-cancel checkpoint.
+        let mut backend = MockBackend::new();
+        let cancel_outcome = runtime
+            .drive_operator_cancel(&mut backend, tmc_channel0(), stepper_channel0(), 4095)
+            .await;
+        assert!(
+            cancel_outcome.is_none(),
+            "the freshly admitted engine must not be cancelled by a stale request"
+        );
     }
 
     #[fixture_test]
