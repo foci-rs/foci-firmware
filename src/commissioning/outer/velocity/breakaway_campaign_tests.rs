@@ -93,6 +93,17 @@ fn test_probe_context() -> BreakawayProbeContext {
 fn run_probe_with_target(
     plan: UpwardBreakawayProbePlan,
     target_velocity_rpm_raw: i32,
+    is_moving: impl FnMut(VelocityDirection, u8) -> bool,
+) -> (BreakawayProbeOutcome, MockBackend) {
+    run_probe_with_backend(test_backend(), plan, target_velocity_rpm_raw, is_moving)
+}
+
+/// [`run_probe_with_target`], but against a caller-supplied `MockBackend` so a
+/// test can preload register state (e.g. `STATUS_FLAGS`) before the probe runs.
+fn run_probe_with_backend(
+    mut backend: MockBackend,
+    plan: UpwardBreakawayProbePlan,
+    target_velocity_rpm_raw: i32,
     mut is_moving: impl FnMut(VelocityDirection, u8) -> bool,
 ) -> (BreakawayProbeOutcome, MockBackend) {
     let target_velocity_rpm = TmcMechanicalRpm::from_register(target_velocity_rpm_raw);
@@ -101,7 +112,6 @@ fn run_probe_with_target(
     let mut workspace = BreakawayProbeWorkspace::new();
     let mut state = BreakawayProbeState::PlannedProbe;
     let mut safety = test_safety();
-    let mut backend = test_backend();
 
     let mut encoder_count: i32 = 0;
     let mut stroke_moving = false;
