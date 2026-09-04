@@ -1924,22 +1924,18 @@ fn zone_three_still_faults_a_wrong_way_excursion() {
     ));
 }
 
-// The worst-case Zone-2 return fits the deployed slot, and a plan whose rate
-// would overrun it is rejected at construction rather than deferred to a
-// runtime ContainedDeadline.
 #[test]
-fn zone_two_budget_fits_and_rejects_an_overrunning_rate_at_construction() {
+fn zone_two_budget_uses_the_actual_return_distance_not_the_worst_case() {
     let band = origin_band_counts();
     let recenter = recovery_recenter_target_counts(band);
     let worst_case = band - recenter; // 834 on the live geometry
-    // Deployed maximum slot admits the worst-case Zone-2 move with margin.
     assert!(recovery_runtime_us(worst_case, 14_000_000, 3_000_000).is_ok());
 
-    // A rate so slow the worst-case move overruns the cap: new() must refuse a
-    // Zone-2 attempt rather than hand back a moving runtime that would time out.
-    // 834 counts at 500_000 q/s plus the fixed allowance exceeds the cap.
-    let overrunning_rate = 500_000_u64;
-    assert!(recovery_runtime_us(worst_case, overrunning_rate, 3_000_000).is_err());
+    let slow_rate = 500_000_u64;
+    assert!(recovery_runtime_us(worst_case, slow_rate, 3_000_000).is_err());
+    let actual_distance = 500 - recenter;
+    assert!(recovery_runtime_us(actual_distance, slow_rate, 3_000_000).is_ok());
+
     let config = RungOriginRecoveryConfig {
         stage: RecoveryStage::Proportional,
         rung_index: 3,
@@ -1947,13 +1943,62 @@ fn zone_two_budget_fits_and_rejects_an_overrunning_rate_at_construction() {
         target_velocity_rpm: TmcMechanicalRpm::from_register(264),
         planned_velocity_mrev_s: 4_394,
         start_offset_counts: 500,
-        lower_rate_q: Some(overrunning_rate),
+        lower_rate_q: Some(slow_rate),
         authority_source: RecoveryBindingSource::SettledRate,
         current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
     };
     let plan = plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap();
-    assert_eq!(
-        RungOriginRecoveryRuntime::new(config, plan),
-        Err(CommissionError::InvalidSchedule)
-    );
+    assert!(RungOriginRecoveryRuntime::new(config, plan).is_ok());
+}
+
+#[test]
+fn zone_two_slow_rate_falls_back_to_contained_deadline_not_a_fault() {
+    let band = i32::try_from(origin_band_counts()).unwrap();
+    for measured_settled_rate_q in [359_000_u64, 490_000, 200_000] {
+        let mut runtime = runtime(band, Some(measured_settled_rate_q));
+        let mut safety = configured_safety(band);
+        let mut observations = VelocityObservationRing::new();
+        let mut blocker = DyadicBlocker::<VELOCITY_SWEEP_BLOCK_LEVELS>::new();
+        let mut analysis = StationarityWork::new();
+        let mut displacement = 0;
+        let mut minimum = 0;
+        let mut maximum = 0;
+        let mut current_observer = operational_current_observer();
+        let mut resources = RungOriginRecoveryResources {
+            safety: &mut safety,
+            observations: &mut observations,
+            blocker: &mut blocker,
+            analysis: &mut analysis,
+            settle_displacement_counts: &mut displacement,
+            settle_min_displacement_counts: &mut minimum,
+            settle_max_displacement_counts: &mut maximum,
+            current_observer: &mut current_observer,
+        };
+        let mut backend = MockBackend::new();
+        backend.current_limit_value = current_limit(2_816);
+        backend.elapsed_us_value = 123_456;
+
+        let result = pollster::block_on(step_rung_origin_recovery(
+            &mut runtime,
+            &mut resources,
+            &mut backend,
+        ));
+        let report = match result {
+            RungOriginRecoveryStep::Finished(report)
+            | RungOriginRecoveryStep::Contained(report) => report,
+            other => {
+                panic!("rate {measured_settled_rate_q} must contain without a fault: {other:?}")
+            }
+        };
+        assert_eq!(
+            report.outcome,
+            RungOriginRecoveryOutcome::ContainedDeadline,
+            "rate {measured_settled_rate_q}"
+        );
+        assert_eq!(report.moving_duration_us, 0);
+        assert!(!backend.spi_log.iter().any(|operation| {
+            matches!(operation, SpiOp::Write(address, value)
+                if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
+        }));
+    }
 }

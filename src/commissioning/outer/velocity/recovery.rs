@@ -340,18 +340,22 @@ impl RungOriginRecoveryRuntime {
                 // would silently preserve the accumulation this zone exists to bound.
                 match lower_rate_q {
                     Some(rate) => {
-                        // Fail-fast: refuse at construction if even the worst-case
-                        // Zone-2 move cannot fit this rate, so the fallback can
-                        // never defer to a runtime deadline. The actual return is no
-                        // larger, so this also proves the actual move fits.
-                        let worst_case = plan.origin_band_counts - recenter_target;
-                        recovery_runtime_us(worst_case, rate, plan.maximum_slot_us)
-                            .map_err(|_| CommissionError::InvalidSchedule)?;
                         let return_distance = offset_abs - recenter_target;
-                        let runtime_us =
-                            recovery_runtime_us(return_distance, rate, plan.maximum_slot_us)
-                                .map_err(|_| CommissionError::InvalidSchedule)?;
-                        (RecoveryState::WriteGains, runtime_us, rate, recenter_target)
+                        match recovery_runtime_us(return_distance, rate, plan.maximum_slot_us) {
+                            Ok(runtime_us) => {
+                                (RecoveryState::WriteGains, runtime_us, rate, recenter_target)
+                            }
+                            Err(RungOriginRecoveryPlanError::ExceedsPrimitiveCap) => (
+                                RecoveryState::Terminal {
+                                    outcome: RungOriginRecoveryOutcome::ContainedDeadline,
+                                    binding_source: RecoveryBindingSource::Deadline,
+                                },
+                                0,
+                                rate,
+                                recenter_target,
+                            ),
+                            Err(_) => return Err(CommissionError::InvalidSchedule),
+                        }
                     }
                     None => (
                         RecoveryState::Terminal {

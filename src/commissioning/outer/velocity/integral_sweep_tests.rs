@@ -1275,6 +1275,141 @@ fn recovered_with_current_headroom_advances_to_the_required_bookend() {
     ));
 }
 
+fn contained_report(rung_index: u8) -> RungOriginRecoveryReport {
+    RungOriginRecoveryReport {
+        stage: RecoveryStage::Integral,
+        rung_index,
+        p_raw: 1_448,
+        planned_velocity_mrev_s: 2_929,
+        start_offset_counts: 900,
+        closest_offset_counts: 900,
+        final_offset_counts: 900,
+        origin_band_counts: 1_000,
+        lower_rate_q: ExactU64Parts::from_u64(490_000),
+        moving_duration_us: 0,
+        settle_duration_us: 0,
+        total_duration_us: 0,
+        peak_torque_target_abs: 0,
+        binding_source: RecoveryBindingSource::Deadline,
+        outcome: RungOriginRecoveryOutcome::ContainedDeadline,
+    }
+}
+
+struct RungKindCase {
+    rung_index: u8,
+    current_terminus: Option<u8>,
+    positive_i_rest_boundary_after_sufficiency: bool,
+    expect_recovery_failure: bool,
+    expect_recovery_unavailable: bool,
+}
+
+#[test]
+fn finalize_recovery_resolves_a_contained_outcome_without_a_fault_at_every_rung_kind() {
+    let cases = [
+        RungKindCase {
+            rung_index: 6,
+            current_terminus: None,
+            positive_i_rest_boundary_after_sufficiency: false,
+            expect_recovery_failure: false,
+            expect_recovery_unavailable: true,
+        },
+        RungKindCase {
+            rung_index: 3,
+            current_terminus: Some(2),
+            positive_i_rest_boundary_after_sufficiency: false,
+            expect_recovery_failure: false,
+            expect_recovery_unavailable: true,
+        },
+        RungKindCase {
+            rung_index: 3,
+            current_terminus: None,
+            positive_i_rest_boundary_after_sufficiency: true,
+            expect_recovery_failure: false,
+            expect_recovery_unavailable: true,
+        },
+        RungKindCase {
+            rung_index: 0,
+            current_terminus: None,
+            positive_i_rest_boundary_after_sufficiency: false,
+            expect_recovery_failure: true,
+            expect_recovery_unavailable: false,
+        },
+        RungKindCase {
+            rung_index: 3,
+            current_terminus: None,
+            positive_i_rest_boundary_after_sufficiency: false,
+            expect_recovery_failure: true,
+            expect_recovery_unavailable: false,
+        },
+    ];
+    for case in cases {
+        let rung_index = case.rung_index;
+        let mut phase = phase();
+        let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+            unreachable!()
+        };
+        data.rung_index = rung_index;
+        data.current_terminus = case.current_terminus;
+        data.positive_i_rest_boundary_after_sufficiency =
+            case.positive_i_rest_boundary_after_sufficiency;
+        *state = VelocityIntegralState::FinalizeRecovery(contained_report(rung_index));
+        let mut workspace = TransientBuffer::new();
+        let mut backend = MockBackend::new();
+
+        assert!(
+            matches!(
+                step(&mut phase, &mut workspace, &mut backend),
+                StepResult::VelocityIntegralEvent(VelocityIntegralEvent::Recovery(_))
+            ),
+            "rung_index {rung_index}"
+        );
+        let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
+            unreachable!()
+        };
+        assert_eq!(
+            data.recovery_failure, case.expect_recovery_failure,
+            "rung_index {rung_index}"
+        );
+        assert_eq!(
+            data.recovery_unavailable, case.expect_recovery_unavailable,
+            "rung_index {rung_index}"
+        );
+        assert!(
+            matches!(state, VelocityIntegralState::Terminal),
+            "rung_index {rung_index}: {state:?}"
+        );
+        assert!(!backend.spi_log.iter().any(|operation| {
+            matches!(operation, SpiOp::Write(address, value)
+                if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
+        }));
+    }
+}
+
+#[test]
+fn finalize_recovery_resolves_a_contained_acceptance_amplitude_rung_as_recovery_failure() {
+    let mut phase = phase();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.acquisition_kind = VelocityIntegralAcquisitionKind::AcceptanceAscending;
+    data.plan.positive_rung_count = 5;
+    data.rung_index = 2;
+    *state = VelocityIntegralState::FinalizeRecovery(contained_report(2));
+    let mut workspace = TransientBuffer::new();
+    let mut backend = MockBackend::new();
+
+    assert!(matches!(
+        step(&mut phase, &mut workspace, &mut backend),
+        StepResult::AcceptanceMatrixEvent(_)
+    ));
+    let OuterPhase::VelocityIntegral { state, data, .. } = phase else {
+        unreachable!()
+    };
+    assert!(data.recovery_failure);
+    assert!(!data.recovery_unavailable);
+    assert!(matches!(state, VelocityIntegralState::Terminal));
+}
+
 #[test]
 fn recovery_current_contact_policy_is_limited_to_the_final_positive_recovery() {
     let mut phase = phase();
