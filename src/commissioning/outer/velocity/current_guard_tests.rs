@@ -512,7 +512,14 @@ fn begin_clears_demoted_bits_without_faulting() {
     // Each demoted bit individually (ipark 16-18, ref_sw 20-22, pwm 24/25), then
     // all combined (0x0377_0000).
     for preload in [
-        1u32 << 16, 1 << 17, 1 << 18, 1 << 20, 1 << 21, 1 << 22, 1 << 24, 1 << 25,
+        1u32 << 16,
+        1 << 17,
+        1 << 18,
+        1 << 20,
+        1 << 21,
+        1 << 22,
+        1 << 24,
+        1 << 25,
         0x0377_0000,
     ] {
         let mut backend = MockBackend::new();
@@ -524,8 +531,15 @@ fn begin_clears_demoted_bits_without_faulting() {
             PidTorqueFluxLimit::new(2_534).unwrap(),
             VelocityLimitEvidenceCapability::BestEffortPolling,
         ));
-        assert!(r.is_ok(), "demoted preload {preload:#x} must not fault: {r:?}");
-        assert_eq!(backend.registers.get(&STATUS_FLAGS.addr()), Some(&0), "must clear baseline");
+        assert!(
+            r.is_ok(),
+            "demoted preload {preload:#x} must not fault: {r:?}"
+        );
+        assert_eq!(
+            backend.registers.get(&STATUS_FLAGS.addr()),
+            Some(&0),
+            "must clear baseline"
+        );
     }
 }
 
@@ -556,13 +570,24 @@ fn begin_reports_register_io_and_does_not_clear() {
         VelocityLimitEvidenceCapability::BestEffortPolling,
     ));
     assert!(matches!(r, Err(VelocityCurrentGuardError::RegisterIo)));
-    assert_eq!(backend.registers.get(&STATUS_FLAGS.addr()), Some(&0x0377_0000), "must not clear on read failure");
+    assert_eq!(
+        backend.registers.get(&STATUS_FLAGS.addr()),
+        Some(&0x0377_0000),
+        "must not clear on read failure"
+    );
 }
 
 #[test]
 fn restart_clears_demoted_bits_without_faulting() {
     for preload in [
-        1u32 << 16, 1 << 17, 1 << 18, 1 << 20, 1 << 21, 1 << 22, 1 << 24, 1 << 25,
+        1u32 << 16,
+        1 << 17,
+        1 << 18,
+        1 << 20,
+        1 << 21,
+        1 << 22,
+        1 << 24,
+        1 << 25,
         0x0377_0000,
     ] {
         let mut backend = MockBackend::new();
@@ -571,8 +596,14 @@ fn restart_clears_demoted_bits_without_faulting() {
             PidTorqueFluxLimit::new(2_534).unwrap(),
             VelocityLimitEvidenceCapability::BestEffortPolling,
         );
-        let r = pollster::block_on(restart_velocity_current_primitive(&mut observer, &mut backend));
-        assert!(r.is_ok(), "demoted preload {preload:#x} must not fault at restart: {r:?}");
+        let r = pollster::block_on(restart_velocity_current_primitive(
+            &mut observer,
+            &mut backend,
+        ));
+        assert!(
+            r.is_ok(),
+            "demoted preload {preload:#x} must not fault at restart: {r:?}"
+        );
         assert_eq!(backend.registers.get(&STATUS_FLAGS.addr()), Some(&0));
     }
 }
@@ -581,10 +612,14 @@ fn restart_clears_demoted_bits_without_faulting() {
 fn restart_faults_on_genuine_fault_bit() {
     let mut backend = MockBackend::new();
     let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << 26);
-    let mut observer =
-        VelocityCurrentObserver::new(PidTorqueFluxLimit::new(2_534).unwrap(),
-            VelocityLimitEvidenceCapability::BestEffortPolling);
-    let r = pollster::block_on(restart_velocity_current_primitive(&mut observer, &mut backend));
+    let mut observer = VelocityCurrentObserver::new(
+        PidTorqueFluxLimit::new(2_534).unwrap(),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    );
+    let r = pollster::block_on(restart_velocity_current_primitive(
+        &mut observer,
+        &mut backend,
+    ));
     assert!(matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << 26)));
 }
 
@@ -595,10 +630,14 @@ fn finish_moving_still_faults_on_demoted_bit_set_during_stroke() {
     for bit in [16u32, 17, 18, 20, 21, 22, 24, 25] {
         let mut backend = MockBackend::new();
         let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << bit);
-        let mut observer =
-            VelocityCurrentObserver::new(PidTorqueFluxLimit::new(2_534).unwrap(),
-                VelocityLimitEvidenceCapability::BestEffortPolling);
-        let r = pollster::block_on(finish_velocity_current_moving_phase(&mut observer, &mut backend));
+        let mut observer = VelocityCurrentObserver::new(
+            PidTorqueFluxLimit::new(2_534).unwrap(),
+            VelocityLimitEvidenceCapability::BestEffortPolling,
+        );
+        let r = pollster::block_on(finish_velocity_current_moving_phase(
+            &mut observer,
+            &mut backend,
+        ));
         assert!(
             matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << bit)),
             "finish_moving must fault on bit {bit} set during the stroke"

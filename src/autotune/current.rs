@@ -1589,6 +1589,10 @@ mod tests {
         }
 
         // A genuine-fault bit (adc_i_clipped, 26) stays in the entry gate.
-        assert_ne!(entry & (1 << 26), 0, "adc_i_clipped must remain entry-actionable");
+        assert_ne!(
+            entry & (1 << 26),
+            0,
+            "adc_i_clipped must remain entry-actionable"
+        );
     }
 }
