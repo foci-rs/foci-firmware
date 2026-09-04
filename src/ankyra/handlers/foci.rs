@@ -276,6 +276,19 @@ pub fn foci_commission(ctx: &mut dyn FociRuntimeHost, oid: u8, profile: u8) {
     }
 }
 
+/// Request cancellation of the in-flight commissioning run on one channel.
+///
+/// A no-op if the channel has no commissioning run in flight -- the engine's
+/// own run-start path clears any stale request, so setting the flag here is
+/// always safe regardless of timing.
+#[klipper_command]
+pub fn foci_commission_cancel(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    state.cancel_requested.store(true, Relaxed);
+}
+
 /// Composite bound for runtime FOCI handlers: they enqueue TMC requests
 /// and enter shutdown when an OID has no configured stepper channel.
 pub trait FociRuntimeHost: ShutdownRecovery + TmcHost {}
@@ -426,6 +439,8 @@ mod tests {
         last_boot_diagnostics: std::vec::Vec<crate::ankyra::replies::FociLastBootDiagnostic>,
         stack_watermark_payloads: std::vec::Vec<crate::ankyra::replies::FociStackWatermarkResult>,
     }
+
+    struct EmptySender;
 
     impl MockSender {
         fn new() -> Self {
@@ -754,5 +769,31 @@ mod tests {
                 status: 1,
             }
         );
+    }
+
+    #[test]
+    fn foci_commission_cancel_sets_cancel_requested_for_the_resolved_channel() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = EmptySender;
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        foci_commission_cancel(&mut ctx, &mut sender, 10);
+
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        assert!(tmc_state.cancel_requested.load(Relaxed));
+    }
+
+    #[test]
+    fn foci_commission_cancel_on_idle_channel_is_a_noop() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = EmptySender;
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        foci_commission_cancel(&mut ctx, &mut sender, 10);
+
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        assert!(tmc_state.cancel_requested.load(Relaxed));
     }
 }
