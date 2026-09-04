@@ -5,6 +5,7 @@ use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentObserver, VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability,
     begin_velocity_current_primitive, classify_phase_evidence, derive_probe_limit,
+    restart_velocity_current_primitive,
 };
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
 use crate::commission_dispatch::test_support::{
@@ -556,4 +557,33 @@ fn begin_reports_register_io_and_does_not_clear() {
     ));
     assert!(matches!(r, Err(VelocityCurrentGuardError::RegisterIo)));
     assert_eq!(backend.registers.get(&STATUS_FLAGS.addr()), Some(&0x0377_0000), "must not clear on read failure");
+}
+
+#[test]
+fn restart_clears_demoted_bits_without_faulting() {
+    for preload in [
+        1u32 << 16, 1 << 17, 1 << 18, 1 << 20, 1 << 21, 1 << 22, 1 << 24, 1 << 25,
+        0x0377_0000,
+    ] {
+        let mut backend = MockBackend::new();
+        let _ = backend.registers.insert(STATUS_FLAGS.addr(), preload);
+        let mut observer = VelocityCurrentObserver::new(
+            PidTorqueFluxLimit::new(2_534).unwrap(),
+            VelocityLimitEvidenceCapability::BestEffortPolling,
+        );
+        let r = pollster::block_on(restart_velocity_current_primitive(&mut observer, &mut backend));
+        assert!(r.is_ok(), "demoted preload {preload:#x} must not fault at restart: {r:?}");
+        assert_eq!(backend.registers.get(&STATUS_FLAGS.addr()), Some(&0));
+    }
+}
+
+#[test]
+fn restart_faults_on_genuine_fault_bit() {
+    let mut backend = MockBackend::new();
+    let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << 26);
+    let mut observer =
+        VelocityCurrentObserver::new(PidTorqueFluxLimit::new(2_534).unwrap(),
+            VelocityLimitEvidenceCapability::BestEffortPolling);
+    let r = pollster::block_on(restart_velocity_current_primitive(&mut observer, &mut backend));
+    assert!(matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << 26)));
 }
