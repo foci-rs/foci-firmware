@@ -281,6 +281,9 @@ pub enum CommissionError {
     /// current polarity or a sign error, not a data-quality gate failure.
     /// Code 73.
     ResistanceNonPositiveSlope,
+    /// Operator-requested cancel reached GPIO-first safe-state gracefully;
+    /// the MCU stays running and `commission_in_flight` is cleared. Code 74.
+    Cancelled,
 }
 
 impl CommissionError {
@@ -363,6 +366,7 @@ impl CommissionError {
             Self::PrimitiveStartInFuture => 71,
             Self::RecoveryOriginMismatch => 72,
             Self::ResistanceNonPositiveSlope => 73,
+            Self::Cancelled => 74,
         }
     }
 }
@@ -721,6 +725,7 @@ mod tests {
             CommissionError::PrimitiveAlreadyOpen,
             CommissionError::PrimitiveStartInFuture,
             CommissionError::RecoveryOriginMismatch,
+            CommissionError::Cancelled,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -768,6 +773,11 @@ mod tests {
     #[test]
     fn commission_chip_reset_detected_has_status_code_18() {
         assert_eq!(CommissionError::ChipResetDetected.status_code(), 18);
+    }
+
+    #[test]
+    fn commission_cancelled_has_status_code_74() {
+        assert_eq!(CommissionError::Cancelled.status_code(), 74);
     }
 
     #[test]
