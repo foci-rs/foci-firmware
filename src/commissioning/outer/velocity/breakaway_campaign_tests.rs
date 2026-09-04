@@ -4457,3 +4457,32 @@ fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
          internal fault is attributable, not just named as an internal fault"
     );
 }
+
+#[test]
+fn probe_start_tolerates_inherited_demoted_status() {
+    // Transition/limiter bits latched before the probe (ipark 16-18, ref_sw
+    // 20-22, pwm 24/25 = 0x0377_0000) must NOT fault at ProbeCurrentPrimitiveStart;
+    // the campaign proceeds to command the probe target.
+    let mut backend = test_backend();
+    let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0x0377_0000);
+    // Same target value/type run_probe passes (100); is_moving is FnMut(VelocityDirection, u8) -> bool.
+    let (outcome, backend) =
+        run_probe_with_backend(backend, test_plan(), 100, |_direction, _index| true);
+    assert!(
+        !matches!(
+            outcome,
+            BreakawayProbeOutcome::SafetyFault {
+                error: CommissionError::SafetyEnvelopeViolation,
+                ..
+            }
+        ),
+        "inherited demoted status must not fault the probe start: {outcome:?}"
+    );
+    assert!(
+        backend
+            .spi_log
+            .iter()
+            .any(|op| matches!(op, SpiOp::Write(addr, _) if *addr == PID_VELOCITY_TARGET.addr())),
+        "probe must reach the target write after a clean entry"
+    );
+}

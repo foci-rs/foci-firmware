@@ -2,16 +2,16 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 use super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
 use super::current_guard::{
-    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentObserver,
-    VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, classify_phase_evidence,
-    derive_probe_limit,
+    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
+    VelocityCurrentObserver, VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability,
+    begin_velocity_current_primitive, classify_phase_evidence, derive_probe_limit,
 };
 use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
 use crate::commission_dispatch::test_support::{
     MockBackend, SpiOp, breakaway_confirmation_for_test,
 };
 use crate::commissioning::outer::OuterMotionBudget;
-use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+use foci_tmc4671::registers::{PID_TORQUE_FLUX_LIMITS, STATUS_FLAGS};
 
 const PID_V_OUTPUT_LIMIT: u32 = 1 << 7;
 
@@ -504,4 +504,56 @@ fn velocity_current_observer_attributes_phases() {
         .unwrap();
     assert_eq!(best_effort.contact, VelocityCurrentContact::None);
     assert!(best_effort.moving_clip_uncertain());
+}
+
+#[test]
+fn begin_clears_demoted_bits_without_faulting() {
+    // Each demoted bit individually (ipark 16-18, ref_sw 20-22, pwm 24/25), then
+    // all combined (0x0377_0000).
+    for preload in [
+        1u32 << 16, 1 << 17, 1 << 18, 1 << 20, 1 << 21, 1 << 22, 1 << 24, 1 << 25,
+        0x0377_0000,
+    ] {
+        let mut backend = MockBackend::new();
+        let _ = backend.registers.insert(STATUS_FLAGS.addr(), preload);
+        let mut observer = VelocityCurrentObserver::EMPTY;
+        let r = pollster::block_on(begin_velocity_current_primitive(
+            &mut observer,
+            &mut backend,
+            PidTorqueFluxLimit::new(2_534).unwrap(),
+            VelocityLimitEvidenceCapability::BestEffortPolling,
+        ));
+        assert!(r.is_ok(), "demoted preload {preload:#x} must not fault: {r:?}");
+        assert_eq!(backend.registers.get(&STATUS_FLAGS.addr()), Some(&0), "must clear baseline");
+    }
+}
+
+#[test]
+fn begin_faults_on_genuine_fault_bit() {
+    let mut backend = MockBackend::new();
+    let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << 26); // adc_i_clipped
+    let mut observer = VelocityCurrentObserver::EMPTY;
+    let r = pollster::block_on(begin_velocity_current_primitive(
+        &mut observer,
+        &mut backend,
+        PidTorqueFluxLimit::new(2_534).unwrap(),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    ));
+    assert!(matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << 26)));
+}
+
+#[test]
+fn begin_reports_register_io_and_does_not_clear() {
+    let mut backend = MockBackend::new();
+    let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0x0377_0000);
+    backend.fail_on_read = Some(STATUS_FLAGS.addr());
+    let mut observer = VelocityCurrentObserver::EMPTY;
+    let r = pollster::block_on(begin_velocity_current_primitive(
+        &mut observer,
+        &mut backend,
+        PidTorqueFluxLimit::new(2_534).unwrap(),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    ));
+    assert!(matches!(r, Err(VelocityCurrentGuardError::RegisterIo)));
+    assert_eq!(backend.registers.get(&STATUS_FLAGS.addr()), Some(&0x0377_0000), "must not clear on read failure");
 }

@@ -31,6 +31,7 @@ pub use buffer::{
     normalize_capture_sample,
 };
 pub use current::current_loop_actionable_status_mask;
+pub use current::current_loop_entry_actionable_status_mask;
 pub use current::estimate_electrical_delay;
 pub use current::is_actionable_status;
 pub use current::{

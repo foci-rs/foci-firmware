@@ -372,7 +372,7 @@ where
         .await
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)?;
     let actionable_mask =
-        crate::autotune::current_loop_actionable_status_mask(backend.feedback_config());
+        crate::autotune::current_loop_entry_actionable_status_mask(backend.feedback_config());
     if crate::autotune::is_actionable_status(flags, actionable_mask) {
         return Err(VelocityCurrentGuardError::ActionableStatus(
             flags & actionable_mask,
