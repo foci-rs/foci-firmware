@@ -3393,7 +3393,14 @@ async fn assert_drain_reaches_safe_state(
         "both slots must survive until the drain has run"
     );
 
-    let _ = runtime.drive_restore_cancel(backend, tmc, stepper).await;
+    let _ = runtime
+        .drive_restore_cancel(
+            backend,
+            tmc,
+            stepper,
+            crate::autotune::CommissionError::Shutdown,
+        )
+        .await;
 
     assert!(!backend.enable_pin, "the motor must be de-energized");
     assert!(!tmc.motor_armed.load(Relaxed));
@@ -3596,6 +3603,140 @@ fn request_restore_cancel_without_a_restore_is_inert() {
     assert!(!runtime.is_restore_pending());
 }
 
+#[test]
+fn cancelled_mid_restore_reports_cancelled_status_not_shutdown() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+        let mut slot =
+            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            );
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
+
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        tmc.cancel_requested.store(true, Relaxed);
+
+        let pwm_maxcnt = commissioning_runtime_config().tmc.pwm_maxcnt;
+        let outcome = runtime
+            .drive_operator_cancel(&mut backend, tmc, stepper, pwm_maxcnt)
+            .await
+            .expect("a cancel latched mid-restore must produce a terminal outcome");
+
+        // armed_runtime_mid_restore's fixture is a CalibrateDone restore, so
+        // the reply is a CalibrateResult whose status is the calibration-side
+        // mapping of the status this drain was told to report -- Cancelled,
+        // not the InternalError fallback Shutdown maps to (Shutdown has no
+        // explicit CalibrationError arm).
+        match outcome {
+            crate::commission_dispatch::CommissionOutcome::Terminal { reply, .. } => match reply {
+                crate::commission_dispatch::ReplyPayload::CalibrateResult { status, .. } => {
+                    assert_eq!(
+                        status,
+                        crate::calibration::CalibrationError::Cancelled.status_code(),
+                        "a mid-restore operator cancel must report Cancelled, not Shutdown"
+                    );
+                }
+                _ => panic!("expected a CalibrateResult reply from a CalibrateDone restore"),
+            },
+            _ => panic!("expected a Terminal outcome"),
+        }
+
+        assert!(!backend.enable_pin, "the motor must be de-energized");
+        assert!(!tmc.commission_in_flight.load(Relaxed));
+        assert!(
+            !tmc.cancel_requested.load(Relaxed),
+            "the cancel flag must be consumed"
+        );
+        assert!(!runtime.is_restore_pending());
+        assert!(!runtime.is_commission_active());
+    });
+}
+
+#[test]
+fn cancelled_mid_phase_disarms_only_the_targeted_channel_and_reports_cancelled() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+
+        use crate::commissioning::backend::CommissionMotorControl;
+
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        tmc.mark_pi_representation_established();
+        tmc.motor_armed.store(true, Relaxed);
+        tmc.commission_in_flight.store(true, Relaxed);
+        tmc.cancel_requested.store(true, Relaxed);
+
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let mut backend = MockBackend::new();
+        backend.set_enable_pin(true);
+        runtime.set_calibrated_for_test(true);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_commission_engine(CommissioningEngine::new_commission(
+            7,
+            crate::autotune::CommissionProfile::Balanced,
+        ));
+        assert!(runtime.is_commission_active());
+        assert!(!runtime.is_restore_pending(), "no restore machine yet");
+
+        let pwm_maxcnt = commissioning_runtime_config().tmc.pwm_maxcnt;
+        let outcome = runtime
+            .drive_operator_cancel(&mut backend, tmc, stepper, pwm_maxcnt)
+            .await
+            .expect("a cancel latched mid-phase must produce a terminal outcome");
+
+        match outcome {
+            crate::commission_dispatch::CommissionOutcome::Terminal { reply, .. } => match reply {
+                crate::commission_dispatch::ReplyPayload::CommissionResult { status, .. } => {
+                    assert_eq!(
+                        status,
+                        crate::autotune::CommissionError::Cancelled.status_code()
+                    );
+                }
+                _ => panic!("expected a CommissionResult reply from a Commission-kind engine"),
+            },
+            _ => panic!("expected a Terminal outcome"),
+        }
+
+        assert!(
+            !backend.enable_pin,
+            "channel 0's motor must be de-energized"
+        );
+        assert!(!tmc.motor_armed.load(Relaxed));
+        assert!(!tmc.commission_in_flight.load(Relaxed));
+        assert!(
+            !tmc.cancel_requested.load(Relaxed),
+            "the cancel flag must be consumed"
+        );
+        assert!(!runtime.is_commission_active());
+        assert!(!runtime.is_restore_pending());
+
+        let other_channel = crate::state::tmc::tmc_channel(1)
+            .expect("a second channel's static state must exist on this build");
+        assert!(
+            !other_channel.motor_armed.load(Relaxed),
+            "the other channel's motor state must be untouched"
+        );
+        assert!(
+            !other_channel.commission_in_flight.load(Relaxed),
+            "the other channel's commissioning state must be untouched"
+        );
+        assert!(
+            !other_channel.cancel_requested.load(Relaxed),
+            "the other channel's cancel flag must be untouched"
+        );
+    });
+}
+
 /// Assert the drop landed inside a real backend operation: the verified write
 /// that was in flight had already pushed its register write, and its verifying
 /// read-back had not run yet.
@@ -3653,7 +3794,12 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
     // Restart as an InnerFailed terminal: its first step is the safe-state
     // sequence, whose verified writes are where the mock can suspend.
     runtime.request_restore_cancel();
-    pollster::block_on(runtime.drive_restore_cancel(&mut backend, tmc, stepper));
+    pollster::block_on(runtime.drive_restore_cancel(
+        &mut backend,
+        tmc,
+        stepper,
+        crate::autotune::CommissionError::Shutdown,
+    ));
     runtime.set_commission_engine(CommissioningEngine::new_calibrate(0));
     runtime.begin_commissioning_terminal(
         crate::commissioning::schedule::CommissionTerminal::InnerFailed(
@@ -3715,8 +3861,12 @@ fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
     backend.pend_next_op = true;
     let ops_before = backend.spi_log.len();
     let suspended = {
-        let mut future =
-            std::boxed::Box::pin(runtime.drive_restore_cancel(&mut backend, tmc, stepper));
+        let mut future = std::boxed::Box::pin(runtime.drive_restore_cancel(
+            &mut backend,
+            tmc,
+            stepper,
+            crate::autotune::CommissionError::Shutdown,
+        ));
         let waker = noop_waker();
         let mut context = std::task::Context::from_waker(&waker);
         matches!(future.as_mut().poll(&mut context), std::task::Poll::Pending)

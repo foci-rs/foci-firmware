@@ -222,7 +222,14 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
         runtime.request_restore_cancel();
     }
     while runtime.restore_cancel_pending() {
-        let _ = runtime.drive_restore_cancel(backend, tmc, stepper).await;
+        let _ = runtime
+            .drive_restore_cancel(
+                backend,
+                tmc,
+                stepper,
+                crate::autotune::CommissionError::Shutdown,
+            )
+            .await;
     }
     let mut state = runtime.dispatch_state(tmc, stepper);
     disarm_motor(backend, &mut state).await;

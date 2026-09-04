@@ -695,6 +695,7 @@ impl TmcControlRuntime {
         backend: &mut B,
         tmc: &'static TmcChannelState,
         stepper: &'static StepperChannelState,
+        status_error: crate::autotune::CommissionError,
     ) -> crate::commission_dispatch::RestoreStep
     where
         B: CommissioningBackend,
@@ -728,6 +729,7 @@ impl TmcControlRuntime {
                 &mut self.motor_enabled,
                 &mut self.stored_gains,
             );
+            machine.set_status_error(status_error);
             machine
                 .force_safe_terminal(&mut self.commission_engine, backend, &mut dispatch)
                 .await
@@ -737,6 +739,71 @@ impl TmcControlRuntime {
         self.applied_torque_flux_offset = None;
         self.restore_cancel_requested = false;
         crate::commission_dispatch::RestoreStep::Done(outcome)
+    }
+
+    /// Cancel this channel's in-flight commissioning run on operator
+    /// request. Returns `None` when `tmc.cancel_requested` was not set, or
+    /// when it was set but nothing on this channel needs cancelling (the
+    /// flag is still consumed in that case). The caller must emit the
+    /// returned reply itself, exactly as it already does for
+    /// `poll_commissioning_terminal`'s `Terminal` result.
+    pub async fn drive_operator_cancel<B>(
+        &mut self,
+        backend: &mut B,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+        pwm_maxcnt: u16,
+    ) -> Option<crate::commission_dispatch::CommissionOutcome>
+    where
+        B: CommissioningBackend,
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        if !tmc.cancel_requested.swap(false, Relaxed) {
+            return None;
+        }
+        if self.restore_machine.is_some() {
+            self.request_restore_cancel();
+            match self
+                .drive_restore_cancel(
+                    backend,
+                    tmc,
+                    stepper,
+                    crate::autotune::CommissionError::Cancelled,
+                )
+                .await
+            {
+                crate::commission_dispatch::RestoreStep::Done(outcome) => Some(outcome),
+                crate::commission_dispatch::RestoreStep::Pending => {
+                    unreachable!("force_safe_terminal completes in one step")
+                }
+            }
+        } else if let Some(engine) = self.commission_engine.as_ref() {
+            let kind = engine.kind();
+            let mut machine = crate::commission_dispatch::TerminalRestoreMachine::start_cancelled(
+                kind,
+                self.channel,
+                pwm_maxcnt,
+            );
+            let mut dispatch = crate::commission_dispatch::DispatchState::new(
+                self.channel,
+                tmc,
+                stepper,
+                &mut self.calibrated,
+                &mut self.motor_enabled,
+                &mut self.stored_gains,
+            );
+            match machine
+                .poll_step(&mut self.commission_engine, backend, &mut dispatch, None)
+                .await
+            {
+                crate::commission_dispatch::RestoreStep::Done(outcome) => Some(outcome),
+                crate::commission_dispatch::RestoreStep::Pending => {
+                    unreachable!("ForceSafeDisarm completes in one step")
+                }
+            }
+        } else {
+            None
+        }
     }
 
     /// Dispatch a terminal commissioning result into the board-facing action.

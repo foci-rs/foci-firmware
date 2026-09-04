@@ -18,7 +18,7 @@ use crate::commission_dispatch::{
     CommissionOutcome, CommissionRetention, DispatchState, PostActions, ReplyPayload,
     StepperPostAction, acceptance, disarm_velocity_workflow, outer_restore_position_stable,
     record_restore_summary, restore, robustness, stage_c, validate_outer_gains,
-    zero_adc_cal_result, zero_outer_result,
+    zero_adc_cal_result, zero_commission_result, zero_outer_result,
 };
 use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionTerminal;
@@ -61,6 +61,10 @@ enum TerminalPayload {
 /// every intermediate result the remaining steps still need.
 struct OwnedTerminalData {
     payload: TerminalPayload,
+    /// Status this restore's `cancelled_reply` reports once it reaches
+    /// `ForceSafeDisarm`. Defaults to `Shutdown`; `set_status_error` and
+    /// `start_cancelled` are the only ways to override it.
+    status_error: CommissionError,
     outer_error: CommissionError,
     outer_restore_failure: Option<CommissionError>,
     restore_drift_counts: u32,
@@ -78,6 +82,7 @@ impl OwnedTerminalData {
     fn new(payload: TerminalPayload) -> Self {
         Self {
             payload,
+            status_error: CommissionError::Shutdown,
             outer_error: CommissionError::Spi,
             outer_restore_failure: None,
             restore_drift_counts: 0,
@@ -262,6 +267,39 @@ impl TerminalRestoreMachine {
                 machine
             }
         }
+    }
+
+    /// Begin a synthetic terminal restore for a channel whose commissioning
+    /// engine is still actively stepping (no natural `StepResult` terminal
+    /// reached yet, so no restore machine exists). Builds a placeholder
+    /// payload for the engine's kind, matching the zero-filled failure-path
+    /// results `zero_outer_result()`/`zero_adc_cal_result()` already use, and
+    /// jumps straight to `ForceSafeDisarm` — this restore never had real
+    /// register state to restore, only the motor to de-energize.
+    pub fn start_cancelled(engine_kind: EngineKind, channel: u8, pwm_maxcnt: u16) -> Self {
+        let payload = match engine_kind {
+            EngineKind::Commission => TerminalPayload::CommissionDone(zero_commission_result()),
+            EngineKind::Calibrate => TerminalPayload::CalibrateDone(zero_adc_cal_result()),
+            EngineKind::Selftest => TerminalPayload::Selftest,
+            EngineKind::OuterTune => TerminalPayload::OuterFailed,
+        };
+        let mut terminal = OwnedTerminalData::new(payload);
+        terminal.status_error = CommissionError::Cancelled;
+        Self {
+            channel,
+            pwm_maxcnt,
+            cursor: RestoreCursor::ForceSafeDisarm,
+            terminal,
+            engine_consumed: false,
+        }
+    }
+
+    /// Override the status this restore's `cancelled_reply` will report,
+    /// once it reaches `ForceSafeDisarm`. Existing callers that never call
+    /// this keep reporting `CommissionError::Shutdown`, the pre-existing
+    /// default `OwnedTerminalData::new` sets.
+    pub(crate) fn set_status_error(&mut self, status_error: CommissionError) {
+        self.terminal.status_error = status_error;
     }
 
     /// Return this machine's board-local TMC channel.
@@ -1221,9 +1259,10 @@ impl TerminalRestoreMachine {
                 RestoreCursor::ForceSafeDisarm => {
                     crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     state.tmc.commission_in_flight.store(false, Relaxed);
+                    let status_error = self.terminal.status_error;
                     let consumed = self.take_engine(engine);
                     return RestoreStep::Done(CommissionOutcome::Terminal {
-                        reply: self.cancelled_reply(consumed.oid()),
+                        reply: self.cancelled_reply(consumed.oid(), status_error),
                         actions: PostActions {
                             stop_trace: true,
                             stepper: StepperPostAction::Stop,
@@ -1460,8 +1499,8 @@ impl TerminalRestoreMachine {
     }
 
     /// Terminal reply for a restore torn down before it finished.
-    fn cancelled_reply(&self, oid: u8) -> ReplyPayload {
-        let status = CommissionError::Shutdown.status_code();
+    fn cancelled_reply(&self, oid: u8, status_error: CommissionError) -> ReplyPayload {
+        let status = status_error.status_code();
         match self.terminal.payload.clone() {
             TerminalPayload::Selftest => ReplyPayload::Selftest {
                 oid,
@@ -1472,9 +1511,7 @@ impl TerminalRestoreMachine {
             TerminalPayload::InnerFailed(_) | TerminalPayload::CalibrateDone(_) => {
                 ReplyPayload::CalibrateResult {
                     oid,
-                    status: super::calibration_status_from_commission_error(
-                        CommissionError::Shutdown,
-                    ),
+                    status: super::calibration_status_from_commission_error(status_error),
                     result: zero_adc_cal_result(),
                     diagnostics: crate::selftest::CommissionDiagnostics::default(),
                 }
