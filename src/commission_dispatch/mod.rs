@@ -437,6 +437,7 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
         CommissionError::MotorEnabled => CalibrationError::AlreadyEnabled,
         CommissionError::EncoderFault => CalibrationError::EncoderFault,
         CommissionError::ClosedLoopEntryUnstable => CalibrationError::ClosedLoopEntryUnstable,
+        CommissionError::Cancelled => CalibrationError::Cancelled,
         _ => CalibrationError::InternalError,
     };
     calibration_error.status_code()
@@ -628,4 +629,17 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     };
     let mut machine = TerminalRestoreMachine::start_staged(staged, channel, pwm_maxcnt);
     drive_restore_machine(&mut machine, engine, backend, state, Some(&mut retention)).await
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn calibration_status_from_commission_error_maps_cancelled() {
+        assert_eq!(
+            calibration_status_from_commission_error(crate::autotune::CommissionError::Cancelled),
+            crate::calibration::CalibrationError::Cancelled.status_code(),
+        );
+    }
 }
