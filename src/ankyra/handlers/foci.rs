@@ -796,4 +796,16 @@ mod tests {
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
         assert!(tmc_state.cancel_requested.load(Relaxed));
     }
+
+    #[test]
+    fn provider_registers_the_commission_cancel_command() {
+        let source = include_str!("../provider.rs");
+
+        assert_eq!(
+            source
+                .matches("crate::ankyra::handlers::foci::foci_commission_cancel,")
+                .count(),
+            2
+        );
+    }
 }
