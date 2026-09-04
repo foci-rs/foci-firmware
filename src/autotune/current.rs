@@ -99,11 +99,13 @@ pub const fn current_loop_actionable_status_mask(
     }
 }
 
-/// Status bits set by normal prior motion, an active hold, or homing that must
-/// not gate the primitive-start check (they are still full-mask actionable on
-/// the finish-phase checks). Exact set fixed by the datasheet audit
-/// (docs/notes/2026-09-03-foci-305-entry-mask-audit.md).
-const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = 0x0377_0000;
+// Demoted from the primitive-start entry check: transition/limiter bits a
+// preceding phase legitimately leaves set (ipark circular-limit 16-18,
+// reference-switch 20-22, PWM duty rails 24-25). They remain full-mask
+// actionable on the finish-phase checks. Datasheet classification:
+// docs/notes/2026-09-03-foci-305-entry-mask-audit.md
+const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 =
+    (1 << 16) | (1 << 17) | (1 << 18) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 24) | (1 << 25);
 
 /// Actionable status the guard checks at primitive start, before commanding
 /// motion. Narrower than [`current_loop_actionable_status_mask`]: it demotes the
@@ -1578,17 +1580,13 @@ mod tests {
         let full = current_loop_actionable_status_mask(FeedbackConfig::abn_abn());
         let entry = current_loop_entry_actionable_status_mask(FeedbackConfig::abn_abn());
 
-        // Entry gate is a strict subset of the full mask.
         assert_eq!(entry & !full, 0, "entry mask must not add bits");
 
-        // Every demoted bit (ipark 16-18, ref_sw 20-22, pwm 24/25) is absent at entry
-        // but present in the full (finish) mask.
         for bit in [16u32, 17, 18, 20, 21, 22, 24, 25] {
             assert_eq!(entry & (1 << bit), 0, "bit {bit} must be demoted at entry");
             assert_ne!(full & (1 << bit), 0, "bit {bit} must stay in the full mask");
         }
 
-        // A genuine-fault bit (adc_i_clipped, 26) stays in the entry gate.
         assert_ne!(
             entry & (1 << 26),
             0,

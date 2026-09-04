@@ -15,6 +15,7 @@ use crate::commissioning::outer::OuterMotionBudget;
 use foci_tmc4671::registers::{PID_TORQUE_FLUX_LIMITS, STATUS_FLAGS};
 
 const PID_V_OUTPUT_LIMIT: u32 = 1 << 7;
+const ADC_I_CLIPPED_BIT: u32 = 1 << 26;
 
 #[test]
 fn velocity_current_guard_contract() {
@@ -509,8 +510,6 @@ fn velocity_current_observer_attributes_phases() {
 
 #[test]
 fn begin_clears_demoted_bits_without_faulting() {
-    // Each demoted bit individually (ipark 16-18, ref_sw 20-22, pwm 24/25), then
-    // all combined (0x0377_0000).
     for preload in [
         1u32 << 16,
         1 << 17,
@@ -546,7 +545,9 @@ fn begin_clears_demoted_bits_without_faulting() {
 #[test]
 fn begin_faults_on_genuine_fault_bit() {
     let mut backend = MockBackend::new();
-    let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << 26); // adc_i_clipped
+    let _ = backend
+        .registers
+        .insert(STATUS_FLAGS.addr(), ADC_I_CLIPPED_BIT);
     let mut observer = VelocityCurrentObserver::EMPTY;
     let r = pollster::block_on(begin_velocity_current_primitive(
         &mut observer,
@@ -554,7 +555,9 @@ fn begin_faults_on_genuine_fault_bit() {
         PidTorqueFluxLimit::new(2_534).unwrap(),
         VelocityLimitEvidenceCapability::BestEffortPolling,
     ));
-    assert!(matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << 26)));
+    assert!(
+        matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == ADC_I_CLIPPED_BIT)
+    );
 }
 
 #[test]
@@ -611,7 +614,9 @@ fn restart_clears_demoted_bits_without_faulting() {
 #[test]
 fn restart_faults_on_genuine_fault_bit() {
     let mut backend = MockBackend::new();
-    let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << 26);
+    let _ = backend
+        .registers
+        .insert(STATUS_FLAGS.addr(), ADC_I_CLIPPED_BIT);
     let mut observer = VelocityCurrentObserver::new(
         PidTorqueFluxLimit::new(2_534).unwrap(),
         VelocityLimitEvidenceCapability::BestEffortPolling,
@@ -620,13 +625,13 @@ fn restart_faults_on_genuine_fault_bit() {
         &mut observer,
         &mut backend,
     ));
-    assert!(matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == (1 << 26)));
+    assert!(
+        matches!(r, Err(VelocityCurrentGuardError::ActionableStatus(s)) if s == ADC_I_CLIPPED_BIT)
+    );
 }
 
 #[test]
 fn finish_moving_still_faults_on_demoted_bit_set_during_stroke() {
-    // A demoted bit that appears DURING the commanded target must still fault at
-    // the finish check (full mask), incl. a ref_sw bit — demotion is entry-only.
     for bit in [16u32, 17, 18, 20, 21, 22, 24, 25] {
         let mut backend = MockBackend::new();
         let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << bit);

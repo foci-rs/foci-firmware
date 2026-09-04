@@ -98,8 +98,6 @@ fn run_probe_with_target(
     run_probe_with_backend(test_backend(), plan, target_velocity_rpm_raw, is_moving)
 }
 
-/// [`run_probe_with_target`], but against a caller-supplied `MockBackend` so a
-/// test can preload register state (e.g. `STATUS_FLAGS`) before the probe runs.
 fn run_probe_with_backend(
     mut backend: MockBackend,
     plan: UpwardBreakawayProbePlan,
@@ -4460,12 +4458,8 @@ fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
 
 #[test]
 fn probe_start_tolerates_inherited_demoted_status() {
-    // Transition/limiter bits latched before the probe (ipark 16-18, ref_sw
-    // 20-22, pwm 24/25 = 0x0377_0000) must NOT fault at ProbeCurrentPrimitiveStart;
-    // the campaign proceeds to command the probe target.
     let mut backend = test_backend();
     let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0x0377_0000);
-    // Same target value/type run_probe passes (100); is_moving is FnMut(VelocityDirection, u8) -> bool.
     let (outcome, backend) =
         run_probe_with_backend(backend, test_plan(), 100, |_direction, _index| true);
     assert!(
