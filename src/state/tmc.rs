@@ -175,6 +175,15 @@ pub struct TmcChannelState {
     pub encoder_reversed: AtomicBool,
     /// Guard for single-in-flight commissioning on this channel.
     pub commission_in_flight: AtomicBool,
+    /// Operator-requested cancel for this channel's in-flight commissioning
+    /// run. Set by `foci_commission_cancel` (P2), observed by the
+    /// commissioning engine's existing bounded wait checkpoints and by the
+    /// mid-phase cancel synthesis path (P1). A fresh run start always resets
+    /// this to `false` before the engine begins polling, closing the race
+    /// where a stale write from a just-finished run's tail could otherwise
+    /// cancel the next run (see `commission_dispatch/mod.rs`'s run-admission
+    /// call sites, Task 7).
+    pub cancel_requested: AtomicBool,
     /// Host-controlled gate for raw-enable auto-calibration.
     pub auto_calibrate_on_enable_allowed: AtomicBool,
     /// Position P gain for cross-priority access (Q8.8).
@@ -244,6 +253,7 @@ impl TmcChannelState {
             adc_vm_offset_sample_count: AtomicU8::new(0),
             encoder_reversed: AtomicBool::new(false),
             commission_in_flight: AtomicBool::new(false),
+            cancel_requested: AtomicBool::new(false),
             auto_calibrate_on_enable_allowed: AtomicBool::new(false),
             position_p_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()),
             position_i_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.position_i.raw()),
@@ -305,6 +315,7 @@ impl TmcChannelState {
             .store(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
+        self.cancel_requested.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);
         self.store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
         self.clear_velocity_clamp_latch();
@@ -608,7 +619,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 124);
+        assert_eq!(size_of::<TmcChannelState>(), 128);
     }
 
     #[test]
@@ -804,5 +815,11 @@ mod tests {
     fn enable_pin_asserted_defaults_false() {
         let ch = TmcChannelState::new();
         assert!(!ch.enable_pin_asserted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn cancel_requested_defaults_to_false() {
+        let state = TmcChannelState::new();
+        assert!(!state.cancel_requested.load(core::sync::atomic::Ordering::Relaxed));
     }
 }
