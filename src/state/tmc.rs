@@ -182,7 +182,7 @@ pub struct TmcChannelState {
     /// this to `false` before the engine begins polling, closing the race
     /// where a stale write from a just-finished run's tail could otherwise
     /// cancel the next run (see `commission_dispatch/mod.rs`'s run-admission
-    /// call sites, Task 7).
+    /// call sites).
     pub cancel_requested: AtomicBool,
     /// Host-controlled gate for raw-enable auto-calibration.
     pub auto_calibrate_on_enable_allowed: AtomicBool,
@@ -820,6 +820,10 @@ mod tests {
     #[test]
     fn cancel_requested_defaults_to_false() {
         let state = TmcChannelState::new();
-        assert!(!state.cancel_requested.load(core::sync::atomic::Ordering::Relaxed));
+        assert!(
+            !state
+                .cancel_requested
+                .load(core::sync::atomic::Ordering::Relaxed)
+        );
     }
 }
