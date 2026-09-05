@@ -1875,7 +1875,9 @@ mod tests {
         // the `<= 6_144` bound below.
         // 5_760 -> 5_744: removes the `combined_workflow`
         // bool from the embedded Stage-C execution plan.
-        assert_eq!(size_of::<CommissioningEngine>(), 5_744);
+        // 5_744 -> 5_760: `OuterSafetyLimits` gains a `u32` peak local-window
+        // excursion field for uncensored characterization data.
+        assert_eq!(size_of::<CommissioningEngine>(), 5_760);
         assert!(size_of::<CommissioningEngine>() <= 5_776);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
         assert!(size_of::<capture_timing::CaptureTiming>() <= 64);

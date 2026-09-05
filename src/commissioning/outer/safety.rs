@@ -200,6 +200,12 @@ pub(crate) struct OuterSafetyLimits {
     pub(crate) next_safety_sample_us: OuterSafetyTimestamp,
     /// Previous ordinary velocity observation for the sliding two-interval gate.
     previous_velocity_observation: Option<OuterVelocityObservation>,
+    /// Peak `|local_position|` observed since the active primitive began,
+    /// updated on every sample regardless of pass/fail. Reset in
+    /// [`Self::begin_primitive`] rather than [`Self::end_primitive`] so the
+    /// value from the primitive that just ended survives long enough to be
+    /// logged there.
+    max_local_position_excursion: u32,
     /// Whether the latest accepted observation met the scoring cadence.
     last_observation_scoring_eligible: bool,
     /// Host-provided motion budget used to clamp firmware safety caps.
@@ -227,6 +233,7 @@ impl OuterSafetyLimits {
             primitive_start_position: None,
             next_safety_sample_us: OuterSafetyTimestamp::none(),
             previous_velocity_observation: None,
+            max_local_position_excursion: 0,
             last_observation_scoring_eligible: false,
             budget,
         }
@@ -514,15 +521,33 @@ impl OuterSafetyLimits {
         self.primitive_start_position = Some(self.unwrapped_position);
         self.previous_velocity_observation = None;
         self.in_settle_phase = false;
+        self.max_local_position_excursion = 0;
         Ok(())
     }
 
     /// End the active motion primitive after its safe target is applied.
     pub(crate) fn end_primitive(&mut self) {
+        if self.primitive_start_us.is_some() {
+            defmt::info!(
+                "outer safety: primitive local position peak {} of window {}",
+                self.max_local_position_excursion,
+                self.position_window,
+            );
+        }
         self.primitive_start_us = None;
         self.primitive_start_position = None;
         self.previous_velocity_observation = None;
         self.in_settle_phase = false;
+    }
+
+    /// Peak `|local_position|` observed since the active primitive began.
+    ///
+    /// Uncensored, unlike a trip fault's `position_counts`: it is updated on
+    /// every sample regardless of pass/fail, so it survives a passing run
+    /// where the local-window check never fires.
+    #[allow(dead_code)]
+    pub(crate) fn max_local_position_excursion(&self) -> u32 {
+        self.max_local_position_excursion
     }
 
     /// Whether the latest accepted observation met the 1 kHz scoring cadence.
@@ -866,6 +891,17 @@ async fn check_outer_safety_inner<B: CommissioningBackend>(
     safety.unwrapped_position = safety.unwrapped_position.saturating_add(delta_counts);
     safety.last_observation_scoring_eligible = dt_us <= OUTER_SAFETY_SAMPLE_PERIOD_US;
 
+    // Track the peak local excursion before any of the fault checks below can
+    // return early, so a sample that also trips the velocity or position
+    // guard is still counted -- this must observe every sample, not just the
+    // ones that pass.
+    if let Some(start) = safety.primitive_start_position {
+        let position = safety.unwrapped_position.saturating_sub(start);
+        safety.max_local_position_excursion = safety
+            .max_local_position_excursion
+            .max(position.unsigned_abs());
+    }
+
     let velocity_observation = OuterVelocityObservation {
         signed_delta_counts: delta_counts,
         absolute_delta_counts: delta.absolute_counts(),
@@ -1085,6 +1121,64 @@ mod tests {
             Err(CommissionError::PrimitiveAlreadyOpen)
         ));
         assert_eq!(safety.primitive_start_us, Some(1_000));
+    }
+
+    #[test]
+    fn max_local_position_excursion_tracks_the_peak_not_the_latest_reading() {
+        pollster::block_on(async {
+            let mut safety = armed_safety(None, 0);
+            safety.begin_primitive(0).unwrap();
+
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            backend.mechanical_encoder_position_counts_value = 50;
+            check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("first observation should succeed");
+
+            backend.elapsed_us_value = 2_000;
+            backend.mechanical_encoder_position_counts_value = 20;
+            check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second observation should succeed");
+
+            assert_eq!(
+                safety.max_local_position_excursion(),
+                50,
+                "the peak from the first sample must survive a smaller later reading"
+            );
+        });
+    }
+
+    #[test]
+    fn max_local_position_excursion_updates_even_on_a_faulting_sample() {
+        pollster::block_on(async {
+            // 70 counts over 5 ms is 14.0 counts/ms, above the 13.8 envelope,
+            // mirroring `outer_safety_velocity_envelope_rejects_one_count_above_the_exact_cap`.
+            let mut safety = envelope_armed_safety(1_450, 3_450);
+            safety.begin_primitive(100_000).unwrap();
+
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 102_500;
+            backend.mechanical_encoder_position_counts_value = 35;
+            check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("first velocity observation should succeed");
+
+            backend.elapsed_us_value = 105_000;
+            backend.mechanical_encoder_position_counts_value = 70;
+            let fault = check_outer_safety(&mut safety, &mut backend)
+                .await
+                .expect("second velocity observation should succeed")
+                .expect("14.0 counts/ms must exceed the 13.8 counts/ms envelope");
+
+            assert_eq!(fault.reason, OUTER_SAFETY_FAULT_VELOCITY);
+            assert_eq!(
+                safety.max_local_position_excursion(),
+                70,
+                "the peak must include the sample that tripped the velocity fault"
+            );
+        });
     }
 
     #[test]

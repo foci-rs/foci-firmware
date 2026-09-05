@@ -215,15 +215,18 @@ fn channel_runtime_size_stays_bounded() {
     // terminal restore machine. Its owned terminal payload used to live in the
     // `tmc_control` task future for the duration of the awaited restore, so
     // this is a move out of that future's frame, not new state.
+    // 7_552 -> 7_568 / 7_520 -> 7_536: the embedded `OuterSafetyLimits` gains
+    // a `u32` peak local-window excursion field (see
+    // `commissioning::tests::size_regression_gates`).
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_552);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_568);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_520);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_536);
 }
 
 #[test]
