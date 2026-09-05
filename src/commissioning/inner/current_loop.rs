@@ -156,7 +156,7 @@ pub(crate) struct AxisDirectionalEvidence {
     cross_axis_sample_count: u8,
     gate: CurrentAxisGateResult,
     encoder_delta_counts: i32,
-    cross_axis_peak_permille: u16,
+    cross_axis_peak_permille: Permille,
     status_flags: u32,
     settled_sample_count: u8,
     settled_samples: [CurrentValidationSettledSampleEvidence; SETTLED_FLUX_AVERAGE_SAMPLES],
@@ -372,14 +372,13 @@ fn axis_sample_from_registers(
     })
 }
 
-fn cross_axis_permille(sample: &CurrentAxisSample) -> u16 {
+fn cross_axis_permille(sample: &CurrentAxisSample) -> Permille {
     let target_abs = u64::from(sample.target.unsigned_abs().max(1));
     Permille::checked_ratio(
         u64::from(sample.cross_axis_actual.unsigned_abs()),
         target_abs,
     )
     .expect("target_abs is at least 1 via .max(1)")
-    .raw()
 }
 
 fn current_validation_axis_code(axis: CurrentValidationAxis) -> u8 {
@@ -415,8 +414,8 @@ fn settled_sample_evidence_from_sample(
         sample_delay_ms,
         same_axis_count: sample.same_axis_actual,
         cross_axis_count: sample.cross_axis_actual,
-        cross_axis_permille: gate.cross_axis_permille,
-        voltage_output_permille: gate.voltage_output_permille,
+        cross_axis_permille: gate.cross_axis_permille.raw(),
+        voltage_output_permille: gate.voltage_output_permille.raw(),
         encoder_delta_counts: sample.encoder_delta_counts,
         status_flags: sample.status_flags,
     }
@@ -543,16 +542,18 @@ fn combine_axis_pair_evidence(
         attempt,
         target,
         sample_delay_ms,
-        positive_response_permille: positive_response,
-        negative_response_permille: negative_response,
-        cross_axis_permille,
+        positive_response_permille: positive_response.raw(),
+        negative_response_permille: negative_response.raw(),
+        cross_axis_permille: cross_axis_permille.raw(),
         cross_axis_peak_permille: positive
             .cross_axis_peak_permille
-            .max(negative.cross_axis_peak_permille),
+            .max(negative.cross_axis_peak_permille)
+            .raw(),
         voltage_output_permille: positive
             .gate
             .voltage_output_permille
-            .max(negative.gate.voltage_output_permille),
+            .max(negative.gate.voltage_output_permille)
+            .raw(),
         encoder_delta_counts: positive
             .gate
             .encoder_delta_counts
@@ -602,7 +603,7 @@ fn bidirectional_pair_response_permille(
     target: i16,
     positive: &AxisDirectionalEvidence,
     negative: &AxisDirectionalEvidence,
-) -> u16 {
+) -> Permille {
     let target_abs = u64::from(target.unsigned_abs().max(1));
     let Some((numerator, denominator)) = bidirectional_pair_response_parts(positive, negative)
     else {
@@ -611,12 +612,10 @@ fn bidirectional_pair_response_permille(
             .response_permille
             .max(negative.gate.response_permille);
     };
-    Permille::checked_ratio(numerator, denominator * target_abs)
-        .expect(
-            "bidirectional_pair_response_parts only returns Some when both sample counts \
+    Permille::checked_ratio(numerator, denominator * target_abs).expect(
+        "bidirectional_pair_response_parts only returns Some when both sample counts \
              are >0, so denominator is at least 2; target_abs is at least 1 via .max(1)",
-        )
-        .raw()
+    )
 }
 
 fn bidirectional_pair_response_error_count(
@@ -627,11 +626,13 @@ fn bidirectional_pair_response_error_count(
     let target_abs = u32::from(target.unsigned_abs());
     let Some((numerator, denominator)) = bidirectional_pair_response_parts(positive, negative)
     else {
-        let response_count = positive
-            .gate
-            .response_permille
-            .max(negative.gate.response_permille) as u32
-            * target_abs
+        let response_count = u32::from(
+            positive
+                .gate
+                .response_permille
+                .max(negative.gate.response_permille)
+                .raw(),
+        ) * target_abs
             / 1000;
         return response_count.abs_diff(target_abs).min(u32::from(u16::MAX)) as u16;
     };
@@ -659,7 +660,7 @@ fn bidirectional_pair_cross_axis_permille(
     target: i16,
     positive: &AxisDirectionalEvidence,
     negative: &AxisDirectionalEvidence,
-) -> u16 {
+) -> Permille {
     let target_abs = u64::from(target.unsigned_abs().max(1));
     let Some((numerator, denominator)) = bidirectional_pair_cross_axis_parts(positive, negative)
     else {
@@ -668,12 +669,10 @@ fn bidirectional_pair_cross_axis_permille(
             .cross_axis_permille
             .max(negative.gate.cross_axis_permille);
     };
-    Permille::checked_ratio(numerator, denominator * target_abs)
-        .expect(
-            "bidirectional_pair_cross_axis_parts only returns Some when both sample counts \
+    Permille::checked_ratio(numerator, denominator * target_abs).expect(
+        "bidirectional_pair_cross_axis_parts only returns Some when both sample counts \
              are >0, so denominator is at least 2; target_abs is at least 1 via .max(1)",
-        )
-        .raw()
+    )
 }
 
 fn bidirectional_pair_cross_axis_count(
@@ -688,7 +687,7 @@ fn bidirectional_pair_cross_axis_count(
 }
 
 fn pair_cross_axis_status(
-    cross_axis_permille: u16,
+    cross_axis_permille: Permille,
     cross_axis_count: u16,
     feedback_config: crate::config::FeedbackConfig,
 ) -> u8 {
@@ -708,7 +707,7 @@ fn pair_cross_axis_status(
 }
 
 fn pair_response_status(
-    response_permille: u16,
+    response_permille: Permille,
     response_error_count: u16,
     feedback_config: crate::config::FeedbackConfig,
 ) -> u8 {
@@ -866,7 +865,7 @@ async fn read_axis_directional_evidence_for_gate<B: CommissioningBackend>(
     let mut output_limited_peak = 0i16;
     let mut encoder_delta_peak = 0i32;
     let mut status_flags_or = 0u32;
-    let mut cross_axis_peak_permille = 0u16;
+    let mut cross_axis_peak_permille = Permille::ZERO;
     let mut settled_samples =
         [CurrentValidationSettledSampleEvidence::EMPTY; SETTLED_FLUX_AVERAGE_SAMPLES];
 
@@ -3933,7 +3932,7 @@ mod tests {
                 crate::autotune::CURRENT_AXIS_VALIDATION_LOW_RESPONSE,
                 "single-polarity response reproduces the hardware false positive"
             );
-            assert_eq!(positive.gate.response_permille, 794);
+            assert_eq!(positive.gate.response_permille, Permille::new(794));
 
             let evidence = combine_axis_pair_evidence(
                 CurrentValidationAxis::Flux,
@@ -4005,7 +4004,7 @@ mod tests {
                 crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS,
                 "single-polarity cross reproduces the hardware false positive"
             );
-            assert_eq!(positive.gate.cross_axis_permille, 160);
+            assert_eq!(positive.gate.cross_axis_permille, Permille::new(160));
 
             let evidence = combine_axis_pair_evidence(
                 CurrentValidationAxis::Flux,
@@ -4126,9 +4125,9 @@ mod tests {
             assert_eq!(evidence.settled_samples[1].cross_axis_count, 5);
             assert_eq!(evidence.settled_samples[0].cross_axis_permille, 180);
             assert_eq!(evidence.settled_samples[1].cross_axis_permille, 20);
-            assert_eq!(evidence.gate.response_permille, 1000);
-            assert_eq!(evidence.gate.cross_axis_permille, 60);
-            assert_eq!(evidence.cross_axis_peak_permille, 180);
+            assert_eq!(evidence.gate.response_permille, Permille::new(1000));
+            assert_eq!(evidence.gate.cross_axis_permille, Permille::new(60));
+            assert_eq!(evidence.cross_axis_peak_permille, Permille::new(180));
             assert_eq!(backend.pid_torque_flux_actual_pos, 4);
             assert_eq!(backend.delay_us_log.as_slice(), &[250, 250, 250]);
         });
@@ -4165,8 +4164,8 @@ mod tests {
                 evidence.gate.status,
                 crate::autotune::CURRENT_AXIS_VALIDATION_CROSS_AXIS
             );
-            assert_eq!(evidence.gate.cross_axis_permille, 180);
-            assert_eq!(evidence.cross_axis_peak_permille, 180);
+            assert_eq!(evidence.gate.cross_axis_permille, Permille::new(180));
+            assert_eq!(evidence.cross_axis_peak_permille, Permille::new(180));
         });
     }
 
@@ -4215,14 +4214,14 @@ mod tests {
             cross_axis_sample_count: 1,
             gate: CurrentAxisGateResult {
                 status,
-                response_permille: 0,
-                cross_axis_permille: 0,
-                voltage_output_permille: 0,
+                response_permille: Permille::ZERO,
+                cross_axis_permille: Permille::ZERO,
+                voltage_output_permille: Permille::ZERO,
                 encoder_delta_counts: 0,
-                max_cross_axis_permille: 150,
+                max_cross_axis_permille: Permille::new(150),
             },
             encoder_delta_counts: 0,
-            cross_axis_peak_permille: 0,
+            cross_axis_peak_permille: Permille::ZERO,
             status_flags: if status == crate::autotune::CURRENT_AXIS_VALIDATION_STATUS_FLAGS {
                 1
             } else {
@@ -4246,7 +4245,7 @@ mod tests {
             status_flags: 0,
         };
 
-        assert_eq!(cross_axis_permille(&sample), u16::MAX);
+        assert_eq!(cross_axis_permille(&sample), Permille::MAX);
     }
 
     #[test]
@@ -4264,7 +4263,7 @@ mod tests {
 
         assert_eq!(
             bidirectional_pair_response_permille(1, &positive, &negative),
-            u16::MAX
+            Permille::MAX
         );
     }
 

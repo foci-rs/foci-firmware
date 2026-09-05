@@ -159,19 +159,19 @@ pub struct CurrentAxisSample {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CurrentAxisGate {
     /// Minimum allowed same-axis response, in permille of target.
-    pub min_response_permille: u16,
+    pub min_response_permille: Permille,
     /// Maximum allowed same-axis response, in permille of target.
-    pub max_response_permille: u16,
+    pub max_response_permille: Permille,
     /// Minimum absolute same-axis current error before the relative response
     /// gate can become a hard fault.
     pub min_response_fault_delta_count: u16,
     /// Maximum allowed opposite-axis response, in permille of target.
-    pub max_cross_axis_permille: u16,
+    pub max_cross_axis_permille: Permille,
     /// Minimum absolute opposite-axis current count before the relative
     /// cross-axis gate can become a hard fault.
     pub min_cross_axis_fault_count: u16,
     /// Maximum allowed voltage output, in permille of output limit.
-    pub max_voltage_output_permille: u16,
+    pub max_voltage_output_permille: Permille,
     /// Maximum allowed encoder movement during the sample.
     pub max_encoder_delta_counts: u16,
     /// Status flags that should fail validation when present.
@@ -187,12 +187,12 @@ impl CurrentAxisGate {
         feedback_config: crate::config::FeedbackConfig,
     ) -> Self {
         Self {
-            min_response_permille,
-            max_response_permille,
+            min_response_permille: Permille::new(min_response_permille),
+            max_response_permille: Permille::new(max_response_permille),
             min_response_fault_delta_count: 32,
-            max_cross_axis_permille: 150,
+            max_cross_axis_permille: Permille::new(150),
             min_cross_axis_fault_count: 32,
-            max_voltage_output_permille: 900,
+            max_voltage_output_permille: Permille::new(900),
             max_encoder_delta_counts,
             actionable_status_mask: current_loop_actionable_status_mask(feedback_config),
         }
@@ -205,15 +205,15 @@ pub struct CurrentAxisGateResult {
     /// `CURRENT_AXIS_VALIDATION_*` status code.
     pub status: u8,
     /// Same-axis current response normalized to target, in permille.
-    pub response_permille: u16,
+    pub response_permille: Permille,
     /// Opposite-axis current response normalized to target, in permille.
-    pub cross_axis_permille: u16,
+    pub cross_axis_permille: Permille,
     /// Voltage output normalized to output limit, in permille.
-    pub voltage_output_permille: u16,
+    pub voltage_output_permille: Permille,
     /// Absolute encoder movement observed during the sample.
     pub encoder_delta_counts: u16,
     /// Gate limit copied into evidence for host-side audit.
-    pub max_cross_axis_permille: u16,
+    pub max_cross_axis_permille: Permille,
 }
 
 /// Classify one current-axis short sample against a fixed gate.
@@ -224,9 +224,9 @@ pub fn classify_current_axis_sample(
     if sample.target == 0 {
         return CurrentAxisGateResult {
             status: CURRENT_AXIS_VALIDATION_ZERO_TARGET,
-            response_permille: 0,
-            cross_axis_permille: 0,
-            voltage_output_permille: 0,
+            response_permille: Permille::ZERO,
+            cross_axis_permille: Permille::ZERO,
+            voltage_output_permille: Permille::ZERO,
             encoder_delta_counts: 0,
             max_cross_axis_permille: gate.max_cross_axis_permille,
         };
@@ -236,21 +236,18 @@ pub fn classify_current_axis_sample(
     let same_axis_count = sample.same_axis_actual.unsigned_abs();
     let response_permille =
         Permille::checked_ratio(u64::from(same_axis_count), u64::from(target_abs))
-            .expect("nonzero current-axis target")
-            .raw();
+            .expect("nonzero current-axis target");
     let response_error_count = same_axis_count.abs_diff(sample.target.unsigned_abs());
     let cross_axis_count = sample.cross_axis_actual.unsigned_abs();
     let cross_axis_permille =
         Permille::checked_ratio(u64::from(cross_axis_count), u64::from(target_abs))
-            .expect("nonzero current-axis target")
-            .raw();
+            .expect("nonzero current-axis target");
     let output_limit = sample.output_limit.max(1) as u32;
     let voltage_output_permille = Permille::checked_ratio(
         u64::from(sample.output_limited.unsigned_abs()),
         u64::from(output_limit),
     )
-    .expect("nonzero current-axis output limit")
-    .raw();
+    .expect("nonzero current-axis output limit");
     let encoder_delta_counts = sample
         .encoder_delta_counts
         .unsigned_abs()
@@ -1078,7 +1075,7 @@ mod tests {
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
-        assert_eq!(gate.response_permille, 960);
+        assert_eq!(gate.response_permille, Permille::new(960));
         assert!(gate.cross_axis_permille <= gate.max_cross_axis_permille);
     }
 
@@ -1151,7 +1148,7 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.response_permille, u16::MAX);
+        assert_eq!(gate.response_permille, Permille::MAX);
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE);
     }
 
@@ -1176,8 +1173,8 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.cross_axis_permille, u16::MAX);
-        assert_eq!(gate.voltage_output_permille, u16::MAX);
+        assert_eq!(gate.cross_axis_permille, Permille::MAX);
+        assert_eq!(gate.voltage_output_permille, Permille::MAX);
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_SATURATION);
     }
 
@@ -1202,7 +1199,7 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.cross_axis_permille, 156);
+        assert_eq!(gate.cross_axis_permille, Permille::new(156));
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
     }
 
@@ -1227,7 +1224,7 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.cross_axis_permille, 257);
+        assert_eq!(gate.cross_axis_permille, Permille::new(257));
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_CROSS_AXIS);
     }
 
@@ -1252,7 +1249,7 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.response_permille, 1179);
+        assert_eq!(gate.response_permille, Permille::new(1179));
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
     }
 
@@ -1277,7 +1274,7 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.response_permille, 1257);
+        assert_eq!(gate.response_permille, Permille::new(1257));
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_HIGH_RESPONSE);
     }
 
@@ -1302,7 +1299,7 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.response_permille, 742);
+        assert_eq!(gate.response_permille, Permille::new(742));
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
     }
 
@@ -1327,7 +1324,7 @@ mod tests {
             ),
         );
 
-        assert_eq!(gate.response_permille, 0);
+        assert_eq!(gate.response_permille, Permille::ZERO);
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_LOW_RESPONSE);
     }
 
