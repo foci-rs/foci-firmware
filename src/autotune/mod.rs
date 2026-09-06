@@ -90,8 +90,9 @@ pub use position::{
 pub use types::{
     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
     CLOSED_LOOP_ENTRY_STATUS_NOT_RUN, CLOSED_LOOP_ENTRY_STATUS_PASS,
-    CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState, CommissionError, CommissionProfile,
-    CommissionStatus, InnerSequence, OperatingMode, CommissionPhase, SavedGains, ValidationResult,
+    CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState, CommissionError, CommissionPhase,
+    CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, SavedGains,
+    ValidationResult,
 };
 pub use velocity_units::{TmcMechanicalRpm, VelocityUnitError};
 

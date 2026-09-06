@@ -4,7 +4,7 @@
 //! engine. They are referenced by board binaries for engine construction
 //! and result dispatch.
 
-use crate::autotune::{CommissionError, CommissionStatus, CommissionPhase};
+use crate::autotune::{CommissionError, CommissionPhase, CommissionStatus};
 
 /// Compatibility re-export for existing `commissioning::types` backend users.
 pub use crate::commissioning::backend::CommissioningBackend;

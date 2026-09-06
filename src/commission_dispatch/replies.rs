@@ -1037,8 +1037,8 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
 ) {
     for priority in [true, false] {
         for event in diagnostics.iter() {
-            let is_electrical_timing =
-                event.phase == CommissionPhase::ElectricalId.to_u8() && matches!(event.code, 34..=41);
+            let is_electrical_timing = event.phase == CommissionPhase::ElectricalId.to_u8()
+                && matches!(event.code, 34..=41);
             if is_electrical_timing == priority {
                 sink.foci_commission_detail(oid, event);
             }
@@ -1417,7 +1417,7 @@ mod tests {
         CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_SOURCE_MEASURED,
         CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_NONE,
         CURRENT_LOOP_FAILURE_SATURATION, CURRENT_VALIDATION_AXIS_FLUX,
-        CURRENT_VALIDATION_AXIS_TORQUE, CommissionError, CommissionStatus, CommissionPhase,
+        CURRENT_VALIDATION_AXIS_TORQUE, CommissionError, CommissionPhase, CommissionStatus,
     };
     use crate::commission_dispatch::ReplyPayload;
     use crate::commissioning::types::{

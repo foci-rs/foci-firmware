@@ -10,9 +10,9 @@
 
 use crate::autotune::{
     CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopEntryState,
-    CommissionError, CommissionProfile, CommissionStatus, CurrentAxisGate, CurrentAxisGateResult,
-    CurrentAxisRetryDecision, CurrentAxisSample, CurrentGainSynthesisInput, CurrentGains,
-    CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, CommissionPhase, TransientBuffer,
+    CommissionError, CommissionPhase, CommissionProfile, CommissionStatus, CurrentAxisGate,
+    CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample, CurrentGainSynthesisInput,
+    CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, TransientBuffer,
     classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
 };
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};

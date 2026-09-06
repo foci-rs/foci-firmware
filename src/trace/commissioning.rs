@@ -12,7 +12,8 @@ pub const fn commission_trace_phase_samples_closed_loop_entry(
     engine_kind: EngineKind,
     phase_id: CommissionPhase,
 ) -> bool {
-    matches!(engine_kind, EngineKind::Commission) && matches!(phase_id, CommissionPhase::ClosedLoopEntry)
+    matches!(engine_kind, EngineKind::Commission)
+        && matches!(phase_id, CommissionPhase::ClosedLoopEntry)
 }
 
 #[cfg(test)]

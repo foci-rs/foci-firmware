@@ -10,8 +10,8 @@ use super::{
     InductanceCaptureState, InductanceRestoreOperation, InnerPhase,
 };
 use crate::autotune::{
-    CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, Permille,
-    CommissionPhase, TransientBuffer,
+    CommissionError, CommissionPhase, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
+    InnerSequence, Permille, TransientBuffer,
 };
 use crate::commissioning::backend::{timed_read_capture_register, timed_read_register_pair};
 use crate::commissioning::capture_timing::{

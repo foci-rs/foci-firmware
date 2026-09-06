@@ -18,8 +18,8 @@ pub mod schedule;
 pub mod types;
 
 use crate::autotune::{
-    CommissionError, CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, CommissionPhase,
-    TransientBuffer,
+    CommissionError, CommissionPhase, CommissionProfile, CommissionStatus, InnerSequence,
+    OperatingMode, TransientBuffer,
 };
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
@@ -1137,7 +1137,11 @@ impl CommissioningEngine {
         }
     }
 
-    fn emit_trace_phase_start<B: CommissioningBackend>(&mut self, backend: &mut B, phase: CommissionPhase) {
+    fn emit_trace_phase_start<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        phase: CommissionPhase,
+    ) {
         self.trace_run.current_phase = Some(phase);
         backend.record_commission_trace_event(self.trace_event(
             TraceEventLevel::Info,
@@ -2739,14 +2743,20 @@ mod tests {
             crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::Commission,
             TraceEventLevel::Info,
-            [crate::autotune::CommissionPhase::AdcCalibrate.to_u8() as i32, 0],
+            [
+                crate::autotune::CommissionPhase::AdcCalibrate.to_u8() as i32,
+                0,
+            ],
         );
         assert_trace_event(
             &events[3],
             crate::trace::events::EVENT_COMMISSION_PHASE_START,
             EngineKind::Commission,
             TraceEventLevel::Info,
-            [crate::autotune::CommissionPhase::CoilCheck.to_u8() as i32, 1],
+            [
+                crate::autotune::CommissionPhase::CoilCheck.to_u8() as i32,
+                1,
+            ],
         );
     }
 

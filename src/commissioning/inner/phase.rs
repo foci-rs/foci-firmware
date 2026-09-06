@@ -5,7 +5,7 @@
 //! both coils. A reversed dominance indicates swapped motor phases.
 
 use super::{CoilObservation, EncoderCheckState, InnerPhase};
-use crate::autotune::{CommissionError, InnerSequence, CommissionPhase};
+use crate::autotune::{CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::types::StepResult;
 
 /// Validate phase wiring from coil test observations.

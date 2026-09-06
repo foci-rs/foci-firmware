@@ -5,7 +5,7 @@
 //! carries the observations forward into the phase-wiring check.
 
 use super::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
-use crate::autotune::{CommissionError, InnerSequence, CommissionPhase};
+use crate::autotune::{CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
 

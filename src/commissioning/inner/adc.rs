@@ -7,7 +7,7 @@
 use super::{
     AdcCalState, AdcResidualStage, CoilCheckState, CoilTestState, EncoderCheckState, InnerPhase,
 };
-use crate::autotune::{CommissionError, InnerSequence, CommissionPhase};
+use crate::autotune::{CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::types::{
     ADC_RESIDUAL_STAGE_CHOP_OFF, ADC_RESIDUAL_STAGE_CHOP_ON, AdcCalResult, AdcResidualEvidence,
     CommissioningBackend, StepResult,

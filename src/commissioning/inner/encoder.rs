@@ -7,7 +7,7 @@
 use super::{
     ElectricalIdData, ElectricalIdState, EncoderAlignState, EncoderCheckState, InnerPhase,
 };
-use crate::autotune::{ClosedLoopEntryState, CommissionError, InnerSequence, CommissionPhase};
+use crate::autotune::{ClosedLoopEntryState, CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::CalibrateEntryGains;
 use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
