@@ -7,9 +7,12 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Firmware trace protocol version. Version 20 adds the velocity
-/// feedforward clamp-engaged flag to the critical sample, at byte 83 bit 0.
-/// Version 19 adds `error_code` to the
+/// Firmware trace protocol version. Version 21 adds `stop_rung_index` to
+/// the breakaway discovery terminal record: the rung the discovery walk had
+/// reached when it stopped, distinct from the breakaway probe's rung (which
+/// is constant per ladder and appears elsewhere in the record). Version 20
+/// adds the velocity feedforward clamp-engaged flag to the critical sample,
+/// at byte 83 bit 0. Version 19 adds `error_code` to the
 /// breakaway campaign terminal record, so a confirmed acceptance whose
 /// Stage-C plan build was refused names the `CommissionError` behind it
 /// rather than leaving the terminal cause self-contradictory. Version 18
@@ -23,7 +26,7 @@ pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// Version 16 added the measured `moving_pid_output_peak` to the breakaway
 /// raw-observation record. Version 15 published the
 /// physical-excursion upward-probe contract.
-pub const PROTOCOL_VERSION: u8 = 20;
+pub const PROTOCOL_VERSION: u8 = 21;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
