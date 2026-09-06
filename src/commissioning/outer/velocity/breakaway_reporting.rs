@@ -51,11 +51,11 @@ use super::sweep_evidence::direction_report_code;
 #[repr(u8)]
 pub(crate) enum BreakawayPhase {
     /// The deterministic upward physical-excursion probe.
-    Probe = 0,
+    BreakawayProbe = 0,
     /// The additive discovery ladder.
-    Discovery = 1,
+    ProportionalResponseDiscovery = 1,
     /// The held-out eight-stroke confirmation block.
-    Confirmation = 2,
+    ProportionalBandConfirmation = 2,
 }
 
 /// Unified wire terminal-cause taxonomy spanning every probe, discovery, and

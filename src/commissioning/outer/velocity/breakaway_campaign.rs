@@ -4331,7 +4331,7 @@ pub(crate) fn breakaway_campaign_fault_terminal(
     let raised_safety = safety_fault.is_some();
     let (owning_phase, terminal_cause) = match campaign.phase() {
         BreakawayCampaignPhase::Probe { .. } => (
-            BreakawayPhase::Probe,
+            BreakawayPhase::BreakawayProbe,
             if raised_safety {
                 super::breakaway_reporting::BreakawayTerminalCause::ProbeSafetyFault
             } else {
@@ -4339,7 +4339,7 @@ pub(crate) fn breakaway_campaign_fault_terminal(
             },
         ),
         BreakawayCampaignPhase::Discovery { .. } => (
-            BreakawayPhase::Discovery,
+            BreakawayPhase::ProportionalResponseDiscovery,
             if raised_safety {
                 super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault
             } else {
@@ -4347,7 +4347,7 @@ pub(crate) fn breakaway_campaign_fault_terminal(
             },
         ),
         BreakawayCampaignPhase::Confirmation { .. } => (
-            BreakawayPhase::Confirmation,
+            BreakawayPhase::ProportionalBandConfirmation,
             if raised_safety {
                 super::breakaway_reporting::BreakawayTerminalCause::ConfirmationSafetyFault
             } else {
@@ -4420,7 +4420,7 @@ pub(crate) fn breakaway_campaign_pending_terminal(phase: &OuterPhase) -> bool {
 /// A discovery plan-time construction failure never freezes a discovery plan
 /// (`plan_additive_discovery_ladder` refused before `AdditiveDiscoveryPlan`
 /// existed), so there is no discovery-owned terminal record to report -- only
-/// the campaign's own closure record, with `BreakawayPhase::Discovery` and
+/// the campaign's own closure record, with `BreakawayPhase::ProportionalResponseDiscovery` and
 /// [`super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault`],
 /// matching [`discovery_terminal_cause`]'s own mapping for
 /// [`AdditiveDiscoveryOutcome::SafetyFault`].
@@ -4429,7 +4429,7 @@ fn discovery_construction_fault(
     evidence_sequence: &mut u16,
 ) -> EmitContinuation {
     let campaign_terminal = campaign_terminal_event(
-        BreakawayPhase::Discovery,
+        BreakawayPhase::ProportionalResponseDiscovery,
         super::breakaway_reporting::BreakawayTerminalCause::DiscoveryInternalFault,
         false,
         0,
@@ -4506,7 +4506,7 @@ fn route_discovery_outcome(
                 _ => 0,
             };
             let campaign_terminal = campaign_terminal_event(
-                BreakawayPhase::Confirmation,
+                BreakawayPhase::ProportionalBandConfirmation,
                 cause,
                 false,
                 0,
@@ -4672,7 +4672,7 @@ fn enter_discovery(
                 ),
             };
             let campaign_terminal = campaign_terminal_event(
-                BreakawayPhase::Discovery,
+                BreakawayPhase::ProportionalResponseDiscovery,
                 cause,
                 false,
                 0,
@@ -4728,7 +4728,7 @@ fn probe_failure_advance(
     };
     let now = BreakawayCampaignEvent::ProbeTerminal(terminal);
     let campaign_terminal = campaign_terminal_event(
-        BreakawayPhase::Probe,
+        BreakawayPhase::BreakawayProbe,
         cause,
         false,
         0,
@@ -4798,7 +4798,7 @@ fn discovery_done_advance(
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => {
             let cause = discovery_terminal_cause(&outcome).0;
             let campaign_terminal = campaign_terminal_event(
-                BreakawayPhase::Discovery,
+                BreakawayPhase::ProportionalResponseDiscovery,
                 cause,
                 false,
                 0,
@@ -4816,7 +4816,7 @@ fn discovery_done_advance(
         }
         AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { error } => {
             let campaign_terminal = campaign_terminal_event(
-                BreakawayPhase::Discovery,
+                BreakawayPhase::ProportionalResponseDiscovery,
                 super::breakaway_reporting::BreakawayTerminalCause::DiscoveryEvidenceExcluded,
                 false,
                 0,
@@ -4834,7 +4834,7 @@ fn discovery_done_advance(
         }
         AdditiveDiscoveryOutcome::SafetyFault { error, safety } => {
             let campaign_terminal = campaign_terminal_event(
-                BreakawayPhase::Discovery,
+                BreakawayPhase::ProportionalResponseDiscovery,
                 if safety.is_some() {
                     super::breakaway_reporting::BreakawayTerminalCause::DiscoverySafetyFault
                 } else {
@@ -5008,7 +5008,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         BreakawayCampaignOutcome::Terminal { .. } => (false, 0),
     };
     let campaign_terminal = campaign_terminal_event(
-        BreakawayPhase::Confirmation,
+        BreakawayPhase::ProportionalBandConfirmation,
         campaign_cause,
         accepted,
         stage_c_plan_digest,
@@ -5191,7 +5191,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     BreakawayProbeStep::Observation(collected) => {
                         CampaignAdvance::Step(raw_observation_step(
                             session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Probe,
+                            super::breakaway_reporting::BreakawayPhase::BreakawayProbe,
                             collected,
                             inputs.run_sequence,
                             evidence_sequence,
@@ -5214,7 +5214,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     BreakawayProbeStep::RestRejected(input) => {
                         CampaignAdvance::Step(rest_rejected_step(
                             session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Probe,
+                            super::breakaway_reporting::BreakawayPhase::BreakawayProbe,
                             input,
                             inputs.run_sequence,
                             evidence_sequence,
@@ -5223,7 +5223,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     BreakawayProbeStep::OriginMismatch(evidence) => {
                         CampaignAdvance::Step(origin_mismatch_step(
                             session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Probe,
+                            super::breakaway_reporting::BreakawayPhase::BreakawayProbe,
                             evidence,
                             session.pending_role.slot_index(),
                             session.pending_role.direction(),
@@ -5250,7 +5250,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     AdditiveDiscoveryStep::Observation(collected) => {
                         CampaignAdvance::Step(raw_observation_step(
                             session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Discovery,
+                            super::breakaway_reporting::BreakawayPhase::ProportionalResponseDiscovery,
                             collected,
                             inputs.run_sequence,
                             evidence_sequence,
@@ -5268,7 +5268,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     AdditiveDiscoveryStep::RestRejected(input) => {
                         CampaignAdvance::Step(rest_rejected_step(
                             session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Discovery,
+                            super::breakaway_reporting::BreakawayPhase::ProportionalResponseDiscovery,
                             input,
                             inputs.run_sequence,
                             evidence_sequence,
@@ -5277,7 +5277,7 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     AdditiveDiscoveryStep::OriginMismatch(evidence) => {
                         CampaignAdvance::Step(origin_mismatch_step(
                             session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Discovery,
+                            super::breakaway_reporting::BreakawayPhase::ProportionalResponseDiscovery,
                             evidence,
                             session.slot,
                             session.direction,
@@ -5290,53 +5290,55 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
                     }
                 }
             }
-            BreakawayCampaignPhase::Confirmation { state, session } => {
-                match step_band_confirmation(state, workspace, session, safety, backend).await {
-                    BandConfirmationStep::ReadyNow => {
-                        CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
-                    }
-                    BandConfirmationStep::At(deadline_us) => {
-                        CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
-                    }
-                    BandConfirmationStep::Observation(collected) => {
-                        CampaignAdvance::Step(raw_observation_step(
-                            session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Confirmation,
-                            collected,
-                            inputs.run_sequence,
-                            evidence_sequence,
-                        ))
-                    }
-                    BandConfirmationStep::RestRejected(input) => {
-                        CampaignAdvance::Step(rest_rejected_step(
-                            session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Confirmation,
-                            input,
-                            inputs.run_sequence,
-                            evidence_sequence,
-                        ))
-                    }
-                    BandConfirmationStep::OriginMismatch(evidence) => {
-                        CampaignAdvance::Step(origin_mismatch_step(
-                            session.plan.plan_digest,
-                            super::breakaway_reporting::BreakawayPhase::Confirmation,
-                            evidence,
-                            session.slot_within_direction(),
-                            session.current_direction(),
-                            inputs.run_sequence,
-                            evidence_sequence,
-                        ))
-                    }
-                    BandConfirmationStep::Done(outcome) => confirmation_done_advance(
-                        outcome,
-                        session,
-                        inputs,
-                        safety,
-                        backend,
-                        evidence_sequence,
-                    ),
+            BreakawayCampaignPhase::Confirmation { state, session } => match step_band_confirmation(
+                state, workspace, session, safety, backend,
+            )
+            .await
+            {
+                BandConfirmationStep::ReadyNow => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::ReadyNow)
                 }
-            }
+                BandConfirmationStep::At(deadline_us) => {
+                    CampaignAdvance::Step(BreakawayCampaignStep::At(deadline_us))
+                }
+                BandConfirmationStep::Observation(collected) => {
+                    CampaignAdvance::Step(raw_observation_step(
+                        session.plan.plan_digest,
+                        super::breakaway_reporting::BreakawayPhase::ProportionalBandConfirmation,
+                        collected,
+                        inputs.run_sequence,
+                        evidence_sequence,
+                    ))
+                }
+                BandConfirmationStep::RestRejected(input) => {
+                    CampaignAdvance::Step(rest_rejected_step(
+                        session.plan.plan_digest,
+                        super::breakaway_reporting::BreakawayPhase::ProportionalBandConfirmation,
+                        input,
+                        inputs.run_sequence,
+                        evidence_sequence,
+                    ))
+                }
+                BandConfirmationStep::OriginMismatch(evidence) => {
+                    CampaignAdvance::Step(origin_mismatch_step(
+                        session.plan.plan_digest,
+                        super::breakaway_reporting::BreakawayPhase::ProportionalBandConfirmation,
+                        evidence,
+                        session.slot_within_direction(),
+                        session.current_direction(),
+                        inputs.run_sequence,
+                        evidence_sequence,
+                    ))
+                }
+                BandConfirmationStep::Done(outcome) => confirmation_done_advance(
+                    outcome,
+                    session,
+                    inputs,
+                    safety,
+                    backend,
+                    evidence_sequence,
+                ),
+            },
         }
     };
     let step = match advance {

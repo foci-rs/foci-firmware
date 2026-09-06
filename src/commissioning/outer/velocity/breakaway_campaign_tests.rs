@@ -1396,7 +1396,10 @@ fn a_discovery_safety_fault_never_seeds_confirmation_from_a_retained_rung() {
             // own dedicated terminal path, not the generic
             // `route_discovery_outcome` gate that a `TargetBandSelected`
             // success uses to enter confirmation.
-            assert_eq!(campaign_terminal.phase, BreakawayPhase::Discovery as u8);
+            assert_eq!(
+                campaign_terminal.phase,
+                BreakawayPhase::ProportionalResponseDiscovery as u8
+            );
             assert_eq!(
                 campaign_terminal.terminal_cause,
                 BreakawayTerminalCause::DiscoverySafetyFault as u8
@@ -3142,7 +3145,10 @@ fn a_probe_failure_emits_its_terminal_then_the_campaign_closure_record() {
         campaign_terminal.terminal_cause,
         probe_terminal.terminal_cause
     );
-    assert_eq!(campaign_terminal.phase, BreakawayPhase::Probe as u8);
+    assert_eq!(
+        campaign_terminal.phase,
+        BreakawayPhase::BreakawayProbe as u8
+    );
     assert_eq!(campaign_terminal.accepted, 0);
 }
 
@@ -3613,7 +3619,10 @@ fn plan_time_resolution_refusal_keeps_its_discovery_terminal_cause() {
     else {
         panic!("the coarse additive ladder must refuse before discovery motion");
     };
-    assert_eq!(campaign_terminal.phase, BreakawayPhase::Discovery as u8);
+    assert_eq!(
+        campaign_terminal.phase,
+        BreakawayPhase::ProportionalResponseDiscovery as u8
+    );
     assert_eq!(
         campaign_terminal.terminal_cause,
         BreakawayTerminalCause::DiscoveryAdditiveLadderResolutionBudgetExceeded as u8
@@ -3991,7 +4000,10 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
         campaign_terminal.stage_c_plan_digest, 0,
         "an accepted campaign's closure record must carry the Stage-C plan digest"
     );
-    assert_eq!(campaign_terminal.phase, BreakawayPhase::Confirmation as u8);
+    assert_eq!(
+        campaign_terminal.phase,
+        BreakawayPhase::ProportionalBandConfirmation as u8
+    );
 }
 
 // ================================================================================
@@ -4097,7 +4109,7 @@ fn breakaway_campaign_fault_terminal_defers_a_campaign_closure_before_outer_fail
     };
     assert_eq!(
         closure.phase,
-        BreakawayPhase::Probe as u8,
+        BreakawayPhase::BreakawayProbe as u8,
         "the closure record must name the phase that was active at the fault"
     );
     assert_eq!(
@@ -4210,7 +4222,7 @@ fn dispatcher_drains_campaign_closure_under_a_persistent_budget_fault() {
     else {
         panic!("tick 2 must drain the deferred campaign closure, got {second:?}");
     };
-    assert_eq!(closure.phase, BreakawayPhase::Probe as u8);
+    assert_eq!(closure.phase, BreakawayPhase::BreakawayProbe as u8);
     assert_eq!(
         closure.terminal_cause,
         BreakawayTerminalCause::ProbeSafetyFault as u8
@@ -4375,7 +4387,10 @@ fn a_dispatcher_fault_reports_the_discovery_rungs_already_collected() {
     else {
         panic!("expected the deferred campaign-closure record, got {second:?}");
     };
-    assert_eq!(closure.phase, BreakawayPhase::Discovery as u8);
+    assert_eq!(
+        closure.phase,
+        BreakawayPhase::ProportionalResponseDiscovery as u8
+    );
 }
 
 #[test]
@@ -4440,7 +4455,10 @@ fn breakaway_campaign_fault_terminal_names_the_owning_discovery_phase() {
     else {
         panic!("expected the deferred campaign-closure record, got {closure_step:?}");
     };
-    assert_eq!(closure.phase, BreakawayPhase::Discovery as u8);
+    assert_eq!(
+        closure.phase,
+        BreakawayPhase::ProportionalResponseDiscovery as u8
+    );
     // The fault was raised with no safety fault, so it must close as an
     // internal fault; `DiscoverySafetyFault` beside `has_safety_fault = 0`
     // reads as a safety event to anyone inspecting the capture.

@@ -392,7 +392,7 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
     };
     let report = raw_observation_report(
         0x1122_3344_5566_7788,
-        BreakawayPhase::Confirmation,
+        BreakawayPhase::ProportionalBandConfirmation,
         &collected,
         7,
         9,
@@ -404,7 +404,10 @@ fn raw_observation_report_carries_atom_inputs_verbatim() {
     assert_eq!(report.run_sequence, 7);
     assert_eq!(report.evidence_sequence, 9);
     assert_eq!(report.plan_digest, 0x1122_3344_5566_7788);
-    assert_eq!(report.phase, BreakawayPhase::Confirmation as u8);
+    assert_eq!(
+        report.phase,
+        BreakawayPhase::ProportionalBandConfirmation as u8
+    );
     assert_eq!(report.rung_index, 0);
     assert_eq!(report.slot_index, 6);
     assert_eq!(
@@ -972,7 +975,7 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
 #[test]
 fn campaign_terminal_report_carries_owning_phase_and_stage_c_digest() {
     let report = campaign_terminal_report(
-        BreakawayPhase::Confirmation,
+        BreakawayPhase::ProportionalBandConfirmation,
         BreakawayTerminalCause::Accepted,
         true,
         0x7788,
@@ -981,7 +984,10 @@ fn campaign_terminal_report_carries_owning_phase_and_stage_c_digest() {
         9,
     );
 
-    assert_eq!(report.phase, BreakawayPhase::Confirmation as u8);
+    assert_eq!(
+        report.phase,
+        BreakawayPhase::ProportionalBandConfirmation as u8
+    );
     assert_eq!(
         report.terminal_cause,
         BreakawayTerminalCause::Accepted as u8
@@ -993,7 +999,7 @@ fn campaign_terminal_report_carries_owning_phase_and_stage_c_digest() {
 #[test]
 fn campaign_terminal_report_zeroes_stage_c_digest_on_failure() {
     let report = campaign_terminal_report(
-        BreakawayPhase::Probe,
+        BreakawayPhase::BreakawayProbe,
         BreakawayTerminalCause::ProbeAuthorityFailure,
         false,
         0,
@@ -1009,7 +1015,7 @@ fn campaign_terminal_report_zeroes_stage_c_digest_on_failure() {
 #[test]
 fn campaign_terminal_report_names_the_owning_discovery_phase() {
     let report = campaign_terminal_report(
-        BreakawayPhase::Discovery,
+        BreakawayPhase::ProportionalResponseDiscovery,
         BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
         false,
         0,
@@ -1018,7 +1024,10 @@ fn campaign_terminal_report_names_the_owning_discovery_phase() {
         1,
     );
 
-    assert_eq!(report.phase, BreakawayPhase::Discovery as u8);
+    assert_eq!(
+        report.phase,
+        BreakawayPhase::ProportionalResponseDiscovery as u8
+    );
     assert_eq!(
         report.terminal_cause,
         BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan as u8
