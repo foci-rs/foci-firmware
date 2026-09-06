@@ -154,43 +154,16 @@ fn fixture_group(group: &str) -> BTreeSet<(String, u8)> {
         .collect()
 }
 
+/// The live sets come from each enum's macro-generated `VOCABULARY`, not from
+/// a list restated here: a hand-maintained inventory would silently accept a
+/// new variant that never reached the fixture or the Python tables, which is
+/// the exact single-layer desynchronization these tests exist to catch.
 #[test]
 fn commission_phase_matches_fixture_exactly() {
-    let live: BTreeSet<(String, u8)> = [
-        ("AdcCalibrate", CommissionPhase::AdcCalibrate),
-        ("CoilCheck", CommissionPhase::CoilCheck),
-        ("PhaseWiringCheck", CommissionPhase::PhaseWiringCheck),
-        ("EncoderCheck", CommissionPhase::EncoderCheck),
-        ("ElectricalId", CommissionPhase::ElectricalId),
-        ("CurrentTune", CommissionPhase::CurrentTune),
-        ("CurrentValidate", CommissionPhase::CurrentValidate),
-        ("InnerDone", CommissionPhase::InnerDone),
-        (
-            "BreakawayProportionalAcquisition",
-            CommissionPhase::BreakawayProportionalAcquisition,
-        ),
-        (
-            "IntegralGainResponseCharacterization",
-            CommissionPhase::IntegralGainResponseCharacterization,
-        ),
-        (
-            "FixedGainAmplitudeValidation",
-            CommissionPhase::FixedGainAmplitudeValidation,
-        ),
-        (
-            "ReversalStandstillRobustnessGate",
-            CommissionPhase::ReversalStandstillRobustnessGate,
-        ),
-        ("PositionTune", CommissionPhase::PositionTune),
-        ("FilterTune", CommissionPhase::FilterTune),
-        ("Commit", CommissionPhase::Commit),
-        ("OuterDone", CommissionPhase::OuterDone),
-        ("EncoderAlign", CommissionPhase::EncoderAlign),
-        ("ClosedLoopEntry", CommissionPhase::ClosedLoopEntry),
-    ]
-    .into_iter()
-    .map(|(ident, phase)| (String::from(ident), phase.to_u8()))
-    .collect();
+    let live: BTreeSet<(String, u8)> = CommissionPhase::VOCABULARY
+        .iter()
+        .map(|(ident, phase)| (String::from(*ident), phase.to_u8()))
+        .collect();
 
     assert_eq!(
         live,
@@ -201,20 +174,10 @@ fn commission_phase_matches_fixture_exactly() {
 
 #[test]
 fn breakaway_phase_matches_fixture_exactly() {
-    let live: BTreeSet<(String, u8)> = [
-        ("BreakawayProbe", BreakawayPhase::BreakawayProbe),
-        (
-            "ProportionalResponseDiscovery",
-            BreakawayPhase::ProportionalResponseDiscovery,
-        ),
-        (
-            "ProportionalBandConfirmation",
-            BreakawayPhase::ProportionalBandConfirmation,
-        ),
-    ]
-    .into_iter()
-    .map(|(ident, phase)| (String::from(ident), phase as u8))
-    .collect();
+    let live: BTreeSet<(String, u8)> = BreakawayPhase::VOCABULARY
+        .iter()
+        .map(|(ident, phase)| (String::from(*ident), *phase as u8))
+        .collect();
 
     assert_eq!(
         live,
