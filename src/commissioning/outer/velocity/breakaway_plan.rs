@@ -445,6 +445,15 @@ pub fn plan_additive_discovery_ladder(
         }
         saw_structural_survivor = true;
 
+        // Per-direction family of individual observation intervals: each of
+        // the `observations_per_direction` strokes at every rung is its own
+        // corrected claim, consumed by the lag-one stationarity gate and the
+        // depth-three consensus. The discovery stop-rule pools a rung's
+        // included observations into one interval per direction and reuses
+        // this multiplier for it; that is a conservative bound, since the
+        // stop-rule makes only `rung_count` claims per direction. The table
+        // ceiling therefore binds on the observation family, not the
+        // stop-rule, so a K-sized stop-rule family would not relax it.
         let confidence_family_size = u16::from(ladder.rung_count)
             .checked_mul(request.observations_per_direction)
             .ok_or(AdditiveLadderPlanError::Arithmetic)?;

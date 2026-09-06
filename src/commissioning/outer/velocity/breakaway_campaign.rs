@@ -1794,6 +1794,12 @@ fn discovery_target_rate_q(
 /// a union can only widen as observations accrue, so one noisy stroke could
 /// veto an otherwise well-contained rung. The two stay separate
 /// implementations on purpose.
+///
+/// The pooled interval borrows the plan's observation-level multiplier
+/// (`rung_count * observations_per_direction`), which over-corrects for the
+/// one pooled claim per rung and direction actually made here. Kept as is:
+/// nomination and confirmation bind at roughly half the noise level where
+/// this test would, so the surplus never decides an outcome.
 const DISCOVERY_CONTAINMENT_C_SIGMA: f32 = 1.0;
 
 /// One rung's classification against the 70-80% target band, judged entirely on
