@@ -21,6 +21,10 @@ pub mod types;
 #[path = "phase_emission_tests.rs"]
 mod phase_emission_tests;
 
+#[cfg(test)]
+#[path = "vocabulary_fixture_tests.rs"]
+mod vocabulary_fixture_tests;
+
 use crate::autotune::{
     CommissionError, CommissionPhase, CommissionProfile, CommissionStatus, InnerSequence,
     OperatingMode, TransientBuffer,
