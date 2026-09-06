@@ -1802,6 +1802,21 @@ fn shutdown_signal_emits_one_stop_action_until_reset() {
 }
 
 #[test]
+fn adc_current_clipped_true_when_bit_set() {
+    assert!(is_adc_current_clipped(Ok(1 << 26)));
+}
+
+#[test]
+fn adc_current_clipped_false_for_clean_read() {
+    assert!(!is_adc_current_clipped(Ok(0)));
+}
+
+#[test]
+fn adc_current_clipped_false_when_status_read_fails() {
+    assert!(!is_adc_current_clipped(Err(())));
+}
+
+#[test]
 fn emergency_disable_without_signal_is_empty() {
     let shutdown_active = AtomicBool::new(false);
     let queue_flush = AtomicBool::new(false);
@@ -1817,7 +1832,7 @@ fn emergency_disable_without_signal_is_empty() {
     runtime.set_calibrated_for_test(true);
     runtime.set_motor_enabled_for_test(true);
 
-    let actions = runtime.poll_emergency_disable(&signals, 1 << 26);
+    let actions = runtime.poll_emergency_disable(&signals, Ok(1 << 26));
 
     assert_no_actions(&actions);
     assert!(runtime.is_motor_enabled());
@@ -1842,7 +1857,7 @@ fn emergency_disable_consumes_signal_and_orders_stop_before_shutdown() {
     runtime.set_motor_enabled_for_test(true);
 
     disable_signal.signal(());
-    let clipped = runtime.poll_emergency_disable(&signals, 1 << 26);
+    let clipped = runtime.poll_emergency_disable(&signals, Ok(1 << 26));
 
     assert_stop_then_shutdown(&clipped, ShutdownReason::AdcCurrentClipped);
     assert!(disable_signal.try_take().is_none());
@@ -1854,9 +1869,35 @@ fn emergency_disable_consumes_signal_and_orders_stop_before_shutdown() {
     runtime.set_motor_enabled_for_test(true);
     fault_active.store(true, Relaxed);
     disable_signal.signal(());
-    let non_clipping_fault = runtime.poll_emergency_disable(&signals, 0);
+    let non_clipping_fault = runtime.poll_emergency_disable(&signals, Ok(0));
 
     assert_stop_then_shutdown(&non_clipping_fault, ShutdownReason::TmcFault);
+    assert!(disable_signal.try_take().is_none());
+    assert!(!fault_active.load(Relaxed));
+    assert!(!runtime.is_motor_enabled());
+    assert!(!runtime.is_calibrated());
+}
+
+#[test]
+fn emergency_disable_treats_failed_status_read_as_tmc_fault() {
+    let shutdown_active = AtomicBool::new(false);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(true);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
+    );
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_calibrated_for_test(true);
+    runtime.set_motor_enabled_for_test(true);
+
+    disable_signal.signal(());
+    let read_failed = runtime.poll_emergency_disable(&signals, Err(()));
+
+    assert_stop_then_shutdown(&read_failed, ShutdownReason::TmcFault);
     assert!(disable_signal.try_take().is_none());
     assert!(!fault_active.load(Relaxed));
     assert!(!runtime.is_motor_enabled());
@@ -3568,7 +3609,7 @@ fn emergency_disable_mid_restore_drains_to_safe_state_before_clearing_slots() {
         );
         // `poll_emergency_disable` never owned the engine slot; the board's exit
         // path latches the cancel, exactly as the commissioning loop does.
-        let _ = runtime.poll_emergency_disable(&signals, 0);
+        let _ = runtime.poll_emergency_disable(&signals, Ok(0));
         runtime.request_restore_cancel();
 
         assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;

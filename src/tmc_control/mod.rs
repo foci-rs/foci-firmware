@@ -43,6 +43,7 @@ pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_
 pub use signals::TmcControlSignals;
 pub use state::{
     HomingMaintenanceResult, TmcControlRuntime, TmcControlTraceState, TmcControlTraceTick,
+    is_adc_current_clipped,
 };
 
 /// Slow-control ticks to wait before clearing settled PID error sums.

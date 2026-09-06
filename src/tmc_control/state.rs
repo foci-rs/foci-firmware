@@ -387,12 +387,15 @@ impl TmcControlRuntime {
     /// Returns nothing when the signal has not been raised. When the signal is
     /// present, clears `fault_active`, disarms the motor, and returns a
     /// `StopNow` action followed by a `Shutdown` action whose reason is
-    /// `AdcCurrentClipped` when bit 26 of `status_flags` is set, or
-    /// `TmcFault` otherwise.
+    /// `AdcCurrentClipped` when `status_flags` is a successful read with bit 26
+    /// set, or `TmcFault` otherwise -- including when the register read itself
+    /// failed. A failed read is never coerced into a clean status value first:
+    /// it carries no evidence of clipping, so it falls through to the generic
+    /// fault reason exactly like a genuine non-clipped read.
     pub fn poll_emergency_disable(
         &mut self,
         signals: &TmcControlSignals,
-        status_flags: u32,
+        status_flags: Result<u32, ()>,
     ) -> BoardActions {
         let mut actions = BoardActions::new();
         if signals.disable_signal.try_take().is_none() {
@@ -403,7 +406,7 @@ impl TmcControlRuntime {
         self.motor_enabled = false;
         self.calibrated = false;
         push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
-        let reason = if status_flags & (1 << 26) != 0 {
+        let reason = if is_adc_current_clipped(status_flags) {
             ShutdownReason::AdcCurrentClipped
         } else {
             ShutdownReason::TmcFault
@@ -2090,6 +2093,19 @@ impl TmcControlRuntime {
         self.trace.phase_advance_last_flags = last_flags;
         self.trace.phase_advance_last_counts = last_counts;
     }
+}
+
+/// TMC4671 STATUS_FLAGS bit 26: ADC current clipped (overcurrent).
+const STATUS_ADC_I_CLIPPED: u32 = 1 << 26;
+
+/// Whether a STATUS_FLAGS read indicates ADC current clipping (overcurrent).
+///
+/// A failed register read is never coerced into a clean STATUS_FLAGS value:
+/// it carries no evidence either way and must report `false` here, the same
+/// as a genuine non-clipped read, rather than being silently indistinguishable
+/// from a healthy chip at the call site.
+pub fn is_adc_current_clipped(status_flags: Result<u32, ()>) -> bool {
+    matches!(status_flags, Ok(flags) if flags & STATUS_ADC_I_CLIPPED != 0)
 }
 
 #[cfg(test)]
