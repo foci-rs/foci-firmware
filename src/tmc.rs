@@ -229,10 +229,10 @@ pub enum TmcRequestKind {
         torque_p: foci_tmc4671::pid::PidPGain,
         torque_i: foci_tmc4671::pid::PidIGain,
     },
-    /// Start Stage 1 commissioning (diagnostics + current tune + closed-loop entry).
+    /// Start commissioning (diagnostics + current tune + closed-loop entry).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     Commission { oid: u8, profile: u8 },
-    /// Start Stage 2 installed tuning (mechanical ID + velocity/position + filters).
+    /// Start installed tuning (mechanical ID + velocity/position + filters).
     /// Profile: 0=Conservative, 1=Balanced, 2=Stiff.
     /// Mode: 0=Unloaded, 1=Nominal, 2=HighInertia.
     Tune {
@@ -245,7 +245,7 @@ pub enum TmcRequestKind {
         current_ringing_count: u8,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
-        /// Inner-confidence warning bitfield carried from Stage 1.
+        /// Inner-confidence warning bitfield carried from commissioning.
         inner_warning_flags: u8,
         /// Requested mechanical velocity amplitude in milli-revolutions/s.
         requested_velocity_mrev_s: u32,
@@ -258,9 +258,9 @@ pub enum TmcRequestKind {
         max_stroke_travel_mrev: u32,
         /// Host planning reserve for braking and settle drift.
         settle_travel_reserve_mrev: u32,
-        /// Negative absolute-position headroom from Stage-2 entry.
+        /// Negative absolute-position headroom from installed-tuning entry.
         negative_position_headroom_mrev: u32,
-        /// Positive absolute-position headroom from Stage-2 entry.
+        /// Positive absolute-position headroom from installed-tuning entry.
         positive_position_headroom_mrev: u32,
         /// Host-computed max primitive duration in milliseconds.
         max_duration_ms: u16,
@@ -442,14 +442,15 @@ pub enum AutotuneAction {
     /// Run the retained fixed-I matrix from highest to lowest amplitude.
     MatrixDescending = 2,
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
-    /// the existing Stage-C integral continuation as one bounded command.
+    /// the existing velocity-integral continuation as one bounded command.
     ///
     /// This is the production `Tune` path: a non-trace build routes the request
-    /// through the breakaway/Stage-C/acceptance engine just like a trace build.
-    /// The `trace` feature adds only the raw evidence emission on top of the
-    /// same campaign, not the campaign itself.
+    /// through the breakaway/velocity-integral/acceptance engine just like a
+    /// trace build. The `trace` feature adds only the raw evidence emission on
+    /// top of the same campaign, not the campaign itself.
     BreakawaySeeded = 7,
-    /// Re-run Stage C against retained firmware authority.
+    /// Re-run the velocity-integral response ladder against retained firmware
+    /// authority.
     ///
     /// Replays one exact retained plan so a sufficient run can reproduce and
     /// promote to `Complete`. Retention is RAM-only, so this succeeds only in
@@ -563,12 +564,12 @@ pub fn tmc_set_pid_gains(
     )
 }
 
-/// Build a `Commission` request (Stage 1: diagnostics + current tune + closed-loop entry).
+/// Build a `Commission` request (diagnostics + current tune + closed-loop entry).
 pub fn tmc_commission(channel: u8, oid: u8, profile: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::Commission { oid, profile })
 }
 
-/// Build a `Tune` request (Stage 2: mechanical ID + velocity/position + filters).
+/// Build a `Tune` request (installed tuning: mechanical ID + velocity/position + filters).
 #[allow(clippy::too_many_arguments)]
 pub fn tmc_tune(
     channel: u8,

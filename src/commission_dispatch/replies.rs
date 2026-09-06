@@ -82,37 +82,37 @@ macro_rules! __commission_reply_manifest {
             }
             entry {
                 name: foci_velocity_integral_plan_core,
-                doc: "Emit the Stage-C plan identity.",
+                doc: "Emit the velocity-integral plan identity.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanCore,
                 fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, stage_b_digest_low: u32, stage_b_digest_high: u32, build_features: u16, build_identity: u32, schema_revision: u16, channel: u8, final_p: u16 },
             }
             entry {
                 name: foci_velocity_integral_plan_geometry,
-                doc: "Emit the Stage-C plan geometry.",
+                doc: "Emit the velocity-integral plan geometry.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanGeometry,
                 fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, planned_velocity_mrev_s: u32, target_velocity_rpm: i32, pwm_hz: u32, encoder_counts_per_rev: u32, i_start: u16, positive_rung_count: u8, family_size: u16, total_rung_count: u8, expected_observations: u16, hard_torque_limit: u16, usable_torque_limit: u16 },
             }
             entry {
                 name: foci_velocity_integral_plan_authority,
-                doc: "Emit one direction of Stage-C authority.",
+                doc: "Emit one direction of velocity-integral authority.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanAuthority,
                 fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, direction: u8, directional_membership: u32, joint_membership: u32, directional_validity: u8, reduced_margin: u8, pooled_low_q16: i32, pooled_high_q16: i32 },
             }
             entry {
                 name: foci_velocity_integral_plan_timing,
-                doc: "Emit Stage-C schedule timing.",
+                doc: "Emit velocity-integral schedule timing.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanTiming,
                 fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, moving_stroke_us: u32, zero_settle_us: u32, analysis_budget_us: u32, nominal_workflow_ms: u32, maximum_workflow_ms: u32 },
             }
             entry {
                 name: foci_velocity_integral_plan_travel,
-                doc: "Emit Stage-C travel identity.",
+                doc: "Emit velocity-integral travel identity.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanTravel,
                 fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, max_stroke_travel_mrev: u32, settle_travel_reserve_mrev: u32, negative_position_headroom_mrev: u32, positive_position_headroom_mrev: u32 },
             }
             entry {
                 name: foci_velocity_integral_plan_recovery,
-                doc: "Emit Stage-C recovery geometry and reserved schedule.",
+                doc: "Emit velocity-integral recovery geometry and reserved schedule.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanRecovery,
                 fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, origin_band_counts: u32, nominal_slot_us: u32, maximum_slot_us: u32, slot_count: u8, flags: u8 },
             }
@@ -124,7 +124,7 @@ macro_rules! __commission_reply_manifest {
             }
             entry {
                 name: foci_velocity_integral_terminal,
-                doc: "Emit the single compact Stage-C terminal reply.",
+                doc: "Emit the single compact velocity-integral terminal reply.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralTerminal<'_>,
                 fields: { oid: u8, payload: &[u8] },
             }
@@ -228,23 +228,23 @@ pub trait CommissionReplySink {
     /// Emit a commissioning phase reply.
     fn foci_commission_phase(&mut self, oid: u8, phase: u8, status: u8);
 
-    /// Emit the Stage 1 commissioning result.
+    /// Emit the commissioning result.
     fn foci_commission_result(&mut self, oid: u8, status: u8, result: &CommissionResult);
 
     crate::__commission_reply_manifest!(foci_firmware_macros::commission_reply_trait_methods);
 
     /// Emit the resistance-identification per-run evidence captured during
-    /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
+    /// commissioning. `FociCommissionResult` is size-capped, so this
     /// reuses the `foci_resistance_run` reply (Task 6) to carry the evidence
     /// that lives on `InnerResult` to the host.
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
 
     /// Emit one resistance-identification per-axis fit result captured
-    /// during Stage 1 commissioning. Reuses the `foci_resistance_axis` reply
+    /// during commissioning. Reuses the `foci_resistance_axis` reply
     /// (Task 6) for the same reason as [`Self::foci_resistance_run`].
     fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
 
-    /// Emit encoder D-axis alignment evidence captured during Stage 1
+    /// Emit encoder D-axis alignment evidence captured during
     /// commissioning. This makes settled current-validation cross-axis tails
     /// correlatable with the alignment residual without expanding the
     /// size-capped terminal commission result.
@@ -254,19 +254,19 @@ pub trait CommissionReplySink {
     /// before the terminal commissioning result.
     fn foci_adc_residual(&mut self, report: AdcResidualReport);
 
-    /// Emit run-level production inductance evidence captured during Stage 1
+    /// Emit run-level production inductance evidence captured during
     /// commissioning.
     fn foci_inductance_run(&mut self, report: InductanceRunReport);
 
     /// Emit rotating-frame production inductance current evidence captured
-    /// during Stage 1 commissioning.
+    /// during commissioning.
     fn foci_inductance_frame(&mut self, report: InductanceFrameReport);
 
     /// Emit accepted production inductance estimate evidence captured during
-    /// Stage 1 commissioning.
+    /// commissioning.
     fn foci_inductance_estimate(&mut self, report: InductanceEstimateReport);
 
-    /// Emit sustained-hold current-loop evidence captured during Stage 1
+    /// Emit sustained-hold current-loop evidence captured during
     /// commissioning before the run-level current-loop summary.
     fn foci_current_loop_hold(&mut self, report: CurrentLoopHoldReport);
 
@@ -277,31 +277,31 @@ pub trait CommissionReplySink {
     /// Emit applied filter cutoffs for the commissioned closed-loop frame.
     fn foci_current_loop_filters(&mut self, report: CurrentLoopFiltersReport);
 
-    /// Emit run-level current-loop commissioning evidence captured during
-    /// Stage 1 commissioning. `FociCommissionResult` is size-capped, so this
+    /// Emit run-level current-loop evidence captured during commissioning.
+    /// `FociCommissionResult` is size-capped, so this
     /// supplemental reply carries source, tier, split, validation coverage,
     /// and failure-reason evidence separately.
     fn foci_current_loop_run(&mut self, report: CurrentLoopRunReport);
 
     /// Emit one per-axis, per-delay current validation evidence sample
-    /// captured during Stage 1 commissioning.
+    /// captured during commissioning.
     fn foci_current_validation_axis(&mut self, report: CurrentValidationAxisReport);
 
-    /// Emit one raw settled-flux current validation read captured during Stage 1
+    /// Emit one raw settled-flux current validation read captured during
     /// commissioning.
     fn foci_current_validation_settled_sample(
         &mut self,
         report: CurrentValidationSettledSampleReport,
     );
 
-    /// Emit the current-validation target envelope captured during Stage 1
+    /// Emit the current-validation target envelope captured during
     /// commissioning.
     fn foci_current_validation_envelope(&mut self, report: CurrentValidationEnvelopeReport);
 
-    /// Emit the Stage 2 tune result.
+    /// Emit the installed-tuning result.
     fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult);
 
-    /// Emit Stage 2 safety-envelope evidence before the terminal tune result.
+    /// Emit installed-tuning safety-envelope evidence before the terminal tune result.
     fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault);
 
     /// Emit the ADC calibration result.
@@ -314,7 +314,7 @@ pub trait CommissionReplySink {
     fn foci_selftest_done(&mut self, oid: u8, status: u8);
 }
 
-/// Emit the command-level workflow envelope that precedes any Stage-B/C motion.
+/// Emit the command-level workflow envelope that precedes any velocity-workflow motion.
 pub fn emit_commissioning_workflow_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -716,7 +716,7 @@ pub fn emit_robustness_cycle_evidence<S: CommissionReplySink>(
     }
 }
 
-/// Emit the complete exact Stage-C plan as bounded causal fragments.
+/// Emit the complete exact velocity-integral plan as bounded causal fragments.
 pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
@@ -830,7 +830,7 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
     }
 }
 
-/// Emit one Stage-C observation or rung group.
+/// Emit one velocity-integral observation or rung group.
 pub fn emit_velocity_integral_event<S: CommissionReplySink>(
     _sink: &mut S,
     _oid: u8,
@@ -847,7 +847,7 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
     }
 }
 
-/// Emit the single compact Stage-C terminal reply.
+/// Emit the single compact velocity-integral terminal reply.
 ///
 /// Carries only the fields the live host reads for status text and
 /// orchestration: outcome, cause, rest-rejection, eligibility/bookend

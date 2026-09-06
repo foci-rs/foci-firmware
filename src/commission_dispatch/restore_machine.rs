@@ -4,7 +4,7 @@
 //! `drive_commission_result` chain used to run inline, re-expressed as an owned
 //! state machine that performs at most one awaited backend operation per
 //! [`TerminalRestoreMachine::poll_step`]. The machine holds only owned values;
-//! the engine slot, dispatch view, backend, and Stage-C retention are borrows
+//! the engine slot, dispatch view, backend, and velocity-integral retention are borrows
 //! supplied per poll, so nothing borrowed lives across a tick boundary.
 //!
 //! Ordering, fault stamping, reply shape, and `engine.take()` policy are
@@ -233,7 +233,7 @@ impl TerminalRestoreMachine {
     }
 
     /// Begin a staged terminal restore, applying the retained-evidence policy
-    /// the Stage-C, acceptance-matrix, and robustness terminals carry.
+    /// the velocity-integral, acceptance-matrix, and robustness terminals carry.
     pub fn start_staged(result: CommissionTerminal, channel: u8, pwm_maxcnt: u16) -> Self {
         match result {
             CommissionTerminal::VelocityIntegral(terminal) => Self {
@@ -321,7 +321,7 @@ impl TerminalRestoreMachine {
     /// # Panics
     ///
     /// Panics when polled after it already reported a terminal, or when a
-    /// staged terminal is polled without Stage-C retention.
+    /// staged terminal is polled without velocity-integral retention.
     pub async fn poll_step<B: CommissioningBackend>(
         &mut self,
         engine: &mut Option<CommissioningEngine>,
@@ -521,7 +521,7 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- commission (Stage 1) -------------------------------------
+                // --- commission -------------------------------------
                 RestoreCursor::CommissionClassify => {
                     let TerminalPayload::CommissionDone(commission_result) =
                         self.terminal.payload.clone()
@@ -660,7 +660,7 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- outer done (Stage 2) -------------------------------------
+                // --- outer done (installed tuning) -------------------------------------
                 RestoreCursor::OuterDoneRestorePosition => {
                     let TerminalPayload::OuterDone(outer) = self.terminal.payload.clone() else {
                         unreachable!("outer-done cursor without an outer-done payload")
@@ -872,7 +872,10 @@ impl TerminalRestoreMachine {
                             self.cursor = RestoreCursor::OuterFailedStability;
                         }
                         Err(restore_err) => {
-                            defmt::error!("OuterFailed: Stage 2 restore failed: {}", restore_err);
+                            defmt::error!(
+                                "OuterFailed: installed-tuning restore failed: {}",
+                                restore_err
+                            );
                             self.terminal.outer_restore_failure = Some(restore_err);
                             self.cursor = RestoreCursor::OuterFailedModeRamp;
                         }
@@ -1160,7 +1163,7 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- velocity-integral (Stage C) -------------------------------
+                // --- velocity-integral -------------------------------
                 RestoreCursor::VelocityStagedPrologue => {
                     let retention = retention
                         .take()
@@ -1412,7 +1415,7 @@ impl TerminalRestoreMachine {
         #[cfg(feature = "trace")]
         let mut promotion_installer_result: u8 = 0;
         defmt::info!(
-            "stage_c promotion check: outcome={} execution_plan_present={} authority_present={}",
+            "velocity-integral promotion check: outcome={} execution_plan_present={} authority_present={}",
             dispatch.terminal.outcome,
             breakaway_execution_plan.is_some(),
             dispatch.authority.is_some(),
@@ -1428,7 +1431,7 @@ impl TerminalRestoreMachine {
                 &dispatch.terminal,
             ) {
                 Ok(stage_c::AcceptanceInstall::Installed(point)) => {
-                    defmt::info!("stage_c promotion: acceptance point installed");
+                    defmt::info!("velocity-integral promotion: acceptance point installed");
                     retention.stage_c.install_acceptance_point(point);
                     #[cfg(feature = "trace")]
                     {
@@ -1436,7 +1439,7 @@ impl TerminalRestoreMachine {
                     }
                 }
                 Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
-                    defmt::warn!("stage_c promotion: missing target terminus");
+                    defmt::warn!("velocity-integral promotion: missing target terminus");
                     dispatch.terminal.cause =
                         StageCCause::Dispatch(stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS);
                     #[cfg(feature = "trace")]
@@ -1445,14 +1448,14 @@ impl TerminalRestoreMachine {
                     }
                 }
                 Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {
-                    defmt::info!("stage_c promotion: not an acceptance terminal");
+                    defmt::info!("velocity-integral promotion: not an acceptance terminal");
                     #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 3;
                     }
                 }
                 Err(()) => {
-                    defmt::warn!("stage_c promotion: evidence integrity fault");
+                    defmt::warn!("velocity-integral promotion: evidence integrity fault");
                     retention.stage_c.observe_fault();
                     dispatch.terminal.outcome = VelocityIntegralOutcome::Fault;
                     dispatch.terminal.cause =
