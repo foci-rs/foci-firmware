@@ -238,6 +238,18 @@ pub trait CommissionTiming {
     }
 }
 
+/// Combine the board-owned shutdown signals `CommissionTiming::is_shutdown_requested`
+/// should report as true: an explicit disable request, an expired
+/// host-liveness lease, or an outer shutdown/fault already in progress.
+pub const fn shutdown_requested_from(
+    disable_signal: bool,
+    lease_expired: bool,
+    shutdown_active: bool,
+    fault_active: bool,
+) -> bool {
+    disable_signal || lease_expired || shutdown_active || fault_active
+}
+
 /// Board and channel configuration values consumed by commissioning.
 pub trait CommissionBoardConfig {
     /// Read the configured torque/flux current limit.
@@ -814,6 +826,31 @@ mod tests {
     use crate::trace::events::{
         CommissionTraceEvent, EVENT_COMMISSION_DIAGNOSTIC_WARNING, TraceEventLevel,
     };
+
+    #[test]
+    fn shutdown_requested_from_false_when_all_clear() {
+        assert!(!shutdown_requested_from(false, false, false, false));
+    }
+
+    #[test]
+    fn shutdown_requested_from_true_when_disable_signal_set() {
+        assert!(shutdown_requested_from(true, false, false, false));
+    }
+
+    #[test]
+    fn shutdown_requested_from_true_when_lease_expired() {
+        assert!(shutdown_requested_from(false, true, false, false));
+    }
+
+    #[test]
+    fn shutdown_requested_from_true_when_shutdown_active() {
+        assert!(shutdown_requested_from(false, false, true, false));
+    }
+
+    #[test]
+    fn shutdown_requested_from_true_when_fault_active() {
+        assert!(shutdown_requested_from(false, false, false, true));
+    }
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     static TEST_TMC_STATE: crate::state::tmc::TmcChannelState =
