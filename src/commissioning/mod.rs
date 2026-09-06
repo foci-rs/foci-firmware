@@ -2189,11 +2189,11 @@ mod tests {
         }
     }
 
-    /// The live outer entry phases (breakaway campaign, Stage-C velocity
-    /// integral, reversal-standstill robustness) all report `VelocityTune`;
-    /// see `OuterPhase::current_phase_id`.
+    /// `breakaway_safety_engine` starts the outer engine in
+    /// `OuterPhase::BreakawayCampaign`, which reports
+    /// `BreakawayProportionalAcquisition`; see `OuterPhase::current_phase_id`.
     fn initial_outer_phase_id() -> CommissionPhase {
-        CommissionPhase::VelocityTune
+        CommissionPhase::BreakawayProportionalAcquisition
     }
 
     fn assert_trace_event(

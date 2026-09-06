@@ -424,20 +424,24 @@ pub enum CommissionPhase {
     CurrentValidate,
     /// Inner commissioning completed.
     InnerDone,
-    /// Reserved for historical decoding: the retired mechanical-identification
-    /// phase (J_eff, B_eff, tau_mech). No live phase reports this ID.
-    MechanicalId,
-    /// Outer phase 9 — Velocity-loop SIMC gain synthesis.
-    VelocityTune,
-    /// Outer phase 10 — Velocity-loop step-response validation.
-    VelocityValidate,
-    /// Outer phase 11 — Position-loop P ramp-up.
+    /// Breakaway-seeded campaign: proportional-gain acquisition against the
+    /// nominated in-band ladder. Wire code 18.
+    BreakawayProportionalAcquisition,
+    /// Stage-C fixed-P velocity-integral response ladder. Wire code 19.
+    IntegralGainResponseCharacterization,
+    /// Stage-C fixed-P velocity-integral acceptance sweep (ascending or
+    /// descending amplitude) against the matrix-nominated point. Wire code 20.
+    FixedGainAmplitudeValidation,
+    /// Reversal-standstill robustness gate over the matrix-accepted point.
+    /// Wire code 21.
+    ReversalStandstillRobustnessGate,
+    /// Outer phase — Position-loop P ramp-up. Wire code 22.
     PositionTune,
-    /// Outer phase 12 — Filter selection based on validation metrics.
+    /// Outer phase — Filter selection based on validation metrics. Wire code 23.
     FilterTune,
-    /// Outer phase 13 — Assemble and transmit final results to host.
+    /// Outer phase — Assemble and transmit final results to host. Wire code 24.
     Commit,
-    /// Outer commissioning completed.
+    /// Outer commissioning completed. Wire code 25.
     OuterDone,
     /// Encoder alignment — drive rotor to the D-axis, zero
     /// ABN_DECODER_COUNT and offset, switch PHI_E_SELECTION to ABN
@@ -457,7 +461,10 @@ pub enum CommissionPhase {
 impl CommissionPhase {
     /// Encode to the wire representation used in the Klipper protocol message.
     ///
-    /// Values are stable; new variants must use new codes.
+    /// Values are stable; new variants must use new codes. Code 9, formerly
+    /// the retired mechanical-identification phase, and codes 10-15, formerly
+    /// the two-variant velocity-tune block and the pre-renumber outer block,
+    /// are never reused.
     pub fn to_u8(self) -> u8 {
         match self {
             Self::AdcCalibrate => 1,
@@ -468,13 +475,14 @@ impl CommissionPhase {
             Self::CurrentTune => 6,
             Self::CurrentValidate => 7,
             Self::InnerDone => 8,
-            Self::MechanicalId => 9,
-            Self::VelocityTune => 10,
-            Self::VelocityValidate => 11,
-            Self::PositionTune => 12,
-            Self::FilterTune => 13,
-            Self::Commit => 14,
-            Self::OuterDone => 15,
+            Self::BreakawayProportionalAcquisition => 18,
+            Self::IntegralGainResponseCharacterization => 19,
+            Self::FixedGainAmplitudeValidation => 20,
+            Self::ReversalStandstillRobustnessGate => 21,
+            Self::PositionTune => 22,
+            Self::FilterTune => 23,
+            Self::Commit => 24,
+            Self::OuterDone => 25,
             Self::EncoderAlign => 16,
             Self::ClosedLoopEntry => 17,
         }
@@ -802,13 +810,16 @@ mod tests {
             CommissionPhase::CurrentTune,
             CommissionPhase::CurrentValidate,
             CommissionPhase::InnerDone,
-            CommissionPhase::MechanicalId,
-            CommissionPhase::VelocityTune,
-            CommissionPhase::VelocityValidate,
+            CommissionPhase::BreakawayProportionalAcquisition,
+            CommissionPhase::IntegralGainResponseCharacterization,
+            CommissionPhase::FixedGainAmplitudeValidation,
+            CommissionPhase::ReversalStandstillRobustnessGate,
             CommissionPhase::PositionTune,
             CommissionPhase::FilterTune,
             CommissionPhase::Commit,
             CommissionPhase::OuterDone,
+            CommissionPhase::EncoderAlign,
+            CommissionPhase::ClosedLoopEntry,
         ];
         let mut seen = [false; 256];
         for p in phases {
@@ -819,14 +830,44 @@ mod tests {
         }
     }
 
-    /// The dead `MechanicalId`/`VelocityTune`/`VelocityValidate` phase chain
-    /// no longer has a live constructor, but its wire codes were assigned
-    /// once and must never be reused by a future phase.
+    /// Inner codes 1-8, 16, 17 are unchanged by the velocity-vocabulary
+    /// renumber; code 9 (formerly `MechanicalId`) stays permanently reserved.
     #[test]
-    fn outer_phase_wire_gap_remains_reserved() {
+    fn inner_phase_wire_codes_unchanged() {
+        assert_eq!(CommissionPhase::AdcCalibrate.to_u8(), 1);
+        assert_eq!(CommissionPhase::CoilCheck.to_u8(), 2);
+        assert_eq!(CommissionPhase::PhaseWiringCheck.to_u8(), 3);
+        assert_eq!(CommissionPhase::EncoderCheck.to_u8(), 4);
+        assert_eq!(CommissionPhase::ElectricalId.to_u8(), 5);
+        assert_eq!(CommissionPhase::CurrentTune.to_u8(), 6);
+        assert_eq!(CommissionPhase::CurrentValidate.to_u8(), 7);
         assert_eq!(CommissionPhase::InnerDone.to_u8(), 8);
-        assert_eq!(CommissionPhase::MechanicalId.to_u8(), 9);
-        assert_eq!(CommissionPhase::VelocityTune.to_u8(), 10);
-        assert_eq!(CommissionPhase::VelocityValidate.to_u8(), 11);
+        assert_eq!(CommissionPhase::EncoderAlign.to_u8(), 16);
+        assert_eq!(CommissionPhase::ClosedLoopEntry.to_u8(), 17);
+    }
+
+    /// The outer block is a contiguous sequence: the four velocity workflow
+    /// codes in workflow order, then the retained non-velocity outer codes,
+    /// placed after `EncoderAlign`/`ClosedLoopEntry` since those two pinned
+    /// codes (16, 17) leave no 8-wide contiguous gap below them.
+    #[test]
+    fn outer_block_is_contiguous_in_workflow_order() {
+        assert_eq!(
+            CommissionPhase::BreakawayProportionalAcquisition.to_u8(),
+            18
+        );
+        assert_eq!(
+            CommissionPhase::IntegralGainResponseCharacterization.to_u8(),
+            19
+        );
+        assert_eq!(CommissionPhase::FixedGainAmplitudeValidation.to_u8(), 20);
+        assert_eq!(
+            CommissionPhase::ReversalStandstillRobustnessGate.to_u8(),
+            21
+        );
+        assert_eq!(CommissionPhase::PositionTune.to_u8(), 22);
+        assert_eq!(CommissionPhase::FilterTune.to_u8(), 23);
+        assert_eq!(CommissionPhase::Commit.to_u8(), 24);
+        assert_eq!(CommissionPhase::OuterDone.to_u8(), 25);
     }
 }

@@ -430,11 +430,29 @@ pub(crate) enum OuterPhase {
 
 impl OuterPhase {
     /// Return the stable phase ID for the active non-terminal outer phase.
+    ///
+    /// `VelocityIntegral` dispatches on its plan's `acquisition_kind`: the
+    /// response ladder and the acceptance sweep are distinct workflows on the
+    /// wire even though they share this engine variant.
     pub(crate) fn current_phase_id(&self) -> Option<CommissionPhase> {
+        use super::velocity::integral_plan::VelocityIntegralAcquisitionKind;
+
         match self {
-            Self::VelocityIntegral { .. } => Some(CommissionPhase::VelocityTune),
-            Self::BreakawayCampaign { .. } => Some(CommissionPhase::VelocityTune),
-            Self::RobustnessReversal { .. } => Some(CommissionPhase::VelocityTune),
+            Self::VelocityIntegral { data, .. } => Some(match data.plan.acquisition_kind {
+                VelocityIntegralAcquisitionKind::ResponseLadder => {
+                    CommissionPhase::IntegralGainResponseCharacterization
+                }
+                VelocityIntegralAcquisitionKind::AcceptanceAscending
+                | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
+                    CommissionPhase::FixedGainAmplitudeValidation
+                }
+            }),
+            Self::BreakawayCampaign { .. } => {
+                Some(CommissionPhase::BreakawayProportionalAcquisition)
+            }
+            Self::RobustnessReversal { .. } => {
+                Some(CommissionPhase::ReversalStandstillRobustnessGate)
+            }
             Self::Failed(_) | Self::FailedWithSafety { .. } => None,
         }
     }
@@ -503,19 +521,35 @@ mod tests {
         );
     }
 
+    fn velocity_integral_phase(acquisition_kind: VelocityIntegralAcquisitionKind) -> OuterPhase {
+        let mut plan = minimal_velocity_integral_plan();
+        plan.acquisition_kind = acquisition_kind;
+        OuterPhase::VelocityIntegral {
+            state: VelocityIntegralState::Setup,
+            data: VelocityIntegralData::new(0, plan),
+            safety: OuterSafetyLimits::new(
+                0,
+                crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
+            ),
+        }
+    }
+
     #[test]
     fn outer_phase_id_maps_active_and_failed_phases() {
         assert_eq!(
-            OuterPhase::VelocityIntegral {
-                state: VelocityIntegralState::Setup,
-                data: VelocityIntegralData::new(0, minimal_velocity_integral_plan()),
-                safety: OuterSafetyLimits::new(
-                    0,
-                    crate::commissioning::outer::OuterMotionBudget::firmware_caps()
-                ),
-            }
-            .current_phase_id(),
-            Some(CommissionPhase::VelocityTune)
+            velocity_integral_phase(VelocityIntegralAcquisitionKind::ResponseLadder)
+                .current_phase_id(),
+            Some(CommissionPhase::IntegralGainResponseCharacterization)
+        );
+        assert_eq!(
+            velocity_integral_phase(VelocityIntegralAcquisitionKind::AcceptanceAscending)
+                .current_phase_id(),
+            Some(CommissionPhase::FixedGainAmplitudeValidation)
+        );
+        assert_eq!(
+            velocity_integral_phase(VelocityIntegralAcquisitionKind::AcceptanceDescending)
+                .current_phase_id(),
+            Some(CommissionPhase::FixedGainAmplitudeValidation)
         );
         assert_eq!(
             OuterPhase::Failed(CommissionError::Spi).current_phase_id(),
