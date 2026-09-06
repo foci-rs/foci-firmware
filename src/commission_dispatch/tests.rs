@@ -723,7 +723,7 @@ fn phase_changed_returns_oid_phase_kind() {
         ));
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::PhaseChanged(
-                crate::autotune::PhaseId::ClosedLoopEntry,
+                crate::autotune::CommissionPhase::ClosedLoopEntry,
             ),
             &mut engine,
             &mut backend,
@@ -738,7 +738,7 @@ fn phase_changed_returns_oid_phase_kind() {
                 engine_kind,
             } => {
                 assert_eq!(oid, 7);
-                assert_eq!(phase_id, crate::autotune::PhaseId::ClosedLoopEntry);
+                assert_eq!(phase_id, crate::autotune::CommissionPhase::ClosedLoopEntry);
                 assert_eq!(
                     engine_kind,
                     crate::commissioning::types::EngineKind::Commission
@@ -806,7 +806,7 @@ async fn inner_failed_commission_emits_phase_reply() {
     ));
     engine.as_mut().expect("engine").diagnostics_mut().push(
         crate::selftest::CommissionDiagnostic {
-            phase: crate::autotune::PhaseId::ElectricalId.to_u8(),
+            phase: crate::autotune::CommissionPhase::ElectricalId.to_u8(),
             code: 28,
             status: 1,
             value0: 820,
@@ -881,7 +881,7 @@ async fn inner_failed_calibrate_emits_calibrate_reply() {
     let mut engine = Some(CommissioningEngine::new_calibrate(2));
     engine.as_mut().expect("engine").diagnostics_mut().push(
         crate::selftest::CommissionDiagnostic {
-            phase: crate::autotune::PhaseId::EncoderCheck.to_u8(),
+            phase: crate::autotune::CommissionPhase::EncoderCheck.to_u8(),
             code: 2,
             status: 1,
             value0: 123,
@@ -918,7 +918,7 @@ async fn inner_failed_calibrate_emits_calibrate_reply() {
             assert_eq!(items.len(), 1);
             assert_eq!(
                 items[0].phase,
-                crate::autotune::PhaseId::EncoderCheck.to_u8()
+                crate::autotune::CommissionPhase::EncoderCheck.to_u8()
             );
             assert_eq!(items[0].code, 2);
             assert_eq!(items[0].value0, 123);
@@ -944,7 +944,7 @@ async fn inner_failed_selftest_emits_selftest_pair() {
     let mut engine = Some(CommissioningEngine::new_selftest(8));
     engine.as_mut().expect("engine").diagnostics_mut().push(
         crate::selftest::CommissionDiagnostic {
-            phase: crate::autotune::PhaseId::ElectricalId.to_u8(),
+            phase: crate::autotune::CommissionPhase::ElectricalId.to_u8(),
             code: 27,
             status: 1,
             value0: 0,

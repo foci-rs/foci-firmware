@@ -7,7 +7,7 @@
 use super::{
     ElectricalIdData, ElectricalIdState, EncoderAlignState, EncoderCheckState, InnerPhase,
 };
-use crate::autotune::{ClosedLoopEntryState, CommissionError, InnerSequence, PhaseId};
+use crate::autotune::{ClosedLoopEntryState, CommissionError, InnerSequence, CommissionPhase};
 use crate::commissioning::CalibrateEntryGains;
 use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
@@ -173,7 +173,7 @@ fn folded_electrical_residual_counts(count: u32, counts_per_electrical_rev: u16)
 
 fn push_encoder_read_unstable(
     diagnostics: &mut CommissionDiagnostics,
-    phase_id: PhaseId,
+    phase_id: CommissionPhase,
     samples: [u32; ENCODER_READ_SAMPLES],
 ) {
     diagnostics.push(CommissionDiagnostic {
@@ -194,7 +194,7 @@ fn push_encoder_direction_result(
     failed: bool,
 ) {
     diagnostics.push(CommissionDiagnostic {
-        phase: PhaseId::EncoderCheck.to_u8(),
+        phase: CommissionPhase::EncoderCheck.to_u8(),
         code: DIAG_ENCODER_DIRECTION_RESULT,
         status: u8::from(failed),
         value0: count_start.raw_counts(),
@@ -210,7 +210,7 @@ fn push_encoder_direction_expected(
     observed_signed_counts: i32,
 ) {
     diagnostics.push(CommissionDiagnostic {
-        phase: PhaseId::EncoderCheck.to_u8(),
+        phase: CommissionPhase::EncoderCheck.to_u8(),
         code: DIAG_ENCODER_DIRECTION_EXPECTED,
         status: 1,
         value0: commanded_electrical_displacement,
@@ -226,7 +226,7 @@ fn push_encoder_direction_bounds(
     pole_pairs: u16,
 ) {
     diagnostics.push(CommissionDiagnostic {
-        phase: PhaseId::EncoderCheck.to_u8(),
+        phase: CommissionPhase::EncoderCheck.to_u8(),
         code: DIAG_ENCODER_DIRECTION_BOUNDS,
         status: 1,
         value0: min_signed_counts as u32,
@@ -243,7 +243,7 @@ fn push_encoder_align_result(
     failed: bool,
 ) {
     diagnostics.push(CommissionDiagnostic {
-        phase: PhaseId::EncoderAlign.to_u8(),
+        phase: CommissionPhase::EncoderAlign.to_u8(),
         code: DIAG_ENCODER_ALIGN_RESULT,
         status: u8::from(failed),
         value0: movement,
@@ -264,7 +264,7 @@ fn push_encoder_align_result(
 async fn read_mechanical_encoder_position_counts_stable<B: CommissioningBackend>(
     backend: &mut B,
     diagnostics: Option<&mut CommissionDiagnostics>,
-    phase_id: PhaseId,
+    phase_id: CommissionPhase,
 ) -> Result<EncoderCount, CommissionError> {
     use foci_tmc4671::registers::ABN_DECODER_COUNT;
 
@@ -455,7 +455,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             let count_start = match read_mechanical_encoder_position_counts_stable(
                 backend,
                 Some(diagnostics),
-                PhaseId::EncoderCheck,
+                CommissionPhase::EncoderCheck,
             )
             .await
             {
@@ -525,7 +525,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             let count_end = match read_mechanical_encoder_position_counts_stable(
                 backend,
                 Some(diagnostics),
-                PhaseId::EncoderCheck,
+                CommissionPhase::EncoderCheck,
             )
             .await
             {
@@ -673,7 +673,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                     count_before: count_end,
                 },
             };
-            StepResult::PhaseChanged(PhaseId::EncoderAlign)
+            StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
         }
     }
 }
@@ -767,7 +767,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             let count1 = match read_mechanical_encoder_position_counts_stable(
                 backend,
                 Some(diagnostics),
-                PhaseId::EncoderAlign,
+                CommissionPhase::EncoderAlign,
             )
             .await
             {
@@ -806,7 +806,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             let count2 = match read_mechanical_encoder_position_counts_stable(
                 backend,
                 Some(diagnostics),
-                PhaseId::EncoderAlign,
+                CommissionPhase::EncoderAlign,
             )
             .await
             {
@@ -969,7 +969,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                         inner_result: None,
                         attempt: 0,
                     };
-                    StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
                 }
                 InnerSequence::Selftest | InnerSequence::Commission => {
                     let voltage = backend.excitation_voltage() as u32;
@@ -977,7 +977,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                         state: ElectricalIdState::ResistanceStart,
                         data: ElectricalIdData::new(voltage),
                     };
-                    StepResult::PhaseChanged(PhaseId::ElectricalId)
+                    StepResult::PhaseChanged(CommissionPhase::ElectricalId)
                 }
             }
         }
@@ -1201,7 +1201,7 @@ mod tests {
             let result = read_mechanical_encoder_position_counts_stable(
                 &mut backend,
                 None,
-                PhaseId::EncoderCheck,
+                CommissionPhase::EncoderCheck,
             )
             .await;
             assert_eq!(result.unwrap().raw_counts(), 1234);
@@ -1218,7 +1218,7 @@ mod tests {
             let result = read_mechanical_encoder_position_counts_stable(
                 &mut backend,
                 None,
-                PhaseId::EncoderCheck,
+                CommissionPhase::EncoderCheck,
             )
             .await;
             assert!(
@@ -1242,7 +1242,7 @@ mod tests {
             let result = read_mechanical_encoder_position_counts_stable(
                 &mut backend,
                 Some(&mut diagnostics),
-                PhaseId::EncoderCheck,
+                CommissionPhase::EncoderCheck,
             )
             .await;
 
@@ -1268,7 +1268,7 @@ mod tests {
             let result = read_mechanical_encoder_position_counts_stable(
                 &mut backend,
                 Some(&mut diagnostics),
-                PhaseId::EncoderCheck,
+                CommissionPhase::EncoderCheck,
             )
             .await;
             match result {
@@ -1277,7 +1277,7 @@ mod tests {
             }
             let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].phase, PhaseId::EncoderCheck.to_u8());
+            assert_eq!(events[0].phase, CommissionPhase::EncoderCheck.to_u8());
             assert_eq!(events[0].code, DIAG_ENCODER_READ_UNSTABLE);
             assert_eq!(events[0].status, 1);
             assert_eq!(events[0].value0, 500);
@@ -1361,7 +1361,7 @@ mod tests {
             ));
             let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].phase, PhaseId::EncoderCheck.to_u8());
+            assert_eq!(events[0].phase, CommissionPhase::EncoderCheck.to_u8());
             assert_eq!(events[0].code, DIAG_ENCODER_DIRECTION_RESULT);
             assert_eq!(events[0].status, 1);
             assert_eq!(events[0].value0, 1234);
@@ -1402,7 +1402,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+                StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
             ));
             assert_eq!(selftest_results.stage(5).unwrap().value, 4);
             assert_eq!(selftest_results.stage(6).unwrap().value, 0);
@@ -1454,7 +1454,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+                StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
             ));
         });
     }
@@ -1491,7 +1491,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+                StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
             ));
         });
     }
@@ -1707,7 +1707,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+                StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
             ));
         });
     }
@@ -1755,7 +1755,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+                StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
             ));
         });
     }
@@ -1819,7 +1819,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::EncoderAlign)
+                StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
             ));
         });
     }
@@ -2180,7 +2180,7 @@ mod tests {
             ));
             let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].phase, PhaseId::EncoderAlign.to_u8());
+            assert_eq!(events[0].phase, CommissionPhase::EncoderAlign.to_u8());
             assert_eq!(events[0].code, DIAG_ENCODER_ALIGN_RESULT);
             assert_eq!(events[0].status, 1);
             assert_eq!(events[0].value0, 1);
@@ -2301,7 +2301,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
             ));
             assert_eq!(adc_cal.as_ref().unwrap().encoder_count, 42);
             let InnerPhase::ClosedLoopEntry {

@@ -1,6 +1,6 @@
 //! Explicit scheduling contract for the cooperative commissioning engine.
 
-use crate::autotune::{CommissionError, PhaseId};
+use crate::autotune::{CommissionError, CommissionPhase};
 use crate::commissioning::types::{
     AcceptanceMatrixTerminal, AdcCalResult, CommissionResult, EngineKind, OuterResult,
     RobustnessReversalTerminal, StepResult, VelocityIntegralEvent, VelocityIntegralTerminal,
@@ -16,7 +16,7 @@ pub enum CommissionEvent {
         /// Object id of the commissioning channel.
         oid: u8,
         /// Newly active phase.
-        phase_id: PhaseId,
+        phase_id: CommissionPhase,
         /// Engine kind used to route the progress reply.
         engine_kind: EngineKind,
     },
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn phase_change_maps_to_ready_now_with_its_event() {
         let poll = adapt_step_result(
-            StepResult::PhaseChanged(PhaseId::ClosedLoopEntry),
+            StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry),
             42_000,
             Some((7, EngineKind::Commission)),
         )
@@ -409,7 +409,7 @@ mod tests {
             CommissionPoll::ReadyNow {
                 event: Some(CommissionEvent::PhaseChanged {
                     oid: 7,
-                    phase_id: PhaseId::ClosedLoopEntry,
+                    phase_id: CommissionPhase::ClosedLoopEntry,
                     engine_kind: EngineKind::Commission,
                 })
             }

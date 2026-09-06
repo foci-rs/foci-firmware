@@ -407,7 +407,7 @@ impl CommissionStatus {
 /// Sent in the `foci_commission_phase` message on each phase transition.
 /// The Python module translates the `u8` code to a human-readable label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum PhaseId {
+pub enum CommissionPhase {
     /// Inner phase 1 — ADC offset calibration.
     AdcCalibrate,
     /// Inner phase 2 — Coil connectivity check.
@@ -454,7 +454,7 @@ pub enum PhaseId {
     ClosedLoopEntry,
 }
 
-impl PhaseId {
+impl CommissionPhase {
     /// Encode to the wire representation used in the Klipper protocol message.
     ///
     /// Values are stable; new variants must use new codes.
@@ -583,7 +583,7 @@ pub const CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT: u8 = 4;
 
 /// Controls which phases run and in what order for the inner engine.
 ///
-/// Replaces the old `stop_after: PhaseId` mechanism.
+/// Replaces the old `stop_after: CommissionPhase` mechanism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum InnerSequence {
     /// Re-enable path: ADC cal -> encoder align -> closed-loop entry (saved gains).
@@ -794,21 +794,21 @@ mod tests {
     #[test]
     fn phase_id_to_u8_unique() {
         let phases = [
-            PhaseId::AdcCalibrate,
-            PhaseId::CoilCheck,
-            PhaseId::PhaseWiringCheck,
-            PhaseId::EncoderCheck,
-            PhaseId::ElectricalId,
-            PhaseId::CurrentTune,
-            PhaseId::CurrentValidate,
-            PhaseId::InnerDone,
-            PhaseId::MechanicalId,
-            PhaseId::VelocityTune,
-            PhaseId::VelocityValidate,
-            PhaseId::PositionTune,
-            PhaseId::FilterTune,
-            PhaseId::Commit,
-            PhaseId::OuterDone,
+            CommissionPhase::AdcCalibrate,
+            CommissionPhase::CoilCheck,
+            CommissionPhase::PhaseWiringCheck,
+            CommissionPhase::EncoderCheck,
+            CommissionPhase::ElectricalId,
+            CommissionPhase::CurrentTune,
+            CommissionPhase::CurrentValidate,
+            CommissionPhase::InnerDone,
+            CommissionPhase::MechanicalId,
+            CommissionPhase::VelocityTune,
+            CommissionPhase::VelocityValidate,
+            CommissionPhase::PositionTune,
+            CommissionPhase::FilterTune,
+            CommissionPhase::Commit,
+            CommissionPhase::OuterDone,
         ];
         let mut seen = [false; 256];
         for p in phases {
@@ -824,9 +824,9 @@ mod tests {
     /// once and must never be reused by a future phase.
     #[test]
     fn outer_phase_wire_gap_remains_reserved() {
-        assert_eq!(PhaseId::InnerDone.to_u8(), 8);
-        assert_eq!(PhaseId::MechanicalId.to_u8(), 9);
-        assert_eq!(PhaseId::VelocityTune.to_u8(), 10);
-        assert_eq!(PhaseId::VelocityValidate.to_u8(), 11);
+        assert_eq!(CommissionPhase::InnerDone.to_u8(), 8);
+        assert_eq!(CommissionPhase::MechanicalId.to_u8(), 9);
+        assert_eq!(CommissionPhase::VelocityTune.to_u8(), 10);
+        assert_eq!(CommissionPhase::VelocityValidate.to_u8(), 11);
     }
 }

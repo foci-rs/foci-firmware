@@ -528,19 +528,19 @@ pub(crate) enum InnerPhase {
 
 impl InnerPhase {
     /// Return the stable phase ID for the active non-terminal inner phase.
-    pub(crate) fn current_phase_id(&self) -> Option<crate::autotune::PhaseId> {
-        use crate::autotune::PhaseId;
+    pub(crate) fn current_phase_id(&self) -> Option<crate::autotune::CommissionPhase> {
+        use crate::autotune::CommissionPhase;
 
         match self {
-            Self::AdcCalibrate(_) => Some(PhaseId::AdcCalibrate),
-            Self::CoilCheck { .. } => Some(PhaseId::CoilCheck),
-            Self::PhaseWiringCheck { .. } => Some(PhaseId::PhaseWiringCheck),
-            Self::EncoderCheck { .. } => Some(PhaseId::EncoderCheck),
-            Self::EncoderAlign { .. } => Some(PhaseId::EncoderAlign),
-            Self::ElectricalId { .. } => Some(PhaseId::ElectricalId),
-            Self::CurrentTune { .. } => Some(PhaseId::CurrentTune),
-            Self::CurrentValidate { .. } => Some(PhaseId::CurrentValidate),
-            Self::ClosedLoopEntry { .. } => Some(PhaseId::ClosedLoopEntry),
+            Self::AdcCalibrate(_) => Some(CommissionPhase::AdcCalibrate),
+            Self::CoilCheck { .. } => Some(CommissionPhase::CoilCheck),
+            Self::PhaseWiringCheck { .. } => Some(CommissionPhase::PhaseWiringCheck),
+            Self::EncoderCheck { .. } => Some(CommissionPhase::EncoderCheck),
+            Self::EncoderAlign { .. } => Some(CommissionPhase::EncoderAlign),
+            Self::ElectricalId { .. } => Some(CommissionPhase::ElectricalId),
+            Self::CurrentTune { .. } => Some(CommissionPhase::CurrentTune),
+            Self::CurrentValidate { .. } => Some(CommissionPhase::CurrentValidate),
+            Self::ClosedLoopEntry { .. } => Some(CommissionPhase::ClosedLoopEntry),
             Self::Failed(_) => None,
         }
     }
@@ -830,13 +830,13 @@ pub async fn restore_entry_gains<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::{AdcCalState, InnerPhase};
-    use crate::autotune::{CommissionError, PhaseId};
+    use crate::autotune::{CommissionError, CommissionPhase};
 
     #[test]
     fn inner_phase_id_maps_active_and_failed_phases() {
         assert_eq!(
             InnerPhase::AdcCalibrate(AdcCalState::Setup).current_phase_id(),
-            Some(PhaseId::AdcCalibrate)
+            Some(CommissionPhase::AdcCalibrate)
         );
         assert_eq!(
             InnerPhase::Failed(CommissionError::Spi).current_phase_id(),

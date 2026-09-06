@@ -12,7 +12,7 @@ use crate::autotune::{
     CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopEntryState,
     CommissionError, CommissionProfile, CommissionStatus, CurrentAxisGate, CurrentAxisGateResult,
     CurrentAxisRetryDecision, CurrentAxisSample, CurrentGainSynthesisInput, CurrentGains,
-    CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, PhaseId, TransientBuffer,
+    CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, CommissionPhase, TransientBuffer,
     classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
 };
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
@@ -1449,7 +1449,7 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
             current_loop_evidence,
         },
     };
-    StepResult::PhaseChanged(PhaseId::CurrentValidate)
+    StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
 }
 
 /// Advance current-loop validation sub-state.
@@ -2132,7 +2132,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         inner_result: Some(result),
                         attempt: 0,
                     };
-                    StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
                 }
                 InnerSequence::Calibrate | InnerSequence::Selftest => {
                     unreachable!("Calibrate/Selftest never reach CurrentValidate")
@@ -2232,7 +2232,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+                StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
             ));
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
@@ -2278,7 +2278,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+                StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
             ));
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
@@ -2323,7 +2323,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+                StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
             ));
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
@@ -2372,7 +2372,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::CurrentValidate)
+                StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
             ));
             match phase {
                 InnerPhase::CurrentValidate { data, .. } => {
@@ -2821,7 +2821,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
             ));
             match phase {
                 InnerPhase::ClosedLoopEntry {
@@ -2866,7 +2866,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::ClosedLoopEntry)
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
             ));
             match phase {
                 InnerPhase::ClosedLoopEntry {

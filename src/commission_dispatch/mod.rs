@@ -33,7 +33,7 @@ pub use post_actions::{StepperTaskDirective, apply_stepper_post_action_state};
 pub use replies::{CommissionReplySink, emit_phase_reply, emit_terminal_reply};
 pub use restore_machine::{RestoreStep, TerminalRestoreMachine};
 
-use crate::autotune::PhaseId;
+use crate::autotune::CommissionPhase;
 // CommissioningEngine lives in commissioning/mod.rs (the engine impl); the
 // data types live in commissioning/types.rs.
 use crate::commissioning::{
@@ -131,7 +131,7 @@ pub enum CommissionOutcome {
     /// Mono::delay(1ms), continue.
     PhaseChanged {
         oid: u8,
-        phase_id: PhaseId,
+        phase_id: CommissionPhase,
         engine_kind: EngineKind,
     },
     /// Nonterminal report-only evidence is ready for immediate emission.

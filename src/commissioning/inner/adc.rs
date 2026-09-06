@@ -7,7 +7,7 @@
 use super::{
     AdcCalState, AdcResidualStage, CoilCheckState, CoilTestState, EncoderCheckState, InnerPhase,
 };
-use crate::autotune::{CommissionError, InnerSequence, PhaseId};
+use crate::autotune::{CommissionError, InnerSequence, CommissionPhase};
 use crate::commissioning::types::{
     ADC_RESIDUAL_STAGE_CHOP_OFF, ADC_RESIDUAL_STAGE_CHOP_ON, AdcCalResult, AdcResidualEvidence,
     CommissioningBackend, StepResult,
@@ -511,14 +511,14 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                             *phase = InnerPhase::EncoderCheck {
                                 state: EncoderCheckState::Setup,
                             };
-                            StepResult::PhaseChanged(PhaseId::EncoderCheck)
+                            StepResult::PhaseChanged(CommissionPhase::EncoderCheck)
                         }
                         InnerSequence::Selftest | InnerSequence::Commission => {
                             *phase = InnerPhase::CoilCheck {
                                 state: CoilCheckState::CoilA(CoilTestState::Setup { phase: 0 }),
                                 coil_a: None,
                             };
-                            StepResult::PhaseChanged(PhaseId::CoilCheck)
+                            StepResult::PhaseChanged(CommissionPhase::CoilCheck)
                         }
                     }
                 }
@@ -912,7 +912,7 @@ mod tests {
 
             assert!(matches!(
                 scheduled,
-                StepResult::PhaseChanged(PhaseId::EncoderCheck)
+                StepResult::PhaseChanged(CommissionPhase::EncoderCheck)
             ));
             let cal = adc_cal.expect("ADC calibration result should be recorded");
             assert_eq!(cal.adc_residual_chop0.stage, ADC_RESIDUAL_STAGE_CHOP_OFF);

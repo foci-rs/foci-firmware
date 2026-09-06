@@ -18,7 +18,7 @@ pub mod schedule;
 pub mod types;
 
 use crate::autotune::{
-    CommissionError, CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, PhaseId,
+    CommissionError, CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, CommissionPhase,
     TransientBuffer,
 };
 use crate::commissioning::inner::InnerPhase;
@@ -218,7 +218,7 @@ struct TraceRunState {
     phase_seq: u32,
     started: bool,
     terminal: bool,
-    current_phase: Option<PhaseId>,
+    current_phase: Option<CommissionPhase>,
 }
 
 impl TraceRunState {
@@ -1059,7 +1059,7 @@ impl CommissioningEngine {
         data.positive_i_rest_boundary = Some(boundary);
     }
 
-    pub(crate) fn current_phase_id(&self) -> Option<PhaseId> {
+    pub(crate) fn current_phase_id(&self) -> Option<CommissionPhase> {
         match &self.engine_mode {
             EngineMode::Inner { phase, .. } => phase.current_phase_id(),
             EngineMode::Outer { phase, .. } => phase.current_phase_id(),
@@ -1137,7 +1137,7 @@ impl CommissioningEngine {
         }
     }
 
-    fn emit_trace_phase_start<B: CommissioningBackend>(&mut self, backend: &mut B, phase: PhaseId) {
+    fn emit_trace_phase_start<B: CommissioningBackend>(&mut self, backend: &mut B, phase: CommissionPhase) {
         self.trace_run.current_phase = Some(phase);
         backend.record_commission_trace_event(self.trace_event(
             TraceEventLevel::Info,
@@ -2188,8 +2188,8 @@ mod tests {
     /// The live outer entry phases (breakaway campaign, Stage-C velocity
     /// integral, reversal-standstill robustness) all report `VelocityTune`;
     /// see `OuterPhase::current_phase_id`.
-    fn initial_outer_phase_id() -> PhaseId {
-        PhaseId::VelocityTune
+    fn initial_outer_phase_id() -> CommissionPhase {
+        CommissionPhase::VelocityTune
     }
 
     fn assert_trace_event(
@@ -2210,7 +2210,7 @@ mod tests {
         mut engine: CommissioningEngine,
         result: StepResult,
         engine_kind: EngineKind,
-        phase_id: PhaseId,
+        phase_id: CommissionPhase,
         terminal_status_code: u8,
         phase_level: TraceEventLevel,
         terminal_level: TraceEventLevel,
@@ -2711,7 +2711,7 @@ mod tests {
             );
             assert_eq!(
                 events[1].payload[0],
-                crate::autotune::PhaseId::AdcCalibrate.to_u8() as i32
+                crate::autotune::CommissionPhase::AdcCalibrate.to_u8() as i32
             );
             assert_eq!(events[1].payload[1], 0);
         });
@@ -2729,7 +2729,7 @@ mod tests {
         engine.emit_trace_start(&mut backend);
         engine.emit_trace_after_step(
             &mut backend,
-            &StepResult::PhaseChanged(crate::autotune::PhaseId::CoilCheck),
+            &StepResult::PhaseChanged(crate::autotune::CommissionPhase::CoilCheck),
         );
 
         let events = &backend.trace_events;
@@ -2739,14 +2739,14 @@ mod tests {
             crate::trace::events::EVENT_COMMISSION_PHASE_END,
             EngineKind::Commission,
             TraceEventLevel::Info,
-            [crate::autotune::PhaseId::AdcCalibrate.to_u8() as i32, 0],
+            [crate::autotune::CommissionPhase::AdcCalibrate.to_u8() as i32, 0],
         );
         assert_trace_event(
             &events[3],
             crate::trace::events::EVENT_COMMISSION_PHASE_START,
             EngineKind::Commission,
             TraceEventLevel::Info,
-            [crate::autotune::PhaseId::CoilCheck.to_u8() as i32, 1],
+            [crate::autotune::CommissionPhase::CoilCheck.to_u8() as i32, 1],
         );
     }
 
@@ -2758,7 +2758,7 @@ mod tests {
                 crate::autotune::CommissionStatus::Accepted,
             )),
             EngineKind::Commission,
-            crate::autotune::PhaseId::AdcCalibrate,
+            crate::autotune::CommissionPhase::AdcCalibrate,
             0,
             TraceEventLevel::Info,
             TraceEventLevel::Info,
@@ -2781,7 +2781,7 @@ mod tests {
             CommissioningEngine::new_calibrate(0),
             StepResult::CalibrateDone(sample_adc_cal_result()),
             EngineKind::Calibrate,
-            crate::autotune::PhaseId::AdcCalibrate,
+            crate::autotune::CommissionPhase::AdcCalibrate,
             0,
             TraceEventLevel::Info,
             TraceEventLevel::Info,
@@ -2790,7 +2790,7 @@ mod tests {
             CommissioningEngine::new_selftest(0),
             StepResult::SelftestDone,
             EngineKind::Selftest,
-            crate::autotune::PhaseId::AdcCalibrate,
+            crate::autotune::CommissionPhase::AdcCalibrate,
             0,
             TraceEventLevel::Info,
             TraceEventLevel::Info,
@@ -3105,7 +3105,7 @@ mod tests {
             EngineKind::Commission,
             TraceEventLevel::Error,
             [
-                crate::autotune::PhaseId::AdcCalibrate.to_u8() as i32,
+                crate::autotune::CommissionPhase::AdcCalibrate.to_u8() as i32,
                 i32::from(status),
             ],
         );
@@ -3185,7 +3185,7 @@ mod tests {
                 crate::autotune::CommissionStatus::AcceptedWithWarnings,
             )),
             EngineKind::Commission,
-            crate::autotune::PhaseId::AdcCalibrate,
+            crate::autotune::CommissionPhase::AdcCalibrate,
             crate::autotune::CommissionStatus::AcceptedWithWarnings.to_u8(),
             TraceEventLevel::Info,
             TraceEventLevel::Warn,

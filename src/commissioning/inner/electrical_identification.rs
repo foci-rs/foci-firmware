@@ -11,7 +11,7 @@ use super::{
 };
 use crate::autotune::{
     CommissionError, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, InnerSequence, Permille,
-    PhaseId, TransientBuffer,
+    CommissionPhase, TransientBuffer,
 };
 use crate::commissioning::backend::{timed_read_capture_register, timed_read_register_pair};
 use crate::commissioning::capture_timing::{
@@ -162,7 +162,7 @@ fn diagnostic_for_model_assembly_failure(
         ),
     };
     crate::selftest::CommissionDiagnostic {
-        phase: PhaseId::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalId.to_u8(),
         code,
         status: 1,
         value0,
@@ -197,7 +197,7 @@ fn electrical_id_measurement_diagnostic(
     value2: u32,
 ) -> crate::selftest::CommissionDiagnostic {
     crate::selftest::CommissionDiagnostic {
-        phase: PhaseId::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalId.to_u8(),
         code,
         status: 0,
         value0,
@@ -688,7 +688,7 @@ fn inductance_frequency_rejection_diagnostic(
     sample_count: u16,
 ) -> crate::selftest::CommissionDiagnostic {
     crate::selftest::CommissionDiagnostic {
-        phase: PhaseId::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalId.to_u8(),
         code: DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY,
         status: 1,
         value0: realized_frequency_millihz,
@@ -735,7 +735,7 @@ fn inductance_capture_rejection_diagnostic(
     value2: u32,
 ) -> crate::selftest::CommissionDiagnostic {
     crate::selftest::CommissionDiagnostic {
-        phase: PhaseId::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalId.to_u8(),
         code: DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_CAPTURE,
         status: 1,
         value0: reason.code(),
@@ -1396,7 +1396,7 @@ fn push_timing_diagnostics(
         let evidence = summary.evidence;
         let code = 34 + (method as u8 * 2);
         diagnostics.push(crate::selftest::CommissionDiagnostic {
-            phase: PhaseId::ElectricalId.to_u8(),
+            phase: CommissionPhase::ElectricalId.to_u8(),
             code,
             status: u8::from(
                 summary.status == crate::commissioning::types::COMMISSION_TIMING_REJECTED,
@@ -1410,7 +1410,7 @@ fn push_timing_diagnostics(
             value2: evidence.max_lateness_us,
         });
         diagnostics.push(crate::selftest::CommissionDiagnostic {
-            phase: PhaseId::ElectricalId.to_u8(),
+            phase: CommissionPhase::ElectricalId.to_u8(),
             code: code + 1,
             status: 0,
             value0: evidence.max_interval_us,
@@ -1425,7 +1425,7 @@ fn push_resistance_current_diagnostic(
     current: crate::resistance_identification::ResistanceCurrentEvidence,
 ) {
     diagnostics.push(crate::selftest::CommissionDiagnostic {
-        phase: PhaseId::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalId.to_u8(),
         code: 40,
         status: u8::from(current.power_stage_tripped()),
         value0: u32::from(current.peak_abs_current_count()),
@@ -2443,7 +2443,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                             .unwrap_or(crate::commissioning::types::InductanceEvidence::EMPTY),
                         timing,
                     };
-                    StepResult::PhaseChanged(PhaseId::CurrentTune)
+                    StepResult::PhaseChanged(CommissionPhase::CurrentTune)
                 }
                 InnerSequence::Calibrate => {
                     // Calibrate never reaches electrical ID.
@@ -2710,7 +2710,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(PhaseId::CurrentTune)
+                StepResult::PhaseChanged(CommissionPhase::CurrentTune)
             ));
             let InnerPhase::CurrentTune {
                 model,
@@ -3106,7 +3106,7 @@ mod tests {
     ) -> crate::selftest::CommissionDiagnostic {
         diagnostics
             .iter()
-            .find(|event| event.phase == PhaseId::ElectricalId.to_u8() && event.code == 33)
+            .find(|event| event.phase == CommissionPhase::ElectricalId.to_u8() && event.code == 33)
             .expect("inductance capture rejection should retain branch detail")
     }
 
@@ -4079,7 +4079,7 @@ mod tests {
                 .iter()
                 .find(|event| event.code == DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY)
                 .expect("frequency rejection should retain realized-frequency evidence");
-            assert_eq!(detail.phase, PhaseId::ElectricalId.to_u8());
+            assert_eq!(detail.phase, CommissionPhase::ElectricalId.to_u8());
             assert_eq!(detail.status, 1);
             assert!(detail.value0 > INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ);
             assert!(detail.value1 < NOMINAL_INDUCTANCE_CAPTURE_US);
@@ -5346,7 +5346,7 @@ mod tests {
     #[test]
     fn model_failure_diagnostic_codes_are_stable() {
         let no_samples = diagnostic_for_model_assembly_failure(ModelAssemblyError::SampleCount);
-        assert_eq!(no_samples.phase, PhaseId::ElectricalId.to_u8());
+        assert_eq!(no_samples.phase, CommissionPhase::ElectricalId.to_u8());
         assert_eq!(no_samples.code, 20);
         assert_eq!(no_samples.status, 1);
 

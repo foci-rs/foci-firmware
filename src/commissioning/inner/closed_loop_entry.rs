@@ -76,7 +76,7 @@ fn push_closed_loop_entry_result(
     drift: u32,
 ) {
     diagnostics.push(CommissionDiagnostic {
-        phase: crate::autotune::PhaseId::ClosedLoopEntry.to_u8(),
+        phase: crate::autotune::CommissionPhase::ClosedLoopEntry.to_u8(),
         code: DIAG_CLOSED_LOOP_ENTRY_RESULT,
         status: entry_status,
         value0: position_1 as u32,
@@ -2032,7 +2032,7 @@ mod tests {
             assert_eq!(events.len(), 1);
             assert_eq!(
                 events[0].phase,
-                crate::autotune::PhaseId::ClosedLoopEntry.to_u8()
+                crate::autotune::CommissionPhase::ClosedLoopEntry.to_u8()
             );
             assert_eq!(events[0].code, DIAG_CLOSED_LOOP_ENTRY_RESULT);
             assert_eq!(events[0].status, CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT);

@@ -4,7 +4,7 @@
 //! engine. They are referenced by board binaries for engine construction
 //! and result dispatch.
 
-use crate::autotune::{CommissionError, CommissionStatus, PhaseId};
+use crate::autotune::{CommissionError, CommissionStatus, CommissionPhase};
 
 /// Compatibility re-export for existing `commissioning::types` backend users.
 pub use crate::commissioning::backend::CommissioningBackend;
@@ -1703,7 +1703,7 @@ pub enum BreakawayCampaignEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterInconclusive {
     /// Phase that could not produce sufficient evidence.
-    pub phase: PhaseId,
+    pub phase: CommissionPhase,
     /// Bit zero is forward sufficiency and bit one is reverse sufficiency.
     pub sufficient_direction_mask: u8,
     /// Phase-local inconclusive cause.
@@ -1723,7 +1723,7 @@ pub enum StepResult {
     /// Engine remains runnable at the strictly future absolute timestamp.
     At(u64),
     /// A phase transition occurred. Report to host.
-    PhaseChanged(PhaseId),
+    PhaseChanged(CommissionPhase),
     /// Streamed Stage-C velocity-integral evidence became available.
     VelocityIntegralEvent(VelocityIntegralEvent),
     /// The report-only Stage-C response sweep reached a terminal result.

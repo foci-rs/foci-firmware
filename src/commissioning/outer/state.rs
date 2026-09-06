@@ -1,6 +1,6 @@
 //! Outer commissioning phase state and phase-local data.
 
-use crate::autotune::{CommissionError, PhaseId};
+use crate::autotune::{CommissionError, CommissionPhase};
 use crate::commissioning::types::{OuterSafetyFault, RestSelectionOwner};
 
 use crate::autotune::velocity_measurement::{
@@ -430,11 +430,11 @@ pub(crate) enum OuterPhase {
 
 impl OuterPhase {
     /// Return the stable phase ID for the active non-terminal outer phase.
-    pub(crate) fn current_phase_id(&self) -> Option<PhaseId> {
+    pub(crate) fn current_phase_id(&self) -> Option<CommissionPhase> {
         match self {
-            Self::VelocityIntegral { .. } => Some(PhaseId::VelocityTune),
-            Self::BreakawayCampaign { .. } => Some(PhaseId::VelocityTune),
-            Self::RobustnessReversal { .. } => Some(PhaseId::VelocityTune),
+            Self::VelocityIntegral { .. } => Some(CommissionPhase::VelocityTune),
+            Self::BreakawayCampaign { .. } => Some(CommissionPhase::VelocityTune),
+            Self::RobustnessReversal { .. } => Some(CommissionPhase::VelocityTune),
             Self::Failed(_) | Self::FailedWithSafety { .. } => None,
         }
     }
@@ -445,7 +445,7 @@ mod tests {
     use core::mem::size_of;
 
     use super::{OuterPhase, VelocityIntegralData, VelocityIntegralState};
-    use crate::autotune::{CommissionError, PhaseId};
+    use crate::autotune::{CommissionError, CommissionPhase};
 
     use crate::commissioning::outer::OuterSafetyLimits;
     use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
@@ -515,7 +515,7 @@ mod tests {
                 ),
             }
             .current_phase_id(),
-            Some(PhaseId::VelocityTune)
+            Some(CommissionPhase::VelocityTune)
         );
         assert_eq!(
             OuterPhase::Failed(CommissionError::Spi).current_phase_id(),

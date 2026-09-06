@@ -5,7 +5,7 @@
 //! commissioning payloads to reply events so boards cannot drift by dropping
 //! fields locally.
 
-use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, PhaseId};
+use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CommissionPhase};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
     AdcCalResult, AdcResidualEvidence, CommissionResult, CurrentValidationAxisEvidence,
@@ -1026,7 +1026,7 @@ fn commission_timing_report(
 }
 
 /// Emit a phase-transition reply with success status.
-pub fn emit_phase_reply<S: CommissionReplySink>(sink: &mut S, oid: u8, phase_id: PhaseId) {
+pub fn emit_phase_reply<S: CommissionReplySink>(sink: &mut S, oid: u8, phase_id: CommissionPhase) {
     sink.foci_commission_phase(oid, phase_id.to_u8(), 0);
 }
 
@@ -1038,7 +1038,7 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
     for priority in [true, false] {
         for event in diagnostics.iter() {
             let is_electrical_timing =
-                event.phase == PhaseId::ElectricalId.to_u8() && matches!(event.code, 34..=41);
+                event.phase == CommissionPhase::ElectricalId.to_u8() && matches!(event.code, 34..=41);
             if is_electrical_timing == priority {
                 sink.foci_commission_detail(oid, event);
             }
@@ -1417,7 +1417,7 @@ mod tests {
         CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_SOURCE_MEASURED,
         CURRENT_GAINS_TIER_MEASURED_SYMMETRIC, CURRENT_GAINS_TIER_NONE, CURRENT_LOOP_FAILURE_NONE,
         CURRENT_LOOP_FAILURE_SATURATION, CURRENT_VALIDATION_AXIS_FLUX,
-        CURRENT_VALIDATION_AXIS_TORQUE, CommissionError, CommissionStatus, PhaseId,
+        CURRENT_VALIDATION_AXIS_TORQUE, CommissionError, CommissionStatus, CommissionPhase,
     };
     use crate::commission_dispatch::ReplyPayload;
     use crate::commissioning::types::{
@@ -2837,7 +2837,7 @@ mod tests {
 
     #[test]
     fn commission_phase_prioritizes_electrical_timing_details() {
-        let electrical_id = PhaseId::ElectricalId.to_u8();
+        let electrical_id = CommissionPhase::ElectricalId.to_u8();
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
@@ -2994,7 +2994,7 @@ mod tests {
                     adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
                 },
                 diagnostics: diagnostics([CommissionDiagnostic {
-                    phase: PhaseId::EncoderCheck.to_u8(),
+                    phase: CommissionPhase::EncoderCheck.to_u8(),
                     code: 2,
                     status: 1,
                     value0: 12,
@@ -3009,7 +3009,7 @@ mod tests {
             std::vec![
                 Event::Detail {
                     oid: 1,
-                    phase: PhaseId::EncoderCheck.to_u8(),
+                    phase: CommissionPhase::EncoderCheck.to_u8(),
                     code: 2,
                     status: 1,
                     value0: 12,
@@ -3329,7 +3329,7 @@ mod tests {
     #[test]
     fn phase_helper_emits_zero_status_phase_reply() {
         let mut sink = RecordingSink::default();
-        emit_phase_reply(&mut sink, 12, PhaseId::ClosedLoopEntry);
+        emit_phase_reply(&mut sink, 12, CommissionPhase::ClosedLoopEntry);
 
         assert_eq!(
             sink.events,

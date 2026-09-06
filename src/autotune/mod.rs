@@ -6,7 +6,7 @@
 //! - [`OperatingMode`]: Load condition selection
 //! - [`CommissionError`]: Error variants for commissioning phase failures
 //! - [`CommissionStatus`]: Overall commissioning outcome
-//! - [`PhaseId`]: Identifies each commissioning phase for progress reporting
+//! - [`CommissionPhase`]: Identifies each commissioning phase for progress reporting
 //!
 //! All types are `no_std` compatible. No heap allocation is used.
 
@@ -91,7 +91,7 @@ pub use types::{
     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
     CLOSED_LOOP_ENTRY_STATUS_NOT_RUN, CLOSED_LOOP_ENTRY_STATUS_PASS,
     CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState, CommissionError, CommissionProfile,
-    CommissionStatus, InnerSequence, OperatingMode, PhaseId, SavedGains, ValidationResult,
+    CommissionStatus, InnerSequence, OperatingMode, CommissionPhase, SavedGains, ValidationResult,
 };
 pub use velocity_units::{TmcMechanicalRpm, VelocityUnitError};
 

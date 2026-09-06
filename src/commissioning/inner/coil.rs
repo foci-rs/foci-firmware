@@ -5,7 +5,7 @@
 //! carries the observations forward into the phase-wiring check.
 
 use super::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
-use crate::autotune::{CommissionError, InnerSequence, PhaseId};
+use crate::autotune::{CommissionError, InnerSequence, CommissionPhase};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
 
@@ -132,7 +132,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
 
                 let sample_failed = obs.expected.unsigned_abs() <= MOTOR_CURRENT_THRESHOLD;
                 diagnostics.push(CommissionDiagnostic {
-                    phase: PhaseId::CoilCheck.to_u8(),
+                    phase: CommissionPhase::CoilCheck.to_u8(),
                     code: if p == 0 {
                         DIAG_COIL_CHECK_A_SAMPLE
                     } else {
@@ -187,7 +187,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                         coil_a: a,
                         coil_b: obs,
                     };
-                    return StepResult::PhaseChanged(PhaseId::PhaseWiringCheck);
+                    return StepResult::PhaseChanged(CommissionPhase::PhaseWiringCheck);
                 }
                 StepResult::At(deadline)
             }
@@ -369,7 +369,7 @@ mod tests {
             ));
             let items: heapless::Vec<_, 4> = diagnostics.iter().collect();
             assert_eq!(items.len(), 1);
-            assert_eq!(items[0].phase, PhaseId::CoilCheck.to_u8());
+            assert_eq!(items[0].phase, CommissionPhase::CoilCheck.to_u8());
             assert_eq!(items[0].status, 1);
             assert_eq!(items[0].value0, 120);
             assert_eq!(items[0].value1, -20i16 as u16 as u32);
