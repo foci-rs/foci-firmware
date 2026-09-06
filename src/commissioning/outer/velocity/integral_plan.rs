@@ -33,173 +33,6 @@ pub const INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US: u32 = 20_000;
 const MICROS_PER_SECOND: u64 = 1_000_000;
 const CONFIDENCE_FAMILY_MAX: u16 = 128;
 
-/// Command-level acquisition shape disclosed before any motion.
-///
-/// Discriminants 0 (`StageB`) and 1 (`StageBThenStageC`) belonged to the
-/// combined Stage-B-then-Stage-C workflow; they are left unassigned rather
-/// than renumbering the variants below them, matching how discriminant 3
-/// (the workflow's own retired combined shape) was already left unassigned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum StageCPlanShape {
-    /// Resume Stage C from retained firmware authority.
-    StageCResume = 2,
-    /// Run the retained fixed-I acceptance matrix from low to high amplitude.
-    AcceptanceMatrixAscending = 4,
-    /// Run the retained fixed-I acceptance matrix from high to low amplitude.
-    AcceptanceMatrixDescending = 5,
-    /// Run the breakaway probe, additive discovery, held-out confirmation, and
-    /// the existing Stage-C integral continuation as one bounded command.
-    BreakawaySeededPThenI = 6,
-    /// Run the reversal-standstill robustness gate over the accepted point.
-    /// Distinct from every acquisition shape so the host arms the extended
-    /// run timeout for the multi-cycle probe instead of the 5 s plan window.
-    RobustnessReversal = 7,
-}
-
-/// Conservative command-level plan used only for disclosure and host timeout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct CommissioningWorkflowPlan {
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Motion shape selected from retained firmware state.
-    pub shape: StageCPlanShape,
-    /// Expected duration under the selected fixed schedule.
-    pub nominal_workflow_ms: u32,
-    /// Conservative host-timeout authority.
-    pub maximum_workflow_ms: u32,
-}
-
-impl CommissioningWorkflowPlan {
-    /// Construct one checked command-level workflow envelope.
-    pub fn new(
-        run_sequence: u32,
-        shape: StageCPlanShape,
-        stage_b_ms: u32,
-        stage_c_ms: u32,
-    ) -> Result<Self, VelocityIntegralPlanError> {
-        let valid = match shape {
-            StageCPlanShape::StageCResume => stage_b_ms == 0 && stage_c_ms != 0,
-            StageCPlanShape::AcceptanceMatrixAscending
-            | StageCPlanShape::AcceptanceMatrixDescending
-            | StageCPlanShape::BreakawaySeededPThenI
-            | StageCPlanShape::RobustnessReversal => false,
-        };
-        if !valid {
-            return Err(VelocityIntegralPlanError::InvalidRequest);
-        }
-        let maximum_workflow_ms = stage_b_ms
-            .checked_add(stage_c_ms)
-            .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-        Ok(Self {
-            run_sequence,
-            shape,
-            nominal_workflow_ms: maximum_workflow_ms,
-            maximum_workflow_ms,
-        })
-    }
-
-    /// Construct one checked fixed-I acceptance-matrix workflow envelope.
-    pub fn new_acceptance_matrix(
-        run_sequence: u32,
-        order: super::acceptance_plan::AcceptanceMatrixOrder,
-        nominal_workflow_ms: u32,
-        maximum_workflow_ms: u32,
-    ) -> Result<Self, VelocityIntegralPlanError> {
-        if nominal_workflow_ms == 0
-            || maximum_workflow_ms == 0
-            || nominal_workflow_ms > maximum_workflow_ms
-        {
-            return Err(VelocityIntegralPlanError::InvalidRequest);
-        }
-        let shape = match order {
-            super::acceptance_plan::AcceptanceMatrixOrder::Ascending => {
-                StageCPlanShape::AcceptanceMatrixAscending
-            }
-            super::acceptance_plan::AcceptanceMatrixOrder::Descending => {
-                StageCPlanShape::AcceptanceMatrixDescending
-            }
-        };
-        Ok(Self {
-            run_sequence,
-            shape,
-            nominal_workflow_ms,
-            maximum_workflow_ms,
-        })
-    }
-
-    /// Construct one checked breakaway-campaign workflow envelope.
-    ///
-    /// Reserved before the probe's first stroke. `nominal_workflow_ms` and
-    /// `maximum_workflow_ms` must already be the worst-case sums produced by
-    /// [`breakaway_workflow_envelope_ms`]; every later probe, discovery,
-    /// confirmation, and Stage-C continuation plan must report an exact
-    /// duration that fits inside `maximum_workflow_ms`. A phase plan that
-    /// would exceed it is rejected before that phase's first stroke -- see
-    /// [`super::breakaway_plan::AdditiveLadderPlanError::WorkflowEnvelopeExceeded`]
-    /// for the discovery-phase example of that check.
-    pub fn new_breakaway(
-        run_sequence: u32,
-        nominal_workflow_ms: u32,
-        maximum_workflow_ms: u32,
-    ) -> Result<Self, VelocityIntegralPlanError> {
-        if nominal_workflow_ms == 0
-            || maximum_workflow_ms == 0
-            || nominal_workflow_ms > maximum_workflow_ms
-        {
-            return Err(VelocityIntegralPlanError::InvalidRequest);
-        }
-        Ok(Self {
-            run_sequence,
-            shape: StageCPlanShape::BreakawaySeededPThenI,
-            nominal_workflow_ms,
-            maximum_workflow_ms,
-        })
-    }
-
-    /// Construct one checked robustness-reversal workflow envelope.
-    ///
-    /// Reserved before the robustness probe's first motion so the host arms
-    /// its extended run timeout: the K-cycle run runs far longer than the
-    /// host's 5 s initial plan window. `maximum_workflow_ms` is
-    /// `robustness_worst_case_duration_ms`, `nominal_workflow_ms` a clean-run
-    /// estimate.
-    pub fn new_robustness(
-        run_sequence: u32,
-        nominal_workflow_ms: u32,
-        maximum_workflow_ms: u32,
-    ) -> Result<Self, VelocityIntegralPlanError> {
-        if nominal_workflow_ms == 0
-            || maximum_workflow_ms == 0
-            || nominal_workflow_ms > maximum_workflow_ms
-        {
-            return Err(VelocityIntegralPlanError::InvalidRequest);
-        }
-        Ok(Self {
-            run_sequence,
-            shape: StageCPlanShape::RobustnessReversal,
-            nominal_workflow_ms,
-            maximum_workflow_ms,
-        })
-    }
-
-    /// Hash the command-level envelope independently of either stage plan.
-    pub fn digest(self) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in self.run_sequence.to_le_bytes() {
-            hash = fnv1a64_byte(hash, byte);
-        }
-        hash = fnv1a64_byte(hash, self.shape as u8);
-        for byte in self.nominal_workflow_ms.to_le_bytes() {
-            hash = fnv1a64_byte(hash, byte);
-        }
-        for byte in self.maximum_workflow_ms.to_le_bytes() {
-            hash = fnv1a64_byte(hash, byte);
-        }
-        hash
-    }
-}
-
 /// Reproduced Stage-B evidence that authorizes one fixed-P Stage-C plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageCAuthority {
@@ -1240,7 +1073,8 @@ pub fn breakaway_workflow_envelope_us(
 /// Every microsecond term in [`breakaway_workflow_envelope_us`] is summed
 /// first; this is the single point where the sum is rounded, via
 /// `div_ceil(1_000)`, matching every other workflow-duration reservation in
-/// this module. The result feeds [`CommissioningWorkflowPlan::new_breakaway`]
+/// this module. The result feeds
+/// [`super::workflow_plan::CommissioningWorkflowPlan::new_breakaway`]
 /// directly.
 pub fn breakaway_workflow_envelope_ms(
     recovery_slot_count: u32,
@@ -1754,6 +1588,6 @@ pub(super) fn largest_i_for_tau(
     }
 }
 
-const fn fnv1a64_byte(hash: u64, byte: u8) -> u64 {
+pub(super) const fn fnv1a64_byte(hash: u64, byte: u8) -> u64 {
     (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3)
 }

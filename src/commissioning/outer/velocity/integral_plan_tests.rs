@@ -11,10 +11,10 @@ use super::breakaway_plan::{
 use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, BreakawayAuthorityBindingError,
-    CommissioningWorkflowPlan, ConfirmedAcquisitionDigest, IntegralSlotOrder,
-    STAGE_C_EVIDENCE_SCHEMA_REVISION, STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I,
-    STAGE_C_OBSERVATIONS_PER_RUNG, StageCAuthority, StageCPlanShape, VelocityIntegralPlan,
-    VelocityIntegralPlanError, bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
+    ConfirmedAcquisitionDigest, IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION,
+    STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG,
+    StageCAuthority, VelocityIntegralPlan, VelocityIntegralPlanError,
+    bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms,
@@ -31,6 +31,7 @@ use super::sweep_plan::{
     RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US, VelocitySweepRequest, ZERO_SETTLE_US,
     plan_velocity_sweep,
 };
+use super::workflow_plan::{CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind};
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
@@ -396,18 +397,18 @@ fn execution_plan_copies_i_top_cap() {
     assert_eq!(breakaway.i_top_cap, 1_310);
 }
 
-/// `CommissioningWorkflowPlan::new` admits exactly `StageCResume`
+/// `CommissioningWorkflowPlan::new` admits exactly `Resume`
 /// (`stage_b_ms == 0 && stage_c_ms != 0`); every other shape it can name is
 /// rejected -- the acceptance-matrix and breakaway shapes have their own
 /// dedicated constructors instead (see
-/// `breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes`).
+/// `workflow_kind_discriminants_are_a_clean_zero_through_four_sequence`).
 #[test]
 fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
     let stage_c = build_test_breakaway_plan();
 
     let resume = CommissioningWorkflowPlan::new(
         9,
-        StageCPlanShape::StageCResume,
+        VelocityAutotuneWorkflowKind::Resume,
         0,
         stage_c.maximum_workflow_ms,
     )
@@ -417,21 +418,21 @@ fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
     assert_eq!(
         CommissioningWorkflowPlan::new(
             9,
-            StageCPlanShape::StageCResume,
+            VelocityAutotuneWorkflowKind::Resume,
             1,
             stage_c.maximum_workflow_ms,
         ),
         Err(VelocityIntegralPlanError::InvalidRequest),
-        "StageCResume names no Stage-B duration"
+        "Resume names no Stage-B duration"
     );
     assert_eq!(
-        CommissioningWorkflowPlan::new(9, StageCPlanShape::StageCResume, 0, 0),
+        CommissioningWorkflowPlan::new(9, VelocityAutotuneWorkflowKind::Resume, 0, 0),
         Err(VelocityIntegralPlanError::InvalidRequest),
-        "StageCResume must name a Stage-C duration"
+        "Resume must name a Stage-C duration"
     );
     let different_sequence = CommissioningWorkflowPlan::new(
         10,
-        StageCPlanShape::StageCResume,
+        VelocityAutotuneWorkflowKind::Resume,
         0,
         stage_c.maximum_workflow_ms,
     )
@@ -561,20 +562,38 @@ fn forward_first_preserves_the_historical_parity_mapping() {
     }
 }
 
-// --- StageCPlanShape::BreakawaySeededPThenI ---------------------------------
+// --- VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral --
 
 #[test]
-fn breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes() {
-    assert_eq!(StageCPlanShape::StageCResume as u8, 2);
-    assert_eq!(StageCPlanShape::AcceptanceMatrixAscending as u8, 4);
-    assert_eq!(StageCPlanShape::AcceptanceMatrixDescending as u8, 5);
-    assert_eq!(StageCPlanShape::BreakawaySeededPThenI as u8, 6);
+fn workflow_kind_discriminants_are_a_clean_zero_through_four_sequence() {
+    assert_eq!(VelocityAutotuneWorkflowKind::Resume as u8, 0);
+    assert_eq!(
+        VelocityAutotuneWorkflowKind::AcceptanceMatrixAscending as u8,
+        1
+    );
+    assert_eq!(
+        VelocityAutotuneWorkflowKind::AcceptanceMatrixDescending as u8,
+        2
+    );
+    assert_eq!(
+        VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral as u8,
+        3
+    );
+    assert_eq!(
+        VelocityAutotuneWorkflowKind::ReversalStandstillRobustnessGate as u8,
+        4
+    );
 
     // The breakaway shape has its own dedicated constructor, matching the
     // existing precedent set by the acceptance-matrix shapes: it is not
     // constructible through the generic two-duration `new`.
     assert_eq!(
-        CommissioningWorkflowPlan::new(1, StageCPlanShape::BreakawaySeededPThenI, 1, 1),
+        CommissioningWorkflowPlan::new(
+            1,
+            VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral,
+            1,
+            1
+        ),
         Err(VelocityIntegralPlanError::InvalidRequest)
     );
 }
@@ -582,7 +601,10 @@ fn breakaway_seeded_p_then_i_appends_without_renumbering_the_existing_shapes() {
 #[test]
 fn new_breakaway_reserves_the_command_level_envelope_before_probe_motion() {
     let envelope = CommissioningWorkflowPlan::new_breakaway(1, 400_000, 450_000).unwrap();
-    assert_eq!(envelope.shape, StageCPlanShape::BreakawaySeededPThenI);
+    assert_eq!(
+        envelope.shape,
+        VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
+    );
     assert_eq!(envelope.run_sequence, 1);
     assert_eq!(envelope.nominal_workflow_ms, 400_000);
     assert_eq!(envelope.maximum_workflow_ms, 450_000);

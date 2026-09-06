@@ -55,7 +55,7 @@ pub const PROBE_MAX_OBSERVATIONS: u8 = 128;
 /// `AcquisitionContext`-shaped values the Stage-C tail consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbeContext {
-    /// Digest of the command-level [`super::integral_plan::CommissioningWorkflowPlan`]
+    /// Digest of the command-level [`super::workflow_plan::CommissioningWorkflowPlan`]
     /// envelope this campaign reserved before probe motion.
     pub workflow_digest: u64,
     /// Frozen signed-target magnitude in mechanical RPM register units.

@@ -281,7 +281,7 @@ pub enum ReplyPayload {
     /// Command-level motion shape and conservative host-timeout authority.
     CommissioningWorkflowPlan {
         oid: u8,
-        plan: crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan,
+        plan: crate::commissioning::outer::velocity::workflow_plan::CommissioningWorkflowPlan,
     },
     /// FociCommissionPhase: phase change reply (foci_commission failures
     /// during inner phases).

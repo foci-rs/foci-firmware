@@ -111,8 +111,8 @@ use super::current_guard::{
     read_velocity_pid_input_abs, read_velocity_pid_output_abs,
 };
 use super::integral_plan::{
-    AcquisitionContext, CommissioningWorkflowPlan, VelocityIntegralPlan,
-    bind_breakaway_stage_c_authority, breakaway_workflow_envelope_ms, max_transition_capable_p,
+    AcquisitionContext, VelocityIntegralPlan, bind_breakaway_stage_c_authority,
+    breakaway_workflow_envelope_ms, max_transition_capable_p,
     plan_breakaway_velocity_integral_response,
 };
 use super::recovery::{
@@ -139,6 +139,7 @@ use super::sweep_plan::{
     VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
     plan_stage_b_velocity_sweep,
 };
+use super::workflow_plan::CommissioningWorkflowPlan;
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
 /// Outer velocity ramp mode written to `MODE_RAMP_MODE_MOTION`. Shared by the

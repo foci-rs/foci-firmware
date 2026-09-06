@@ -14,9 +14,8 @@ use crate::commissioning::outer::velocity::band_confirmation::{
 use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
-    AcquisitionContext, CommissioningWorkflowPlan, ConfirmedAcquisitionDigest, StageCPlanShape,
-    VelocityIntegralPlan, bind_breakaway_stage_c_authority,
-    plan_breakaway_velocity_integral_response,
+    AcquisitionContext, ConfirmedAcquisitionDigest, VelocityIntegralPlan,
+    bind_breakaway_stage_c_authority, plan_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot, StageCPlanIdentity,
@@ -28,6 +27,9 @@ use crate::commissioning::outer::velocity::sweep_consensus::{
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::velocity::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, current_gain_span, plan_stage_b_velocity_sweep,
+};
+use crate::commissioning::outer::velocity::workflow_plan::{
+    CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind,
 };
 use crate::commissioning::types::{
     AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
@@ -433,10 +435,13 @@ fn action_codes_and_invalid_values_are_exact() {
         66_456,
     )
     .unwrap();
-    assert_eq!(ascending.shape, StageCPlanShape::AcceptanceMatrixAscending);
+    assert_eq!(
+        ascending.shape,
+        VelocityAutotuneWorkflowKind::AcceptanceMatrixAscending
+    );
     assert_eq!(
         descending.shape,
-        StageCPlanShape::AcceptanceMatrixDescending
+        VelocityAutotuneWorkflowKind::AcceptanceMatrixDescending
     );
 }
 

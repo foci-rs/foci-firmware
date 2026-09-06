@@ -59,6 +59,7 @@ mod sweep_consensus_tests;
 pub mod sweep_evidence;
 pub mod sweep_plan;
 pub(crate) mod sweep_reporting;
+pub mod workflow_plan;
 
 /// Wire value declaring best-effort polling for velocity-limit evidence.
 pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT: u32 =

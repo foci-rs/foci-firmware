@@ -318,7 +318,7 @@ pub trait CommissionReplySink {
 pub fn emit_commissioning_workflow_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
-    plan: crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan,
+    plan: crate::commissioning::outer::velocity::workflow_plan::CommissioningWorkflowPlan,
 ) {
     let digest = plan.digest();
     sink.foci_commissioning_workflow_plan(crate::ankyra::replies::FociCommissioningWorkflowPlan {

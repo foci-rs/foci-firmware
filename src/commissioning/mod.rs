@@ -2560,8 +2560,8 @@ mod tests {
     #[fixture_test]
     fn breakaway_command_enters_the_campaign_and_reports_its_torque_limit() {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
-        use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
         use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
+        use crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind;
 
         let params = sample_outer_params();
         let request = VelocitySweepRequest {
@@ -2579,7 +2579,10 @@ mod tests {
                 .expect("a valid host request must admit a breakaway campaign");
 
         // The command discloses the breakaway shape and a well-ordered envelope.
-        assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
+        assert_eq!(
+            workflow.shape,
+            VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
+        );
         assert_eq!(workflow.run_sequence, 42);
         assert!(workflow.nominal_workflow_ms > 0);
         assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);

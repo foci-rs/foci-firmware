@@ -96,7 +96,7 @@ fn build_stage_c_resume_workflow_plan(
     run_sequence: u32,
     reproduce_ms: u32,
     recovery_maximum_slot_us: u32,
-) -> crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan {
+) -> crate::commissioning::outer::velocity::workflow_plan::CommissioningWorkflowPlan {
     let maximum_workflow_ms = reproduce_ms
         .checked_add(
             crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
@@ -104,9 +104,9 @@ fn build_stage_c_resume_workflow_plan(
             ),
         )
         .expect("resume reproduce budget plus robustness worst case fits u32");
-    crate::commissioning::outer::velocity::integral_plan::CommissioningWorkflowPlan::new(
+    crate::commissioning::outer::velocity::workflow_plan::CommissioningWorkflowPlan::new(
         run_sequence,
-        crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageCResume,
+        crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::Resume,
         0,
         maximum_workflow_ms,
     )
@@ -875,7 +875,7 @@ where
                             return TmcControlRequestOutcome::skip_tick_tail();
                         }
                     };
-                    let workflow = crate::commissioning::outer::velocity::integral_plan::
+                    let workflow = crate::commissioning::outer::velocity::workflow_plan::
                         CommissioningWorkflowPlan::new_acceptance_matrix(
                             run_sequence,
                             preflight.plan.order,
@@ -1026,7 +1026,7 @@ where
                     // so the host arms its extended run timeout: the K-cycle
                     // probe runs far longer than the host's 5 s initial plan
                     // window, which caps the run when no workflow plan arrives.
-                    let workflow = crate::commissioning::outer::velocity::integral_plan::
+                    let workflow = crate::commissioning::outer::velocity::workflow_plan::
                         CommissioningWorkflowPlan::new_robustness(
                             run_sequence,
                             crate::commission_dispatch::robustness::robustness_nominal_duration_ms(),
@@ -2511,7 +2511,7 @@ mod tests {
 
     #[fixture_test]
     async fn production_tune_routes_breakaway_seeded_to_campaign() {
-        use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
+        use crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind;
 
         let mut board = RecordingBoard::skip_tick_tail();
         let tmc_state = tmc_channel0();
@@ -2538,7 +2538,10 @@ mod tests {
         else {
             panic!("breakaway admission must emit exactly the workflow envelope")
         };
-        assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
+        assert_eq!(
+            workflow.shape,
+            VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
+        );
         assert!(runtime.is_commission_active());
     }
 
@@ -2592,7 +2595,7 @@ mod tests {
 
     #[fixture_test]
     async fn breakaway_breadcrumb_begins_when_workflow_is_installed() {
-        use crate::commissioning::outer::velocity::integral_plan::StageCPlanShape;
+        use crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind;
 
         crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2623,7 +2626,10 @@ mod tests {
         else {
             panic!("breakaway workflow envelope must be the only admission reply")
         };
-        assert_eq!(workflow.shape, StageCPlanShape::BreakawaySeededPThenI);
+        assert_eq!(
+            workflow.shape,
+            VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
+        );
         assert!(workflow.nominal_workflow_ms > 0);
         assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
         assert!(runtime.is_commission_active());
@@ -2759,7 +2765,7 @@ mod tests {
         };
         assert_eq!(
             workflow.shape,
-            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::
+            crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::
                 AcceptanceMatrixAscending
         );
         assert_eq!(workflow.maximum_workflow_ms, 66_456);
@@ -2817,7 +2823,8 @@ mod tests {
         };
         assert_eq!(
             workflow.shape,
-            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::RobustnessReversal
+            crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::
+                ReversalStandstillRobustnessGate
         );
         assert_eq!(
             workflow.maximum_workflow_ms,
@@ -2923,7 +2930,7 @@ mod tests {
         };
         assert_eq!(
             workflow.shape,
-            crate::commissioning::outer::velocity::integral_plan::StageCPlanShape::StageCResume
+            crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::Resume
         );
         // The envelope bounds reproduce plus the inline robustness continuation,
         // not just the reproduce budget: the host arms one wait across the whole
