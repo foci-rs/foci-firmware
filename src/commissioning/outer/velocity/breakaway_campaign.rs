@@ -4365,12 +4365,15 @@ pub(crate) fn breakaway_campaign_fault_terminal(
             let sequence = next_sequence(&mut campaign.evidence_sequence);
             Some(super::breakaway_reporting::discovery_terminal_fields(
                 &session.plan,
-                terminal_cause,
-                u8::from(raised_safety),
-                session.in_band.count(),
+                super::breakaway_reporting::DiscoveryTerminalEvidence {
+                    cause: terminal_cause,
+                    has_safety_fault: u8::from(raised_safety),
+                    collected_count: session.in_band.count(),
+                    stop_rung_index: session.rung_index,
+                    error_code: error.status_code(),
+                },
                 campaign.inputs.run_sequence,
                 sequence,
-                error.status_code(),
             ))
         }
         // Probe and confirmation have no collected-rung evidence to preserve,
@@ -4758,6 +4761,7 @@ fn discovery_done_advance(
         &session.plan,
         &outcome,
         session.in_band.count(),
+        session.rung_index,
         inputs.run_sequence,
         sequence,
     );

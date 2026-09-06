@@ -669,6 +669,16 @@ pub(crate) fn rung_zero_diagnostic_report(
     }
 }
 
+/// Already-classified discovery-terminal evidence, gathered by the caller
+/// before [`discovery_terminal_fields`] shapes it into the wire record.
+pub(crate) struct DiscoveryTerminalEvidence {
+    pub(crate) cause: BreakawayTerminalCause,
+    pub(crate) has_safety_fault: u8,
+    pub(crate) collected_count: u8,
+    pub(crate) stop_rung_index: u8,
+    pub(crate) error_code: u8,
+}
+
 /// Assemble a discovery terminal record from its already-classified fields.
 ///
 /// Split out from [`discovery_terminal_report`] so the record-shaping logic
@@ -677,12 +687,9 @@ pub(crate) fn rung_zero_diagnostic_report(
 /// to [`super::breakaway_campaign`]).
 pub(crate) fn discovery_terminal_fields(
     plan: &AdditiveDiscoveryPlan,
-    cause: BreakawayTerminalCause,
-    has_safety_fault: u8,
-    collected_count: u8,
+    evidence: DiscoveryTerminalEvidence,
     run_sequence: u32,
     evidence_sequence: u16,
-    error_code: u8,
 ) -> AdditiveDiscoveryTerminal {
     AdditiveDiscoveryTerminal {
         run_sequence,
@@ -690,10 +697,11 @@ pub(crate) fn discovery_terminal_fields(
         plan_digest: plan.plan_digest,
         prior_plan_digest: plan.probe_plan_digest,
         family_size: plan.confidence_family_size,
-        terminal_cause: cause as u8,
-        collected_count,
-        has_safety_fault,
-        error_code,
+        terminal_cause: evidence.cause as u8,
+        collected_count: evidence.collected_count,
+        has_safety_fault: evidence.has_safety_fault,
+        stop_rung_index: evidence.stop_rung_index,
+        error_code: evidence.error_code,
     }
 }
 
@@ -706,6 +714,7 @@ pub(crate) fn discovery_terminal_report(
     plan: &AdditiveDiscoveryPlan,
     outcome: &AdditiveDiscoveryOutcome,
     session_collected_count: u8,
+    session_rung_index: u8,
     run_sequence: u32,
     evidence_sequence: u16,
 ) -> AdditiveDiscoveryTerminal {
@@ -739,14 +748,28 @@ pub(crate) fn discovery_terminal_report(
         AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
         | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => 0,
     };
+    // Same split as `collected_count` above: a plan-time refusal never started
+    // a walk, so it has no stop rung to report.
+    let stop_rung_index = match outcome {
+        AdditiveDiscoveryOutcome::TargetBandSelected(_)
+        | AdditiveDiscoveryOutcome::TargetBandSkipped
+        | AdditiveDiscoveryOutcome::CurrentHeadroomBeforeBand
+        | AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded { .. }
+        | AdditiveDiscoveryOutcome::SafetyFault { .. } => session_rung_index,
+        AdditiveDiscoveryOutcome::InsufficientAdditiveSpan
+        | AdditiveDiscoveryOutcome::AdditiveLadderResolutionBudgetExceeded => 0,
+    };
     discovery_terminal_fields(
         plan,
-        cause,
-        has_safety_fault,
-        collected_count,
+        DiscoveryTerminalEvidence {
+            cause,
+            has_safety_fault,
+            collected_count,
+            stop_rung_index,
+            error_code,
+        },
         run_sequence,
         evidence_sequence,
-        error_code,
     )
 }
 

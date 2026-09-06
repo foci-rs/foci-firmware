@@ -1360,6 +1360,9 @@ pub struct AdditiveDiscoveryTerminal {
     pub collected_count: u8,
     /// Nonzero when the terminal carries retained safety-fault evidence.
     pub has_safety_fault: u8,
+    /// Rung index the discovery walk had reached when it stopped, whether by
+    /// nominating, exhausting the ladder, or a discovery-owned fault.
+    pub stop_rung_index: u8,
     /// `CommissionError::status_code()` for a faulted terminal, or `0` when the
     /// terminal carries no error.
     ///

@@ -1716,8 +1716,9 @@ mod breakaway_reply_wire_tests {
             terminal_cause: 9,
             collected_count: 10,
             has_safety_fault: 11,
+            stop_rung_index: 12,
         };
-        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         assert_fits_with_id(
             &FociBreakawayDiscoveryTerminal {
                 oid: u8::MAX,
@@ -1731,6 +1732,7 @@ mod breakaway_reply_wire_tests {
                 terminal_cause: u8::MAX,
                 collected_count: u8::MAX,
                 has_safety_fault: u8::MAX,
+                stop_rung_index: u8::MAX,
             },
             "foci_breakaway_discovery_terminal",
         );
@@ -2498,6 +2500,9 @@ pub struct FociBreakawayDiscoveryTerminal {
     pub collected_count: u8,
     /// Nonzero when the terminal carries retained safety-fault evidence.
     pub has_safety_fault: u8,
+    /// Rung index the discovery walk had reached when it stopped, whether by
+    /// nominating, exhausting the ladder, or a discovery-owned fault.
+    pub stop_rung_index: u8,
 }
 
 /// Immutable held-out confirmation plan evidence emitted before the first

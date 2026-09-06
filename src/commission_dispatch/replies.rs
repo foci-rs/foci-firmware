@@ -187,7 +187,7 @@ macro_rules! __commission_reply_manifest {
                 name: foci_breakaway_discovery_terminal,
                 doc: "Emit a discovery-campaign terminal.",
                 reply: foci_firmware::ankyra::replies::FociBreakawayDiscoveryTerminal,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16, terminal_cause: u8, collected_count: u8, has_safety_fault: u8 },
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16, terminal_cause: u8, collected_count: u8, has_safety_fault: u8, stop_rung_index: u8 },
             }
             entry {
                 name: foci_breakaway_confirmation_plan,
@@ -464,6 +464,7 @@ pub fn emit_breakaway_discovery_terminal<S: CommissionReplySink>(
             terminal_cause: report.terminal_cause,
             collected_count: report.collected_count,
             has_safety_fault: report.has_safety_fault,
+            stop_rung_index: report.stop_rung_index,
         },
     );
 }

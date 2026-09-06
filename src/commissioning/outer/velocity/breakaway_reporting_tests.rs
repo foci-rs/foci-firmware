@@ -563,15 +563,18 @@ fn discovery_terminal_report_matches_the_field_level_assembly() {
     let (_, plan) = discovery_fixture();
 
     let outcome = AdditiveDiscoveryOutcome::InsufficientAdditiveSpan;
-    let via_outcome = discovery_terminal_report(&plan, &outcome, 0, 6, 2);
+    let via_outcome = discovery_terminal_report(&plan, &outcome, 0, 0, 6, 2);
     let via_fields = discovery_terminal_fields(
         &plan,
-        BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
-        0,
-        0,
+        DiscoveryTerminalEvidence {
+            cause: BreakawayTerminalCause::DiscoveryInsufficientAdditiveSpan,
+            has_safety_fault: 0,
+            collected_count: 0,
+            stop_rung_index: 0,
+            error_code: 0,
+        },
         6,
         2,
-        0,
     );
 
     assert_eq!(via_outcome, via_fields);
@@ -590,9 +593,10 @@ fn discovery_safety_fault_terminal_reports_the_rungs_already_collected() {
         safety: Some(zero_safety_fault()),
     };
 
-    let report = discovery_terminal_report(&plan, &outcome, 3, 6, 2);
+    let report = discovery_terminal_report(&plan, &outcome, 3, 5, 6, 2);
 
     assert_eq!(report.collected_count, 3);
+    assert_eq!(report.stop_rung_index, 5);
     assert_eq!(report.has_safety_fault, 1);
     assert_eq!(
         report.terminal_cause,
