@@ -562,8 +562,6 @@ fn forward_first_preserves_the_historical_parity_mapping() {
     }
 }
 
-// --- VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral --
-
 #[test]
 fn workflow_kind_discriminants_are_a_clean_zero_through_four_sequence() {
     assert_eq!(VelocityAutotuneWorkflowKind::Resume as u8, 0);

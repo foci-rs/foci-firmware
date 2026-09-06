@@ -44,8 +44,6 @@ fn is_terminal(result: &StepResult) -> bool {
     )
 }
 
-/// Drive one engine to its terminal result, collecting the phase transitions
-/// it reported on the way.
 async fn drive_to_completion(
     engine: &mut CommissioningEngine,
     backend: &mut MockBackend,
@@ -150,7 +148,6 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
     .expect("a valid retained breakaway Stage-C plan")
 }
 
-/// A direct Stage-C resume engine: the standalone response-ladder workflow.
 fn response_ladder_engine_with_params(params: OuterTuneParams) -> CommissioningEngine {
     use crate::commission_dispatch::stage_c::StageCPreflight;
     use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
@@ -178,7 +175,6 @@ fn response_ladder_engine() -> CommissioningEngine {
     response_ladder_engine_with_params(plan_matched_outer_params())
 }
 
-/// A direct fixed-gain acceptance-matrix engine.
 fn acceptance_matrix_engine() -> CommissioningEngine {
     use crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight;
     use crate::commissioning::outer::velocity::acceptance_plan::{

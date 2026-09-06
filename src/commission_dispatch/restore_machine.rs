@@ -521,7 +521,6 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- commission -------------------------------------
                 RestoreCursor::CommissionClassify => {
                     let TerminalPayload::CommissionDone(commission_result) =
                         self.terminal.payload.clone()
@@ -660,7 +659,6 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- outer done (installed tuning) -------------------------------------
                 RestoreCursor::OuterDoneRestorePosition => {
                     let TerminalPayload::OuterDone(outer) = self.terminal.payload.clone() else {
                         unreachable!("outer-done cursor without an outer-done payload")
@@ -1163,7 +1161,6 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                // --- velocity-integral -------------------------------
                 RestoreCursor::VelocityStagedPrologue => {
                     let retention = retention
                         .take()
