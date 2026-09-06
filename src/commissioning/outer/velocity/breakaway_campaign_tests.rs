@@ -4498,3 +4498,212 @@ fn probe_start_tolerates_inherited_demoted_status() {
         "probe must reach the target write after a clean entry"
     );
 }
+
+// --- The Stage-C hand-off as the scheduled tick sees it -----------------------
+
+use crate::autotune::CommissionPhase;
+
+/// One adapted engine event, reduced to what the hand-off ordering turns on.
+///
+/// The plan itself is kept out: `VelocityIntegralPlan` carries a full
+/// `VelocityIntegralPlan`, and the sibling test above already pins its contents
+/// against an independently built expectation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandOffEvent {
+    Phase(CommissionPhase),
+    StageCPlan { oid: u8, run_sequence: u32 },
+    CampaignEvidence,
+    IntegralEvidence,
+}
+
+/// Drive a confirmation-staged campaign to acceptance through the real
+/// [`CommissioningEngine`], returning every adapted event the scheduled tick
+/// would hand the host.
+///
+/// Only the campaign's *progress* is seeded: starting at a planned confirmation
+/// block skips the probe and discovery ladders, which are upstream of the
+/// hand-off and would need tens of thousands of ticks of scripted physics.
+/// The probe's `SetupSafety` state is what normally freezes the torque cap and
+/// arms the safety observation, so those three writes are reproduced here.
+/// Everything from that point on is the production path: the engine's own
+/// `step`, its unreported-phase selector, `step_breakaway_campaign_with_trace`,
+/// `route_confirmed_accept`, and `adapt_step_result`.
+async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
+    use crate::commissioning::OuterTuneParams;
+    use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, adapt_step_result};
+    use crate::commissioning::types::EngineKind;
+    use crate::commissioning::{CommissioningEngine, EngineMode};
+
+    const OID: u8 = 3;
+    const CANDIDATE: u16 = 512;
+
+    let (_p_start, _p_top, usable, _ceiling_binding_source) =
+        current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
+    let BandConfirmationEntry::Ready(session) = begin_band_confirmation(
+        AdditiveDiscoveryOutcome::TargetBandSelected(confirmable_discovery_rungs(CANDIDATE)),
+        42,
+        TmcMechanicalRpm::from_register(100),
+        4_394,
+        u16::MAX,
+    ) else {
+        panic!("the crafted discovery rungs must nominate a confirmable candidate");
+    };
+    let inputs = stage_c_inputs(usable);
+    let frozen_torque_cap = inputs.hard_torque_limit;
+    let budget = test_budget();
+    let mut engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+        OID,
+        crate::state::tmc::tmc_channel0(),
+        OuterTuneParams {
+            requested_velocity_mrev_s: budget.requested_velocity_mrev_s,
+            machine_velocity_ceiling_mrev_s: budget.machine_velocity_ceiling_mrev_s,
+            requested_velocity_source: budget.requested_velocity_source,
+            max_stroke_travel_mrev: budget.max_stroke_travel_mrev,
+            settle_travel_reserve_mrev: budget.settle_travel_reserve_mrev,
+            negative_position_headroom_mrev: budget.negative_position_headroom_mrev,
+            positive_position_headroom_mrev: budget.positive_position_headroom_mrev,
+            max_duration_ms: budget.max_duration_ms,
+            ..crate::commission_dispatch::test_support::sample_outer_params()
+        },
+        crate::commission_dispatch::test_support::sample_entry_snapshot(),
+        BreakawayCampaign {
+            inputs,
+            phase: BreakawayCampaignPhase::Confirmation {
+                state: BandConfirmationState::PlannedConfirmation,
+                session,
+            },
+            evidence_sequence: 0,
+            pending_event: None,
+            pending_done: None,
+            pending_phase_terminal: None,
+        },
+    )
+    .expect("valid breakaway safety configuration");
+
+    let EngineMode::Outer {
+        phase: OuterPhase::BreakawayCampaign { safety, .. },
+        ..
+    } = &mut engine.engine_mode
+    else {
+        panic!("the constructor must install the campaign as the outer phase");
+    };
+    safety.set_encoder_baseline(0).expect("baseline configured");
+    safety.torque_cap = frozen_torque_cap;
+    safety
+        .arm_safety_observation(0)
+        .expect("safety observation armed");
+
+    let mut backend = test_backend();
+    let mut events = std::vec::Vec::new();
+    let mut encoder_count: i32 = 0;
+    let mut stroke_numerator = 0_i32;
+    let mut stroke_sign = 1_i32;
+
+    for _ in 0..2_000_000 {
+        let EngineMode::Outer { phase, .. } = &engine.engine_mode else {
+            panic!("the engine must stay in outer mode");
+        };
+        let mut is_capture_phase = false;
+        if let OuterPhase::BreakawayCampaign { campaign, .. } = phase
+            && let BreakawayCampaignPhase::Confirmation { state, session } = campaign.phase()
+        {
+            if matches!(state, BandConfirmationState::CommandTarget) {
+                stroke_numerator = 5; // 75%: inside the confirmable band both ways.
+                stroke_sign = direction_sign(session.current_direction());
+            }
+            is_capture_phase = matches!(state, BandConfirmationState::Capture { .. });
+        }
+
+        let poll = adapt_step_result(
+            engine.step(&mut backend).await,
+            0,
+            Some((OID, EngineKind::OuterTune)),
+        )
+        .expect("every engine result adapts to the scheduling contract");
+        match poll {
+            CommissionPoll::ReadyNow { event: Some(event) } => events.push(match event {
+                CommissionEvent::PhaseChanged { phase_id, .. } => HandOffEvent::Phase(phase_id),
+                CommissionEvent::VelocityIntegralPlan {
+                    oid, run_sequence, ..
+                } => HandOffEvent::StageCPlan { oid, run_sequence },
+                CommissionEvent::BreakawayCampaign { .. } => HandOffEvent::CampaignEvidence,
+                CommissionEvent::VelocityIntegral { .. } => HandOffEvent::IntegralEvidence,
+            }),
+            CommissionPoll::ReadyNow { event: None } => {}
+            CommissionPoll::At { timestamp_us, .. } => {
+                backend.elapsed_us_value = timestamp_us;
+                if is_capture_phase {
+                    encoder_count += stroke_sign * stroke_numerator;
+                }
+                backend.set_abn_decoder_count(encoder_count);
+            }
+            CommissionPoll::Terminal { .. } => return events,
+        }
+    }
+    panic!("the accept path must reach a terminal");
+}
+
+fn position_of(events: &[HandOffEvent], wanted: HandOffEvent) -> usize {
+    events
+        .iter()
+        .position(|event| *event == wanted)
+        .unwrap_or_else(|| panic!("the engine must report {wanted:?}: {events:?}"))
+}
+
+/// The exact-plan contract, proven at the engine seam rather than at the
+/// campaign stepper: the host must receive the Stage-C plan once, after the
+/// campaign named its workflow and before any Stage-C observation, or its
+/// assembler refuses that first observation as arriving before an exact plan.
+///
+/// The plan event fires on the tick that installs the Stage-C phase, while that
+/// phase is still the reported one; the engine's selector notices the new
+/// workflow on the following tick. So the boundary phase event trails the plan
+/// event, and both precede the first integral evidence.
+#[foci_firmware_macros::fixture_test]
+async fn the_engine_reports_one_stage_c_plan_before_any_integral_evidence() {
+    let events = engine_hand_off_events().await;
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, HandOffEvent::StageCPlan { .. }))
+            .count(),
+        1,
+        "the hand-off must report its plan exactly once: {events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, HandOffEvent::Phase(_)))
+            .copied()
+            .collect::<std::vec::Vec<_>>(),
+        std::vec![
+            HandOffEvent::Phase(CommissionPhase::BreakawayProportionalAcquisition),
+            HandOffEvent::Phase(CommissionPhase::IntegralGainResponseCharacterization),
+        ],
+        "an accepted campaign names exactly its own workflow and Stage C's"
+    );
+
+    let entry = position_of(
+        &events,
+        HandOffEvent::Phase(CommissionPhase::BreakawayProportionalAcquisition),
+    );
+    let plan = position_of(
+        &events,
+        HandOffEvent::StageCPlan {
+            oid: 3,
+            run_sequence: 7,
+        },
+    );
+    let boundary = position_of(
+        &events,
+        HandOffEvent::Phase(CommissionPhase::IntegralGainResponseCharacterization),
+    );
+    let first_evidence = position_of(&events, HandOffEvent::IntegralEvidence);
+
+    assert!(
+        entry < plan && plan < boundary && boundary < first_evidence,
+        "expected entry < plan < boundary < first integral evidence, got \
+         {entry} < {plan} < {boundary} < {first_evidence}: {events:?}"
+    );
+}

@@ -244,6 +244,13 @@ fn phase_code(phase: CommissionPhase) -> i32 {
 /// Replace the outer phase in place exactly as an accepted breakaway
 /// confirmation does (`route_confirmed_accept`), so the engine sees the same
 /// underneath-the-stepper hand-off a live campaign produces.
+///
+/// A stand-in, not the seam: `BreakawayCampaign`'s fields are private to its own
+/// module, so a mid-confirmation campaign cannot be built here. The hand-off
+/// driven through the live campaign, and the event ordering it produces, is
+/// covered by `breakaway_campaign_tests`'
+/// `the_engine_reports_one_stage_c_plan_before_any_integral_evidence`; what this
+/// buys is the trace-span pairing below, which that test does not inspect.
 fn hand_off_to_response_ladder(engine: &mut CommissioningEngine) {
     use crate::commissioning::outer::{VelocityIntegralData, VelocityIntegralState};
 
