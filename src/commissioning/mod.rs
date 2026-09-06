@@ -17,6 +17,10 @@ pub mod outer;
 pub mod schedule;
 pub mod types;
 
+#[cfg(test)]
+#[path = "phase_emission_tests.rs"]
+mod phase_emission_tests;
+
 use crate::autotune::{
     CommissionError, CommissionPhase, CommissionProfile, CommissionStatus, InnerSequence,
     OperatingMode, TransientBuffer,
@@ -250,6 +254,9 @@ pub struct CommissioningEngine {
     diagnostics: crate::selftest::CommissionDiagnostics,
     trace_run: TraceRunState,
     trace_summary_seqs: TraceSummarySeqs,
+    /// Last phase reported to the host, so an outer workflow boundary is
+    /// detected once rather than on every tick.
+    last_emitted_phase: Option<CommissionPhase>,
 }
 
 /// Phase-independent assembly shared by every outer constructor.
@@ -350,6 +357,7 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            last_emitted_phase: None,
         }
     }
 
@@ -397,6 +405,7 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            last_emitted_phase: None,
         }
     }
 
@@ -454,6 +463,7 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            last_emitted_phase: None,
         }
     }
 
@@ -549,6 +559,7 @@ impl CommissioningEngine {
             diagnostics: crate::selftest::CommissionDiagnostics::default(),
             trace_run: TraceRunState::new(trace_engine_seq),
             trace_summary_seqs: TraceSummarySeqs::new(),
+            last_emitted_phase: None,
         }
     }
 
@@ -1066,6 +1077,21 @@ impl CommissioningEngine {
         }
     }
 
+    /// The active outer phase, when it has not yet been reported to the host.
+    ///
+    /// Outer steppers report evidence, not transitions: a velocity workflow
+    /// boundary is only visible as a change in the resident phase, so the
+    /// engine detects it here. Inner phases report their own transitions and
+    /// are left alone.
+    fn unreported_outer_phase(&self) -> Option<CommissionPhase> {
+        let EngineMode::Outer { phase, .. } = &self.engine_mode else {
+            return None;
+        };
+        phase
+            .current_phase_id()
+            .filter(|active| Some(*active) != self.last_emitted_phase)
+    }
+
     fn trace_profile_or_mode(&self) -> i32 {
         match &self.engine_mode {
             EngineMode::Inner {
@@ -1274,9 +1300,14 @@ impl CommissioningEngine {
         match result {
             StepResult::ReadyNow | StepResult::At(_) => {}
             StepResult::PhaseChanged(phase) => {
-                self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
-                self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
-                self.emit_trace_phase_start(backend, *phase);
+                // The span for a run's first phase is already open from
+                // `emit_trace_start`, so reporting that phase to the host must
+                // not close and reopen it. Only a real boundary does.
+                if self.trace_run.current_phase != Some(*phase) {
+                    self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
+                    self.trace_run.phase_seq = self.trace_run.phase_seq.wrapping_add(1);
+                    self.emit_trace_phase_start(backend, *phase);
+                }
             }
             StepResult::VelocityIntegralEvent(event) => {
                 #[cfg(feature = "trace")]
@@ -1662,56 +1693,65 @@ impl CommissioningEngine {
 
         self.emit_trace_start(backend);
 
-        let selftest_results = &mut self.selftest_results;
-        let diagnostics = &mut self.diagnostics;
-        let trace_summary_seqs = &mut self.trace_summary_seqs;
-        let result = match &mut self.engine_mode {
-            EngineMode::Inner {
-                phase,
-                profile,
-                sequence,
-                adc_cal,
-                calibrate_entry_gains,
-            } => {
-                inner::step_inner(
+        let result = if let Some(phase) = self.unreported_outer_phase() {
+            self.last_emitted_phase = Some(phase);
+            StepResult::PhaseChanged(phase)
+        } else {
+            let selftest_results = &mut self.selftest_results;
+            let diagnostics = &mut self.diagnostics;
+            let trace_summary_seqs = &mut self.trace_summary_seqs;
+            let result = match &mut self.engine_mode {
+                EngineMode::Inner {
                     phase,
-                    &mut self.buf,
-                    *profile,
-                    *sequence,
+                    profile,
+                    sequence,
                     adc_cal,
-                    *calibrate_entry_gains,
-                    selftest_results,
-                    diagnostics,
-                    backend,
-                )
-                .await
-            }
-            EngineMode::Outer {
-                phase,
-                profile,
-                mode,
-                inner_lambda_us,
-                theta_e_us,
-                current_ringing,
-                current_bandwidth_hz,
-                inner_warning_flags,
-                ..
-            } => {
-                outer::step_outer_with_trace(
+                    calibrate_entry_gains,
+                } => {
+                    inner::step_inner(
+                        phase,
+                        &mut self.buf,
+                        *profile,
+                        *sequence,
+                        adc_cal,
+                        *calibrate_entry_gains,
+                        selftest_results,
+                        diagnostics,
+                        backend,
+                    )
+                    .await
+                }
+                EngineMode::Outer {
                     phase,
-                    &mut self.buf,
-                    *profile,
-                    *mode,
-                    *inner_lambda_us,
-                    *theta_e_us,
-                    *current_ringing,
-                    *current_bandwidth_hz,
-                    *inner_warning_flags,
-                    trace_summary_seqs,
-                    backend,
-                )
-                .await
+                    profile,
+                    mode,
+                    inner_lambda_us,
+                    theta_e_us,
+                    current_ringing,
+                    current_bandwidth_hz,
+                    inner_warning_flags,
+                    ..
+                } => {
+                    outer::step_outer_with_trace(
+                        phase,
+                        &mut self.buf,
+                        *profile,
+                        *mode,
+                        *inner_lambda_us,
+                        *theta_e_us,
+                        *current_ringing,
+                        *current_bandwidth_hz,
+                        *inner_warning_flags,
+                        trace_summary_seqs,
+                        backend,
+                    )
+                    .await
+                }
+            };
+            if let StepResult::PhaseChanged(phase) = &result {
+                self.last_emitted_phase = Some(*phase);
             }
+            result
         };
         self.emit_trace_after_step(backend, &result);
         result
@@ -2480,6 +2520,14 @@ mod tests {
             backend.current_limit_value = current_limit(2_816);
             backend.mechanical_encoder_position_counts_value = 1_234;
 
+            // The engine names the campaign's workflow before dispatching its
+            // stepper, so the probe plan lands one tick later.
+            let entry = engine.step(&mut backend).await;
+            assert!(matches!(
+                entry,
+                StepResult::PhaseChanged(CommissionPhase::BreakawayProportionalAcquisition)
+            ));
+
             let first = engine.step(&mut backend).await;
             assert!(matches!(
                 first,
@@ -2523,6 +2571,11 @@ mod tests {
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
         backend.current_limit_value = current_limit(2_816);
 
+        let entry = engine.step(&mut backend).await;
+        assert!(matches!(
+            entry,
+            StepResult::PhaseChanged(CommissionPhase::BreakawayProportionalAcquisition)
+        ));
         let planned = engine.step(&mut backend).await;
         assert!(matches!(
             planned,
