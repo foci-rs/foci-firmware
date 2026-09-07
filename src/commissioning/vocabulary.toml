@@ -1,0 +1,237 @@
+# Single source of truth for the commissioning phase/shape/action vocabulary.
+# The generator (tools/gen_commissioning_vocabulary.py) emits the Rust enums and
+# the host Python decode tables from this file; do not hand-edit the outputs.
+#
+# Array order per group is the Rust declaration order and is load-bearing: it is
+# the defmt::Format ordinal for each enum. Entries are listed in declaration
+# order, never sorted by wire_code.
+#
+# label semantics per group: phase carries a klipper prose `label` plus the
+# foci-trace `trace_ident` (the Rust variant name); breakaway and action carry a
+# snake_case `label` (the host selector); workflow_shape carries no label, only a
+# `const_stem` (the host-side named-constant name, new generated API).
+#
+# [reserved] is machine-read by the validator, not advisory: a wire_code listed
+# here may not appear in that group.
+[reserved]
+phase = [9, 10, 11, 12, 13, 14, 15]
+action = [0, 3, 4, 5, 6]
+
+[[phase]]
+ident = "AdcCalibrate"
+wire_code = 1
+label = "ADC calibration"
+trace_ident = "AdcCalibrate"
+doc = "Inner phase 1 — ADC offset calibration."
+[[phase]]
+ident = "CoilCheck"
+wire_code = 2
+label = "Coil check"
+trace_ident = "CoilCheck"
+doc = "Inner phase 2 — Coil connectivity check."
+[[phase]]
+ident = "PhaseWiringCheck"
+wire_code = 3
+label = "Phase wiring"
+trace_ident = "PhaseWiringCheck"
+doc = "Inner phase 3 — Phase wiring validation."
+[[phase]]
+ident = "EncoderCheck"
+wire_code = 4
+label = "Encoder check"
+trace_ident = "EncoderCheck"
+doc = "Inner phase 4 — Encoder presence and direction detection."
+[[phase]]
+ident = "ElectricalId"
+wire_code = 5
+label = "Electrical ID"
+trace_ident = "ElectricalId"
+doc = "Inner phase 5 — Electrical identification (R, L, theta_e)."
+[[phase]]
+ident = "CurrentTune"
+wire_code = 6
+label = "Current tune"
+trace_ident = "CurrentTune"
+doc = "Inner phase 6 — Current-loop gain synthesis."
+[[phase]]
+ident = "CurrentValidate"
+wire_code = 7
+label = "Current validation"
+trace_ident = "CurrentValidate"
+doc = "Inner phase 7 — Current-loop step-response validation."
+[[phase]]
+ident = "InnerDone"
+wire_code = 8
+label = "Inner done"
+trace_ident = "InnerDone"
+doc = "Inner commissioning completed."
+[[phase]]
+ident = "BreakawayProportionalAcquisition"
+wire_code = 18
+label = "Breakaway proportional acquisition"
+trace_ident = "BreakawayProportionalAcquisition"
+doc = """
+Breakaway-seeded campaign: proportional-gain acquisition against the
+nominated in-band ladder. Wire code 18."""
+[[phase]]
+ident = "IntegralGainResponseCharacterization"
+wire_code = 19
+label = "Integral gain response characterization"
+trace_ident = "IntegralGainResponseCharacterization"
+doc = "Stage-C fixed-P velocity-integral response ladder. Wire code 19."
+[[phase]]
+ident = "FixedGainAmplitudeValidation"
+wire_code = 20
+label = "Fixed-gain amplitude validation"
+trace_ident = "FixedGainAmplitudeValidation"
+doc = """
+Stage-C fixed-P velocity-integral acceptance sweep (ascending or
+descending amplitude) against the matrix-nominated point. Wire code 20."""
+[[phase]]
+ident = "ReversalStandstillRobustnessGate"
+wire_code = 21
+label = "Reversal standstill robustness gate"
+trace_ident = "ReversalStandstillRobustnessGate"
+doc = """
+Reversal-standstill robustness gate over the matrix-accepted point.
+Wire code 21."""
+[[phase]]
+ident = "PositionTune"
+wire_code = 22
+label = "Position tune"
+trace_ident = "PositionTune"
+doc = "Outer phase — Position-loop P ramp-up. Wire code 22."
+[[phase]]
+ident = "FilterTune"
+wire_code = 23
+label = "Filter selection"
+trace_ident = "FilterTune"
+doc = "Outer phase — Filter selection based on validation metrics. Wire code 23."
+[[phase]]
+ident = "Commit"
+wire_code = 24
+label = "Commit"
+trace_ident = "Commit"
+doc = "Outer phase — Assemble and transmit final results to host. Wire code 24."
+[[phase]]
+ident = "OuterDone"
+wire_code = 25
+label = "Outer done"
+trace_ident = "OuterDone"
+doc = "Outer commissioning completed. Wire code 25."
+[[phase]]
+ident = "EncoderAlign"
+wire_code = 16
+label = "Encoder alignment"
+trace_ident = "EncoderAlign"
+doc = """
+Encoder alignment — drive rotor to the D-axis, zero
+ABN_DECODER_COUNT and offset, switch PHI_E_SELECTION to ABN
+while still driving. Runs between EncoderCheck and ElectricalId
+in the inner sequence, and is a valid `stop_after` target for
+calibrate-on-enable paths. Appended (not inserted between
+EncoderCheck and ElectricalId) so the stable wire values remain
+unchanged — wire code 16."""
+[[phase]]
+ident = "ClosedLoopEntry"
+wire_code = 17
+label = "Closed-loop entry"
+trace_ident = "ClosedLoopEntry"
+doc = """
+Closed-loop position mode entry — writes PID gains, velocity
+limit, voltage limits, biquad filters, STEP_WIDTH, enters
+position mode, and verifies stability. Runs as the final inner
+phase for Calibrate and Commission sequences — wire code 17."""
+
+[[breakaway]]
+ident = "BreakawayProbe"
+wire_code = 0
+label = "breakaway_probe"
+doc = "The deterministic upward physical-excursion probe."
+[[breakaway]]
+ident = "ProportionalResponseDiscovery"
+wire_code = 1
+label = "proportional_response_discovery"
+doc = "The additive discovery ladder."
+[[breakaway]]
+ident = "ProportionalBandConfirmation"
+wire_code = 2
+label = "proportional_band_confirmation"
+doc = "The held-out eight-stroke confirmation block."
+
+[[workflow_shape]]
+ident = "Resume"
+wire_code = 0
+const_stem = "SHAPE_RESUME"
+doc = "Resume Stage C from retained firmware authority."
+[[workflow_shape]]
+ident = "AcceptanceMatrixAscending"
+wire_code = 1
+const_stem = "SHAPE_MATRIX_ASCENDING"
+doc = "Run the retained fixed-I acceptance matrix from low to high amplitude."
+[[workflow_shape]]
+ident = "AcceptanceMatrixDescending"
+wire_code = 2
+const_stem = "SHAPE_MATRIX_DESCENDING"
+doc = "Run the retained fixed-I acceptance matrix from high to low amplitude."
+[[workflow_shape]]
+ident = "BreakawaySeededProportionalThenIntegral"
+wire_code = 3
+const_stem = "SHAPE_BREAKAWAY_SEEDED"
+doc = """
+Run the breakaway probe, additive discovery, held-out confirmation, and
+the existing Stage-C integral continuation as one bounded command."""
+[[workflow_shape]]
+ident = "ReversalStandstillRobustnessGate"
+wire_code = 4
+const_stem = "SHAPE_ROBUSTNESS_REVERSAL"
+doc = """
+Run the reversal-standstill robustness gate over the accepted point.
+Distinct from every acquisition shape so the host arms the extended run
+timeout for the multi-cycle probe instead of the 5 s plan window."""
+
+[[action]]
+ident = "MatrixAscending"
+wire_code = 1
+label = "matrix_ascending"
+doc = "Run the retained fixed-I matrix from lowest to highest amplitude."
+[[action]]
+ident = "MatrixDescending"
+wire_code = 2
+label = "matrix_descending"
+doc = "Run the retained fixed-I matrix from highest to lowest amplitude."
+[[action]]
+ident = "BreakawaySeeded"
+wire_code = 7
+label = "breakaway_seeded"
+doc = """
+Run the breakaway probe, additive discovery, held-out confirmation, and
+the existing velocity-integral continuation as one bounded command.
+
+This is the production `Tune` path: a non-trace build routes the request
+through the breakaway/velocity-integral/acceptance engine just like a
+trace build. The `trace` feature adds only the raw evidence emission on
+top of the same campaign, not the campaign itself."""
+[[action]]
+ident = "StageCResume"
+wire_code = 8
+label = "stage_c_resume"
+doc = """
+Re-run the velocity-integral response ladder against retained firmware
+authority.
+
+Replays one exact retained plan so a sufficient run can reproduce and
+promote to `Complete`. Retention is RAM-only, so this succeeds only in
+the same power cycle as the run that produced the candidate, and a
+campaign in between resets the slot."""
+[[action]]
+ident = "RobustnessReversal"
+wire_code = 9
+label = "robustness_reversal"
+doc = """
+Run the reversal/standstill robustness confirmation gates.
+
+Exercises the closed-loop controller through directional reversals and
+forced standstill holds to confirm gain margins survive the conditions
+production motion actually produces, rather than the smooth
+constant-direction runs the other actions use."""
