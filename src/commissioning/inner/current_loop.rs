@@ -2096,8 +2096,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         });
                     }
 
-                    // Transition to ClosedLoopActivation with computed
-                    // current-loop gains and fallback outer gains.
                     let vel_limit = backend.operational_velocity_limit();
                     let default_current_filter_hz = if data.gains.effective_bandwidth_hz > 0 {
                         backend

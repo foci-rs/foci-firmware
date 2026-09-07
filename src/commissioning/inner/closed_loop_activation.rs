@@ -897,8 +897,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     StepResult::ReadyNow
                 }
                 InnerSequence::Selftest => {
-                    // Selftest never reaches ClosedLoopActivation.
-                    unreachable!()
+                    unreachable!("Selftest never reaches ClosedLoopActivation")
                 }
             }
         }
