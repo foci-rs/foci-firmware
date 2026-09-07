@@ -863,7 +863,7 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
     terminal: crate::commissioning::types::VelocityIntegralTerminal,
     reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
     _authority: Option<
-        crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
+        crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
     >,
 ) {
     use crate::commissioning::outer::velocity::integral_reporting::{

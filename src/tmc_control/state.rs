@@ -966,7 +966,7 @@ impl TmcControlRuntime {
         B: CommissioningBackend,
     {
         let mut stage_c_candidate =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         self.drive_commissioning_terminal_with_stages(
             result,
@@ -999,7 +999,7 @@ impl TmcControlRuntime {
         B: CommissioningBackend,
     {
         let mut stage_c_candidate =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         self.drive_commissioning_poll_with_stages(
             poll,

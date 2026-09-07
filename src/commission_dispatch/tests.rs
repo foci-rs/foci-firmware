@@ -2652,10 +2652,10 @@ fn robustness_accepted_point(
     qualifier_bits: u16,
 ) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
+        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
     };
     AcceptancePoint {
-        identity: StageCPlanIdentity {
+        identity: IntegralPlanIdentity {
             channel: 0,
             build_features: 0x1234,
             schema_revision: 1,
@@ -2704,7 +2704,7 @@ fn robustness_reject_terminal(
 
 #[fixture_test]
 async fn robustness_pass_emits_tune_result_with_joined_gains() {
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
     use core::sync::atomic::Ordering::Relaxed;
 
     let mut backend = MockBackend::new();
@@ -2723,7 +2723,7 @@ async fn robustness_pass_emits_tune_result_with_joined_gains() {
         200_000,
         (300, 300, 150, 300),
     )));
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0));
 
     tmc_state().motor_armed.store(false, Relaxed);
@@ -2771,7 +2771,7 @@ async fn robustness_pass_emits_tune_result_with_joined_gains() {
 /// bits are measurement/capability provenance, not a status verdict.
 #[fixture_test]
 async fn robustness_pass_with_qualifier_bits_still_emits_accepted_status() {
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
     use core::sync::atomic::Ordering::Relaxed;
 
     let mut backend = MockBackend::new();
@@ -2788,7 +2788,7 @@ async fn robustness_pass_with_qualifier_bits_still_emits_accepted_status() {
         200_000,
         (300, 300, 150, 300),
     )));
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0x0200));
 
     tmc_state().motor_armed.store(false, Relaxed);
@@ -2822,7 +2822,7 @@ async fn robustness_pass_with_qualifier_bits_still_emits_accepted_status() {
 
 #[fixture_test]
 async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
     let mut backend = MockBackend::new();
     let (mut cal, mut en, mut gains) = fresh_state_locals();
@@ -2833,7 +2833,7 @@ async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
         200_000,
         (300, 300, 150, 300),
     )));
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0));
     seed_motor_sentinel(&mut backend).await;
 
@@ -2904,14 +2904,14 @@ fn assert_baseline_restored(
 
 #[fixture_test]
 async fn robustness_rejected_restores_entry_snapshot_before_disarm() {
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
     let mut backend = MockBackend::new();
     let (mut cal, mut en, mut gains) = fresh_state_locals();
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let entry = robustness_entry_snapshot(700, 40, 200_000, (300, 300, 150, 300));
     let mut engine = Some(robustness_outer_engine(entry));
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0));
     seed_motor_sentinel(&mut backend).await;
 
@@ -2957,7 +2957,7 @@ async fn robustness_rejected_restores_entry_snapshot_before_disarm() {
 
 #[fixture_test]
 async fn robustness_inconclusive_restores_entry_snapshot_before_disarm() {
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
     use crate::commissioning::types::RobustnessOutcome;
 
     let mut backend = MockBackend::new();
@@ -2965,7 +2965,7 @@ async fn robustness_inconclusive_restores_entry_snapshot_before_disarm() {
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let entry = robustness_entry_snapshot(700, 40, 200_000, (300, 300, 150, 300));
     let mut engine = Some(robustness_outer_engine(entry));
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0));
     seed_motor_sentinel(&mut backend).await;
 
@@ -3002,7 +3002,7 @@ async fn robustness_inconclusive_restores_entry_snapshot_before_disarm() {
 
 #[fixture_test]
 async fn robustness_restore_failure_maps_to_safety_fault() {
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
     use crate::commissioning::types::RobustnessOutcome;
 
     let mut backend = MockBackend::new();
@@ -3010,7 +3010,7 @@ async fn robustness_restore_failure_maps_to_safety_fault() {
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let entry = robustness_entry_snapshot(700, 40, 200_000, (300, 300, 150, 300));
     let mut engine = Some(robustness_outer_engine(entry));
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0));
     seed_motor_sentinel(&mut backend).await;
     // A register the entry-snapshot restore writes but the safe-state disarm

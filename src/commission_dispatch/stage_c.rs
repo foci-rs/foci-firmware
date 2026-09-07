@@ -5,9 +5,9 @@ use crate::commissioning::outer::velocity::integral_plan::{
     StageCFailedAdmission, VelocityIntegralPlan, VelocityIntegralPlanError,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, StageCAuthoritySummary, StageCCandidateSlot,
-    StageCCandidateSummary, StageCPlanIdentity, StageCReproductionDecision,
-    StageCReproductionDelta, StageCRestBoundaryReference,
+    AcceptanceMatrixProgress, AcceptancePoint, IntegralAuthoritySummary, IntegralPlanIdentity,
+    IntegralReproductionDecision, IntegralReproductionDelta, IntegralRestBoundaryReference,
+    IntegralRetentionSlot, RetainedIntegralEvidence,
 };
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
@@ -49,7 +49,7 @@ pub struct StageCPreflight {
     /// The sole exact Stage-C plan consumed by construction and reporting.
     pub plan: VelocityIntegralPlan,
     /// Exact cross-run identity derived from the plan.
-    pub identity: StageCPlanIdentity,
+    pub identity: IntegralPlanIdentity,
     /// Caller-assigned trace sequence.
     pub run_sequence: u32,
 }
@@ -77,10 +77,10 @@ impl StageCPreflight {
 /// and a Stage-C terminal arriving with an empty slot fails closed.
 pub fn install_authority_from_plan(
     channel: u8,
-    stage_c_candidate: &mut StageCCandidateSlot,
+    stage_c_candidate: &mut IntegralRetentionSlot,
     plan: VelocityIntegralPlan,
-) -> StageCAuthoritySummary {
-    let authority = StageCAuthoritySummary::from_plan(
+) -> IntegralAuthoritySummary {
+    let authority = IntegralAuthoritySummary::from_plan(
         channel,
         BUILD_FEATURES,
         plan.schema_revision,
@@ -100,7 +100,7 @@ pub enum StageCPreflightRejection {
     /// The current request differs from retained Stage-C authority.
     RejectedPlanMismatch {
         /// Exact retained Stage-C identity.
-        retained: StageCPlanIdentity,
+        retained: IntegralPlanIdentity,
     },
     /// The reproduced operating component contains no Stage-C-safe test point.
     NoTransitionCapableOperatingPoint(StageCFailedAdmission),
@@ -110,7 +110,7 @@ pub enum StageCPreflightRejection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StageCReproductionReport {
     /// One exact retained-versus-current comparison.
-    pub delta: StageCReproductionDelta,
+    pub delta: IntegralReproductionDelta,
     /// One for Complete, two for mismatch.
     pub outcome: u8,
     /// Exact retained-run evidence digest.
@@ -127,7 +127,7 @@ pub struct StageCTerminalDispatch {
     /// Comparison evidence present only for a second sufficient run.
     pub reproduction: Option<StageCReproductionReport>,
     /// Retained Stage-B authority used for anchor comparison and context.
-    pub authority: Option<StageCAuthoritySummary>,
+    pub authority: Option<IntegralAuthoritySummary>,
 }
 
 /// Typed outcome of the breakaway acceptance-point installer.
@@ -157,7 +157,7 @@ pub enum AcceptanceInstall {
 /// hold together.
 pub(crate) fn breakaway_acceptance_point(
     channel: u8,
-    authority: &StageCAuthoritySummary,
+    authority: &IntegralAuthoritySummary,
     plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan,
     terminal: &VelocityIntegralTerminal,
 ) -> Result<AcceptanceInstall, ()> {
@@ -208,7 +208,7 @@ pub(crate) fn breakaway_acceptance_point(
         qualifier_bits |= ACCEPTANCE_QUALIFIER_LATCHED_LIMIT_EVIDENCE;
     }
     Ok(AcceptanceInstall::Installed(AcceptancePoint {
-        identity: StageCPlanIdentity {
+        identity: IntegralPlanIdentity {
             channel,
             build_features: BUILD_FEATURES,
             schema_revision: BREAKAWAY_STAGE_C_SCHEMA_REVISION,
@@ -254,11 +254,11 @@ pub struct StageCPreflightConfig {
 /// its target-rate math against the stale resolution.
 fn preflight_retained_breakaway(
     token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
-    authority: StageCAuthoritySummary,
+    authority: IntegralAuthoritySummary,
     motion_budget: OuterMotionBudget,
     config: &StageCPreflightConfig,
     run_sequence: u32,
-    stage_c_candidate: &StageCCandidateSlot,
+    stage_c_candidate: &IntegralRetentionSlot,
 ) -> Result<Option<StageCPreflight>, StageCPreflightRejection> {
     use crate::commissioning::outer::velocity::integral_plan::{
         AcquisitionContext, plan_retained_breakaway_velocity_integral_response,
@@ -293,7 +293,7 @@ fn preflight_retained_breakaway(
         }
         Err(_) => return Err(StageCPreflightRejection::InvalidPlan),
     };
-    let identity = StageCPlanIdentity {
+    let identity = IntegralPlanIdentity {
         channel: authority.identity.channel,
         build_features: BUILD_FEATURES,
         schema_revision: plan.schema_revision,
@@ -321,7 +321,7 @@ pub fn preflight_stage_c_request(
     request: VelocitySweepRequest,
     config: &StageCPreflightConfig,
     run_sequence: u32,
-    stage_c_candidate: &StageCCandidateSlot,
+    stage_c_candidate: &IntegralRetentionSlot,
 ) -> Result<Option<StageCPreflight>, StageCPreflightRejection> {
     let Some(authority) = stage_c_candidate.authority() else {
         return Ok(None);
@@ -354,7 +354,7 @@ pub fn preflight_stage_c_request(
 /// Apply one Stage-C terminal to the authoritative RAM-only lifecycle.
 pub fn apply_stage_c_terminal(
     mut terminal: VelocityIntegralTerminal,
-    stage_c_candidate: &mut StageCCandidateSlot,
+    stage_c_candidate: &mut IntegralRetentionSlot,
 ) -> StageCTerminalDispatch {
     let Some(authority) = stage_c_candidate.authority() else {
         terminal.outcome = VelocityIntegralOutcome::Fault;
@@ -381,17 +381,19 @@ pub fn apply_stage_c_terminal(
             let previous_run_digest = stage_c_candidate
                 .candidate()
                 .map_or(0, |candidate| candidate.run_digest);
-            let current = StageCCandidateSummary {
+            let current = RetainedIntegralEvidence {
                 authority,
                 evidence: terminal.evidence,
                 rest_boundary: terminal
                     .rest_boundary_rung_plus_one
                     .checked_sub(1)
                     .zip(terminal.rest_boundary_slot_plus_one.checked_sub(1))
-                    .map(|(positive_rung_index, slot)| StageCRestBoundaryReference {
-                        positive_rung_index,
-                        slot,
-                    }),
+                    .map(
+                        |(positive_rung_index, slot)| IntegralRestBoundaryReference {
+                            positive_rung_index,
+                            slot,
+                        },
+                    ),
                 // The breakaway target-terminus wire encoding
                 // (`terminal_target_terminus`) is `rest_boundary_slot_plus_one
                 // == 0`, disjoint from the current-headroom encoding `rest_boundary`
@@ -409,8 +411,8 @@ pub fn apply_stage_c_terminal(
                 .candidate()
                 .map_or(0, |candidate| candidate.target_terminus_rung_plus_one);
             match stage_c_candidate.observe_sufficient(current) {
-                StageCReproductionDecision::CompleteCandidate(_) => None,
-                StageCReproductionDecision::Complete(delta) => {
+                IntegralReproductionDecision::FirstRunRetained(_) => None,
+                IntegralReproductionDecision::RepeatabilityConfirmed(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Complete;
                     // The confirmation run's own terminus check need not
                     // re-trip for reproduction to succeed (a breakaway target
@@ -431,7 +433,7 @@ pub fn apply_stage_c_terminal(
                         current_run_digest: terminal.digest,
                     })
                 }
-                StageCReproductionDecision::InconclusiveReproductionMismatch(delta) => {
+                IntegralReproductionDecision::RepeatabilityMismatch(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Inconclusive;
                     terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH);
                     // The sole defmt signal for why a resume came back Inconclusive:
@@ -450,12 +452,12 @@ pub fn apply_stage_c_terminal(
                         current_run_digest: terminal.digest,
                     })
                 }
-                StageCReproductionDecision::RejectedPlanMismatch { .. } => {
+                IntegralReproductionDecision::RejectedPlanMismatch { .. } => {
                     terminal.outcome = VelocityIntegralOutcome::RejectedPlanMismatch;
                     terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
                     None
                 }
-                StageCReproductionDecision::EvidenceIntegrityFault => {
+                IntegralReproductionDecision::EvidenceIntegrityFault => {
                     terminal.outcome = VelocityIntegralOutcome::Fault;
                     terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
                     None

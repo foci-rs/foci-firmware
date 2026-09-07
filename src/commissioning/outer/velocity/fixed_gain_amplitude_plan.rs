@@ -5,7 +5,7 @@ use super::integral_plan::{
     STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan,
     VelocityIntegralPlan,
 };
-use super::integral_reproduction::{AcceptancePoint, StageCPlanIdentity};
+use super::integral_reproduction::{AcceptancePoint, IntegralPlanIdentity};
 use super::recovery::commanded_side_lower_rate_q;
 use super::reproduction::BUILD_FEATURES;
 use super::sweep_plan::VelocitySweepRequest;
@@ -84,7 +84,7 @@ pub struct FixedGainAmplitudePlan {
     /// Independent amplitude evidence schema.
     pub schema_revision: u16,
     /// Combined Stage-C identity that established the operating point.
-    pub acceptance_identity: StageCPlanIdentity,
+    pub acceptance_identity: IntegralPlanIdentity,
     /// Immutable acquisition order.
     pub order: FixedGainAmplitudeOrder,
     /// Immutable execution order of the forward and reverse observation slots.

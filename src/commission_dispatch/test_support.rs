@@ -87,8 +87,8 @@ pub fn breakaway_confirmation_for_test() -> BreakawayConfirmationForTest {
     use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
     use foci_tmc4671::pid::PidPGain;
 
-    let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
-    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+    let nominated_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+    let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, nominated_p)
         .expect("valid confirmation plan");
 
     let consensus = || DirectionalConsensus {
@@ -123,7 +123,7 @@ pub fn breakaway_confirmation_for_test() -> BreakawayConfirmationForTest {
         }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
     };
     let acceptance =
-        evaluate_band_confirmation(candidate_p, forward, reverse).expect("accepted confirmation");
+        evaluate_band_confirmation(nominated_p, forward, reverse).expect("accepted confirmation");
     let token = bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
@@ -185,11 +185,11 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
 pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine {
     use crate::commission_dispatch::robustness::RobustnessPreflight;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
+        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
     };
 
     let point = AcceptancePoint {
-        identity: StageCPlanIdentity {
+        identity: IntegralPlanIdentity {
             channel: 0,
             build_features: 0x1234,
             schema_revision: 1,

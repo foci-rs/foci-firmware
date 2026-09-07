@@ -14,7 +14,9 @@ use super::integral_plan::{
     plan_retained_breakaway_velocity_integral_response,
 };
 use super::integral_reporting::plan_recovery_flags;
-use super::integral_reproduction::{AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity};
+use super::integral_reproduction::{
+    AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
+};
 use super::reproduction::BUILD_FEATURES;
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -108,8 +110,8 @@ fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, Confirmati
     (forward, reverse)
 }
 
-fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
-    plan_band_confirmation(0x1111_2222_3333_4444, candidate_p).unwrap()
+fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
+    plan_band_confirmation(0x1111_2222_3333_4444, nominated_p).unwrap()
 }
 
 /// Mint the confirmation token through the real gate, exactly as a live
@@ -117,7 +119,7 @@ fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
-        evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse).unwrap();
+        evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
     bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
@@ -128,7 +130,7 @@ fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcqu
 
 fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]; 2] {
     let (forward, reverse) = accepted_confirmation_evidence();
-    evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse)
+    evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse)
         .unwrap()
         .held_out_response_intervals_q
 }
@@ -152,7 +154,7 @@ fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
     let token = breakaway_token_for(confirmation_plan);
     plan_retained_breakaway_velocity_integral_response(
         token,
-        confirmation_plan.candidate_p.raw(),
+        confirmation_plan.nominated_p.raw(),
         context,
         breakaway_intervals_for(confirmation_plan),
         0,
@@ -166,7 +168,7 @@ fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
 
 fn breakaway_point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
     AcceptancePoint {
-        identity: StageCPlanIdentity {
+        identity: IntegralPlanIdentity {
             channel: 0,
             build_features: BUILD_FEATURES,
             schema_revision: plan.schema_revision,

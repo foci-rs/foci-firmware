@@ -127,7 +127,7 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
     let confirmation = breakaway_confirmation_for_test();
     plan_retained_breakaway_velocity_integral_response(
         confirmation.token,
-        confirmation.confirmation_plan.candidate_p.raw(),
+        confirmation.confirmation_plan.nominated_p.raw(),
         context,
         confirmation.held_out_response_intervals_q,
         confirmation.confidence_q,
@@ -150,7 +150,7 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
 
 fn response_ladder_engine_with_params(params: OuterAutotuneInputs) -> CommissioningEngine {
     use crate::commission_dispatch::stage_c::StageCPreflight;
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity;
 
     let plan = response_ladder_plan();
     CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
@@ -160,7 +160,7 @@ fn response_ladder_engine_with_params(params: OuterAutotuneInputs) -> Commission
         sample_entry_snapshot(),
         StageCPreflight {
             plan,
-            identity: StageCPlanIdentity {
+            identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 0,
                 schema_revision: plan.schema_revision,
@@ -182,13 +182,13 @@ fn fixed_gain_amplitude_engine() -> CommissioningEngine {
     };
     use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
+        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
     };
     use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 
     let current = response_ladder_plan();
     let point = AcceptancePoint {
-        identity: StageCPlanIdentity {
+        identity: IntegralPlanIdentity {
             channel: 0,
             build_features: BUILD_FEATURES,
             schema_revision: current.schema_revision,

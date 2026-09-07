@@ -1799,7 +1799,7 @@ mod tests {
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::check_outer_safety;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, StageCCandidateSlot, StageCPlanIdentity,
+        AcceptanceMatrixProgress, IntegralPlanIdentity, IntegralRetentionSlot,
     };
     use crate::commissioning::outer::velocity::robustness_metrics::{
         ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
@@ -1850,7 +1850,7 @@ mod tests {
 
     fn test_point() -> AcceptancePoint {
         AcceptancePoint {
-            identity: StageCPlanIdentity {
+            identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 0x1234,
                 schema_revision: 1,
@@ -2261,12 +2261,12 @@ mod tests {
 
     // This test checks a slot the phase never receives (the session holds a
     // copy), so it is tautological; the real guarantee is the
-    // `&StageCCandidateSlot` shared-ref signatures on the dispatch entry points.
+    // `&IntegralRetentionSlot` shared-ref signatures on the dispatch entry points.
     #[test]
     fn run_leaves_acceptance_matrix_progress_untouched() {
         for (noisy, expected) in [(false, false), (true, true)] {
             let point = test_point();
-            let mut slot = StageCCandidateSlot::new();
+            let mut slot = IntegralRetentionSlot::new();
             slot.install_acceptance_point(point);
             let before = slot.acceptance_point().expect("point installed").progress;
 

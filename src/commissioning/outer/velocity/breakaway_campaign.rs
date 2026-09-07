@@ -3035,7 +3035,7 @@ fn evaluate_confirmation_session(session: &BandConfirmationSession) -> BandConfi
         observations: session.reverse.atoms,
     };
     confirmation_evaluation_outcome(
-        evaluate_band_confirmation(session.plan.candidate_p, forward, reverse),
+        evaluate_band_confirmation(session.plan.nominated_p, forward, reverse),
         session.plan,
     )
 }
@@ -3065,7 +3065,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             crate::diagnostic::checkpoint_breakaway_campaign(
                 crate::diagnostic::BreakawayCheckpoint::GainProgramming,
             );
-            let p = session.plan.candidate_p;
+            let p = session.plan.nominated_p;
             if backend
                 .write_register(
                     PID_VELOCITY_P_VELOCITY_I,
@@ -3241,7 +3241,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 Ok(None) => return BandConfirmationStep::ReadyNow,
                 Err(error) => return confirmation_fault(error),
             };
-            let p = session.plan.candidate_p;
+            let p = session.plan.nominated_p;
             let input = match assemble_velocity_observation_input(VelocityObservationInputRequest {
                 direction: session.current_direction(),
                 p,
@@ -3445,7 +3445,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 Ok(plan) => plan,
                 Err(_) => return confirmation_fault(CommissionError::RecoveryPlanFailed),
             };
-            let p = session.plan.candidate_p;
+            let p = session.plan.nominated_p;
             let hard_limit = safety.torque_cap;
             let clamp_limit = match PidTorqueFluxLimit::new(u32::from(hard_limit)) {
                 Ok(limit) => limit,
@@ -4916,7 +4916,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
                 &session.plan,
                 &forward,
                 &reverse,
-                Some(acceptance.candidate_p().raw()),
+                Some(acceptance.nominated_p().raw()),
                 None,
                 inputs.run_sequence,
                 sequence,
@@ -5092,7 +5092,7 @@ fn emit_phase_planned_event(campaign: &mut BreakawayCampaign) -> Option<Breakawa
             }
             let sequence = next_sequence(evidence_sequence);
             let nomination = NominatedConfirmationCandidate {
-                p: session.plan.candidate_p,
+                p: session.plan.nominated_p,
                 margin_percent: session.nominated_margin_percent,
             };
             let planned =

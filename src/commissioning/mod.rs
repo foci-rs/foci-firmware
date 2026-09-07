@@ -2961,7 +2961,7 @@ mod tests {
             AcquisitionContext, bind_breakaway_stage_c_authority,
             plan_breakaway_velocity_integral_response,
         };
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity;
         use crate::commissioning::outer::velocity::sweep_consensus::{
             CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
         };
@@ -2977,8 +2977,8 @@ mod tests {
         };
         use foci_tmc4671::pid::PidPGain;
 
-        let candidate_p = PidPGain::new(512).expect("raw gain within PidPGain range");
-        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, candidate_p)
+        let nominated_p = PidPGain::new(512).expect("raw gain within PidPGain range");
+        let confirmation_plan = plan_band_confirmation(0x1111_2222_3333_4444, nominated_p)
             .expect("valid confirmation plan");
 
         let consensus = || DirectionalConsensus {
@@ -3012,7 +3012,7 @@ mod tests {
                 direction: VelocityDirection::Reverse,
             }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
         };
-        let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+        let acceptance = evaluate_band_confirmation(nominated_p, forward, reverse)
             .expect("accepted confirmation");
         let intervals = acceptance.held_out_response_intervals_q;
         let token = bind_breakaway_stage_c_authority(
@@ -3057,7 +3057,7 @@ mod tests {
 
         let preflight = StageCPreflight {
             plan,
-            identity: StageCPlanIdentity {
+            identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 0,
                 schema_revision: plan.schema_revision,

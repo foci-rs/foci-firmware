@@ -779,7 +779,7 @@ pub(crate) fn confirmation_plan_report(
         prior_plan_digest: plan.discovery_plan_digest,
         family_size: plan.family_size,
         observations_per_direction: plan.observations_per_direction,
-        candidate_p_raw: plan.candidate_p.raw(),
+        candidate_p_raw: plan.nominated_p.raw(),
         band_lower_percent: plan.band_lower_percent,
         band_upper_percent: plan.band_upper_percent,
         capture_profile: plan.capture_profile,

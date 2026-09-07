@@ -640,7 +640,7 @@ fn confirmation_accepts_a_split_disturbance_consensus_when_all_eight_are_contain
     let result = evaluate_band_confirmation(gain(2258), forward, reverse);
 
     assert_eq!(
-        result.map(|acceptance| acceptance.candidate_p()),
+        result.map(|acceptance| acceptance.nominated_p()),
         Ok(gain(2258))
     );
 }
@@ -849,7 +849,7 @@ fn confirmation_evaluation_carries_no_hidden_state_across_independent_calls() {
     let second = evaluate_band_confirmation(gain(724), passing_forward, passing_reverse);
     let accepted =
         second.expect("rung-18-class evidence confirms within the 70-80% band, as above");
-    assert_eq!(accepted.candidate_p(), gain(724));
+    assert_eq!(accepted.nominated_p(), gain(724));
     // Forward and reverse share the same commanded magnitude (750,000) and
     // variance, so both directions pool to the identical MAGNITUDE bound;
     // recompute it through the real production math (not a transcribed
@@ -1032,10 +1032,10 @@ fn confirmation_plan_rejects_zero_candidate_gain() {
 
 // --- validate_fixed_contract: every fixed field is checked -------------------
 
-// `BandConfirmationAcceptance`'s `candidate_p` field is private to
+// `BandConfirmationAcceptance`'s `nominated_p` field is private to
 // `band_confirmation`. A sibling module -- any of the other `*_tests.rs`
 // files declared in `mod.rs`, which are NOT descendants of `band_confirmation`
-// -- cannot write `BandConfirmationAcceptance { candidate_p, .. }` or
+// -- cannot write `BandConfirmationAcceptance { nominated_p, .. }` or
 // `Ok(BandConfirmationAcceptance { .. })`, so it cannot forge an acceptance to
 // hand to `bind_breakaway_stage_c_authority`. The only route to a value of
 // this type is a genuine all-eight-contained pass through
@@ -1043,7 +1043,7 @@ fn confirmation_plan_rejects_zero_candidate_gain() {
 // `ConfirmedAcquisitionDigest` precedent in `integral_plan.rs`. This file
 // *is* a descendant of `band_confirmation` (it is wired as
 // `#[path = "band_confirmation_tests.rs"] mod tests;` inside
-// `band_confirmation.rs`), so it may read `candidate_p` and
+// `band_confirmation.rs`), so it may read `nominated_p` and
 // `held_out_response_intervals_q` directly (see
 // `confirmation_evaluation_carries_no_hidden_state_across_independent_calls`
 // above) -- that intra-module access is the point of the privacy boundary,
@@ -1063,7 +1063,7 @@ fn digest_with_slot_order(plan: &BandConfirmationPlan, slot_order: &[VelocityDir
         };
     }
     hash_value!(plan.discovery_plan_digest);
-    hash_value!(plan.candidate_p.raw());
+    hash_value!(plan.nominated_p.raw());
     hash_value!(plan.capture_profile);
     hash_value!(plan.family_size);
     hash_value!(plan.observations_per_direction);

@@ -18,7 +18,7 @@ use crate::commissioning::outer::velocity::integral_plan::{
     bind_breakaway_stage_c_authority, plan_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot, StageCPlanIdentity,
+    AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity, IntegralRetentionSlot,
 };
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_consensus::{
@@ -115,8 +115,8 @@ fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, Confirmati
     (forward, reverse)
 }
 
-fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
-    plan_band_confirmation(0x1111_2222_3333_4444, candidate_p).unwrap()
+fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
+    plan_band_confirmation(0x1111_2222_3333_4444, nominated_p).unwrap()
 }
 
 /// Mint the confirmation token through the real gate, exactly as a live
@@ -124,7 +124,7 @@ fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
-        evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse).unwrap();
+        evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
     bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
@@ -135,7 +135,7 @@ fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcqu
 
 fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]; 2] {
     let (forward, reverse) = accepted_confirmation_evidence();
-    evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse)
+    evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse)
         .unwrap()
         .held_out_response_intervals_q
 }
@@ -201,7 +201,7 @@ fn breakaway_point(
     progress: AcceptanceMatrixProgress,
 ) -> AcceptancePoint {
     AcceptancePoint {
-        identity: StageCPlanIdentity {
+        identity: IntegralPlanIdentity {
             channel: CHANNEL,
             build_features: BUILD_FEATURES,
             schema_revision: plan.schema_revision,
@@ -452,7 +452,7 @@ fn action_codes_and_invalid_values_are_exact() {
 fn preflight_requires_matching_point_and_order_without_mutation() {
     let (current, token) = breakaway_plan_and_token();
     let config = amplitude_config();
-    let mut empty = StageCCandidateSlot::new();
+    let mut empty = IntegralRetentionSlot::new();
     assert_eq!(
         preflight_fixed_gain_amplitude(
             AutotuneAction::FixedGainAmplitudeAscending,
@@ -499,7 +499,7 @@ fn preflight_requires_matching_point_and_order_without_mutation() {
 fn preflight_admits_only_the_expected_amplitude_direction() {
     let (current, token) = breakaway_plan_and_token();
     let config = amplitude_config();
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(breakaway_point(
         current,
         token,
@@ -531,7 +531,7 @@ fn preflight_admits_only_the_expected_amplitude_direction() {
 fn safe_terminals_advance_or_close_and_fault_clears() {
     let (current, token) = breakaway_plan_and_token();
     let config = amplitude_config();
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(breakaway_point(
         current,
         token,
@@ -609,7 +609,7 @@ fn rest_unconfirmed_preserves_the_exact_point_and_amplitude_order() {
             AcceptanceMatrixProgress::ReadyDescending,
         ),
     ] {
-        let mut slot = StageCCandidateSlot::new();
+        let mut slot = IntegralRetentionSlot::new();
         slot.install_acceptance_point(breakaway_point(current, token, progress));
         let before = slot.acceptance_point().unwrap();
         let preflight =

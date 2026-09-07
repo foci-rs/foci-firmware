@@ -5,12 +5,12 @@
 //! `robustness_evidence::summary_cause`) plus the read-only preflight, the
 //! failed-terminal builder, and the terminal-application identity check.
 //! Both `preflight_robustness_reversal` and `apply_robustness_terminal`
-//! take `&StageCCandidateSlot`, never `&mut`: this phase probes the
+//! take `&IntegralRetentionSlot`, never `&mut`: this phase probes the
 //! already-accepted operating point but never advances or closes
 //! `AcceptanceMatrixProgress`.
 
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptancePoint, StageCCandidateSlot,
+    AcceptancePoint, IntegralRetentionSlot,
 };
 use crate::commissioning::outer::velocity::robustness_cycles::ROBUSTNESS_CYCLES_PER_DIRECTION;
 use crate::commissioning::outer::velocity::robustness_evidence::{
@@ -103,13 +103,13 @@ pub struct RobustnessPreflight {
 
 /// Validate a retained accepted point without mutating retention.
 ///
-/// Reads [`StageCCandidateSlot::acceptance_point`] only; never calls
+/// Reads [`IntegralRetentionSlot::acceptance_point`] only; never calls
 /// `advance_matrix_progress`/`close_matrix_progress`, so a failed or
 /// completed reversal probe cannot itself move the fixed-gain-amplitude
 /// lifecycle forward.
 pub fn preflight_robustness_reversal(
     run_sequence: u32,
-    stage_c_candidate: &StageCCandidateSlot,
+    stage_c_candidate: &IntegralRetentionSlot,
 ) -> Result<RobustnessPreflight, RobustnessPreflightRejection> {
     let point = stage_c_candidate
         .acceptance_point()
@@ -150,14 +150,14 @@ pub fn failed_robustness_terminal(
 /// Apply one reversal-robustness terminal after confirming the retained
 /// accepted point's identity has not changed underneath the probe.
 ///
-/// Takes `&StageCCandidateSlot` (shared, read-only): this phase never
+/// Takes `&IntegralRetentionSlot` (shared, read-only): this phase never
 /// advances or closes `AcceptanceMatrixProgress`, so it cannot take a
 /// mutable slot reference. On identity mismatch (or an emptied slot) the
 /// terminal is stamped `Failed`/`EVIDENCE_INTEGRITY` -- distinct from
 /// `SAFETY_FAULT`, which is reserved for envelope faults.
 pub fn apply_robustness_terminal(
     mut terminal: RobustnessReversalTerminal,
-    stage_c_candidate: &StageCCandidateSlot,
+    stage_c_candidate: &IntegralRetentionSlot,
 ) -> RobustnessReversalTerminal {
     let identity_ok = stage_c_candidate.acceptance_point().is_some_and(|point| {
         point.selected_p == terminal.selected_p
@@ -241,12 +241,12 @@ fn zero_robustness_evidence() -> RobustnessEvidence {
 mod tests {
     use super::*;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, StageCPlanIdentity,
+        AcceptanceMatrixProgress, IntegralPlanIdentity,
     };
 
     fn sample_acceptance_point() -> AcceptancePoint {
         AcceptancePoint {
-            identity: StageCPlanIdentity {
+            identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 0x1234,
                 schema_revision: 1,
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn preflight_refuses_when_no_accepted_point() {
-        let slot = StageCCandidateSlot::new(); // Empty
+        let slot = IntegralRetentionSlot::new(); // Empty
         assert_eq!(
             preflight_robustness_reversal(1, &slot),
             Err(RobustnessPreflightRejection::NoAcceptedCandidate)
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn preflight_reads_point_without_mutating_progress() {
-        let mut slot = StageCCandidateSlot::new();
+        let mut slot = IntegralRetentionSlot::new();
         slot.install_acceptance_point(sample_acceptance_point()); // helper; progress ReadyAscending
         let before = slot.acceptance_point().unwrap().progress;
         let pre = preflight_robustness_reversal(1, &slot).expect("has point");
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn apply_terminal_passes_through_on_identity_match() {
         let point = sample_acceptance_point();
-        let mut slot = StageCCandidateSlot::new();
+        let mut slot = IntegralRetentionSlot::new();
         slot.install_acceptance_point(point);
         let terminal = sample_terminal(point);
 
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn apply_terminal_flags_evidence_integrity_on_identity_mismatch() {
         let point = sample_acceptance_point();
-        let mut slot = StageCCandidateSlot::new();
+        let mut slot = IntegralRetentionSlot::new();
         slot.install_acceptance_point(point);
         let mut terminal = sample_terminal(point);
         terminal.selected_p = point.selected_p.wrapping_add(1);
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn apply_terminal_flags_evidence_integrity_on_target_velocity_mismatch() {
         let point = sample_acceptance_point();
-        let mut slot = StageCCandidateSlot::new();
+        let mut slot = IntegralRetentionSlot::new();
         slot.install_acceptance_point(point);
         let mut terminal = sample_terminal(point);
         // Identical gains, different target: a re-installed candidate must not
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn apply_terminal_flags_evidence_integrity_when_slot_empty() {
         let point = sample_acceptance_point();
-        let slot = StageCCandidateSlot::new(); // Empty
+        let slot = IntegralRetentionSlot::new(); // Empty
         let terminal = sample_terminal(point);
 
         let applied = apply_robustness_terminal(terminal, &slot);

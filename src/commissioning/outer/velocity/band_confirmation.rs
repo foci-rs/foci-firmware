@@ -741,22 +741,22 @@ pub struct TargetBandConfirmationInconclusive(pub BandConfirmationFailureCause);
 
 /// Held-out confirmation success: the only value that may authorize Stage C.
 ///
-/// This is an unforgeable capability. Its `candidate_p` field is **private**
+/// This is an unforgeable capability. Its `nominated_p` field is **private**
 /// and this module exposes no public constructor, no `Default`, and no
 /// `From`: the only code that may build a `BandConfirmationAcceptance` is
 /// [`evaluate_band_confirmation`] in this module, on the path where all eight
 /// fresh intervals passed. A module outside `band_confirmation` therefore
-/// cannot write `BandConfirmationAcceptance { candidate_p, .. }` or otherwise
+/// cannot write `BandConfirmationAcceptance { nominated_p, .. }` or otherwise
 /// mint one, so an `Ok(acceptance)` handed to
 /// [`super::integral_plan::bind_breakaway_stage_c_authority`] can only have
 /// come from a genuine all-eight-contained held-out pass -- it can never be
 /// synthesized to bypass the confirmation gate. Read the confirmed gain with
-/// [`Self::candidate_p`].
+/// [`Self::nominated_p`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationAcceptance {
     /// Confirmed proportional gain. Private so no sibling module can construct
     /// an acceptance; see the type's own documentation.
-    candidate_p: PidPGain,
+    nominated_p: PidPGain,
     /// Per-direction held-out response interval, forward then reverse, in
     /// the SAME signed settled-rate-Q domain `directional_pooled_intervals`
     /// already carries on the combined Stage-C path
@@ -780,12 +780,12 @@ pub struct BandConfirmationAcceptance {
     /// math is unchanged), only the retained, returned interval is in the
     /// rate domain.
     ///
-    /// `pub(crate)`, not private: unlike `candidate_p`, this field carries no
+    /// `pub(crate)`, not private: unlike `nominated_p`, this field carries no
     /// unforgeability requirement of its own (the struct as a whole is still
-    /// unforgeable because `candidate_p` stays private), and both
+    /// unforgeable because `nominated_p` stays private), and both
     /// [`super::integral_plan::StageCAuthority::new_breakaway`]'s test and the
     /// breakaway campaign need to read it directly from a sibling,
-    /// non-descendant module, so a `candidate_p`-style
+    /// non-descendant module, so a `nominated_p`-style
     /// private-field-plus-accessor pair would only add ceremony here.
     pub(crate) held_out_response_intervals_q: [[i32; 2]; 2],
     /// Q0.16 confidence: `1 - worst_half_width_fraction / MAXIMUM_CONTAINABLE_HALF_WIDTH_FRACTION`,
@@ -815,8 +815,8 @@ pub struct BandConfirmationAcceptance {
 
 impl BandConfirmationAcceptance {
     /// The confirmed proportional gain this held-out block accepted.
-    pub(crate) fn candidate_p(&self) -> PidPGain {
-        self.candidate_p
+    pub(crate) fn nominated_p(&self) -> PidPGain {
+        self.nominated_p
     }
 }
 
@@ -854,7 +854,7 @@ fn directional_input_is_complete(input: &ConfirmationDirectionalInput) -> bool {
 /// either: this is real held-out data, not a discovery-derived prediction, so
 /// the interval uses `h = m(8) * SE` directly.
 pub fn evaluate_band_confirmation(
-    candidate_p: PidPGain,
+    nominated_p: PidPGain,
     forward: ConfirmationDirectionalInput,
     reverse: ConfirmationDirectionalInput,
 ) -> Result<BandConfirmationAcceptance, TargetBandConfirmationInconclusive> {
@@ -995,7 +995,7 @@ pub fn evaluate_band_confirmation(
     let band_position_q = (pos * 65535.0) as u16;
 
     Ok(BandConfirmationAcceptance {
-        candidate_p,
+        nominated_p,
         held_out_response_intervals_q,
         confidence_q,
         band_position_q,
@@ -1011,10 +1011,10 @@ pub fn evaluate_band_confirmation(
 /// section 7, "Confirmation block".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationPlan {
-    /// Digest of the discovery plan whose nomination screen selected `candidate_p`.
+    /// Digest of the discovery plan whose nomination screen selected `nominated_p`.
     pub discovery_plan_digest: u64,
     /// Nominated proportional gain under held-out test.
-    pub candidate_p: PidPGain,
+    pub nominated_p: PidPGain,
     /// Stable wire code for the confirmation capture profile.
     pub capture_profile: u8,
     /// Predeclared confirmation family size. Always [`CONFIRMATION_FAMILY_SIZE`],
@@ -1057,7 +1057,7 @@ impl BandConfirmationPlan {
             };
         }
         hash_value!(self.discovery_plan_digest);
-        hash_value!(self.candidate_p.raw());
+        hash_value!(self.nominated_p.raw());
         hash_value!(self.capture_profile);
         hash_value!(self.family_size);
         hash_value!(self.observations_per_direction);
@@ -1077,19 +1077,19 @@ impl BandConfirmationPlan {
 /// Build the immutable held-out confirmation plan for one nominated candidate.
 ///
 /// Binds `discovery_plan_digest`, the digest of the discovery plan whose
-/// nomination screen produced `candidate_p`, so a later Stage-C plan can trace
+/// nomination screen produced `nominated_p`, so a later Stage-C plan can trace
 /// authority back through confirmation to the discovery evidence that
 /// selected its candidate.
 pub fn plan_band_confirmation(
     discovery_plan_digest: u64,
-    candidate_p: PidPGain,
+    nominated_p: PidPGain,
 ) -> Result<BandConfirmationPlan, BandConfirmationPlanError> {
-    if candidate_p == PidPGain::ZERO {
+    if nominated_p == PidPGain::ZERO {
         return Err(BandConfirmationPlanError::InvalidRequest);
     }
     let mut plan = BandConfirmationPlan {
         discovery_plan_digest,
-        candidate_p,
+        nominated_p,
         capture_profile: CONFIRMATION_CAPTURE_PROFILE_EXISTING,
         family_size: CONFIRMATION_FAMILY_SIZE,
         observations_per_direction: CONFIRMATION_OBSERVATIONS_PER_DIRECTION,
@@ -1135,7 +1135,7 @@ pub(crate) enum BandConfirmationContractError {
     /// The recomputed [`BandConfirmationPlan::digest`] did not match the stored
     /// `plan_digest`. Because `digest()` folds every frozen field, the
     /// candidate gain, the bound discovery digest, and the fixed slot order,
-    /// any tamper the field checks above do not name (a mutated `candidate_p`,
+    /// any tamper the field checks above do not name (a mutated `nominated_p`,
     /// `discovery_plan_digest`, or slot-order contribution) is caught here.
     DigestMismatch,
 }
@@ -1169,7 +1169,7 @@ const CANONICAL_CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
 /// Every field frozen for the only admitted confirmation profile is verified:
 /// `family_size`, `observations_per_direction`, `capture_profile`, all three
 /// timing fields, both band edges, the acceptance rule, the fixed slot order,
-/// and -- last -- digest self-consistency, which binds `candidate_p`, the
+/// and -- last -- digest self-consistency, which binds `nominated_p`, the
 /// discovery digest, and the slot-order contribution the earlier scalar checks
 /// do not name individually.
 pub(crate) fn validate_fixed_contract(

@@ -300,7 +300,7 @@ pub async fn handle_tmc_control_request_with_stages<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,
     runtime: &mut TmcControlRuntime,
-    stage_c_candidate: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+    stage_c_candidate: &mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
     tmc: &mut Tmc4671Spi<Spi>,
     board: &mut Board,
 ) -> TmcControlRequestOutcome
@@ -1359,7 +1359,7 @@ where
 /// Handle one request with a throwaway, per-call Stage-C candidate slot.
 ///
 /// This wrapper is a test/convenience entry point: it allocates a fresh
-/// `StageCCandidateSlot` on every call, so it retains no Stage-C state across
+/// `IntegralRetentionSlot` on every call, so it retains no Stage-C state across
 /// calls. Production board integration calls
 /// [`handle_tmc_control_request_with_stages`] directly with its persistent,
 /// task-local Stage-C slot.
@@ -1375,7 +1375,7 @@ where
     Board: TmcRequestBoard<Spi>,
 {
     let mut stage_c_candidate =
-        crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new();
+        crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new();
     handle_tmc_control_request_with_stages(
         req,
         pre_request,
@@ -1559,10 +1559,10 @@ mod tests {
 
     #[fixture_test]
     fn trace_request_future_size_stays_bounded() {
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         let mut board = RecordingBoard::skip_tick_tail();
         let request = TmcRequest::new(0, TmcRequestKind::SetEnable(false));
@@ -1815,13 +1815,13 @@ mod tests {
     }
 
     fn retained_stage_c_authority()
-    -> crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary {
+    -> crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            StageCAuthoritySummary, StageCPlanIdentity,
+            IntegralAuthoritySummary, IntegralPlanIdentity,
         };
 
-        StageCAuthoritySummary {
-            identity: StageCPlanIdentity {
+        IntegralAuthoritySummary {
+            identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 1,
                 schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
@@ -2683,7 +2683,7 @@ mod tests {
 
     #[fixture_test]
     async fn amplitude_request_without_acceptance_point_fails_without_motion_writes() {
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
         use crate::commissioning::types::{FixedGainAmplitudeCause, FixedGainAmplitudeOutcome};
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2694,7 +2694,7 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
@@ -2730,7 +2730,7 @@ mod tests {
     #[fixture_test]
     async fn admitted_amplitude_discloses_exact_plan_before_engine_execution() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            AcceptanceMatrixProgress, StageCCandidateSlot,
+            AcceptanceMatrixProgress, IntegralRetentionSlot,
         };
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2741,7 +2741,7 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         stage_c.install_acceptance_point(
             crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
                 velocity_sweep_request(),
@@ -2787,7 +2787,7 @@ mod tests {
     #[fixture_test]
     async fn robustness_discloses_worst_case_duration_before_motion() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            AcceptanceMatrixProgress, StageCCandidateSlot,
+            AcceptanceMatrixProgress, IntegralRetentionSlot,
         };
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2798,7 +2798,7 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         stage_c.install_acceptance_point(
             crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
                 velocity_sweep_request(),
@@ -2900,7 +2900,7 @@ mod tests {
 
     #[fixture_test]
     async fn admitted_resume_discloses_exact_plan_before_engine_execution() {
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
         let mut board = RecordingBoard::skip_tick_tail();
         tmc_channel0()
@@ -2910,7 +2910,7 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         let plan = resumable_stage_c_plan();
         crate::commission_dispatch::stage_c::install_authority_from_plan(0, &mut stage_c, plan);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -2982,7 +2982,7 @@ mod tests {
 
     #[fixture_test]
     async fn resume_plan_mismatch_names_the_retained_plan_without_motion_writes() {
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
         use crate::commissioning::types::VelocityIntegralOutcome;
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2993,7 +2993,7 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         let plan = resumable_stage_c_plan();
         let retained =
             crate::commission_dispatch::stage_c::install_authority_from_plan(0, &mut stage_c, plan);
@@ -3047,7 +3047,7 @@ mod tests {
 
     #[fixture_test]
     async fn resume_of_an_unplannable_request_still_names_the_retained_plan() {
-        use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
         use crate::commissioning::types::VelocityIntegralOutcome;
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -3058,7 +3058,7 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         let retained = crate::commission_dispatch::stage_c::install_authority_from_plan(
             0,
             &mut stage_c,
@@ -3109,7 +3109,7 @@ mod tests {
     #[fixture_test]
     async fn amplitude_order_mismatch_preserves_point_without_motion() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            AcceptanceMatrixProgress, StageCCandidateSlot,
+            AcceptanceMatrixProgress, IntegralRetentionSlot,
         };
         use crate::commissioning::types::FixedGainAmplitudeCause;
 
@@ -3121,7 +3121,7 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         let point = crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
             velocity_sweep_request(),
             AcceptanceMatrixProgress::ReadyDescending,
@@ -3158,11 +3158,11 @@ mod tests {
     #[fixture_test]
     async fn same_channel_explicit_calibration_preserves_stage_c_authority() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            StageCCandidateSlot, StageCSlotState,
+            IntegralRetentionSlot, IntegralRetentionSlotState,
         };
 
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut stage_c = StageCCandidateSlot::new();
+        let mut stage_c = IntegralRetentionSlot::new();
         stage_c.install_authority(retained_stage_c_authority());
         let mut board = RecordingBoard::skip_tick_tail();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -3177,7 +3177,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(stage_c.state(), StageCSlotState::AuthorityOnly);
+        assert_eq!(stage_c.state(), IntegralRetentionSlotState::AuthorityOnly);
         assert_eq!(stage_c.authority(), Some(retained_stage_c_authority()));
         assert_eq!(
             runtime.pending_commission_kind(),

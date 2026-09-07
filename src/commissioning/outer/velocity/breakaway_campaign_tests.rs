@@ -2320,8 +2320,8 @@ fn an_all_eight_contained_run_accepts_with_the_candidate_p_and_the_frozen_plan()
     let BandConfirmationOutcome::Accepted { acceptance, plan } = outcome else {
         panic!("expected Accepted, got {outcome:?}");
     };
-    assert_eq!(acceptance.candidate_p(), gain(724));
-    assert_eq!(plan.candidate_p, gain(724));
+    assert_eq!(acceptance.nominated_p(), gain(724));
+    assert_eq!(plan.nominated_p, gain(724));
     assert_eq!(plan.discovery_plan_digest, 42);
 
     assert_eq!(
@@ -2457,7 +2457,7 @@ fn excessive_uncertainty_reports_inconclusive_excessive_uncertainty() {
     };
 
     let outcome = confirmation_evaluation_outcome(
-        evaluate_band_confirmation(plan.candidate_p, forward, reverse),
+        evaluate_band_confirmation(plan.nominated_p, forward, reverse),
         plan,
     );
 

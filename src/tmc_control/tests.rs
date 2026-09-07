@@ -3466,7 +3466,7 @@ fn armed_runtime_with_restore_started(runtime: &mut TmcControlRuntime, backend: 
 async fn armed_runtime_mid_restore(
     runtime: &mut TmcControlRuntime,
     backend: &mut MockBackend,
-    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
 ) {
     let tmc = crate::state::tmc::tmc_channel0();
     let stepper = crate::state::stepper::stepper_channel0();
@@ -3489,7 +3489,7 @@ async fn armed_runtime_mid_restore(
 async fn assert_drain_reaches_safe_state(
     runtime: &mut TmcControlRuntime,
     backend: &mut MockBackend,
-    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+    slot: &mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
 ) {
     let tmc = crate::state::tmc::tmc_channel0();
     let stepper = crate::state::stepper::stepper_channel0();
@@ -3555,7 +3555,7 @@ fn shutdown_mid_restore_drains_to_safe_state_before_clearing_slots() {
         crate::state::tmc::reset_all_tmc_channels();
         crate::state::stepper::reset_all_stepper_channels();
         let mut slot =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -3586,7 +3586,7 @@ fn shutdown_safe_state_drains_a_pending_restore_before_disarming() {
         crate::state::tmc::reset_all_tmc_channels();
         crate::state::stepper::reset_all_stepper_channels();
         let mut slot =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -3621,7 +3621,7 @@ fn queue_flush_mid_restore_drains_to_safe_state_before_clearing_slots() {
         crate::state::tmc::reset_all_tmc_channels();
         crate::state::stepper::reset_all_stepper_channels();
         let mut slot =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -3656,7 +3656,7 @@ fn emergency_disable_mid_restore_drains_to_safe_state_before_clearing_slots() {
         crate::state::tmc::reset_all_tmc_channels();
         crate::state::stepper::reset_all_stepper_channels();
         let mut slot =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -3691,7 +3691,7 @@ fn lease_expiry_mid_restore_drains_to_safe_state_before_clearing_slots() {
         crate::state::tmc::reset_all_tmc_channels();
         crate::state::stepper::reset_all_stepper_channels();
         let mut slot =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -3722,7 +3722,7 @@ fn cancelled_mid_restore_reports_cancelled_status_not_shutdown() {
         crate::state::tmc::reset_all_tmc_channels();
         crate::state::stepper::reset_all_stepper_channels();
         let mut slot =
-            crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new(
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
@@ -3897,7 +3897,7 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
     let tmc = crate::state::tmc::tmc_channel0();
     let stepper = crate::state::stepper::stepper_channel0();
     let mut slot =
-        crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new();
+        crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let mut backend = MockBackend::new();
     armed_runtime_with_restore_started(&mut runtime, &mut backend);
@@ -3958,7 +3958,7 @@ fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
     let tmc = crate::state::tmc::tmc_channel0();
     let stepper = crate::state::stepper::stepper_channel0();
     let mut slot =
-        crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot::new();
+        crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let mut backend = MockBackend::new();
     pollster::block_on(armed_runtime_mid_restore(

@@ -398,7 +398,7 @@ mod tests {
         FixedGainAmplitudeOrder, FixedGainAmplitudePlan,
     };
     use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity;
     use crate::commissioning::outer::velocity::recovery::RecoveryStage;
     use crate::commissioning::outer::velocity::sweep_consensus::{
         DirectionalConsensus, DirectionalConsensusClass,
@@ -452,7 +452,7 @@ mod tests {
             slot_order: IntegralSlotOrder::ForwardFirst,
             schema_revision:
                 crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
-            acceptance_identity: StageCPlanIdentity {
+            acceptance_identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 0x1234,
                 schema_revision:

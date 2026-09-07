@@ -1046,7 +1046,7 @@ mod tests {
     use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, StageCPlanIdentity,
+        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
     };
     use crate::commissioning::outer::velocity::robustness_reversal::{
         RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
@@ -1082,7 +1082,7 @@ mod tests {
     /// read), so the values just need to be well-typed.
     fn robustness_test_point() -> AcceptancePoint {
         AcceptancePoint {
-            identity: StageCPlanIdentity {
+            identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 0x1234,
                 schema_revision: 1,

@@ -74,7 +74,7 @@ struct OwnedTerminalData {
     use_handled_stop_take: bool,
     reproduction: Option<stage_c::StageCReproductionReport>,
     authority: Option<
-        crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
+        crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
     >,
 }
 

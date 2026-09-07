@@ -3,10 +3,10 @@ use super::integral_plan::{
     STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
 };
 use super::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, StageCAuthoritySummary, StageCCandidateSlot,
-    StageCCandidateSummary, StageCPlanIdentity, StageCReproductionDecision,
-    StageCRestBoundaryReference, StageCSlotState, closed_intersection, compare_integral_runs,
-    delta_e, signed_divergence_gap,
+    AcceptanceMatrixProgress, AcceptancePoint, IntegralAuthoritySummary, IntegralPlanIdentity,
+    IntegralReproductionDecision, IntegralRestBoundaryReference, IntegralRetentionSlot,
+    IntegralRetentionSlotState, RetainedIntegralEvidence, closed_intersection,
+    compare_integral_runs, delta_e, signed_divergence_gap,
 };
 use super::reproduction::{BUILD_FEATURES, StageBDirectionalValidity};
 use crate::commission_dispatch::test_support::breakaway_acquisition_for_test;
@@ -15,8 +15,8 @@ fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
     ExactRateInterval::new(low_q, high_q).unwrap()
 }
 
-fn identity(channel: u8, digest: u64) -> StageCPlanIdentity {
-    StageCPlanIdentity {
+fn identity(channel: u8, digest: u64) -> IntegralPlanIdentity {
+    IntegralPlanIdentity {
         channel,
         build_features: 0x1234,
         schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
@@ -24,8 +24,8 @@ fn identity(channel: u8, digest: u64) -> StageCPlanIdentity {
     }
 }
 
-fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
-    StageCAuthoritySummary {
+fn authority(channel: u8, digest: u64) -> IntegralAuthoritySummary {
+    IntegralAuthoritySummary {
         identity: identity(channel, digest),
         acquisition: breakaway_acquisition_for_test(),
         final_p: 1_448,
@@ -75,11 +75,11 @@ fn evidence(
 }
 
 fn candidate(
-    authority: StageCAuthoritySummary,
+    authority: IntegralAuthoritySummary,
     evidence: IntegralRunEvidence,
     run: u64,
-) -> StageCCandidateSummary {
-    StageCCandidateSummary {
+) -> RetainedIntegralEvidence {
+    RetainedIntegralEvidence {
         authority,
         evidence,
         rest_boundary: None,
@@ -107,15 +107,15 @@ fn acceptance_point(channel: u8, progress: AcceptanceMatrixProgress) -> Acceptan
 #[test]
 fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authority() {
     let point = acceptance_point(0, AcceptanceMatrixProgress::ReadyAscending);
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
 
     slot.install_acceptance_point(point);
 
-    assert_eq!(slot.state(), StageCSlotState::AcceptancePoint);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::AcceptancePoint);
     assert_eq!(slot.acceptance_point(), Some(point));
     assert_eq!(slot.authority(), None);
     assert_eq!(slot.candidate(), None);
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
+    assert_eq!(core::mem::size_of::<IntegralRetentionSlot>(), 648);
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
     assert_eq!(AcceptanceMatrixProgress::Closed as u8, 2);
 
     let point = acceptance_point(0, AcceptanceMatrixProgress::ReadyAscending);
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(point);
     slot.observe_host_error();
     slot.preserve_for_same_channel_calibration(0);
@@ -145,25 +145,25 @@ fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
     assert!(!slot.close_matrix_progress());
 
     assert!(!slot.begin_acceptance_replacement(1));
-    assert_eq!(slot.state(), StageCSlotState::AcceptancePoint);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::AcceptancePoint);
     assert!(slot.begin_acceptance_replacement(0));
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 
     slot.install_acceptance_point(point);
     slot.invalidate_for_channel(1);
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
     slot.install_acceptance_point(point);
     slot.invalidate_for_unrelated_commissioning();
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
     slot.install_acceptance_point(point);
     slot.observe_fault();
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 }
 
 #[test]
 fn legacy_retained_states_refuse_acceptance_replacement() {
     let legacy = authority(0, 7);
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(legacy);
 
     assert!(!slot.begin_acceptance_replacement(0));
@@ -178,41 +178,44 @@ fn boundary_references_are_reported_but_never_gate_reproduction() {
         [0b001111, 0b111100],
         [20, -40],
     );
-    let previous_boundary = StageCRestBoundaryReference {
+    let previous_boundary = IntegralRestBoundaryReference {
         positive_rung_index: 3,
         slot: 4,
     };
-    let current_boundary = StageCRestBoundaryReference {
+    let current_boundary = IntegralRestBoundaryReference {
         positive_rung_index: 5,
         slot: 1,
     };
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(authority);
     let mut first = candidate(authority, evidence, 1);
     first.rest_boundary = Some(previous_boundary);
     assert!(matches!(
         slot.observe_sufficient(first),
-        StageCReproductionDecision::CompleteCandidate(_)
+        IntegralReproductionDecision::FirstRunRetained(_)
     ));
 
     let mut second = candidate(authority, evidence, 2);
     second.rest_boundary = Some(current_boundary);
-    let StageCReproductionDecision::Complete(delta) = slot.observe_sufficient(second) else {
+    let IntegralReproductionDecision::RepeatabilityConfirmed(delta) =
+        slot.observe_sufficient(second)
+    else {
         panic!("boundary identity must not gate an otherwise reproduced curve");
     };
     assert_eq!(delta.previous_rest_boundary, Some(previous_boundary));
     assert_eq!(delta.current_rest_boundary, Some(current_boundary));
     assert!(delta.reproduces());
 
-    let mut none_then_present = StageCCandidateSlot::new();
+    let mut none_then_present = IntegralRetentionSlot::new();
     none_then_present.install_authority(authority);
     assert!(matches!(
         none_then_present.observe_sufficient(candidate(authority, evidence, 3)),
-        StageCReproductionDecision::CompleteCandidate(_)
+        IntegralReproductionDecision::FirstRunRetained(_)
     ));
     let mut present = candidate(authority, evidence, 4);
     present.rest_boundary = Some(current_boundary);
-    let StageCReproductionDecision::Complete(delta) = none_then_present.observe_sufficient(present)
+    let IntegralReproductionDecision::RepeatabilityConfirmed(delta) =
+        none_then_present.observe_sufficient(present)
     else {
         panic!("boundary presence must remain report-only");
     };
@@ -220,17 +223,17 @@ fn boundary_references_are_reported_but_never_gate_reproduction() {
     assert_eq!(delta.current_rest_boundary, Some(current_boundary));
 
     for boundary in [None, Some(previous_boundary)] {
-        let mut equal_boundaries = StageCCandidateSlot::new();
+        let mut equal_boundaries = IntegralRetentionSlot::new();
         equal_boundaries.install_authority(authority);
         let mut first = candidate(authority, evidence, 5);
         first.rest_boundary = boundary;
         assert!(matches!(
             equal_boundaries.observe_sufficient(first),
-            StageCReproductionDecision::CompleteCandidate(_)
+            IntegralReproductionDecision::FirstRunRetained(_)
         ));
         let mut second = candidate(authority, evidence, 6);
         second.rest_boundary = boundary;
-        let StageCReproductionDecision::Complete(delta) =
+        let IntegralReproductionDecision::RepeatabilityConfirmed(delta) =
             equal_boundaries.observe_sufficient(second)
         else {
             panic!("equal boundary references must not gate reproduction");
@@ -367,19 +370,19 @@ fn two_reproduced_rungs_or_out_of_range_masks_refuse_reproduction() {
 #[test]
 fn authority_only_lifecycle_preserves_authority_on_safe_insufficiency() {
     let authority = authority(0, 7);
-    let mut slot = StageCCandidateSlot::new();
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    let mut slot = IntegralRetentionSlot::new();
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
     slot.install_authority(authority);
-    assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
 
     slot.observe_inconclusive();
-    assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
     slot.observe_host_error();
     slot.preserve_for_same_channel_calibration(0);
-    assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
 
     slot.observe_fault();
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 }
 
 #[test]
@@ -391,13 +394,13 @@ fn candidate_completes_mismatches_replaces_and_inconclusive_demotes() {
         [20, -40],
     );
     let first = candidate(authority, first_evidence, 1);
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(authority);
     assert!(matches!(
         slot.observe_sufficient(first),
-        StageCReproductionDecision::CompleteCandidate(_)
+        IntegralReproductionDecision::FirstRunRetained(_)
     ));
-    assert_eq!(slot.state(), StageCSlotState::Candidate);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Candidate);
 
     let mut divergent = first_evidence;
     for direction in 0..2 {
@@ -410,47 +413,50 @@ fn candidate_completes_mismatches_replaces_and_inconclusive_demotes() {
     let second = candidate(authority, divergent, 2);
     assert!(matches!(
         slot.observe_sufficient(second),
-        StageCReproductionDecision::InconclusiveReproductionMismatch(_)
+        IntegralReproductionDecision::RepeatabilityMismatch(_)
     ));
     assert_eq!(slot.candidate().unwrap().run_digest, 2);
 
     slot.observe_inconclusive();
-    assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
     assert_eq!(slot.authority(), Some(authority));
 
     let fresh = candidate(authority, first_evidence, 3);
     assert!(matches!(
         slot.observe_sufficient(fresh),
-        StageCReproductionDecision::CompleteCandidate(_)
+        IntegralReproductionDecision::FirstRunRetained(_)
     ));
     let matching = candidate(authority, first_evidence, 4);
     assert!(matches!(
         slot.observe_sufficient(matching),
-        StageCReproductionDecision::Complete(_)
+        IntegralReproductionDecision::RepeatabilityConfirmed(_)
     ));
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 }
 
 #[test]
 fn plan_mismatch_and_invalidation_follow_the_authority_lifecycle() {
     let authority = authority(0, 7);
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(authority);
     assert!(matches!(
         slot.preflight(identity(0, 8)),
-        Some(StageCReproductionDecision::RejectedPlanMismatch { .. })
+        Some(IntegralReproductionDecision::RejectedPlanMismatch { .. })
     ));
     assert_eq!(slot.authority(), Some(authority));
 
     slot.invalidate_for_channel(0);
-    assert_eq!(slot.state(), StageCSlotState::AuthorityOnly);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
     slot.invalidate_for_channel(1);
-    assert_eq!(slot.state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 
     slot.install_authority(authority);
     slot.invalidate_for_unrelated_commissioning();
-    assert_eq!(slot.state(), StageCSlotState::Empty);
-    assert_eq!(StageCCandidateSlot::new().state(), StageCSlotState::Empty);
+    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
+    assert_eq!(
+        IntegralRetentionSlot::new().state(),
+        IntegralRetentionSlotState::Empty
+    );
 }
 
 #[test]
@@ -458,12 +464,12 @@ fn schema_one_candidate_rejects_before_motion_without_losing_authority() {
     let current = authority(0, 7);
     let mut retained = current;
     retained.identity.schema_revision = 1;
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained);
 
     assert!(matches!(
         slot.preflight(current.identity),
-        Some(StageCReproductionDecision::RejectedPlanMismatch { .. })
+        Some(IntegralReproductionDecision::RejectedPlanMismatch { .. })
     ));
     assert_eq!(slot.authority(), Some(retained));
 }
@@ -476,12 +482,12 @@ fn q8_8_package_authority_rejects_before_stage_c_motion() {
     retained.identity.build_features = 0b0000;
     let mut current = retained.identity;
     current.build_features = BUILD_FEATURES;
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained);
 
     assert!(matches!(
         slot.preflight(current),
-        Some(StageCReproductionDecision::RejectedPlanMismatch { .. })
+        Some(IntegralReproductionDecision::RejectedPlanMismatch { .. })
     ));
     assert_eq!(slot.authority(), Some(retained));
 }
@@ -502,14 +508,14 @@ fn stage_c_candidate_size_is_measured_without_padding() {
     // integral_plan.rs's own size assertion for the rationale.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 128);
-    assert_eq!(core::mem::size_of::<StageCAuthoritySummary>(), 96);
+    assert_eq!(core::mem::size_of::<IntegralAuthoritySummary>(), 96);
     assert_eq!(
         core::mem::size_of::<crate::commissioning::types::VelocityIntegralTerminal>(),
         640
     );
-    assert_eq!(core::mem::size_of::<StageCCandidateSlot>(), 648);
+    assert_eq!(core::mem::size_of::<IntegralRetentionSlot>(), 648);
     assert_eq!(
-        core::mem::size_of::<super::integral_reproduction::StageCReproductionDelta>(),
+        core::mem::size_of::<super::integral_reproduction::IntegralReproductionDelta>(),
         596
     );
 }

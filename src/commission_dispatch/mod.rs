@@ -68,13 +68,13 @@ pub struct DispatchState<'a> {
 /// Mutable board-wide evidence retention passed through one dispatch call.
 pub struct CommissionRetention<'a> {
     pub stage_c:
-        &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+        &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
 }
 
 impl<'a> CommissionRetention<'a> {
     /// Borrow the Stage-C RAM slot as one lifecycle context.
     pub fn new(
-        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
     ) -> Self {
         Self { stage_c }
     }
@@ -91,7 +91,7 @@ pub struct CommissionTerminalContext<'a, E> {
 impl<'a, E> CommissionTerminalContext<'a, E> {
     /// Borrow the retained Stage-C slot and bind the board's reply emitter.
     pub fn new(
-        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot,
+        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
         emit_evidence: E,
     ) -> Self {
         Self {
@@ -337,7 +337,7 @@ pub enum ReplyPayload {
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
         reproduction: Option<stage_c::StageCReproductionReport>,
         authority: Option<
-            crate::commissioning::outer::velocity::integral_reproduction::StageCAuthoritySummary,
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
         >,
     },
     /// Stage-C terminal for a request refused before any exact plan existed.

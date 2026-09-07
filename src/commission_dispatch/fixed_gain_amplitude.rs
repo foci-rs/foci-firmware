@@ -14,7 +14,7 @@ use crate::commissioning::outer::velocity::integral_plan::{
     plan_retained_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, StageCCandidateSlot,
+    AcceptanceMatrixProgress, AcceptancePoint, IntegralRetentionSlot,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepRequest, plan_stage_b_velocity_sweep,
@@ -188,7 +188,7 @@ pub fn preflight_fixed_gain_amplitude(
     request: VelocitySweepRequest,
     config: &StageCPreflightConfig,
     run_sequence: u32,
-    stage_c_candidate: &StageCCandidateSlot,
+    stage_c_candidate: &IntegralRetentionSlot,
 ) -> Result<FixedGainAmplitudePreflight, FixedGainAmplitudePreflightRejection> {
     let point = stage_c_candidate
         .acceptance_point()
@@ -236,7 +236,7 @@ pub fn apply_fixed_gain_amplitude_terminal(
     mut terminal: FixedGainAmplitudeTerminal,
     order: FixedGainAmplitudeOrder,
     expected_plan_digest: u64,
-    stage_c_candidate: &mut StageCCandidateSlot,
+    stage_c_candidate: &mut IntegralRetentionSlot,
 ) -> FixedGainAmplitudeTerminal {
     let Some(point) = stage_c_candidate.acceptance_point() else {
         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
@@ -286,7 +286,7 @@ pub fn apply_fixed_gain_amplitude_terminal(
 pub fn failed_fixed_gain_amplitude_terminal(
     run_sequence: u32,
     rejection: FixedGainAmplitudePreflightRejection,
-    stage_c_candidate: &StageCCandidateSlot,
+    stage_c_candidate: &IntegralRetentionSlot,
 ) -> FixedGainAmplitudeTerminal {
     let cause = match rejection {
         FixedGainAmplitudePreflightRejection::MissingAcceptancePoint => {
@@ -404,7 +404,7 @@ pub(crate) fn test_acceptance_point(
         }); CONSENSUS_OBSERVATIONS_PER_DIRECTION],
     };
     let acceptance =
-        evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse).unwrap();
+        evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
     let held_out_response_intervals_q = acceptance.held_out_response_intervals_q;
     let token = bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
@@ -425,7 +425,7 @@ pub(crate) fn test_acceptance_point(
     };
     let plan = plan_retained_breakaway_velocity_integral_response(
         token,
-        confirmation_plan.candidate_p.raw(),
+        confirmation_plan.nominated_p.raw(),
         context,
         held_out_response_intervals_q,
         acceptance.confidence_q,
@@ -438,7 +438,7 @@ pub(crate) fn test_acceptance_point(
 
     crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
         identity:
-            crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity {
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity {
                 channel: 0,
                 build_features: BUILD_FEATURES,
                 schema_revision: plan.schema_revision,

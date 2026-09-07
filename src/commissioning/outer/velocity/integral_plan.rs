@@ -1124,7 +1124,7 @@ pub(crate) fn bind_breakaway_stage_c_authority(
 ) -> Result<ConfirmedAcquisitionDigest, BreakawayAuthorityBindingError> {
     let acceptance = confirmation_outcome
         .map_err(|_| BreakawayAuthorityBindingError::ConfirmationNotAccepted)?;
-    if acceptance.candidate_p() != confirmation_plan.candidate_p {
+    if acceptance.nominated_p() != confirmation_plan.nominated_p {
         return Err(BreakawayAuthorityBindingError::AcceptanceCandidateMismatch);
     }
     if candidate_acquisition_digest != confirmation_plan.plan_digest {
@@ -1206,7 +1206,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 ///
 /// The normative decision (spec section 7):
 /// confirmation selects the exact Stage-C proportional gain but does not
-/// waive Stage-C safety admission. `fixed_p = confirmation_plan.candidate_p`
+/// waive Stage-C safety admission. `fixed_p = confirmation_plan.nominated_p`
 /// unconditionally -- there is no joint-membership test-point selection, no
 /// lower-middle or highest-in-band reselection, and no fallback to another
 /// discovery candidate. Every existing plan-time safety check still gates
@@ -1215,7 +1215,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// The only authority input is `token`, a [`ConfirmedAcquisitionDigest`]. That
 /// token can be minted solely by [`bind_breakaway_stage_c_authority`] from a
 /// genuine `Ok(`[`BandConfirmationAcceptance`]`)` -- itself unforgeable (its
-/// `candidate_p` field is private) -- so this gate cannot be reached for an
+/// `nominated_p` field is private) -- so this gate cannot be reached for an
 /// arbitrary gain without a real all-eight held-out pass. The gate builds the
 /// [`StageCAuthority`] INTERNALLY via [`StageCAuthority::new_breakaway`]; it
 /// never accepts a pre-built `StageCAuthority`, closing the bypass where a
@@ -1294,7 +1294,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
         confidence_q,
         band_position_q,
     );
-    let fixed_p = confirmation_plan.candidate_p.raw();
+    let fixed_p = confirmation_plan.nominated_p.raw();
     if !transition_capable_stage_c_gain(
         fixed_p,
         context.target_velocity_rpm,
@@ -1346,8 +1346,8 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 /// `held_out_response_intervals_q` must be the exact value
 /// [`StageCAuthority::directional_pooled_intervals`] carried on the plan being
 /// resumed -- callers read it back from the retained
-/// [`super::integral_reproduction::StageCAuthoritySummary`], which
-/// `StageCAuthoritySummary::from_plan` captured from the original accepted
+/// [`super::integral_reproduction::IntegralAuthoritySummary`], which
+/// `IntegralAuthoritySummary::from_plan` captured from the original accepted
 /// plan. `plan.digest()` folds this field in, so any other value -- including
 /// the unavailable-value zero this parameter's predecessor hardcoded --
 /// rebuilds a plan whose digest can never match the retained identity, and

@@ -767,18 +767,18 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     .unwrap();
     assert_eq!(discovery_plan.probe_plan_digest, probe_plan.plan_digest);
 
-    let candidate_p = breakaway_gain(724);
+    let nominated_p = breakaway_gain(724);
     let confirmation_plan =
-        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+        plan_band_confirmation(discovery_plan.plan_digest, nominated_p).unwrap();
     assert_eq!(
         confirmation_plan.discovery_plan_digest,
         discovery_plan.plan_digest
     );
 
     let (forward, reverse) = accepted_confirmation_evidence();
-    let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse)
+    let acceptance = evaluate_band_confirmation(nominated_p, forward, reverse)
         .expect("rung-18-class evidence confirms within the 70-80% band");
-    assert_eq!(acceptance.candidate_p(), candidate_p);
+    assert_eq!(acceptance.nominated_p(), nominated_p);
 
     let bound = bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
@@ -860,11 +860,11 @@ fn stage_c_authority_rejects_a_discovery_or_probe_digest() {
         320_000,
     ))
     .unwrap();
-    let candidate_p = breakaway_gain(724);
+    let nominated_p = breakaway_gain(724);
     let confirmation_plan =
-        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+        plan_band_confirmation(discovery_plan.plan_digest, nominated_p).unwrap();
     let (forward, reverse) = accepted_confirmation_evidence();
-    let acceptance = evaluate_band_confirmation(candidate_p, forward, reverse).unwrap();
+    let acceptance = evaluate_band_confirmation(nominated_p, forward, reverse).unwrap();
 
     // The discovery digest is offered where the confirmation digest belongs.
     assert_eq!(
@@ -892,9 +892,9 @@ fn stage_c_authority_rejects_a_failed_confirmation_even_with_a_matching_digest()
         320_000,
     ))
     .unwrap();
-    let candidate_p = breakaway_gain(724);
+    let nominated_p = breakaway_gain(724);
     let confirmation_plan =
-        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+        plan_band_confirmation(discovery_plan.plan_digest, nominated_p).unwrap();
 
     // The confirmation plan's own digest is well formed and matches exactly,
     // but the held-out block did not accept: Stage C must still be refused.
@@ -920,9 +920,9 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
         320_000,
     ))
     .unwrap();
-    let candidate_p = breakaway_gain(724);
+    let nominated_p = breakaway_gain(724);
     let confirmation_plan =
-        plan_band_confirmation(discovery_plan.plan_digest, candidate_p).unwrap();
+        plan_band_confirmation(discovery_plan.plan_digest, nominated_p).unwrap();
 
     // A `BandConfirmationAcceptance` cannot be forged from this sibling module
     // (its field is private to `band_confirmation`), so the mismatched
@@ -932,7 +932,7 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
     let (forward, reverse) = accepted_confirmation_evidence();
     let mismatched_acceptance = evaluate_band_confirmation(breakaway_gain(512), forward, reverse)
         .expect("rung-18-class evidence confirms within the 70-80% band");
-    assert_eq!(mismatched_acceptance.candidate_p(), breakaway_gain(512));
+    assert_eq!(mismatched_acceptance.nominated_p(), breakaway_gain(512));
     assert_eq!(
         bind_breakaway_stage_c_authority(
             confirmation_plan.plan_digest,
@@ -973,8 +973,8 @@ fn breakaway_acquisition_context() -> AcquisitionContext {
     context
 }
 
-fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
-    plan_band_confirmation(0x1111_2222_3333_4444, candidate_p).unwrap()
+fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
+    plan_band_confirmation(0x1111_2222_3333_4444, nominated_p).unwrap()
 }
 
 /// Mint the breakaway confirmation token for `confirmation_plan` through the
@@ -984,7 +984,7 @@ fn breakaway_confirmation_plan(candidate_p: PidPGain) -> BandConfirmationPlan {
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
-        evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse).unwrap();
+        evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
     bind_breakaway_stage_c_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
@@ -1002,7 +1002,7 @@ fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcqu
 /// rather than threading a tuple through every fixture call site.
 fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]; 2] {
     let (forward, reverse) = accepted_confirmation_evidence();
-    evaluate_band_confirmation(confirmation_plan.candidate_p, forward, reverse)
+    evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse)
         .unwrap()
         .held_out_response_intervals_q
 }
@@ -1019,7 +1019,7 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
     use crate::commission_dispatch::stage_c::{
         StageCPreflightConfig, install_authority_from_plan, preflight_stage_c_request,
     };
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
     let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
     let plan = plan_breakaway_velocity_integral_response(
@@ -1034,7 +1034,7 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
         4_000,
     )
     .expect("the campaign's own Stage-C plan");
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     install_authority_from_plan(0, &mut slot, plan);
 
     let preflight = preflight_stage_c_request(
@@ -1075,7 +1075,7 @@ fn a_resume_under_changed_physical_context_is_refused() {
         StageCPreflightConfig, StageCPreflightRejection, install_authority_from_plan,
         preflight_stage_c_request,
     };
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
     let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
     let plan = plan_breakaway_velocity_integral_response(
@@ -1090,7 +1090,7 @@ fn a_resume_under_changed_physical_context_is_refused() {
         4_000,
     )
     .expect("the campaign's own Stage-C plan");
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     install_authority_from_plan(0, &mut slot, plan);
     let config = |pwm_hz, encoder_counts_per_rev| StageCPreflightConfig {
         encoder_counts_per_rev,
@@ -1122,7 +1122,7 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
         StageCPreflightConfig, StageCPreflightRejection, install_authority_from_plan,
         preflight_stage_c_request,
     };
-    use crate::commissioning::outer::velocity::integral_reproduction::StageCCandidateSlot;
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
     let confirmation_plan = breakaway_confirmation_plan(breakaway_gain(512));
     let plan = plan_breakaway_velocity_integral_response(
@@ -1137,7 +1137,7 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
         4_000,
     )
     .expect("the campaign's own Stage-C plan");
-    let mut slot = StageCCandidateSlot::new();
+    let mut slot = IntegralRetentionSlot::new();
     let retained = install_authority_from_plan(0, &mut slot, plan);
     let mut changed = stage_b_request();
     changed.max_stroke_travel_mrev += 1;
@@ -1165,8 +1165,8 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
 
 #[test]
 fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
-    let candidate_p = breakaway_gain(512);
-    let confirmation_plan = breakaway_confirmation_plan(candidate_p);
+    let nominated_p = breakaway_gain(512);
+    let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
     let context = breakaway_acquisition_context();
 
@@ -1184,7 +1184,7 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
     .expect("the exact confirmed P passes every plan-time safety check");
 
     assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
-    assert_eq!(plan.final_p, candidate_p.raw());
+    assert_eq!(plan.final_p, nominated_p.raw());
     assert_eq!(plan.authority.acquisition, token);
     assert_eq!(
         plan.authority.acquisition.get(),
@@ -1237,8 +1237,8 @@ fn execution_plan_reports_acceptance_source_from_authority() {
 /// ever produce a refusal, never a plan built around a substitute P.
 #[test]
 fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_authority() {
-    let candidate_p = breakaway_gain(1_024);
-    let confirmation_plan = breakaway_confirmation_plan(candidate_p);
+    let nominated_p = breakaway_gain(1_024);
+    let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
     let mut context = breakaway_acquisition_context();
     // A torque authority this small cannot carry any nonzero I prefix at the
@@ -1331,8 +1331,8 @@ fn max_transition_capable_p_is_zero_when_nothing_is_capable() {
 
 #[test]
 fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_budget() {
-    let candidate_p = breakaway_gain(512);
-    let confirmation_plan = breakaway_confirmation_plan(candidate_p);
+    let nominated_p = breakaway_gain(512);
+    let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
     let mut context = breakaway_acquisition_context();
     // The confirmed P still passes transition capability; only the recovery
@@ -1359,8 +1359,8 @@ fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_
 
 #[test]
 fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validate() {
-    let candidate_p = breakaway_gain(512);
-    let confirmation_plan = breakaway_confirmation_plan(candidate_p);
+    let nominated_p = breakaway_gain(512);
+    let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
     let context = breakaway_acquisition_context();
 
@@ -1402,10 +1402,10 @@ fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validat
 
 #[test]
 fn breakaway_stage_c_rejects_a_token_minted_for_a_different_confirmation_plan() {
-    let candidate_p = breakaway_gain(512);
-    let confirmation_plan_a = breakaway_confirmation_plan(candidate_p);
+    let nominated_p = breakaway_gain(512);
+    let confirmation_plan_a = breakaway_confirmation_plan(nominated_p);
     let token_a = breakaway_token_for(confirmation_plan_a);
-    let confirmation_plan_b = plan_band_confirmation(0x5555_6666_7777_8888, candidate_p).unwrap();
+    let confirmation_plan_b = plan_band_confirmation(0x5555_6666_7777_8888, nominated_p).unwrap();
     let context = breakaway_acquisition_context();
 
     assert_eq!(
@@ -1475,8 +1475,8 @@ fn breakaway_stage_c_requires_a_token_matching_the_confirmation_plan() {
 
 #[test]
 fn breakaway_stage_c_refuses_when_plan_time_physical_context_differs_from_live() {
-    let candidate_p = breakaway_gain(512);
-    let confirmation_plan = breakaway_confirmation_plan(candidate_p);
+    let nominated_p = breakaway_gain(512);
+    let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
 
     // Plan-time PWM (25 kHz) but a live PWM of 50 kHz: confirmation evidence was
