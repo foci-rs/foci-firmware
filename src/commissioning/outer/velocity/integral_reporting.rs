@@ -359,7 +359,7 @@ pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES: usize = 36;
 
 /// Cross-run reproduction summary carried on the compact terminal reply.
 ///
-/// Absent for a `CompleteCandidate` (a first sufficient run has no prior run
+/// Absent for a `FirstRunRetained` (a first sufficient run has no prior run
 /// to compare against); present for every terminal that followed a second
 /// run.
 #[derive(Debug, Clone, Copy, Default)]
@@ -691,7 +691,7 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
 
 /// Trace-only diagnostic captured at the breakaway acceptance-point install
 /// seam, to attribute a promotion that produced no installed point (terminal
-/// promotes to `Complete` but `cause` stays engine 0).
+/// promotes to `RepeatabilityConfirmed` but `cause` stays engine 0).
 #[cfg(feature = "trace")]
 pub(crate) struct IntegralPromotionDiagnostic {
     /// FOC channel.
@@ -826,8 +826,8 @@ pub(crate) const fn stationarity_exclusion_code(exclusion: StationarityExclusion
 
 pub(crate) const fn outcome_code(outcome: VelocityIntegralOutcome) -> u8 {
     match outcome {
-        VelocityIntegralOutcome::CompleteCandidate => 0,
-        VelocityIntegralOutcome::Complete => 1,
+        VelocityIntegralOutcome::FirstRunRetained => 0,
+        VelocityIntegralOutcome::RepeatabilityConfirmed => 1,
         VelocityIntegralOutcome::Inconclusive => 2,
         VelocityIntegralOutcome::Fault => 3,
         VelocityIntegralOutcome::RejectedPlanMismatch => 4,
@@ -1449,7 +1449,7 @@ mod tests {
             evidence_sequence: 9,
             plan_digest: 0x0123_4567_89ab_cdef,
             digest: 0xfedc_ba98_7654_3210,
-            outcome: VelocityIntegralOutcome::Complete,
+            outcome: VelocityIntegralOutcome::RepeatabilityConfirmed,
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
             fixed_p: 0,
@@ -1517,7 +1517,7 @@ mod tests {
             evidence_sequence: 0,
             plan_digest: 0,
             digest: 0,
-            outcome: VelocityIntegralOutcome::Complete,
+            outcome: VelocityIntegralOutcome::RepeatabilityConfirmed,
             cause: IntegralOutcomeCause::Engine(0x2A),
             breakaway_acceptance: false,
             fixed_p: 0,
@@ -1593,7 +1593,7 @@ mod tests {
             evidence_sequence: 0,
             plan_digest: 0,
             digest: 0,
-            outcome: VelocityIntegralOutcome::Complete,
+            outcome: VelocityIntegralOutcome::RepeatabilityConfirmed,
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
             fixed_p: 0,
@@ -1736,7 +1736,7 @@ mod tests {
             evidence_sequence: 9,
             plan_digest: 0,
             digest: 0,
-            outcome: VelocityIntegralOutcome::Complete,
+            outcome: VelocityIntegralOutcome::RepeatabilityConfirmed,
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: true,
             fixed_p: 512,

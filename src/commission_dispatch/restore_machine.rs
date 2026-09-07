@@ -1424,7 +1424,7 @@ impl TerminalRestoreMachine {
             breakaway_execution_plan.is_some(),
             dispatch.authority.is_some(),
         );
-        if dispatch.terminal.outcome == VelocityIntegralOutcome::Complete
+        if dispatch.terminal.outcome == VelocityIntegralOutcome::RepeatabilityConfirmed
             && let (Some(execution_plan), Some(authority)) =
                 (breakaway_execution_plan, dispatch.authority)
         {

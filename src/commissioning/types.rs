@@ -782,9 +782,9 @@ pub enum VelocityIntegralEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityIntegralOutcome {
     /// One sufficient run awaits a separately commanded repeat.
-    CompleteCandidate = 0,
+    FirstRunRetained = 0,
     /// A second run reproduced at least three response points per direction.
-    Complete = 1,
+    RepeatabilityConfirmed = 1,
     /// Measurement was safe but evidence was insufficient.
     Inconclusive = 2,
     /// Safety or evidence integrity failed.
@@ -1013,7 +1013,7 @@ pub struct VelocityIntegralTerminal {
     pub cause: IntegralOutcomeCause,
     /// Whether this terminal came from a breakaway-campaign acceptance run.
     ///
-    /// Terminus-independent: a breakaway `Complete` that finished on
+    /// Terminus-independent: a breakaway `RepeatabilityConfirmed` that finished on
     /// sufficiency without reaching target is still a breakaway acceptance
     /// terminal. Firmware-internal only; not on the host wire. Lets
     /// `terminal_target_terminus`/`terminal_target_status` distinguish

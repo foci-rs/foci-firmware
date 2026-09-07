@@ -31,7 +31,7 @@ pub const INTEGRAL_DISPATCH_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT: u8 = 11
 /// retention is RAM-only. Sharing a cause with a rejection would tell the
 /// operator to inspect a mismatch that does not exist.
 pub const INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY: u8 = 12;
-/// A breakaway acceptance `Complete` recorded no target terminus.
+/// A breakaway acceptance `RepeatabilityConfirmed` recorded no target terminus.
 ///
 /// Distinct from an evidence-integrity fault: the run was well formed and simply
 /// did not reach a target terminus, so no acceptance point is installed. Sharing
@@ -111,7 +111,7 @@ pub enum IntegralPreflightRejection {
 pub struct IntegralReproductionReport {
     /// One exact retained-versus-current comparison.
     pub delta: IntegralReproductionDelta,
-    /// One for Complete, two for mismatch.
+    /// One for RepeatabilityConfirmed, two for RepeatabilityMismatch.
     pub outcome: u8,
     /// Exact retained-run evidence digest.
     pub previous_run_digest: u64,
@@ -134,27 +134,27 @@ pub struct IntegralTerminalDispatch {
 ///
 /// The no-terminus refusal is a distinct variant, not folded into an ordinary
 /// non-install, so the caller can attach a dedicated cause instead of silently
-/// dropping a breakaway `Complete` that carried no target terminus.
+/// dropping a breakaway `RepeatabilityConfirmed` that carried no target terminus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum AcceptanceInstall {
     /// A reproduced breakaway target run yielded one installable point.
     Installed(AcceptancePoint),
     /// The terminal is not a breakaway acceptance terminal (no install).
     NotAcceptanceTerminal,
-    /// A breakaway acceptance `Complete` that recorded no target terminus.
+    /// A breakaway acceptance `RepeatabilityConfirmed` that recorded no target terminus.
     MissingTargetTerminus,
 }
 
-/// Derive one token-carrying amplitude handoff from a reproduced breakaway `Complete`.
+/// Derive one token-carrying amplitude handoff from a breakaway `RepeatabilityConfirmed`.
 ///
 /// A breakaway point sources the token and signed recovery intervals from the
 /// run's breakaway authority; it cannot be reconstructed from the request
 /// alone. The token is copied from `authority.acquisition`, never
 /// constructed, so the confirmation's unforgeability is preserved.
 ///
-/// `Err(())` is an evidence-integrity fault: a breakaway acceptance `Complete`
-/// whose recorded target status, plan digest, gain, or ladder index does not
-/// hold together.
+/// `Err(())` is an evidence-integrity fault: a breakaway acceptance
+/// `RepeatabilityConfirmed` whose recorded target status, plan digest, gain,
+/// or ladder index does not hold together.
 pub(crate) fn breakaway_acceptance_point(
     channel: u8,
     authority: &IntegralAuthoritySummary,
@@ -173,16 +173,16 @@ pub(crate) fn breakaway_acceptance_point(
 
     // (1) Not a breakaway acceptance terminal: nothing to install. The
     // terminus-independent `breakaway_acceptance` flag is what keeps a
-    // no-terminus breakaway `Complete` from being dismissed here, so it can
+    // no-terminus breakaway `RepeatabilityConfirmed` from being dismissed here, so it can
     // reach the distinct missing-terminus branch below.
     if !terminal.breakaway_acceptance {
         return Ok(AcceptanceInstall::NotAcceptanceTerminal);
     }
-    // (2) Defensive: the caller invokes only on a promoted `Complete`.
-    if terminal.outcome != VelocityIntegralOutcome::Complete {
+    // (2) Defensive: the caller invokes only on a promoted `RepeatabilityConfirmed`.
+    if terminal.outcome != VelocityIntegralOutcome::RepeatabilityConfirmed {
         return Ok(AcceptanceInstall::NotAcceptanceTerminal);
     }
-    // (3) A breakaway `Complete` that recorded no target terminus is a distinct
+    // (3) A breakaway `RepeatabilityConfirmed` that recorded no target terminus is a distinct
     // refusal, not a fabricated point.
     let Some(positive_index) = terminal_target_terminus(terminal) else {
         return Ok(AcceptanceInstall::MissingTargetTerminus);
@@ -375,7 +375,7 @@ pub fn apply_integral_terminal(
     }
 
     let reproduction = match terminal.outcome {
-        VelocityIntegralOutcome::CompleteCandidate => {
+        VelocityIntegralOutcome::FirstRunRetained => {
             let previous_run_digest = integral_candidate
                 .candidate()
                 .map_or(0, |candidate| candidate.run_digest);
@@ -411,7 +411,7 @@ pub fn apply_integral_terminal(
             match integral_candidate.observe_sufficient(current) {
                 IntegralReproductionDecision::FirstRunRetained(_) => None,
                 IntegralReproductionDecision::RepeatabilityConfirmed(delta) => {
-                    terminal.outcome = VelocityIntegralOutcome::Complete;
+                    terminal.outcome = VelocityIntegralOutcome::RepeatabilityConfirmed;
                     // The confirmation run's own terminus check need not
                     // re-trip for reproduction to succeed (a breakaway target
                     // terminus is not part of reproduction authority), so fall
@@ -478,7 +478,8 @@ pub fn apply_integral_terminal(
             integral_candidate.observe_fault();
             None
         }
-        VelocityIntegralOutcome::Complete | VelocityIntegralOutcome::RejectedPlanMismatch => {
+        VelocityIntegralOutcome::RepeatabilityConfirmed
+        | VelocityIntegralOutcome::RejectedPlanMismatch => {
             integral_candidate.observe_fault();
             terminal.outcome = VelocityIntegralOutcome::Fault;
             terminal.cause =

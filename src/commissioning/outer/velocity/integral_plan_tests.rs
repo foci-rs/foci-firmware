@@ -1019,7 +1019,7 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 /// The breakaway campaign has no Proportional phase, so nothing recomputes a sweep
 /// plan for it. Before this the preflight compared the retained confirmation
 /// token against a freshly planned Proportional digest and refused every resume,
-/// which made the `CompleteCandidate` to `Complete` promotion unreachable for
+/// which made the `FirstRunRetained` to `RepeatabilityConfirmed` promotion unreachable for
 /// the only campaign that produces candidates.
 #[test]
 fn retained_breakaway_authority_regenerates_its_exact_plan() {

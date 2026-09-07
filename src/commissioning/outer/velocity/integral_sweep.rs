@@ -1192,7 +1192,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
         }) => terminal_from_data(
             data,
             evidence,
-            VelocityIntegralOutcome::CompleteCandidate,
+            VelocityIntegralOutcome::FirstRunRetained,
             IntegralOutcomeCause::Engine(if data.positive_i_rest_boundary_after_sufficiency {
                 INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY
             } else if current_terminus.is_some() {

@@ -100,7 +100,7 @@ fn breakaway_integral_plan()
 }
 
 /// The retained breakaway authority summary, as `apply_integral_terminal` holds
-/// it at the reproduced-`Complete` promotion (`acquisition ==
+/// it at the `RepeatabilityConfirmed` promotion (`acquisition ==
 /// ConfirmedBreakaway`, held-out intervals, campaign `fixed_p`/target).
 fn breakaway_authority_summary(
     plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
@@ -161,7 +161,7 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
     let mut terminal = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::Complete,
+        VelocityIntegralOutcome::RepeatabilityConfirmed,
         sufficient_evidence(0),
     );
     // terminus == 2 (rest boundary at rung index 2, slot cleared).
@@ -204,7 +204,7 @@ fn breakaway_complete_without_terminus_reports_missing_terminus() {
     let terminal = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::Complete,
+        VelocityIntegralOutcome::RepeatabilityConfirmed,
         sufficient_evidence(0),
     );
     assert!(matches!(
@@ -380,8 +380,11 @@ fn changed_resume_plan_is_rejected_without_mutating_retention() {
 fn velocity_integral_outcome_codes_and_integral_namespace_are_stable() {
     use crate::commissioning::outer::velocity::integral_reporting::outcome_code;
 
-    assert_eq!(outcome_code(VelocityIntegralOutcome::CompleteCandidate), 0);
-    assert_eq!(outcome_code(VelocityIntegralOutcome::Complete), 1);
+    assert_eq!(outcome_code(VelocityIntegralOutcome::FirstRunRetained), 0);
+    assert_eq!(
+        outcome_code(VelocityIntegralOutcome::RepeatabilityConfirmed),
+        1
+    );
     assert_eq!(outcome_code(VelocityIntegralOutcome::Inconclusive), 2);
     assert_eq!(outcome_code(VelocityIntegralOutcome::Fault), 3);
     assert_eq!(
@@ -402,7 +405,7 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     slot.install_authority(retained_authority());
 
     let mut first_terminal = terminal(
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(0),
     );
     first_terminal.rest_boundary_rung_plus_one = 4;
@@ -410,7 +413,7 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     let first = apply_integral_terminal(first_terminal, &mut slot);
     assert_eq!(
         first.terminal.outcome,
-        VelocityIntegralOutcome::CompleteCandidate
+        VelocityIntegralOutcome::FirstRunRetained
     );
     assert!(first.reproduction.is_none());
     assert_eq!(slot.state(), IntegralRetentionSlotState::Candidate);
@@ -423,14 +426,17 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     );
 
     let mut second_terminal = terminal(
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(2),
     );
     second_terminal.rest_boundary_rung_plus_one = 5;
     second_terminal.rest_boundary_slot_plus_one = 2;
     second_terminal.cause = IntegralOutcomeCause::Engine(10);
     let second = apply_integral_terminal(second_terminal, &mut slot);
-    assert_eq!(second.terminal.outcome, VelocityIntegralOutcome::Complete);
+    assert_eq!(
+        second.terminal.outcome,
+        VelocityIntegralOutcome::RepeatabilityConfirmed
+    );
     assert_eq!(second.terminal.cause, IntegralOutcomeCause::Engine(10));
     let reproduction = second.reproduction.unwrap();
     assert_eq!(
@@ -455,7 +461,7 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
 /// A reproduced confirmation run that does not itself re-cross the
 /// target-reaching threshold must still install, using the terminus already
 /// proven by the first sufficient run: a breakaway target terminus is not
-/// part of reproduction authority, so a `Complete` promotion cannot require
+/// part of reproduction authority, so a `RepeatabilityConfirmed` promotion cannot require
 /// the second run to redetect it.
 #[test]
 fn reproduced_complete_without_current_terminus_still_installs() {
@@ -469,7 +475,7 @@ fn reproduced_complete_without_current_terminus_still_installs() {
     let mut first_terminal = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(0),
     );
     first_terminal.rest_boundary_rung_plus_one = 3;
@@ -478,13 +484,16 @@ fn reproduced_complete_without_current_terminus_still_installs() {
     let mut second_terminal = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(2),
     );
     second_terminal.rest_boundary_rung_plus_one = 0;
     second_terminal.rest_boundary_slot_plus_one = 0;
     let dispatch = apply_integral_terminal(second_terminal, &mut slot);
-    assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Complete);
+    assert_eq!(
+        dispatch.terminal.outcome,
+        VelocityIntegralOutcome::RepeatabilityConfirmed
+    );
 
     let installed = match super::integral::breakaway_acceptance_point(
         CHANNEL,
@@ -506,7 +515,7 @@ fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
     slot.install_authority(retained_authority());
     apply_integral_terminal(
         terminal(
-            VelocityIntegralOutcome::CompleteCandidate,
+            VelocityIntegralOutcome::FirstRunRetained,
             sufficient_evidence(0),
         ),
         &mut slot,
@@ -514,7 +523,7 @@ fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
 
     let dispatch = apply_integral_terminal(
         terminal(
-            VelocityIntegralOutcome::CompleteCandidate,
+            VelocityIntegralOutcome::FirstRunRetained,
             divergent_evidence(),
         ),
         &mut slot,
@@ -538,7 +547,7 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
     slot.install_authority(retained_authority());
     apply_integral_terminal(
         terminal(
-            VelocityIntegralOutcome::CompleteCandidate,
+            VelocityIntegralOutcome::FirstRunRetained,
             sufficient_evidence(0),
         ),
         &mut slot,
@@ -565,14 +574,17 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
 #[test]
 fn unexpected_complete_terminal_fails_closed_in_retained_integral_dispatch() {
     // Combined workflow terminals are handled before this retained dispatcher.
-    // Non-combined retained Integral reports sufficiency as `CompleteCandidate`.
-    // A bare `Complete` reaching this function is therefore a contract
+    // Non-combined retained Integral reports sufficiency as `FirstRunRetained`.
+    // A bare `RepeatabilityConfirmed` reaching this function is therefore a contract
     // violation, so it must not be accepted as success.
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
 
     let dispatch = apply_integral_terminal(
-        terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0)),
+        terminal(
+            VelocityIntegralOutcome::RepeatabilityConfirmed,
+            sufficient_evidence(0),
+        ),
         &mut slot,
     );
 
@@ -593,13 +605,13 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
     // cannot pass unnoticed again.
     let expectations = [
         (
-            VelocityIntegralOutcome::Complete,
+            VelocityIntegralOutcome::RepeatabilityConfirmed,
             VelocityIntegralOutcome::Fault,
             IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY),
         ),
         (
-            VelocityIntegralOutcome::CompleteCandidate,
-            VelocityIntegralOutcome::CompleteCandidate,
+            VelocityIntegralOutcome::FirstRunRetained,
+            VelocityIntegralOutcome::FirstRunRetained,
             IntegralOutcomeCause::Engine(0),
         ),
         (
@@ -648,7 +660,7 @@ fn inconclusive_rest_discards_candidate_but_retains_proportional_authority() {
     slot.install_authority(retained_authority());
     apply_integral_terminal(
         terminal(
-            VelocityIntegralOutcome::CompleteCandidate,
+            VelocityIntegralOutcome::FirstRunRetained,
             sufficient_evidence(0),
         ),
         &mut slot,
@@ -929,7 +941,7 @@ fn outer_safety_timing_terminal_order_integral_resume() {
 
         let outcome = super::drive_velocity_integral_terminal_with_stages(
             terminal(
-                VelocityIntegralOutcome::CompleteCandidate,
+                VelocityIntegralOutcome::FirstRunRetained,
                 sufficient_evidence(0),
             ),
             &mut engine,
@@ -1076,7 +1088,7 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
 
         let _outcome = super::drive_velocity_integral_terminal_with_stages(
             terminal(
-                VelocityIntegralOutcome::CompleteCandidate,
+                VelocityIntegralOutcome::FirstRunRetained,
                 sufficient_evidence(0),
             ),
             &mut engine,
@@ -1177,7 +1189,7 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
     let mut first = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(0),
     );
     first.rest_boundary_rung_plus_one = 3;
@@ -1218,7 +1230,7 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
     let mut second = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(0),
     );
     second.rest_boundary_rung_plus_one = 3;
@@ -1239,10 +1251,13 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
         ..
     } = outcome
     else {
-        panic!("a promoted Complete must emit a normal velocity-integral terminal");
+        panic!("a promoted RepeatabilityConfirmed must emit a normal velocity-integral terminal");
     };
     assert_eq!(oid, 1);
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
+    assert_eq!(
+        terminal.outcome,
+        VelocityIntegralOutcome::RepeatabilityConfirmed
+    );
 
     // The acceptance point install (unchanged from before F3) still happens.
     assert_eq!(
@@ -1326,7 +1341,7 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
     let mut first = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(0),
     );
     first.rest_boundary_rung_plus_one = 3;
@@ -1344,7 +1359,7 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
     let mut second = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(0),
     );
     second.rest_boundary_rung_plus_one = 3;
@@ -1364,24 +1379,27 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
         .await
         .expect("active engine should drive the promoted terminal");
 
-    // A promoted Complete from the terminal poll ends the workflow like any
-    // other terminal outcome, disarming instead of continuing into
+    // A promoted RepeatabilityConfirmed from the terminal poll ends the workflow
+    // like any other terminal outcome, disarming instead of continuing into
     // robustness.
     let ScheduledCommissionTickAction::Terminal { reply, .. } = action else {
-        panic!("a promoted Complete from the terminal poll must emit a Terminal action");
+        panic!("a promoted RepeatabilityConfirmed must emit a Terminal action from the poll");
     };
     let ReplyPayload::VelocityIntegralTerminal { oid, terminal, .. } = reply else {
-        panic!("a promoted Complete from the terminal poll must report its terminal");
+        panic!("a promoted RepeatabilityConfirmed from the terminal poll must report its terminal");
     };
     assert_eq!(oid, 1);
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Complete);
+    assert_eq!(
+        terminal.outcome,
+        VelocityIntegralOutcome::RepeatabilityConfirmed
+    );
     // The Terminal action already carries the reply; the terminal poll must
     // not also forward it through the report-only evidence channel.
     assert!(emitted_reply.is_none());
 }
 
 #[fixture_test]
-async fn complete_candidate_still_emits_report_only_terminal() {
+async fn first_run_retained_still_emits_report_only_terminal() {
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
 
     crate::state::tmc::tmc_channel0()
@@ -1392,7 +1410,7 @@ async fn complete_candidate_still_emits_report_only_terminal() {
     let authority = breakaway_authority_summary(&plan);
 
     // Authority only: the first sufficient run has nothing to reproduce, so it
-    // stays a `CompleteCandidate` the host resumes from.
+    // stays a `FirstRunRetained` the host resumes from.
     let mut integral_slot = IntegralRetentionSlot::new();
     integral_slot.install_authority(authority);
 
@@ -1414,7 +1432,7 @@ async fn complete_candidate_still_emits_report_only_terminal() {
     let mut first = breakaway_terminal(
         &plan,
         &authority,
-        VelocityIntegralOutcome::CompleteCandidate,
+        VelocityIntegralOutcome::FirstRunRetained,
         sufficient_evidence(0),
     );
     first.rest_boundary_rung_plus_one = 3;
@@ -1432,10 +1450,10 @@ async fn complete_candidate_still_emits_report_only_terminal() {
 
     assert!(
         engine.is_none(),
-        "a first CompleteCandidate consumes the engine and ends the run"
+        "a first FirstRunRetained consumes the engine and ends the run"
     );
     let CommissionOutcome::Terminal { reply, .. } = outcome else {
-        panic!("CompleteCandidate must emit a report-only terminal");
+        panic!("FirstRunRetained must emit a report-only terminal");
     };
     assert!(matches!(
         reply,

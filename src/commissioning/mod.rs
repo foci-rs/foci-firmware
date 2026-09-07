@@ -1236,8 +1236,8 @@ impl CommissioningEngine {
             });
         }
         let level = match terminal.outcome {
-            crate::commissioning::types::VelocityIntegralOutcome::CompleteCandidate
-            | crate::commissioning::types::VelocityIntegralOutcome::Complete => {
+            crate::commissioning::types::VelocityIntegralOutcome::FirstRunRetained
+            | crate::commissioning::types::VelocityIntegralOutcome::RepeatabilityConfirmed => {
                 TraceEventLevel::Info
             }
             crate::commissioning::types::VelocityIntegralOutcome::Inconclusive
@@ -1256,7 +1256,9 @@ impl CommissioningEngine {
             ],
             payload_count: 2,
         });
-        if terminal.outcome == crate::commissioning::types::VelocityIntegralOutcome::Complete {
+        if terminal.outcome
+            == crate::commissioning::types::VelocityIntegralOutcome::RepeatabilityConfirmed
+        {
             backend.record_commission_trace_event(CommissionTraceEvent {
                 level: TraceEventLevel::Info,
                 event_id: EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE,
@@ -2890,7 +2892,7 @@ mod tests {
             evidence_sequence: 57,
             plan_digest: 0x1111_2222_3333_4444,
             digest: 0x0123_4567_89ab_cdef,
-            outcome: VelocityIntegralOutcome::Complete,
+            outcome: VelocityIntegralOutcome::RepeatabilityConfirmed,
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
             fixed_p: 0,
@@ -3101,7 +3103,7 @@ mod tests {
             evidence_sequence: 57,
             plan_digest: plan.digest(),
             digest: 0,
-            outcome: VelocityIntegralOutcome::Complete,
+            outcome: VelocityIntegralOutcome::RepeatabilityConfirmed,
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
             fixed_p: 0,

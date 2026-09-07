@@ -2234,7 +2234,7 @@ fn breakaway_clean_sufficiency_preserves_recorded_terminus_through_continuation(
     else {
         panic!("clean sufficiency close must reach the terminal");
     };
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::FirstRunRetained);
     assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(0));
     // The recorded terminus (rung 3) must survive to the terminal as rung + 1.
     assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
@@ -2262,7 +2262,7 @@ fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
     else {
         panic!("a sufficient boundary run must retain the response candidate");
     };
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::FirstRunRetained);
     assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(10));
 }
 
@@ -2992,7 +2992,7 @@ fn contained_recovery_after_an_eligible_bookend_is_nonblocking() {
     else {
         panic!("contained final recovery must preserve the Stage-C terminal");
     };
-    assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::FirstRunRetained);
     assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(0));
     assert!(terminal.recovery_unavailable);
     assert_eq!(
