@@ -22,8 +22,8 @@ pub use helpers::pack_voltage_ext;
 pub use replies::{DiagnosticReplySink, emit_diagnostic_report};
 pub use reports::{
     AdcResidualReport, CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI,
-    ClosedLoopActivationReport, CommissionTimingReport, CurrentLoopFiltersReport, CurrentLoopHoldReport,
-    CurrentLoopRunReport, CurrentStepReport, CurrentTorqueSampleReport,
+    ClosedLoopActivationReport, CommissionTimingReport, CurrentLoopFiltersReport,
+    CurrentLoopHoldReport, CurrentLoopRunReport, CurrentStepReport, CurrentTorqueSampleReport,
     CurrentValidationAxisReport, CurrentValidationEnvelopeReport,
     CurrentValidationSettledSampleReport, EncoderAlignmentReport, InductanceEstimateReport,
     InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceProfileReport,

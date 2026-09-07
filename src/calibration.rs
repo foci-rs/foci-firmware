@@ -58,7 +58,10 @@ mod tests {
 
     #[test]
     fn calibration_closed_loop_activation_unstable_has_status_code_9() {
-        assert_eq!(CalibrationError::ClosedLoopActivationUnstable.status_code(), 9);
+        assert_eq!(
+            CalibrationError::ClosedLoopActivationUnstable.status_code(),
+            9
+        );
     }
 
     #[test]
