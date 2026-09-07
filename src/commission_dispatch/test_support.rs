@@ -1030,7 +1030,7 @@ pub fn accepted_commission_result() -> crate::commissioning::types::CommissionRe
             current_validation_axes: crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE,
             retry_budget_exhausted: 0,
             current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
-            closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+            closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ACTIVATION_STATUS_NOT_RUN,
             closed_loop_activation_position_1: 0,
             closed_loop_activation_position_2: 0,
             closed_loop_activation_drift_count: 0,

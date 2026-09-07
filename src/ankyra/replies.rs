@@ -430,7 +430,7 @@ pub struct FociCurrentLoopFilters {
 pub struct FociClosedLoopActivation {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// `CLOSED_LOOP_ENTRY_STATUS_*`.
+    /// `CLOSED_LOOP_ACTIVATION_STATUS_*`.
     pub entry_status: u8,
     /// First position sample after entering position mode.
     pub position_1: i32,

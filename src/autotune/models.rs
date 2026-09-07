@@ -169,7 +169,7 @@ pub const CURRENT_LOOP_FAILURE_CROSS_AXIS_COUPLING: u8 = 15;
 /// Current-loop validation detected a wrong-sign current response.
 pub const CURRENT_LOOP_FAILURE_WRONG_SIGN: u8 = 16;
 /// Closed-loop entry rejected the candidate frame before sustained hold.
-pub const CURRENT_LOOP_FAILURE_CLOSED_LOOP_ENTRY: u8 = 17;
+pub const CURRENT_LOOP_FAILURE_CLOSED_LOOP_ACTIVATION: u8 = 17;
 
 /// Firmware-owned evidence for current-loop gain source, split policy,
 /// validation coverage, and failure reason.

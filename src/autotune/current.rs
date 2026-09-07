@@ -706,7 +706,10 @@ mod tests {
             15
         );
         assert_eq!(crate::autotune::CURRENT_LOOP_FAILURE_WRONG_SIGN, 16);
-        assert_eq!(crate::autotune::CURRENT_LOOP_FAILURE_CLOSED_LOOP_ENTRY, 17);
+        assert_eq!(
+            crate::autotune::CURRENT_LOOP_FAILURE_CLOSED_LOOP_ACTIVATION,
+            17
+        );
     }
 
     #[test]

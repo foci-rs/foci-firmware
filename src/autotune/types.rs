@@ -494,15 +494,15 @@ pub enum ClosedLoopActivationState {
 }
 
 /// Closed-loop entry evidence has not been captured.
-pub const CLOSED_LOOP_ENTRY_STATUS_NOT_RUN: u8 = 0;
+pub const CLOSED_LOOP_ACTIVATION_STATUS_NOT_RUN: u8 = 0;
 /// Closed-loop entry fast stability check passed.
-pub const CLOSED_LOOP_ENTRY_STATUS_PASS: u8 = 1;
+pub const CLOSED_LOOP_ACTIVATION_STATUS_PASS: u8 = 1;
 /// Closed-loop entry detected runaway position growth.
-pub const CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY: u8 = 2;
+pub const CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY: u8 = 2;
 /// Closed-loop entry detected bounded position drift above the threshold.
-pub const CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT: u8 = 3;
+pub const CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT: u8 = 3;
 /// Closed-loop entry detected bounded drift accepted for downstream hold sampling.
-pub const CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT: u8 = 4;
+pub const CLOSED_LOOP_ACTIVATION_STATUS_WARN_DRIFT: u8 = 4;
 
 /// Controls which phases run and in what order for the inner engine.
 ///

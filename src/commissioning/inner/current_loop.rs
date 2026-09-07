@@ -2035,7 +2035,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 current_validation_axes: data.current_loop_evidence.current_validation_axes,
                 retry_budget_exhausted: data.current_loop_evidence.retry_budget_exhausted,
                 current_loop_failure_reason: data.current_loop_evidence.failure_reason,
-                closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+                closed_loop_activation_status:
+                    crate::autotune::CLOSED_LOOP_ACTIVATION_STATUS_NOT_RUN,
                 closed_loop_activation_position_1: 0,
                 closed_loop_activation_position_2: 0,
                 closed_loop_activation_drift_count: 0,

@@ -9,11 +9,11 @@
 
 use super::InnerPhase;
 use crate::autotune::{
-    CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
-    CLOSED_LOOP_ENTRY_STATUS_PASS, CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopActivationState,
-    CommissionError, CommissionStatus, HOLD_GATE_DWELL_US, HOLD_GATE_MAX_SAMPLES,
-    HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS, HoldGateAccumulator, HoldGateMetrics,
-    HoldGateSample, InnerSequence, hold_status_failure_reason,
+    CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT, CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY,
+    CLOSED_LOOP_ACTIVATION_STATUS_PASS, CLOSED_LOOP_ACTIVATION_STATUS_WARN_DRIFT,
+    ClosedLoopActivationState, CommissionError, CommissionStatus, HOLD_GATE_DWELL_US,
+    HOLD_GATE_MAX_SAMPLES, HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS, HoldGateAccumulator,
+    HoldGateMetrics, HoldGateSample, InnerSequence, hold_status_failure_reason,
 };
 use crate::commissioning::types::{
     AdcCalResult, AdcResidualEvidence, CommissionResult, CommissioningBackend, InnerResult,
@@ -54,19 +54,19 @@ const CLOSED_LOOP_PWM_SV_CHOP: u32 = 7;
 const CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS: u32 = (2 << 16) | 50;
 const CLOSED_LOOP_PHI_E_SELECTION: u32 = 3;
 const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
-const CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD: u32 = 2;
-const CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
-const CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
+const CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD: u32 = 2;
+const CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
+const CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
 #[allow(dead_code)]
-pub(super) const CLOSED_LOOP_ENTRY_MAX_REGISTER_OPS_PER_ARM: usize = 48;
+pub(super) const CLOSED_LOOP_ACTIVATION_MAX_REGISTER_OPS_PER_ARM: usize = 48;
 
 /// Number of attempts allowed for a bounded-drift `ClosedLoopActivationUnstable`
 /// failure before surfacing a hard failure. Runaway failures (position error
 /// large and still growing -- the signature of wrong-sign feedback or genuine
 /// instability) never retry regardless of this budget.
-const CLOSED_LOOP_ENTRY_MAX_ATTEMPTS: u8 = 3;
+const CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS: u8 = 3;
 
-const DIAG_CLOSED_LOOP_ENTRY_RESULT: u8 = 1;
+const DIAG_CLOSED_LOOP_ACTIVATION_RESULT: u8 = 1;
 
 fn push_closed_loop_activation_result(
     diagnostics: &mut CommissionDiagnostics,
@@ -77,7 +77,7 @@ fn push_closed_loop_activation_result(
 ) {
     diagnostics.push(CommissionDiagnostic {
         phase: crate::autotune::CommissionPhase::ClosedLoopActivation.to_u8(),
-        code: DIAG_CLOSED_LOOP_ENTRY_RESULT,
+        code: DIAG_CLOSED_LOOP_ACTIVATION_RESULT,
         status: entry_status,
         value0: position_1 as u32,
         value1: position_2 as u32,
@@ -257,7 +257,8 @@ fn copy_closed_loop_activation_metrics(
     inner.closed_loop_activation_position_1 = position_1;
     inner.closed_loop_activation_position_2 = position_2;
     inner.closed_loop_activation_drift_count = saturating_u16(drift);
-    inner.closed_loop_activation_threshold_count = CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD as u16;
+    inner.closed_loop_activation_threshold_count =
+        CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD as u16;
     inner.closed_loop_activation_runaway = u8::from(runaway);
 }
 
@@ -287,7 +288,8 @@ async fn fail_closed_loop_activation<B: CommissioningBackend>(
 
     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     inner.status = CommissionStatus::Failed(CommissionError::ClosedLoopActivationUnstable);
-    inner.current_loop_failure_reason = crate::autotune::CURRENT_LOOP_FAILURE_CLOSED_LOOP_ENTRY;
+    inner.current_loop_failure_reason =
+        crate::autotune::CURRENT_LOOP_FAILURE_CLOSED_LOOP_ACTIVATION;
     copy_closed_loop_activation_metrics(
         &mut inner,
         entry_status,
@@ -736,7 +738,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
 
             // Runaway detection: if position error is large and growing,
             // the feedback sign is wrong.
-            if pos2.unsigned_abs() > CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD
+            if pos2.unsigned_abs() > CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD
                 && pos2.unsigned_abs() > position_1.unsigned_abs()
             {
                 defmt::error!(
@@ -747,7 +749,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
                 push_closed_loop_activation_result(
                     diagnostics,
-                    CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
+                    CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY,
                     *position_1,
                     pos2,
                     drift,
@@ -756,7 +758,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     && let Some(result) = fail_closed_loop_activation(
                         inner_result,
                         backend,
-                        CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
+                        CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY,
                         *position_1,
                         pos2,
                         drift,
@@ -787,8 +789,8 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
             // simply completes normally, same as a clean pass. Only
             // drift beyond the bounded band remains a hard failure.
             let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
-            let bounded_hunt = drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD
-                && drift <= CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD;
+            let bounded_hunt = drift > CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD
+                && drift <= CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD;
 
             if bounded_hunt && matches!(sequence, InnerSequence::Commission) {
                 defmt::warn!(
@@ -800,7 +802,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 if let Some(inner) = inner_result.as_mut() {
                     copy_closed_loop_activation_metrics(
                         inner,
-                        CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT,
+                        CLOSED_LOOP_ACTIVATION_STATUS_WARN_DRIFT,
                         *position_1,
                         pos2,
                         drift,
@@ -811,7 +813,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 return StepResult::ReadyNow;
             }
 
-            if drift > CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD && !bounded_hunt {
+            if drift > CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD && !bounded_hunt {
                 defmt::error!(
                     "closed-loop: unstable (attempt {}): pos1={}, pos2={}, drift={}",
                     attempt,
@@ -821,7 +823,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 );
                 push_closed_loop_activation_result(
                     diagnostics,
-                    CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT,
+                    CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT,
                     *position_1,
                     pos2,
                     drift,
@@ -829,7 +831,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
 
                 let next_attempt = attempt + 1;
-                if next_attempt < CLOSED_LOOP_ENTRY_MAX_ATTEMPTS {
+                if next_attempt < CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS {
                     let InnerPhase::ClosedLoopActivation { state, attempt, .. } = phase else {
                         unreachable!("phase was just matched as ClosedLoopActivation");
                     };
@@ -842,7 +844,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     && let Some(result) = fail_closed_loop_activation(
                         inner_result,
                         backend,
-                        CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT,
+                        CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT,
                         *position_1,
                         pos2,
                         drift,
@@ -886,7 +888,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     if let Some(inner) = inner_result.as_mut() {
                         copy_closed_loop_activation_metrics(
                             inner,
-                            CLOSED_LOOP_ENTRY_STATUS_PASS,
+                            CLOSED_LOOP_ACTIVATION_STATUS_PASS,
                             *position_1,
                             pos2,
                             drift,
@@ -1182,7 +1184,7 @@ mod tests {
             current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
             retry_budget_exhausted: 0,
             current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
-            closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+            closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ACTIVATION_STATUS_NOT_RUN,
             closed_loop_activation_position_1: 0,
             closed_loop_activation_position_2: 0,
             closed_loop_activation_drift_count: 0,
@@ -1662,7 +1664,7 @@ mod tests {
             assert!(matches!(result, StepResult::ReadyNow));
             assert_eq!(
                 register_op_count(&backend),
-                CLOSED_LOOP_ENTRY_MAX_REGISTER_OPS_PER_ARM
+                CLOSED_LOOP_ACTIVATION_MAX_REGISTER_OPS_PER_ARM
             );
         });
     }
@@ -1916,7 +1918,7 @@ mod tests {
             );
             assert_eq!(
                 inner.closed_loop_activation_status,
-                CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT
+                CLOSED_LOOP_ACTIVATION_STATUS_WARN_DRIFT
             );
             assert_eq!(inner.closed_loop_activation_position_1, 0);
             assert_eq!(inner.closed_loop_activation_position_2, 17);
@@ -2000,7 +2002,7 @@ mod tests {
             });
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
-            // Above CLOSED_LOOP_ENTRY_BOUNDED_DRIFT_WARN_THRESHOLD (64):
+            // Above CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD (64):
             // a bounded hunt inside that band is now accepted for every
             // sequence, so this exercises genuinely excessive drift.
             backend
@@ -2036,8 +2038,8 @@ mod tests {
                 events[0].phase,
                 crate::autotune::CommissionPhase::ClosedLoopActivation.to_u8()
             );
-            assert_eq!(events[0].code, DIAG_CLOSED_LOOP_ENTRY_RESULT);
-            assert_eq!(events[0].status, CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT);
+            assert_eq!(events[0].code, DIAG_CLOSED_LOOP_ACTIVATION_RESULT);
+            assert_eq!(events[0].status, CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT);
             assert_eq!(events[0].value1, 100);
             assert_eq!(events[0].value2, 100);
         });
@@ -2051,7 +2053,7 @@ mod tests {
                     position_1: 0,
                     deadline_us: 0,
                 },
-                CLOSED_LOOP_ENTRY_MAX_ATTEMPTS - 1,
+                CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS - 1,
             );
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
@@ -2089,7 +2091,7 @@ mod tests {
                 .registers
                 .insert(
                     PID_POSITION_ACTUAL.addr(),
-                    CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD + 1,
+                    CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD + 1,
                 )
                 .ok();
             let mut diagnostics = CommissionDiagnostics::default();
@@ -2112,7 +2114,7 @@ mod tests {
             );
             let events: heapless::Vec<_, 4> = diagnostics.iter().collect();
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].status, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY);
+            assert_eq!(events[0].status, CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY);
         });
     }
 
@@ -2124,7 +2126,7 @@ mod tests {
                     position_1: 0,
                     deadline_us: 0,
                 },
-                CLOSED_LOOP_ENTRY_MAX_ATTEMPTS - 1,
+                CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS - 1,
             );
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
@@ -2152,7 +2154,7 @@ mod tests {
             assert_eq!(result.inner.current_loop_failure_reason, 17);
             assert_eq!(
                 result.inner.closed_loop_activation_status,
-                CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT
+                CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT
             );
             assert_eq!(result.inner.closed_loop_activation_position_1, 0);
             assert_eq!(result.inner.closed_loop_activation_position_2, 65);

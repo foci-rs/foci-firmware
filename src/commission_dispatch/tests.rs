@@ -1727,7 +1727,7 @@ fn commission_result_maps_current_loop_evidence() {
                 sample_count: 0,
             },
             ReplyEvent::ClosedLoopActivation {
-                entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+                entry_status: crate::autotune::CLOSED_LOOP_ACTIVATION_STATUS_NOT_RUN,
                 drift_count: 0,
             },
             ReplyEvent::CurrentLoopRun {

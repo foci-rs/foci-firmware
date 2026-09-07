@@ -2069,7 +2069,7 @@ pub struct InnerResult {
     pub retry_budget_exhausted: u8,
     /// `CURRENT_LOOP_FAILURE_*`.
     pub current_loop_failure_reason: u8,
-    /// Closed-loop entry fast stability status (`CLOSED_LOOP_ENTRY_STATUS_*`).
+    /// Closed-loop entry fast stability status (`CLOSED_LOOP_ACTIVATION_STATUS_*`).
     pub closed_loop_activation_status: u8,
     /// First closed-loop entry position sample after entering position mode.
     pub closed_loop_activation_position_1: i32,
