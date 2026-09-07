@@ -63,6 +63,7 @@ pub enum ShutdownReason {
     TrsyncTriggerFailed,
     InvalidTmcChannel,
     TmcSetCurrentLostQueueFull,
+    FociHomingConfigInvalid,
     TmcSetMotionScaleLostQueueFull,
     TmcSetEncoderDirLostQueueFull,
     TmcSetPidGainsLostQueueFull,
@@ -119,6 +120,7 @@ impl ShutdownReason {
             Self::TrsyncTriggerFailed => "trsync_trigger failed",
             Self::InvalidTmcChannel => "Invalid TMC channel",
             Self::TmcSetCurrentLostQueueFull => "tmc_set_current lost (queue full)",
+            Self::FociHomingConfigInvalid => "foci_config_homing rejected",
             Self::TmcSetMotionScaleLostQueueFull => "tmc_set_motion_scale lost (queue full)",
             Self::TmcSetEncoderDirLostQueueFull => "tmc_set_encoder_dir lost (queue full)",
             Self::TmcSetPidGainsLostQueueFull => "tmc_set_pid_gains lost (queue full)",
@@ -278,6 +280,9 @@ macro_rules! dispatch_shutdown {
                     "tmc_set_current lost (queue full)",
                     $clock
                 );
+            }
+            $crate::shutdown::ShutdownReason::FociHomingConfigInvalid => {
+                ::ankyra::klipper_shutdown_from!($sender, "foci_config_homing rejected", $clock);
             }
             $crate::shutdown::ShutdownReason::TmcSetMotionScaleLostQueueFull => {
                 ::ankyra::klipper_shutdown_from!(
@@ -482,6 +487,7 @@ macro_rules! foci_ankyra_config {
                 "trsync_trigger failed",
                 "Invalid TMC channel",
                 "tmc_set_current lost (queue full)",
+                "foci_config_homing rejected",
                 "tmc_set_motion_scale lost (queue full)",
                 "tmc_set_encoder_dir lost (queue full)",
                 "tmc_set_pid_gains lost (queue full)",

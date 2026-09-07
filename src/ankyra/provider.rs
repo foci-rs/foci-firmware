@@ -84,11 +84,12 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_test_spin,
         crate::ankyra::handlers::tmc::tmc_write_register,
         crate::ankyra::handlers::tmc::tmc_read_register,
-        // FOCI (7 — foci_tune stays board-local)
+        // FOCI (8 — foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_adc_vm_offset,
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,
         crate::ankyra::handlers::foci::foci_commission_cancel,
+        crate::ankyra::handlers::foci::foci_config_homing,
         crate::ankyra::handlers::foci::foci_dump_registers,
         crate::ankyra::handlers::foci::foci_selftest,
         crate::ankyra::handlers::foci::foci_stack_watermark,
@@ -252,11 +253,12 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_position_torque_offset_sample_test,
         crate::ankyra::handlers::tmc::tmc_voltage_step_test,
         crate::ankyra::handlers::tmc::tmc_resistance_test,
-        // FOCI (7 — foci_tune stays board-local)
+        // FOCI (8 — foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_adc_vm_offset,
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,
         crate::ankyra::handlers::foci::foci_commission_cancel,
+        crate::ankyra::handlers::foci::foci_config_homing,
         crate::ankyra::handlers::foci::foci_dump_registers,
         crate::ankyra::handlers::foci::foci_selftest,
         crate::ankyra::handlers::foci::foci_stack_watermark,
