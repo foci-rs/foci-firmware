@@ -60,7 +60,12 @@ pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up
                 .stall_endstop_configured
                 .store(true, core::sync::atomic::Ordering::Relaxed);
         }
-        defmt::info!("config_endstop: oid={} idx={} virtual pin={}", oid, idx, pin);
+        defmt::info!(
+            "config_endstop: oid={} idx={} virtual pin={}",
+            oid,
+            idx,
+            pin
+        );
     }
     ENDSTOP_PIN_IDS[idx].store(pin, core::sync::atomic::Ordering::Relaxed);
 }

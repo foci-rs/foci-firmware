@@ -913,7 +913,10 @@ mod tests {
 
             foci_config_homing(&mut ctx, &mut sender, 10, 700, stall_units, persistence);
 
-            assert_eq!(ctx.last_shutdown, Some(ShutdownReason::FociHomingConfigInvalid));
+            assert_eq!(
+                ctx.last_shutdown,
+                Some(ShutdownReason::FociHomingConfigInvalid)
+            );
         }
     }
 }
