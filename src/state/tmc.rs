@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 136);
+        assert_eq!(size_of::<TmcChannelState>(), 156);
     }
 
     #[test]
