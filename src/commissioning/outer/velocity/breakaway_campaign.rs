@@ -64,7 +64,9 @@ use crate::autotune::velocity_measurement::{
 use crate::autotune::{CommissionError, EquivalentTorqueTargetInterval, TmcMechanicalRpm};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
-use crate::commissioning::outer::state::{OuterPhase, VelocityIntegralData, VelocityIntegralState};
+use crate::commissioning::outer::state::{
+    OuterPhase, VelocityIntegralRuntime, VelocityIntegralState,
+};
 use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityObservationRing};
 use crate::commissioning::outer::{OuterSafetyLimits, fail_outer, fail_outer_with_safety};
 use crate::commissioning::schedule::next_grid_deadline;
@@ -5406,7 +5408,7 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
             let run_sequence = campaign.run_sequence();
             *phase = OuterPhase::VelocityIntegral {
                 state: VelocityIntegralState::Setup,
-                data: VelocityIntegralData::new(run_sequence, plan.execution_plan()),
+                data: VelocityIntegralRuntime::new(run_sequence, plan.execution_plan()),
                 safety,
             };
             crate::diagnostic::complete_breakaway_campaign(

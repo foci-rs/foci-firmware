@@ -42,7 +42,8 @@ use crate::commissioning::outer::velocity::integral_evidence::{
 use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::{
-    OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
+    OuterMotionBudget, OuterPhase, OuterSafetyLimits, VelocityIntegralRuntime,
+    VelocityIntegralState,
 };
 use crate::commissioning::types::{
     FixedGainAmplitudeCause, FixedGainAmplitudeEvent, FixedGainAmplitudeOutcome,
@@ -108,7 +109,7 @@ fn breakaway_target_terminus_stays_sticky_once_recorded() {
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
-    let mut data = VelocityIntegralData::new(1, plan);
+    let mut data = VelocityIntegralRuntime::new(1, plan);
     data.rung_index = 3;
 
     assert!(
@@ -159,7 +160,7 @@ fn breakaway_records_target_terminus_when_target_reached() {
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
-    let mut data = VelocityIntegralData::new(1, plan);
+    let mut data = VelocityIntegralRuntime::new(1, plan);
     data.rung_index = 4;
 
     let reached = record_integral_target_if_reached(
@@ -185,7 +186,7 @@ fn breakaway_leaves_terminus_none_on_sufficiency_without_target() {
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
-    let mut data = VelocityIntegralData::new(1, plan);
+    let mut data = VelocityIntegralRuntime::new(1, plan);
     data.rung_index = 3;
 
     let reached = record_integral_target_if_reached(
@@ -213,7 +214,7 @@ fn non_breakaway_ladder_does_not_record_a_terminus() {
     plan.target_velocity_rpm = 264;
     plan.encoder_counts_per_rev = 4_000;
     plan.positive_rung_count = 13;
-    let mut data = VelocityIntegralData::new(1, plan);
+    let mut data = VelocityIntegralRuntime::new(1, plan);
     data.rung_index = 4;
 
     let reached = record_integral_target_if_reached(
@@ -338,7 +339,7 @@ fn completed_rest_selection() -> RestSelectionDecision {
     }
 }
 
-fn reset_scored_rest(data: &mut VelocityIntegralData) {
+fn reset_scored_rest(data: &mut VelocityIntegralRuntime) {
     data.analysis.reset_for_scored_rest(
         data.settle_min_displacement_counts >= -1
             && data.settle_max_displacement_counts <= 1
@@ -373,7 +374,7 @@ fn live_stage_c_schedule_records_one_selector_per_observation() {
     let mut live_plan = plan();
     live_plan.positive_rung_count = 13;
     live_plan.recovery_slot_count = 15;
-    let mut data = VelocityIntegralData::new(31, live_plan);
+    let mut data = VelocityIntegralRuntime::new(31, live_plan);
     let decision = completed_rest_selection();
     let mut emitted = 0_u16;
 
@@ -430,7 +431,7 @@ fn live_amplitude_schedule_records_one_selector_per_completed_rest_decision() {
     amplitude_plan.i_start = 1_024;
     amplitude_plan.positive_rung_count = 5;
     amplitude_plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut data = VelocityIntegralData::new(41, amplitude_plan);
+    let mut data = VelocityIntegralRuntime::new(41, amplitude_plan);
     let decision = completed_rest_selection();
 
     for amplitude_index in 0..5 {
@@ -482,7 +483,7 @@ fn live_amplitude_schedule_records_one_selector_per_completed_rest_decision() {
 #[test]
 fn stage_c_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
     let stage_c_plan = plan();
-    let mut stage_c = VelocityIntegralData::new(17, stage_c_plan);
+    let mut stage_c = VelocityIntegralRuntime::new(17, stage_c_plan);
     let before = stage_c.integrity.digest();
     let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(selection)) =
         record_integral_recovery_rest_selection(
@@ -525,7 +526,7 @@ fn stage_c_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
     let mut amplitude_plan = plan();
     amplitude_plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
     amplitude_plan.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut amplitude = VelocityIntegralData::new(23, amplitude_plan);
+    let mut amplitude = VelocityIntegralRuntime::new(23, amplitude_plan);
     let StepResult::FixedGainAmplitudeEvent(FixedGainAmplitudeEvent::RestSelection(selection)) =
         record_integral_recovery_rest_selection(
             &mut amplitude,
@@ -568,7 +569,7 @@ fn amplitude_fold_retains_exact_consensus_location_and_masks() {
     amplitude.i_start = 1_024;
     amplitude.positive_rung_count = 5;
     amplitude.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut data = VelocityIntegralData::new(1, amplitude);
+    let mut data = VelocityIntegralRuntime::new(1, amplitude);
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     data.rung_intervals = [
         ExactRateInterval::new(100, 110).unwrap(),
@@ -756,7 +757,7 @@ fn amplitude_terminals_distinguish_sufficiency_recovery_and_integrity() {
     amplitude.qualifier_bits = 0x55aa;
     amplitude.positive_rung_count = 5;
     amplitude.amplitude_targets_rpm = [16, 33, 66, 132, 263];
-    let mut data = VelocityIntegralData::new(1, amplitude);
+    let mut data = VelocityIntegralRuntime::new(1, amplitude);
     data.opening_direction_mask = 0b11111;
     data.bookend_available_mask = 0b11111;
     data.eligible_masks = [0b00111; 2];
@@ -808,7 +809,7 @@ fn amplitude_terminals_distinguish_sufficiency_recovery_and_integrity() {
 
 #[test]
 fn non_amplitude_plan_faults_on_evidence_integrity() {
-    let mut data = VelocityIntegralData::new(1, plan());
+    let mut data = VelocityIntegralRuntime::new(1, plan());
     data.opening_direction_mask = 0b11111;
     data.bookend_available_mask = 0b11111;
     data.eligible_masks = [0b00111; 2];
@@ -1671,7 +1672,7 @@ fn stage_c_terminal_causes_reserve_bookend_and_rest_boundary_values() {
     );
 }
 
-fn seed_boundary(data: &mut VelocityIntegralData, rung_index: u8, slot: u8) {
+fn seed_boundary(data: &mut VelocityIntegralRuntime, rung_index: u8, slot: u8) {
     let observer = VelocityCurrentObserver::new(
         current_limit(u32::from(data.plan.usable_torque_limit)),
         VelocityLimitEvidenceCapability::BestEffortPolling,
@@ -2373,7 +2374,7 @@ fn phase() -> OuterPhase {
     let plan = plan();
     OuterPhase::VelocityIntegral {
         state: VelocityIntegralState::Setup,
-        data: VelocityIntegralData::new(7, plan),
+        data: VelocityIntegralRuntime::new(7, plan),
         safety: OuterSafetyLimits::new(
             plan.hard_torque_limit,
             OuterMotionBudget {
@@ -2408,7 +2409,7 @@ fn logged_writes(backend: &MockBackend) -> heapless::Vec<(u8, u32), 16> {
     writes
 }
 
-fn seed_sufficient_curve(data: &mut VelocityIntegralData, workspace: &mut TransientBuffer) {
+fn seed_sufficient_curve(data: &mut VelocityIntegralRuntime, workspace: &mut TransientBuffer) {
     data.opening_direction_mask = 3;
     data.eligible_masks = [0b111; 2];
     for (index, value) in [10_i32, 20, -20, -10].into_iter().enumerate() {
@@ -3056,7 +3057,7 @@ fn rung_aggregation_follows_the_declared_slot_order() {
     let slot_order = IntegralSlotOrder::ForwardFirst;
     let mut plan = plan();
     plan.slot_order = slot_order;
-    let mut data = VelocityIntegralData::new(1, plan);
+    let mut data = VelocityIntegralRuntime::new(1, plan);
     data.rung_classes = [VelocityObservationClass::Eligible; 8];
     // Sign each slot by the direction that slot actually travels, so reading
     // the wrong slots yields the wrong sign rather than merely wrong values.

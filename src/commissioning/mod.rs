@@ -31,7 +31,7 @@ use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::outer::{
     OuterMotionBudget, OuterPhase, OuterSafetyLimits, TraceSummarySeqs,
 };
-use crate::commissioning::outer::{VelocityIntegralData, VelocityIntegralState};
+use crate::commissioning::outer::{VelocityIntegralRuntime, VelocityIntegralState};
 use crate::commissioning::types::{AdcCalResult, EngineKind, StepResult};
 use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
@@ -672,7 +672,7 @@ impl CommissioningEngine {
         );
         let phase = OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
-            data: VelocityIntegralData::new(
+            data: VelocityIntegralRuntime::new(
                 preflight.run_sequence,
                 preflight.plan.execution_plan(),
             ),
@@ -698,7 +698,7 @@ impl CommissioningEngine {
         );
         let phase = OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
-            data: VelocityIntegralData::new(
+            data: VelocityIntegralRuntime::new(
                 preflight.run_sequence,
                 preflight.plan.execution_plan(),
             ),
@@ -1887,7 +1887,7 @@ mod tests {
         assert_eq!(size_of::<TraceRunState>(), 12);
         assert_eq!(size_of::<TraceSummarySeqs>(), 16);
         assert_eq!(
-            size_of::<crate::commissioning::outer::VelocityIntegralData>(),
+            size_of::<crate::commissioning::outer::VelocityIntegralRuntime>(),
             2_960
         );
         assert!(

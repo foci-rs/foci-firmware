@@ -11,7 +11,7 @@ use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::state::{PositiveIRestBoundary, VelocitySettleMetrics};
 use crate::commissioning::outer::{
-    OuterPhase, OuterSafetyLimits, VelocityIntegralData, VelocityIntegralState,
+    OuterPhase, OuterSafetyLimits, VelocityIntegralRuntime, VelocityIntegralState,
 };
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
@@ -178,7 +178,7 @@ pub(super) fn integral_rung_kind(
 
 pub(super) fn apply_integral_current_headroom(
     state: &mut VelocityIntegralState,
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
 ) {
     if matches!(
         data.plan.acquisition_kind,
@@ -207,14 +207,14 @@ pub(super) fn apply_integral_current_headroom(
     *state = VelocityIntegralState::Terminal;
 }
 
-pub(super) fn positive_directional_floors_exist(data: &VelocityIntegralData) -> bool {
+pub(super) fn positive_directional_floors_exist(data: &VelocityIntegralRuntime) -> bool {
     data.eligible_masks
         .iter()
         .all(|mask| mask.count_ones() >= 3)
 }
 
 pub(super) fn record_integral_target_if_reached(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     intervals: [ExactRateInterval; 2],
 ) -> Result<bool, CommissionError> {
     if !data.plan.records_target_terminus() {
@@ -261,7 +261,9 @@ pub(super) fn record_integral_target_if_reached(
 /// terminus when the deficit reaches the target. It is a no-op unless the plan
 /// records a terminus and both directions reach an eligible consensus, so it is
 /// safe on a diversion that consumed a partially swept rung.
-fn record_diverted_target_terminus(data: &mut VelocityIntegralData) -> Result<(), CommissionError> {
+fn record_diverted_target_terminus(
+    data: &mut VelocityIntegralRuntime,
+) -> Result<(), CommissionError> {
     let forward = analyze_rung(data, VelocityDirection::Forward)?;
     let reverse = analyze_rung(data, VelocityDirection::Reverse)?;
     if let [Some(forward), Some(reverse)] = [forward.interval, reverse.interval] {
@@ -271,7 +273,7 @@ fn record_diverted_target_terminus(data: &mut VelocityIntegralData) -> Result<()
 }
 
 pub(super) fn integral_recovery_current_contact_policy(
-    data: &VelocityIntegralData,
+    data: &VelocityIntegralRuntime,
 ) -> RecoveryCurrentContactPolicy {
     let closes_positive_ladder = data.rung_index == data.plan.positive_rung_count
         || data.current_terminus.is_some()
@@ -305,7 +307,7 @@ fn current_guard_error(error: VelocityCurrentGuardError) -> CommissionError {
 }
 
 fn reset_rung(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     workspace: &mut TransientBuffer,
 ) -> Result<(), CommissionError> {
     data.slot = 0;
@@ -350,7 +352,7 @@ pub(super) fn amplitude_rung_mean(
 }
 
 fn set_rung_blocking_level(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     slot: u8,
     level: u8,
 ) -> Result<(), CommissionError> {
@@ -363,15 +365,19 @@ fn set_rung_blocking_level(
     Ok(())
 }
 
-fn rung_blocking_level(data: &VelocityIntegralData, slot: usize) -> u8 {
+fn rung_blocking_level(data: &VelocityIntegralRuntime, slot: usize) -> u8 {
     ((data.rung_blocking_levels >> (slot * 4)) & 0x0f) as u8
 }
 
-fn fixed_gain_amplitude_attempted_masks(data: &VelocityIntegralData) -> [u8; 2] {
+fn fixed_gain_amplitude_attempted_masks(data: &VelocityIntegralRuntime) -> [u8; 2] {
     [data.opening_direction_mask, data.bookend_available_mask]
 }
 
-fn set_fixed_gain_amplitude_attempted(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
+fn set_fixed_gain_amplitude_attempted(
+    data: &mut VelocityIntegralRuntime,
+    direction: usize,
+    bit: u8,
+) {
     if direction == 0 {
         data.opening_direction_mask |= bit;
     } else {
@@ -379,14 +385,14 @@ fn set_fixed_gain_amplitude_attempted(data: &mut VelocityIntegralData, direction
     }
 }
 
-fn fixed_gain_amplitude_current_masks(data: &VelocityIntegralData) -> [u8; 2] {
+fn fixed_gain_amplitude_current_masks(data: &VelocityIntegralRuntime) -> [u8; 2] {
     [
         data.current_terminus.unwrap_or(0),
         data.target_terminus.unwrap_or(0),
     ]
 }
 
-fn set_fixed_gain_amplitude_current(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
+fn set_fixed_gain_amplitude_current(data: &mut VelocityIntegralRuntime, direction: usize, bit: u8) {
     let value = if direction == 0 {
         &mut data.current_terminus
     } else {
@@ -426,7 +432,7 @@ fn acceptance_identity_and_qualifiers(plan: VelocityIntegralExecutionPlan) -> Op
 }
 
 pub(super) fn fixed_gain_amplitude_report(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     workspace: &TransientBuffer,
 ) -> Result<FixedGainAmplitudeReport, CommissionError> {
     let amplitude = usize::from(data.rung_index);
@@ -502,7 +508,7 @@ pub(super) fn fixed_gain_amplitude_report(
 }
 
 pub(super) fn fixed_gain_amplitude_terminal(
-    data: &VelocityIntegralData,
+    data: &VelocityIntegralRuntime,
     faulted: bool,
     safety_fault: Option<OuterSafetyFault>,
 ) -> FixedGainAmplitudeTerminal {
@@ -685,7 +691,7 @@ pub(super) fn opening_recovery_lower_rate_q(
 }
 
 pub(super) fn plan_integral_recovery(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     workspace: &TransientBuffer,
     safety: &OuterSafetyLimits,
 ) -> Result<RungOriginRecoveryRuntime, CommissionError> {
@@ -754,7 +760,7 @@ pub(super) fn plan_integral_recovery(
 }
 
 pub(super) fn record_integral_recovery_rest(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     analysis: RecoveryRestAnalysis,
 ) -> StepResult {
     let diagnostic = RecoveryRestDiagnostic {
@@ -797,7 +803,7 @@ pub(super) fn record_integral_recovery_rest(
 }
 
 pub(super) fn record_integral_recovery_rest_selection(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     decision: crate::autotune::velocity_measurement::RestSelectionDecision,
     stage: RecoveryStage,
     rung_index: u8,
@@ -839,7 +845,7 @@ pub(super) fn record_integral_recovery_rest_selection(
 }
 
 pub(super) fn record_integral_observation_rest_selection(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     decision: crate::autotune::velocity_measurement::RestSelectionDecision,
     owner: RestSelectionOwner,
 ) -> StepResult {
@@ -876,7 +882,7 @@ pub(super) fn record_integral_observation_rest_selection(
 }
 
 fn materialize_run_evidence(
-    data: &VelocityIntegralData,
+    data: &VelocityIntegralRuntime,
     workspace: &TransientBuffer,
 ) -> Result<super::integral_evidence::IntegralRunEvidence, CommissionError> {
     let opening = if data.opening_direction_mask == 3 {
@@ -919,7 +925,7 @@ fn direction_for_slot(
 }
 
 pub(super) fn terminal_from_data(
-    data: &VelocityIntegralData,
+    data: &VelocityIntegralRuntime,
     evidence: super::integral_evidence::IntegralRunEvidence,
     outcome: VelocityIntegralOutcome,
     cause: StageCCause,
@@ -1006,7 +1012,7 @@ async fn fail_integral_with_safety<B: CommissioningBackend>(
 }
 
 fn compact_summary(
-    data: &VelocityIntegralData,
+    data: &VelocityIntegralRuntime,
     slot: usize,
     direction: VelocityDirection,
 ) -> Result<VelocityObservationSummary, CommissionError> {
@@ -1033,7 +1039,7 @@ fn compact_summary(
 }
 
 pub(super) fn analyze_rung(
-    data: &VelocityIntegralData,
+    data: &VelocityIntegralRuntime,
     direction: VelocityDirection,
 ) -> Result<IntegralRungEvidence, CommissionError> {
     let direction_index = match direction {
@@ -1055,7 +1061,7 @@ pub(super) fn analyze_rung(
 }
 
 fn retain_rung(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     workspace: &mut TransientBuffer,
     directions: [IntegralRungEvidence; 2],
 ) -> Result<(), CommissionError> {
@@ -1112,7 +1118,7 @@ fn retain_rung(
     Ok(())
 }
 
-fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -> StepResult {
+fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer) -> StepResult {
     let evidence = match materialize_run_evidence(data, workspace) {
         Ok(evidence) => evidence,
         Err(_) => {
@@ -1238,7 +1244,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
 }
 
 fn current_report(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     current_evidence: super::velocity_clamp::VelocityCurrentPhaseEvidence,
 ) -> VelocityPrimitiveCurrentEvidence {
     VelocityPrimitiveCurrentEvidence {
@@ -1265,7 +1271,7 @@ type MovingAnalysis = (
 );
 
 fn moving_analysis(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     counts_per_rev: u32,
 ) -> Result<Option<MovingAnalysis>, CommissionError> {
     let Some((stationarity, rejection, drift_ratio_ppm)) =
@@ -1329,7 +1335,7 @@ fn moving_analysis(
 }
 
 fn retain_analyzed_observation(
-    data: &mut VelocityIntegralData,
+    data: &mut VelocityIntegralRuntime,
     workspace: &mut TransientBuffer,
     summary: VelocityObservationSummary,
 ) -> Result<(), CommissionError> {

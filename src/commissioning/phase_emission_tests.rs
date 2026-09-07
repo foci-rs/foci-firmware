@@ -252,7 +252,7 @@ fn phase_code(phase: CommissionPhase) -> i32 {
 /// `the_engine_reports_one_stage_c_plan_before_any_integral_evidence`; what this
 /// buys is the trace-span pairing below, which that test does not inspect.
 fn hand_off_to_response_ladder(engine: &mut CommissioningEngine) {
-    use crate::commissioning::outer::{VelocityIntegralData, VelocityIntegralState};
+    use crate::commissioning::outer::{VelocityIntegralRuntime, VelocityIntegralState};
 
     let EngineMode::Outer { phase, .. } = &mut engine.engine_mode else {
         panic!("the fixture engine must be an outer engine");
@@ -263,7 +263,7 @@ fn hand_off_to_response_ladder(engine: &mut CommissioningEngine) {
     let safety = *safety;
     *phase = OuterPhase::VelocityIntegral {
         state: VelocityIntegralState::Setup,
-        data: VelocityIntegralData::new(7, response_ladder_plan().execution_plan()),
+        data: VelocityIntegralRuntime::new(7, response_ladder_plan().execution_plan()),
         safety,
     };
 }

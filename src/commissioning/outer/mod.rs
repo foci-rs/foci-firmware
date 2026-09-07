@@ -37,5 +37,5 @@ pub(crate) use safety_timing::{
 pub(crate) use state::OuterPhase;
 #[cfg(test)]
 pub(crate) use state::{PositiveIRestBoundary, VelocitySettleMetrics};
-pub(crate) use state::{VelocityIntegralData, VelocityIntegralState};
+pub(crate) use state::{VelocityIntegralRuntime, VelocityIntegralState};
 pub(crate) use trace::{TraceSummarySeqs, trace_pack_i16_pair, trace_summary_event};

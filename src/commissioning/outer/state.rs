@@ -24,7 +24,7 @@ pub(crate) const VELOCITY_OBSERVATION_CAPACITY: usize = 256;
 /// Dyadic levels required to analyze every retained suffix through 256 samples.
 ///
 /// Used for `DyadicBlocker<VELOCITY_SWEEP_BLOCK_LEVELS>` in
-/// `VelocityIntegralData` and `RungOriginRecoveryResources`.
+/// `VelocityIntegralRuntime` and `RungOriginRecoveryResources`.
 pub(crate) const VELOCITY_SWEEP_BLOCK_LEVELS: usize = 5;
 
 /// Fixed-memory tail ring with split arrays to avoid tuple padding.
@@ -303,7 +303,7 @@ pub(crate) enum VelocityIntegralState {
 
 /// Engine-owned Stage-C acquisition and exact raw-curve state.
 #[derive(Debug, defmt::Format)]
-pub(crate) struct VelocityIntegralData {
+pub(crate) struct VelocityIntegralRuntime {
     pub(crate) plan: VelocityIntegralExecutionPlan,
     pub(crate) integrity: super::velocity::integral_reporting::VelocityIntegralIntegrity,
     pub(crate) rung_index: u8,
@@ -342,7 +342,7 @@ pub(crate) struct VelocityIntegralData {
     pub(crate) emitted_rungs: u16,
 }
 
-impl VelocityIntegralData {
+impl VelocityIntegralRuntime {
     pub(crate) fn new(run_sequence: u32, plan: VelocityIntegralExecutionPlan) -> Self {
         Self {
             plan,
@@ -392,7 +392,7 @@ pub(crate) enum OuterPhase {
     /// Stage-C fixed-P velocity-integral response phase.
     VelocityIntegral {
         state: VelocityIntegralState,
-        data: VelocityIntegralData,
+        data: VelocityIntegralRuntime,
         safety: OuterSafetyLimits,
     },
     /// Breakaway-seeded campaign: probe, additive discovery, and held-out
@@ -462,7 +462,7 @@ impl OuterPhase {
 mod tests {
     use core::mem::size_of;
 
-    use super::{OuterPhase, VelocityIntegralData, VelocityIntegralState};
+    use super::{OuterPhase, VelocityIntegralRuntime, VelocityIntegralState};
     use crate::autotune::{CommissionError, CommissionPhase};
 
     use crate::commissioning::outer::OuterSafetyLimits;
@@ -526,7 +526,7 @@ mod tests {
         plan.acquisition_kind = acquisition_kind;
         OuterPhase::VelocityIntegral {
             state: VelocityIntegralState::Setup,
-            data: VelocityIntegralData::new(0, plan),
+            data: VelocityIntegralRuntime::new(0, plan),
             safety: OuterSafetyLimits::new(
                 0,
                 crate::commissioning::outer::OuterMotionBudget::firmware_caps(),
