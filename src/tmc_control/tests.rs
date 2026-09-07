@@ -1817,6 +1817,72 @@ fn adc_current_clipped_false_when_status_read_fails() {
 }
 
 #[test]
+fn classify_emergency_disable_fault_prefers_adc_clipped_over_read_failure() {
+    assert_eq!(
+        classify_emergency_disable_fault(Ok(1 << 26)),
+        EmergencyDisableFault::AdcCurrentClipped
+    );
+}
+
+#[test]
+fn classify_emergency_disable_fault_is_read_failed_on_err() {
+    assert_eq!(
+        classify_emergency_disable_fault(Err(())),
+        EmergencyDisableFault::StatusReadFailed
+    );
+}
+
+#[test]
+fn classify_emergency_disable_fault_is_generic_for_other_fault_bits() {
+    assert_eq!(
+        classify_emergency_disable_fault(Ok(1 << 3)),
+        EmergencyDisableFault::Generic
+    );
+}
+
+#[test]
+fn combine_emergency_disable_fault_clipped_beats_read_failed_either_order() {
+    use EmergencyDisableFault::{AdcCurrentClipped, StatusReadFailed};
+    assert_eq!(
+        combine_emergency_disable_fault(AdcCurrentClipped, StatusReadFailed),
+        AdcCurrentClipped
+    );
+    assert_eq!(
+        combine_emergency_disable_fault(StatusReadFailed, AdcCurrentClipped),
+        AdcCurrentClipped
+    );
+}
+
+#[test]
+fn combine_emergency_disable_fault_read_failed_beats_generic_either_order() {
+    use EmergencyDisableFault::{Generic, StatusReadFailed};
+    assert_eq!(
+        combine_emergency_disable_fault(StatusReadFailed, Generic),
+        StatusReadFailed
+    );
+    assert_eq!(
+        combine_emergency_disable_fault(Generic, StatusReadFailed),
+        StatusReadFailed
+    );
+}
+
+#[test]
+fn multi_channel_fold_retains_earlier_channel_failure_after_later_channel_succeeds() {
+    let mut fault = EmergencyDisableFault::Generic;
+    fault = combine_emergency_disable_fault(fault, classify_emergency_disable_fault(Err(())));
+    fault = combine_emergency_disable_fault(fault, classify_emergency_disable_fault(Ok(0)));
+    assert_eq!(fault, EmergencyDisableFault::StatusReadFailed);
+}
+
+#[test]
+fn multi_channel_fold_retains_earlier_channel_clip_after_later_channel_read_fails() {
+    let mut fault = EmergencyDisableFault::Generic;
+    fault = combine_emergency_disable_fault(fault, classify_emergency_disable_fault(Ok(1 << 26)));
+    fault = combine_emergency_disable_fault(fault, classify_emergency_disable_fault(Err(())));
+    assert_eq!(fault, EmergencyDisableFault::AdcCurrentClipped);
+}
+
+#[test]
 fn emergency_disable_without_signal_is_empty() {
     let shutdown_active = AtomicBool::new(false);
     let queue_flush = AtomicBool::new(false);

@@ -2108,6 +2108,51 @@ pub fn is_adc_current_clipped(status_flags: Result<u32, ()>) -> bool {
     matches!(status_flags, Ok(flags) if flags & STATUS_ADC_I_CLIPPED != 0)
 }
 
+/// Which emergency-disable shutdown message a STATUS_FLAGS poll (or set of
+/// polls, for a multi-channel board) selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum EmergencyDisableFault {
+    /// ADC current clipped (overcurrent) — the most specific, actionable
+    /// fault; wins over the other two regardless of poll order.
+    AdcCurrentClipped,
+    /// The STATUS_FLAGS read itself failed, carrying no fault evidence
+    /// either way. Distinct from [`Self::Generic`] so a transport error is
+    /// never indistinguishable from a genuine unclassified fault bit.
+    StatusReadFailed,
+    /// A non-ADC-clip fault bit was set, or all attempted reads succeeded
+    /// with no bit set (reaching the emergency-disable path at all implies
+    /// something else already triggered it).
+    Generic,
+}
+
+/// Classifies one STATUS_FLAGS poll outcome.
+pub fn classify_emergency_disable_fault(status_flags: Result<u32, ()>) -> EmergencyDisableFault {
+    if is_adc_current_clipped(status_flags) {
+        EmergencyDisableFault::AdcCurrentClipped
+    } else if status_flags.is_err() {
+        EmergencyDisableFault::StatusReadFailed
+    } else {
+        EmergencyDisableFault::Generic
+    }
+}
+
+/// Combines one channel's classification into a running multi-channel
+/// aggregate, in priority order: [`EmergencyDisableFault::AdcCurrentClipped`]
+/// beats [`EmergencyDisableFault::StatusReadFailed`] beats
+/// [`EmergencyDisableFault::Generic`], regardless of which channel produced
+/// which outcome or the order channels are folded in.
+pub fn combine_emergency_disable_fault(
+    so_far: EmergencyDisableFault,
+    channel: EmergencyDisableFault,
+) -> EmergencyDisableFault {
+    use EmergencyDisableFault::{AdcCurrentClipped, Generic, StatusReadFailed};
+    match (so_far, channel) {
+        (AdcCurrentClipped, _) | (_, AdcCurrentClipped) => AdcCurrentClipped,
+        (StatusReadFailed, _) | (_, StatusReadFailed) => StatusReadFailed,
+        (Generic, Generic) => Generic,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

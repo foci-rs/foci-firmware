@@ -42,7 +42,8 @@ pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_request};
 pub use signals::TmcControlSignals;
 pub use state::{
-    HomingMaintenanceResult, TmcControlRuntime, TmcControlTraceState, TmcControlTraceTick,
+    EmergencyDisableFault, HomingMaintenanceResult, TmcControlRuntime, TmcControlTraceState,
+    TmcControlTraceTick, classify_emergency_disable_fault, combine_emergency_disable_fault,
     is_adc_current_clipped,
 };
 
