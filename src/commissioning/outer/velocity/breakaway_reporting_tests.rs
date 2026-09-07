@@ -622,7 +622,7 @@ fn confirmation_plan_report_carries_band_and_margin() {
     assert_eq!(report.plan_digest, plan.plan_digest);
     assert_eq!(report.prior_plan_digest, 0x22);
     assert_eq!(report.family_size, plan.family_size);
-    assert_eq!(report.candidate_p_raw, 724);
+    assert_eq!(report.nominated_p_raw, 724);
     assert_eq!(report.band_lower_percent, CONFIRMATION_BAND_LOWER_PERCENT);
     assert_eq!(report.band_upper_percent, CONFIRMATION_BAND_UPPER_PERCENT);
     assert_eq!(report.nominated_margin_percent_milli, 4_500);

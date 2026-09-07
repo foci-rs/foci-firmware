@@ -373,7 +373,7 @@ fn encode_confirmation_planned_has_stable_frame_layout() {
         prior_plan_digest: 0x99aa_bbcc_ddee_ff00,
         family_size: 8,
         observations_per_direction: 4,
-        candidate_p_raw: 0x0910,
+        nominated_p_raw: 0x0910,
         band_lower_percent: 70,
         band_upper_percent: 80,
         capture_profile: 0,
@@ -389,7 +389,7 @@ fn encode_confirmation_planned_has_stable_frame_layout() {
         .u64(report.prior_plan_digest)
         .u16(report.family_size)
         .u16(report.observations_per_direction)
-        .u16(report.candidate_p_raw)
+        .u16(report.nominated_p_raw)
         .u8(report.band_lower_percent)
         .u8(report.band_upper_percent)
         .u8(report.capture_profile)
@@ -631,7 +631,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             prior_plan_digest: 0,
             family_size: 0,
             observations_per_direction: 0,
-            candidate_p_raw: 0,
+            nominated_p_raw: 0,
             band_lower_percent: 0,
             band_upper_percent: 0,
             capture_profile: 0,

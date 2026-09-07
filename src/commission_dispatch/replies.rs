@@ -486,7 +486,7 @@ pub fn emit_breakaway_confirmation_plan<S: CommissionReplySink>(
         prior_plan_digest_high: (report.prior_plan_digest >> 32) as u32,
         family_size: report.family_size,
         observations_per_direction: report.observations_per_direction,
-        nominated_p_raw: report.candidate_p_raw,
+        nominated_p_raw: report.nominated_p_raw,
         band_lower_percent: report.band_lower_percent,
         band_upper_percent: report.band_upper_percent,
         capture_profile: report.capture_profile,

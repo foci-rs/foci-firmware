@@ -1390,7 +1390,7 @@ pub struct BandConfirmationPlanned {
     /// Fresh observations collected per direction.
     pub observations_per_direction: u16,
     /// Nominated proportional gain under held-out test.
-    pub candidate_p_raw: u16,
+    pub nominated_p_raw: u16,
     /// Inclusive lower edge of the confirmable response band, in percent.
     pub band_lower_percent: u8,
     /// Inclusive upper edge of the confirmable response band, in percent.

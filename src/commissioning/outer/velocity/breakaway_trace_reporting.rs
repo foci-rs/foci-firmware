@@ -262,7 +262,7 @@ pub(crate) fn encode_confirmation_planned(
     push_u64(&mut record, report.prior_plan_digest);
     record.push_u16(report.family_size);
     record.push_u16(report.observations_per_direction);
-    record.push_u16(report.candidate_p_raw);
+    record.push_u16(report.nominated_p_raw);
     record.push_u8(report.band_lower_percent);
     record.push_u8(report.band_upper_percent);
     record.push_u8(report.capture_profile);
