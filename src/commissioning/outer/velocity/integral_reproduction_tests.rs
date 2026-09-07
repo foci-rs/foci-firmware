@@ -3,7 +3,7 @@ use super::integral_plan::{
     INTEGRAL_EVIDENCE_SCHEMA_REVISION, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
 };
 use super::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, IntegralAuthoritySummary, IntegralPlanIdentity,
+    AcceptancePoint, FixedGainAmplitudeProgress, IntegralAuthoritySummary, IntegralPlanIdentity,
     IntegralReproductionDecision, IntegralRestBoundaryReference, IntegralRetentionSlot,
     IntegralRetentionSlotState, RetainedIntegralEvidence, closed_intersection,
     compare_integral_runs, delta_e, signed_divergence_gap,
@@ -89,7 +89,7 @@ fn candidate(
     }
 }
 
-fn acceptance_point(channel: u8, progress: AcceptanceMatrixProgress) -> AcceptancePoint {
+fn acceptance_point(channel: u8, progress: FixedGainAmplitudeProgress) -> AcceptancePoint {
     AcceptancePoint {
         identity: identity(channel, 0xfeed_beef),
         selected_p: 1_024,
@@ -106,7 +106,7 @@ fn acceptance_point(channel: u8, progress: AcceptanceMatrixProgress) -> Acceptan
 
 #[test]
 fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authority() {
-    let point = acceptance_point(0, AcceptanceMatrixProgress::ReadyAscending);
+    let point = acceptance_point(0, FixedGainAmplitudeProgress::ReadyAscending);
     let mut slot = IntegralRetentionSlot::new();
 
     slot.install_acceptance_point(point);
@@ -120,11 +120,11 @@ fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authori
 
 #[test]
 fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
-    assert_eq!(AcceptanceMatrixProgress::ReadyAscending as u8, 0);
-    assert_eq!(AcceptanceMatrixProgress::ReadyDescending as u8, 1);
-    assert_eq!(AcceptanceMatrixProgress::Closed as u8, 2);
+    assert_eq!(FixedGainAmplitudeProgress::ReadyAscending as u8, 0);
+    assert_eq!(FixedGainAmplitudeProgress::ReadyDescending as u8, 1);
+    assert_eq!(FixedGainAmplitudeProgress::Closed as u8, 2);
 
-    let point = acceptance_point(0, AcceptanceMatrixProgress::ReadyAscending);
+    let point = acceptance_point(0, FixedGainAmplitudeProgress::ReadyAscending);
     let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(point);
     slot.observe_host_error();
@@ -134,13 +134,13 @@ fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
     assert!(slot.advance_matrix_progress());
     assert_eq!(
         slot.acceptance_point().unwrap().progress,
-        AcceptanceMatrixProgress::ReadyDescending
+        FixedGainAmplitudeProgress::ReadyDescending
     );
     assert!(!slot.advance_matrix_progress());
     assert!(slot.close_matrix_progress());
     assert_eq!(
         slot.acceptance_point().unwrap().progress,
-        AcceptanceMatrixProgress::Closed
+        FixedGainAmplitudeProgress::Closed
     );
     assert!(!slot.close_matrix_progress());
 

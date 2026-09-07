@@ -13,7 +13,7 @@
 //! the absolute thresholds and rejects a second conclusive tail cycle.
 //!
 //! The phase reads the accepted point read-only; it never advances or closes
-//! [`AcceptanceMatrixProgress`](super::integral_reproduction::AcceptanceMatrixProgress).
+//! [`FixedGainAmplitudeProgress`](super::integral_reproduction::FixedGainAmplitudeProgress).
 
 use crate::autotune::CommissionError;
 use crate::autotune::CommissionStatus;
@@ -1799,7 +1799,7 @@ mod tests {
     use crate::commissioning::outer::OuterMotionBudget;
     use crate::commissioning::outer::check_outer_safety;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, IntegralPlanIdentity, IntegralRetentionSlot,
+        FixedGainAmplitudeProgress, IntegralPlanIdentity, IntegralRetentionSlot,
     };
     use crate::commissioning::outer::velocity::robustness_metrics::{
         ROBUSTNESS_MAX_RETRIES, ROBUSTNESS_THRESHOLDS,
@@ -1864,7 +1864,7 @@ mod tests {
             band_position_q: 0,
             qualifier_bits: 0,
             token: None,
-            progress: AcceptanceMatrixProgress::ReadyAscending,
+            progress: FixedGainAmplitudeProgress::ReadyAscending,
         }
     }
 
@@ -2282,7 +2282,7 @@ mod tests {
                 slot.acceptance_point().expect("point retained").progress,
                 before
             );
-            assert_eq!(before, AcceptanceMatrixProgress::ReadyAscending);
+            assert_eq!(before, FixedGainAmplitudeProgress::ReadyAscending);
         }
     }
 

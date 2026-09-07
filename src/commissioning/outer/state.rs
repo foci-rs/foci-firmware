@@ -408,7 +408,7 @@ pub(crate) enum OuterPhase {
     /// Reversal-standstill robustness gate over the retained acceptance point.
     ///
     /// Reads the retained accepted point read-only; it never advances or closes
-    /// `AcceptanceMatrixProgress`. Its cooperative stepper owns its own capture
+    /// `FixedGainAmplitudeProgress`. Its cooperative stepper owns its own capture
     /// and analysis state; the shared outer-safety envelope check runs against
     /// `safety` between ticks like every other outer phase.
     RobustnessReversal {

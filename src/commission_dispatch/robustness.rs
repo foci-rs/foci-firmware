@@ -7,7 +7,7 @@
 //! Both `preflight_robustness_reversal` and `apply_robustness_terminal`
 //! take `&IntegralRetentionSlot`, never `&mut`: this phase probes the
 //! already-accepted operating point but never advances or closes
-//! `AcceptanceMatrixProgress`.
+//! `FixedGainAmplitudeProgress`.
 
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptancePoint, IntegralRetentionSlot,
@@ -151,7 +151,7 @@ pub fn failed_robustness_terminal(
 /// accepted point's identity has not changed underneath the probe.
 ///
 /// Takes `&IntegralRetentionSlot` (shared, read-only): this phase never
-/// advances or closes `AcceptanceMatrixProgress`, so it cannot take a
+/// advances or closes `FixedGainAmplitudeProgress`, so it cannot take a
 /// mutable slot reference. On identity mismatch (or an emptied slot) the
 /// terminal is stamped `Failed`/`EVIDENCE_INTEGRITY` -- distinct from
 /// `SAFETY_FAULT`, which is reserved for envelope faults.
@@ -241,7 +241,7 @@ fn zero_robustness_evidence() -> RobustnessEvidence {
 mod tests {
     use super::*;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, IntegralPlanIdentity,
+        FixedGainAmplitudeProgress, IntegralPlanIdentity,
     };
 
     fn sample_acceptance_point() -> AcceptancePoint {
@@ -260,7 +260,7 @@ mod tests {
             band_position_q: 0,
             qualifier_bits: 0,
             token: None,
-            progress: AcceptanceMatrixProgress::ReadyAscending,
+            progress: FixedGainAmplitudeProgress::ReadyAscending,
         }
     }
 

@@ -182,7 +182,7 @@ fn fixed_gain_amplitude_engine() -> CommissioningEngine {
     };
     use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
+        AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
     };
     use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 
@@ -202,7 +202,7 @@ fn fixed_gain_amplitude_engine() -> CommissioningEngine {
         band_position_q: 0,
         qualifier_bits: 0,
         token: None,
-        progress: AcceptanceMatrixProgress::ReadyAscending,
+        progress: FixedGainAmplitudeProgress::ReadyAscending,
     };
     let plan = plan_fixed_gain_amplitude(
         point,

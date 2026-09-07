@@ -18,7 +18,7 @@ use crate::commissioning::outer::velocity::integral_plan::{
     bind_breakaway_integral_authority, plan_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity, IntegralRetentionSlot,
+    AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity, IntegralRetentionSlot,
 };
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_consensus::{
@@ -199,7 +199,7 @@ fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDige
 fn breakaway_point(
     plan: VelocityIntegralPlan,
     token: ConfirmedAcquisitionDigest,
-    progress: AcceptanceMatrixProgress,
+    progress: FixedGainAmplitudeProgress,
 ) -> AcceptancePoint {
     AcceptancePoint {
         identity: IntegralPlanIdentity {
@@ -227,7 +227,7 @@ fn breakaway_point(
 #[test]
 fn breakaway_reconstructs_and_verifies_from_token() {
     let (plan, token) = breakaway_plan_and_token();
-    let point = breakaway_point(plan, token, AcceptanceMatrixProgress::ReadyAscending);
+    let point = breakaway_point(plan, token, FixedGainAmplitudeProgress::ReadyAscending);
 
     let rebuilt = reconstruct_breakaway_plan(
         point,
@@ -251,7 +251,7 @@ fn breakaway_reconstructs_and_verifies_from_token() {
 #[test]
 fn breakaway_reconstruct_rejects_tampered_intervals() {
     let (plan, token) = breakaway_plan_and_token();
-    let mut point = breakaway_point(plan, token, AcceptanceMatrixProgress::ReadyAscending);
+    let mut point = breakaway_point(plan, token, FixedGainAmplitudeProgress::ReadyAscending);
     point.selected_response_intervals_q[0][0] += 2;
 
     assert_eq!(
@@ -272,7 +272,7 @@ fn breakaway_reconstruct_rejects_tampered_intervals() {
 #[test]
 fn breakaway_reconstruct_rejects_tampered_selected_p() {
     let (plan, token) = breakaway_plan_and_token();
-    let mut point = breakaway_point(plan, token, AcceptanceMatrixProgress::ReadyAscending);
+    let mut point = breakaway_point(plan, token, FixedGainAmplitudeProgress::ReadyAscending);
     point.selected_p += 1;
 
     assert_eq!(
@@ -293,7 +293,7 @@ fn breakaway_reconstruct_rejects_tampered_selected_p() {
 #[test]
 fn breakaway_reconstruct_rejects_point_without_token() {
     let (plan, token) = breakaway_plan_and_token();
-    let mut point = breakaway_point(plan, token, AcceptanceMatrixProgress::ReadyAscending);
+    let mut point = breakaway_point(plan, token, FixedGainAmplitudeProgress::ReadyAscending);
     point.token = None;
 
     assert_eq!(
@@ -465,7 +465,7 @@ fn preflight_requires_matching_point_and_order_without_mutation() {
         Err(FixedGainAmplitudePreflightRejection::MissingAcceptancePoint)
     );
 
-    let mut stale = breakaway_point(current, token, AcceptanceMatrixProgress::ReadyAscending);
+    let mut stale = breakaway_point(current, token, FixedGainAmplitudeProgress::ReadyAscending);
     stale.identity.plan_digest ^= 1;
     empty.install_acceptance_point(stale);
     assert_eq!(
@@ -481,7 +481,7 @@ fn preflight_requires_matching_point_and_order_without_mutation() {
     assert_eq!(empty.acceptance_point(), Some(stale));
 
     let ready_descending =
-        breakaway_point(current, token, AcceptanceMatrixProgress::ReadyDescending);
+        breakaway_point(current, token, FixedGainAmplitudeProgress::ReadyDescending);
     empty.install_acceptance_point(ready_descending);
     assert_eq!(
         preflight_fixed_gain_amplitude(
@@ -504,7 +504,7 @@ fn preflight_admits_only_the_expected_amplitude_direction() {
     slot.install_acceptance_point(breakaway_point(
         current,
         token,
-        AcceptanceMatrixProgress::ReadyAscending,
+        FixedGainAmplitudeProgress::ReadyAscending,
     ));
     let ascending = preflight_fixed_gain_amplitude(
         AutotuneAction::FixedGainAmplitudeAscending,
@@ -536,7 +536,7 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
     slot.install_acceptance_point(breakaway_point(
         current,
         token,
-        AcceptanceMatrixProgress::ReadyAscending,
+        FixedGainAmplitudeProgress::ReadyAscending,
     ));
     let ascending = preflight_fixed_gain_amplitude(
         AutotuneAction::FixedGainAmplitudeAscending,
@@ -554,7 +554,7 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
     );
     assert_eq!(
         slot.acceptance_point().unwrap().progress,
-        AcceptanceMatrixProgress::ReadyDescending
+        FixedGainAmplitudeProgress::ReadyDescending
     );
 
     let descending = preflight_fixed_gain_amplitude(
@@ -576,13 +576,13 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
     );
     assert_eq!(
         slot.acceptance_point().unwrap().progress,
-        AcceptanceMatrixProgress::Closed
+        FixedGainAmplitudeProgress::Closed
     );
 
     slot.install_acceptance_point(breakaway_point(
         current,
         token,
-        AcceptanceMatrixProgress::ReadyAscending,
+        FixedGainAmplitudeProgress::ReadyAscending,
     ));
     apply_fixed_gain_amplitude_terminal(
         terminal(ascending.plan.digest(), FixedGainAmplitudeOutcome::Fault),
@@ -602,12 +602,12 @@ fn rest_unconfirmed_preserves_the_exact_point_and_amplitude_order() {
         (
             AutotuneAction::FixedGainAmplitudeAscending,
             FixedGainAmplitudeOrder::Ascending,
-            AcceptanceMatrixProgress::ReadyAscending,
+            FixedGainAmplitudeProgress::ReadyAscending,
         ),
         (
             AutotuneAction::FixedGainAmplitudeDescending,
             FixedGainAmplitudeOrder::Descending,
-            AcceptanceMatrixProgress::ReadyDescending,
+            FixedGainAmplitudeProgress::ReadyDescending,
         ),
     ] {
         let mut slot = IntegralRetentionSlot::new();

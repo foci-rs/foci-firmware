@@ -185,7 +185,7 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
 pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine {
     use crate::commission_dispatch::robustness::RobustnessPreflight;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
+        AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
     };
 
     let point = AcceptancePoint {
@@ -203,7 +203,7 @@ pub fn robustness_reversal_engine() -> crate::commissioning::CommissioningEngine
         band_position_q: 0,
         qualifier_bits: 0,
         token: None,
-        progress: AcceptanceMatrixProgress::ReadyAscending,
+        progress: FixedGainAmplitudeProgress::ReadyAscending,
     };
     crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_robustness(
         0,

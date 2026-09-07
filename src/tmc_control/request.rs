@@ -2732,7 +2732,7 @@ mod tests {
     #[fixture_test]
     async fn admitted_amplitude_discloses_exact_plan_before_engine_execution() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            AcceptanceMatrixProgress, IntegralRetentionSlot,
+            FixedGainAmplitudeProgress, IntegralRetentionSlot,
         };
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2747,7 +2747,7 @@ mod tests {
         integral.install_acceptance_point(
             crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
                 velocity_sweep_request(),
-                AcceptanceMatrixProgress::ReadyAscending,
+                FixedGainAmplitudeProgress::ReadyAscending,
             ),
         );
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -2782,14 +2782,14 @@ mod tests {
         assert!(runtime.is_commission_active());
         assert_eq!(
             integral.acceptance_point().unwrap().progress,
-            AcceptanceMatrixProgress::ReadyAscending
+            FixedGainAmplitudeProgress::ReadyAscending
         );
     }
 
     #[fixture_test]
     async fn robustness_discloses_worst_case_duration_before_motion() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            AcceptanceMatrixProgress, IntegralRetentionSlot,
+            FixedGainAmplitudeProgress, IntegralRetentionSlot,
         };
 
         let mut board = RecordingBoard::skip_tick_tail();
@@ -2804,7 +2804,7 @@ mod tests {
         integral.install_acceptance_point(
             crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
                 velocity_sweep_request(),
-                AcceptanceMatrixProgress::ReadyAscending,
+                FixedGainAmplitudeProgress::ReadyAscending,
             ),
         );
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
@@ -3114,7 +3114,7 @@ mod tests {
     #[fixture_test]
     async fn amplitude_order_mismatch_preserves_point_without_motion() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
-            AcceptanceMatrixProgress, IntegralRetentionSlot,
+            FixedGainAmplitudeProgress, IntegralRetentionSlot,
         };
         use crate::commissioning::types::FixedGainAmplitudeCause;
 
@@ -3129,7 +3129,7 @@ mod tests {
         let mut integral = IntegralRetentionSlot::new();
         let point = crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
             velocity_sweep_request(),
-            AcceptanceMatrixProgress::ReadyDescending,
+            FixedGainAmplitudeProgress::ReadyDescending,
         );
         integral.install_acceptance_point(point);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());

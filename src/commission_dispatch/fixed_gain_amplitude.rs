@@ -14,7 +14,7 @@ use crate::commissioning::outer::velocity::integral_plan::{
     plan_retained_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, IntegralRetentionSlot,
+    AcceptancePoint, FixedGainAmplitudeProgress, IntegralRetentionSlot,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepRequest, plan_proportional_velocity_sweep,
@@ -200,8 +200,8 @@ pub fn preflight_fixed_gain_amplitude(
         .amplitude_slot_order()
         .ok_or(FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch)?;
     let expected_progress = match order {
-        FixedGainAmplitudeOrder::Ascending => AcceptanceMatrixProgress::ReadyAscending,
-        FixedGainAmplitudeOrder::Descending => AcceptanceMatrixProgress::ReadyDescending,
+        FixedGainAmplitudeOrder::Ascending => FixedGainAmplitudeProgress::ReadyAscending,
+        FixedGainAmplitudeOrder::Descending => FixedGainAmplitudeProgress::ReadyDescending,
     };
     if point.progress != expected_progress {
         return Err(FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch);
@@ -244,8 +244,8 @@ pub fn apply_fixed_gain_amplitude_terminal(
         return terminal;
     };
     let expected_progress = match order {
-        FixedGainAmplitudeOrder::Ascending => AcceptanceMatrixProgress::ReadyAscending,
-        FixedGainAmplitudeOrder::Descending => AcceptanceMatrixProgress::ReadyDescending,
+        FixedGainAmplitudeOrder::Ascending => FixedGainAmplitudeProgress::ReadyAscending,
+        FixedGainAmplitudeOrder::Descending => FixedGainAmplitudeProgress::ReadyDescending,
     };
     if point.identity.plan_digest != terminal.acceptance_plan_digest
         || terminal.plan_digest != expected_plan_digest
@@ -334,7 +334,7 @@ pub fn failed_fixed_gain_amplitude_terminal(
 #[cfg(test)]
 pub(crate) fn test_acceptance_point(
     request: VelocitySweepRequest,
-    progress: AcceptanceMatrixProgress,
+    progress: FixedGainAmplitudeProgress,
 ) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
     use crate::autotune::velocity_measurement::VelocityDirection;
     use crate::commissioning::outer::velocity::band_confirmation::{

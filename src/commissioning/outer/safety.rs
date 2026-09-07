@@ -1046,7 +1046,7 @@ mod tests {
     use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
+        AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
     };
     use crate::commissioning::outer::velocity::robustness_reversal::{
         RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
@@ -1096,7 +1096,7 @@ mod tests {
             band_position_q: 0,
             qualifier_bits: 0,
             token: None,
-            progress: AcceptanceMatrixProgress::ReadyAscending,
+            progress: FixedGainAmplitudeProgress::ReadyAscending,
         }
     }
 

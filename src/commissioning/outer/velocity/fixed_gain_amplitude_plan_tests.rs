@@ -15,7 +15,7 @@ use super::integral_plan::{
 };
 use super::integral_reporting::plan_recovery_flags;
 use super::integral_reproduction::{
-    AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
+    AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
 };
 use super::reproduction::BUILD_FEATURES;
 use super::sweep_consensus::{
@@ -182,7 +182,7 @@ fn breakaway_point(plan: super::integral_plan::VelocityIntegralPlan) -> Acceptan
         band_position_q: 0,
         qualifier_bits: 0x0123,
         token: None,
-        progress: AcceptanceMatrixProgress::ReadyAscending,
+        progress: FixedGainAmplitudeProgress::ReadyAscending,
     }
 }
 

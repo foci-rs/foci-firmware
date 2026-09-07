@@ -174,7 +174,7 @@ pub struct RetainedIntegralEvidence {
 /// Next amplitude acquisition allowed by one retained acceptance point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
-pub enum AcceptanceMatrixProgress {
+pub enum FixedGainAmplitudeProgress {
     /// The ascending amplitude is the next allowed acquisition.
     ReadyAscending = 0,
     /// The ascending amplitude completed and the descending amplitude is next.
@@ -207,7 +207,7 @@ pub struct AcceptancePoint {
     /// amplitude preflight rebuilds it deterministically from this token.
     pub token: Option<super::integral_plan::ConfirmedAcquisitionDigest>,
     /// Next allowed amplitude acquisition.
-    pub progress: AcceptanceMatrixProgress,
+    pub progress: FixedGainAmplitudeProgress,
 }
 
 /// Externally visible lifecycle state of the Stage-C RAM slot.
@@ -376,10 +376,10 @@ impl IntegralRetentionSlot {
         let RetainedIntegral::AcceptancePoint(mut point) = self.retained else {
             return false;
         };
-        if point.progress != AcceptanceMatrixProgress::ReadyAscending {
+        if point.progress != FixedGainAmplitudeProgress::ReadyAscending {
             return false;
         }
-        point.progress = AcceptanceMatrixProgress::ReadyDescending;
+        point.progress = FixedGainAmplitudeProgress::ReadyDescending;
         self.retained = RetainedIntegral::AcceptancePoint(point);
         true
     }
@@ -389,10 +389,10 @@ impl IntegralRetentionSlot {
         let RetainedIntegral::AcceptancePoint(mut point) = self.retained else {
             return false;
         };
-        if point.progress == AcceptanceMatrixProgress::Closed {
+        if point.progress == FixedGainAmplitudeProgress::Closed {
             return false;
         }
-        point.progress = AcceptanceMatrixProgress::Closed;
+        point.progress = FixedGainAmplitudeProgress::Closed;
         self.retained = RetainedIntegral::AcceptancePoint(point);
         true
     }

@@ -2652,7 +2652,7 @@ fn robustness_accepted_point(
     qualifier_bits: u16,
 ) -> crate::commissioning::outer::velocity::integral_reproduction::AcceptancePoint {
     use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity,
+        AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
     };
     AcceptancePoint {
         identity: IntegralPlanIdentity {
@@ -2669,7 +2669,7 @@ fn robustness_accepted_point(
         band_position_q: 0,
         qualifier_bits,
         token: None,
-        progress: AcceptanceMatrixProgress::ReadyAscending,
+        progress: FixedGainAmplitudeProgress::ReadyAscending,
     }
 }
 
