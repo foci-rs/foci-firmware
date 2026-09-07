@@ -22,8 +22,6 @@ pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;
 #[cfg(test)]
 mod combined_plan_tests;
-#[cfg(test)]
-mod current_guard_tests;
 pub mod integral_evidence;
 #[cfg(test)]
 mod integral_evidence_tests;
@@ -59,6 +57,8 @@ pub mod sweep_evidence;
 pub mod sweep_plan;
 pub(crate) mod sweep_reporting;
 pub(crate) mod velocity_clamp;
+#[cfg(test)]
+mod velocity_clamp_tests;
 pub mod workflow_plan;
 
 /// Wire value declaring best-effort polling for velocity-limit evidence.
