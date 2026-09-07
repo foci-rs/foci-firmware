@@ -284,6 +284,10 @@ pub enum CommissionError {
     /// Operator-requested cancel reached GPIO-first safe-state gracefully;
     /// the MCU stays running and `commission_in_flight` is cleared. Code 74.
     Cancelled,
+    /// The most recent safe-state restore pass had one or more write
+    /// failures; `arm_motor_electrical` refuses to arm until a subsequent
+    /// restore pass completes with zero failures. Code 75.
+    SafeStateIncomplete,
 }
 
 impl CommissionError {
@@ -367,6 +371,7 @@ impl CommissionError {
             Self::RecoveryOriginMismatch => 72,
             Self::ResistanceNonPositiveSlope => 73,
             Self::Cancelled => 74,
+            Self::SafeStateIncomplete => 75,
         }
     }
 }

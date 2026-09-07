@@ -82,6 +82,19 @@ pub struct TmcChannelState {
     /// inactive". Used by `arm_motor_electrical` to detect silent chip
     /// resets between commission and arm.
     pub motor_sentinel: AtomicU32,
+    /// Set when the most recent `restore_safe_state_via_backend` pass had
+    /// one or more verified-write or PID-error-sum-clear failures. Checked
+    /// by `arm_motor_electrical`, which refuses to arm while this is set.
+    /// Cleared by the next restore pass that completes with zero failures.
+    pub safe_state_incomplete: AtomicBool,
+    /// Failed-write count from the most recent safe-state restore pass.
+    pub safe_state_failed_writes: AtomicU8,
+    /// Address of the first register or sub-register write that failed
+    /// during the most recent safe-state restore pass. `0xFF` means none.
+    pub safe_state_first_failed_register: AtomicU8,
+    /// Board-monotonic millisecond timestamp of the most recent safe-state
+    /// restore pass. Diagnostic only: wraps every ~49 days.
+    pub safe_state_failure_timestamp_ms: AtomicU32,
     /// Whether firmware established the fixed Q8.8-P/Q4.12-I representation.
     pi_representation_established: AtomicBool,
     /// Configured mechanical ABN encoder pulses per revolution.
@@ -210,6 +223,10 @@ impl TmcChannelState {
             motor_armed: AtomicBool::new(false),
             enable_pin_asserted: AtomicBool::new(false),
             motor_sentinel: AtomicU32::new(0),
+            safe_state_incomplete: AtomicBool::new(false),
+            safe_state_failed_writes: AtomicU8::new(0),
+            safe_state_first_failed_register: AtomicU8::new(0xFF),
+            safe_state_failure_timestamp_ms: AtomicU32::new(0),
             pi_representation_established: AtomicBool::new(false),
             encoder_ppr: AtomicU32::new(0),
             encoder_counts_per_rev: AtomicU32::new(0),
@@ -272,6 +289,10 @@ impl TmcChannelState {
         self.store_current_limit(PidTorqueFluxLimit::ZERO, Relaxed);
         self.motor_armed.store(false, Relaxed);
         self.motor_sentinel.store(0, Relaxed);
+        self.safe_state_incomplete.store(false, Relaxed);
+        self.safe_state_failed_writes.store(0, Relaxed);
+        self.safe_state_first_failed_register.store(0xFF, Relaxed);
+        self.safe_state_failure_timestamp_ms.store(0, Relaxed);
         self.clear_pi_representation_established();
         self.encoder_ppr.store(0, Relaxed);
         self.encoder_counts_per_rev.store(0, Relaxed);
@@ -619,7 +640,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 128);
+        assert_eq!(size_of::<TmcChannelState>(), 132);
     }
 
     #[test]

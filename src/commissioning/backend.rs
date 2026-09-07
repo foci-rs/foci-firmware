@@ -188,6 +188,20 @@ pub trait CommissionMotorControl {
         _value: bool,
     ) {
     }
+
+    /// Persist the outcome of a safe-state restore pass.
+    ///
+    /// Called once at the end of every `restore_safe_state_via_backend`
+    /// pass. `timestamp_ms` is a board-monotonic millisecond timestamp
+    /// taken when the pass completed. Default no-op: a backend that does
+    /// not need to retain this (e.g. a mock that doesn't exercise the
+    /// re-arm gate) can ignore it.
+    fn record_safe_state_report(
+        &mut self,
+        _report: crate::tmc_safe_state::SafeStateRestoreReport,
+        _timestamp_ms: u32,
+    ) {
+    }
 }
 
 /// Encoder sampling capability used by inner and outer commissioning.
@@ -651,6 +665,24 @@ where
     fn set_enable_pin(&mut self, state: bool) {
         self.set_commission_enable_pin(state);
     }
+
+    fn record_safe_state_report(
+        &mut self,
+        report: crate::tmc_safe_state::SafeStateRestoreReport,
+        timestamp_ms: u32,
+    ) {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let tmc = self.tmc_state();
+        tmc.safe_state_incomplete
+            .store(report.failed_writes > 0, Relaxed);
+        tmc.safe_state_failed_writes
+            .store(report.failed_writes, Relaxed);
+        tmc.safe_state_first_failed_register
+            .store(report.first_failed_register.unwrap_or(0xFF), Relaxed);
+        tmc.safe_state_failure_timestamp_ms
+            .store(timestamp_ms, Relaxed);
+    }
 }
 
 impl<T> CommissionBoardConfig for T
@@ -1005,6 +1037,14 @@ mod tests {
         #[cfg(feature = "trace")]
         LAST_VELOCITY_DELTA.store(0, Relaxed);
         TEST_TMC_STATE.motor_sentinel.store(0, Relaxed);
+        TEST_TMC_STATE.safe_state_incomplete.store(false, Relaxed);
+        TEST_TMC_STATE.safe_state_failed_writes.store(0, Relaxed);
+        TEST_TMC_STATE
+            .safe_state_first_failed_register
+            .store(0xFF, Relaxed);
+        TEST_TMC_STATE
+            .safe_state_failure_timestamp_ms
+            .store(0, Relaxed);
     }
 
     #[fixture_test]
@@ -1030,6 +1070,74 @@ mod tests {
 
         backend.set_commission_enable_pin(false);
         assert!(!TEST_TMC_STATE.enable_pin_asserted.load(Relaxed));
+    }
+
+    #[fixture_test]
+    fn shared_backend_persists_safe_state_report_into_tmc_state() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+        TEST_TMC_STATE.safe_state_incomplete.store(false, Relaxed);
+        TEST_TMC_STATE
+            .safe_state_first_failed_register
+            .store(0xFF, Relaxed);
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let mut backend =
+            SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+                0,
+                &mut tmc,
+                &mut enable_pin,
+                &TEST_TMC_STATE,
+            );
+
+        let report = crate::tmc_safe_state::SafeStateRestoreReport {
+            failed_writes: 2,
+            first_failed_register: Some(0x1A),
+        };
+        backend.record_safe_state_report(report, 12_345);
+
+        assert!(TEST_TMC_STATE.safe_state_incomplete.load(Relaxed));
+        assert_eq!(TEST_TMC_STATE.safe_state_failed_writes.load(Relaxed), 2);
+        assert_eq!(
+            TEST_TMC_STATE
+                .safe_state_first_failed_register
+                .load(Relaxed),
+            0x1A
+        );
+        assert_eq!(
+            TEST_TMC_STATE.safe_state_failure_timestamp_ms.load(Relaxed),
+            12_345
+        );
+    }
+
+    #[fixture_test]
+    fn shared_backend_clears_safe_state_incomplete_on_clean_report() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+        TEST_TMC_STATE.safe_state_incomplete.store(true, Relaxed);
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let mut backend =
+            SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+                0,
+                &mut tmc,
+                &mut enable_pin,
+                &TEST_TMC_STATE,
+            );
+
+        let report = crate::tmc_safe_state::SafeStateRestoreReport {
+            failed_writes: 0,
+            first_failed_register: None,
+        };
+        backend.record_safe_state_report(report, 0);
+
+        assert!(!TEST_TMC_STATE.safe_state_incomplete.load(Relaxed));
     }
 
     #[fixture_test]

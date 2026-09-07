@@ -142,6 +142,8 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 ///
 /// # Errors
 ///
+/// Returns [`crate::autotune::CommissionError::SafeStateIncomplete`] if the
+/// most recent safe-state restore pass had unresolved write failures.
 /// Returns [`crate::autotune::CommissionError::ChipResetDetected`] if the
 /// sentinel is inactive or does not match the TMC4671 readback.
 pub async fn arm_motor_electrical<B: CommissioningBackend>(
@@ -153,6 +155,15 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
         "FATAL: arm_motor_electrical called with calibrated=false; \
          SPI restore must precede arm"
     );
+
+    if state
+        .tmc
+        .safe_state_incomplete
+        .load(core::sync::atomic::Ordering::Relaxed)
+    {
+        defmt::error!("arm_motor_electrical: safe-state cleanup incomplete, refusing arm");
+        return Err(crate::autotune::CommissionError::SafeStateIncomplete);
+    }
 
     verify_motor_sentinel(backend, state.tmc).await?;
 
@@ -350,6 +361,41 @@ mod tests {
         assert!(!*state.motor_enabled);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_refuses_when_safe_state_incomplete() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        tmc_state()
+            .safe_state_incomplete
+            .store(true, Ordering::Relaxed);
+
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::SafeStateIncomplete)
+        );
+        assert!(!backend.enable_pin, "must not enable while latch is set");
+        assert!(!*state.motor_enabled);
+
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+        tmc_state()
+            .safe_state_incomplete
+            .store(false, Ordering::Relaxed);
     }
 
     #[fixture_test]

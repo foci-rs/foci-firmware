@@ -383,6 +383,13 @@ pub struct MockBackend {
     /// Last value written to `UQ_UD_EXT`, tracked only when
     /// `script_resistance_current_proportional_to_ud` is set.
     last_uq_ud_ext_write: u32,
+    /// Whether the most recent `record_safe_state_report` call reported
+    /// `failed_writes > 0`.
+    pub safe_state_incomplete: bool,
+    /// The report from the most recent `record_safe_state_report` call.
+    pub safe_state_report: Option<crate::tmc_safe_state::SafeStateRestoreReport>,
+    /// The timestamp from the most recent `record_safe_state_report` call.
+    pub safe_state_report_timestamp_ms: Option<u32>,
 }
 
 impl MockBackend {
@@ -452,6 +459,9 @@ impl MockBackend {
             assert_motor_armed_false_on_write: false,
             script_resistance_current_proportional_to_ud: false,
             last_uq_ud_ext_write: 0,
+            safe_state_incomplete: false,
+            safe_state_report: None,
+            safe_state_report_timestamp_ms: None,
         }
     }
 
@@ -796,6 +806,16 @@ impl CommissionMotorControl for MockBackend {
 
     fn record_lifecycle(&mut self, flag: LifecycleFlag, value: bool) {
         self.spi_log.push(SpiOp::Lifecycle { flag, value }).ok();
+    }
+
+    fn record_safe_state_report(
+        &mut self,
+        report: crate::tmc_safe_state::SafeStateRestoreReport,
+        timestamp_ms: u32,
+    ) {
+        self.safe_state_incomplete = report.failed_writes > 0;
+        self.safe_state_report = Some(report);
+        self.safe_state_report_timestamp_ms = Some(timestamp_ms);
     }
 }
 

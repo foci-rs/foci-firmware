@@ -14,9 +14,11 @@ use foci_tmc4671::registers::Register;
 
 /// Diagnostic summary for a safe-state restore attempt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct SafeStateRestoreReport {
+pub struct SafeStateRestoreReport {
     /// Number of verified safe-state writes that exhausted retries.
-    pub(crate) failed_writes: u8,
+    pub failed_writes: u8,
+    /// Address of the first register or sub-register write that failed.
+    pub first_failed_register: Option<u8>,
 }
 
 /// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
@@ -63,22 +65,23 @@ where
     safe_state_write(backend, PWM_SV_CHOP, 0, &mut report).await;
     safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut report).await;
     safe_state_write(backend, PIDOUT_UQ_UD_LIMITS, 1024, &mut report).await;
-    let _ = clear_pid_error_sums_via_backend(backend).await;
+    clear_pid_error_sums_via_backend(backend, &mut report).await;
+    let timestamp_ms = (backend.elapsed_us() / 1000) as u32;
+    backend.record_safe_state_report(report, timestamp_ms);
     report
 }
 
 /// Backend-trait variant of PID error-sum clearing for safe-state recovery.
 ///
-/// Each sub-register write is best-effort. The returned error only indicates
-/// whether any selector/data write failed; callers that are already in a
-/// disarmed safe-state path may intentionally ignore it.
-async fn clear_pid_error_sums_via_backend<B>(backend: &mut B) -> Result<(), ()>
+/// Each sub-register write is best-effort and accumulates into the shared
+/// [`SafeStateRestoreReport`] the same way [`safe_state_write`] does, so a
+/// failure here is no longer invisible to the retained safe-state report.
+async fn clear_pid_error_sums_via_backend<B>(backend: &mut B, report: &mut SafeStateRestoreReport)
 where
     B: CommissioningBackend,
 {
     use foci_tmc4671::registers::*;
 
-    let mut failed = false;
     let pairs = [
         PID_ERROR_PID_TORQUE_ERROR_SUM,
         PID_ERROR_PID_FLUX_ERROR_SUM,
@@ -86,19 +89,29 @@ where
         PID_ERROR_PID_POSITION_ERROR_SUM,
     ];
     for sub in pairs {
-        if backend
-            .write_register(sub.addr, sub.sub_addr as u32)
-            .await
-            .is_err()
-        {
-            failed = true;
-        }
-        if backend.write_register(sub.data, 0).await.is_err() {
-            failed = true;
-        }
+        record_sub_register_write(backend, sub.addr, sub.sub_addr as u32, report).await;
+        record_sub_register_write(backend, sub.data, 0, report).await;
     }
+}
 
-    if failed { Err(()) } else { Ok(()) }
+async fn record_sub_register_write<B>(
+    backend: &mut B,
+    reg: Register,
+    val: u32,
+    report: &mut SafeStateRestoreReport,
+) where
+    B: CommissioningBackend,
+{
+    if backend.write_register(reg, val).await.is_err() {
+        report.failed_writes = report.failed_writes.saturating_add(1);
+        if report.first_failed_register.is_none() {
+            report.first_failed_register = Some(reg.addr());
+        }
+        defmt::warn!(
+            "safe-state restore PID error-sum clear write failed: reg={=u8}",
+            reg.addr()
+        );
+    }
 }
 
 async fn safe_state_write<B>(
@@ -111,6 +124,9 @@ async fn safe_state_write<B>(
 {
     if backend.write_register_verified(reg, val).await.is_err() {
         report.failed_writes = report.failed_writes.saturating_add(1);
+        if report.first_failed_register.is_none() {
+            report.first_failed_register = Some(reg.addr());
+        }
         defmt::warn!(
             "safe-state restore write failed after retries: reg={=u8}",
             reg.addr()
@@ -203,6 +219,65 @@ mod tests {
             let report = restore_safe_state_via_backend_report(&mut backend).await;
 
             assert_eq!(report.failed_writes, 1);
+        });
+    }
+
+    #[test]
+    fn restore_persists_incomplete_report_via_backend() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(UQ_UD_EXT.addr());
+
+            restore_safe_state_via_backend(&mut backend).await;
+
+            assert!(backend.safe_state_incomplete);
+            let recorded = backend
+                .safe_state_report
+                .expect("record_safe_state_report should have been called");
+            assert_eq!(recorded.failed_writes, 1);
+            assert_eq!(recorded.first_failed_register, Some(UQ_UD_EXT.addr()));
+        });
+    }
+
+    #[test]
+    fn restore_clears_incomplete_report_on_clean_pass() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+
+            restore_safe_state_via_backend(&mut backend).await;
+
+            assert!(!backend.safe_state_incomplete);
+        });
+    }
+
+    #[test]
+    fn restore_counts_pid_error_sum_clear_failures() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr());
+
+            let report = restore_safe_state_via_backend_report(&mut backend).await;
+
+            assert_eq!(
+                report.failed_writes, 4,
+                "all four sum-clear selector writes share this address and should all fail"
+            );
+            assert_eq!(
+                report.first_failed_register,
+                Some(PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr())
+            );
+        });
+    }
+
+    #[test]
+    fn restore_reports_first_failed_register_on_write_failure() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(UQ_UD_EXT.addr());
+
+            let report = restore_safe_state_via_backend_report(&mut backend).await;
+
+            assert_eq!(report.first_failed_register, Some(UQ_UD_EXT.addr()));
         });
     }
 
