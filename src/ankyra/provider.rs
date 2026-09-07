@@ -93,6 +93,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::foci::foci_dump_registers,
         crate::ankyra::handlers::foci::foci_selftest,
         crate::ankyra::handlers::foci::foci_stack_watermark,
+        crate::ankyra::handlers::foci::foci_stall_query,
     ],
     replies: [
         crate::ankyra::replies::Clock,
@@ -169,6 +170,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::replies::FociBreakawayConfirmationTerminalIdentity,
         crate::ankyra::replies::FociBreakawayConfirmationTerminalMasks,
         crate::ankyra::replies::FociBreakawayCampaignTerminal,
+        crate::ankyra::replies::FociStallResult,
         crate::ankyra::replies::FociTuneResult,
         crate::ankyra::replies::SpiTransferResponse<'_>,
         crate::ankyra::replies::Stats,
@@ -262,6 +264,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::foci::foci_dump_registers,
         crate::ankyra::handlers::foci::foci_selftest,
         crate::ankyra::handlers::foci::foci_stack_watermark,
+        crate::ankyra::handlers::foci::foci_stall_query,
     ],
     replies: [
         crate::ankyra::replies::Clock,
@@ -338,6 +341,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::replies::FociBreakawayConfirmationTerminalIdentity,
         crate::ankyra::replies::FociBreakawayConfirmationTerminalMasks,
         crate::ankyra::replies::FociBreakawayCampaignTerminal,
+        crate::ankyra::replies::FociStallResult,
         crate::ankyra::replies::FociTuneResult,
         crate::ankyra::replies::SpiTransferResponse<'_>,
         crate::ankyra::replies::Stats,

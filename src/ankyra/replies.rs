@@ -3172,6 +3172,23 @@ pub struct FociOuterSafetyFault {
     pub duration_cap_us: u32,
 }
 
+/// `foci_stall_result` reply — outcome of the most recent homing mode.
+///
+/// Wire name: `foci_stall_result`.
+#[klipper_reply]
+pub struct FociStallResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// 1 if the stall latch set during the most recent homing mode.
+    pub latched: u8,
+    /// Peak following error in TMC position units during that homing mode.
+    pub peak_error_units: u32,
+    /// Detector tick at which the latch set, 0 if it never did.
+    pub trigger_tick: u32,
+    /// 1 while the homing clamp overrides the run-current limit.
+    pub clamp_active: u8,
+}
+
 /// `foci_tune_result` reply — final outer-loop tune output.
 ///
 /// Wire name: `foci_tune_result`.

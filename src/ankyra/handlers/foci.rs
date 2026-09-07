@@ -332,6 +332,23 @@ pub fn foci_config_homing(
     state.stall_persistence.store(persistence, Relaxed);
 }
 
+/// Report the most recent homing-mode stall outcome and whether the clamp is
+/// still in force.
+#[klipper_command]
+pub fn foci_stall_query(ctx: &mut dyn FociRuntimeHost, oid: u8) {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+        return;
+    };
+    ::ankyra::klipper_reply!(
+        crate::ankyra::replies::FociStallResult,
+        oid: u8 = oid,
+        latched: u8 = u8::from(state.stall_result_latched.load(Relaxed)),
+        peak_error_units: u32 = state.stall_peak_error_units.load(Relaxed),
+        trigger_tick: u32 = state.stall_trigger_tick.load(Relaxed),
+        clamp_active: u8 = u8::from(state.homing_clamp_active.load(Relaxed))
+    );
+}
+
 /// Composite bound for runtime FOCI handlers: they enqueue TMC requests
 /// and enter shutdown when an OID has no configured stepper channel.
 pub trait FociRuntimeHost: ShutdownRecovery + TmcHost {}
@@ -481,6 +498,7 @@ mod tests {
         adc_vm_offsets: std::vec::Vec<AdcVmOffsetReply>,
         last_boot_diagnostics: std::vec::Vec<crate::ankyra::replies::FociLastBootDiagnostic>,
         stack_watermark_payloads: std::vec::Vec<crate::ankyra::replies::FociStackWatermarkResult>,
+        stall_results: std::vec::Vec<crate::ankyra::replies::FociStallResult>,
     }
 
     struct EmptySender;
@@ -491,6 +509,7 @@ mod tests {
                 adc_vm_offsets: std::vec::Vec::new(),
                 last_boot_diagnostics: std::vec::Vec::new(),
                 stack_watermark_payloads: std::vec::Vec::new(),
+                stall_results: std::vec::Vec::new(),
             }
         }
     }
@@ -515,6 +534,12 @@ mod tests {
     impl ::ankyra::SendReply<crate::ankyra::replies::FociStackWatermarkResult> for MockSender {
         fn send(&mut self, payload: crate::ankyra::replies::FociStackWatermarkResult) {
             self.stack_watermark_payloads.push(payload);
+        }
+    }
+
+    impl ::ankyra::SendReply<crate::ankyra::replies::FociStallResult> for MockSender {
+        fn send(&mut self, payload: crate::ankyra::replies::FociStallResult) {
+            self.stall_results.push(payload);
         }
     }
 
@@ -837,6 +862,29 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn foci_stall_query_reports_last_result_and_clamp_state() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = MockSender::new();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.stall_result_latched.store(true, Relaxed);
+        tmc_state.stall_peak_error_units.store(1234, Relaxed);
+        tmc_state.stall_trigger_tick.store(77, Relaxed);
+        tmc_state.homing_clamp_active.store(true, Relaxed);
+
+        foci_stall_query(&mut ctx, &mut sender, 10);
+
+        assert_eq!(sender.stall_results.len(), 1);
+        let reply = &sender.stall_results[0];
+        assert_eq!(reply.oid, 10);
+        assert_eq!(reply.latched, 1);
+        assert_eq!(reply.peak_error_units, 1234);
+        assert_eq!(reply.trigger_tick, 77);
+        assert_eq!(reply.clamp_active, 1);
     }
 
     #[test]
