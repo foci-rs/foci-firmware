@@ -12,9 +12,11 @@
 # `const_stem` (the host-side named-constant name, new generated API).
 #
 # [reserved] is machine-read by the validator, not advisory: a wire_code listed
-# here may not appear in that group.
+# here may not appear in that group. Phase reserves 9-15 for the retired
+# mechanical-id (9) plus the pre-renumber block, and 0 as the host's
+# miss/sentinel value, never a real phase.
 [reserved]
-phase = [9, 10, 11, 12, 13, 14, 15]
+phase = [0, 9, 10, 11, 12, 13, 14, 15]
 action = [0, 3, 4, 5, 6]
 
 [[phase]]
