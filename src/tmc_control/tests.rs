@@ -971,7 +971,7 @@ fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
         ));
         let poll = crate::commissioning::schedule::adapt_step_result(
             crate::commissioning::types::StepResult::PhaseChanged(
-                crate::autotune::CommissionPhase::ElectricalId,
+                crate::autotune::CommissionPhase::ElectricalIdentification,
             ),
             81_250,
             Some((37, crate::commissioning::types::EngineKind::Commission)),
@@ -984,7 +984,7 @@ fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
                 event: Some(
                     crate::commissioning::schedule::CommissionEvent::PhaseChanged {
                         oid: 37,
-                        phase_id: crate::autotune::CommissionPhase::ElectricalId,
+                        phase_id: crate::autotune::CommissionPhase::ElectricalIdentification,
                         engine_kind: crate::commissioning::types::EngineKind::Commission,
                     }
                 ),
@@ -1002,7 +1002,7 @@ fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
                 event: Some(
                     crate::commissioning::schedule::CommissionEvent::PhaseChanged {
                         oid: 37,
-                        phase_id: crate::autotune::CommissionPhase::ElectricalId,
+                        phase_id: crate::autotune::CommissionPhase::ElectricalIdentification,
                         engine_kind: crate::commissioning::types::EngineKind::Commission,
                     }
                 ),

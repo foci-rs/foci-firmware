@@ -9,7 +9,7 @@
 //! commissioning fault.
 
 use crate::autotune::{
-    ClosedLoopEntryState, CommissionError, CommissionProfile, ElectricalModel, InnerSequence,
+    ClosedLoopActivationState, CommissionError, CommissionProfile, ElectricalModel, InnerSequence,
     TransientBuffer,
 };
 use crate::commissioning::EntrySnapshot;
@@ -21,7 +21,7 @@ use crate::commissioning::types::{
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 
 pub mod adc;
-pub mod closed_loop_entry;
+pub mod closed_loop_activation;
 pub mod coil;
 pub mod current_loop;
 pub mod electrical_identification;
@@ -197,7 +197,7 @@ pub(crate) enum EncoderAlignState {
 
 /// Accumulated per-coil measurements for electrical identification.
 #[derive(Debug, Clone, defmt::Format)]
-pub(crate) struct ElectricalIdData {
+pub(crate) struct ElectricalIdentificationData {
     /// Excitation voltage used for all measurements (PIDOUT units).
     pub(crate) voltage: u32,
     /// Shared multi-point resistance-identification result. `Some` once the
@@ -224,7 +224,7 @@ pub(crate) struct ElectricalIdData {
     pub(crate) encoder_domain: Option<crate::commissioning::encoder_domain::EncoderDomain>,
 }
 
-impl ElectricalIdData {
+impl ElectricalIdentificationData {
     pub(crate) fn new(voltage: u32) -> Self {
         Self {
             voltage,
@@ -308,7 +308,7 @@ pub(crate) enum InductanceRestoreOperation {
     clippy::large_enum_variant,
     reason = "no heap; capture state uses fixed-size accumulators and timestamp storage"
 )]
-pub(crate) enum ElectricalIdState {
+pub(crate) enum ElectricalIdentificationState {
     // --- Resistance identification ---
     /// Validate commissioning inputs and construct the shared runner.
     ResistanceStart,
@@ -458,9 +458,9 @@ pub(crate) enum InnerPhase {
     /// Encoder D-axis alignment and zeroing.
     EncoderAlign { state: EncoderAlignState },
     /// Phase 5: Electrical identification (R, L, theta_e).
-    ElectricalId {
-        state: ElectricalIdState,
-        data: ElectricalIdData,
+    ElectricalIdentification {
+        state: ElectricalIdentificationState,
+        data: ElectricalIdentificationData,
     },
     /// Phase 6: Current-loop gain synthesis.
     CurrentTune {
@@ -486,9 +486,9 @@ pub(crate) enum InnerPhase {
         data: CurrentValidateData,
     },
     /// Closed-loop position mode entry with PID gains, filters, and stability check.
-    ClosedLoopEntry {
+    ClosedLoopActivation {
         /// Current sub-state.
-        state: ClosedLoopEntryState,
+        state: ClosedLoopActivationState,
         /// Current-loop flux P gain to write.
         flux_p: PidPGain,
         /// Current-loop flux I gain to write.
@@ -537,10 +537,10 @@ impl InnerPhase {
             Self::PhaseWiringCheck { .. } => Some(CommissionPhase::PhaseWiringCheck),
             Self::EncoderCheck { .. } => Some(CommissionPhase::EncoderCheck),
             Self::EncoderAlign { .. } => Some(CommissionPhase::EncoderAlign),
-            Self::ElectricalId { .. } => Some(CommissionPhase::ElectricalId),
+            Self::ElectricalIdentification { .. } => Some(CommissionPhase::ElectricalIdentification),
             Self::CurrentTune { .. } => Some(CommissionPhase::CurrentTune),
             Self::CurrentValidate { .. } => Some(CommissionPhase::CurrentValidate),
-            Self::ClosedLoopEntry { .. } => Some(CommissionPhase::ClosedLoopEntry),
+            Self::ClosedLoopActivation { .. } => Some(CommissionPhase::ClosedLoopActivation),
             Self::Failed(_) => None,
         }
     }
@@ -641,7 +641,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
             )
             .await
         }
-        InnerPhase::ElectricalId { .. } => {
+        InnerPhase::ElectricalIdentification { .. } => {
             electrical_identification::step_electrical_identification(
                 phase,
                 buf,
@@ -659,8 +659,8 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
             current_loop::step_current_validate(phase, buf, profile, sequence, adc_cal, backend)
                 .await
         }
-        InnerPhase::ClosedLoopEntry { .. } => {
-            closed_loop_entry::step_closed_loop_entry(
+        InnerPhase::ClosedLoopActivation { .. } => {
+            closed_loop_activation::step_closed_loop_activation(
                 phase,
                 sequence,
                 adc_cal,

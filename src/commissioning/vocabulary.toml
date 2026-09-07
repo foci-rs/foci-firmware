@@ -44,10 +44,10 @@ label = "Encoder check"
 trace_ident = "EncoderCheck"
 doc = "Inner phase 4 — Encoder presence and direction detection."
 [[phase]]
-ident = "ElectricalId"
+ident = "ElectricalIdentification"
 wire_code = 5
 label = "Electrical ID"
-trace_ident = "ElectricalId"
+trace_ident = "ElectricalIdentification"
 doc = "Inner phase 5 — Electrical identification (R, L, theta_e)."
 [[phase]]
 ident = "CurrentTune"
@@ -105,16 +105,16 @@ trace_ident = "EncoderAlign"
 doc = """
 Encoder alignment — drive rotor to the D-axis, zero
 ABN_DECODER_COUNT and offset, switch PHI_E_SELECTION to ABN
-while still driving. Runs between EncoderCheck and ElectricalId
-in the inner sequence, and is a valid `stop_after` target for
-calibrate-on-enable paths. Appended (not inserted between
-EncoderCheck and ElectricalId) so the stable wire values remain
-unchanged — wire code 16."""
+while still driving. Runs between EncoderCheck and
+ElectricalIdentification in the inner sequence, and is a valid
+`stop_after` target for calibrate-on-enable paths. Appended (not
+inserted between EncoderCheck and ElectricalIdentification) so the
+stable wire values remain unchanged — wire code 16."""
 [[phase]]
-ident = "ClosedLoopEntry"
+ident = "ClosedLoopActivation"
 wire_code = 17
 label = "Closed-loop entry"
-trace_ident = "ClosedLoopEntry"
+trace_ident = "ClosedLoopActivation"
 doc = """
 Closed-loop position mode entry — writes PID gains, velocity
 limit, voltage limits, biquad filters, STEP_WIDTH, enters

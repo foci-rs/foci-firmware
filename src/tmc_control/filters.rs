@@ -165,7 +165,7 @@ where
 /// Re-apply biquad filters from stored atomics.
 ///
 /// Called after `CalibrateDone` to restore filters that the commissioning
-/// engine's `ClosedLoopEntry` phase disabled (it has no access to the filter
+/// engine's `ClosedLoopActivation` phase disabled (it has no access to the filter
 /// Hz atomics).
 ///
 /// `pwm_maxcnt` is board-specific and must be supplied by the caller

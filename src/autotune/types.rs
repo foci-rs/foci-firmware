@@ -115,7 +115,7 @@ pub enum CommissionError {
     /// Encoder was not detected or direction could not be determined. Code 7.
     EncoderFault,
     /// Electrical identification (R, L) failed to converge. Code 8.
-    ElectricalIdFailed,
+    ElectricalIdentificationFailed,
     /// Current-loop step-response validation failed after retry. Code 9.
     CurrentValidationFailed,
     /// Reserved for historical decoding: the retired mechanical-identification
@@ -191,7 +191,7 @@ pub enum CommissionError {
     /// Sustained current-loop hold validation failed. Code 42.
     CurrentHoldFailed,
     /// Closed-loop entry stability check saw runaway or drift. Code 43.
-    ClosedLoopEntryUnstable,
+    ClosedLoopActivationUnstable,
     /// Electrical model assembly had no usable current or inductance samples. Code 44.
     ElectricalModelNoSamples,
     /// Electrical model assembly rounded the inductance scale to zero. Code 45.
@@ -300,7 +300,7 @@ impl CommissionError {
             Self::CoilFault => 5,
             Self::PhaseFault => 6,
             Self::EncoderFault => 7,
-            Self::ElectricalIdFailed => 8,
+            Self::ElectricalIdentificationFailed => 8,
             Self::CurrentValidationFailed => 9,
             Self::MechanicalIdFailed => 10,
             Self::VelocityValidationFailed => 11,
@@ -335,7 +335,7 @@ impl CommissionError {
             Self::InductanceDriftInvalid => 40,
             Self::InductanceSaliencyInvalid => 41,
             Self::CurrentHoldFailed => 42,
-            Self::ClosedLoopEntryUnstable => 43,
+            Self::ClosedLoopActivationUnstable => 43,
             Self::ElectricalModelNoSamples => 44,
             Self::ElectricalModelScaleZero => 45,
             Self::ElectricalThetaTooLarge => 46,
@@ -439,13 +439,13 @@ pub struct SavedGains {
     pub flux_filter_hz: u16,
 }
 
-/// Sub-states for the `ClosedLoopEntry` engine phase.
+/// Sub-states for the `ClosedLoopActivation` engine phase.
 ///
 /// Writes PID gains, velocity limit, voltage limits, position selection,
 /// step width, motion mode, and biquad filters, then verifies position
 /// hold stability.
 #[derive(Debug, Clone, Copy, defmt::Format)]
-pub enum ClosedLoopEntryState {
+pub enum ClosedLoopActivationState {
     /// Write current-loop and outer PID gains.
     WriteGains,
     /// Write velocity limit and raise PIDOUT_UQ_UD_LIMITS.
@@ -583,7 +583,7 @@ mod tests {
             CommissionError::CoilFault,
             CommissionError::PhaseFault,
             CommissionError::EncoderFault,
-            CommissionError::ElectricalIdFailed,
+            CommissionError::ElectricalIdentificationFailed,
             CommissionError::CurrentValidationFailed,
             CommissionError::MechanicalIdFailed,
             CommissionError::VelocityValidationFailed,
@@ -618,7 +618,7 @@ mod tests {
             CommissionError::InductanceDriftInvalid,
             CommissionError::InductanceSaliencyInvalid,
             CommissionError::CurrentHoldFailed,
-            CommissionError::ClosedLoopEntryUnstable,
+            CommissionError::ClosedLoopActivationUnstable,
             CommissionError::ElectricalModelNoSamples,
             CommissionError::ElectricalModelScaleZero,
             CommissionError::ElectricalThetaTooLarge,
@@ -658,7 +658,7 @@ mod tests {
             seen[code] = true;
         }
         assert_eq!(CommissionError::CurrentHoldFailed.status_code(), 42);
-        assert_eq!(CommissionError::ClosedLoopEntryUnstable.status_code(), 43);
+        assert_eq!(CommissionError::ClosedLoopActivationUnstable.status_code(), 43);
         assert_eq!(CommissionError::ElectricalModelNoSamples.status_code(), 44);
         assert_eq!(CommissionError::ElectricalModelScaleZero.status_code(), 45);
         assert_eq!(CommissionError::ElectricalThetaTooLarge.status_code(), 46);
@@ -722,17 +722,17 @@ mod tests {
         assert_eq!(CommissionPhase::CoilCheck.to_u8(), 2);
         assert_eq!(CommissionPhase::PhaseWiringCheck.to_u8(), 3);
         assert_eq!(CommissionPhase::EncoderCheck.to_u8(), 4);
-        assert_eq!(CommissionPhase::ElectricalId.to_u8(), 5);
+        assert_eq!(CommissionPhase::ElectricalIdentification.to_u8(), 5);
         assert_eq!(CommissionPhase::CurrentTune.to_u8(), 6);
         assert_eq!(CommissionPhase::CurrentValidate.to_u8(), 7);
         assert_eq!(CommissionPhase::InnerDone.to_u8(), 8);
         assert_eq!(CommissionPhase::EncoderAlign.to_u8(), 16);
-        assert_eq!(CommissionPhase::ClosedLoopEntry.to_u8(), 17);
+        assert_eq!(CommissionPhase::ClosedLoopActivation.to_u8(), 17);
     }
 
     /// The outer block is a contiguous sequence: the four velocity workflow
     /// codes in workflow order, then the retained non-velocity outer codes,
-    /// placed after `EncoderAlign`/`ClosedLoopEntry` since those two pinned
+    /// placed after `EncoderAlign`/`ClosedLoopActivation` since those two pinned
     /// codes (16, 17) leave no 8-wide contiguous gap below them.
     #[test]
     fn outer_block_is_contiguous_in_workflow_order() {
@@ -764,7 +764,7 @@ mod tests {
                 ("CoilCheck", 2),
                 ("PhaseWiringCheck", 3),
                 ("EncoderCheck", 4),
-                ("ElectricalId", 5),
+                ("ElectricalIdentification", 5),
                 ("CurrentTune", 6),
                 ("CurrentValidate", 7),
                 ("InnerDone", 8),
@@ -773,7 +773,7 @@ mod tests {
                 ("FixedGainAmplitudeValidation", 20),
                 ("ReversalStandstillRobustnessGate", 21),
                 ("EncoderAlign", 16),
-                ("ClosedLoopEntry", 17),
+                ("ClosedLoopActivation", 17),
             ]
         );
         assert_eq!(

@@ -9,7 +9,7 @@
 //! current gains.
 
 use crate::autotune::{
-    CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopEntryState,
+    CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopActivationState,
     CommissionError, CommissionPhase, CommissionProfile, CommissionStatus, CurrentAxisGate,
     CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample, CurrentGainSynthesisInput,
     CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, TransientBuffer,
@@ -2034,12 +2034,12 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 current_validation_axes: data.current_loop_evidence.current_validation_axes,
                 retry_budget_exhausted: data.current_loop_evidence.retry_budget_exhausted,
                 current_loop_failure_reason: data.current_loop_evidence.failure_reason,
-                closed_loop_entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
-                closed_loop_entry_position_1: 0,
-                closed_loop_entry_position_2: 0,
-                closed_loop_entry_drift_count: 0,
-                closed_loop_entry_threshold_count: 0,
-                closed_loop_entry_runaway: 0,
+                closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+                closed_loop_activation_position_1: 0,
+                closed_loop_activation_position_2: 0,
+                closed_loop_activation_drift_count: 0,
+                closed_loop_activation_threshold_count: 0,
+                closed_loop_activation_runaway: 0,
                 current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
                 current_hold_warning_flags: 0,
                 current_hold_elapsed_us: 0,
@@ -2095,7 +2095,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         });
                     }
 
-                    // Transition to ClosedLoopEntry with computed
+                    // Transition to ClosedLoopActivation with computed
                     // current-loop gains and fallback outer gains.
                     let vel_limit = backend.operational_velocity_limit();
                     let default_current_filter_hz = if data.gains.effective_bandwidth_hz > 0 {
@@ -2113,8 +2113,8 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     let flux_filter_hz = backend
                         .configured_flux_filter_hz()
                         .unwrap_or(default_current_filter_hz);
-                    *phase = InnerPhase::ClosedLoopEntry {
-                        state: ClosedLoopEntryState::WriteGains,
+                    *phase = InnerPhase::ClosedLoopActivation {
+                        state: ClosedLoopActivationState::WriteGains,
                         flux_p: data.gains.flux_p,
                         flux_i: data.gains.flux_i,
                         torque_p: data.gains.torque_p,
@@ -2132,7 +2132,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         inner_result: Some(result),
                         attempt: 0,
                     };
-                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
+                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
                 }
                 InnerSequence::Calibrate | InnerSequence::Selftest => {
                     unreachable!("Calibrate/Selftest never reach CurrentValidate")
@@ -2821,10 +2821,10 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
             ));
             match phase {
-                InnerPhase::ClosedLoopEntry {
+                InnerPhase::ClosedLoopActivation {
                     velocity_filter_hz,
                     torque_filter_hz,
                     position_filter_hz,
@@ -2836,7 +2836,7 @@ mod tests {
                     assert_eq!(position_filter_hz, 0);
                     assert_eq!(flux_filter_hz, 3200);
                 }
-                other => panic!("expected ClosedLoopEntry phase, got {other:?}"),
+                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
         });
     }
@@ -2866,10 +2866,10 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
             ));
             match phase {
-                InnerPhase::ClosedLoopEntry {
+                InnerPhase::ClosedLoopActivation {
                     torque_filter_hz,
                     flux_filter_hz,
                     ..
@@ -2877,7 +2877,7 @@ mod tests {
                     assert_eq!(torque_filter_hz, 0);
                     assert_eq!(flux_filter_hz, 3000);
                 }
-                other => panic!("expected ClosedLoopEntry phase, got {other:?}"),
+                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
         });
     }

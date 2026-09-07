@@ -5,9 +5,9 @@
 //! `PHI_E_SELECTION` to the ABN decoder before any closed-loop operation.
 
 use super::{
-    ElectricalIdData, ElectricalIdState, EncoderAlignState, EncoderCheckState, InnerPhase,
+    ElectricalIdentificationData, ElectricalIdentificationState, EncoderAlignState, EncoderCheckState, InnerPhase,
 };
-use crate::autotune::{ClosedLoopEntryState, CommissionError, CommissionPhase, InnerSequence};
+use crate::autotune::{ClosedLoopActivationState, CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::CalibrateEntryGains;
 use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
@@ -951,8 +951,8 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                     let Some(outer) = gains.outer else {
                         return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
                     };
-                    *phase = InnerPhase::ClosedLoopEntry {
-                        state: ClosedLoopEntryState::WriteGains,
+                    *phase = InnerPhase::ClosedLoopActivation {
+                        state: ClosedLoopActivationState::WriteGains,
                         flux_p: gains.inner.flux_p,
                         flux_i: gains.inner.flux_i,
                         torque_p: gains.inner.torque_p,
@@ -969,15 +969,15 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                         inner_result: None,
                         attempt: 0,
                     };
-                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
+                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
                 }
                 InnerSequence::Selftest | InnerSequence::Commission => {
                     let voltage = backend.excitation_voltage() as u32;
-                    *phase = InnerPhase::ElectricalId {
-                        state: ElectricalIdState::ResistanceStart,
-                        data: ElectricalIdData::new(voltage),
+                    *phase = InnerPhase::ElectricalIdentification {
+                        state: ElectricalIdentificationState::ResistanceStart,
+                        data: ElectricalIdentificationData::new(voltage),
                     };
-                    StepResult::PhaseChanged(CommissionPhase::ElectricalId)
+                    StepResult::PhaseChanged(CommissionPhase::ElectricalIdentification)
                 }
             }
         }
@@ -2301,10 +2301,10 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry)
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
             ));
             assert_eq!(adc_cal.as_ref().unwrap().encoder_count, 42);
-            let InnerPhase::ClosedLoopEntry {
+            let InnerPhase::ClosedLoopActivation {
                 flux_p,
                 flux_i,
                 torque_p,
@@ -2321,7 +2321,7 @@ mod tests {
                 ..
             } = phase
             else {
-                panic!("calibrate StopDrive should enter ClosedLoopEntry");
+                panic!("calibrate StopDrive should enter ClosedLoopActivation");
             };
 
             assert_eq!(flux_p, gains.inner.flux_p);

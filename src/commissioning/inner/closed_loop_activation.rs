@@ -10,7 +10,7 @@
 use super::InnerPhase;
 use crate::autotune::{
     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
-    CLOSED_LOOP_ENTRY_STATUS_PASS, CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState,
+    CLOSED_LOOP_ENTRY_STATUS_PASS, CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopActivationState,
     CommissionError, CommissionStatus, HOLD_GATE_DWELL_US, HOLD_GATE_MAX_SAMPLES,
     HOLD_GATE_SAMPLE_PERIOD_US, HOLD_GATE_STATUS_PASS, HoldGateAccumulator, HoldGateMetrics,
     HoldGateSample, InnerSequence, hold_status_failure_reason,
@@ -60,7 +60,7 @@ const CLOSED_LOOP_ENTRY_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
 #[allow(dead_code)]
 pub(super) const CLOSED_LOOP_ENTRY_MAX_REGISTER_OPS_PER_ARM: usize = 48;
 
-/// Number of attempts allowed for a bounded-drift `ClosedLoopEntryUnstable`
+/// Number of attempts allowed for a bounded-drift `ClosedLoopActivationUnstable`
 /// failure before surfacing a hard failure. Runaway failures (position error
 /// large and still growing -- the signature of wrong-sign feedback or genuine
 /// instability) never retry regardless of this budget.
@@ -68,7 +68,7 @@ const CLOSED_LOOP_ENTRY_MAX_ATTEMPTS: u8 = 3;
 
 const DIAG_CLOSED_LOOP_ENTRY_RESULT: u8 = 1;
 
-fn push_closed_loop_entry_result(
+fn push_closed_loop_activation_result(
     diagnostics: &mut CommissionDiagnostics,
     entry_status: u8,
     position_1: i32,
@@ -76,7 +76,7 @@ fn push_closed_loop_entry_result(
     drift: u32,
 ) {
     diagnostics.push(CommissionDiagnostic {
-        phase: crate::autotune::CommissionPhase::ClosedLoopEntry.to_u8(),
+        phase: crate::autotune::CommissionPhase::ClosedLoopActivation.to_u8(),
         code: DIAG_CLOSED_LOOP_ENTRY_RESULT,
         status: entry_status,
         value0: position_1 as u32,
@@ -245,7 +245,7 @@ async fn fail_sustained_hold<B: CommissioningBackend>(
     )
 }
 
-fn copy_closed_loop_entry_metrics(
+fn copy_closed_loop_activation_metrics(
     inner: &mut InnerResult,
     entry_status: u8,
     position_1: i32,
@@ -253,19 +253,19 @@ fn copy_closed_loop_entry_metrics(
     drift: u32,
     runaway: bool,
 ) {
-    inner.closed_loop_entry_status = entry_status;
-    inner.closed_loop_entry_position_1 = position_1;
-    inner.closed_loop_entry_position_2 = position_2;
-    inner.closed_loop_entry_drift_count = saturating_u16(drift);
-    inner.closed_loop_entry_threshold_count = CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD as u16;
-    inner.closed_loop_entry_runaway = u8::from(runaway);
+    inner.closed_loop_activation_status = entry_status;
+    inner.closed_loop_activation_position_1 = position_1;
+    inner.closed_loop_activation_position_2 = position_2;
+    inner.closed_loop_activation_drift_count = saturating_u16(drift);
+    inner.closed_loop_activation_threshold_count = CLOSED_LOOP_ENTRY_STABILITY_THRESHOLD as u16;
+    inner.closed_loop_activation_runaway = u8::from(runaway);
 }
 
 #[expect(
     clippy::too_many_arguments,
     reason = "failure helper preserves the same terminal state as success"
 )]
-async fn fail_closed_loop_entry<B: CommissioningBackend>(
+async fn fail_closed_loop_activation<B: CommissioningBackend>(
     inner_result: &mut Option<InnerResult>,
     backend: &mut B,
     entry_status: u8,
@@ -286,9 +286,9 @@ async fn fail_closed_loop_entry<B: CommissioningBackend>(
     let mut inner = inner_result.take()?;
 
     crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
-    inner.status = CommissionStatus::Failed(CommissionError::ClosedLoopEntryUnstable);
+    inner.status = CommissionStatus::Failed(CommissionError::ClosedLoopActivationUnstable);
     inner.current_loop_failure_reason = crate::autotune::CURRENT_LOOP_FAILURE_CLOSED_LOOP_ENTRY;
-    copy_closed_loop_entry_metrics(
+    copy_closed_loop_activation_metrics(
         &mut inner,
         entry_status,
         position_1,
@@ -311,7 +311,7 @@ async fn fail_closed_loop_entry<B: CommissioningBackend>(
 }
 
 /// Advance closed-loop entry sub-state by one cooperative tick.
-pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
+pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     sequence: InnerSequence,
     adc_cal: &mut Option<AdcCalResult>,
@@ -338,7 +338,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
         inner_result,
         attempt,
     ) = match phase {
-        InnerPhase::ClosedLoopEntry {
+        InnerPhase::ClosedLoopActivation {
             state,
             flux_p,
             flux_i,
@@ -377,7 +377,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
     };
 
     match cle_state {
-        ClosedLoopEntryState::WriteGains => {
+        ClosedLoopActivationState::WriteGains => {
             let (flux_reg, torque_reg, velocity_reg, position_reg) = gain_registers(
                 crate::pid::InnerLoopGains {
                     flux_p,
@@ -423,11 +423,11 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            *cle_state = ClosedLoopEntryState::WriteLimits;
+            *cle_state = ClosedLoopActivationState::WriteLimits;
             StepResult::ReadyNow
         }
 
-        ClosedLoopEntryState::WriteLimits => {
+        ClosedLoopActivationState::WriteLimits => {
             // 4. Velocity limit.
             if backend
                 .write_register(PID_VELOCITY_LIMIT, velocity_limit)
@@ -456,14 +456,14 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 }
             }
 
-            *cle_state = ClosedLoopEntryState::VerifyPhiE;
+            *cle_state = ClosedLoopActivationState::VerifyPhiE;
             StepResult::ReadyNow
         }
 
-        ClosedLoopEntryState::VerifyPhiE => {
+        ClosedLoopActivationState::VerifyPhiE => {
             // Set PHI_E_SELECTION to ABN encoder (3). For Calibrate this
             // is already 3 from EncoderAlign::Commit; for Commission the
-            // intervening ElectricalId/CurrentTune phases reset it to 1
+            // intervening ElectricalIdentification/CurrentTune phases reset it to 1
             // (external phi_e for voltage-mode sweeps).
             if backend
                 .write_register(PHI_E_SELECTION, CLOSED_LOOP_PHI_E_SELECTION)
@@ -483,11 +483,11 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 }
             }
 
-            *cle_state = ClosedLoopEntryState::ZeroAndClear;
+            *cle_state = ClosedLoopActivationState::ZeroAndClear;
             StepResult::ReadyNow
         }
 
-        ClosedLoopEntryState::ZeroAndClear => {
+        ClosedLoopActivationState::ZeroAndClear => {
             // 6. Zero position (also zeros target per datasheet 0x6B).
             if backend
                 .write_register(PID_POSITION_ACTUAL, 0)
@@ -533,11 +533,11 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
-            *cle_state = ClosedLoopEntryState::WritePositionConfig;
+            *cle_state = ClosedLoopActivationState::WritePositionConfig;
             StepResult::ReadyNow
         }
 
-        ClosedLoopEntryState::WritePositionConfig => {
+        ClosedLoopActivationState::WritePositionConfig => {
             // 7. Explicit selection setup:
             // - velocity source 9 uses ABN mechanical angle
             // - velocity meter 1 uses the advanced/PWM-synchronized meter
@@ -586,11 +586,11 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             }
             defmt::info!("STEP_WIDTH(0x78) = {} written", physical_step_width);
 
-            *cle_state = ClosedLoopEntryState::WriteFilters;
+            *cle_state = ClosedLoopActivationState::WriteFilters;
             StepResult::ReadyNow
         }
 
-        ClosedLoopEntryState::WriteFilters => {
+        ClosedLoopActivationState::WriteFilters => {
             let pwm_maxcnt = backend.pwm_maxcnt();
 
             // Best-effort filter writes (warn on failure, don't abort).
@@ -658,11 +658,11 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 .await;
             }
 
-            *cle_state = ClosedLoopEntryState::EnterPositionMode;
+            *cle_state = ClosedLoopActivationState::EnterPositionMode;
             StepResult::ReadyNow
         }
 
-        ClosedLoopEntryState::EnterPositionMode => {
+        ClosedLoopActivationState::EnterPositionMode => {
             // MODE_PID_TYPE=1 (bit 31), MODE_MOTION=3 (position).
             if backend
                 .write_register(MODE_RAMP_MODE_MOTION, CLOSED_LOOP_POSITION_MODE)
@@ -687,14 +687,14 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             let Some(deadline_us) = now.checked_add(10_000) else {
                 return super::fail_inner(phase, CommissionError::InvalidSchedule);
             };
-            *cle_state = ClosedLoopEntryState::StabilityCheck1 {
+            *cle_state = ClosedLoopActivationState::StabilityCheck1 {
                 position_1: 0,
                 deadline_us,
             };
             StepResult::At(deadline_us)
         }
 
-        ClosedLoopEntryState::StabilityCheck1 {
+        ClosedLoopActivationState::StabilityCheck1 {
             position_1: _,
             deadline_us,
         } => {
@@ -711,14 +711,14 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             let Some(next_deadline_us) = now.checked_add(20_000) else {
                 return super::fail_inner(phase, CommissionError::InvalidSchedule);
             };
-            *cle_state = ClosedLoopEntryState::StabilityCheck2 {
+            *cle_state = ClosedLoopActivationState::StabilityCheck2 {
                 position_1: pos1,
                 deadline_us: next_deadline_us,
             };
             StepResult::At(next_deadline_us)
         }
 
-        ClosedLoopEntryState::StabilityCheck2 {
+        ClosedLoopActivationState::StabilityCheck2 {
             position_1,
             deadline_us,
         } => {
@@ -745,7 +745,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     pos2
                 );
                 let drift = (pos2.wrapping_sub(*position_1)).unsigned_abs();
-                push_closed_loop_entry_result(
+                push_closed_loop_activation_result(
                     diagnostics,
                     CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
                     *position_1,
@@ -753,7 +753,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     drift,
                 );
                 if matches!(sequence, InnerSequence::Commission)
-                    && let Some(result) = fail_closed_loop_entry(
+                    && let Some(result) = fail_closed_loop_activation(
                         inner_result,
                         backend,
                         CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
@@ -776,7 +776,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     return result;
                 }
                 let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-                return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
+                return super::fail_inner(phase, CommissionError::ClosedLoopActivationUnstable);
             }
 
             // Stability check: a small two-sample drift can be a bounded
@@ -798,7 +798,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     drift
                 );
                 if let Some(inner) = inner_result.as_mut() {
-                    copy_closed_loop_entry_metrics(
+                    copy_closed_loop_activation_metrics(
                         inner,
                         CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT,
                         *position_1,
@@ -807,7 +807,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                         false,
                     );
                 }
-                *cle_state = ClosedLoopEntryState::SustainedHoldStart;
+                *cle_state = ClosedLoopActivationState::SustainedHoldStart;
                 return StepResult::ReadyNow;
             }
 
@@ -819,7 +819,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                     pos2,
                     drift
                 );
-                push_closed_loop_entry_result(
+                push_closed_loop_activation_result(
                     diagnostics,
                     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT,
                     *position_1,
@@ -830,16 +830,16 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
 
                 let next_attempt = attempt + 1;
                 if next_attempt < CLOSED_LOOP_ENTRY_MAX_ATTEMPTS {
-                    let InnerPhase::ClosedLoopEntry { state, attempt, .. } = phase else {
-                        unreachable!("phase was just matched as ClosedLoopEntry");
+                    let InnerPhase::ClosedLoopActivation { state, attempt, .. } = phase else {
+                        unreachable!("phase was just matched as ClosedLoopActivation");
                     };
-                    *state = ClosedLoopEntryState::WriteGains;
+                    *state = ClosedLoopActivationState::WriteGains;
                     *attempt = next_attempt;
                     return StepResult::ReadyNow;
                 }
 
                 if matches!(sequence, InnerSequence::Commission)
-                    && let Some(result) = fail_closed_loop_entry(
+                    && let Some(result) = fail_closed_loop_activation(
                         inner_result,
                         backend,
                         CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT,
@@ -861,7 +861,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 {
                     return result;
                 }
-                return super::fail_inner(phase, CommissionError::ClosedLoopEntryUnstable);
+                return super::fail_inner(phase, CommissionError::ClosedLoopActivationUnstable);
             }
 
             defmt::info!("closed-loop position mode active (engine)");
@@ -884,7 +884,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                 }
                 InnerSequence::Commission => {
                     if let Some(inner) = inner_result.as_mut() {
-                        copy_closed_loop_entry_metrics(
+                        copy_closed_loop_activation_metrics(
                             inner,
                             CLOSED_LOOP_ENTRY_STATUS_PASS,
                             *position_1,
@@ -893,22 +893,22 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
                             false,
                         );
                     }
-                    *cle_state = ClosedLoopEntryState::SustainedHoldStart;
+                    *cle_state = ClosedLoopActivationState::SustainedHoldStart;
                     StepResult::ReadyNow
                 }
                 InnerSequence::Selftest => {
-                    // Selftest never reaches ClosedLoopEntry.
+                    // Selftest never reaches ClosedLoopActivation.
                     unreachable!()
                 }
             }
         }
 
-        ClosedLoopEntryState::SustainedHoldStart => {
+        ClosedLoopActivationState::SustainedHoldStart => {
             let now = backend.elapsed_us();
             let Some(deadline_us) = now.checked_add(HOLD_GATE_DWELL_US as u64) else {
                 return super::fail_inner(phase, CommissionError::InvalidSchedule);
             };
-            *cle_state = ClosedLoopEntryState::SustainedHoldSample {
+            *cle_state = ClosedLoopActivationState::SustainedHoldSample {
                 accumulator: HoldGateAccumulator::commissioning(
                     HOLD_GATE_SAMPLE_PERIOD_US as u16,
                     backend.feedback_config(),
@@ -922,7 +922,7 @@ pub(crate) async fn step_closed_loop_entry<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
 
-        ClosedLoopEntryState::SustainedHoldSample {
+        ClosedLoopActivationState::SustainedHoldSample {
             accumulator,
             started_us,
             next_sample_us,
@@ -1069,8 +1069,8 @@ mod tests {
         );
     }
 
-    fn closed_loop_phase_at(state: ClosedLoopEntryState) -> InnerPhase {
-        InnerPhase::ClosedLoopEntry {
+    fn closed_loop_phase_at(state: ClosedLoopActivationState) -> InnerPhase {
+        InnerPhase::ClosedLoopActivation {
             state,
             flux_p: PidPGain::ZERO,
             flux_i: PidIGain::ZERO,
@@ -1090,18 +1090,18 @@ mod tests {
         }
     }
 
-    fn closed_loop_phase_at_without_inner(state: ClosedLoopEntryState) -> InnerPhase {
+    fn closed_loop_phase_at_without_inner(state: ClosedLoopActivationState) -> InnerPhase {
         let mut phase = closed_loop_phase_at(state);
-        let InnerPhase::ClosedLoopEntry { inner_result, .. } = &mut phase else {
+        let InnerPhase::ClosedLoopActivation { inner_result, .. } = &mut phase else {
             unreachable!();
         };
         *inner_result = None;
         phase
     }
 
-    fn closed_loop_phase_at_with_attempt(state: ClosedLoopEntryState, attempt: u8) -> InnerPhase {
+    fn closed_loop_phase_at_with_attempt(state: ClosedLoopActivationState, attempt: u8) -> InnerPhase {
         let mut phase = closed_loop_phase_at(state);
-        let InnerPhase::ClosedLoopEntry {
+        let InnerPhase::ClosedLoopActivation {
             attempt: phase_attempt,
             ..
         } = &mut phase
@@ -1180,12 +1180,12 @@ mod tests {
             current_validation_axes: CURRENT_VALIDATION_AXIS_TORQUE,
             retry_budget_exhausted: 0,
             current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
-            closed_loop_entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
-            closed_loop_entry_position_1: 0,
-            closed_loop_entry_position_2: 0,
-            closed_loop_entry_drift_count: 0,
-            closed_loop_entry_threshold_count: 0,
-            closed_loop_entry_runaway: 0,
+            closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+            closed_loop_activation_position_1: 0,
+            closed_loop_activation_position_2: 0,
+            closed_loop_activation_drift_count: 0,
+            closed_loop_activation_threshold_count: 0,
+            closed_loop_activation_runaway: 0,
             current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
             current_hold_warning_flags: 0,
             current_hold_elapsed_us: 0,
@@ -1299,12 +1299,12 @@ mod tests {
     #[test]
     fn write_position_config_programs_selection_registers() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.configured_physical_width = Some(16);
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1316,8 +1316,8 @@ mod tests {
             assert!(matches!(result, StepResult::ReadyNow));
             assert!(matches!(
                 phase,
-                InnerPhase::ClosedLoopEntry {
-                    state: ClosedLoopEntryState::WriteFilters,
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::WriteFilters,
                     ..
                 }
             ));
@@ -1335,13 +1335,13 @@ mod tests {
     #[test]
     fn write_position_config_verifies_mechanical_selection_before_step_width() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.configured_physical_width = Some(16);
             backend.read_override = Some((POSITION_SELECTION.addr(), 8));
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1367,13 +1367,13 @@ mod tests {
     #[test]
     fn write_position_config_propagates_mechanical_selection_read_error() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.configured_physical_width = Some(16);
             backend.fail_on_read = Some(POSITION_SELECTION.addr());
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1399,12 +1399,12 @@ mod tests {
     #[test]
     fn write_position_config_uses_published_physical_width_not_legacy_mirror() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.configured_physical_width = Some(8);
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1428,11 +1428,11 @@ mod tests {
     #[test]
     fn write_position_config_rejects_unpublished_legacy_width() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1458,12 +1458,12 @@ mod tests {
     #[test]
     fn write_position_config_rejects_zero_published_physical_width() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WritePositionConfig);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WritePositionConfig);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.configured_physical_width = Some(0);
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1489,12 +1489,12 @@ mod tests {
     #[test]
     fn write_limits_uses_configured_operational_voltage_limit() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WriteLimits);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WriteLimits);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.operational_voltage_limit_value = 20_000;
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1521,8 +1521,8 @@ mod tests {
             );
             assert!(matches!(
                 phase,
-                InnerPhase::ClosedLoopEntry {
-                    state: ClosedLoopEntryState::VerifyPhiE,
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::VerifyPhiE,
                     ..
                 }
             ));
@@ -1532,12 +1532,12 @@ mod tests {
     #[test]
     fn enter_position_mode_accepts_expected_armed_state_readbacks() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1549,8 +1549,8 @@ mod tests {
             assert!(matches!(result, StepResult::At(10_000)));
             assert!(matches!(
                 phase,
-                InnerPhase::ClosedLoopEntry {
-                    state: ClosedLoopEntryState::StabilityCheck1 { .. },
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::StabilityCheck1 { .. },
                     ..
                 }
             ));
@@ -1568,7 +1568,7 @@ mod tests {
     #[test]
     fn stability_checks_return_exact_one_shot_deadlines() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck1 {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck1 {
                 position_1: 0,
                 deadline_us: 10_000,
             });
@@ -1576,7 +1576,7 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 9_999;
 
-            let early = step_closed_loop_entry(
+            let early = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1590,7 +1590,7 @@ mod tests {
 
             backend.elapsed_us_value = 10_000;
             backend.registers.insert(PID_POSITION_ACTUAL.addr(), 7).ok();
-            let due = step_closed_loop_entry(
+            let due = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1602,8 +1602,8 @@ mod tests {
             assert!(matches!(due, StepResult::At(30_000)));
             assert!(matches!(
                 phase,
-                InnerPhase::ClosedLoopEntry {
-                    state: ClosedLoopEntryState::StabilityCheck2 {
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::StabilityCheck2 {
                         position_1: 7,
                         deadline_us: 30_000,
                     },
@@ -1613,7 +1613,7 @@ mod tests {
 
             backend.spi_log.clear();
             backend.elapsed_us_value = 29_999;
-            let second_early = step_closed_loop_entry(
+            let second_early = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1630,8 +1630,8 @@ mod tests {
     #[test]
     fn filter_writes_respect_entry_operation_bound() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::WriteFilters);
-            let InnerPhase::ClosedLoopEntry {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::WriteFilters);
+            let InnerPhase::ClosedLoopActivation {
                 velocity_filter_hz,
                 torque_filter_hz,
                 position_filter_hz,
@@ -1648,7 +1648,7 @@ mod tests {
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1668,7 +1668,7 @@ mod tests {
     #[test]
     fn enter_position_mode_sets_hold_target_before_enable() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
@@ -1681,7 +1681,7 @@ mod tests {
                 .insert(STATUS_FLAGS.addr(), 0xffff_ffff)
                 .ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1724,13 +1724,13 @@ mod tests {
     #[test]
     fn enter_position_mode_rejects_unpublished_legacy_width() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
             backend.configured_physical_width = None;
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1750,13 +1750,13 @@ mod tests {
     #[test]
     fn enter_position_mode_rejects_divergent_legacy_width_without_enable() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
             backend.configured_physical_width = Some(8);
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1776,13 +1776,13 @@ mod tests {
     #[test]
     fn enter_position_mode_propagates_armed_state_read_error_without_enable() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
             backend.fail_on_read = Some(STEP_WIDTH.addr());
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1821,13 +1821,13 @@ mod tests {
             ];
 
             for (addr, stale_value) in stale_registers {
-                let mut phase = closed_loop_phase_at(ClosedLoopEntryState::EnterPositionMode);
+                let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
                 let mut adc_cal = None;
                 let mut backend = MockBackend::new();
                 seed_armed_state_registers(&mut backend);
                 backend.registers.insert(addr, stale_value).ok();
 
-                let result = step_closed_loop_entry(
+                let result = step_closed_loop_activation(
                     &mut phase,
                     InnerSequence::Calibrate,
                     &mut adc_cal,
@@ -1847,7 +1847,7 @@ mod tests {
     #[test]
     fn commission_runs_sustained_hold_after_fast_stability_check() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck2 {
                 position_1: 0,
                 deadline_us: 0,
             });
@@ -1855,7 +1855,7 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.registers.insert(PID_POSITION_ACTUAL.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -1866,8 +1866,8 @@ mod tests {
 
             assert!(matches!(
                 phase,
-                InnerPhase::ClosedLoopEntry {
-                    state: ClosedLoopEntryState::SustainedHoldStart,
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::SustainedHoldStart,
                     ..
                 }
             ));
@@ -1878,7 +1878,7 @@ mod tests {
     #[test]
     fn commission_bounded_entry_drift_runs_sustained_hold_with_warning_evidence() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck2 {
                 position_1: 0,
                 deadline_us: 0,
             });
@@ -1889,7 +1889,7 @@ mod tests {
                 .insert(PID_POSITION_ACTUAL.addr(), 17)
                 .ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -1899,8 +1899,8 @@ mod tests {
             .await;
 
             assert!(matches!(result, StepResult::ReadyNow));
-            let InnerPhase::ClosedLoopEntry {
-                state: ClosedLoopEntryState::SustainedHoldStart,
+            let InnerPhase::ClosedLoopActivation {
+                state: ClosedLoopActivationState::SustainedHoldStart,
                 inner_result: Some(inner),
                 ..
             } = phase
@@ -1913,14 +1913,14 @@ mod tests {
                 crate::autotune::CURRENT_LOOP_FAILURE_NONE
             );
             assert_eq!(
-                inner.closed_loop_entry_status,
+                inner.closed_loop_activation_status,
                 CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT
             );
-            assert_eq!(inner.closed_loop_entry_position_1, 0);
-            assert_eq!(inner.closed_loop_entry_position_2, 17);
-            assert_eq!(inner.closed_loop_entry_drift_count, 17);
-            assert_eq!(inner.closed_loop_entry_threshold_count, 2);
-            assert_eq!(inner.closed_loop_entry_runaway, 0);
+            assert_eq!(inner.closed_loop_activation_position_1, 0);
+            assert_eq!(inner.closed_loop_activation_position_2, 17);
+            assert_eq!(inner.closed_loop_activation_drift_count, 17);
+            assert_eq!(inner.closed_loop_activation_threshold_count, 2);
+            assert_eq!(inner.closed_loop_activation_runaway, 0);
             assert!(
                 !write_log(&backend)
                     .as_slice()
@@ -1933,7 +1933,7 @@ mod tests {
     #[test]
     fn calibrate_skips_sustained_hold_after_fast_stability_check() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck2 {
                 position_1: 0,
                 deadline_us: 0,
             });
@@ -1941,7 +1941,7 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.registers.insert(PID_POSITION_ACTUAL.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1957,7 +1957,7 @@ mod tests {
     #[test]
     fn calibrate_accepts_bounded_entry_drift_without_retry_or_failure() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck2 {
                 position_1: 0,
                 deadline_us: 0,
             });
@@ -1969,7 +1969,7 @@ mod tests {
                 .ok();
             let mut diagnostics = CommissionDiagnostics::default();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -1992,7 +1992,7 @@ mod tests {
     #[test]
     fn stability_drift_retries_before_exhausting_attempts() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck2 {
                 position_1: 0,
                 deadline_us: 0,
             });
@@ -2007,7 +2007,7 @@ mod tests {
                 .ok();
             let mut diagnostics = CommissionDiagnostics::default();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -2022,8 +2022,8 @@ mod tests {
             );
             assert!(matches!(
                 phase,
-                InnerPhase::ClosedLoopEntry {
-                    state: ClosedLoopEntryState::WriteGains,
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::WriteGains,
                     attempt: 1,
                     ..
                 }
@@ -2032,7 +2032,7 @@ mod tests {
             assert_eq!(events.len(), 1);
             assert_eq!(
                 events[0].phase,
-                crate::autotune::CommissionPhase::ClosedLoopEntry.to_u8()
+                crate::autotune::CommissionPhase::ClosedLoopActivation.to_u8()
             );
             assert_eq!(events[0].code, DIAG_CLOSED_LOOP_ENTRY_RESULT);
             assert_eq!(events[0].status, CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT);
@@ -2045,7 +2045,7 @@ mod tests {
     fn stability_drift_reports_closed_loop_unstable_after_exhausting_attempts() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at_with_attempt(
-                ClosedLoopEntryState::StabilityCheck2 {
+                ClosedLoopActivationState::StabilityCheck2 {
                     position_1: 0,
                     deadline_us: 0,
                 },
@@ -2058,7 +2058,7 @@ mod tests {
                 .insert(PID_POSITION_ACTUAL.addr(), 100)
                 .ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -2069,7 +2069,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                StepResult::InnerFailed(CommissionError::ClosedLoopEntryUnstable)
+                StepResult::InnerFailed(CommissionError::ClosedLoopActivationUnstable)
             ));
         });
     }
@@ -2077,7 +2077,7 @@ mod tests {
     #[test]
     fn stability_runaway_never_retries_even_on_first_attempt() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::StabilityCheck2 {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck2 {
                 position_1: 0,
                 deadline_us: 0,
             });
@@ -2092,7 +2092,7 @@ mod tests {
                 .ok();
             let mut diagnostics = CommissionDiagnostics::default();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Calibrate,
                 &mut adc_cal,
@@ -2104,7 +2104,7 @@ mod tests {
             assert!(
                 matches!(
                     result,
-                    StepResult::InnerFailed(CommissionError::ClosedLoopEntryUnstable)
+                    StepResult::InnerFailed(CommissionError::ClosedLoopActivationUnstable)
                 ),
                 "runaway must fail immediately regardless of attempt budget, got {result:?}"
             );
@@ -2118,7 +2118,7 @@ mod tests {
     fn commission_large_entry_drift_returns_failed_result_with_entry_evidence() {
         pollster::block_on(async {
             let mut phase = closed_loop_phase_at_with_attempt(
-                ClosedLoopEntryState::StabilityCheck2 {
+                ClosedLoopActivationState::StabilityCheck2 {
                     position_1: 0,
                     deadline_us: 0,
                 },
@@ -2131,7 +2131,7 @@ mod tests {
                 .insert(PID_POSITION_ACTUAL.addr(), 65)
                 .ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -2145,18 +2145,18 @@ mod tests {
             };
             assert_eq!(
                 result.inner.status,
-                CommissionStatus::Failed(CommissionError::ClosedLoopEntryUnstable)
+                CommissionStatus::Failed(CommissionError::ClosedLoopActivationUnstable)
             );
             assert_eq!(result.inner.current_loop_failure_reason, 17);
             assert_eq!(
-                result.inner.closed_loop_entry_status,
+                result.inner.closed_loop_activation_status,
                 CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT
             );
-            assert_eq!(result.inner.closed_loop_entry_position_1, 0);
-            assert_eq!(result.inner.closed_loop_entry_position_2, 65);
-            assert_eq!(result.inner.closed_loop_entry_drift_count, 65);
-            assert_eq!(result.inner.closed_loop_entry_threshold_count, 2);
-            assert_eq!(result.inner.closed_loop_entry_runaway, 0);
+            assert_eq!(result.inner.closed_loop_activation_position_1, 0);
+            assert_eq!(result.inner.closed_loop_activation_position_2, 65);
+            assert_eq!(result.inner.closed_loop_activation_drift_count, 65);
+            assert_eq!(result.inner.closed_loop_activation_threshold_count, 2);
+            assert_eq!(result.inner.closed_loop_activation_runaway, 0);
             assert!(
                 write_log(&backend)
                     .as_slice()
@@ -2180,7 +2180,7 @@ mod tests {
                 flux_count: 0,
                 status_flags: 0,
             });
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::SustainedHoldSample {
                 accumulator,
                 started_us: 0,
                 next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
@@ -2202,7 +2202,7 @@ mod tests {
                 .ok();
             backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -2242,7 +2242,7 @@ mod tests {
                 flux_count: -4,
                 status_flags: 0,
             });
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::SustainedHoldSample {
                 accumulator,
                 started_us: 0,
                 next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
@@ -2264,7 +2264,7 @@ mod tests {
                 .ok();
             backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -2308,7 +2308,7 @@ mod tests {
                 flux_count: 0,
                 status_flags: 0,
             });
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::SustainedHoldSample {
                 accumulator,
                 started_us: 0,
                 next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
@@ -2330,7 +2330,7 @@ mod tests {
                 .ok();
             backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -2373,7 +2373,7 @@ mod tests {
                 status_flags: 0,
             });
             let mut phase =
-                closed_loop_phase_at_without_inner(ClosedLoopEntryState::SustainedHoldSample {
+                closed_loop_phase_at_without_inner(ClosedLoopActivationState::SustainedHoldSample {
                     accumulator,
                     started_us: 0,
                     next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
@@ -2394,7 +2394,7 @@ mod tests {
                 .ok();
             backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -2419,7 +2419,7 @@ mod tests {
     #[test]
     fn sustained_hold_spi_read_failure_stops_motion_mode() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::SustainedHoldSample {
                 accumulator: HoldGateAccumulator::new(
                     HOLD_GATE_SAMPLE_PERIOD_US as u16,
                     current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
@@ -2434,7 +2434,7 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -2459,7 +2459,7 @@ mod tests {
     #[test]
     fn sustained_hold_late_sample_marks_overrun_and_preserves_grid() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::SustainedHoldSample {
                 accumulator: HoldGateAccumulator::new(
                     HOLD_GATE_SAMPLE_PERIOD_US as u16,
                     current_loop_actionable_status_mask(crate::config::FeedbackConfig::abn_abn()),
@@ -2480,7 +2480,7 @@ mod tests {
                 .ok();
             backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,
@@ -2495,8 +2495,8 @@ mod tests {
             ));
             assert!(matches!(
                 phase,
-                InnerPhase::ClosedLoopEntry {
-                    state: ClosedLoopEntryState::SustainedHoldSample {
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::SustainedHoldSample {
                         next_sample_us,
                         sample_overrun: true,
                         ..
@@ -2521,7 +2521,7 @@ mod tests {
                 flux_count: 0,
                 status_flags: 0,
             });
-            let mut phase = closed_loop_phase_at(ClosedLoopEntryState::SustainedHoldSample {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::SustainedHoldSample {
                 accumulator,
                 started_us: 0,
                 next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
@@ -2540,7 +2540,7 @@ mod tests {
                 .ok();
             backend.registers.insert(STATUS_FLAGS.addr(), 0).ok();
 
-            let result = step_closed_loop_entry(
+            let result = step_closed_loop_activation(
                 &mut phase,
                 InnerSequence::Commission,
                 &mut adc_cal,

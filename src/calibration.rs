@@ -24,7 +24,7 @@ pub enum CalibrationError {
     EncoderFault,
     /// Closed-loop entry position hold was unstable (runaway or excess
     /// drift) after exhausting the bounded-drift retry budget. Code 9.
-    ClosedLoopEntryUnstable,
+    ClosedLoopActivationUnstable,
     /// Operator-requested cancel reached GPIO-first safe-state gracefully
     /// during calibration; the MCU stays running. Code 10.
     Cancelled,
@@ -41,7 +41,7 @@ impl CalibrationError {
             Self::InternalError => 6,
             Self::ConfigFault => 7,
             Self::EncoderFault => 8,
-            Self::ClosedLoopEntryUnstable => 9,
+            Self::ClosedLoopActivationUnstable => 9,
             Self::Cancelled => 10,
         }
     }
@@ -57,8 +57,8 @@ mod tests {
     }
 
     #[test]
-    fn calibration_closed_loop_entry_unstable_has_status_code_9() {
-        assert_eq!(CalibrationError::ClosedLoopEntryUnstable.status_code(), 9);
+    fn calibration_closed_loop_activation_unstable_has_status_code_9() {
+        assert_eq!(CalibrationError::ClosedLoopActivationUnstable.status_code(), 9);
     }
 
     #[test]

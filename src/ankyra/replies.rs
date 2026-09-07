@@ -423,11 +423,11 @@ pub struct FociCurrentLoopFilters {
     pub flux_filter_hz: u16,
 }
 
-/// `foci_closed_loop_entry` reply - fast closed-loop entry stability evidence.
+/// `foci_closed_loop_activation` reply - fast closed-loop entry stability evidence.
 ///
-/// Wire name: `foci_closed_loop_entry`.
+/// Wire name: `foci_closed_loop_activation`.
 #[klipper_reply]
-pub struct FociClosedLoopEntry {
+pub struct FociClosedLoopActivation {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
     /// `CLOSED_LOOP_ENTRY_STATUS_*`.
@@ -1025,7 +1025,7 @@ pub struct FociResistanceAxis {
 #[cfg(test)]
 mod resistance_reply_size_tests {
     use super::{
-        FociClosedLoopEntry, FociCommissionResult, FociCommissionTiming, FociCurrentLoopFilters,
+        FociClosedLoopActivation, FociCommissionResult, FociCommissionTiming, FociCurrentLoopFilters,
         FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis, FociResistanceProfile,
         FociResistanceRun, FociRobustnessCycleEvidence,
     };
@@ -1261,8 +1261,8 @@ mod resistance_reply_size_tests {
     }
 
     #[test]
-    fn closed_loop_entry_reply_fits_klipper_message_limit() {
-        let reply = FociClosedLoopEntry {
+    fn closed_loop_activation_reply_fits_klipper_message_limit() {
+        let reply = FociClosedLoopActivation {
             oid: u8::MAX,
             entry_status: u8::MAX,
             position_1: i32::MIN,
@@ -1271,7 +1271,7 @@ mod resistance_reply_size_tests {
             threshold_count: u16::MAX,
             runaway: u8::MAX,
         };
-        assert_fits_with_id(&reply, "foci_closed_loop_entry");
+        assert_fits_with_id(&reply, "foci_closed_loop_activation");
     }
 
     #[test]

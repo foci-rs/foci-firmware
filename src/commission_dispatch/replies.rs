@@ -14,7 +14,7 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    AdcResidualReport, ClosedLoopEntryReport, CommissionTimingReport, CurrentLoopFiltersReport,
+    AdcResidualReport, ClosedLoopActivationReport, CommissionTimingReport, CurrentLoopFiltersReport,
     CurrentLoopHoldReport, CurrentLoopRunReport, CurrentValidationAxisReport,
     CurrentValidationEnvelopeReport, CurrentValidationSettledSampleReport, EncoderAlignmentReport,
     InductanceEstimateReport, InductanceFrameReport, InductanceRunReport, ResistanceAxisReport,
@@ -272,7 +272,7 @@ pub trait CommissionReplySink {
 
     /// Emit fast closed-loop entry stability evidence captured before the
     /// sustained-hold sampler.
-    fn foci_closed_loop_entry(&mut self, report: ClosedLoopEntryReport);
+    fn foci_closed_loop_activation(&mut self, report: ClosedLoopActivationReport);
 
     /// Emit applied filter cutoffs for the commissioned closed-loop frame.
     fn foci_current_loop_filters(&mut self, report: CurrentLoopFiltersReport);
@@ -1037,7 +1037,7 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
 ) {
     for priority in [true, false] {
         for event in diagnostics.iter() {
-            let is_electrical_timing = event.phase == CommissionPhase::ElectricalId.to_u8()
+            let is_electrical_timing = event.phase == CommissionPhase::ElectricalIdentification.to_u8()
                 && matches!(event.code, 34..=41);
             if is_electrical_timing == priority {
                 sink.foci_commission_detail(oid, event);
@@ -1253,7 +1253,7 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
         ));
     }
     sink.foci_current_loop_hold(commission_current_loop_hold_report(oid, inner));
-    sink.foci_closed_loop_entry(commission_closed_loop_entry_report(oid, inner));
+    sink.foci_closed_loop_activation(commission_closed_loop_activation_report(oid, inner));
     sink.foci_current_loop_filters(commission_current_loop_filters_report(oid, result));
     sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
 }
@@ -1391,15 +1391,15 @@ fn commission_current_loop_hold_report(oid: u8, inner: &InnerResult) -> CurrentL
     }
 }
 
-fn commission_closed_loop_entry_report(oid: u8, inner: &InnerResult) -> ClosedLoopEntryReport {
-    ClosedLoopEntryReport {
+fn commission_closed_loop_activation_report(oid: u8, inner: &InnerResult) -> ClosedLoopActivationReport {
+    ClosedLoopActivationReport {
         oid,
-        entry_status: inner.closed_loop_entry_status,
-        position_1: inner.closed_loop_entry_position_1,
-        position_2: inner.closed_loop_entry_position_2,
-        drift_count: inner.closed_loop_entry_drift_count,
-        threshold_count: inner.closed_loop_entry_threshold_count,
-        runaway: inner.closed_loop_entry_runaway,
+        entry_status: inner.closed_loop_activation_status,
+        position_1: inner.closed_loop_activation_position_1,
+        position_2: inner.closed_loop_activation_position_2,
+        drift_count: inner.closed_loop_activation_drift_count,
+        threshold_count: inner.closed_loop_activation_threshold_count,
+        runaway: inner.closed_loop_activation_runaway,
     }
 }
 
@@ -1614,7 +1614,7 @@ mod tests {
             torque_rms_count: u16,
             flux_rms_count: u16,
         },
-        ClosedLoopEntry {
+        ClosedLoopActivation {
             oid: u8,
             entry_status: u8,
             position_1: i32,
@@ -1855,11 +1855,11 @@ mod tests {
             });
         }
 
-        fn foci_closed_loop_entry(
+        fn foci_closed_loop_activation(
             &mut self,
-            report: crate::tmc_diagnostics::ClosedLoopEntryReport,
+            report: crate::tmc_diagnostics::ClosedLoopActivationReport,
         ) {
-            self.events.push(Event::ClosedLoopEntry {
+            self.events.push(Event::ClosedLoopActivation {
                 oid: report.oid,
                 entry_status: report.entry_status,
                 position_1: report.position_1,
@@ -2228,12 +2228,12 @@ mod tests {
                     | CURRENT_VALIDATION_AXIS_TORQUE,
                 retry_budget_exhausted: 0,
                 current_loop_failure_reason: CURRENT_LOOP_FAILURE_NONE,
-                closed_loop_entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
-                closed_loop_entry_position_1: 0,
-                closed_loop_entry_position_2: 0,
-                closed_loop_entry_drift_count: 0,
-                closed_loop_entry_threshold_count: 0,
-                closed_loop_entry_runaway: 0,
+                closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+                closed_loop_activation_position_1: 0,
+                closed_loop_activation_position_2: 0,
+                closed_loop_activation_drift_count: 0,
+                closed_loop_activation_threshold_count: 0,
+                closed_loop_activation_runaway: 0,
                 current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
                 current_hold_warning_flags: 0,
                 current_hold_elapsed_us: 0,
@@ -2396,7 +2396,7 @@ mod tests {
                 torque_rms_count: 0,
                 flux_rms_count: 0,
             },
-            Event::ClosedLoopEntry {
+            Event::ClosedLoopActivation {
                 oid,
                 entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
                 position_1: 0,
@@ -2837,7 +2837,7 @@ mod tests {
 
     #[test]
     fn commission_phase_prioritizes_electrical_timing_details() {
-        let electrical_id = CommissionPhase::ElectricalId.to_u8();
+        let electrical_id = CommissionPhase::ElectricalIdentification.to_u8();
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
@@ -3329,7 +3329,7 @@ mod tests {
     #[test]
     fn phase_helper_emits_zero_status_phase_reply() {
         let mut sink = RecordingSink::default();
-        emit_phase_reply(&mut sink, 12, CommissionPhase::ClosedLoopEntry);
+        emit_phase_reply(&mut sink, 12, CommissionPhase::ClosedLoopActivation);
 
         assert_eq!(
             sink.events,

@@ -90,7 +90,7 @@ pub use position::{
 pub use types::{
     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
     CLOSED_LOOP_ENTRY_STATUS_NOT_RUN, CLOSED_LOOP_ENTRY_STATUS_PASS,
-    CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopEntryState, CommissionError, CommissionPhase,
+    CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopActivationState, CommissionError, CommissionPhase,
     CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, SavedGains,
     ValidationResult,
 };

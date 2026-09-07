@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn phase_change_maps_to_ready_now_with_its_event() {
         let poll = adapt_step_result(
-            StepResult::PhaseChanged(CommissionPhase::ClosedLoopEntry),
+            StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation),
             42_000,
             Some((7, EngineKind::Commission)),
         )
@@ -409,7 +409,7 @@ mod tests {
             CommissionPoll::ReadyNow {
                 event: Some(CommissionEvent::PhaseChanged {
                     oid: 7,
-                    phase_id: CommissionPhase::ClosedLoopEntry,
+                    phase_id: CommissionPhase::ClosedLoopActivation,
                     engine_kind: EngineKind::Commission,
                 })
             }

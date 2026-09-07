@@ -15,7 +15,7 @@ pub enum CommissionPhase {
     /// Inner phase 4 — Encoder presence and direction detection.
     EncoderCheck,
     /// Inner phase 5 — Electrical identification (R, L, theta_e).
-    ElectricalId,
+    ElectricalIdentification,
     /// Inner phase 6 — Current-loop gain synthesis.
     CurrentTune,
     /// Inner phase 7 — Current-loop step-response validation.
@@ -35,17 +35,17 @@ pub enum CommissionPhase {
     ReversalStandstillRobustnessGate,
     /// Encoder alignment — drive rotor to the D-axis, zero
     /// ABN_DECODER_COUNT and offset, switch PHI_E_SELECTION to ABN
-    /// while still driving. Runs between EncoderCheck and ElectricalId
-    /// in the inner sequence, and is a valid `stop_after` target for
-    /// calibrate-on-enable paths. Appended (not inserted between
-    /// EncoderCheck and ElectricalId) so the stable wire values remain
-    /// unchanged — wire code 16.
+    /// while still driving. Runs between EncoderCheck and
+    /// ElectricalIdentification in the inner sequence, and is a valid
+    /// `stop_after` target for calibrate-on-enable paths. Appended (not
+    /// inserted between EncoderCheck and ElectricalIdentification) so the
+    /// stable wire values remain unchanged — wire code 16.
     EncoderAlign,
     /// Closed-loop position mode entry — writes PID gains, velocity
     /// limit, voltage limits, biquad filters, STEP_WIDTH, enters
     /// position mode, and verifies stability. Runs as the final inner
     /// phase for Calibrate and Commission sequences — wire code 17.
-    ClosedLoopEntry,
+    ClosedLoopActivation,
 }
 
 impl CommissionPhase {
@@ -61,7 +61,7 @@ impl CommissionPhase {
             Self::CoilCheck => 2,
             Self::PhaseWiringCheck => 3,
             Self::EncoderCheck => 4,
-            Self::ElectricalId => 5,
+            Self::ElectricalIdentification => 5,
             Self::CurrentTune => 6,
             Self::CurrentValidate => 7,
             Self::InnerDone => 8,
@@ -70,7 +70,7 @@ impl CommissionPhase {
             Self::FixedGainAmplitudeValidation => 20,
             Self::ReversalStandstillRobustnessGate => 21,
             Self::EncoderAlign => 16,
-            Self::ClosedLoopEntry => 17,
+            Self::ClosedLoopActivation => 17,
         }
     }
 
@@ -81,7 +81,7 @@ impl CommissionPhase {
         ("CoilCheck", 2),
         ("PhaseWiringCheck", 3),
         ("EncoderCheck", 4),
-        ("ElectricalId", 5),
+        ("ElectricalIdentification", 5),
         ("CurrentTune", 6),
         ("CurrentValidate", 7),
         ("InnerDone", 8),
@@ -90,7 +90,7 @@ impl CommissionPhase {
         ("FixedGainAmplitudeValidation", 20),
         ("ReversalStandstillRobustnessGate", 21),
         ("EncoderAlign", 16),
-        ("ClosedLoopEntry", 17),
+        ("ClosedLoopActivation", 17),
     ];
 }
 

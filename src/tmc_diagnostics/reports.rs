@@ -551,7 +551,7 @@ pub struct CurrentLoopFiltersReport {
 
 /// Fast closed-loop entry stability evidence emitted before the run report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClosedLoopEntryReport {
+pub struct ClosedLoopActivationReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
     /// `CLOSED_LOOP_ENTRY_STATUS_*`.

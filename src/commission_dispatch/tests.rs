@@ -153,7 +153,7 @@ enum ReplyEvent {
         hold_status: u8,
         sample_count: u8,
     },
-    ClosedLoopEntry {
+    ClosedLoopActivation {
         entry_status: u8,
         drift_count: u16,
     },
@@ -261,8 +261,8 @@ impl CommissionReplySink for ReplyRecorder {
         });
     }
 
-    fn foci_closed_loop_entry(&mut self, report: crate::tmc_diagnostics::ClosedLoopEntryReport) {
-        self.events.push(ReplyEvent::ClosedLoopEntry {
+    fn foci_closed_loop_activation(&mut self, report: crate::tmc_diagnostics::ClosedLoopActivationReport) {
+        self.events.push(ReplyEvent::ClosedLoopActivation {
             entry_status: report.entry_status,
             drift_count: report.drift_count,
         });
@@ -723,7 +723,7 @@ fn phase_changed_returns_oid_phase_kind() {
         ));
         let outcome = drive_commission_result(
             crate::commissioning::types::StepResult::PhaseChanged(
-                crate::autotune::CommissionPhase::ClosedLoopEntry,
+                crate::autotune::CommissionPhase::ClosedLoopActivation,
             ),
             &mut engine,
             &mut backend,
@@ -738,7 +738,7 @@ fn phase_changed_returns_oid_phase_kind() {
                 engine_kind,
             } => {
                 assert_eq!(oid, 7);
-                assert_eq!(phase_id, crate::autotune::CommissionPhase::ClosedLoopEntry);
+                assert_eq!(phase_id, crate::autotune::CommissionPhase::ClosedLoopActivation);
                 assert_eq!(
                     engine_kind,
                     crate::commissioning::types::EngineKind::Commission
@@ -806,7 +806,7 @@ async fn inner_failed_commission_emits_phase_reply() {
     ));
     engine.as_mut().expect("engine").diagnostics_mut().push(
         crate::selftest::CommissionDiagnostic {
-            phase: crate::autotune::CommissionPhase::ElectricalId.to_u8(),
+            phase: crate::autotune::CommissionPhase::ElectricalIdentification.to_u8(),
             code: 28,
             status: 1,
             value0: 820,
@@ -944,7 +944,7 @@ async fn inner_failed_selftest_emits_selftest_pair() {
     let mut engine = Some(CommissioningEngine::new_selftest(8));
     engine.as_mut().expect("engine").diagnostics_mut().push(
         crate::selftest::CommissionDiagnostic {
-            phase: crate::autotune::CommissionPhase::ElectricalId.to_u8(),
+            phase: crate::autotune::CommissionPhase::ElectricalIdentification.to_u8(),
             code: 27,
             status: 1,
             value0: 0,
@@ -1720,7 +1720,7 @@ fn commission_result_maps_current_loop_evidence() {
                 hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
                 sample_count: 0,
             },
-            ReplyEvent::ClosedLoopEntry {
+            ReplyEvent::ClosedLoopActivation {
                 entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
                 drift_count: 0,
             },

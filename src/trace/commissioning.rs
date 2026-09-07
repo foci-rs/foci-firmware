@@ -8,41 +8,41 @@ use crate::autotune::CommissionPhase;
 use crate::commissioning::types::EngineKind;
 
 /// Return whether a commissioning phase should emit closed-loop entry samples.
-pub const fn commission_trace_phase_samples_closed_loop_entry(
+pub const fn commission_trace_phase_samples_closed_loop_activation(
     engine_kind: EngineKind,
     phase_id: CommissionPhase,
 ) -> bool {
     matches!(engine_kind, EngineKind::Commission)
-        && matches!(phase_id, CommissionPhase::ClosedLoopEntry)
+        && matches!(phase_id, CommissionPhase::ClosedLoopActivation)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::commission_trace_phase_samples_closed_loop_entry;
+    use super::commission_trace_phase_samples_closed_loop_activation;
     use crate::autotune::CommissionPhase;
     use crate::commissioning::types::EngineKind;
 
     #[test]
-    fn closed_loop_entry_samples_only_stage1_commission() {
-        assert!(commission_trace_phase_samples_closed_loop_entry(
+    fn closed_loop_activation_samples_only_stage1_commission() {
+        assert!(commission_trace_phase_samples_closed_loop_activation(
             EngineKind::Commission,
-            CommissionPhase::ClosedLoopEntry,
+            CommissionPhase::ClosedLoopActivation,
         ));
-        assert!(!commission_trace_phase_samples_closed_loop_entry(
+        assert!(!commission_trace_phase_samples_closed_loop_activation(
             EngineKind::Calibrate,
-            CommissionPhase::ClosedLoopEntry,
+            CommissionPhase::ClosedLoopActivation,
         ));
-        assert!(!commission_trace_phase_samples_closed_loop_entry(
+        assert!(!commission_trace_phase_samples_closed_loop_activation(
             EngineKind::Selftest,
-            CommissionPhase::ClosedLoopEntry,
+            CommissionPhase::ClosedLoopActivation,
         ));
-        assert!(!commission_trace_phase_samples_closed_loop_entry(
+        assert!(!commission_trace_phase_samples_closed_loop_activation(
             EngineKind::OuterTune,
-            CommissionPhase::ClosedLoopEntry,
+            CommissionPhase::ClosedLoopActivation,
         ));
-        assert!(!commission_trace_phase_samples_closed_loop_entry(
+        assert!(!commission_trace_phase_samples_closed_loop_activation(
             EngineKind::Commission,
-            CommissionPhase::ElectricalId,
+            CommissionPhase::ElectricalIdentification,
         ));
     }
 }

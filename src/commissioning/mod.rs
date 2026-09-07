@@ -916,9 +916,9 @@ impl CommissioningEngine {
         let EngineMode::Inner { phase, .. } = &mut self.engine_mode else {
             panic!("inductance capture fixture requires an inner engine");
         };
-        *phase = InnerPhase::ElectricalId {
-            state: inner::ElectricalIdState::InductanceSample { capture },
-            data: inner::ElectricalIdData::new(1_024),
+        *phase = InnerPhase::ElectricalIdentification {
+            state: inner::ElectricalIdentificationState::InductanceSample { capture },
+            data: inner::ElectricalIdentificationData::new(1_024),
         };
     }
 
@@ -929,9 +929,9 @@ impl CommissioningEngine {
         };
         self.buf
             .reset(inner::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US as u16);
-        *phase = InnerPhase::ElectricalId {
-            state: inner::ElectricalIdState::DelaySample { capture },
-            data: inner::ElectricalIdData::new(1_024),
+        *phase = InnerPhase::ElectricalIdentification {
+            state: inner::ElectricalIdentificationState::DelaySample { capture },
+            data: inner::ElectricalIdentificationData::new(1_024),
         };
     }
 
@@ -1763,9 +1763,9 @@ impl CommissioningEngine {
         matches!(
             &self.engine_mode,
             EngineMode::Inner {
-                phase: InnerPhase::ElectricalId {
-                    state: inner::ElectricalIdState::InductanceSample { .. }
-                        | inner::ElectricalIdState::DelaySample { .. },
+                phase: InnerPhase::ElectricalIdentification {
+                    state: inner::ElectricalIdentificationState::InductanceSample { .. }
+                        | inner::ElectricalIdentificationState::DelaySample { .. },
                     ..
                 },
                 ..
@@ -1855,9 +1855,9 @@ mod tests {
             EngineMode::Outer { .. } => unreachable!(),
         };
 
-        let mut phase = inner::InnerPhase::ElectricalId {
-            state: inner::ElectricalIdState::ResistanceStart,
-            data: inner::ElectricalIdData::new(1024),
+        let mut phase = inner::InnerPhase::ElectricalIdentification {
+            state: inner::ElectricalIdentificationState::ResistanceStart,
+            data: inner::ElectricalIdentificationData::new(1024),
         };
         let mut buf = crate::autotune::TransientBuffer::new();
         let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -2057,12 +2057,12 @@ mod tests {
             current_validation_axes: crate::autotune::CURRENT_VALIDATION_AXIS_TORQUE,
             retry_budget_exhausted: 0,
             current_loop_failure_reason: crate::autotune::CURRENT_LOOP_FAILURE_NONE,
-            closed_loop_entry_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
-            closed_loop_entry_position_1: 0,
-            closed_loop_entry_position_2: 0,
-            closed_loop_entry_drift_count: 0,
-            closed_loop_entry_threshold_count: 0,
-            closed_loop_entry_runaway: 0,
+            closed_loop_activation_status: crate::autotune::CLOSED_LOOP_ENTRY_STATUS_NOT_RUN,
+            closed_loop_activation_position_1: 0,
+            closed_loop_activation_position_2: 0,
+            closed_loop_activation_drift_count: 0,
+            closed_loop_activation_threshold_count: 0,
+            closed_loop_activation_runaway: 0,
             current_hold_status: crate::autotune::HOLD_GATE_STATUS_NOT_RUN,
             current_hold_warning_flags: 0,
             current_hold_elapsed_us: 0,
@@ -2136,8 +2136,8 @@ mod tests {
             let EngineMode::Inner { phase, .. } = &mut engine.engine_mode else {
                 unreachable!();
             };
-            *phase = InnerPhase::ClosedLoopEntry {
-                state: crate::autotune::ClosedLoopEntryState::WriteGains,
+            *phase = InnerPhase::ClosedLoopActivation {
+                state: crate::autotune::ClosedLoopActivationState::WriteGains,
                 flux_p: crate::pid::p_gain(100),
                 flux_i: crate::pid::i_gain(10),
                 torque_p: crate::pid::p_gain(200),
@@ -2284,7 +2284,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn calibrate_constructor_uses_stored_gains_for_closed_loop_entry() {
+    async fn calibrate_constructor_uses_stored_gains_for_closed_loop_activation() {
         use core::sync::atomic::Ordering::Relaxed;
 
         let tmc_state = tmc_state();
@@ -3278,10 +3278,10 @@ mod tests {
         let mut engine =
             CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced);
         if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
-            let mut data = inner::ElectricalIdData::new(512);
+            let mut data = inner::ElectricalIdentificationData::new(512);
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
-            *phase = InnerPhase::ElectricalId {
-                state: inner::ElectricalIdState::DelaySample {
+            *phase = InnerPhase::ElectricalIdentification {
+                state: inner::ElectricalIdentificationState::DelaySample {
                     capture: inner::DelayCaptureState {
                         baseline: 0,
                         origin_us: 1_000,
@@ -3338,8 +3338,8 @@ mod tests {
                 .tmc_config
                 .resistance_profile(backend.tmc_config.resistance_scale_metadata_validated);
             if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
-                *phase = InnerPhase::ElectricalId {
-                    state: inner::ElectricalIdState::ResistanceIdentify {
+                *phase = InnerPhase::ElectricalIdentification {
+                    state: inner::ElectricalIdentificationState::ResistanceIdentify {
                         runner: crate::resistance_identification::ResistanceRunner::new(
                             crate::resistance_identification::ResistanceRunMode::CommissioningManagedEnable,
                             profile,
@@ -3347,7 +3347,7 @@ mod tests {
                         )
                         .unwrap(),
                     },
-                    data: inner::ElectricalIdData::new(512),
+                    data: inner::ElectricalIdentificationData::new(512),
                 };
             }
             backend.shutdown_requested = true;
@@ -3394,10 +3394,10 @@ mod tests {
                 max_spi_wall_us: 8,
             };
             if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
-                let mut data = inner::ElectricalIdData::new(512);
+                let mut data = inner::ElectricalIdentificationData::new(512);
                 data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
-                *phase = InnerPhase::ElectricalId {
-                    state: inner::ElectricalIdState::InductanceRestore {
+                *phase = InnerPhase::ElectricalIdentification {
+                    state: inner::ElectricalIdentificationState::InductanceRestore {
                         operation: inner::InductanceRestoreOperation::RetainedUqUdExt,
                         primary_error: None,
                         evidence: Some(crate::commissioning::types::InductanceEvidence::EMPTY),

@@ -6,7 +6,7 @@
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
 use super::{
-    DelayCaptureState, DelayCompletedCapture, ElectricalIdData, ElectricalIdState,
+    DelayCaptureState, DelayCompletedCapture, ElectricalIdentificationData, ElectricalIdentificationState,
     InductanceCaptureState, InductanceRestoreOperation, InnerPhase,
 };
 use crate::autotune::{
@@ -108,7 +108,7 @@ pub(crate) struct ModelAssembly {
 }
 
 /// Reason a model assembly was rejected. Each variant logs distinct
-/// `defmt::warn!` text and maps to `CommissionError::ElectricalIdFailed`
+/// `defmt::warn!` text and maps to `CommissionError::ElectricalIdentificationFailed`
 /// at the phase boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ModelAssemblyError {
@@ -162,7 +162,7 @@ fn diagnostic_for_model_assembly_failure(
         ),
     };
     crate::selftest::CommissionDiagnostic {
-        phase: CommissionPhase::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalIdentification.to_u8(),
         code,
         status: 1,
         value0,
@@ -197,7 +197,7 @@ fn electrical_id_measurement_diagnostic(
     value2: u32,
 ) -> crate::selftest::CommissionDiagnostic {
     crate::selftest::CommissionDiagnostic {
-        phase: CommissionPhase::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalIdentification.to_u8(),
         code,
         status: 0,
         value0,
@@ -213,7 +213,7 @@ fn electrical_id_measurement_diagnostic(
 /// (`dV_count / dI_count * 1000`), so it feeds the per-coil tau and gain math
 /// directly without conversion. Returns `(count_slope, count_slope, samples)`
 /// because the diagnostic retains both established count-space evidence slots.
-fn per_coil_resistance_slope(data: &ElectricalIdData, coil_idx: usize) -> Option<(u32, u32, u32)> {
+fn per_coil_resistance_slope(data: &ElectricalIdentificationData, coil_idx: usize) -> Option<(u32, u32, u32)> {
     let result = data.resistance_result?;
     let axis = if coil_idx == 0 {
         result.axis0
@@ -241,7 +241,7 @@ fn l_count_micro_from_reactance(
 }
 
 fn record_electrical_id_measurement_diagnostics(
-    data: &ElectricalIdData,
+    data: &ElectricalIdentificationData,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
 ) {
     diagnostics.push(electrical_id_measurement_diagnostic(
@@ -268,7 +268,7 @@ fn record_electrical_id_measurement_diagnostics(
 }
 
 fn assemble_electrical_model(
-    data: &ElectricalIdData,
+    data: &ElectricalIdentificationData,
     configured_theta_e_us: u32,
 ) -> Result<ModelAssembly, ModelAssemblyError> {
     // --- Per-coil resistance (from the shared multi-point runner) ---
@@ -431,7 +431,7 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
 }
 
 fn begin_inductance_restore<B: CommissioningBackend>(
-    state: &mut ElectricalIdState,
+    state: &mut ElectricalIdentificationState,
     backend: &mut B,
     primary_error: Option<CommissionError>,
     evidence: Option<InductanceEvidence>,
@@ -439,8 +439,8 @@ fn begin_inductance_restore<B: CommissioningBackend>(
 ) -> StepResult {
     backend.set_enable_pin(false);
     let timing_accepted =
-        timing.is_some() && !matches!(state, ElectricalIdState::InductanceSample { .. });
-    *state = ElectricalIdState::InductanceRestore {
+        timing.is_some() && !matches!(state, ElectricalIdentificationState::InductanceSample { .. });
+    *state = ElectricalIdentificationState::InductanceRestore {
         operation: InductanceRestoreOperation::RetainedUqUdExt,
         primary_error,
         evidence,
@@ -517,13 +517,13 @@ fn inductance_restore_write(
 }
 
 fn begin_delay_restore<B: CommissioningBackend>(
-    state: &mut ElectricalIdState,
+    state: &mut ElectricalIdentificationState,
     backend: &mut B,
     primary_error: Option<CommissionError>,
     completed: Option<DelayCompletedCapture>,
 ) -> StepResult {
     backend.set_enable_pin(false);
-    *state = ElectricalIdState::DelayRestore {
+    *state = ElectricalIdentificationState::DelayRestore {
         operation: InductanceRestoreOperation::CanonicalMotionStop,
         primary_error,
         completed,
@@ -532,7 +532,7 @@ fn begin_delay_restore<B: CommissioningBackend>(
 }
 
 fn begin_delay_cooldown<B: CommissioningBackend>(
-    state: &mut ElectricalIdState,
+    state: &mut ElectricalIdentificationState,
     backend: &B,
     primary_error: Option<CommissionError>,
 ) -> Result<StepResult, CommissionError> {
@@ -540,7 +540,7 @@ fn begin_delay_cooldown<B: CommissioningBackend>(
         .elapsed_us()
         .checked_add(ELECTRICAL_COOLDOWN_US)
         .ok_or(CommissionError::InvalidSchedule)?;
-    *state = ElectricalIdState::DelayCooldown {
+    *state = ElectricalIdentificationState::DelayCooldown {
         deadline_us,
         primary_error,
     };
@@ -673,7 +673,7 @@ fn inductance_encoder_delta(
         })
 }
 
-fn selected_resistance_count_slope(data: &ElectricalIdData) -> Option<i32> {
+fn selected_resistance_count_slope(data: &ElectricalIdentificationData) -> Option<i32> {
     Some(data.resistance_result?.selected_r_count_slope_milli)
 }
 
@@ -688,7 +688,7 @@ fn inductance_frequency_rejection_diagnostic(
     sample_count: u16,
 ) -> crate::selftest::CommissionDiagnostic {
     crate::selftest::CommissionDiagnostic {
-        phase: CommissionPhase::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalIdentification.to_u8(),
         code: DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY,
         status: 1,
         value0: realized_frequency_millihz,
@@ -735,7 +735,7 @@ fn inductance_capture_rejection_diagnostic(
     value2: u32,
 ) -> crate::selftest::CommissionDiagnostic {
     crate::selftest::CommissionDiagnostic {
-        phase: CommissionPhase::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalIdentification.to_u8(),
         code: DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_CAPTURE,
         status: 1,
         value0: reason.code(),
@@ -1048,12 +1048,12 @@ pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
 ) -> Option<StepResult> {
-    let InnerPhase::ElectricalId { state, data } = phase else {
+    let InnerPhase::ElectricalIdentification { state, data } = phase else {
         return None;
     };
 
     match state {
-        ElectricalIdState::InductanceSample { capture } => loop {
+        ElectricalIdentificationState::InductanceSample { capture } => loop {
             if matches!(
                 wait_for_capture_deadline(backend, capture.next_sample_us).await,
                 CaptureWait::Shutdown
@@ -1064,7 +1064,7 @@ pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
             match poll_inductance_sample(backend, diagnostics, capture, now_us).await {
                 Ok(InductanceSamplePoll::At) => {}
                 Ok(InductanceSamplePoll::Complete { elapsed_us, timing }) => {
-                    *state = ElectricalIdState::InductanceReadStatus {
+                    *state = ElectricalIdentificationState::InductanceReadStatus {
                         capture: *capture,
                         completed_elapsed_us: elapsed_us,
                         timing,
@@ -1086,7 +1086,7 @@ pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
                 }
             }
         },
-        ElectricalIdState::DelaySample { capture } => loop {
+        ElectricalIdentificationState::DelaySample { capture } => loop {
             if matches!(
                 wait_for_capture_deadline(backend, capture.next_sample_us).await,
                 CaptureWait::Shutdown
@@ -1098,7 +1098,7 @@ pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
                 Ok(DelaySamplePoll::At) => {}
                 Ok(DelaySamplePoll::Complete(completed)) => {
                     data.delay_timing = Some(completed.timing);
-                    *state = ElectricalIdState::DelayStopMotion {
+                    *state = ElectricalIdentificationState::DelayStopMotion {
                         primary_error: None,
                         completed: Some(completed),
                     };
@@ -1118,7 +1118,7 @@ pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
 }
 
 struct InductanceCaptureFinish<'a> {
-    data: &'a ElectricalIdData,
+    data: &'a ElectricalIdentificationData,
     encoder_domain: EncoderDomain,
     encoder_start: u32,
     encoder_after: u32,
@@ -1363,7 +1363,7 @@ fn saliency_for_frame_average(
 }
 
 fn electrical_timing_summaries(
-    data: &ElectricalIdData,
+    data: &ElectricalIdentificationData,
 ) -> [crate::commissioning::types::CommissionTimingSummary; 3] {
     use crate::commissioning::types::CommissionTimingSummary;
 
@@ -1380,7 +1380,7 @@ fn electrical_timing_summaries(
     })
 }
 
-fn set_timing_state(data: &mut ElectricalIdData, method: usize, status: u8) {
+fn set_timing_state(data: &mut ElectricalIdentificationData, method: usize, status: u8) {
     let shift = method * 2;
     data.timing_states = (data.timing_states & !(0x03 << shift)) | ((status & 0x03) << shift);
 }
@@ -1396,7 +1396,7 @@ fn push_timing_diagnostics(
         let evidence = summary.evidence;
         let code = 34 + (method as u8 * 2);
         diagnostics.push(crate::selftest::CommissionDiagnostic {
-            phase: CommissionPhase::ElectricalId.to_u8(),
+            phase: CommissionPhase::ElectricalIdentification.to_u8(),
             code,
             status: u8::from(
                 summary.status == crate::commissioning::types::COMMISSION_TIMING_REJECTED,
@@ -1410,7 +1410,7 @@ fn push_timing_diagnostics(
             value2: evidence.max_lateness_us,
         });
         diagnostics.push(crate::selftest::CommissionDiagnostic {
-            phase: CommissionPhase::ElectricalId.to_u8(),
+            phase: CommissionPhase::ElectricalIdentification.to_u8(),
             code: code + 1,
             status: 0,
             value0: evidence.max_interval_us,
@@ -1425,7 +1425,7 @@ fn push_resistance_current_diagnostic(
     current: crate::resistance_identification::ResistanceCurrentEvidence,
 ) {
     diagnostics.push(crate::selftest::CommissionDiagnostic {
-        phase: CommissionPhase::ElectricalId.to_u8(),
+        phase: CommissionPhase::ElectricalIdentification.to_u8(),
         code: 40,
         status: u8::from(current.power_stage_tripped()),
         value0: u32::from(current.peak_abs_current_count()),
@@ -1439,13 +1439,13 @@ pub(crate) fn push_active_electrical_diagnostics(
     phase: &InnerPhase,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
 ) {
-    let InnerPhase::ElectricalId { state, data } = phase else {
+    let InnerPhase::ElectricalIdentification { state, data } = phase else {
         return;
     };
     let mut summaries = electrical_timing_summaries(data);
     let mut active_resistance_current = None;
     match state {
-        ElectricalIdState::ResistanceIdentify { runner } => {
+        ElectricalIdentificationState::ResistanceIdentify { runner } => {
             let timing = runner.timing_evidence_with_active();
             summaries[0] = crate::commissioning::types::CommissionTimingSummary::rejected(
                 timing.capture_evidence(),
@@ -1453,21 +1453,21 @@ pub(crate) fn push_active_electrical_diagnostics(
             );
             active_resistance_current = Some(runner.current_evidence());
         }
-        ElectricalIdState::InductanceSample { capture } => {
+        ElectricalIdentificationState::InductanceSample { capture } => {
             let (evidence, overflowed) = capture.timing.snapshot();
             summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
                 evidence, overflowed,
             );
         }
-        ElectricalIdState::InductanceReadStatus { timing, .. }
-        | ElectricalIdState::InductanceReadEncoder { timing, .. }
-        | ElectricalIdState::InductanceEvaluate { timing, .. } => {
+        ElectricalIdentificationState::InductanceReadStatus { timing, .. }
+        | ElectricalIdentificationState::InductanceReadEncoder { timing, .. }
+        | ElectricalIdentificationState::InductanceEvaluate { timing, .. } => {
             summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
                 *timing,
                 data.timing_overflow_mask & (1 << 1) != 0,
             );
         }
-        ElectricalIdState::InductanceRestore {
+        ElectricalIdentificationState::InductanceRestore {
             timing: Some(timing),
             ..
         } => {
@@ -1476,7 +1476,7 @@ pub(crate) fn push_active_electrical_diagnostics(
                 data.timing_overflow_mask & (1 << 1) != 0,
             );
         }
-        ElectricalIdState::DelaySample { capture } => {
+        ElectricalIdentificationState::DelaySample { capture } => {
             let (evidence, overflowed) = capture.timing.snapshot();
             summaries[2] = crate::commissioning::types::CommissionTimingSummary::rejected(
                 evidence, overflowed,
@@ -1495,7 +1495,7 @@ fn fail_electrical_id(
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
     error: CommissionError,
 ) -> StepResult {
-    if let InnerPhase::ElectricalId { data, .. } = &*phase {
+    if let InnerPhase::ElectricalIdentification { data, .. } = &*phase {
         push_timing_diagnostics(diagnostics, electrical_timing_summaries(data));
     }
     super::fail_inner(phase, error)
@@ -1517,16 +1517,16 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 ) -> StepResult {
     use foci_tmc4671::registers::*;
 
-    let (electrical_id_state, data) = match phase {
-        InnerPhase::ElectricalId { state, data } => (state, data),
+    let (electrical_identification_state, data) = match phase {
+        InnerPhase::ElectricalIdentification { state, data } => (state, data),
         _ => return StepResult::ReadyNow,
     };
 
-    match electrical_id_state {
+    match electrical_identification_state {
         // ---------------------------------------------------------------
         // Resistance identification (shared multi-point runner)
         // ---------------------------------------------------------------
-        ElectricalIdState::ResistanceStart => {
+        ElectricalIdentificationState::ResistanceStart => {
             data.encoder_domain =
                 match EncoderDomain::new(backend.mechanical_encoder_quadrature_counts_per_rev()) {
                     Ok(domain) => Some(domain),
@@ -1557,11 +1557,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 0,
                 crate::commissioning::types::COMMISSION_TIMING_REJECTED,
             );
-            *electrical_id_state = ElectricalIdState::ResistanceIdentify { runner };
+            *electrical_identification_state = ElectricalIdentificationState::ResistanceIdentify { runner };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::ResistanceIdentify { runner } => {
+        ElectricalIdentificationState::ResistanceIdentify { runner } => {
             let now_us = backend.elapsed_us();
             let poll = runner
                 .poll(&mut CommissionResistanceBackend { backend }, now_us)
@@ -1583,7 +1583,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         0,
                         crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
                     );
-                    *electrical_id_state = ElectricalIdState::InductanceSetup;
+                    *electrical_identification_state = ElectricalIdentificationState::InductanceSetup;
                     StepResult::ReadyNow
                 }
                 crate::resistance_identification::ResistancePoll::Complete(Err(error)) => {
@@ -1597,15 +1597,15 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // ---------------------------------------------------------------
         // Inductance measurement (phi-locked rotating field)
         // ---------------------------------------------------------------
-        ElectricalIdState::InductanceSetup => {
+        ElectricalIdentificationState::InductanceSetup => {
             if data.encoder_domain.is_none() {
                 return fail_electrical_id(phase, diagnostics, CommissionError::EncoderFault);
             }
-            *electrical_id_state = ElectricalIdState::InductanceSetupOperation { operation: 0 };
+            *electrical_identification_state = ElectricalIdentificationState::InductanceSetupOperation { operation: 0 };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceSetupOperation { operation } => {
+        ElectricalIdentificationState::InductanceSetupOperation { operation } => {
             let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
             let result = match *operation {
                 0 => {
@@ -1647,7 +1647,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             };
             if result.is_err() {
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Spi),
                     None,
@@ -1663,7 +1663,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 .checked_add(INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US)
             else {
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::InvalidSchedule),
                     None,
@@ -1671,16 +1671,16 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 );
             };
             backend.set_enable_pin(true);
-            *electrical_id_state = ElectricalIdState::InductanceWaitVelocity { deadline_us };
+            *electrical_identification_state = ElectricalIdentificationState::InductanceWaitVelocity { deadline_us };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceWaitVelocity { deadline_us } => {
+        ElectricalIdentificationState::InductanceWaitVelocity { deadline_us } => {
             let velocity = match backend.read_register(OPENLOOP_VELOCITY_ACTUAL).await {
                 Ok(velocity) => velocity,
                 Err(_) => {
                     return begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(CommissionError::Spi),
                         None,
@@ -1693,23 +1693,23 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     return StepResult::At(*deadline_us);
                 }
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::InductanceVelocityTimeout),
                     None,
                     None,
                 );
             }
-            *electrical_id_state = ElectricalIdState::InductanceReadEncoderStart;
+            *electrical_identification_state = ElectricalIdentificationState::InductanceReadEncoderStart;
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceReadEncoderStart => {
+        ElectricalIdentificationState::InductanceReadEncoderStart => {
             let encoder_start = match backend.read_register(ABN_DECODER_COUNT).await {
                 Ok(count) => count,
                 Err(_) => {
                     return begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(CommissionError::Spi),
                         None,
@@ -1717,18 +1717,18 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     );
                 }
             };
-            *electrical_id_state = ElectricalIdState::InductanceApplyDrive { encoder_start };
+            *electrical_identification_state = ElectricalIdentificationState::InductanceApplyDrive { encoder_start };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceApplyDrive { encoder_start } => {
+        ElectricalIdentificationState::InductanceApplyDrive { encoder_start } => {
             if backend
                 .write_register(UQ_UD_EXT, pack_ud_drive(INDUCTANCE_AC_UD_EXT))
                 .await
                 .is_err()
             {
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Spi),
                     None,
@@ -1738,7 +1738,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let Some(deadline_us) = backend.elapsed_us().checked_add(INDUCTANCE_AC_SETTLE_US)
             else {
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::InvalidSchedule),
                     None,
@@ -1748,7 +1748,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let encoder_domain = data
                 .encoder_domain
                 .expect("validated before inductance setup");
-            *electrical_id_state = ElectricalIdState::InductanceDriveSettle {
+            *electrical_identification_state = ElectricalIdentificationState::InductanceDriveSettle {
                 deadline_us,
                 encoder_start: *encoder_start,
                 encoder_domain,
@@ -1756,7 +1756,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::At(deadline_us)
         }
 
-        ElectricalIdState::InductanceDriveSettle {
+        ElectricalIdentificationState::InductanceDriveSettle {
             deadline_us,
             encoder_start,
             encoder_domain,
@@ -1764,14 +1764,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
             }
-            *electrical_id_state = ElectricalIdState::InductanceReadPreStatus {
+            *electrical_identification_state = ElectricalIdentificationState::InductanceReadPreStatus {
                 encoder_start: *encoder_start,
                 encoder_domain: *encoder_domain,
             };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceReadPreStatus {
+        ElectricalIdentificationState::InductanceReadPreStatus {
             encoder_start,
             encoder_domain,
         } => {
@@ -1779,7 +1779,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(status) => status,
                 Err(_) => {
                     return begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(CommissionError::Spi),
                         None,
@@ -1789,14 +1789,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             };
             if inductance_status_is_critical(status_flags_or, backend.feedback_config()) {
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::InductanceCaptureRejected),
                     None,
                     None,
                 );
             }
-            *electrical_id_state = ElectricalIdState::InductanceReadStartPhi {
+            *electrical_identification_state = ElectricalIdentificationState::InductanceReadStartPhi {
                 encoder_start: *encoder_start,
                 encoder_domain: *encoder_domain,
                 status_flags_or,
@@ -1804,7 +1804,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceReadStartPhi {
+        ElectricalIdentificationState::InductanceReadStartPhi {
             encoder_start,
             encoder_domain,
             status_flags_or,
@@ -1813,7 +1813,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(phi) => phi as u16,
                 Err(_) => {
                     return begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(CommissionError::Spi),
                         None,
@@ -1826,7 +1826,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 start_us.checked_add(u64::from(INDUCTANCE_AC_SAMPLE_PERIOD_US))
             else {
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::InvalidSchedule),
                     None,
@@ -1838,7 +1838,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 1,
                 crate::commissioning::types::COMMISSION_TIMING_REJECTED,
             );
-            *electrical_id_state = ElectricalIdState::InductanceSample {
+            *electrical_identification_state = ElectricalIdentificationState::InductanceSample {
                 capture: InductanceCaptureState {
                     encoder_domain: *encoder_domain,
                     encoder_start: *encoder_start,
@@ -1862,12 +1862,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::At(next_sample_us)
         }
 
-        ElectricalIdState::InductanceSample { capture } => {
+        ElectricalIdentificationState::InductanceSample { capture } => {
             let now_us = backend.elapsed_us();
             match poll_inductance_sample(backend, diagnostics, capture, now_us).await {
                 Ok(InductanceSamplePoll::At) => StepResult::At(capture.next_sample_us),
                 Ok(InductanceSamplePoll::Complete { elapsed_us, timing }) => {
-                    *electrical_id_state = ElectricalIdState::InductanceReadStatus {
+                    *electrical_identification_state = ElectricalIdentificationState::InductanceReadStatus {
                         capture: *capture,
                         completed_elapsed_us: elapsed_us,
                         timing,
@@ -1879,7 +1879,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     data.inductance_timing = Some(evidence);
                     data.timing_overflow_mask |= u8::from(overflowed) << 1;
                     begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(error),
                         None,
@@ -1889,7 +1889,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
         }
 
-        ElectricalIdState::InductanceReadStatus {
+        ElectricalIdentificationState::InductanceReadStatus {
             capture,
             completed_elapsed_us,
             timing,
@@ -1901,7 +1901,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(status) => status,
                 Err(_) => {
                     return begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(CommissionError::Spi),
                         None,
@@ -1912,14 +1912,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             next_capture.status_flags_or |= status;
             if inductance_status_is_critical(status, backend.feedback_config()) {
                 return begin_inductance_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::InductanceCaptureRejected),
                     None,
                     Some(timing),
                 );
             }
-            *electrical_id_state = ElectricalIdState::InductanceReadEncoder {
+            *electrical_identification_state = ElectricalIdentificationState::InductanceReadEncoder {
                 capture: next_capture,
                 completed_elapsed_us,
                 timing,
@@ -1927,7 +1927,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceReadEncoder {
+        ElectricalIdentificationState::InductanceReadEncoder {
             capture,
             completed_elapsed_us,
             timing,
@@ -1939,7 +1939,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(count) => count,
                 Err(_) => {
                     return begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(CommissionError::Spi),
                         None,
@@ -1947,7 +1947,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     );
                 }
             };
-            *electrical_id_state = ElectricalIdState::InductanceEvaluate {
+            *electrical_identification_state = ElectricalIdentificationState::InductanceEvaluate {
                 capture,
                 encoder_after,
                 completed_elapsed_us,
@@ -1956,7 +1956,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::InductanceEvaluate {
+        ElectricalIdentificationState::InductanceEvaluate {
             capture,
             encoder_after,
             completed_elapsed_us,
@@ -2001,7 +2001,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                             evidence.estimate.saliency_status = saliency.status;
                             evidence.estimate.saliency_permille = saliency.saliency_permille.raw();
                             begin_inductance_restore(
-                                electrical_id_state,
+                                electrical_identification_state,
                                 backend,
                                 None,
                                 Some(evidence),
@@ -2014,7 +2014,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                                 evidence.estimate,
                             );
                             begin_inductance_restore(
-                                electrical_id_state,
+                                electrical_identification_state,
                                 backend,
                                 Some(CommissionError::InductanceCaptureRejected),
                                 None,
@@ -2022,7 +2022,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                             )
                         }
                         Err(error) => begin_inductance_restore(
-                            electrical_id_state,
+                            electrical_identification_state,
                             backend,
                             Some(error.commission_error()),
                             None,
@@ -2044,7 +2044,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         ));
                     }
                     begin_inductance_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(error.commission_error()),
                         None,
@@ -2054,7 +2054,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
         }
 
-        ElectricalIdState::InductanceRestore {
+        ElectricalIdentificationState::InductanceRestore {
             operation,
             primary_error,
             evidence,
@@ -2097,28 +2097,28 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let Some(deadline_us) = backend.elapsed_us().checked_add(ELECTRICAL_COOLDOWN_US) else {
                 return fail_electrical_id(phase, diagnostics, CommissionError::InvalidSchedule);
             };
-            *electrical_id_state = ElectricalIdState::InductanceDisable { deadline_us };
+            *electrical_identification_state = ElectricalIdentificationState::InductanceDisable { deadline_us };
             StepResult::At(deadline_us)
         }
 
-        ElectricalIdState::InductanceDisable { deadline_us } => {
+        ElectricalIdentificationState::InductanceDisable { deadline_us } => {
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
             }
-            *electrical_id_state = ElectricalIdState::DelaySetup;
+            *electrical_identification_state = ElectricalIdentificationState::DelaySetup;
             StepResult::ReadyNow
         }
 
         // ---------------------------------------------------------------
         // Delay identification (transient capture)
         // ---------------------------------------------------------------
-        ElectricalIdState::DelaySetup => {
+        ElectricalIdentificationState::DelaySetup => {
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
-            *electrical_id_state = ElectricalIdState::DelaySetupOperation { operation: 0 };
+            *electrical_identification_state = ElectricalIdentificationState::DelaySetupOperation { operation: 0 };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::DelaySetupOperation { operation } => {
+        ElectricalIdentificationState::DelaySetupOperation { operation } => {
             let result = match *operation {
                 0 => backend.write_register(PHI_E_SELECTION, 1).await,
                 1 => backend.write_register(PHI_E_EXT, 0).await,
@@ -2135,7 +2135,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             };
             if result.is_err() {
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Spi),
                     None,
@@ -2149,20 +2149,20 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             backend.set_enable_pin(true);
             let Some(deadline_us) = backend.elapsed_us().checked_add(DELAY_PRE_SETTLE_US) else {
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::InvalidSchedule),
                     None,
                 );
             };
-            *electrical_id_state = ElectricalIdState::DelayPreSettle { deadline_us };
+            *electrical_identification_state = ElectricalIdentificationState::DelayPreSettle { deadline_us };
             StepResult::At(deadline_us)
         }
 
-        ElectricalIdState::DelayPreSettle { deadline_us } => {
+        ElectricalIdentificationState::DelayPreSettle { deadline_us } => {
             if backend.is_shutdown_requested() {
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Shutdown),
                     None,
@@ -2171,14 +2171,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
             }
-            *electrical_id_state = ElectricalIdState::DelayReadBaseline;
+            *electrical_identification_state = ElectricalIdentificationState::DelayReadBaseline;
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::DelayReadBaseline => {
+        ElectricalIdentificationState::DelayReadBaseline => {
             if backend.is_shutdown_requested() {
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Shutdown),
                     None,
@@ -2188,21 +2188,21 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(actual) => (actual & 0xffff) as i16,
                 Err(_) => {
                     return begin_delay_restore(
-                        electrical_id_state,
+                        electrical_identification_state,
                         backend,
                         Some(CommissionError::Spi),
                         None,
                     );
                 }
             };
-            *electrical_id_state = ElectricalIdState::DelayApplyStep { baseline };
+            *electrical_identification_state = ElectricalIdentificationState::DelayApplyStep { baseline };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::DelayApplyStep { baseline } => {
+        ElectricalIdentificationState::DelayApplyStep { baseline } => {
             if backend.is_shutdown_requested() {
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Shutdown),
                     None,
@@ -2214,7 +2214,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 .is_err()
             {
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Spi),
                     None,
@@ -2223,7 +2223,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let origin_us = backend.elapsed_us();
             let Some(next_sample_us) = origin_us.checked_add(ELECTRICAL_SAMPLE_PERIOD_US) else {
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::DelayTimingRejected),
                     None,
@@ -2234,7 +2234,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 2,
                 crate::commissioning::types::COMMISSION_TIMING_REJECTED,
             );
-            *electrical_id_state = ElectricalIdState::DelaySample {
+            *electrical_identification_state = ElectricalIdentificationState::DelaySample {
                 capture: DelayCaptureState {
                     baseline: *baseline,
                     origin_us,
@@ -2249,13 +2249,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             StepResult::At(next_sample_us)
         }
 
-        ElectricalIdState::DelaySample { capture } => {
+        ElectricalIdentificationState::DelaySample { capture } => {
             let now_us = backend.elapsed_us();
             match poll_delay_sample(backend, buf, capture, now_us).await {
                 Ok(DelaySamplePoll::At) => StepResult::At(capture.next_sample_us),
                 Ok(DelaySamplePoll::Complete(completed)) => {
                     data.delay_timing = Some(completed.timing);
-                    *electrical_id_state = ElectricalIdState::DelayStopMotion {
+                    *electrical_identification_state = ElectricalIdentificationState::DelayStopMotion {
                         primary_error: None,
                         completed: Some(completed),
                     };
@@ -2265,12 +2265,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     let (evidence, overflowed) = capture.timing.snapshot();
                     data.delay_timing = Some(evidence);
                     data.timing_overflow_mask |= u8::from(overflowed) << 2;
-                    begin_delay_restore(electrical_id_state, backend, Some(error), None)
+                    begin_delay_restore(electrical_identification_state, backend, Some(error), None)
                 }
             }
         }
 
-        ElectricalIdState::DelayStopMotion {
+        ElectricalIdentificationState::DelayStopMotion {
             primary_error,
             completed,
         } => {
@@ -2281,7 +2281,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             {
                 let completed = completed.take();
                 return begin_delay_restore(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
                     Some(CommissionError::Spi),
                     completed,
@@ -2289,14 +2289,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
             let error = *primary_error;
             let completed = completed.take();
-            *electrical_id_state = ElectricalIdState::DelayStopVoltage {
+            *electrical_identification_state = ElectricalIdentificationState::DelayStopVoltage {
                 primary_error: error,
                 completed,
             };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::DelayStopVoltage {
+        ElectricalIdentificationState::DelayStopVoltage {
             primary_error,
             completed,
         } => {
@@ -2305,10 +2305,10 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
             let error = *primary_error;
             let completed = completed.take();
-            begin_delay_restore(electrical_id_state, backend, error, completed)
+            begin_delay_restore(electrical_identification_state, backend, error, completed)
         }
 
-        ElectricalIdState::DelayRestore {
+        ElectricalIdentificationState::DelayRestore {
             operation,
             primary_error,
             completed,
@@ -2327,26 +2327,26 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
 
             if let Some(error) = *primary_error {
-                return match begin_delay_cooldown(electrical_id_state, backend, Some(error)) {
+                return match begin_delay_cooldown(electrical_identification_state, backend, Some(error)) {
                     Ok(result) => result,
                     Err(error) => fail_electrical_id(phase, diagnostics, error),
                 };
             }
             let Some(completed) = completed.take() else {
                 return match begin_delay_cooldown(
-                    electrical_id_state,
+                    electrical_identification_state,
                     backend,
-                    Some(CommissionError::ElectricalIdFailed),
+                    Some(CommissionError::ElectricalIdentificationFailed),
                 ) {
                     Ok(result) => result,
                     Err(error) => fail_electrical_id(phase, diagnostics, error),
                 };
             };
-            *electrical_id_state = ElectricalIdState::DelayEvaluate { completed };
+            *electrical_identification_state = ElectricalIdentificationState::DelayEvaluate { completed };
             StepResult::ReadyNow
         }
 
-        ElectricalIdState::DelayEvaluate { completed } => {
+        ElectricalIdentificationState::DelayEvaluate { completed } => {
             data.delay_timing = Some(completed.timing);
             let estimate = crate::autotune::estimate_electrical_delay(
                 buf.samples(),
@@ -2359,13 +2359,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
                 Err(error) => Some(error),
             };
-            match begin_delay_cooldown(electrical_id_state, backend, primary_error) {
+            match begin_delay_cooldown(electrical_identification_state, backend, primary_error) {
                 Ok(result) => result,
                 Err(error) => fail_electrical_id(phase, diagnostics, error),
             }
         }
 
-        ElectricalIdState::DelayCooldown {
+        ElectricalIdentificationState::DelayCooldown {
             deadline_us,
             primary_error,
         } => {
@@ -2380,14 +2380,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 2,
                 crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
             );
-            *electrical_id_state = ElectricalIdState::Validate;
+            *electrical_identification_state = ElectricalIdentificationState::Validate;
             StepResult::ReadyNow
         }
 
         // ---------------------------------------------------------------
         // Model assembly and validation
         // ---------------------------------------------------------------
-        ElectricalIdState::Validate => {
+        ElectricalIdentificationState::Validate => {
             let assembly = match assemble_electrical_model(
                 data,
                 backend.tmc_config().electrical_model_theta_e_us,
@@ -2460,7 +2460,7 @@ mod tests {
     use crate::autotune::{Permille, TransientBuffer};
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::backend::CommissionBoardConfig;
-    use crate::commissioning::inner::ElectricalIdData;
+    use crate::commissioning::inner::ElectricalIdentificationData;
     use crate::commissioning::types::{INDUCTANCE_WARN_STATUS_FLAGS, StepResult};
     use crate::resistance_identification::{
         ElectricalAxis, ResistanceAxisResult, ResistanceRunResult, ResistanceWarningFlags,
@@ -2577,8 +2577,8 @@ mod tests {
 
     /// Per-coil resistance count-slopes of 1706 milli and accepted rotating-
     /// field reactance evidence from the AC estimator.
-    fn representative_data() -> ElectricalIdData {
-        let mut data = ElectricalIdData::new(512);
+    fn representative_data() -> ElectricalIdentificationData {
+        let mut data = ElectricalIdentificationData::new(512);
         data.resistance_result = Some(resistance_result(1706, 1706));
         data.inductance = Some(inductance_evidence_fixture(8_600, 1_000_000));
         data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
@@ -2625,13 +2625,13 @@ mod tests {
 
     #[test]
     fn electrical_id_enters_rotating_inductance_after_resistance() {
-        let mut data = ElectricalIdData::new(768);
+        let mut data = ElectricalIdentificationData::new(768);
         data.resistance_result = Some(resistance_result_fixture());
 
-        let state = ElectricalIdState::InductanceSetup;
+        let state = ElectricalIdentificationState::InductanceSetup;
 
         assert!(data.resistance_result.is_some());
-        assert!(matches!(state, ElectricalIdState::InductanceSetup));
+        assert!(matches!(state, ElectricalIdentificationState::InductanceSetup));
     }
 
     #[test]
@@ -2673,7 +2673,7 @@ mod tests {
 
     #[test]
     fn model_assembly_uses_configured_theta() {
-        let mut data = ElectricalIdData::new(512);
+        let mut data = ElectricalIdentificationData::new(512);
         // r_count_slope_milli = 1706 (V=512 / I=300 count-slope).
         data.resistance_result = Some(resistance_result(1706, 1706));
         data.inductance = Some(inductance_evidence_fixture(9_500, 1_000_000));
@@ -2689,8 +2689,8 @@ mod tests {
             let mut data = representative_data();
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_ACCEPTED
                 | (crate::commissioning::types::COMMISSION_TIMING_ACCEPTED << 2);
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::Validate,
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::Validate,
                 data,
             };
             let mut buf = TransientBuffer::new();
@@ -2981,13 +2981,13 @@ mod tests {
         primary_error: Option<CommissionError>,
         evidence: Option<InductanceEvidence>,
     ) -> InnerPhase {
-        let mut state = ElectricalIdState::InductanceSetup;
+        let mut state = ElectricalIdentificationState::InductanceSetup;
         let result = begin_inductance_restore(&mut state, backend, primary_error, evidence, None);
         assert!(matches!(result, StepResult::ReadyNow));
         let mut data = representative_data();
         data.inductance = None;
         data.inductance_timing = None;
-        InnerPhase::ElectricalId { state, data }
+        InnerPhase::ElectricalIdentification { state, data }
     }
 
     #[test]
@@ -3004,10 +3004,10 @@ mod tests {
             let result = run_bounded_inductance_restore(&mut phase, &mut backend).await;
 
             assert!(matches!(result, StepResult::At(_)));
-            let InnerPhase::ElectricalId { state, data } = &phase else {
+            let InnerPhase::ElectricalIdentification { state, data } = &phase else {
                 panic!("expected electrical-id cooldown, got {phase:?}");
             };
-            assert!(matches!(state, ElectricalIdState::InductanceDisable { .. }));
+            assert!(matches!(state, ElectricalIdentificationState::InductanceDisable { .. }));
             assert!(data.inductance.is_some());
             assert!(!backend.enable_pin);
             let enable_low = enable_position(&backend.spi_log, false);
@@ -3085,8 +3085,8 @@ mod tests {
             .await;
             if matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceDisable { .. },
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceDisable { .. },
                     ..
                 }
             ) {
@@ -3106,7 +3106,7 @@ mod tests {
     ) -> crate::selftest::CommissionDiagnostic {
         diagnostics
             .iter()
-            .find(|event| event.phase == CommissionPhase::ElectricalId.to_u8() && event.code == 33)
+            .find(|event| event.phase == CommissionPhase::ElectricalIdentification.to_u8() && event.code == 33)
             .expect("inductance capture rejection should retain branch detail")
     }
 
@@ -3244,10 +3244,10 @@ mod tests {
     #[test]
     fn inductance_setup_bounds_voltage_before_enable_and_starts_hardware_ramp() {
         pollster::block_on(async {
-            let mut data = ElectricalIdData::new(1024);
+            let mut data = ElectricalIdentificationData::new(1024);
             data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSetup,
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSetup,
                 data,
             };
             let mut buf = TransientBuffer::new();
@@ -3284,8 +3284,8 @@ mod tests {
             assert!(backend.enable_pin);
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceWaitVelocity { .. },
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceWaitVelocity { .. },
                     ..
                 }
             ));
@@ -3316,8 +3316,8 @@ mod tests {
     #[test]
     fn inductance_velocity_timeout_tears_down_openloop_drive() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceWaitVelocity { deadline_us: 10 },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceWaitVelocity { deadline_us: 10 },
                 data: representative_data(),
             };
             let mut buf = TransientBuffer::new();
@@ -3363,8 +3363,8 @@ mod tests {
                 .unwrap();
             let mut data = representative_data();
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data,
             };
             let mut buf = TransientBuffer::new();
@@ -3410,8 +3410,8 @@ mod tests {
     #[test]
     fn inductance_capture_rejection_records_zero_phi_delta_detail() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample {
                     capture: inductance_capture_state(0, 1_000, 0, 0),
                 },
                 data: representative_data(),
@@ -3458,8 +3458,8 @@ mod tests {
     #[test]
     fn inductance_capture_rejection_records_saliency_sample_detail() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample {
                     capture: inductance_capture_state(0, 0, 0, 0),
                 },
                 data: representative_data(),
@@ -3506,8 +3506,8 @@ mod tests {
     #[test]
     fn inductance_capture_rejection_records_elapsed_interpolation_detail() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample {
                     capture: inductance_capture_state(
                         9_000,
                         0,
@@ -3563,8 +3563,8 @@ mod tests {
     #[test]
     fn inductance_sample_reads_one_phi_current_pair_and_returns_deadline() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample {
                     capture: inductance_capture_state(0, 0, 0, 0),
                 },
                 data: representative_data(),
@@ -3604,8 +3604,8 @@ mod tests {
             assert_eq!(register_operation_count(&backend.spi_log), 2);
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceSample { .. },
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceSample { .. },
                     ..
                 }
             ));
@@ -3618,8 +3618,8 @@ mod tests {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.start_us = 900;
             capture.next_sample_us = 1_000;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut buf = TransientBuffer::new();
@@ -3641,8 +3641,8 @@ mod tests {
             .await;
 
             assert!(matches!(result, StepResult::At(1_200)));
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 ..
             } = phase
             else {
@@ -3659,8 +3659,8 @@ mod tests {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.start_us = 10_000;
             capture.next_sample_us = 10_000;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut buf = TransientBuffer::new();
@@ -3686,8 +3686,8 @@ mod tests {
                 matches!(result, StepResult::At(10_200)),
                 "expected next sample deadline, got {result:?} in {phase:?}"
             );
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 ..
             } = phase
             else {
@@ -3704,8 +3704,8 @@ mod tests {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.next_sample_us = 200;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
@@ -3735,8 +3735,8 @@ mod tests {
                 );
                 assert_eq!(register_operation_count(&backend.spi_log) - before, 2);
             }
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 ..
             } = phase
             else {
@@ -3753,8 +3753,8 @@ mod tests {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.next_sample_us = 200;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
@@ -3777,8 +3777,8 @@ mod tests {
 
             assert!(matches!(result, StepResult::At(400)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 ..
             } = phase
             else {
@@ -3797,8 +3797,8 @@ mod tests {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.next_sample_us = 200;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
@@ -3822,8 +3822,8 @@ mod tests {
             assert!(matches!(result, StepResult::At(600)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 0);
             assert!(backend.enable_pin);
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 ..
             } = phase
             else {
@@ -3841,8 +3841,8 @@ mod tests {
         pollster::block_on(async {
             let mut capture = inductance_capture_state(0, 0, 0, 0);
             capture.next_sample_us = 200;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
@@ -3882,8 +3882,8 @@ mod tests {
             assert_eq!(register_operation_count(&backend.spi_log) - before, 2);
             assert!(backend.enable_pin);
             match phase {
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceSample { capture },
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceSample { capture },
                     ..
                 } => {
                     let evidence = capture.timing.finish().unwrap();
@@ -3891,7 +3891,7 @@ mod tests {
                     assert_eq!(evidence.missed_samples, 6);
                     assert_eq!(evidence.max_consecutive_misses, 2);
                 }
-                InnerPhase::ElectricalId { state, .. } => {
+                InnerPhase::ElectricalIdentification { state, .. } => {
                     panic!("expected active inductance capture, got {state:?}")
                 }
                 _ => panic!("expected electrical identification phase"),
@@ -3909,8 +3909,8 @@ mod tests {
                 INDUCTANCE_MIN_AC_SAMPLE_COUNT,
             );
             capture.next_sample_us = 100;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample { capture },
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
             let mut backend = MockBackend::new();
@@ -3934,8 +3934,8 @@ mod tests {
             assert!(matches!(sample, StepResult::ReadyNow));
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceReadStatus { .. },
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceReadStatus { .. },
                     ..
                 }
             ));
@@ -3955,8 +3955,8 @@ mod tests {
             );
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceReadEncoder { .. },
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceReadEncoder { .. },
                     ..
                 }
             ));
@@ -3966,8 +3966,8 @@ mod tests {
     #[test]
     fn inductance_sample_excludes_scheduler_gap_before_first_phi_sample() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceReadStartPhi {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceReadStartPhi {
                     encoder_start: 0,
                     encoder_domain: EncoderDomain::new(4000).unwrap(),
                     status_flags_or: 0,
@@ -4008,8 +4008,8 @@ mod tests {
             .await;
 
             assert!(matches!(result, StepResult::ReadyNow));
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceDisable { .. },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceDisable { .. },
                 data,
             } = phase
             else {
@@ -4033,8 +4033,8 @@ mod tests {
     #[test]
     fn inductance_frequency_rejection_records_measured_window_detail() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample {
                     capture: inductance_capture_state(0, 0, 0, 0),
                 },
                 data: representative_data(),
@@ -4079,7 +4079,7 @@ mod tests {
                 .iter()
                 .find(|event| event.code == DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY)
                 .expect("frequency rejection should retain realized-frequency evidence");
-            assert_eq!(detail.phase, CommissionPhase::ElectricalId.to_u8());
+            assert_eq!(detail.phase, CommissionPhase::ElectricalIdentification.to_u8());
             assert_eq!(detail.status, 1);
             assert!(detail.value0 > INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ);
             assert!(detail.value1 < NOMINAL_INDUCTANCE_CAPTURE_US);
@@ -4200,9 +4200,9 @@ mod tests {
     #[test]
     fn inductance_setup_rejects_missing_validated_domain_before_excitation() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSetup,
-                data: ElectricalIdData::new(1024),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSetup,
+                data: ElectricalIdentificationData::new(1024),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -4232,9 +4232,9 @@ mod tests {
     #[test]
     fn resistance_rejects_invalid_domain_before_identification() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceStart,
-                data: ElectricalIdData::new(1024),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::ResistanceStart,
+                data: ElectricalIdentificationData::new(1024),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -4271,11 +4271,11 @@ mod tests {
     #[test]
     fn inductance_half_turn_path_tears_down_without_committing_evidence() {
         pollster::block_on(async {
-            let mut data = ElectricalIdData::new(512);
+            let mut data = ElectricalIdentificationData::new(512);
             data.resistance_result = Some(resistance_result_fixture());
             data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::InductanceSample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSample {
                     capture: inductance_capture_state(0, 0, 0, 0),
                 },
                 data,
@@ -4337,9 +4337,9 @@ mod tests {
             seed_resistance_power_stage_registers(&mut backend);
             backend.script_resistance_current_proportional_to_ud = true;
 
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceStart,
-                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::ResistanceStart,
+                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4367,8 +4367,8 @@ mod tests {
 
                 if matches!(
                     phase,
-                    InnerPhase::ElectricalId {
-                        state: ElectricalIdState::InductanceSetup,
+                    InnerPhase::ElectricalIdentification {
+                        state: ElectricalIdentificationState::InductanceSetup,
                         ..
                     }
                 ) {
@@ -4383,8 +4383,8 @@ mod tests {
                 }
             }
             assert!(reached_inductance, "resistance runner did not complete");
-            let InnerPhase::ElectricalId { data, .. } = &phase else {
-                panic!("expected ElectricalId, got {phase:?}");
+            let InnerPhase::ElectricalIdentification { data, .. } = &phase else {
+                panic!("expected ElectricalIdentification, got {phase:?}");
             };
             assert!(
                 data.resistance_result.is_some(),
@@ -4400,9 +4400,9 @@ mod tests {
             seed_resistance_power_stage_registers(&mut backend);
             backend.script_resistance_current_proportional_to_ud = true;
 
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceStart,
-                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::ResistanceStart,
+                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4431,8 +4431,8 @@ mod tests {
 
                 if injected && !backend.enable_pin && !containment_seen {
                     assert!(matches!(step, StepResult::ReadyNow));
-                    let InnerPhase::ElectricalId {
-                        state: ElectricalIdState::ResistanceIdentify { runner },
+                    let InnerPhase::ElectricalIdentification {
+                        state: ElectricalIdentificationState::ResistanceIdentify { runner },
                         ..
                     } = &phase
                     else {
@@ -4477,9 +4477,9 @@ mod tests {
             backend.script_resistance_current_proportional_to_ud = true;
             backend.tmc_config.resistance_max_expected_current_count = 100;
 
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceStart,
-                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::ResistanceStart,
+                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4531,9 +4531,9 @@ mod tests {
             seed_resistance_power_stage_registers(&mut backend);
             backend.script_resistance_current_proportional_to_ud = true;
 
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceStart,
-                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::ResistanceStart,
+                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4562,8 +4562,8 @@ mod tests {
                     "resistance poll performed {operations} SPI ops"
                 );
 
-                if let InnerPhase::ElectricalId {
-                    state: ElectricalIdState::InductanceSetup,
+                if let InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceSetup,
                     data,
                 } = &phase
                 {
@@ -4601,9 +4601,9 @@ mod tests {
             // adaptive runner reports this as an unsupported measurement
             // envelope rather than applying unsafe higher excitation.
 
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::ResistanceStart,
-                data: ElectricalIdData::new(u32::from(backend.tmc_config().excitation_voltage)),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::ResistanceStart,
+                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4643,9 +4643,9 @@ mod tests {
     #[test]
     fn delay_setup_verifies_pwm_before_enable_and_voltage_step() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelaySetup,
-                data: ElectricalIdData::new(512),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelaySetup,
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -4674,8 +4674,8 @@ mod tests {
                 }
                 if matches!(
                     phase,
-                    InnerPhase::ElectricalId {
-                        state: ElectricalIdState::DelaySample { .. },
+                    InnerPhase::ElectricalIdentification {
+                        state: ElectricalIdentificationState::DelaySample { .. },
                         ..
                     }
                 ) {
@@ -4685,8 +4685,8 @@ mod tests {
 
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::DelaySample { .. },
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::DelaySample { .. },
                     ..
                 }
             ));
@@ -4716,9 +4716,9 @@ mod tests {
     fn delay_setup_pwm_verification_failure_restores_without_enabling() {
         pollster::block_on(async {
             for transport_failure in [false, true] {
-                let mut phase = InnerPhase::ElectricalId {
-                    state: ElectricalIdState::DelaySetup,
-                    data: ElectricalIdData::new(512),
+                let mut phase = InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::DelaySetup,
+                    data: ElectricalIdentificationData::new(512),
                 };
                 let mut buf = TransientBuffer::new();
                 let mut backend = MockBackend::new();
@@ -4743,8 +4743,8 @@ mod tests {
                     assert!(matches!(result, StepResult::ReadyNow));
                     if matches!(
                         phase,
-                        InnerPhase::ElectricalId {
-                            state: ElectricalIdState::DelayRestore { .. },
+                        InnerPhase::ElectricalIdentification {
+                            state: ElectricalIdentificationState::DelayRestore { .. },
                             ..
                         }
                     ) {
@@ -4767,8 +4767,8 @@ mod tests {
                 );
                 assert!(matches!(
                     phase,
-                    InnerPhase::ElectricalId {
-                        state: ElectricalIdState::DelayRestore {
+                    InnerPhase::ElectricalIdentification {
+                        state: ElectricalIdentificationState::DelayRestore {
                             primary_error: Some(CommissionError::Spi),
                             completed: None,
                             ..
@@ -4786,9 +4786,9 @@ mod tests {
     #[test]
     fn delay_voltage_step_completion_is_origin_and_sample_poll_reads_once() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelayApplyStep { baseline: 0 },
-                data: ElectricalIdData::new(512),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelayApplyStep { baseline: 0 },
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -4825,8 +4825,8 @@ mod tests {
             assert!(matches!(sample, StepResult::At(1_407)));
             assert_eq!(register_operation_count(&backend.spi_log) - before, 1);
             assert_eq!(buf.samples(), &[250]);
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelaySample { capture },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelaySample { capture },
                 ..
             } = &phase
             else {
@@ -4840,10 +4840,10 @@ mod tests {
     #[test]
     fn delay_missed_slot_rejects_without_catch_up_read() {
         pollster::block_on(async {
-            let mut data = ElectricalIdData::new(512);
+            let mut data = ElectricalIdentificationData::new(512);
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelaySample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelaySample {
                     capture: delay_capture_state(0, 1_000, 1_200),
                 },
                 data,
@@ -4872,8 +4872,8 @@ mod tests {
             assert!(!backend.enable_pin);
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::DelayRestore {
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::DelayRestore {
                         primary_error: Some(CommissionError::DelayTimingRejected),
                         ..
                     },
@@ -4881,7 +4881,7 @@ mod tests {
                 }
             ));
             assert!(buf.is_empty());
-            let InnerPhase::ElectricalId { data, .. } = &phase else {
+            let InnerPhase::ElectricalIdentification { data, .. } = &phase else {
                 unreachable!();
             };
             let timing = data.delay_timing.expect("rejected delay timing snapshot");
@@ -4896,11 +4896,11 @@ mod tests {
     #[test]
     fn delay_sample_completion_at_next_deadline_is_accepted() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelaySample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelaySample {
                     capture: delay_capture_state(0, 1_000, 1_200),
                 },
-                data: ElectricalIdData::new(512),
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -4922,8 +4922,8 @@ mod tests {
 
             assert!(matches!(result, StepResult::At(1_400)));
             assert_eq!(buf.samples(), &[250]);
-            let InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelaySample { capture },
+            let InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelaySample { capture },
                 ..
             } = phase
             else {
@@ -4939,11 +4939,11 @@ mod tests {
     #[test]
     fn delay_bookkeeping_overrun_rejects_without_committing_sample() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelaySample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelaySample {
                     capture: delay_capture_state(0, 1_000, 1_200),
                 },
-                data: ElectricalIdData::new(512),
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -4970,12 +4970,12 @@ mod tests {
                 "rejected current must not reach the estimator"
             );
             assert!(!backend.enable_pin);
-            let InnerPhase::ElectricalId { state, data } = phase else {
+            let InnerPhase::ElectricalIdentification { state, data } = phase else {
                 unreachable!();
             };
             assert!(matches!(
                 state,
-                ElectricalIdState::DelayRestore {
+                ElectricalIdentificationState::DelayRestore {
                     primary_error: Some(CommissionError::DelayTimingRejected),
                     ..
                 }
@@ -4990,10 +4990,10 @@ mod tests {
     #[test]
     fn delay_source_overflow_is_retained_before_restore() {
         pollster::block_on(async {
-            let mut data = ElectricalIdData::new(512);
+            let mut data = ElectricalIdentificationData::new(512);
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelaySample {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelaySample {
                     capture: delay_capture_state(0, 1_000, 1_200),
                 },
                 data,
@@ -5018,7 +5018,7 @@ mod tests {
             .await;
 
             assert!(matches!(result, StepResult::ReadyNow));
-            let InnerPhase::ElectricalId { data, .. } = &phase else {
+            let InnerPhase::ElectricalIdentification { data, .. } = &phase else {
                 unreachable!();
             };
             assert_ne!(data.timing_overflow_mask & (1 << 2), 0);
@@ -5041,8 +5041,8 @@ mod tests {
         let mut inductance_data = representative_data();
         inductance_data.timing_states =
             crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
-        let inductance_phase = InnerPhase::ElectricalId {
-            state: ElectricalIdState::InductanceSample {
+        let inductance_phase = InnerPhase::ElectricalIdentification {
+            state: ElectricalIdentificationState::InductanceSample {
                 capture: inductance_capture,
             },
             data: inductance_data,
@@ -5061,10 +5061,10 @@ mod tests {
         let mut delay_capture = delay_capture_state(0, 1_000, 1_200);
         let slot = sample_slot(1_200, 200, 1_400).unwrap();
         delay_capture.timing.record_rejected_slot(slot, 1_400);
-        let mut delay_data = ElectricalIdData::new(512);
+        let mut delay_data = ElectricalIdentificationData::new(512);
         delay_data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
-        let delay_phase = InnerPhase::ElectricalId {
-            state: ElectricalIdState::DelaySample {
+        let delay_phase = InnerPhase::ElectricalIdentification {
+            state: ElectricalIdentificationState::DelaySample {
                 capture: delay_capture,
             },
             data: delay_data,
@@ -5095,23 +5095,23 @@ mod tests {
             max_spi_wall_us: 10,
         };
         let states = [
-            ElectricalIdState::InductanceReadStatus {
+            ElectricalIdentificationState::InductanceReadStatus {
                 capture,
                 completed_elapsed_us: 700,
                 timing,
             },
-            ElectricalIdState::InductanceReadEncoder {
+            ElectricalIdentificationState::InductanceReadEncoder {
                 capture,
                 completed_elapsed_us: 700,
                 timing,
             },
-            ElectricalIdState::InductanceEvaluate {
+            ElectricalIdentificationState::InductanceEvaluate {
                 capture,
                 encoder_after: 0,
                 completed_elapsed_us: 700,
                 timing,
             },
-            ElectricalIdState::InductanceRestore {
+            ElectricalIdentificationState::InductanceRestore {
                 operation: InductanceRestoreOperation::RetainedUqUdExt,
                 primary_error: Some(CommissionError::InductanceCaptureRejected),
                 evidence: None,
@@ -5124,7 +5124,7 @@ mod tests {
             let mut data = representative_data();
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
             data.timing_overflow_mask = 1 << 1;
-            let phase = InnerPhase::ElectricalId { state, data };
+            let phase = InnerPhase::ElectricalIdentification { state, data };
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             push_active_electrical_diagnostics(&phase, &mut diagnostics);
@@ -5143,12 +5143,12 @@ mod tests {
     #[test]
     fn delay_restore_completes_before_timestamp_estimate_is_committed() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelayStopMotion {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelayStopMotion {
                     primary_error: None,
                     completed: Some(completed_delay_capture(&[160, 350, 515])),
                 },
-                data: ElectricalIdData::new(512),
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -5177,10 +5177,10 @@ mod tests {
                 );
 
                 if matches!(result, StepResult::At(_)) {
-                    let InnerPhase::ElectricalId { state, data } = &phase else {
+                    let InnerPhase::ElectricalIdentification { state, data } = &phase else {
                         panic!("expected electrical ID: {phase:?}");
                     };
-                    assert!(matches!(state, ElectricalIdState::DelayCooldown { .. }));
+                    assert!(matches!(state, ElectricalIdentificationState::DelayCooldown { .. }));
                     assert_eq!(data.delay_estimate_us, Some(350));
                     assert!(data.delay_timing.is_some());
                     assert!(!backend.enable_pin);
@@ -5193,7 +5193,7 @@ mod tests {
                     return;
                 }
                 assert!(matches!(result, StepResult::ReadyNow));
-                let InnerPhase::ElectricalId { data, .. } = &phase else {
+                let InnerPhase::ElectricalIdentification { data, .. } = &phase else {
                     panic!("expected electrical ID: {phase:?}");
                 };
                 assert!(data.delay_estimate_us.is_none());
@@ -5206,13 +5206,13 @@ mod tests {
     #[test]
     fn delay_restore_failure_replaces_existing_timing_error() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelayRestore {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelayRestore {
                     operation: InductanceRestoreOperation::CanonicalMotionStop,
                     primary_error: Some(CommissionError::DelayTimingRejected),
                     completed: None,
                 },
-                data: ElectricalIdData::new(512),
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -5247,12 +5247,12 @@ mod tests {
     #[test]
     fn delay_stop_failure_lowers_gpio_before_next_restore_operation() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelayStopMotion {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelayStopMotion {
                     primary_error: None,
                     completed: Some(completed_delay_capture(&[160, 320])),
                 },
-                data: ElectricalIdData::new(512),
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -5275,8 +5275,8 @@ mod tests {
             assert!(!backend.enable_pin);
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::DelayRestore {
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::DelayRestore {
                         primary_error: Some(CommissionError::Spi),
                         ..
                     },
@@ -5289,9 +5289,9 @@ mod tests {
     #[test]
     fn delay_presettle_shutdown_enters_gpio_first_restore() {
         pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalId {
-                state: ElectricalIdState::DelayPreSettle { deadline_us: 2_000 },
-                data: ElectricalIdData::new(512),
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelayPreSettle { deadline_us: 2_000 },
+                data: ElectricalIdentificationData::new(512),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -5315,8 +5315,8 @@ mod tests {
             assert!(!backend.enable_pin);
             assert!(matches!(
                 phase,
-                InnerPhase::ElectricalId {
-                    state: ElectricalIdState::DelayRestore {
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::DelayRestore {
                         primary_error: Some(CommissionError::Shutdown),
                         ..
                     },
@@ -5334,10 +5334,10 @@ mod tests {
     /// Build model data for per-coil resistance currents `c0`/`c1` (counts).
     ///
     /// The per-axis count-slopes are `512000/c` (V=512 in count-slope-milli).
-    fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdData {
+    fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdentificationData {
         let slope0 = (512_000 / c0.max(1)).max(1);
         let slope1 = (512_000 / c1.max(1)).max(1);
-        let mut data = ElectricalIdData::new(512);
+        let mut data = ElectricalIdentificationData::new(512);
         data.resistance_result = Some(resistance_result(slope0, slope1));
         data.inductance = Some(inductance_evidence_fixture(8_600, 1_000_000));
         data
@@ -5346,7 +5346,7 @@ mod tests {
     #[test]
     fn model_failure_diagnostic_codes_are_stable() {
         let no_samples = diagnostic_for_model_assembly_failure(ModelAssemblyError::SampleCount);
-        assert_eq!(no_samples.phase, CommissionPhase::ElectricalId.to_u8());
+        assert_eq!(no_samples.phase, CommissionPhase::ElectricalIdentification.to_u8());
         assert_eq!(no_samples.code, 20);
         assert_eq!(no_samples.status, 1);
 
@@ -5411,7 +5411,7 @@ mod tests {
 
     #[test]
     fn assemble_rejects_zero_l_count_micro_with_model_scale_zero() {
-        let mut data = ElectricalIdData::new(512);
+        let mut data = ElectricalIdentificationData::new(512);
         data.resistance_result = Some(resistance_result(100, 100));
         data.inductance = Some(inductance_evidence_fixture(1, 1_000_000));
         let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
