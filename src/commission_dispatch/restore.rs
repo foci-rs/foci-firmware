@@ -259,7 +259,7 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
 /// value just written.
 pub async fn restore_entry_snapshot_to_registers<B: CommissioningBackend>(
     backend: &mut B,
-    snapshot: &crate::commissioning::EntrySnapshot,
+    snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
 ) -> Result<(), RestoreError<B::Error>> {
     use foci_tmc4671::registers::*;
 
@@ -552,12 +552,12 @@ mod tests {
         tmc_state().clear_pi_representation_established();
     }
 
-    fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
+    fn sample_entry_snapshot() -> crate::commissioning::OuterGainRollbackSnapshot {
         crate::commission_dispatch::test_support::sample_entry_snapshot()
     }
 
     fn snapshot_outer_gains(
-        snap: &crate::commissioning::EntrySnapshot,
+        snap: &crate::commissioning::OuterGainRollbackSnapshot,
     ) -> crate::pid::OuterLoopGains {
         crate::pid::OuterLoopGains {
             position_p: snap.position_p,

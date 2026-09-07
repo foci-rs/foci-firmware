@@ -1310,7 +1310,7 @@ impl TerminalRestoreMachine {
     fn entry_snapshot(
         &self,
         engine: &Option<CommissioningEngine>,
-    ) -> Option<crate::commissioning::EntrySnapshot> {
+    ) -> Option<crate::commissioning::OuterGainRollbackSnapshot> {
         engine
             .as_ref()
             .and_then(CommissioningEngine::entry_snapshot)

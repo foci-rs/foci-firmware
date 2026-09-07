@@ -28,7 +28,7 @@ use crate::commission_dispatch::robustness::{
     ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_SAFETY_FAULT,
     ROBUSTNESS_CAUSE_TAIL_REPEATED,
 };
-use crate::commissioning::EntrySnapshot;
+use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::commissioning::outer::OuterSafetyLimits;
@@ -1753,7 +1753,7 @@ pub(crate) fn robustness_reversal_fault_terminal(
 /// status here.
 pub(crate) fn robustness_pass_outer_result(
     terminal: &RobustnessReversalTerminal,
-    entry: &EntrySnapshot,
+    entry: &OuterGainRollbackSnapshot,
     point: &AcceptancePoint,
 ) -> OuterResult {
     let status = CommissionStatus::Accepted;

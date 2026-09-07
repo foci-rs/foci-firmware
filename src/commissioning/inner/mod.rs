@@ -12,7 +12,7 @@ use crate::autotune::{
     ClosedLoopActivationState, CommissionError, CommissionProfile, ElectricalModel, InnerSequence,
     TransientBuffer,
 };
-use crate::commissioning::EntrySnapshot;
+use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentValidateState};
 use crate::commissioning::types::{
@@ -683,7 +683,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
 /// mode. The caller owns the post-restore stability policy so this helper
 /// remains limited to the register restore sequence.
 pub async fn restore_entry_gains<B: CommissioningBackend>(
-    snapshot: &EntrySnapshot,
+    snapshot: &OuterGainRollbackSnapshot,
     backend: &mut B,
     tmc_state: &crate::state::tmc::TmcChannelState,
 ) -> Result<(), CommissionError> {

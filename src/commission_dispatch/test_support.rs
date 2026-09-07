@@ -22,8 +22,8 @@ pub fn current_limit(raw: u32) -> PidTorqueFluxLimit {
 }
 
 /// Construct the shared outer-entry snapshot used by dispatcher fixtures.
-pub fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
-    crate::commissioning::EntrySnapshot {
+pub fn sample_entry_snapshot() -> crate::commissioning::OuterGainRollbackSnapshot {
+    crate::commissioning::OuterGainRollbackSnapshot {
         velocity_p: crate::pid::p_gain(1152),
         velocity_i: crate::pid::i_gain(0),
         position_p: crate::pid::p_gain(640),
@@ -38,8 +38,8 @@ pub fn sample_entry_snapshot() -> crate::commissioning::EntrySnapshot {
 }
 
 /// Construct the shared outer-tune parameters used by dispatcher fixtures.
-pub fn sample_outer_params() -> crate::commissioning::OuterTuneParams {
-    crate::commissioning::OuterTuneParams {
+pub fn sample_outer_params() -> crate::commissioning::OuterAutotuneInputs {
+    crate::commissioning::OuterAutotuneInputs {
         slot_order:
             crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         profile: crate::autotune::CommissionProfile::Balanced,

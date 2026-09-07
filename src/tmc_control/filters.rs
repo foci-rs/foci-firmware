@@ -352,7 +352,7 @@ pub async fn apply_outer_result_filters_via_backend<B: CommissioningBackend>(
 /// Returns the first backend register-write error.
 pub async fn apply_entry_snapshot_filters_via_backend<B: CommissioningBackend>(
     backend: &mut B,
-    snapshot: &crate::commissioning::EntrySnapshot,
+    snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
     pwm_maxcnt: u16,
 ) -> Result<(), B::Error> {
     apply_backend_filter_cutoffs(

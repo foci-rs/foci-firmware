@@ -2611,9 +2611,9 @@ fn robustness_entry_snapshot(
     position_i: u16,
     velocity_limit: u32,
     filters: (u16, u16, u16, u16),
-) -> crate::commissioning::EntrySnapshot {
+) -> crate::commissioning::OuterGainRollbackSnapshot {
     let (velocity_filter_hz, position_filter_hz, flux_filter_hz, torque_filter_hz) = filters;
-    crate::commissioning::EntrySnapshot {
+    crate::commissioning::OuterGainRollbackSnapshot {
         velocity_p: crate::pid::p_gain(1_152),
         velocity_i: crate::pid::i_gain(0),
         position_p: crate::pid::p_gain(position_p),
@@ -2630,7 +2630,9 @@ fn robustness_entry_snapshot(
 /// Outer engine holding `entry`. The robustness-terminal dispatch arm only
 /// reads `entry_snapshot()` and consumes the engine, so the engine's internal
 /// phase is immaterial to the routing this exercises.
-fn robustness_outer_engine(entry: crate::commissioning::EntrySnapshot) -> CommissioningEngine {
+fn robustness_outer_engine(
+    entry: crate::commissioning::OuterGainRollbackSnapshot,
+) -> CommissioningEngine {
     CommissioningEngine::new_outer_for_tmc_with_robustness(
         0,
         crate::state::tmc::tmc_channel0(),
@@ -2863,7 +2865,9 @@ async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
 
 /// Baseline gains an entry snapshot must restore before disarm, as the
 /// `PID_VELOCITY_P_VELOCITY_I`/`PID_POSITION_P_POSITION_I` register values.
-fn entry_snapshot_baseline_registers(entry: &crate::commissioning::EntrySnapshot) -> (u32, u32) {
+fn entry_snapshot_baseline_registers(
+    entry: &crate::commissioning::OuterGainRollbackSnapshot,
+) -> (u32, u32) {
     let baseline = crate::pid::OuterLoopGains {
         position_p: entry.position_p,
         position_i: entry.position_i,
@@ -2873,7 +2877,10 @@ fn entry_snapshot_baseline_registers(entry: &crate::commissioning::EntrySnapshot
     baseline.to_registers()
 }
 
-fn assert_baseline_restored(backend: &MockBackend, entry: &crate::commissioning::EntrySnapshot) {
+fn assert_baseline_restored(
+    backend: &MockBackend,
+    entry: &crate::commissioning::OuterGainRollbackSnapshot,
+) {
     let (velocity_reg, position_reg) = entry_snapshot_baseline_registers(entry);
     assert!(
         backend.spi_log.iter().any(|op| matches!(

@@ -8,7 +8,7 @@ use foci_tmc4671::spi::Tmc4671Spi;
 
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode};
 use crate::calibration::CalibrationError;
-use crate::commission::{CommissioningEngine, EntrySnapshot, OuterTuneParams};
+use crate::commission::{CommissioningEngine, OuterAutotuneInputs, OuterGainRollbackSnapshot};
 use crate::commission_dispatch::{ReplyPayload, StepperPostAction};
 use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::selftest::{CommissionDiagnostics, SelftestResults};
@@ -1073,7 +1073,7 @@ where
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }
                 };
-                EntrySnapshot {
+                OuterGainRollbackSnapshot {
                     velocity_p: outer_gains.velocity_p,
                     velocity_i: outer_gains.velocity_i,
                     position_p: outer_gains.position_p,
@@ -1113,7 +1113,7 @@ where
             tmc_state
                 .cancel_requested
                 .store(false, core::sync::atomic::Ordering::Relaxed);
-            let outer_params = OuterTuneParams {
+            let outer_params = OuterAutotuneInputs {
                 slot_order: req.autotune_action.slot_order(),
                 profile: CommissionProfile::from_u8(profile),
                 mode: OperatingMode::from_u8(mode),

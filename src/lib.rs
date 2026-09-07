@@ -57,5 +57,7 @@ pub mod commission {
     pub use crate::commissioning::types::{
         AdcCalResult, CommissionResult, InnerResult, OuterResult, StepResult,
     };
-    pub use crate::commissioning::{CommissioningEngine, EntrySnapshot, OuterTuneParams};
+    pub use crate::commissioning::{
+        CommissioningEngine, OuterAutotuneInputs, OuterGainRollbackSnapshot,
+    };
 }

@@ -80,7 +80,7 @@ const PHASE_END_OK: u8 = 0;
 /// Groups the inner-loop characterization results and operating mode
 /// the outer engine constructors need beyond `oid` and `entry_snapshot`.
 #[derive(Debug, Clone, Copy, defmt::Format)]
-pub struct OuterTuneParams {
+pub struct OuterAutotuneInputs {
     /// Commissioning profile (conservative / balanced / aggressive).
     pub profile: CommissionProfile,
     /// Operating mode (step/dir vs position).
@@ -122,7 +122,7 @@ pub struct OuterTuneParams {
 /// Built by the caller in `main.rs` from firmware atomics and passed to
 /// the outer engine constructors.
 #[derive(Debug, Clone, Copy, defmt::Format)]
-pub struct EntrySnapshot {
+pub struct OuterGainRollbackSnapshot {
     /// Velocity P gain (Q8.8).
     pub velocity_p: PidPGain,
     /// Velocity I gain (Q4.12).
@@ -216,7 +216,7 @@ pub(crate) enum EngineMode {
         /// Inner-confidence warning bitfield carried from Stage 1.
         inner_warning_flags: u8,
         /// Gains snapshot at entry for soft-failure restoration.
-        entry_snapshot: EntrySnapshot,
+        entry_snapshot: OuterGainRollbackSnapshot,
     },
 }
 
@@ -279,7 +279,7 @@ struct OuterScaffold {
     current_ringing: bool,
     current_bandwidth_hz: u32,
     inner_warning_flags: u8,
-    entry_snapshot: EntrySnapshot,
+    entry_snapshot: OuterGainRollbackSnapshot,
     trace_engine_seq: u32,
     /// Independent outer safety envelope derived from the motion budget.
     safety: OuterSafetyLimits,
@@ -479,11 +479,11 @@ impl CommissioningEngine {
     fn outer_scaffold(
         oid: u8,
         tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
+        params: OuterAutotuneInputs,
+        entry_snapshot: OuterGainRollbackSnapshot,
         trace_engine_seq: u32,
     ) -> OuterScaffold {
-        let OuterTuneParams {
+        let OuterAutotuneInputs {
             profile,
             mode,
             inner_lambda_us,
@@ -585,8 +585,8 @@ impl CommissioningEngine {
     pub(crate) fn new_outer_for_tmc_with_breakaway_campaign(
         oid: u8,
         tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
+        params: OuterAutotuneInputs,
+        entry_snapshot: OuterGainRollbackSnapshot,
         campaign: crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign,
     ) -> Result<Self, CommissionError> {
         let run_sequence = campaign.run_sequence();
@@ -659,8 +659,8 @@ impl CommissioningEngine {
     pub fn new_outer_for_tmc_with_stage_c_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
+        params: OuterAutotuneInputs,
+        entry_snapshot: OuterGainRollbackSnapshot,
         preflight: crate::commission_dispatch::stage_c::StageCPreflight,
     ) -> Self {
         let scaffold = Self::outer_scaffold(
@@ -685,8 +685,8 @@ impl CommissioningEngine {
     pub fn new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
+        params: OuterAutotuneInputs,
+        entry_snapshot: OuterGainRollbackSnapshot,
         preflight: crate::commission_dispatch::fixed_gain_amplitude::FixedGainAmplitudePreflight,
     ) -> Self {
         let scaffold = Self::outer_scaffold(
@@ -723,8 +723,8 @@ impl CommissioningEngine {
     pub(crate) fn new_outer_for_tmc_with_robustness(
         oid: u8,
         tmc_state: &'static TmcChannelState,
-        params: OuterTuneParams,
-        entry_snapshot: EntrySnapshot,
+        params: OuterAutotuneInputs,
+        entry_snapshot: OuterGainRollbackSnapshot,
         preflight: crate::commission_dispatch::robustness::RobustnessPreflight,
         encoder_counts_per_rev: u32,
     ) -> Result<Self, CommissionError> {
@@ -940,7 +940,7 @@ impl CommissioningEngine {
     }
 
     /// Return the entry snapshot for the outer engine, if active.
-    pub fn entry_snapshot(&self) -> Option<EntrySnapshot> {
+    pub fn entry_snapshot(&self) -> Option<OuterGainRollbackSnapshot> {
         match &self.engine_mode {
             EngineMode::Outer { entry_snapshot, .. } => Some(*entry_snapshot),
             _ => None,
@@ -1959,8 +1959,8 @@ mod tests {
         crate::state::tmc::tmc_channel0()
     }
 
-    fn sample_outer_params() -> OuterTuneParams {
-        OuterTuneParams {
+    fn sample_outer_params() -> OuterAutotuneInputs {
+        OuterAutotuneInputs {
             slot_order:
                 crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
             profile: crate::autotune::CommissionProfile::Balanced,
@@ -1982,8 +1982,8 @@ mod tests {
         }
     }
 
-    fn sample_entry_snapshot() -> EntrySnapshot {
-        EntrySnapshot {
+    fn sample_entry_snapshot() -> OuterGainRollbackSnapshot {
+        OuterGainRollbackSnapshot {
             velocity_p: crate::pid::p_gain(1152),
             velocity_i: crate::pid::i_gain(0),
             position_p: crate::pid::p_gain(640),
@@ -2357,7 +2357,7 @@ mod tests {
         use crate::commissioning::outer::velocity::breakaway_campaign::plan_breakaway_campaign_command;
         use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 
-        let params = OuterTuneParams {
+        let params = OuterAutotuneInputs {
             requested_velocity_mrev_s: 4_500,
             max_stroke_travel_mrev: 750,
             settle_travel_reserve_mrev: 75,

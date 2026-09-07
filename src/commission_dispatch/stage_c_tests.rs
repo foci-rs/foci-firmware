@@ -676,8 +676,8 @@ fn same_channel_calibration_preserves_stage_c_and_other_channel_clears_it() {
     assert_eq!(slot.state(), StageCSlotState::Empty);
 }
 
-fn outer_params() -> crate::commissioning::OuterTuneParams {
-    crate::commissioning::OuterTuneParams {
+fn outer_params() -> crate::commissioning::OuterAutotuneInputs {
+    crate::commissioning::OuterAutotuneInputs {
         slot_order:
             crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst,
         profile: crate::autotune::CommissionProfile::Balanced,
@@ -698,8 +698,8 @@ fn outer_params() -> crate::commissioning::OuterTuneParams {
     }
 }
 
-fn entry_snapshot() -> crate::commissioning::EntrySnapshot {
-    crate::commissioning::EntrySnapshot {
+fn entry_snapshot() -> crate::commissioning::OuterGainRollbackSnapshot {
+    crate::commissioning::OuterGainRollbackSnapshot {
         velocity_p: crate::pid::p_gain(1_152),
         velocity_i: crate::pid::i_gain(0),
         position_p: crate::pid::p_gain(640),

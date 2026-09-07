@@ -11,7 +11,7 @@ use crate::commission_dispatch::test_support::{
     MockBackend, breakaway_campaign_engine, breakaway_confirmation_for_test,
     robustness_reversal_engine, sample_entry_snapshot, sample_outer_params,
 };
-use crate::commissioning::OuterTuneParams;
+use crate::commissioning::OuterAutotuneInputs;
 use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan;
 use crate::commissioning::types::StepResult;
 use crate::trace::events::{EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START};
@@ -74,8 +74,8 @@ fn outer_backend() -> MockBackend {
 
 /// Outer parameters whose motion budget reproduces the velocity the plan
 /// fixtures below freeze, so the engine's safety envelope agrees with them.
-fn plan_matched_outer_params() -> OuterTuneParams {
-    OuterTuneParams {
+fn plan_matched_outer_params() -> OuterAutotuneInputs {
+    OuterAutotuneInputs {
         requested_velocity_mrev_s: 6_666,
         machine_velocity_ceiling_mrev_s: 10_000,
         max_stroke_travel_mrev: 2_500,
@@ -148,7 +148,7 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
     .expect("a valid retained breakaway Stage-C plan")
 }
 
-fn response_ladder_engine_with_params(params: OuterTuneParams) -> CommissioningEngine {
+fn response_ladder_engine_with_params(params: OuterAutotuneInputs) -> CommissioningEngine {
     use crate::commission_dispatch::stage_c::StageCPreflight;
     use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
 
@@ -406,7 +406,7 @@ async fn robustness_reversal_reports_its_own_phase() {
 /// the phase event is selected before the stepper is dispatched at all.
 #[fixture_test]
 async fn first_step_failure_emits_initial_phase_before_terminal() {
-    let mut engine = response_ladder_engine_with_params(OuterTuneParams {
+    let mut engine = response_ladder_engine_with_params(OuterAutotuneInputs {
         max_duration_ms: 0,
         ..plan_matched_outer_params()
     });

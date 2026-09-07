@@ -4529,7 +4529,7 @@ enum HandOffEvent {
 /// `step`, its unreported-phase selector, `step_breakaway_campaign_with_trace`,
 /// `route_confirmed_accept`, and `adapt_step_result`.
 async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
-    use crate::commissioning::OuterTuneParams;
+    use crate::commissioning::OuterAutotuneInputs;
     use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, adapt_step_result};
     use crate::commissioning::types::EngineKind;
     use crate::commissioning::{CommissioningEngine, EngineMode};
@@ -4554,7 +4554,7 @@ async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
     let mut engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
         OID,
         crate::state::tmc::tmc_channel0(),
-        OuterTuneParams {
+        OuterAutotuneInputs {
             requested_velocity_mrev_s: budget.requested_velocity_mrev_s,
             machine_velocity_ceiling_mrev_s: budget.machine_velocity_ceiling_mrev_s,
             requested_velocity_source: budget.requested_velocity_source,
