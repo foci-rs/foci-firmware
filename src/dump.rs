@@ -89,6 +89,8 @@ pub const DUMP_SUB_REGISTERS: &[(u8, SubRegister)] = &[
     (0x86, foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT),
     // ADC_RAW selector 1: low half is ADC_VM_RAW, high half is ADC_AGPI_A_RAW.
     (0x87, foci_tmc4671::registers::ADC_AGPI_A_RAW_ADC_VM_RAW),
+    // CONFIG: position (X) biquad filter enable.
+    (0x8A, foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE),
 ];
 
 /// Synthetic dump address for the latched velocity-clamp flag.
@@ -193,5 +195,13 @@ mod tests {
         });
 
         assert!(found, "missing ADC_VM_RAW dump field");
+    }
+
+    #[test]
+    fn dump_sub_registers_include_position_filter_enable() {
+        let found = DUMP_SUB_REGISTERS.iter().any(|&(addr, sub)| {
+            addr == 0x8A && sub == foci_tmc4671::registers::CONFIG_BIQUAD_X_ENABLE
+        });
+        assert!(found, "missing CONFIG_BIQUAD_X_ENABLE dump field");
     }
 }
