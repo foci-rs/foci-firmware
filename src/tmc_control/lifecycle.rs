@@ -502,6 +502,10 @@ mod tests {
         backend.read_override = None;
 
         // A successful sentinel pass clears it.
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::new(0x1234).unwrap(),
+            Ordering::Relaxed,
+        );
         arm_motor_electrical(&mut backend, &mut state)
             .await
             .expect("sentinel should match once the override is removed");
@@ -514,6 +518,10 @@ mod tests {
         tmc_state()
             .safe_state_incomplete
             .store(false, Ordering::Relaxed);
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
         *state.motor_enabled = false;
     }
 
