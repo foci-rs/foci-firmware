@@ -382,12 +382,18 @@ mod tests {
         tmc_state()
             .safe_state_incomplete
             .store(true, Ordering::Relaxed);
+        let spi_log_len_before = backend.spi_log.len();
 
         let result = arm_motor_electrical(&mut backend, &mut state).await;
 
         assert_eq!(
             result,
             Err(crate::autotune::CommissionError::SafeStateIncomplete)
+        );
+        assert_eq!(
+            backend.spi_log.len(),
+            spi_log_len_before,
+            "must not touch the chip at all while the latch is set"
         );
         assert!(!backend.enable_pin, "must not enable while latch is set");
         assert!(!*state.motor_enabled);

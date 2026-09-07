@@ -92,9 +92,19 @@ pub struct TmcChannelState {
     /// Address of the first register or sub-register write that failed
     /// during the most recent safe-state restore pass. `0xFF` means none.
     pub safe_state_first_failed_register: AtomicU8,
+    /// If the first failure was a PID error-sum clear, the logical
+    /// sub-register selector (4=torque, 5=flux, 6=velocity, 7=position).
+    /// All four sums share the same physical selector/data registers, so
+    /// `safe_state_first_failed_register` alone cannot distinguish them.
+    /// `0xFF` means the first failure was not a PID error-sum clear, or
+    /// there was no failure.
+    pub safe_state_first_failed_sub_addr: AtomicU8,
     /// Board-monotonic millisecond timestamp of the most recent safe-state
     /// restore pass. Diagnostic only: wraps every ~49 days.
     pub safe_state_failure_timestamp_ms: AtomicU32,
+    /// Number of consecutive safe-state restore passes that had failures,
+    /// reset to zero by the next pass that completes with zero failures.
+    pub safe_state_consecutive_failed_passes: AtomicU16,
     /// Whether firmware established the fixed Q8.8-P/Q4.12-I representation.
     pi_representation_established: AtomicBool,
     /// Configured mechanical ABN encoder pulses per revolution.
@@ -226,7 +236,9 @@ impl TmcChannelState {
             safe_state_incomplete: AtomicBool::new(false),
             safe_state_failed_writes: AtomicU8::new(0),
             safe_state_first_failed_register: AtomicU8::new(0xFF),
+            safe_state_first_failed_sub_addr: AtomicU8::new(0xFF),
             safe_state_failure_timestamp_ms: AtomicU32::new(0),
+            safe_state_consecutive_failed_passes: AtomicU16::new(0),
             pi_representation_established: AtomicBool::new(false),
             encoder_ppr: AtomicU32::new(0),
             encoder_counts_per_rev: AtomicU32::new(0),
@@ -292,7 +304,9 @@ impl TmcChannelState {
         self.safe_state_incomplete.store(false, Relaxed);
         self.safe_state_failed_writes.store(0, Relaxed);
         self.safe_state_first_failed_register.store(0xFF, Relaxed);
+        self.safe_state_first_failed_sub_addr.store(0xFF, Relaxed);
         self.safe_state_failure_timestamp_ms.store(0, Relaxed);
+        self.safe_state_consecutive_failed_passes.store(0, Relaxed);
         self.clear_pi_representation_established();
         self.encoder_ppr.store(0, Relaxed);
         self.encoder_counts_per_rev.store(0, Relaxed);
@@ -640,7 +654,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 132);
+        assert_eq!(size_of::<TmcChannelState>(), 136);
     }
 
     #[test]

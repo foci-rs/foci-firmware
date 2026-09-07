@@ -654,6 +654,7 @@ mod tests {
             CommissionError::PrimitiveStartInFuture,
             CommissionError::RecoveryOriginMismatch,
             CommissionError::Cancelled,
+            CommissionError::SafeStateIncomplete,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -709,6 +710,7 @@ mod tests {
     #[test]
     fn commission_cancelled_has_status_code_74() {
         assert_eq!(CommissionError::Cancelled.status_code(), 74);
+        assert_eq!(CommissionError::SafeStateIncomplete.status_code(), 75);
     }
 
     #[test]

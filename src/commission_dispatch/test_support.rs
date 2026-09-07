@@ -390,6 +390,9 @@ pub struct MockBackend {
     pub safe_state_report: Option<crate::tmc_safe_state::SafeStateRestoreReport>,
     /// The timestamp from the most recent `record_safe_state_report` call.
     pub safe_state_report_timestamp_ms: Option<u32>,
+    /// Number of consecutive `record_safe_state_report` calls that reported
+    /// `failed_writes > 0`, reset to zero by the next clean call.
+    pub safe_state_failed_pass_count: u16,
 }
 
 impl MockBackend {
@@ -462,6 +465,7 @@ impl MockBackend {
             safe_state_incomplete: false,
             safe_state_report: None,
             safe_state_report_timestamp_ms: None,
+            safe_state_failed_pass_count: 0,
         }
     }
 
@@ -814,6 +818,11 @@ impl CommissionMotorControl for MockBackend {
         timestamp_ms: u32,
     ) {
         self.safe_state_incomplete = report.failed_writes > 0;
+        self.safe_state_failed_pass_count = if self.safe_state_incomplete {
+            self.safe_state_failed_pass_count.saturating_add(1)
+        } else {
+            0
+        };
         self.safe_state_report = Some(report);
         self.safe_state_report_timestamp_ms = Some(timestamp_ms);
     }

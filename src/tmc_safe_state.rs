@@ -19,6 +19,11 @@ pub struct SafeStateRestoreReport {
     pub failed_writes: u8,
     /// Address of the first register or sub-register write that failed.
     pub first_failed_register: Option<u8>,
+    /// If the first failure was a PID error-sum clear, its logical
+    /// sub-register selector (4=torque, 5=flux, 6=velocity, 7=position).
+    /// All four sums share the same physical selector/data registers, so
+    /// `first_failed_register` alone cannot distinguish them.
+    pub first_failed_sub_addr: Option<u8>,
 }
 
 /// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
@@ -89,8 +94,9 @@ where
         PID_ERROR_PID_POSITION_ERROR_SUM,
     ];
     for sub in pairs {
-        record_sub_register_write(backend, sub.addr, sub.sub_addr as u32, report).await;
-        record_sub_register_write(backend, sub.data, 0, report).await;
+        let sub_addr = sub.sub_addr;
+        record_sub_register_write(backend, sub.addr, sub.sub_addr as u32, sub_addr, report).await;
+        record_sub_register_write(backend, sub.data, 0, sub_addr, report).await;
     }
 }
 
@@ -98,6 +104,7 @@ async fn record_sub_register_write<B>(
     backend: &mut B,
     reg: Register,
     val: u32,
+    sub_addr: u8,
     report: &mut SafeStateRestoreReport,
 ) where
     B: CommissioningBackend,
@@ -106,6 +113,7 @@ async fn record_sub_register_write<B>(
         report.failed_writes = report.failed_writes.saturating_add(1);
         if report.first_failed_register.is_none() {
             report.first_failed_register = Some(reg.addr());
+            report.first_failed_sub_addr = Some(sub_addr);
         }
         defmt::warn!(
             "safe-state restore PID error-sum clear write failed: reg={=u8}",
@@ -240,6 +248,30 @@ mod tests {
     }
 
     #[test]
+    fn restore_tracks_consecutive_failed_pass_count() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.fail_on_write = Some(UQ_UD_EXT.addr());
+
+            restore_safe_state_via_backend(&mut backend).await;
+            assert_eq!(backend.safe_state_failed_pass_count, 1);
+
+            restore_safe_state_via_backend(&mut backend).await;
+            assert_eq!(
+                backend.safe_state_failed_pass_count, 2,
+                "consecutive failed passes should accumulate"
+            );
+
+            backend.fail_on_write = None;
+            restore_safe_state_via_backend(&mut backend).await;
+            assert_eq!(
+                backend.safe_state_failed_pass_count, 0,
+                "a clean pass should reset the consecutive-failure count"
+            );
+        });
+    }
+
+    #[test]
     fn restore_clears_incomplete_report_on_clean_pass() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
@@ -265,6 +297,36 @@ mod tests {
             assert_eq!(
                 report.first_failed_register,
                 Some(PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr())
+            );
+            assert_eq!(
+                report.first_failed_sub_addr,
+                Some(PID_ERROR_PID_TORQUE_ERROR_SUM.sub_addr),
+                "torque is the first sum in iteration order"
+            );
+        });
+    }
+
+    #[test]
+    fn restore_identifies_which_pid_sum_failed_when_not_the_first() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            // All four sums share PID_ERROR_PID_TORQUE_ERROR_SUM.addr (0x6C) as
+            // their selector register; occurrence 2 (0-indexed) is the third
+            // selector write in iteration order, i.e. velocity's.
+            backend.fail_on_write_occurrence =
+                Some((PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr(), 2));
+
+            let report = restore_safe_state_via_backend_report(&mut backend).await;
+
+            assert_eq!(
+                report.first_failed_register,
+                Some(PID_ERROR_PID_TORQUE_ERROR_SUM.addr.addr()),
+                "torque, flux, and velocity selector writes share this physical address"
+            );
+            assert_eq!(
+                report.first_failed_sub_addr,
+                Some(PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr),
+                "the shared physical address alone cannot tell torque/flux/velocity/position apart"
             );
         });
     }

@@ -674,14 +674,25 @@ where
         use core::sync::atomic::Ordering::Relaxed;
 
         let tmc = self.tmc_state();
-        tmc.safe_state_incomplete
-            .store(report.failed_writes > 0, Relaxed);
+        let incomplete = report.failed_writes > 0;
+        tmc.safe_state_incomplete.store(incomplete, Relaxed);
         tmc.safe_state_failed_writes
             .store(report.failed_writes, Relaxed);
         tmc.safe_state_first_failed_register
             .store(report.first_failed_register.unwrap_or(0xFF), Relaxed);
+        tmc.safe_state_first_failed_sub_addr
+            .store(report.first_failed_sub_addr.unwrap_or(0xFF), Relaxed);
         tmc.safe_state_failure_timestamp_ms
             .store(timestamp_ms, Relaxed);
+        let consecutive_failed_passes = if incomplete {
+            tmc.safe_state_consecutive_failed_passes
+                .load(Relaxed)
+                .saturating_add(1)
+        } else {
+            0
+        };
+        tmc.safe_state_consecutive_failed_passes
+            .store(consecutive_failed_passes, Relaxed);
     }
 }
 
@@ -1043,7 +1054,13 @@ mod tests {
             .safe_state_first_failed_register
             .store(0xFF, Relaxed);
         TEST_TMC_STATE
+            .safe_state_first_failed_sub_addr
+            .store(0xFF, Relaxed);
+        TEST_TMC_STATE
             .safe_state_failure_timestamp_ms
+            .store(0, Relaxed);
+        TEST_TMC_STATE
+            .safe_state_consecutive_failed_passes
             .store(0, Relaxed);
     }
 
@@ -1092,6 +1109,7 @@ mod tests {
         let report = crate::tmc_safe_state::SafeStateRestoreReport {
             failed_writes: 2,
             first_failed_register: Some(0x1A),
+            first_failed_sub_addr: Some(6),
         };
         backend.record_safe_state_report(report, 12_345);
 
@@ -1104,8 +1122,29 @@ mod tests {
             0x1A
         );
         assert_eq!(
+            TEST_TMC_STATE
+                .safe_state_first_failed_sub_addr
+                .load(Relaxed),
+            6
+        );
+        assert_eq!(
             TEST_TMC_STATE.safe_state_failure_timestamp_ms.load(Relaxed),
             12_345
+        );
+        assert_eq!(
+            TEST_TMC_STATE
+                .safe_state_consecutive_failed_passes
+                .load(Relaxed),
+            1
+        );
+
+        backend.record_safe_state_report(report, 12_346);
+        assert_eq!(
+            TEST_TMC_STATE
+                .safe_state_consecutive_failed_passes
+                .load(Relaxed),
+            2,
+            "consecutive failed passes should accumulate"
         );
     }
 
@@ -1116,6 +1155,9 @@ mod tests {
             .expect("commissioning backend test lock is available");
         reset_hooks();
         TEST_TMC_STATE.safe_state_incomplete.store(true, Relaxed);
+        TEST_TMC_STATE
+            .safe_state_consecutive_failed_passes
+            .store(3, Relaxed);
 
         let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
         let mut enable_pin = RecordingPin::default();
@@ -1130,10 +1172,18 @@ mod tests {
         let report = crate::tmc_safe_state::SafeStateRestoreReport {
             failed_writes: 0,
             first_failed_register: None,
+            first_failed_sub_addr: None,
         };
         backend.record_safe_state_report(report, 0);
 
         assert!(!TEST_TMC_STATE.safe_state_incomplete.load(Relaxed));
+        assert_eq!(
+            TEST_TMC_STATE
+                .safe_state_consecutive_failed_passes
+                .load(Relaxed),
+            0,
+            "a clean pass should reset the consecutive-failure count"
+        );
     }
 
     #[fixture_test]
