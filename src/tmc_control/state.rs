@@ -19,6 +19,12 @@ use crate::tmc_control::config::{TmcControlConfig, TmcControlHomingRefs, TmcCont
 use crate::tmc_control::signals::TmcControlSignals;
 use foci_tmc4671::pid::{PidGainPair, PidIGain};
 
+/// Consecutive homing-clamp write attempts tolerated before failing closed.
+pub(crate) const HOMING_CLAMP_MAX_RETRIES: u8 = 3;
+
+/// Consecutive run-current restore attempts tolerated before failing closed.
+pub(crate) const HOMING_RESTORE_MAX_RETRIES: u8 = 2;
+
 /// Trace-only cached state. Core safety state stays in `TmcControlRuntime`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TmcControlTraceState {
@@ -100,6 +106,8 @@ pub enum HomingMaintenanceResult {
     ReadyToAdvance,
     /// This channel could not complete work; keep the global homing state.
     RetryCurrentState,
+    /// Homing cannot proceed safely; the board must disable the motor.
+    FailClosed,
 }
 
 /// Long-lived board-agnostic TMC control state.
@@ -125,6 +133,8 @@ pub struct TmcControlRuntime {
     pid_error_clear_countdown_ms: u8,
     status_poll_counter: u16,
     slow_control_accum_us: u16,
+    stall_detector: Option<crate::tmc_control::stall_detector::StallDetector>,
+    homing_clamp_retries: u8,
     #[cfg(feature = "trace")]
     trace: TmcControlTraceState,
 }
@@ -168,6 +178,8 @@ impl TmcControlRuntime {
             pid_error_clear_countdown_ms: 0,
             status_poll_counter: 0,
             slow_control_accum_us: 0,
+            stall_detector: None,
+            homing_clamp_retries: 0,
             #[cfg(feature = "trace")]
             trace: TmcControlTraceState::new(),
         }
@@ -260,10 +272,22 @@ impl TmcControlRuntime {
         self.pid_error_clear_countdown_ms = 0;
         self.status_poll_counter = 0;
         self.slow_control_accum_us = 0;
+        self.clear_homing_runtime();
         #[cfg(feature = "trace")]
         {
             self.trace = TmcControlTraceState::new();
         }
+    }
+
+    /// Drop runtime-owned homing state without touching channel atomics.
+    ///
+    /// The clamped torque limit is restored by construction on every path that
+    /// calls this: shutdown de-energizes and every re-energize path rewrites
+    /// the limit from stored channel state, and a config reset makes the host
+    /// re-send the run current.
+    pub fn clear_homing_runtime(&mut self) {
+        self.stall_detector = None;
+        self.homing_clamp_retries = 0;
     }
 
     /// Reset channel atomics to firmware defaults after a config reset.
@@ -352,6 +376,7 @@ impl TmcControlRuntime {
         self.applied_velocity_offset = None;
         self.applied_torque_flux_offset = None;
         self.pid_error_clear_countdown_ms = 0;
+        self.clear_homing_runtime();
         push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
         actions
     }
@@ -1731,10 +1756,22 @@ impl TmcControlRuntime {
     ///
     /// The caller owns global homing state advancement. This method only
     /// performs per-channel TMC register work for the provided snapshot.
+    ///
+    /// State 1 suppresses the position integrator, clamps the torque/flux
+    /// current limit to the configured homing current, and arms the stall
+    /// detector. State 2 feeds the detector one target/actual position sample.
+    /// State 3 restores the stored run current and publishes the detector
+    /// result. A missing precondition or an exhausted write-retry budget
+    /// returns [`HomingMaintenanceResult::FailClosed`], which the board must
+    /// translate into an emergency disable.
+    ///
+    /// The clamp writes `PID_TORQUE_FLUX_LIMITS` directly and never mutates the
+    /// stored run-current limit in `TmcChannelState`.
     pub async fn apply_homing_channel_tick<B>(
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
         refs: TmcControlStateRefs<'_>,
+        config: &TmcControlConfig,
         homing_state: u8,
     ) -> HomingMaintenanceResult
     where
@@ -1756,6 +1793,23 @@ impl TmcControlRuntime {
                     .write_register(foci_tmc4671::registers::PID_POSITION_P_POSITION_I, reg)
                     .await;
                 defmt::info!("homing: position I suppressed");
+
+                self.apply_homing_current_clamp(tmc_spi, refs, config).await
+            }
+            2 => {
+                if let Some(detector) = self.stall_detector.as_mut() {
+                    let target = tmc_spi
+                        .read_register(foci_tmc4671::registers::PID_POSITION_TARGET)
+                        .await;
+                    let actual = tmc_spi
+                        .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
+                        .await;
+                    if let (Ok(target), Ok(actual)) = (target, actual)
+                        && detector.observe(target, actual)
+                    {
+                        refs.tmc.stall_latched.store(true, Relaxed);
+                    }
+                }
                 HomingMaintenanceResult::ReadyToAdvance
             }
             3 => {
@@ -1774,10 +1828,136 @@ impl TmcControlRuntime {
                     )
                     .await;
                 defmt::info!("homing: position I restored, integrator cleared");
+
+                self.restore_run_current_after_homing(tmc_spi, refs).await
+            }
+            _ => {
+                self.homing_clamp_retries = 0;
+                if self.stall_detector.take().is_some()
+                    || refs.tmc.homing_clamp_active.load(Relaxed)
+                {
+                    refs.tmc.homing_clamp_active.store(false, Relaxed);
+                    refs.tmc.stall_latched.store(false, Relaxed);
+                    defmt::warn!("homing: state forced idle outside the tick, detector dropped");
+                }
                 HomingMaintenanceResult::ReadyToAdvance
             }
-            _ => HomingMaintenanceResult::ReadyToAdvance,
         }
+    }
+
+    /// Clamp the torque/flux limit to the homing current and arm the detector.
+    async fn apply_homing_current_clamp<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+        config: &TmcControlConfig,
+    ) -> HomingMaintenanceResult
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        let homing_ma = refs.tmc.homing_current_ma.load(Relaxed);
+        if homing_ma == 0 {
+            if refs.tmc.stall_endstop_configured.load(Relaxed) {
+                defmt::error!("homing: stall endstop configured without homing current");
+                return HomingMaintenanceResult::FailClosed;
+            }
+            return HomingMaintenanceResult::ReadyToAdvance;
+        }
+        if !(self.motor_enabled && self.calibrated) || self.is_commission_active() {
+            defmt::error!("homing: channel not armed for steps, refusing clamp");
+            return HomingMaintenanceResult::FailClosed;
+        }
+        let limit = match crate::tmc_control::current_limit::current_limit_from_run_ma(
+            homing_ma,
+            config.current_scale_ma_per_lsb,
+        ) {
+            Ok(limit) => limit,
+            Err(_) => {
+                defmt::error!("homing: invalid homing current {} mA", homing_ma);
+                return HomingMaintenanceResult::FailClosed;
+            }
+        };
+        if limit.raw() >= refs.tmc.load_current_limit(Relaxed).raw() {
+            defmt::error!(
+                "homing: homing current {} mA is not below run current",
+                homing_ma
+            );
+            return HomingMaintenanceResult::FailClosed;
+        }
+        if tmc_spi
+            .write_register(
+                foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
+                limit.register_value(),
+            )
+            .await
+            .is_err()
+        {
+            self.homing_clamp_retries = self.homing_clamp_retries.saturating_add(1);
+            if self.homing_clamp_retries >= HOMING_CLAMP_MAX_RETRIES {
+                defmt::error!(
+                    "homing: clamp write failed {} times",
+                    self.homing_clamp_retries
+                );
+                self.homing_clamp_retries = 0;
+                return HomingMaintenanceResult::FailClosed;
+            }
+            return HomingMaintenanceResult::RetryCurrentState;
+        }
+        self.homing_clamp_retries = 0;
+        refs.tmc.stall_latched.store(false, Relaxed);
+        refs.tmc.homing_clamp_active.store(true, Relaxed);
+        self.stall_detector = Some(crate::tmc_control::stall_detector::StallDetector::new(
+            refs.tmc.stall_threshold_units.load(Relaxed),
+            refs.tmc.stall_persistence.load(Relaxed),
+        ));
+        defmt::info!("homing: clamp {} mA, detector armed", homing_ma);
+        HomingMaintenanceResult::ReadyToAdvance
+    }
+
+    /// Rewrite the stored run current and publish the stall-detector result.
+    async fn restore_run_current_after_homing<B>(
+        &mut self,
+        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
+        refs: TmcControlStateRefs<'_>,
+    ) -> HomingMaintenanceResult
+    where
+        B: embedded_hal_async::spi::SpiDevice<u8>,
+    {
+        if refs.tmc.homing_clamp_active.load(Relaxed) {
+            let run_limit = refs.tmc.load_current_limit(Relaxed).register_value();
+            if tmc_spi
+                .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS, run_limit)
+                .await
+                .is_err()
+            {
+                self.homing_clamp_retries = self.homing_clamp_retries.saturating_add(1);
+                if self.homing_clamp_retries >= HOMING_RESTORE_MAX_RETRIES {
+                    defmt::error!(
+                        "homing: run-current restore failed {} times",
+                        self.homing_clamp_retries
+                    );
+                    self.homing_clamp_retries = 0;
+                    return HomingMaintenanceResult::FailClosed;
+                }
+                return HomingMaintenanceResult::RetryCurrentState;
+            }
+            self.homing_clamp_retries = 0;
+            refs.tmc.homing_clamp_active.store(false, Relaxed);
+        }
+        if let Some(detector) = self.stall_detector.take() {
+            refs.tmc
+                .stall_result_latched
+                .store(detector.latched(), Relaxed);
+            refs.tmc
+                .stall_peak_error_units
+                .store(detector.peak_error_units(), Relaxed);
+            refs.tmc
+                .stall_trigger_tick
+                .store(detector.trigger_tick(), Relaxed);
+        }
+        refs.tmc.stall_latched.store(false, Relaxed);
+        defmt::info!("homing: run current restored");
+        HomingMaintenanceResult::ReadyToAdvance
     }
 
     /// Advance the global homing state after every channel observed a snapshot.
@@ -1808,13 +1988,14 @@ impl TmcControlRuntime {
         &mut self,
         tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
         refs: TmcControlStateRefs<'_>,
+        config: &TmcControlConfig,
         homing_snapshot: u8,
     ) -> HomingMaintenanceResult
     where
         B: embedded_hal_async::spi::SpiDevice<u8>,
     {
         self.apply_pid_error_settle_tick(tmc_spi, refs).await;
-        self.apply_homing_channel_tick(tmc_spi, refs, homing_snapshot)
+        self.apply_homing_channel_tick(tmc_spi, refs, config, homing_snapshot)
             .await
     }
 
@@ -1827,8 +2008,8 @@ impl TmcControlRuntime {
     /// # Parameters
     /// - `tmc_spi`: TMC4671 SPI transport for register reads and writes.
     /// - `refs`: Borrowed channel atomics for this motor.
-    /// - `config`: Runtime control configuration, reserved for future slow
-    ///   maintenance policies.
+    /// - `config`: Runtime control configuration; supplies the board current
+    ///   scale used to clamp the torque limit to the homing current.
     /// - `homing`: Board-owned homing state atomics.
     pub async fn apply_slow_maintenance_tick<B>(
         &mut self,
@@ -1840,16 +2021,21 @@ impl TmcControlRuntime {
     where
         B: embedded_hal_async::spi::SpiDevice<u8>,
     {
-        let _ = config;
         let mut actions = BoardActions::new();
 
         let homing_snapshot = homing.state.load(Relaxed);
-        let homing_ready = self
-            .apply_slow_channel_maintenance_tick(tmc_spi, refs, homing_snapshot)
+        match self
+            .apply_slow_channel_maintenance_tick(tmc_spi, refs, config, homing_snapshot)
             .await
-            == HomingMaintenanceResult::ReadyToAdvance;
-        if !homing_ready {
-            return actions;
+        {
+            HomingMaintenanceResult::ReadyToAdvance => {}
+            HomingMaintenanceResult::RetryCurrentState => return actions,
+            HomingMaintenanceResult::FailClosed => {
+                refs.tmc.homing_clamp_active.store(false, Relaxed);
+                self.stall_detector = None;
+                push_action(&mut actions, BoardAction::SignalEmergencyDisable);
+                return actions;
+            }
         }
         Self::advance_homing_state_after_channels(homing, homing_snapshot, true);
 
@@ -1994,6 +2180,11 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) fn set_motor_enabled_for_test(&mut self, value: bool) {
         self.motor_enabled = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stall_detector_armed_for_test(&self) -> bool {
+        self.stall_detector.is_some()
     }
 
     #[cfg(test)]

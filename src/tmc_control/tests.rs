@@ -218,15 +218,17 @@ fn channel_runtime_size_stays_bounded() {
     // 7_552 -> 7_568 / 7_520 -> 7_536: the embedded `OuterSafetyLimits` gains
     // a `u32` peak local-window excursion field (see
     // `commissioning::tests::size_regression_gates`).
+    // 7_568 -> 7_584 / 7_536 -> 7_552: the runtime now owns the homing
+    // `Option<StallDetector>` and its clamp-write retry counter.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_568);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_584);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_536);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_552);
 }
 
 #[test]
@@ -1477,6 +1479,7 @@ fn homing_channel_tick_suppresses_position_i_without_global_advance() {
             .apply_homing_channel_tick(
                 &mut tmc,
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &commissioning_runtime_config(),
                 1,
             )
             .await;
@@ -1502,6 +1505,7 @@ fn homing_channel_tick_preserves_openffboard_ungated_suppression() {
             .apply_homing_channel_tick(
                 &mut tmc,
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &commissioning_runtime_config(),
                 1,
             )
             .await;
@@ -1527,6 +1531,7 @@ fn homing_channel_tick_restores_position_i_and_clears_integrator() {
             .apply_homing_channel_tick(
                 &mut tmc,
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &commissioning_runtime_config(),
                 3,
             )
             .await;
@@ -1559,6 +1564,7 @@ fn homing_channel_tick_preserves_openffboard_ungated_restore() {
             .apply_homing_channel_tick(
                 &mut tmc,
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &commissioning_runtime_config(),
                 3,
             )
             .await;
@@ -1593,6 +1599,7 @@ fn homing_channel_tick_restore_failure_blocks_advance() {
             .apply_homing_channel_tick(
                 &mut tmc,
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &commissioning_runtime_config(),
                 1,
             )
             .await;
@@ -1603,6 +1610,401 @@ fn homing_channel_tick_restore_failure_blocks_advance() {
             !tmc.into_inner()
                 .attempted_write_to(PID_POSITION_P_POSITION_I)
         );
+    });
+}
+
+/// Board current scale realistic enough that both the homing and the run
+/// current land inside the TMC4671 limit domain. `commissioning_runtime_config`
+/// uses 0.03125 mA/LSB, which caps the representable run current near 724 mA.
+const HOMING_CURRENT_SCALE_MA_PER_LSB: f32 = 1.155;
+
+fn homing_runtime_config() -> TmcControlConfig {
+    let mut config = commissioning_runtime_config();
+    config.current_scale_ma_per_lsb = HOMING_CURRENT_SCALE_MA_PER_LSB;
+    config
+}
+
+fn homing_limit_for(run_ma: u32) -> foci_tmc4671::current_limit::PidTorqueFluxLimit {
+    crate::tmc_control::current_limit::current_limit_from_run_ma(
+        run_ma,
+        HOMING_CURRENT_SCALE_MA_PER_LSB,
+    )
+    .expect("current must be representable")
+}
+
+fn homing_state(runtime: &mut TmcControlRuntime) -> crate::state::tmc::TmcChannelState {
+    let tmc_state = crate::state::tmc::TmcChannelState::new();
+    tmc_state.store_outer_gains(crate::pid::test_outer_gains(123, 0, 1152, 0), Relaxed);
+    tmc_state.homing_current_ma.store(700, Relaxed);
+    tmc_state.stall_threshold_units.store(100, Relaxed);
+    tmc_state.stall_persistence.store(2, Relaxed);
+    tmc_state.store_current_limit(homing_limit_for(2300), Relaxed);
+    runtime.set_motor_enabled_for_test(true);
+    runtime.set_calibrated_for_test(true);
+    tmc_state
+}
+
+#[test]
+fn homing_prepare_clamps_torque_limit_and_arms_detector() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &homing_runtime_config(),
+                1,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        let expected_limit = homing_limit_for(700).register_value();
+        let writes = tmc.into_inner().writes;
+        assert!(writes.contains(&(PID_TORQUE_FLUX_LIMITS.addr(), expected_limit)));
+        assert!(tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!tmc_state.stall_latched.load(Relaxed));
+        assert!(runtime.stall_detector_armed_for_test());
+        assert_eq!(
+            tmc_state.load_current_limit(Relaxed).raw(),
+            homing_limit_for(2300).raw(),
+            "clamp must not overwrite the stored run current"
+        );
+    });
+}
+
+#[test]
+fn homing_prepare_without_homing_current_leaves_limit_alone() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        tmc_state.homing_current_ma.store(0, Relaxed);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &homing_runtime_config(),
+                1,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        assert!(!tmc.into_inner().attempted_write_to(PID_TORQUE_FLUX_LIMITS));
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!runtime.stall_detector_armed_for_test());
+    });
+}
+
+#[test]
+fn homing_prepare_fails_closed_for_stall_endstop_without_current() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        tmc_state.homing_current_ma.store(0, Relaxed);
+        tmc_state.stall_endstop_configured.store(true, Relaxed);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &homing_runtime_config(),
+                1,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::FailClosed);
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+    });
+}
+
+#[test]
+fn homing_prepare_fails_closed_when_not_armed_for_steps() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        runtime.set_calibrated_for_test(false);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &homing_runtime_config(),
+                1,
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::FailClosed);
+        assert!(!tmc.into_inner().attempted_write_to(PID_TORQUE_FLUX_LIMITS));
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+    });
+}
+
+#[test]
+fn homing_prepare_fails_closed_when_homing_current_not_below_run_current() {
+    pollster::block_on(async {
+        for homing_ma in [2300u32, 3000] {
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let tmc_state = homing_state(&mut runtime);
+            tmc_state.homing_current_ma.store(homing_ma, Relaxed);
+            let stepper_state = crate::state::stepper::StepperChannelState::new();
+            let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+            let result = runtime
+                .apply_homing_channel_tick(
+                    &mut tmc,
+                    TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                    &homing_runtime_config(),
+                    1,
+                )
+                .await;
+
+            assert_eq!(result, HomingMaintenanceResult::FailClosed);
+            assert!(!tmc.into_inner().attempted_write_to(PID_TORQUE_FLUX_LIMITS));
+            assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        }
+    });
+}
+
+#[test]
+fn homing_shutdown_quiesce_drops_detector_and_retry_state() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .await;
+        assert!(runtime.stall_detector_armed_for_test());
+
+        let _ = runtime.prepare_shutdown_quiesce();
+
+        assert!(!runtime.stall_detector_armed_for_test());
+    });
+}
+
+#[test]
+fn homing_state_forced_idle_drops_detector_and_clamp_flag() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .await;
+        tmc_state.stall_latched.store(true, Relaxed);
+        assert!(tmc_state.homing_clamp_active.load(Relaxed));
+
+        let result = runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 0)
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        assert!(!runtime.stall_detector_armed_for_test());
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!tmc_state.stall_latched.load(Relaxed));
+    });
+}
+
+#[test]
+fn homing_prepare_retries_then_fails_closed_on_clamp_write_failure() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
+        );
+
+        let mut results = std::vec::Vec::new();
+        for _ in 0..crate::tmc_control::state::HOMING_CLAMP_MAX_RETRIES {
+            results.push(
+                runtime
+                    .apply_homing_channel_tick(
+                        &mut tmc,
+                        TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                        &homing_runtime_config(),
+                        1,
+                    )
+                    .await,
+            );
+        }
+
+        assert!(
+            results[..results.len() - 1]
+                .iter()
+                .all(|r| *r == HomingMaintenanceResult::RetryCurrentState)
+        );
+        assert_eq!(
+            *results.last().unwrap(),
+            HomingMaintenanceResult::FailClosed
+        );
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!runtime.stall_detector_armed_for_test());
+    });
+}
+
+#[test]
+fn homing_detect_sets_latch_after_persistence() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default()
+                .with_read(1000)
+                .with_read(950)
+                .with_read(1000)
+                .with_read(850)
+                .with_read(1000)
+                .with_read(850),
+        );
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .await;
+
+        assert_eq!(
+            runtime
+                .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+                .await,
+            HomingMaintenanceResult::ReadyToAdvance
+        );
+        assert!(!tmc_state.stall_latched.load(Relaxed));
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .await;
+        assert!(!tmc_state.stall_latched.load(Relaxed));
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .await;
+        assert!(tmc_state.stall_latched.load(Relaxed));
+
+        let spi = tmc.into_inner();
+        assert!(spi.read_requested(PID_POSITION_TARGET));
+        assert!(spi.read_requested(PID_POSITION_ACTUAL));
+    });
+}
+
+#[test]
+fn homing_restore_writes_run_current_and_publishes_result() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default()
+                .with_read(1000)
+                .with_read(0)
+                .with_read(1000)
+                .with_read(0),
+        );
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .await;
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .await;
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .await;
+
+        let result = runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 3)
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
+        let run_limit = tmc_state.load_current_limit(Relaxed).register_value();
+        assert_eq!(
+            tmc.into_inner().writes.last(),
+            Some(&(PID_TORQUE_FLUX_LIMITS.addr(), run_limit))
+        );
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!tmc_state.stall_latched.load(Relaxed));
+        assert!(tmc_state.stall_result_latched.load(Relaxed));
+        assert_eq!(tmc_state.stall_peak_error_units.load(Relaxed), 1000);
+        assert_eq!(tmc_state.stall_trigger_tick.load(Relaxed), 2);
+        assert!(!runtime.stall_detector_armed_for_test());
+    });
+}
+
+#[test]
+fn homing_restore_failure_retries_then_fails_closed() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .await;
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
+        );
+
+        let first = runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 3)
+            .await;
+        let second = runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 3)
+            .await;
+
+        assert_eq!(first, HomingMaintenanceResult::RetryCurrentState);
+        assert_eq!(second, HomingMaintenanceResult::FailClosed);
+        assert!(
+            tmc_state.homing_clamp_active.load(Relaxed),
+            "clamp stays flagged until a successful restore or the board disable path"
+        );
+    });
+}
+
+#[test]
+fn slow_maintenance_fail_closed_signals_emergency_disable() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        tmc_state.homing_current_ma.store(0, Relaxed);
+        tmc_state.stall_endstop_configured.store(true, Relaxed);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let homing_state_atomic = core::sync::atomic::AtomicU8::new(1);
+        let triggered = core::sync::atomic::AtomicU8::new(0xFF);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let actions = runtime
+            .apply_slow_maintenance_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &homing_runtime_config(),
+                TmcControlHomingRefs::new(&homing_state_atomic, &triggered),
+            )
+            .await;
+
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, BoardAction::SignalEmergencyDisable))
+        );
+        assert_eq!(
+            homing_state_atomic.load(Relaxed),
+            1,
+            "state must not advance on fail-closed"
+        );
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
     });
 }
 
