@@ -18,6 +18,7 @@ pub mod request;
 pub mod request_writes;
 pub mod settle;
 pub mod signals;
+pub mod stall_detector;
 pub mod state;
 
 #[cfg(test)]

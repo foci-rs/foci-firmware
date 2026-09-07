@@ -43,6 +43,7 @@ pub mod stepper_runtime;
 pub mod tmc;
 pub mod tmc_control;
 pub mod tmc_diagnostics;
+pub mod tmc_ops;
 pub mod tmc_safe_state;
 pub mod trace;
 pub mod transport;
