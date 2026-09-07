@@ -170,7 +170,7 @@ pub enum AutotuneAction {
     /// promote to `Complete`. Retention is RAM-only, so this succeeds only in
     /// the same power cycle as the run that produced the candidate, and a
     /// campaign in between resets the slot.
-    StageCResume = 8,
+    IntegralResume = 8,
     /// Run the reversal/standstill robustness confirmation gates.
     ///
     /// Exercises the closed-loop controller through directional reversals and
@@ -187,7 +187,7 @@ impl AutotuneAction {
         ("FixedGainAmplitudeAscending", 1),
         ("FixedGainAmplitudeDescending", 2),
         ("BreakawaySeeded", 7),
-        ("StageCResume", 8),
+        ("IntegralResume", 8),
         ("RobustnessReversal", 9),
     ];
 }
@@ -199,7 +199,7 @@ impl AutotuneAction {
             1 => Some(Self::FixedGainAmplitudeAscending),
             2 => Some(Self::FixedGainAmplitudeDescending),
             7 => Some(Self::BreakawaySeeded),
-            8 => Some(Self::StageCResume),
+            8 => Some(Self::IntegralResume),
             9 => Some(Self::RobustnessReversal),
             _ => None,
         }

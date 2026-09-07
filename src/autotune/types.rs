@@ -803,7 +803,7 @@ mod tests {
                 ("FixedGainAmplitudeAscending", 1),
                 ("FixedGainAmplitudeDescending", 2),
                 ("BreakawaySeeded", 7),
-                ("StageCResume", 8),
+                ("IntegralResume", 8),
                 ("RobustnessReversal", 9),
             ]
         );

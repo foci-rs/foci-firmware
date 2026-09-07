@@ -346,7 +346,7 @@ fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::FixedGainAmplitudeAscending as u8, 1);
     assert_eq!(AutotuneAction::FixedGainAmplitudeDescending as u8, 2);
     assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
-    assert_eq!(AutotuneAction::StageCResume as u8, 8);
+    assert_eq!(AutotuneAction::IntegralResume as u8, 8);
     for byte in [0u8, 3, 4, 5, 6, 10] {
         assert_eq!(AutotuneAction::from_u8(byte), None);
     }
@@ -364,7 +364,7 @@ fn action_codes_and_invalid_values_are_exact() {
     );
     assert_eq!(
         AutotuneAction::from_u8(8),
-        Some(AutotuneAction::StageCResume)
+        Some(AutotuneAction::IntegralResume)
     );
     assert_eq!(
         AutotuneAction::from_u8(9),
@@ -423,8 +423,8 @@ fn action_codes_and_invalid_values_are_exact() {
             "{action:?} slot order"
         );
     }
-    assert_eq!(AutotuneAction::StageCResume.amplitude_order(), None);
-    assert_eq!(AutotuneAction::StageCResume.amplitude_slot_order(), None);
+    assert_eq!(AutotuneAction::IntegralResume.amplitude_order(), None);
+    assert_eq!(AutotuneAction::IntegralResume.amplitude_slot_order(), None);
     let ascending = CommissioningWorkflowPlan::new_fixed_gain_amplitude(
         1,
         FixedGainAmplitudeOrder::Ascending,

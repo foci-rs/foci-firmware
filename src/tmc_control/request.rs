@@ -903,7 +903,7 @@ where
                     });
                     TuneRoute::FixedGainAmplitude(preflight)
                 }
-                crate::tmc::AutotuneAction::StageCResume => {
+                crate::tmc::AutotuneAction::IntegralResume => {
                     let config = crate::commission_dispatch::integral::IntegralPreflightConfig {
                         encoder_counts_per_rev,
                         torque_limit: current_limit.raw(),
@@ -2918,7 +2918,7 @@ mod tests {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
-            tune_request_with_action(crate::tmc::AutotuneAction::StageCResume),
+            tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
             &mut integral,
@@ -3002,7 +3002,7 @@ mod tests {
             &mut integral,
             plan,
         );
-        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::StageCResume);
+        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume);
         let TmcRequestKind::Tune {
             max_stroke_travel_mrev,
             ..
@@ -3072,7 +3072,7 @@ mod tests {
         // No Proportional plan reconstructs from this, so the preflight refuses
         // before it can compare digests. The refusal still has to say which
         // retained plan the operator failed to resume.
-        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::StageCResume);
+        let mut request = tune_request_with_action(crate::tmc::AutotuneAction::IntegralResume);
         let TmcRequestKind::Tune {
             max_duration_ms, ..
         } = &mut request.kind

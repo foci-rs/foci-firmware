@@ -449,7 +449,7 @@ impl AutotuneAction {
             Self::FixedGainAmplitudeAscending
             | Self::FixedGainAmplitudeDescending
             | Self::BreakawaySeeded
-            | Self::StageCResume
+            | Self::IntegralResume
             | Self::RobustnessReversal => IntegralSlotOrder::ForwardFirst,
         }
     }
@@ -1499,22 +1499,22 @@ mod tests {
         // amplitude order nor a mirrored slot schedule.
         assert_eq!(
             AutotuneAction::from_u8(8),
-            Some(AutotuneAction::StageCResume)
+            Some(AutotuneAction::IntegralResume)
         );
         assert_eq!(
             AutotuneAction::from_u8(9),
             Some(AutotuneAction::RobustnessReversal)
         );
         assert_eq!(AutotuneAction::from_u8(10), None);
-        assert_eq!(AutotuneAction::StageCResume as u8, 8);
-        assert_eq!(AutotuneAction::StageCResume.amplitude_order(), None);
-        assert_eq!(AutotuneAction::StageCResume.amplitude_slot_order(), None);
+        assert_eq!(AutotuneAction::IntegralResume as u8, 8);
+        assert_eq!(AutotuneAction::IntegralResume.amplitude_order(), None);
+        assert_eq!(AutotuneAction::IntegralResume.amplitude_slot_order(), None);
         // Retained authority does not carry the acquisition's slot order, so a
         // resume reconstructs at the default. Every surviving action only ever
         // selects `ForwardFirst`, so the reconstruction is exact, not merely a
         // fallback.
         assert_eq!(
-            AutotuneAction::StageCResume.slot_order(),
+            AutotuneAction::IntegralResume.slot_order(),
             crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder::ForwardFirst
         );
     }

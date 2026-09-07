@@ -192,9 +192,9 @@ through the breakaway/velocity-integral/fixed-gain-amplitude engine just like a
 trace build. The `trace` feature adds only the raw evidence emission on
 top of the same campaign, not the campaign itself."""
 [[action]]
-ident = "StageCResume"
+ident = "IntegralResume"
 wire_code = 8
-label = "stage_c_resume"
+label = "integral_resume"
 doc = """
 Re-run the velocity-integral response ladder against retained firmware
 authority.
