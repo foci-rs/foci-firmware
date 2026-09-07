@@ -402,99 +402,7 @@ impl CommissionStatus {
     }
 }
 
-/// Single source of truth for the `foci_commission_phase` vocabulary: each
-/// variant's doc, identifier, and wire code, declared once.
-///
-/// Expands to [`CommissionPhase`], its `to_u8` encoding, and — under
-/// `cfg(test)` — the exhaustive inventory the uniqueness and fixture-parity
-/// guards iterate. A variant added to the invocation below therefore reaches
-/// both guards without a second edit, and one omitted from
-/// `vocabulary_fixture.json` or a host decode table fails the parity test.
-///
-/// Declaration order is load-bearing: `defmt::Format` encodes a variant by its
-/// index, so variants are appended, never reordered.
-macro_rules! commission_phase_vocabulary {
-    ($($(#[$variant_meta:meta])* $variant:ident = $code:literal,)+) => {
-        /// Identifies a single commissioning phase for progress reporting.
-        ///
-        /// Sent in the `foci_commission_phase` message on each phase transition.
-        /// The Python module translates the `u8` code to a human-readable label.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-        pub enum CommissionPhase {
-            $($(#[$variant_meta])* $variant,)+
-        }
-
-        impl CommissionPhase {
-            /// Encode to the wire representation used in the Klipper protocol message.
-            ///
-            /// Values are stable; new variants must use new codes. Code 9, formerly
-            /// the retired mechanical-identification phase, and codes 10-15, formerly
-            /// the two-variant velocity-tune block and the pre-renumber outer block,
-            /// are never reused.
-            pub fn to_u8(self) -> u8 {
-                match self {
-                    $(Self::$variant => $code,)+
-                }
-            }
-
-            /// Every variant paired with its identifier, in declaration order.
-            #[cfg(test)]
-            pub(crate) const VOCABULARY: &'static [(&'static str, Self)] =
-                &[$((stringify!($variant), Self::$variant),)+];
-        }
-    };
-}
-
-commission_phase_vocabulary! {
-    /// Inner phase 1 — ADC offset calibration.
-    AdcCalibrate = 1,
-    /// Inner phase 2 — Coil connectivity check.
-    CoilCheck = 2,
-    /// Inner phase 3 — Phase wiring validation.
-    PhaseWiringCheck = 3,
-    /// Inner phase 4 — Encoder presence and direction detection.
-    EncoderCheck = 4,
-    /// Inner phase 5 — Electrical identification (R, L, theta_e).
-    ElectricalId = 5,
-    /// Inner phase 6 — Current-loop gain synthesis.
-    CurrentTune = 6,
-    /// Inner phase 7 — Current-loop step-response validation.
-    CurrentValidate = 7,
-    /// Inner commissioning completed.
-    InnerDone = 8,
-    /// Breakaway-seeded campaign: proportional-gain acquisition against the
-    /// nominated in-band ladder. Wire code 18.
-    BreakawayProportionalAcquisition = 18,
-    /// Stage-C fixed-P velocity-integral response ladder. Wire code 19.
-    IntegralGainResponseCharacterization = 19,
-    /// Stage-C fixed-P velocity-integral acceptance sweep (ascending or
-    /// descending amplitude) against the matrix-nominated point. Wire code 20.
-    FixedGainAmplitudeValidation = 20,
-    /// Reversal-standstill robustness gate over the matrix-accepted point.
-    /// Wire code 21.
-    ReversalStandstillRobustnessGate = 21,
-    /// Outer phase — Position-loop P ramp-up. Wire code 22.
-    PositionTune = 22,
-    /// Outer phase — Filter selection based on validation metrics. Wire code 23.
-    FilterTune = 23,
-    /// Outer phase — Assemble and transmit final results to host. Wire code 24.
-    Commit = 24,
-    /// Outer commissioning completed. Wire code 25.
-    OuterDone = 25,
-    /// Encoder alignment — drive rotor to the D-axis, zero
-    /// ABN_DECODER_COUNT and offset, switch PHI_E_SELECTION to ABN
-    /// while still driving. Runs between EncoderCheck and ElectricalId
-    /// in the inner sequence, and is a valid `stop_after` target for
-    /// calibrate-on-enable paths. Appended (not inserted between
-    /// EncoderCheck and ElectricalId) so the stable wire values remain
-    /// unchanged — wire code 16.
-    EncoderAlign = 16,
-    /// Closed-loop position mode entry — writes PID gains, velocity
-    /// limit, voltage limits, biquad filters, STEP_WIDTH, enters
-    /// position mode, and verifies stability. Runs as the final inner
-    /// phase for Calibrate and Commission sequences — wire code 17.
-    ClosedLoopEntry = 17,
-}
+pub use crate::commissioning::vocabulary_generated::CommissionPhase;
 
 /// Complete gain set for closed-loop entry on re-enable.
 ///
@@ -806,17 +714,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn phase_id_to_u8_unique() {
-        let mut seen = [false; 256];
-        for (ident, p) in CommissionPhase::VOCABULARY {
-            let code = p.to_u8() as usize;
-            assert_ne!(code, 0, "{ident} must not use code 0");
-            assert!(!seen[code], "duplicate to_u8 code {code} for {ident}");
-            seen[code] = true;
-        }
-    }
-
     /// Inner codes 1-8, 16, 17 are unchanged by the velocity-vocabulary
     /// renumber; code 9 (formerly `MechanicalId`) stays permanently reserved.
     #[test]
@@ -856,5 +753,64 @@ mod tests {
         assert_eq!(CommissionPhase::FilterTune.to_u8(), 23);
         assert_eq!(CommissionPhase::Commit.to_u8(), 24);
         assert_eq!(CommissionPhase::OuterDone.to_u8(), 25);
+    }
+
+    #[test]
+    fn declaration_order_is_frozen() {
+        use crate::commissioning::vocabulary_generated::{
+            AutotuneAction, BreakawayPhase, VelocityAutotuneWorkflowKind,
+        };
+
+        assert_eq!(
+            CommissionPhase::DECLARATION_ORDER,
+            &[
+                ("AdcCalibrate", 1),
+                ("CoilCheck", 2),
+                ("PhaseWiringCheck", 3),
+                ("EncoderCheck", 4),
+                ("ElectricalId", 5),
+                ("CurrentTune", 6),
+                ("CurrentValidate", 7),
+                ("InnerDone", 8),
+                ("BreakawayProportionalAcquisition", 18),
+                ("IntegralGainResponseCharacterization", 19),
+                ("FixedGainAmplitudeValidation", 20),
+                ("ReversalStandstillRobustnessGate", 21),
+                ("PositionTune", 22),
+                ("FilterTune", 23),
+                ("Commit", 24),
+                ("OuterDone", 25),
+                ("EncoderAlign", 16),
+                ("ClosedLoopEntry", 17),
+            ]
+        );
+        assert_eq!(
+            BreakawayPhase::DECLARATION_ORDER,
+            &[
+                ("BreakawayProbe", 0),
+                ("ProportionalResponseDiscovery", 1),
+                ("ProportionalBandConfirmation", 2),
+            ]
+        );
+        assert_eq!(
+            VelocityAutotuneWorkflowKind::DECLARATION_ORDER,
+            &[
+                ("Resume", 0),
+                ("AcceptanceMatrixAscending", 1),
+                ("AcceptanceMatrixDescending", 2),
+                ("BreakawaySeededProportionalThenIntegral", 3),
+                ("ReversalStandstillRobustnessGate", 4),
+            ]
+        );
+        assert_eq!(
+            AutotuneAction::DECLARATION_ORDER,
+            &[
+                ("MatrixAscending", 1),
+                ("MatrixDescending", 2),
+                ("BreakawaySeeded", 7),
+                ("StageCResume", 8),
+                ("RobustnessReversal", 9),
+            ]
+        );
     }
 }

@@ -8,24 +8,7 @@
 
 use super::integral_plan::{VelocityIntegralPlanError, fnv1a64_byte};
 
-/// Command-level acquisition shape disclosed before any motion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum VelocityAutotuneWorkflowKind {
-    /// Resume Stage C from retained firmware authority.
-    Resume = 0,
-    /// Run the retained fixed-I acceptance matrix from low to high amplitude.
-    AcceptanceMatrixAscending = 1,
-    /// Run the retained fixed-I acceptance matrix from high to low amplitude.
-    AcceptanceMatrixDescending = 2,
-    /// Run the breakaway probe, additive discovery, held-out confirmation, and
-    /// the existing Stage-C integral continuation as one bounded command.
-    BreakawaySeededProportionalThenIntegral = 3,
-    /// Run the reversal-standstill robustness gate over the accepted point.
-    /// Distinct from every acquisition shape so the host arms the extended
-    /// run timeout for the multi-cycle probe instead of the 5 s plan window.
-    ReversalStandstillRobustnessGate = 4,
-}
+pub use crate::commissioning::vocabulary_generated::VelocityAutotuneWorkflowKind;
 
 /// Conservative command-level plan used only for disclosure and host timeout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

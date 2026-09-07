@@ -433,52 +433,9 @@ pub enum TmcRequestKind {
     TestSpin { revolutions: u8 },
 }
 
-/// Operator-selected velocity-autotune acquisition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-#[repr(u8)]
-pub enum AutotuneAction {
-    /// Run the retained fixed-I matrix from lowest to highest amplitude.
-    MatrixAscending = 1,
-    /// Run the retained fixed-I matrix from highest to lowest amplitude.
-    MatrixDescending = 2,
-    /// Run the breakaway probe, additive discovery, held-out confirmation, and
-    /// the existing velocity-integral continuation as one bounded command.
-    ///
-    /// This is the production `Tune` path: a non-trace build routes the request
-    /// through the breakaway/velocity-integral/acceptance engine just like a
-    /// trace build. The `trace` feature adds only the raw evidence emission on
-    /// top of the same campaign, not the campaign itself.
-    BreakawaySeeded = 7,
-    /// Re-run the velocity-integral response ladder against retained firmware
-    /// authority.
-    ///
-    /// Replays one exact retained plan so a sufficient run can reproduce and
-    /// promote to `Complete`. Retention is RAM-only, so this succeeds only in
-    /// the same power cycle as the run that produced the candidate, and a
-    /// campaign in between resets the slot.
-    StageCResume = 8,
-    /// Run the reversal/standstill robustness confirmation gates.
-    ///
-    /// Exercises the closed-loop controller through directional reversals and
-    /// forced standstill holds to confirm gain margins survive the conditions
-    /// production motion actually produces, rather than the smooth
-    /// constant-direction runs the other actions use.
-    RobustnessReversal = 9,
-}
+pub use crate::commissioning::vocabulary_generated::AutotuneAction;
 
 impl AutotuneAction {
-    /// Decode one wire action without assigning behavior to unknown values.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::MatrixAscending),
-            2 => Some(Self::MatrixDescending),
-            7 => Some(Self::BreakawaySeeded),
-            8 => Some(Self::StageCResume),
-            9 => Some(Self::RobustnessReversal),
-            _ => None,
-        }
-    }
-
     /// Return the observation slot order this acquisition requests.
     ///
     /// Every surviving action executes the same fixed forward/reverse slot
@@ -1518,6 +1475,22 @@ mod tests {
 
     fn i_gain(raw: u16) -> foci_tmc4671::pid::PidIGain {
         foci_tmc4671::pid::PidIGain::new(raw).expect("test gain must be in range")
+    }
+
+    #[test]
+    fn autotune_action_admission_is_frozen() {
+        for code in [0u8, 3, 4, 5, 6] {
+            assert!(
+                AutotuneAction::from_u8(code).is_none(),
+                "reserved {code} decoded"
+            );
+        }
+        for code in [1u8, 2, 7, 8, 9] {
+            assert!(
+                AutotuneAction::from_u8(code).is_some(),
+                "live {code} rejected"
+            );
+        }
     }
 
     #[test]

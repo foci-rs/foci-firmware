@@ -46,36 +46,7 @@ use super::breakaway_plan::{
 use super::breakaway_search::BreakawayMotionClass;
 use super::sweep_evidence::direction_report_code;
 
-/// Single source of truth for the breakaway sub-phase vocabulary, matching
-/// [`crate::autotune::CommissionPhase`]'s: the enum and the exhaustive
-/// inventory the fixture-parity guard iterates come from one declaration, so a
-/// variant added here cannot slip past that guard.
-macro_rules! breakaway_phase_vocabulary {
-    ($($(#[$variant_meta:meta])* $variant:ident = $code:literal,)+) => {
-        /// Phase that owns a breakaway-campaign wire record or terminal.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-        #[repr(u8)]
-        pub(crate) enum BreakawayPhase {
-            $($(#[$variant_meta])* $variant = $code,)+
-        }
-
-        impl BreakawayPhase {
-            /// Every variant paired with its identifier, in declaration order.
-            #[cfg(test)]
-            pub(crate) const VOCABULARY: &'static [(&'static str, Self)] =
-                &[$((stringify!($variant), Self::$variant),)+];
-        }
-    };
-}
-
-breakaway_phase_vocabulary! {
-    /// The deterministic upward physical-excursion probe.
-    BreakawayProbe = 0,
-    /// The additive discovery ladder.
-    ProportionalResponseDiscovery = 1,
-    /// The held-out eight-stroke confirmation block.
-    ProportionalBandConfirmation = 2,
-}
+pub(crate) use crate::commissioning::vocabulary_generated::BreakawayPhase;
 
 /// Unified wire terminal-cause taxonomy spanning every probe, discovery, and
 /// confirmation terminal variant, plus the campaign-level accept outcome.
