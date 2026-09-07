@@ -86,9 +86,10 @@ pub struct TmcChannelState {
     /// had failures — a restore alone does not confirm the chip is safe to
     /// arm, only a fresh sentinel pass does. Cleared only by
     /// `arm_motor_electrical` immediately after `verify_motor_sentinel`
-    /// succeeds, before any settling write or enable-pin assertion. This is
-    /// the compound "safe-state pass AND fresh sentinel pass" latch the
-    /// re-arm gate is built on; do not clear it anywhere else.
+    /// succeeds, before any settling write or enable-pin assertion, or by a
+    /// full `TmcChannelState::reset()`. This is the compound "safe-state
+    /// pass AND fresh sentinel pass" latch the re-arm gate is built on; do
+    /// not clear it anywhere else.
     pub safe_state_incomplete: AtomicBool,
     /// Set when the most recent `restore_safe_state_via_backend` pass had
     /// one or more verified-write or PID-error-sum-clear failures. Checked
