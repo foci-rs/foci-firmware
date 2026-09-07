@@ -704,7 +704,7 @@ pub(crate) struct StageCPromotionDiagnostic {
     pub phase_live: bool,
     /// The terminal's `breakaway_acceptance` flag.
     pub breakaway_acceptance: bool,
-    /// `breakaway_stage_c_execution_plan()` returned `Some`.
+    /// `breakaway_integral_execution_plan()` returned `Some`.
     pub execution_plan_present: bool,
     /// The dispatch carried an authority.
     pub authority_present: bool,
@@ -719,7 +719,7 @@ pub(crate) struct StageCPromotionDiagnostic {
 
 /// Encode a [`StageCPromotionDiagnostic`] as a canonical trace record (kind 10).
 #[cfg(feature = "trace")]
-pub(crate) fn encode_stage_c_promotion_diagnostic(
+pub(crate) fn encode_integral_promotion_diagnostic(
     diagnostic: StageCPromotionDiagnostic,
 ) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_c_recovery_rest_reuses_the_exact_event_150_record() {
+    fn integral_recovery_rest_reuses_the_exact_event_150_record() {
         let report = recovery_rest_diagnostic();
         let encoded = encode_velocity_integral_event(VelocityIntegralEvent::RecoveryRest(report));
         let shared = super::super::sweep_reporting::encode_recovery_rest(report);
@@ -1117,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_c_probe_constrained_flags_and_trace_plan_preserve_reconstruction_inputs() {
+    fn integral_probe_constrained_flags_and_trace_plan_preserve_reconstruction_inputs() {
         let mut positive_i = [0; super::super::integral_plan::INTEGRAL_MAX_POSITIVE_RUNGS];
         for (index, gain) in positive_i.iter_mut().enumerate() {
             *gain = u16::try_from(index + 1).unwrap();
@@ -1311,7 +1311,7 @@ mod tests {
     /// agree by construction, and this test is the regression guard for that
     /// agreement.
     #[test]
-    fn production_stage_c_digest_matches_trace_baseline() {
+    fn production_integral_digest_matches_trace_baseline() {
         use crate::commissioning::types::{VelocityIntegralEvent, VelocityIntegralPlanned};
 
         let mut integrity = VelocityIntegralIntegrity::new(7, plan());
@@ -1627,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_c_terminal_flags_are_packed_once() {
+    fn integral_terminal_flags_are_packed_once() {
         let terminal = VelocityIntegralTerminal {
             run_sequence: 7,
             evidence_sequence: 9,
@@ -1673,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_c_terminal_flags_pack_the_rest_rejection_discriminator() {
+    fn integral_terminal_flags_pack_the_rest_rejection_discriminator() {
         let mut terminal = VelocityIntegralTerminal {
             run_sequence: 7,
             evidence_sequence: 9,
@@ -1954,7 +1954,7 @@ mod tests {
     }
 
     #[test]
-    fn excessive_drift_encodes_as_stage_c_exclusion_code_six() {
+    fn excessive_drift_encodes_as_integral_exclusion_code_six() {
         let mut report = excluded_observation(
             StationarityExclusion::ExcessiveDrift,
             Some(rejection_diagnostic_fixture()),

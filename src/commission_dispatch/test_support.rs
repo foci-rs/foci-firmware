@@ -63,7 +63,7 @@ pub fn sample_outer_params() -> crate::commissioning::OuterAutotuneInputs {
 
 /// A genuine breakaway confirmation, minted through the real
 /// `plan_band_confirmation` -> `evaluate_band_confirmation` ->
-/// `bind_breakaway_stage_c_authority` chain a live campaign uses, plus the
+/// `bind_breakaway_integral_authority` chain a live campaign uses, plus the
 /// intermediate values a Stage-C plan builder needs alongside the token.
 pub struct BreakawayConfirmationForTest {
     pub token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
@@ -80,7 +80,7 @@ pub fn breakaway_confirmation_for_test() -> BreakawayConfirmationForTest {
         ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
         plan_band_confirmation,
     };
-    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
+    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_integral_authority;
     use crate::commissioning::outer::velocity::sweep_consensus::{
         CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
     };
@@ -124,7 +124,7 @@ pub fn breakaway_confirmation_for_test() -> BreakawayConfirmationForTest {
     };
     let acceptance =
         evaluate_band_confirmation(nominated_p, forward, reverse).expect("accepted confirmation");
-    let token = bind_breakaway_stage_c_authority(
+    let token = bind_breakaway_integral_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
         Ok(acceptance),

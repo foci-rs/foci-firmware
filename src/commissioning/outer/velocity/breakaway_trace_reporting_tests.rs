@@ -476,7 +476,7 @@ fn encode_campaign_terminal_has_stable_frame_layout() {
         phase: 2,
         terminal_cause: 21,
         accepted: 1,
-        stage_c_plan_digest: 0x1122_3344_5566_7788,
+        integral_plan_digest: 0x1122_3344_5566_7788,
         error_code: 0,
     };
     let record = encode_campaign_terminal(report);
@@ -487,7 +487,7 @@ fn encode_campaign_terminal_has_stable_frame_layout() {
         .u8(report.phase)
         .u8(report.terminal_cause)
         .u8(report.accepted)
-        .u64(report.stage_c_plan_digest)
+        .u64(report.integral_plan_digest)
         .u8(report.error_code);
     assert_eq!(record.as_bytes(), expected.bytes());
 }
@@ -676,7 +676,7 @@ fn every_encoder_uses_a_distinct_local_tag() {
             phase: 0,
             terminal_cause: 0,
             accepted: 0,
-            stage_c_plan_digest: 0,
+            integral_plan_digest: 0,
             error_code: 0,
         })
         .as_bytes()[0],

@@ -1011,7 +1011,7 @@ pub(crate) fn campaign_terminal_report(
     phase: BreakawayPhase,
     terminal_cause: BreakawayTerminalCause,
     accepted: bool,
-    stage_c_plan_digest: u64,
+    integral_plan_digest: u64,
     error_code: u8,
     run_sequence: u32,
     evidence_sequence: u16,
@@ -1022,7 +1022,7 @@ pub(crate) fn campaign_terminal_report(
         phase: phase as u8,
         terminal_cause: terminal_cause as u8,
         accepted: u8::from(accepted),
-        stage_c_plan_digest,
+        integral_plan_digest,
         error_code,
     }
 }

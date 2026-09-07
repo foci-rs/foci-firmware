@@ -475,7 +475,7 @@ fn schema_one_candidate_rejects_before_motion_without_losing_authority() {
 }
 
 #[test]
-fn q8_8_package_authority_rejects_before_stage_c_motion() {
+fn q8_8_package_authority_rejects_before_integral_motion() {
     let mut retained = authority(0, 7);
     // A retained plan from the legacy Q8.8 build carries an older rule contract
     // (no rule bits set) that differs from the current BUILD_FEATURES.
@@ -493,7 +493,7 @@ fn q8_8_package_authority_rejects_before_stage_c_motion() {
 }
 
 #[test]
-fn stage_c_candidate_size_is_measured_without_padding() {
+fn integral_candidate_size_is_measured_without_padding() {
     // Exact sizes, so retained Stage-C state cannot grow unnoticed on a target
     // with no heap. A failure here is a prompt to justify the growth, not to
     // update the number reflexively.

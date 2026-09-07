@@ -1,9 +1,9 @@
-use super::stage_c::{
-    STAGE_C_CAUSE_EVIDENCE_INTEGRITY, STAGE_C_CAUSE_NO_RETAINED_AUTHORITY,
-    STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, STAGE_C_CAUSE_PLAN_MISMATCH,
-    STAGE_C_CAUSE_REPRODUCTION_MISMATCH, StageCPreflight, StageCPreflightConfig,
-    StageCPreflightRejection, apply_stage_c_terminal, missing_authority_stage_c_terminal,
-    preflight_stage_c_request,
+use super::integral::{
+    INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY, INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY,
+    INTEGRAL_DISPATCH_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
+    INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH, INTEGRAL_DISPATCH_CAUSE_REPRODUCTION_MISMATCH,
+    IntegralPreflight, IntegralPreflightConfig, IntegralPreflightRejection,
+    apply_integral_terminal, missing_authority_integral_terminal, preflight_integral_request,
 };
 use super::{CommissionOutcome, ReplyPayload};
 use crate::commissioning::outer::OuterMotionBudget;
@@ -28,8 +28,8 @@ const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 const COUNTS_PER_REV: u32 = 4_000;
 
-fn preflight_config() -> StageCPreflightConfig {
-    StageCPreflightConfig {
+fn preflight_config() -> IntegralPreflightConfig {
+    IntegralPreflightConfig {
         encoder_counts_per_rev: COUNTS_PER_REV,
         torque_limit: TORQUE_LIMIT,
         limit_evidence_capability: VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
@@ -61,7 +61,7 @@ fn stage_b_plan() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
     .expect("valid Stage-B plan")
 }
 
-fn breakaway_stage_c_plan()
+fn breakaway_integral_plan()
 -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
     use crate::commission_dispatch::test_support::breakaway_confirmation_for_test;
     use crate::commissioning::outer::velocity::integral_plan::{
@@ -99,7 +99,7 @@ fn breakaway_stage_c_plan()
     .expect("valid breakaway Stage-C plan")
 }
 
-/// The retained breakaway authority summary, as `apply_stage_c_terminal` holds
+/// The retained breakaway authority summary, as `apply_integral_terminal` holds
 /// it at the reproduced-`Complete` promotion (`acquisition ==
 /// ConfirmedBreakaway`, held-out intervals, campaign `fixed_p`/target).
 fn breakaway_authority_summary(
@@ -155,7 +155,7 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
     use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
     use crate::commissioning::outer::velocity::integral_i_at;
 
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
     let execution = plan.execution_plan();
     let mut terminal = breakaway_terminal(
@@ -167,13 +167,14 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
     // terminus == 2 (rest boundary at rung index 2, slot cleared).
     terminal.rest_boundary_rung_plus_one = 3;
 
-    let installed =
-        match super::stage_c::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
-            .expect("no fault")
-        {
-            super::stage_c::AcceptanceInstall::Installed(point) => point,
-            other => panic!("expected install, got {other:?}"),
-        };
+    let installed = match super::integral::breakaway_acceptance_point(
+        CHANNEL, &authority, execution, &terminal,
+    )
+    .expect("no fault")
+    {
+        super::integral::AcceptanceInstall::Installed(point) => point,
+        other => panic!("expected install, got {other:?}"),
+    };
     assert_eq!(
         installed.identity.schema_revision,
         BREAKAWAY_INTEGRAL_SCHEMA_REVISION
@@ -196,7 +197,7 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
 
 #[test]
 fn breakaway_complete_without_terminus_reports_missing_terminus() {
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
     let execution = plan.execution_plan();
     // Sufficiency only: no rest boundary, so no target terminus.
@@ -207,15 +208,15 @@ fn breakaway_complete_without_terminus_reports_missing_terminus() {
         sufficient_evidence(0),
     );
     assert!(matches!(
-        super::stage_c::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
+        super::integral::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
             .expect("no fault"),
-        super::stage_c::AcceptanceInstall::MissingTargetTerminus
+        super::integral::AcceptanceInstall::MissingTargetTerminus
     ));
 }
 
 #[test]
 fn breakaway_non_complete_terminal_is_not_an_acceptance_terminal() {
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
     let execution = plan.execution_plan();
     let mut terminal = breakaway_terminal(
@@ -226,14 +227,14 @@ fn breakaway_non_complete_terminal_is_not_an_acceptance_terminal() {
     );
     terminal.rest_boundary_rung_plus_one = 3;
     assert!(matches!(
-        super::stage_c::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
+        super::integral::breakaway_acceptance_point(CHANNEL, &authority, execution, &terminal)
             .expect("no fault"),
-        super::stage_c::AcceptanceInstall::NotAcceptanceTerminal
+        super::integral::AcceptanceInstall::NotAcceptanceTerminal
     ));
 }
 
 fn retained_authority() -> IntegralAuthoritySummary {
-    breakaway_authority_summary(&breakaway_stage_c_plan())
+    breakaway_authority_summary(&breakaway_integral_plan())
 }
 
 fn sufficient_evidence(offset: i32) -> IntegralRunEvidence {
@@ -272,7 +273,7 @@ fn terminal(
     outcome: VelocityIntegralOutcome,
     evidence: IntegralRunEvidence,
 ) -> VelocityIntegralTerminal {
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     VelocityIntegralTerminal {
         run_sequence: 9,
         evidence_sequence: 57,
@@ -313,21 +314,23 @@ fn a_resume_without_retained_authority_fails_closed_and_carries_no_plan() {
     // nothing retained, which is the ordinary state after any reset.
     let slot = IntegralRetentionSlot::new();
     assert!(
-        preflight_stage_c_request(request(), &preflight_config(), 4, &slot)
+        preflight_integral_request(request(), &preflight_config(), 4, &slot)
             .expect("an empty slot is not a rejection")
             .is_none()
     );
 
-    let terminal = missing_authority_stage_c_terminal(4);
+    let terminal = missing_authority_integral_terminal(4);
 
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
     assert_eq!(
         terminal.cause,
-        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_NO_RETAINED_AUTHORITY)
+        IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY)
     );
     assert_ne!(
         terminal.cause,
-        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT)
+        IntegralOutcomeCause::Dispatch(
+            INTEGRAL_DISPATCH_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT
+        )
     );
     assert_eq!(terminal.run_sequence, 4);
     assert_eq!(terminal.plan_digest, 0);
@@ -341,15 +344,15 @@ fn a_resume_without_retained_authority_fails_closed_and_carries_no_plan() {
 }
 
 #[test]
-fn retained_authority_regenerates_the_exact_stage_c_plan_before_motion() {
+fn retained_authority_regenerates_the_exact_integral_plan_before_motion() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
 
-    let preflight = preflight_stage_c_request(request(), &preflight_config(), 7, &slot)
+    let preflight = preflight_integral_request(request(), &preflight_config(), 7, &slot)
         .expect("matching retained plan")
         .expect("nonempty Stage-C slot");
 
-    assert_eq!(preflight.plan, breakaway_stage_c_plan());
+    assert_eq!(preflight.plan, breakaway_integral_plan());
     assert_eq!(preflight.identity, retained_authority().identity);
     assert_eq!(preflight.run_sequence, 7);
     assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
@@ -363,18 +366,18 @@ fn changed_resume_plan_is_rejected_without_mutating_retention() {
     let mut changed = request();
     changed.max_stroke_travel_mrev += 1;
 
-    let rejection = preflight_stage_c_request(changed, &preflight_config(), 8, &slot)
+    let rejection = preflight_integral_request(changed, &preflight_config(), 8, &slot)
         .expect_err("changed frozen plan must reject before motion");
 
     assert!(matches!(
         rejection,
-        StageCPreflightRejection::RejectedPlanMismatch { .. }
+        IntegralPreflightRejection::RejectedPlanMismatch { .. }
     ));
     assert_eq!(slot.authority(), Some(retained));
 }
 
 #[test]
-fn velocity_integral_outcome_codes_and_stage_c_namespace_are_stable() {
+fn velocity_integral_outcome_codes_and_integral_namespace_are_stable() {
     use crate::commissioning::outer::velocity::integral_reporting::outcome_code;
 
     assert_eq!(outcome_code(VelocityIntegralOutcome::CompleteCandidate), 0);
@@ -386,8 +389,11 @@ fn velocity_integral_outcome_codes_and_stage_c_namespace_are_stable() {
         4
     );
     assert_eq!(outcome_code(VelocityIntegralOutcome::Failed), 5);
-    assert_eq!(STAGE_C_CAUSE_PLAN_MISMATCH, 7);
-    assert_eq!(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT, 11);
+    assert_eq!(INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH, 7);
+    assert_eq!(
+        INTEGRAL_DISPATCH_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
+        11
+    );
 }
 
 #[test]
@@ -401,7 +407,7 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     );
     first_terminal.rest_boundary_rung_plus_one = 4;
     first_terminal.rest_boundary_slot_plus_one = 6;
-    let first = apply_stage_c_terminal(first_terminal, &mut slot);
+    let first = apply_integral_terminal(first_terminal, &mut slot);
     assert_eq!(
         first.terminal.outcome,
         VelocityIntegralOutcome::CompleteCandidate
@@ -423,7 +429,7 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     second_terminal.rest_boundary_rung_plus_one = 5;
     second_terminal.rest_boundary_slot_plus_one = 2;
     second_terminal.cause = IntegralOutcomeCause::Engine(10);
-    let second = apply_stage_c_terminal(second_terminal, &mut slot);
+    let second = apply_integral_terminal(second_terminal, &mut slot);
     assert_eq!(second.terminal.outcome, VelocityIntegralOutcome::Complete);
     assert_eq!(second.terminal.cause, IntegralOutcomeCause::Engine(10));
     let reproduction = second.reproduction.unwrap();
@@ -453,7 +459,7 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
 /// the second run to redetect it.
 #[test]
 fn reproduced_complete_without_current_terminus_still_installs() {
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
     let execution = plan.execution_plan();
 
@@ -467,7 +473,7 @@ fn reproduced_complete_without_current_terminus_still_installs() {
         sufficient_evidence(0),
     );
     first_terminal.rest_boundary_rung_plus_one = 3;
-    apply_stage_c_terminal(first_terminal, &mut slot);
+    apply_integral_terminal(first_terminal, &mut slot);
 
     let mut second_terminal = breakaway_terminal(
         &plan,
@@ -477,10 +483,10 @@ fn reproduced_complete_without_current_terminus_still_installs() {
     );
     second_terminal.rest_boundary_rung_plus_one = 0;
     second_terminal.rest_boundary_slot_plus_one = 0;
-    let dispatch = apply_stage_c_terminal(second_terminal, &mut slot);
+    let dispatch = apply_integral_terminal(second_terminal, &mut slot);
     assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Complete);
 
-    let installed = match super::stage_c::breakaway_acceptance_point(
+    let installed = match super::integral::breakaway_acceptance_point(
         CHANNEL,
         &authority,
         execution,
@@ -488,7 +494,7 @@ fn reproduced_complete_without_current_terminus_still_installs() {
     )
     .expect("no fault")
     {
-        super::stage_c::AcceptanceInstall::Installed(point) => point,
+        super::integral::AcceptanceInstall::Installed(point) => point,
         other => panic!("expected install, got {other:?}"),
     };
     assert_eq!(installed.selected_p, authority.fixed_p);
@@ -498,7 +504,7 @@ fn reproduced_complete_without_current_terminus_still_installs() {
 fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
-    apply_stage_c_terminal(
+    apply_integral_terminal(
         terminal(
             VelocityIntegralOutcome::CompleteCandidate,
             sufficient_evidence(0),
@@ -506,7 +512,7 @@ fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
         &mut slot,
     );
 
-    let dispatch = apply_stage_c_terminal(
+    let dispatch = apply_integral_terminal(
         terminal(
             VelocityIntegralOutcome::CompleteCandidate,
             divergent_evidence(),
@@ -520,7 +526,7 @@ fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
     );
     assert_eq!(
         dispatch.terminal.cause,
-        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH)
+        IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_REPRODUCTION_MISMATCH)
     );
     assert!(dispatch.reproduction.is_some());
     assert_eq!(slot.state(), IntegralRetentionSlotState::Candidate);
@@ -530,7 +536,7 @@ fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
 fn inconclusive_preserves_authority_while_fault_clears_it() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
-    apply_stage_c_terminal(
+    apply_integral_terminal(
         terminal(
             VelocityIntegralOutcome::CompleteCandidate,
             sufficient_evidence(0),
@@ -538,7 +544,7 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
         &mut slot,
     );
 
-    let inconclusive = apply_stage_c_terminal(
+    let inconclusive = apply_integral_terminal(
         terminal(VelocityIntegralOutcome::Inconclusive, empty_evidence()),
         &mut slot,
     );
@@ -548,7 +554,7 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
     );
     assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
 
-    let fault = apply_stage_c_terminal(
+    let fault = apply_integral_terminal(
         terminal(VelocityIntegralOutcome::Fault, empty_evidence()),
         &mut slot,
     );
@@ -557,7 +563,7 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
 }
 
 #[test]
-fn unexpected_complete_terminal_fails_closed_in_retained_stage_c_dispatch() {
+fn unexpected_complete_terminal_fails_closed_in_retained_integral_dispatch() {
     // Combined workflow terminals are handled before this retained dispatcher.
     // Non-combined retained Stage C reports sufficiency as `CompleteCandidate`.
     // A bare `Complete` reaching this function is therefore a contract
@@ -565,7 +571,7 @@ fn unexpected_complete_terminal_fails_closed_in_retained_stage_c_dispatch() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
 
-    let dispatch = apply_stage_c_terminal(
+    let dispatch = apply_integral_terminal(
         terminal(VelocityIntegralOutcome::Complete, sufficient_evidence(0)),
         &mut slot,
     );
@@ -573,14 +579,14 @@ fn unexpected_complete_terminal_fails_closed_in_retained_stage_c_dispatch() {
     assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
         dispatch.terminal.cause,
-        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY)
+        IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY)
     );
     assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 }
 
 #[test]
 fn every_engine_outcome_has_a_declared_dispatch_verdict() {
-    // The engine has six outcomes and `apply_stage_c_terminal` has five arms;
+    // The engine has six outcomes and `apply_integral_terminal` has five arms;
     // nothing tested the cross-product, which is why three instances of
     // dispatch-level fault promotion reached hardware before a test. Each row
     // states the intended verdict, so grouping a success with a rejection
@@ -589,7 +595,7 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
         (
             VelocityIntegralOutcome::Complete,
             VelocityIntegralOutcome::Fault,
-            IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
+            IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY),
         ),
         (
             VelocityIntegralOutcome::CompleteCandidate,
@@ -614,7 +620,7 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
         (
             VelocityIntegralOutcome::RejectedPlanMismatch,
             VelocityIntegralOutcome::Fault,
-            IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
+            IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY),
         ),
     ];
 
@@ -623,7 +629,7 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
         slot.install_authority(retained_authority());
 
         let dispatch =
-            apply_stage_c_terminal(terminal(engine_outcome, sufficient_evidence(0)), &mut slot);
+            apply_integral_terminal(terminal(engine_outcome, sufficient_evidence(0)), &mut slot);
 
         assert_eq!(
             dispatch.terminal.outcome, expected_outcome,
@@ -640,7 +646,7 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
 fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
-    apply_stage_c_terminal(
+    apply_integral_terminal(
         terminal(
             VelocityIntegralOutcome::CompleteCandidate,
             sufficient_evidence(0),
@@ -652,7 +658,7 @@ fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
     rest_terminal.cause = IntegralOutcomeCause::Error(
         crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code(),
     );
-    let dispatch = apply_stage_c_terminal(rest_terminal, &mut slot);
+    let dispatch = apply_integral_terminal(rest_terminal, &mut slot);
 
     assert_eq!(
         dispatch.terminal.outcome,
@@ -668,7 +674,7 @@ fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
 }
 
 #[test]
-fn same_channel_calibration_preserves_stage_c_and_other_channel_clears_it() {
+fn same_channel_calibration_preserves_integral_and_other_channel_clears_it() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
 
@@ -716,21 +722,27 @@ fn entry_snapshot() -> crate::commissioning::OuterGainRollbackSnapshot {
 }
 
 #[test]
-fn stage_c_terminal_causes_reserve_recovery_and_lifecycle_values() {
-    assert_eq!(super::stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY, 4);
-    assert_eq!(super::stage_c::STAGE_C_CAUSE_REPRODUCTION_MISMATCH, 6);
-    assert_eq!(super::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH, 7);
+fn integral_terminal_causes_reserve_recovery_and_lifecycle_values() {
+    assert_eq!(
+        super::integral::INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY,
+        4
+    );
+    assert_eq!(
+        super::integral::INTEGRAL_DISPATCH_CAUSE_REPRODUCTION_MISMATCH,
+        6
+    );
+    assert_eq!(super::integral::INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH, 7);
 }
 
 #[fixture_test]
-async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
+async fn breakaway_integral_plan_ready_retains_terminal_authority() {
     crate::state::tmc::reset_all_tmc_channels();
     crate::state::stepper::reset_all_stepper_channels();
 
     use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
     use crate::commissioning::types::StepResult;
 
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let expected_authority = IntegralAuthoritySummary::from_plan(
         CHANNEL,
         BUILD_FEATURES,
@@ -739,7 +751,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
         plan.execution_plan(),
         plan.authority,
     );
-    let mut stage_c_slot = IntegralRetentionSlot::new();
+    let mut integral_slot = IntegralRetentionSlot::new();
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
     let mut calibrated = true;
@@ -764,15 +776,15 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
         &mut state,
         4_095,
         CHANNEL,
-        super::CommissionRetention::new(&mut stage_c_slot),
+        super::CommissionRetention::new(&mut integral_slot),
     )
     .await;
 
     assert_eq!(
-        stage_c_slot.state(),
+        integral_slot.state(),
         IntegralRetentionSlotState::AuthorityOnly
     );
-    assert_eq!(stage_c_slot.authority(), Some(expected_authority));
+    assert_eq!(integral_slot.authority(), Some(expected_authority));
     assert!(matches!(
         outcome,
         CommissionOutcome::Evidence {
@@ -786,7 +798,7 @@ async fn breakaway_stage_c_plan_ready_retains_terminal_authority() {
 }
 
 #[fixture_test]
-async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
+async fn scheduled_integral_plan_event_retains_terminal_authority() {
     crate::state::tmc::reset_all_tmc_channels();
     crate::state::stepper::reset_all_stepper_channels();
 
@@ -796,14 +808,14 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
     use crate::config::TmcConfig;
     use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
 
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let expected_authority = retained_authority();
     let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
     runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(
         1,
         crate::state::tmc::tmc_channel0(),
     ));
-    let mut stage_c_slot = IntegralRetentionSlot::new();
+    let mut integral_slot = IntegralRetentionSlot::new();
     let mut backend = MockBackend::new();
     let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, TmcConfig::default_for_test());
     let poll = CommissionPoll::ReadyNow {
@@ -819,7 +831,7 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
         .drive_commissioning_poll_with_stages(
             poll,
             &mut backend,
-            super::CommissionTerminalContext::new(&mut stage_c_slot, |reply| {
+            super::CommissionTerminalContext::new(&mut integral_slot, |reply| {
                 emitted_reply = Some(reply)
             }),
             crate::state::tmc::tmc_channel0(),
@@ -830,10 +842,10 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
         .expect("active engine should classify the scheduled plan event");
 
     assert_eq!(
-        stage_c_slot.state(),
+        integral_slot.state(),
         IntegralRetentionSlotState::AuthorityOnly
     );
-    assert_eq!(stage_c_slot.authority(), Some(expected_authority));
+    assert_eq!(integral_slot.authority(), Some(expected_authority));
     assert!(emitted_reply.is_none());
     assert!(matches!(
         action,
@@ -848,7 +860,7 @@ async fn scheduled_stage_c_plan_event_retains_terminal_authority() {
 }
 
 #[test]
-fn outer_safety_timing_terminal_order_stage_c_resume() {
+fn outer_safety_timing_terminal_order_integral_resume() {
     pollster::block_on(async {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
             .lock()
@@ -863,13 +875,14 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         };
         use crate::commissioning::outer::{PositiveIRestBoundary, VelocitySettleMetrics};
 
-        let mut stage_c_slot = IntegralRetentionSlot::new();
-        stage_c_slot.install_authority(retained_authority());
-        let preflight = preflight_stage_c_request(request(), &preflight_config(), 9, &stage_c_slot)
-            .unwrap()
-            .unwrap();
+        let mut integral_slot = IntegralRetentionSlot::new();
+        integral_slot.install_authority(retained_authority());
+        let preflight =
+            preflight_integral_request(request(), &preflight_config(), 9, &integral_slot)
+                .unwrap()
+                .unwrap();
         let mut engine = Some(
-            CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+            CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
                 1,
                 crate::state::tmc::tmc_channel0(),
                 outer_params(),
@@ -880,7 +893,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         engine
             .as_mut()
             .unwrap()
-            .set_stage_c_rest_boundary_for_test(PositiveIRestBoundary {
+            .set_integral_rest_boundary_for_test(PositiveIRestBoundary {
                 rung_index: 4,
                 slot: 5,
                 i_raw: 4,
@@ -924,7 +937,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
             &mut state,
             4_095,
             CHANNEL,
-            super::CommissionRetention::new(&mut stage_c_slot),
+            super::CommissionRetention::new(&mut integral_slot),
         )
         .await;
 
@@ -932,7 +945,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         assert!(!enabled);
         assert!(!calibrated);
         assert!(!backend.enable_pin);
-        assert_eq!(stage_c_slot.state(), IntegralRetentionSlotState::Candidate);
+        assert_eq!(integral_slot.state(), IntegralRetentionSlotState::Candidate);
         let CommissionOutcome::Terminal {
             reply: ReplyPayload::VelocityIntegralTerminal { terminal, .. },
             ..
@@ -994,14 +1007,15 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
             PIDOUT_UQ_UD_LIMITS,
         };
 
-        let mut stage_c_slot = IntegralRetentionSlot::new();
-        stage_c_slot.install_authority(retained_authority());
-        let preflight = preflight_stage_c_request(request(), &preflight_config(), 9, &stage_c_slot)
-            .unwrap()
-            .unwrap();
+        let mut integral_slot = IntegralRetentionSlot::new();
+        integral_slot.install_authority(retained_authority());
+        let preflight =
+            preflight_integral_request(request(), &preflight_config(), 9, &integral_slot)
+                .unwrap()
+                .unwrap();
         let baseline = entry_snapshot();
         let mut engine = Some(
-            CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+            CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
                 1,
                 crate::state::tmc::tmc_channel0(),
                 outer_params(),
@@ -1012,7 +1026,7 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
         engine
             .as_mut()
             .unwrap()
-            .set_stage_c_rest_boundary_for_test(PositiveIRestBoundary {
+            .set_integral_rest_boundary_for_test(PositiveIRestBoundary {
                 rung_index: 4,
                 slot: 5,
                 i_raw: 4,
@@ -1070,7 +1084,7 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
             &mut state,
             4_095,
             CHANNEL,
-            super::CommissionRetention::new(&mut stage_c_slot),
+            super::CommissionRetention::new(&mut integral_slot),
         )
         .await;
 
@@ -1129,12 +1143,12 @@ fn breakaway_engine(
     plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     authority: &IntegralAuthoritySummary,
 ) -> crate::commissioning::CommissioningEngine {
-    crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+    crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
         1,
         crate::state::tmc::tmc_channel0(),
         outer_params(),
         entry_snapshot(),
-        StageCPreflight {
+        IntegralPreflight {
             plan,
             identity: authority.identity,
             run_sequence: 9,
@@ -1154,12 +1168,12 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
         .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
         .expect("valid motion scale");
 
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
 
     // First sufficient run retains the candidate the reproduced run confirms.
-    let mut stage_c_slot = IntegralRetentionSlot::new();
-    stage_c_slot.install_authority(authority);
+    let mut integral_slot = IntegralRetentionSlot::new();
+    integral_slot.install_authority(authority);
     let mut first = breakaway_terminal(
         &plan,
         &authority,
@@ -1167,8 +1181,8 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
         sufficient_evidence(0),
     );
     first.rest_boundary_rung_plus_one = 3;
-    apply_stage_c_terminal(first, &mut stage_c_slot);
-    assert_eq!(stage_c_slot.state(), IntegralRetentionSlotState::Candidate);
+    apply_integral_terminal(first, &mut integral_slot);
+    assert_eq!(integral_slot.state(), IntegralRetentionSlotState::Candidate);
 
     let baseline = entry_snapshot();
     let mut engine = Some(breakaway_engine(plan, &authority));
@@ -1216,7 +1230,7 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
         &mut state,
         4_095,
         CHANNEL,
-        super::CommissionRetention::new(&mut stage_c_slot),
+        super::CommissionRetention::new(&mut integral_slot),
     )
     .await;
 
@@ -1232,7 +1246,7 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
 
     // The acceptance point install (unchanged from before F3) still happens.
     assert_eq!(
-        stage_c_slot.state(),
+        integral_slot.state(),
         IntegralRetentionSlotState::AcceptancePoint
     );
 
@@ -1303,12 +1317,12 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
         .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
         .expect("valid motion scale");
 
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
 
     // First sufficient run retains the candidate the reproduced run confirms.
-    let mut stage_c_slot = IntegralRetentionSlot::new();
-    stage_c_slot.install_authority(authority);
+    let mut integral_slot = IntegralRetentionSlot::new();
+    integral_slot.install_authority(authority);
     let mut first = breakaway_terminal(
         &plan,
         &authority,
@@ -1316,8 +1330,8 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
         sufficient_evidence(0),
     );
     first.rest_boundary_rung_plus_one = 3;
-    apply_stage_c_terminal(first, &mut stage_c_slot);
-    assert_eq!(stage_c_slot.state(), IntegralRetentionSlotState::Candidate);
+    apply_integral_terminal(first, &mut integral_slot);
+    assert_eq!(integral_slot.state(), IntegralRetentionSlotState::Candidate);
 
     let mut runtime = TmcControlRuntime::new_for_channel(CHANNEL);
     runtime.set_commission_engine(breakaway_engine(plan, &authority));
@@ -1340,7 +1354,7 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
         .drive_commissioning_terminal_with_stages(
             CommissionTerminal::VelocityIntegral(second),
             &mut backend,
-            super::CommissionTerminalContext::new(&mut stage_c_slot, |reply| {
+            super::CommissionTerminalContext::new(&mut integral_slot, |reply| {
                 emitted_reply = Some(reply)
             }),
             crate::state::tmc::tmc_channel0(),
@@ -1374,13 +1388,13 @@ async fn complete_candidate_still_emits_report_only_terminal() {
         .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
         .expect("valid motion scale");
 
-    let plan = breakaway_stage_c_plan();
+    let plan = breakaway_integral_plan();
     let authority = breakaway_authority_summary(&plan);
 
     // Authority only: the first sufficient run has nothing to reproduce, so it
     // stays a `CompleteCandidate` the host resumes from.
-    let mut stage_c_slot = IntegralRetentionSlot::new();
-    stage_c_slot.install_authority(authority);
+    let mut integral_slot = IntegralRetentionSlot::new();
+    integral_slot.install_authority(authority);
 
     let mut engine = Some(breakaway_engine(plan, &authority));
     let mut backend = MockBackend::new();
@@ -1412,7 +1426,7 @@ async fn complete_candidate_still_emits_report_only_terminal() {
         &mut state,
         4_095,
         CHANNEL,
-        super::CommissionRetention::new(&mut stage_c_slot),
+        super::CommissionRetention::new(&mut integral_slot),
     )
     .await;
 

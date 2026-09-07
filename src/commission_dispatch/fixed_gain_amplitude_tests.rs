@@ -2,7 +2,7 @@ use super::fixed_gain_amplitude::{
     AutotuneAction, FixedGainAmplitudePreflightRejection, apply_fixed_gain_amplitude_terminal,
     preflight_fixed_gain_amplitude, reconstruct_breakaway_plan,
 };
-use super::stage_c::StageCPreflightConfig;
+use super::integral::IntegralPreflightConfig;
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
@@ -15,7 +15,7 @@ use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainA
 use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
     AcquisitionContext, ConfirmedAcquisitionDigest, VelocityIntegralPlan,
-    bind_breakaway_stage_c_authority, plan_breakaway_velocity_integral_response,
+    bind_breakaway_integral_authority, plan_breakaway_velocity_integral_response,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, IntegralPlanIdentity, IntegralRetentionSlot,
@@ -41,8 +41,8 @@ const COUNTS_PER_REV: u32 = 4_000;
 const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 
-fn amplitude_config() -> StageCPreflightConfig {
-    StageCPreflightConfig {
+fn amplitude_config() -> IntegralPreflightConfig {
+    IntegralPreflightConfig {
         encoder_counts_per_rev: COUNTS_PER_REV,
         torque_limit: TORQUE_LIMIT,
         limit_evidence_capability: VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
@@ -125,7 +125,7 @@ fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcqu
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
         evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
-    bind_breakaway_stage_c_authority(
+    bind_breakaway_integral_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
         Ok(acceptance),

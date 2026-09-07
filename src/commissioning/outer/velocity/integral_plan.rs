@@ -90,7 +90,7 @@ impl IntegralAcquisitionAuthority {
     /// paths (see [`super::band_confirmation::BandConfirmationAcceptance`]'s
     /// field doc), not a reproduced Stage-B value.
     /// The only way to obtain a [`ConfirmedAcquisitionDigest`] is a successful
-    /// call to [`bind_breakaway_stage_c_authority`], so this constructor makes
+    /// call to [`bind_breakaway_integral_authority`], so this constructor makes
     /// "Stage C authorized by anything other than an accepted confirmation"
     /// unrepresentable for every breakaway authority built this way.
     #[allow(dead_code)]
@@ -578,7 +578,7 @@ pub enum VelocityIntegralPlanError {
     InvalidConfirmationPlan,
     /// The breakaway campaign's confirmed proportional gain -- the exact
     /// candidate a held-out confirmation accepted, with no reselection --
-    /// failed [`transition_capable_stage_c_gain`]. Carries the digest of the
+    /// failed [`transition_capable_integral_gain`]. Carries the digest of the
     /// rejected [`BandConfirmationPlan`].
     ConfirmedGainNotTransitionCapable(u64),
     /// The plan-time physical acquisition context frozen into the confirmation
@@ -591,7 +591,7 @@ pub enum VelocityIntegralPlanError {
 
 /// Rejected attempt to bind Stage-C authority to a breakaway confirmation.
 ///
-/// Returned only by [`bind_breakaway_stage_c_authority`], the single gate
+/// Returned only by [`bind_breakaway_integral_authority`], the single gate
 /// that may produce the digest a breakaway-schema [`IntegralAcquisitionAuthority::
 /// stage_b_plan_digest`] carries. Every rejection is fail-closed: no digest,
 /// discovery or otherwise, ever authorizes Stage C unless it is exactly the
@@ -614,7 +614,7 @@ pub enum BreakawayAuthorityBindingError {
 ///
 /// The inner field is private, and this module exposes no way to construct
 /// one from a raw `u64`: the only path to a value of this type is a
-/// successful call to [`bind_breakaway_stage_c_authority`], which requires an
+/// successful call to [`bind_breakaway_integral_authority`], which requires an
 /// `Ok` [`BandConfirmationAcceptance`] whose candidate matches the bound
 /// [`BandConfirmationPlan`] and whose digest matches the candidate digest
 /// under review. A sibling module -- including this module's own test
@@ -855,7 +855,7 @@ pub(crate) fn recovery_quantization_exposed(
 }
 
 /// Whether one proportional gain can exercise the required Q4.12 I prefix unclipped.
-pub(crate) fn transition_capable_stage_c_gain(
+pub(crate) fn transition_capable_integral_gain(
     p_raw: u16,
     target_rpm: i32,
     counts_per_rev: u32,
@@ -900,10 +900,10 @@ pub(crate) fn transition_capable_stage_c_gain(
     Ok(lhs < rhs)
 }
 
-/// Largest proportional gain that still satisfies [`transition_capable_stage_c_gain`]
+/// Largest proportional gain that still satisfies [`transition_capable_integral_gain`]
 /// for one physical acquisition context, or `0` when not even `p = 1` is capable.
 ///
-/// [`transition_capable_stage_c_gain`] is strictly monotone increasing in
+/// [`transition_capable_integral_gain`] is strictly monotone increasing in
 /// `p_raw` (the gain appears only on the left of a `lhs < rhs` comparison whose
 /// right side is P-independent), so a single ceiling is exactly equivalent to
 /// testing every candidate individually: `p <= max_transition_capable_p(..)`
@@ -949,7 +949,7 @@ pub(crate) fn max_transition_capable_p(
         .and_then(|value| value.checked_mul(u128::from(probe_limit)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     // Largest integer P with `P * denominator < rhs`, mirroring the strict
-    // `lhs < rhs` in `transition_capable_stage_c_gain`. `rhs >= 1` and
+    // `lhs < rhs` in `transition_capable_integral_gain`. `rhs >= 1` and
     // `denominator >= 1` always hold, so `(rhs - 1) / denominator` is exact.
     let max_p = (rhs - 1) / denominator;
     Ok(u16::try_from(max_p.min(u128::from(u16::MAX))).unwrap_or(u16::MAX))
@@ -1052,7 +1052,7 @@ pub fn breakaway_confirmation_slots_us() -> Result<u64, VelocityIntegralPlanErro
 pub fn breakaway_workflow_envelope_us(
     recovery_slot_count: u32,
     recovery_maximum_slot_us: u32,
-    stage_c_maximum_us: u64,
+    integral_maximum_us: u64,
 ) -> Result<u64, VelocityIntegralPlanError> {
     let probe_us = breakaway_probe_slots_us()?;
     let discovery_us = breakaway_discovery_slots_us(MAX_SWEEP_RUNGS as u8)?;
@@ -1064,7 +1064,7 @@ pub fn breakaway_workflow_envelope_us(
         .checked_add(recovery_us)
         .and_then(|value| value.checked_add(discovery_us))
         .and_then(|value| value.checked_add(confirmation_us))
-        .and_then(|value| value.checked_add(stage_c_maximum_us))
+        .and_then(|value| value.checked_add(integral_maximum_us))
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
 
@@ -1079,12 +1079,12 @@ pub fn breakaway_workflow_envelope_us(
 pub fn breakaway_workflow_envelope_ms(
     recovery_slot_count: u32,
     recovery_maximum_slot_us: u32,
-    stage_c_maximum_us: u64,
+    integral_maximum_us: u64,
 ) -> Result<u32, VelocityIntegralPlanError> {
     let total_us = breakaway_workflow_envelope_us(
         recovery_slot_count,
         recovery_maximum_slot_us,
-        stage_c_maximum_us,
+        integral_maximum_us,
     )?;
     u32::try_from(total_us.div_ceil(1_000)).map_err(|_| VelocityIntegralPlanError::Arithmetic)
 }
@@ -1117,7 +1117,7 @@ pub fn breakaway_workflow_envelope_ms(
 /// `confirmation_outcome`; there is no way to synthesize acceptance from a
 /// bare digest.
 #[allow(dead_code)]
-pub(crate) fn bind_breakaway_stage_c_authority(
+pub(crate) fn bind_breakaway_integral_authority(
     candidate_acquisition_digest: u64,
     confirmation_plan: BandConfirmationPlan,
     confirmation_outcome: Result<BandConfirmationAcceptance, TargetBandConfirmationInconclusive>,
@@ -1213,7 +1213,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// Stage C, and any failure refuses without motion.
 ///
 /// The only authority input is `token`, a [`ConfirmedAcquisitionDigest`]. That
-/// token can be minted solely by [`bind_breakaway_stage_c_authority`] from a
+/// token can be minted solely by [`bind_breakaway_integral_authority`] from a
 /// genuine `Ok(`[`BandConfirmationAcceptance`]`)` -- itself unforgeable (its
 /// `nominated_p` field is private) -- so this gate cannot be reached for an
 /// arbitrary gain without a real all-eight held-out pass. The gate builds the
@@ -1245,7 +1245,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// Order of checks, all before any plan is constructed: confirmation-plan
 /// contract validation; plan-to-token digest binding; plan-time-vs-live
 /// physical-context match; authority built from the token;
-/// [`transition_capable_stage_c_gain`] for the exact confirmed gain; then the
+/// [`transition_capable_integral_gain`] for the exact confirmed gain; then the
 /// shared tail's own recovery-geometry and duration admission. Emits schema
 /// [`super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION`], using the
 /// existing non-combined integral ladder unchanged.
@@ -1269,7 +1269,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     validate_fixed_contract(&confirmation_plan)
         .map_err(|_| VelocityIntegralPlanError::InvalidConfirmationPlan)?;
     // The token is the confirmed plan's digest and can be minted only by
-    // `bind_breakaway_stage_c_authority` from a genuine, unforgeable
+    // `bind_breakaway_integral_authority` from a genuine, unforgeable
     // `Ok(BandConfirmationAcceptance)`. Tie the supplied plan to it: a plan
     // whose candidate (or any hashed field) differs has a different digest and
     // is refused, so no forged `BandConfirmationPlan` can be admitted here.
@@ -1295,7 +1295,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
         band_position_q,
     );
     let fixed_p = confirmation_plan.nominated_p.raw();
-    if !transition_capable_stage_c_gain(
+    if !transition_capable_integral_gain(
         fixed_p,
         context.target_velocity_rpm,
         encoder_counts_per_rev,
@@ -1382,7 +1382,7 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
         confidence_q,
         band_position_q,
     );
-    if !transition_capable_stage_c_gain(
+    if !transition_capable_integral_gain(
         fixed_p,
         context.target_velocity_rpm,
         encoder_counts_per_rev,

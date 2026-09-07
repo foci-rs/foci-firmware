@@ -306,7 +306,7 @@ pub enum EngineKind {
     /// Engine constructed via `new_selftest` — diagnostic selftest run.
     Selftest,
     /// Engine constructed via one of the live outer constructors
-    /// (`new_outer_for_tmc_with_fixed_gain_amplitude_preflight`, `_with_stage_c_preflight`,
+    /// (`new_outer_for_tmc_with_fixed_gain_amplitude_preflight`, `_with_integral_preflight`,
     /// `_with_breakaway_campaign`, `_with_robustness`) — Stage 2 mechanical/velocity tune.
     OuterTune,
 }
@@ -973,7 +973,7 @@ pub enum IntegralOutcomeCause {
     Engine(u8),
     /// From `CommissionError::status_code()`.
     Error(u8),
-    /// From `commission_dispatch::stage_c::STAGE_C_CAUSE_*`.
+    /// From `commission_dispatch::integral::STAGE_C_CAUSE_*`.
     Dispatch(u8),
 }
 
@@ -1480,7 +1480,7 @@ pub struct BreakawayCampaignTerminal {
     pub accepted: u8,
     /// Exact digest of the Stage-C plan bound through the confirmed candidate,
     /// or zero when `accepted == 0`.
-    pub stage_c_plan_digest: u64,
+    pub integral_plan_digest: u64,
     /// `CommissionError::status_code()` for a campaign terminal that carries a
     /// causally-relevant error beyond `terminal_cause` alone, or `0` when the
     /// terminal carries no error.
@@ -2408,7 +2408,7 @@ mod fixed_gain_amplitude_code_tests {
 }
 
 #[cfg(test)]
-mod stage_c_cause_tests {
+mod integral_cause_tests {
     use super::IntegralOutcomeCause;
 
     #[test]

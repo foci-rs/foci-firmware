@@ -130,15 +130,15 @@ pub struct TmcControlRuntime {
 }
 
 impl TmcControlRuntime {
-    fn retain_stage_c_authority_from_event(
+    fn retain_integral_authority_from_event(
         channel: u8,
         event: &Option<CommissionEvent>,
         retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
     ) {
         if let Some(CommissionEvent::VelocityIntegralPlan { plan, .. }) = event {
-            crate::commission_dispatch::stage_c::install_authority_from_plan(
+            crate::commission_dispatch::integral::install_authority_from_plan(
                 channel,
-                retention.stage_c,
+                retention.integral,
                 *plan,
             );
         }
@@ -882,14 +882,14 @@ impl TmcControlRuntime {
     ) -> Option<ScheduledCommissionTickAction> {
         match poll {
             CommissionPoll::ReadyNow { event } => {
-                Self::retain_stage_c_authority_from_event(self.channel, &event, retention);
+                Self::retain_integral_authority_from_event(self.channel, &event, retention);
                 self.classify_commission_poll(CommissionPoll::ReadyNow { event })
             }
             CommissionPoll::At {
                 timestamp_us,
                 event,
             } => {
-                Self::retain_stage_c_authority_from_event(self.channel, &event, retention);
+                Self::retain_integral_authority_from_event(self.channel, &event, retention);
                 self.classify_commission_poll(CommissionPoll::At {
                     timestamp_us,
                     event,
@@ -919,7 +919,7 @@ impl TmcControlRuntime {
     {
         match poll {
             CommissionPoll::ReadyNow { event } => {
-                Self::retain_stage_c_authority_from_event(
+                Self::retain_integral_authority_from_event(
                     self.channel,
                     &event,
                     &mut context.retention,
@@ -930,7 +930,7 @@ impl TmcControlRuntime {
                 timestamp_us,
                 event,
             } => {
-                Self::retain_stage_c_authority_from_event(
+                Self::retain_integral_authority_from_event(
                     self.channel,
                     &event,
                     &mut context.retention,
@@ -965,14 +965,14 @@ impl TmcControlRuntime {
     where
         B: CommissioningBackend,
     {
-        let mut stage_c_candidate =
+        let mut integral_candidate =
             crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         self.drive_commissioning_terminal_with_stages(
             result,
             backend,
             crate::commission_dispatch::CommissionTerminalContext::new(
-                &mut stage_c_candidate,
+                &mut integral_candidate,
                 |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
             ),
             tmc,
@@ -998,14 +998,14 @@ impl TmcControlRuntime {
     where
         B: CommissioningBackend,
     {
-        let mut stage_c_candidate =
+        let mut integral_candidate =
             crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
             );
         self.drive_commissioning_poll_with_stages(
             poll,
             backend,
             crate::commission_dispatch::CommissionTerminalContext::new(
-                &mut stage_c_candidate,
+                &mut integral_candidate,
                 |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
             ),
             tmc,

@@ -182,7 +182,7 @@ struct OpTrace {
 
 /// Pack a `IntegralOutcomeCause`'s namespace and raw value into one `u16` so the two
 /// namespaces (`Engine`/`Error`/`Dispatch`) never alias each other.
-fn stage_c_cause_code(cause: crate::commissioning::types::IntegralOutcomeCause) -> u16 {
+fn integral_cause_code(cause: crate::commissioning::types::IntegralOutcomeCause) -> u16 {
     (u16::from(cause.namespace_code()) << 8) | u16::from(cause.raw_value())
 }
 
@@ -197,7 +197,7 @@ fn terminal_shape(reply: &ReplyPayload) -> (Option<u8>, Option<u16>) {
         ReplyPayload::VelocityIntegralTerminal { terminal, .. }
         | ReplyPayload::VelocityIntegralRefusal { terminal, .. } => (
             Some(terminal.outcome as u8),
-            Some(stage_c_cause_code(terminal.cause)),
+            Some(integral_cause_code(terminal.cause)),
         ),
         ReplyPayload::FixedGainAmplitudeTerminal { terminal, .. } => {
             (Some(terminal.outcome as u8), Some(terminal.cause as u16))

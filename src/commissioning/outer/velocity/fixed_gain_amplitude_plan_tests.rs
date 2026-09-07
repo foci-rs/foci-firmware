@@ -10,7 +10,7 @@ use super::fixed_gain_amplitude_plan::{
 };
 use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, ConfirmedAcquisitionDigest, IntegralSlotOrder,
-    VelocityIntegralAcquisitionKind, bind_breakaway_stage_c_authority,
+    VelocityIntegralAcquisitionKind, bind_breakaway_integral_authority,
     plan_retained_breakaway_velocity_integral_response,
 };
 use super::integral_reporting::plan_recovery_flags;
@@ -120,7 +120,7 @@ fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcqu
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
         evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
-    bind_breakaway_stage_c_authority(
+    bind_breakaway_integral_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
         Ok(acceptance),
@@ -531,7 +531,7 @@ fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
 /// retained acceptance-point binding, and archived capture valid. A schema bump
 /// would have cascaded into the host cross-check for a diagnostic-only field.
 #[test]
-fn forward_first_leaves_the_stage_c_plan_digest_untouched() {
+fn forward_first_leaves_the_integral_plan_digest_untouched() {
     let plan = breakaway_plan();
     let mut explicit = plan;
     explicit.slot_order = IntegralSlotOrder::ForwardFirst;

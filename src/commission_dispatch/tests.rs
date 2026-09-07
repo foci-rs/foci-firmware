@@ -197,8 +197,8 @@ enum ReplyEvent {
         phase: u8,
         terminal_cause: u8,
         accepted: u8,
-        stage_c_plan_digest_low: u32,
-        stage_c_plan_digest_high: u32,
+        integral_plan_digest_low: u32,
+        integral_plan_digest_high: u32,
         error_code: u8,
     },
 }
@@ -426,8 +426,8 @@ impl CommissionReplySink for ReplyRecorder {
             phase: report.phase,
             terminal_cause: report.terminal_cause,
             accepted: report.accepted,
-            stage_c_plan_digest_low: report.stage_c_plan_digest_low,
-            stage_c_plan_digest_high: report.stage_c_plan_digest_high,
+            integral_plan_digest_low: report.stage_c_plan_digest_low,
+            integral_plan_digest_high: report.stage_c_plan_digest_high,
             error_code: report.error_code,
         });
     }
@@ -599,7 +599,7 @@ fn emit_breakaway_confirmation_terminal_emits_identity_then_masks_fragments() {
 }
 
 #[test]
-fn emit_breakaway_campaign_terminal_splits_the_stage_c_digest() {
+fn emit_breakaway_campaign_terminal_splits_the_integral_digest() {
     use crate::commission_dispatch::replies::emit_breakaway_campaign_terminal;
     use crate::commissioning::types::BreakawayCampaignTerminal;
 
@@ -613,7 +613,7 @@ fn emit_breakaway_campaign_terminal_splits_the_stage_c_digest() {
             phase: 2,
             terminal_cause: 21,
             accepted: 1,
-            stage_c_plan_digest: 0x0000_0006_0000_0005,
+            integral_plan_digest: 0x0000_0006_0000_0005,
             error_code: 65,
         },
     );
@@ -624,8 +624,8 @@ fn emit_breakaway_campaign_terminal_splits_the_stage_c_digest() {
             phase: 2,
             terminal_cause: 21,
             accepted: 1,
-            stage_c_plan_digest_low: 5,
-            stage_c_plan_digest_high: 6,
+            integral_plan_digest_low: 5,
+            integral_plan_digest_high: 6,
             error_code: 65,
         }]
     );

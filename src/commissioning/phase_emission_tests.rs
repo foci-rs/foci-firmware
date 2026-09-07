@@ -149,16 +149,16 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
 }
 
 fn response_ladder_engine_with_params(params: OuterAutotuneInputs) -> CommissioningEngine {
-    use crate::commission_dispatch::stage_c::StageCPreflight;
+    use crate::commission_dispatch::integral::IntegralPreflight;
     use crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity;
 
     let plan = response_ladder_plan();
-    CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+    CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
         0,
         crate::state::tmc::tmc_channel0(),
         params,
         sample_entry_snapshot(),
-        StageCPreflight {
+        IntegralPreflight {
             plan,
             identity: IntegralPlanIdentity {
                 channel: 0,
@@ -249,7 +249,7 @@ fn phase_code(phase: CommissionPhase) -> i32 {
 /// module, so a mid-confirmation campaign cannot be built here. The hand-off
 /// driven through the live campaign, and the event ordering it produces, is
 /// covered by `breakaway_campaign_tests`'
-/// `the_engine_reports_one_stage_c_plan_before_any_integral_evidence`; what this
+/// `the_engine_reports_one_integral_plan_before_any_integral_evidence`; what this
 /// buys is the trace-span pairing below, which that test does not inspect.
 fn hand_off_to_response_ladder(engine: &mut CommissioningEngine) {
     use crate::commissioning::outer::{VelocityIntegralRuntime, VelocityIntegralState};

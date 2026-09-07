@@ -1037,7 +1037,7 @@ fn confirmation_plan_rejects_zero_candidate_gain() {
 // files declared in `mod.rs`, which are NOT descendants of `band_confirmation`
 // -- cannot write `BandConfirmationAcceptance { nominated_p, .. }` or
 // `Ok(BandConfirmationAcceptance { .. })`, so it cannot forge an acceptance to
-// hand to `bind_breakaway_stage_c_authority`. The only route to a value of
+// hand to `bind_breakaway_integral_authority`. The only route to a value of
 // this type is a genuine all-eight-contained pass through
 // `evaluate_band_confirmation` in this module, exactly the
 // `ConfirmedAcquisitionDigest` precedent in `integral_plan.rs`. This file

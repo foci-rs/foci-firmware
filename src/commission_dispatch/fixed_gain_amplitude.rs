@@ -2,7 +2,7 @@
 
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
-use crate::commission_dispatch::stage_c::StageCPreflightConfig;
+use crate::commission_dispatch::integral::IntegralPreflightConfig;
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
@@ -182,15 +182,15 @@ pub fn reconstruct_breakaway_plan(
 /// breakaway points rebuild theirs deterministically from the carried
 /// confirmation token via [`reconstruct_breakaway_plan`]; every other
 /// identity is rejected. No full plan is retained -- only the compact
-/// [`AcceptancePoint`] the caller reads from `stage_c_candidate`.
+/// [`AcceptancePoint`] the caller reads from `integral_candidate`.
 pub fn preflight_fixed_gain_amplitude(
     action: AutotuneAction,
     request: VelocitySweepRequest,
-    config: &StageCPreflightConfig,
+    config: &IntegralPreflightConfig,
     run_sequence: u32,
-    stage_c_candidate: &IntegralRetentionSlot,
+    integral_candidate: &IntegralRetentionSlot,
 ) -> Result<FixedGainAmplitudePreflight, FixedGainAmplitudePreflightRejection> {
-    let point = stage_c_candidate
+    let point = integral_candidate
         .acceptance_point()
         .ok_or(FixedGainAmplitudePreflightRejection::MissingAcceptancePoint)?;
     let order = action
@@ -236,9 +236,9 @@ pub fn apply_fixed_gain_amplitude_terminal(
     mut terminal: FixedGainAmplitudeTerminal,
     order: FixedGainAmplitudeOrder,
     expected_plan_digest: u64,
-    stage_c_candidate: &mut IntegralRetentionSlot,
+    integral_candidate: &mut IntegralRetentionSlot,
 ) -> FixedGainAmplitudeTerminal {
-    let Some(point) = stage_c_candidate.acceptance_point() else {
+    let Some(point) = integral_candidate.acceptance_point() else {
         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
         terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
         return terminal;
@@ -251,7 +251,7 @@ pub fn apply_fixed_gain_amplitude_terminal(
         || terminal.plan_digest != expected_plan_digest
         || point.progress != expected_progress
     {
-        stage_c_candidate.observe_fault();
+        integral_candidate.observe_fault();
         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
         terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
         return terminal;
@@ -259,23 +259,23 @@ pub fn apply_fixed_gain_amplitude_terminal(
 
     let transition_ok = match terminal.outcome {
         FixedGainAmplitudeOutcome::Complete => match order {
-            FixedGainAmplitudeOrder::Ascending => stage_c_candidate.advance_matrix_progress(),
-            FixedGainAmplitudeOrder::Descending => stage_c_candidate.close_matrix_progress(),
+            FixedGainAmplitudeOrder::Ascending => integral_candidate.advance_matrix_progress(),
+            FixedGainAmplitudeOrder::Descending => integral_candidate.close_matrix_progress(),
         },
         FixedGainAmplitudeOutcome::Inconclusive
             if terminal.cause == FixedGainAmplitudeCause::VelocityRestNotConfirmed =>
         {
             true
         }
-        FixedGainAmplitudeOutcome::Inconclusive => stage_c_candidate.close_matrix_progress(),
+        FixedGainAmplitudeOutcome::Inconclusive => integral_candidate.close_matrix_progress(),
         FixedGainAmplitudeOutcome::Fault => {
-            stage_c_candidate.observe_fault();
+            integral_candidate.observe_fault();
             true
         }
         FixedGainAmplitudeOutcome::Failed => true,
     };
     if !transition_ok {
-        stage_c_candidate.observe_fault();
+        integral_candidate.observe_fault();
         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
         terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
     }
@@ -286,7 +286,7 @@ pub fn apply_fixed_gain_amplitude_terminal(
 pub fn failed_fixed_gain_amplitude_terminal(
     run_sequence: u32,
     rejection: FixedGainAmplitudePreflightRejection,
-    stage_c_candidate: &IntegralRetentionSlot,
+    integral_candidate: &IntegralRetentionSlot,
 ) -> FixedGainAmplitudeTerminal {
     let cause = match rejection {
         FixedGainAmplitudePreflightRejection::MissingAcceptancePoint => {
@@ -307,7 +307,7 @@ pub fn failed_fixed_gain_amplitude_terminal(
             crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         run_sequence,
         evidence_sequence: 0,
-        acceptance_plan_digest: stage_c_candidate
+        acceptance_plan_digest: integral_candidate
             .acceptance_point()
             .map_or(0, |point| point.identity.plan_digest),
         plan_digest: 0,
@@ -322,7 +322,7 @@ pub fn failed_fixed_gain_amplitude_terminal(
         emitted_observations: 0,
         expected_amplitudes: 0,
         emitted_amplitudes: 0,
-        qualifier_bits: stage_c_candidate
+        qualifier_bits: integral_candidate
             .acceptance_point()
             .map_or(0, |point| point.qualifier_bits),
         run_started_us: 0,
@@ -341,7 +341,7 @@ pub(crate) fn test_acceptance_point(
         ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
         plan_band_confirmation,
     };
-    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_stage_c_authority;
+    use crate::commissioning::outer::velocity::integral_plan::bind_breakaway_integral_authority;
     use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
     use crate::commissioning::outer::velocity::sweep_consensus::{
         CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -406,7 +406,7 @@ pub(crate) fn test_acceptance_point(
     let acceptance =
         evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
     let held_out_response_intervals_q = acceptance.held_out_response_intervals_q;
-    let token = bind_breakaway_stage_c_authority(
+    let token = bind_breakaway_integral_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
         Ok(acceptance),

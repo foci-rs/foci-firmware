@@ -616,7 +616,7 @@ impl CommissioningEngine {
     /// `Some` only for a breakaway acceptance run, so a `Some` return is itself
     /// the "run is breakaway" discriminator the install site needs; any other
     /// acceptance source returns `None`.
-    pub(crate) fn breakaway_stage_c_execution_plan(
+    pub(crate) fn breakaway_integral_execution_plan(
         &self,
     ) -> Option<crate::commissioning::outer::velocity::integral_plan::VelocityIntegralExecutionPlan>
     {
@@ -639,7 +639,7 @@ impl CommissioningEngine {
     /// install be attributed to phase liveness versus plan source without
     /// re-deriving either from the terminal.
     #[cfg(feature = "trace")]
-    pub(crate) fn stage_c_promotion_source_diagnostic(&self) -> (u8, bool) {
+    pub(crate) fn integral_promotion_source_diagnostic(&self) -> (u8, bool) {
         use crate::commissioning::outer::velocity::integral_plan::AcceptanceSource;
         let EngineMode::Outer {
             phase: OuterPhase::VelocityIntegral { data, .. },
@@ -656,12 +656,12 @@ impl CommissioningEngine {
     }
 
     /// Create a direct Stage-C resume engine from a preflighted exact plan.
-    pub fn new_outer_for_tmc_with_stage_c_preflight(
+    pub fn new_outer_for_tmc_with_integral_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,
         params: OuterAutotuneInputs,
         entry_snapshot: OuterGainRollbackSnapshot,
-        preflight: crate::commission_dispatch::stage_c::StageCPreflight,
+        preflight: crate::commission_dispatch::integral::IntegralPreflight,
     ) -> Self {
         let scaffold = Self::outer_scaffold(
             oid,
@@ -1028,7 +1028,7 @@ impl CommissioningEngine {
     }
 
     /// Attach and return the terminal-sequenced active-I rest-boundary record.
-    pub(crate) fn attach_stage_c_rest_boundary(
+    pub(crate) fn attach_integral_rest_boundary(
         &self,
         terminal: &mut crate::commissioning::types::VelocityIntegralTerminal,
     ) -> Option<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord> {
@@ -1062,7 +1062,7 @@ impl CommissioningEngine {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_stage_c_rest_boundary_for_test(
+    pub(crate) fn set_integral_rest_boundary_for_test(
         &mut self,
         boundary: crate::commissioning::outer::PositiveIRestBoundary,
     ) {
@@ -1214,11 +1214,11 @@ impl CommissioningEngine {
     /// Emit the authoritative Stage-C terminal after retained-evidence policy.
     #[cfg(feature = "trace")]
     #[inline(never)]
-    pub(crate) fn emit_stage_c_terminal_trace<B: CommissioningBackend>(
+    pub(crate) fn emit_integral_terminal_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
         terminal: &crate::commissioning::types::VelocityIntegralTerminal,
-        reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
+        reproduction: Option<crate::commission_dispatch::integral::IntegralReproductionReport>,
     ) {
         self.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
         backend.record_velocity_sweep_trace_record(
@@ -2875,7 +2875,7 @@ mod tests {
 
     #[cfg(feature = "trace")]
     #[test]
-    fn complete_stage_c_uses_dedicated_terminal_and_complete_events() {
+    fn complete_integral_uses_dedicated_terminal_and_complete_events() {
         use crate::commissioning::outer::velocity::integral_evidence::{
             ExactRateInterval, IntegralRunEvidence,
         };
@@ -2916,7 +2916,7 @@ mod tests {
         };
 
         engine.emit_trace_start(&mut backend);
-        engine.emit_stage_c_terminal_trace(&mut backend, &terminal, None);
+        engine.emit_integral_terminal_trace(&mut backend, &terminal, None);
 
         assert_eq!(backend.velocity_sweep_trace_records.len(), 2);
         let ids: std::vec::Vec<_> = backend
@@ -2938,10 +2938,10 @@ mod tests {
 
     /// Build a Stage-C `VelocityIntegral` engine already sitting at a rest
     /// boundary, plus a matching terminal ready for
-    /// [`CommissioningEngine::attach_stage_c_rest_boundary`] and the
+    /// [`CommissioningEngine::attach_integral_rest_boundary`] and the
     /// boundary the engine was seeded with.
     #[cfg(feature = "trace")]
-    fn stage_c_engine_at_rest_boundary_for_test() -> (
+    fn integral_engine_at_rest_boundary_for_test() -> (
         CommissioningEngine,
         crate::commissioning::types::VelocityIntegralTerminal,
         crate::commissioning::outer::PositiveIRestBoundary,
@@ -2949,7 +2949,7 @@ mod tests {
         use crate::autotune::velocity_measurement::{
             StationarityExclusion, StationarityResult, VelocityDirection,
         };
-        use crate::commission_dispatch::stage_c::StageCPreflight;
+        use crate::commission_dispatch::integral::IntegralPreflight;
         use crate::commissioning::outer::velocity::band_confirmation::{
             ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
             plan_band_confirmation,
@@ -2958,7 +2958,7 @@ mod tests {
             ExactRateInterval, IntegralRunEvidence,
         };
         use crate::commissioning::outer::velocity::integral_plan::{
-            AcquisitionContext, bind_breakaway_stage_c_authority,
+            AcquisitionContext, bind_breakaway_integral_authority,
             plan_breakaway_velocity_integral_response,
         };
         use crate::commissioning::outer::velocity::integral_reproduction::IntegralPlanIdentity;
@@ -3015,7 +3015,7 @@ mod tests {
         let acceptance = evaluate_band_confirmation(nominated_p, forward, reverse)
             .expect("accepted confirmation");
         let intervals = acceptance.held_out_response_intervals_q;
-        let token = bind_breakaway_stage_c_authority(
+        let token = bind_breakaway_integral_authority(
             confirmation_plan.plan_digest,
             confirmation_plan,
             Ok(acceptance),
@@ -3055,7 +3055,7 @@ mod tests {
         )
         .unwrap();
 
-        let preflight = StageCPreflight {
+        let preflight = IntegralPreflight {
             plan,
             identity: IntegralPlanIdentity {
                 channel: 0,
@@ -3066,7 +3066,7 @@ mod tests {
             run_sequence: 9,
         };
 
-        let mut engine = CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+        let mut engine = CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
             0,
             tmc_state(),
             sample_outer_params(),
@@ -3094,7 +3094,7 @@ mod tests {
             },
             cleanup_confirmed: true,
         };
-        engine.set_stage_c_rest_boundary_for_test(boundary);
+        engine.set_integral_rest_boundary_for_test(boundary);
 
         let terminal = VelocityIntegralTerminal {
             run_sequence: 9,
@@ -3130,7 +3130,7 @@ mod tests {
     }
 
     /// The Stage-C rest-boundary digest fold happens inside
-    /// `attach_stage_c_rest_boundary` itself, before any board sink ever sees
+    /// `attach_integral_rest_boundary` itself, before any board sink ever sees
     /// the record. Whether the sink then records the boundary event or drops
     /// it (as the always-compiled `record_velocity_sweep_trace_record` no-op
     /// default does outside a `trace` build) cannot retroactively change
@@ -3141,10 +3141,10 @@ mod tests {
     /// instead.
     #[cfg(feature = "trace")]
     #[fixture_test]
-    async fn stage_c_terminal_digest_is_independent_of_emission_sink() {
-        let (engine, mut terminal, boundary) = stage_c_engine_at_rest_boundary_for_test();
+    async fn integral_terminal_digest_is_independent_of_emission_sink() {
+        let (engine, mut terminal, boundary) = integral_engine_at_rest_boundary_for_test();
         let record = engine
-            .attach_stage_c_rest_boundary(&mut terminal)
+            .attach_integral_rest_boundary(&mut terminal)
             .expect("a boundary record is produced");
         assert_ne!(terminal.digest, 0);
         assert_eq!(terminal.rest_boundary_rung_plus_one, boundary.rung_index);

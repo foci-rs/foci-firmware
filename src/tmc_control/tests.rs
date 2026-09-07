@@ -2066,7 +2066,7 @@ fn raw_take_preserves_breakaway_cancellation_interrupted_state() {
 }
 
 #[test]
-fn non_breakaway_handled_stop_preserves_completed_stage_c_breadcrumb() {
+fn non_breakaway_handled_stop_preserves_completed_integral_breadcrumb() {
     let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     runtime.set_commission_engine(CommissioningEngine::new_calibrate(8));

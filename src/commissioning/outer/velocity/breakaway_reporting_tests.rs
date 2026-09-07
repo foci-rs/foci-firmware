@@ -973,7 +973,7 @@ fn confirmation_zero_stroke_cause_maps_every_zero_stroke_variant() {
 // --- Campaign terminal --------------------------------------------------------
 
 #[test]
-fn campaign_terminal_report_carries_owning_phase_and_stage_c_digest() {
+fn campaign_terminal_report_carries_owning_phase_and_integral_digest() {
     let report = campaign_terminal_report(
         BreakawayPhase::ProportionalBandConfirmation,
         BreakawayTerminalCause::Accepted,
@@ -993,11 +993,11 @@ fn campaign_terminal_report_carries_owning_phase_and_stage_c_digest() {
         BreakawayTerminalCause::Accepted as u8
     );
     assert_eq!(report.accepted, 1);
-    assert_eq!(report.stage_c_plan_digest, 0x7788);
+    assert_eq!(report.integral_plan_digest, 0x7788);
 }
 
 #[test]
-fn campaign_terminal_report_zeroes_stage_c_digest_on_failure() {
+fn campaign_terminal_report_zeroes_integral_digest_on_failure() {
     let report = campaign_terminal_report(
         BreakawayPhase::BreakawayProbe,
         BreakawayTerminalCause::ProbeAuthorityFailure,
@@ -1009,7 +1009,7 @@ fn campaign_terminal_report_zeroes_stage_c_digest_on_failure() {
     );
 
     assert_eq!(report.accepted, 0);
-    assert_eq!(report.stage_c_plan_digest, 0);
+    assert_eq!(report.integral_plan_digest, 0);
 }
 
 #[test]

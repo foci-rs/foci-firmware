@@ -660,7 +660,7 @@ pub enum NominationRejection {
 ///
 /// `transition_ceiling` is [`super::integral_plan::max_transition_capable_p`]
 /// for the campaign's live acquisition context -- the exact monotone inverse of
-/// [`super::integral_plan::transition_capable_stage_c_gain`], so filtering by
+/// [`super::integral_plan::transition_capable_integral_gain`], so filtering by
 /// `p <= transition_ceiling` admits exactly the gains that gate would admit.
 /// Wraps the unconstrained [`nominate_confirmation_candidate_from_bounds`]
 /// primitive rather than reimplementing selection, so the two cannot diverge.
@@ -748,7 +748,7 @@ pub struct TargetBandConfirmationInconclusive(pub BandConfirmationFailureCause);
 /// fresh intervals passed. A module outside `band_confirmation` therefore
 /// cannot write `BandConfirmationAcceptance { nominated_p, .. }` or otherwise
 /// mint one, so an `Ok(acceptance)` handed to
-/// [`super::integral_plan::bind_breakaway_stage_c_authority`] can only have
+/// [`super::integral_plan::bind_breakaway_integral_authority`] can only have
 /// come from a genuine all-eight-contained held-out pass -- it can never be
 /// synthesized to bypass the confirmation gate. Read the confirmed gain with
 /// [`Self::nominated_p`].

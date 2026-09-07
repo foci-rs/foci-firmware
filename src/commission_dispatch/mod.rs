@@ -14,6 +14,9 @@ mod characterization_tests;
 pub mod fixed_gain_amplitude;
 #[cfg(test)]
 mod fixed_gain_amplitude_tests;
+pub mod integral;
+#[cfg(test)]
+mod integral_tests;
 #[cfg(test)]
 mod manifest_completeness_tests;
 pub mod post_actions;
@@ -21,9 +24,6 @@ pub mod replies;
 mod restore;
 pub mod restore_machine;
 pub mod robustness;
-pub mod stage_c;
-#[cfg(test)]
-mod stage_c_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
@@ -67,16 +67,16 @@ pub struct DispatchState<'a> {
 
 /// Mutable board-wide evidence retention passed through one dispatch call.
 pub struct CommissionRetention<'a> {
-    pub stage_c:
+    pub integral:
         &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
 }
 
 impl<'a> CommissionRetention<'a> {
     /// Borrow the Stage-C RAM slot as one lifecycle context.
     pub fn new(
-        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
+        integral: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
     ) -> Self {
-        Self { stage_c }
+        Self { integral }
     }
 }
 
@@ -91,11 +91,11 @@ pub struct CommissionTerminalContext<'a, E> {
 impl<'a, E> CommissionTerminalContext<'a, E> {
     /// Borrow the retained Stage-C slot and bind the board's reply emitter.
     pub fn new(
-        stage_c: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
+        integral: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
         emit_evidence: E,
     ) -> Self {
         Self {
-            retention: CommissionRetention::new(stage_c),
+            retention: CommissionRetention::new(integral),
             emit_evidence,
         }
     }
@@ -335,7 +335,7 @@ pub enum ReplyPayload {
     VelocityIntegralTerminal {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
-        reproduction: Option<stage_c::StageCReproductionReport>,
+        reproduction: Option<integral::IntegralReproductionReport>,
         authority: Option<
             crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
         >,
@@ -745,7 +745,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             crate::commissioning::schedule::CommissionTerminal::RobustnessReversal(terminal)
         }
         StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
-            stage_c::install_authority_from_plan(channel, retention.stage_c, plan);
+            integral::install_authority_from_plan(channel, retention.integral, plan);
             let engine_ref = engine
                 .as_ref()
                 .expect("engine slot is None on BreakawayStageCPlanReady");

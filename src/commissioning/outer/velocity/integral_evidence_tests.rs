@@ -81,7 +81,7 @@ fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
 }
 
 #[test]
-fn intrinsic_stage_c_classification_never_requires_disturbance() {
+fn intrinsic_integral_classification_never_requires_disturbance() {
     let input = VelocityObservationInput {
         direction: VelocityDirection::Forward,
         p: PidPGain::new(1_448).unwrap(),
@@ -309,7 +309,7 @@ fn ambiguity_and_signed_overshoot_are_reported_without_teleology() {
 }
 
 #[test]
-fn stage_c_requires_both_bookend_directions() {
+fn integral_requires_both_bookend_directions() {
     let mut run = IntegralRunEvidence::new([interval(100, 200), interval(-200, -100)]);
     for rung in [0, 2, 4] {
         run.retain_positive(0, rung, interval(10 + rung as i32, 20 + rung as i32))

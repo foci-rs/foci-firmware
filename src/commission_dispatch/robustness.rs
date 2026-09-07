@@ -109,9 +109,9 @@ pub struct RobustnessPreflight {
 /// lifecycle forward.
 pub fn preflight_robustness_reversal(
     run_sequence: u32,
-    stage_c_candidate: &IntegralRetentionSlot,
+    integral_candidate: &IntegralRetentionSlot,
 ) -> Result<RobustnessPreflight, RobustnessPreflightRejection> {
-    let point = stage_c_candidate
+    let point = integral_candidate
         .acceptance_point()
         .ok_or(RobustnessPreflightRejection::NoAcceptedCandidate)?;
     Ok(RobustnessPreflight {
@@ -157,9 +157,9 @@ pub fn failed_robustness_terminal(
 /// `SAFETY_FAULT`, which is reserved for envelope faults.
 pub fn apply_robustness_terminal(
     mut terminal: RobustnessReversalTerminal,
-    stage_c_candidate: &IntegralRetentionSlot,
+    integral_candidate: &IntegralRetentionSlot,
 ) -> RobustnessReversalTerminal {
-    let identity_ok = stage_c_candidate.acceptance_point().is_some_and(|point| {
+    let identity_ok = integral_candidate.acceptance_point().is_some_and(|point| {
         point.selected_p == terminal.selected_p
             && point.selected_i == terminal.selected_i
             && point.target_velocity_rpm == terminal.target_velocity_rpm

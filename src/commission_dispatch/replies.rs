@@ -547,8 +547,8 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
         phase: report.phase,
         terminal_cause: report.terminal_cause,
         accepted: report.accepted,
-        stage_c_plan_digest_low: report.stage_c_plan_digest as u32,
-        stage_c_plan_digest_high: (report.stage_c_plan_digest >> 32) as u32,
+        stage_c_plan_digest_low: report.integral_plan_digest as u32,
+        stage_c_plan_digest_high: (report.integral_plan_digest >> 32) as u32,
         error_code: report.error_code,
     });
 }
@@ -861,7 +861,7 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     terminal: crate::commissioning::types::VelocityIntegralTerminal,
-    reproduction: Option<crate::commission_dispatch::stage_c::StageCReproductionReport>,
+    reproduction: Option<crate::commission_dispatch::integral::IntegralReproductionReport>,
     _authority: Option<
         crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
     >,
@@ -3311,8 +3311,8 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_stage_c_admission_emits_exactly_one_compact_terminal() {
-        use crate::commission_dispatch::stage_c::missing_authority_stage_c_terminal;
+    fn a_refused_integral_admission_emits_exactly_one_compact_terminal() {
+        use crate::commission_dispatch::integral::missing_authority_integral_terminal;
         use crate::commissioning::outer::velocity::integral_reporting::VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES;
 
         let mut sink = RecordingSink::default();
@@ -3321,7 +3321,7 @@ mod tests {
             &mut sink,
             ReplyPayload::VelocityIntegralRefusal {
                 oid: 3,
-                terminal: missing_authority_stage_c_terminal(21),
+                terminal: missing_authority_integral_terminal(21),
             },
         );
 

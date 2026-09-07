@@ -346,7 +346,7 @@ impl OuterSafetyLimits {
     /// travel-sized sweep window. The absolute signed windows, velocity cap,
     /// and torque cap are untouched and remain the active protection
     /// regardless of the reserve's size.
-    pub(crate) fn configure_stage_c_encoder_resolution(
+    pub(crate) fn configure_integral_encoder_resolution(
         &mut self,
         counts_per_rev: u32,
     ) -> Result<(), EncoderMathError> {
@@ -1463,64 +1463,64 @@ mod tests {
     /// the observed overshoot is itself right-censored at the trip point, so
     /// there is no sound data yet to size a tighter margin from.
     #[test]
-    fn stage_c_window_opens_to_the_absolute_clamp() {
+    fn integral_window_opens_to_the_absolute_clamp() {
         let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
-        let mut stage_c_safety = OuterSafetyLimits::new(100, budget);
-        stage_c_safety
-            .configure_stage_c_encoder_resolution(4_000)
+        let mut integral_safety = OuterSafetyLimits::new(100, budget);
+        integral_safety
+            .configure_integral_encoder_resolution(4_000)
             .unwrap();
-        assert_eq!(stage_c_safety.position_window, 16_000);
-        assert_eq!(stage_c_safety.negative_position_window, 16_000);
-        assert_eq!(stage_c_safety.positive_position_window, 20_000);
+        assert_eq!(integral_safety.position_window, 16_000);
+        assert_eq!(integral_safety.negative_position_window, 16_000);
+        assert_eq!(integral_safety.positive_position_window, 20_000);
     }
 
     #[test]
-    fn stage_c_window_tightens_with_a_finite_reserve() {
+    fn integral_window_tightens_with_a_finite_reserve() {
         let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
-        let mut stage_c_safety = OuterSafetyLimits::new(100, budget);
-        stage_c_safety
+        let mut integral_safety = OuterSafetyLimits::new(100, budget);
+        integral_safety
             .configure_velocity_sweep_encoder_resolution(4_000)
             .unwrap();
-        assert_eq!(stage_c_safety.position_window, 12_000);
+        assert_eq!(integral_safety.position_window, 12_000);
 
-        stage_c_safety.tighten_position_window(Some(500));
-        assert_eq!(stage_c_safety.position_window, 12_500);
+        integral_safety.tighten_position_window(Some(500));
+        assert_eq!(integral_safety.position_window, 12_500);
     }
 
     #[test]
-    fn stage_c_window_finite_reserve_clamps_to_the_headroom_ceiling() {
+    fn integral_window_finite_reserve_clamps_to_the_headroom_ceiling() {
         let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
-        let mut stage_c_safety = OuterSafetyLimits::new(100, budget);
-        stage_c_safety
+        let mut integral_safety = OuterSafetyLimits::new(100, budget);
+        integral_safety
             .configure_velocity_sweep_encoder_resolution(4_000)
             .unwrap();
 
-        stage_c_safety.tighten_position_window(Some(u32::MAX));
-        assert_eq!(stage_c_safety.position_window, 16_000);
+        integral_safety.tighten_position_window(Some(u32::MAX));
+        assert_eq!(integral_safety.position_window, 16_000);
     }
 
     #[test]
-    fn stage_c_window_no_reserve_opens_to_the_headroom_ceiling() {
+    fn integral_window_no_reserve_opens_to_the_headroom_ceiling() {
         let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
-        let mut stage_c_safety = OuterSafetyLimits::new(100, budget);
-        stage_c_safety
+        let mut integral_safety = OuterSafetyLimits::new(100, budget);
+        integral_safety
             .configure_velocity_sweep_encoder_resolution(4_000)
             .unwrap();
 
-        stage_c_safety.tighten_position_window(None);
-        assert_eq!(stage_c_safety.position_window, 16_000);
+        integral_safety.tighten_position_window(None);
+        assert_eq!(integral_safety.position_window, 16_000);
     }
 
     /// Arm a safety envelope around a frozen amplitude and machine ceiling.

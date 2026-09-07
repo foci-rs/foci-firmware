@@ -105,9 +105,9 @@ use super::breakaway_search::{
     BreakawayMotionClass, BreakawaySearchError, ProbeStrokeRole, UpwardBreakawayCursor,
     UpwardProbeStep,
 };
-use super::combined_plan::stage_c_continuation_geometry;
+use super::combined_plan::integral_continuation_geometry;
 use super::integral_plan::{
-    AcquisitionContext, VelocityIntegralPlan, bind_breakaway_stage_c_authority,
+    AcquisitionContext, VelocityIntegralPlan, bind_breakaway_integral_authority,
     breakaway_workflow_envelope_ms, max_transition_capable_p,
     plan_breakaway_velocity_integral_response,
 };
@@ -3860,7 +3860,7 @@ impl BreakawayCampaign {
 /// This is pure command admission: it commands no motion and touches no backend.
 /// It reuses [`plan_stage_b_velocity_sweep`] to derive the shared target
 /// velocity, planned amplitude, and per-slot recovery reservations, and
-/// [`stage_c_continuation_geometry`] for the worst-case Stage-C continuation, then
+/// [`integral_continuation_geometry`] for the worst-case Stage-C continuation, then
 /// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
 /// (392 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
 /// returned [`CommissioningWorkflowPlan`] carries the exact envelope the
@@ -3883,24 +3883,24 @@ pub(crate) fn plan_breakaway_campaign_command(
         limit_evidence_capability,
     )
     .map_err(|_| CommissionError::CampaignPlanInvalid)?;
-    let geometry = stage_c_continuation_geometry(plan, pwm_hz)
+    let geometry = integral_continuation_geometry(plan, pwm_hz)
         .map_err(|_| CommissionError::CampaignPlanInvalid)?;
-    let stage_c_nominal_us = u64::from(geometry.i_nominal_ms)
+    let integral_nominal_us = u64::from(geometry.i_nominal_ms)
         .checked_mul(1_000)
         .ok_or(CommissionError::InvalidSchedule)?;
-    let stage_c_maximum_us = u64::from(geometry.i_maximum_ms)
+    let integral_maximum_us = u64::from(geometry.i_maximum_ms)
         .checked_mul(1_000)
         .ok_or(CommissionError::InvalidSchedule)?;
     let nominal_workflow_ms = breakaway_workflow_envelope_ms(
         BreakawayCampaign::RECOVERY_SLOT_COUNT,
         plan.recovery_nominal_slot_us,
-        stage_c_nominal_us,
+        integral_nominal_us,
     )
     .map_err(|_| CommissionError::CampaignPlanInvalid)?;
     let maximum_workflow_ms = breakaway_workflow_envelope_ms(
         BreakawayCampaign::RECOVERY_SLOT_COUNT,
         plan.recovery_maximum_slot_us,
-        stage_c_maximum_us,
+        integral_maximum_us,
     )
     .map_err(|_| CommissionError::CampaignPlanInvalid)?;
     let workflow = CommissioningWorkflowPlan::new_breakaway(
@@ -4275,7 +4275,7 @@ fn campaign_terminal_event(
     phase: BreakawayPhase,
     terminal_cause: super::breakaway_reporting::BreakawayTerminalCause,
     accepted: bool,
-    stage_c_plan_digest: u64,
+    integral_plan_digest: u64,
     error_code: u8,
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
@@ -4285,7 +4285,7 @@ fn campaign_terminal_event(
         phase,
         terminal_cause,
         accepted,
-        stage_c_plan_digest,
+        integral_plan_digest,
         error_code,
         inputs.run_sequence,
         sequence,
@@ -4526,7 +4526,7 @@ fn route_discovery_outcome(
 }
 
 /// Route an accepted held-out confirmation through the ONE authorized Stage-C
-/// chain: [`bind_breakaway_stage_c_authority`] -> `ConfirmedAcquisitionDigest`
+/// chain: [`bind_breakaway_integral_authority`] -> `ConfirmedAcquisitionDigest`
 /// token -> [`plan_breakaway_velocity_integral_response`], which builds the
 /// `IntegralAcquisitionAuthority` internally from the token.
 ///
@@ -4547,11 +4547,11 @@ fn route_confirmed_accept<B: CommissioningBackend>(
     safety: &OuterSafetyLimits,
     backend: &B,
 ) -> BreakawayCampaignOutcome {
-    let token = match bind_breakaway_stage_c_authority(plan.plan_digest, plan, Ok(acceptance)) {
+    let token = match bind_breakaway_integral_authority(plan.plan_digest, plan, Ok(acceptance)) {
         Ok(token) => token,
         Err(_) => {
             return BreakawayCampaignOutcome::Terminal {
-                error: CommissionError::StageCAuthorityDenied,
+                error: CommissionError::IntegralAuthorityDenied,
                 safety: None,
             };
         }
@@ -4582,7 +4582,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
         backend.tmc_config().pwm_freq_hz(),
         safety.counts_per_rev(),
     ) {
-        Ok(stage_c_plan) => BreakawayCampaignOutcome::StageCPlanReady(stage_c_plan),
+        Ok(integral_plan) => BreakawayCampaignOutcome::StageCPlanReady(integral_plan),
         Err(_) => BreakawayCampaignOutcome::Terminal {
             error: CommissionError::VelocityValidationFailed,
             safety: None,
@@ -5006,7 +5006,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
             (confirmation_terminal(other), cause, error_code)
         }
     };
-    let (accepted, stage_c_plan_digest) = match &done {
+    let (accepted, integral_plan_digest) = match &done {
         BreakawayCampaignOutcome::StageCPlanReady(plan) => (true, plan.digest()),
         BreakawayCampaignOutcome::Terminal { .. } => (false, 0),
     };
@@ -5014,7 +5014,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         BreakawayPhase::ProportionalBandConfirmation,
         campaign_cause,
         accepted,
-        stage_c_plan_digest,
+        integral_plan_digest,
         error_code,
         inputs,
         evidence_sequence,

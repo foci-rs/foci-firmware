@@ -1309,7 +1309,7 @@ fn a_discovery_terminal_carries_only_the_rung_zero_diagnostic_and_the_terminal()
                 8 // 120%: confidently above 80%, stopping exploration here.
             }
         });
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 3_u16;
     let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
     let CampaignAdvance::Emit { now, next } = advance else {
@@ -1364,7 +1364,7 @@ fn a_discovery_safety_fault_never_seeds_confirmation_from_a_retained_rung() {
         error: CommissionError::SafetyEnvelopeViolation,
         safety: Some(zero_safety_fault(4)),
     };
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 3_u16;
     let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
     let CampaignAdvance::Emit { now, next } = advance else {
@@ -1431,7 +1431,7 @@ fn a_discovery_internal_fault_carries_the_underlying_error_on_the_closure() {
         error: CommissionError::Spi,
         safety: None,
     };
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 3_u16;
     let advance = discovery_done_advance(outcome, &session, &inputs, &mut evidence_sequence);
     let CampaignAdvance::Emit { next, .. } = advance else {
@@ -1463,7 +1463,7 @@ fn a_discovery_internal_fault_carries_the_underlying_error_on_the_closure() {
 #[test]
 fn a_probe_internal_fault_carries_the_underlying_error_on_the_closure() {
     let plan = test_plan();
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 0_u16;
 
     let advance = probe_failure_advance(
@@ -2695,7 +2695,7 @@ fn campaign_request() -> BreakawayCampaignRequest {
 
 /// Frozen inputs for the Stage-C token route, with a caller-chosen usable torque
 /// limit so a test can either admit or refuse the confirmed P at plan time.
-fn stage_c_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
+fn integral_inputs(usable_torque_limit: u16) -> BreakawayCampaignInputs {
     BreakawayCampaignInputs {
         p_start: gain(1),
         p_top: gain(1_024),
@@ -3185,26 +3185,26 @@ fn accepted_confirmation(candidate_raw: u16) -> (BandConfirmationAcceptance, Ban
 }
 
 #[test]
-fn an_accepted_confirmation_routes_through_the_token_chain_to_a_stage_c_plan() {
+fn an_accepted_confirmation_routes_through_the_token_chain_to_a_integral_plan() {
     let (_p_start, _p_top, usable, _ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
     let (acceptance, plan) = accepted_confirmation(512);
-    let inputs = stage_c_inputs(usable);
+    let inputs = integral_inputs(usable);
     let safety = test_safety();
     let backend = test_backend();
 
     let outcome = route_confirmed_accept(acceptance, plan, &inputs, &safety, &backend);
 
-    let BreakawayCampaignOutcome::StageCPlanReady(stage_c_plan) = outcome else {
+    let BreakawayCampaignOutcome::StageCPlanReady(integral_plan) = outcome else {
         panic!("an accepted, transition-capable P must yield a Stage-C plan: {outcome:?}");
     };
     // The confirmed P is admitted unchanged, and the authority's digest is the
     // accepted confirmation plan's digest (the token chain, not a fabricated
     // value).
-    assert_eq!(stage_c_plan.fixed_p, 512);
-    assert_eq!(stage_c_plan.authority.acquisition.get(), plan.plan_digest);
+    assert_eq!(integral_plan.fixed_p, 512);
+    assert_eq!(integral_plan.authority.acquisition.get(), plan.plan_digest);
     assert_eq!(
-        stage_c_plan.schema_revision,
+        integral_plan.schema_revision,
         crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     );
 }
@@ -3212,11 +3212,11 @@ fn an_accepted_confirmation_routes_through_the_token_chain_to_a_stage_c_plan() {
 // --- Accept whose P fails 6a safety refuses Stage C WITHOUT motion -------------
 
 #[test]
-fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_stage_c_without_motion() {
+fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_integral_without_motion() {
     let (acceptance, plan) = accepted_confirmation(1_024);
     // A torque authority of 1 cannot carry any nonzero I prefix at the confirmed
     // P: `plan_breakaway_velocity_integral_response` refuses at plan time.
-    let inputs = stage_c_inputs(1);
+    let inputs = integral_inputs(1);
     let safety = test_safety();
     let mut backend = test_backend();
     let writes_before = backend.spi_log.len();
@@ -3235,16 +3235,16 @@ fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_stage_c_without_motion() 
 }
 
 #[test]
-fn a_confirmed_accept_whose_stage_c_plan_build_is_refused_reports_a_distinct_campaign_cause() {
+fn a_confirmed_accept_whose_integral_plan_build_is_refused_reports_a_distinct_campaign_cause() {
     let (acceptance, plan) = accepted_confirmation(1_024);
     let session =
         BandConfirmationSession::new(plan, 5.0, TmcMechanicalRpm::from_register(100), 4_394);
     // Same starved-torque fixture as
-    // `an_accept_whose_confirmed_p_fails_6a_safety_refuses_stage_c_without_motion`:
+    // `an_accept_whose_confirmed_p_fails_6a_safety_refuses_integral_without_motion`:
     // a torque authority of 1 cannot carry any nonzero I prefix at the confirmed
     // P, so `plan_breakaway_velocity_integral_response` refuses with
     // `VelocityValidationFailed`.
-    let inputs = stage_c_inputs(1);
+    let inputs = integral_inputs(1);
     let safety = test_safety();
     let backend = test_backend();
     let mut evidence_sequence = 0_u16;
@@ -3283,7 +3283,7 @@ fn a_confirmed_accept_whose_stage_c_plan_build_is_refused_reports_a_distinct_cam
         BreakawayTerminalCause::ConfirmationStageCPlanRefused as u8
     );
     assert_eq!(campaign_terminal.accepted, 0);
-    assert_eq!(campaign_terminal.stage_c_plan_digest, 0);
+    assert_eq!(campaign_terminal.integral_plan_digest, 0);
     assert_eq!(
         campaign_terminal.error_code,
         CommissionError::VelocityValidationFailed.status_code()
@@ -3294,7 +3294,7 @@ fn a_confirmed_accept_whose_stage_c_plan_build_is_refused_reports_a_distinct_cam
 // --- Non-accept confirmation terminals never carry a Stage-C plan -------------
 
 #[test]
-fn no_non_accept_confirmation_terminal_carries_a_stage_c_plan() {
+fn no_non_accept_confirmation_terminal_carries_a_integral_plan() {
     for outcome in [
         BandConfirmationOutcome::TargetBandUnconfirmableFromDiscovery,
         BandConfirmationOutcome::TargetBandNotReachedAtAuthority,
@@ -3337,7 +3337,7 @@ fn confirmation_evidence_excluded_after_a_recorded_stroke_reports_partial_eviden
         .forward
         .record(0, VelocityObservationClass::Eligible, None, atom);
 
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
     let safety = test_safety();
     let backend = test_backend();
     let mut evidence_sequence = 0_u16;
@@ -3424,7 +3424,7 @@ fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
         .forward
         .record(0, VelocityObservationClass::Eligible, None, atom);
 
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
     let safety = test_safety();
     let backend = test_backend();
     let mut evidence_sequence = 0_u16;
@@ -3511,7 +3511,7 @@ fn safety_fault_after_a_recorded_stroke_reports_partial_evidence_not_empty() {
 
 #[test]
 fn an_impossible_discovery_outcome_reaching_confirmation_maps_to_band_not_selected() {
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
 
     // `TargetBandSkipped` is a discovery-owned terminal that must never reach
     // confirmation routing; if it does, it maps to `DiscoveryBandNotSelected`
@@ -3549,7 +3549,7 @@ fn discovery_rest_refusal_keeps_its_specific_terminal_status() {
         4_394,
     )
     .expect("valid discovery session");
-    let inputs = stage_c_inputs(2_448);
+    let inputs = integral_inputs(2_448);
     let mut evidence_sequence = 0_u16;
 
     let advance = discovery_done_advance(
@@ -3582,7 +3582,7 @@ fn discovery_rest_refusal_keeps_its_specific_terminal_status() {
 
 #[test]
 fn plan_time_resolution_refusal_keeps_its_discovery_terminal_cause() {
-    let mut inputs = stage_c_inputs(2_448);
+    let mut inputs = integral_inputs(2_448);
     inputs.p_start = gain(1);
     inputs.p_top = gain(7_456);
     let probe_plan = plan_upward_breakaway_probe(
@@ -3635,7 +3635,7 @@ fn plan_time_resolution_refusal_keeps_its_discovery_terminal_cause() {
 
 #[test]
 fn a_discovery_construction_fault_carries_an_error_code() {
-    let mut inputs = stage_c_inputs(2_448);
+    let mut inputs = integral_inputs(2_448);
     inputs.p_start = gain(1);
     inputs.p_top = gain(7_456);
     let probe_plan = plan_upward_breakaway_probe(
@@ -3679,7 +3679,7 @@ fn a_discovery_construction_fault_carries_an_error_code() {
 
 #[test]
 fn a_discovery_plan_structural_fault_carries_its_error_code() {
-    let mut inputs = stage_c_inputs(2_448);
+    let mut inputs = integral_inputs(2_448);
     inputs.p_start = gain(1);
     inputs.p_top = gain(7_456);
     // A workflow envelope too small for any discovery ladder: the plan builder
@@ -3742,7 +3742,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     let BreakawayCampaignOutcome::StageCPlanReady(expected_stage_c) = route_confirmed_accept(
         expected_acceptance,
         expected_plan,
-        &stage_c_inputs(usable),
+        &integral_inputs(usable),
         &test_safety(),
         &test_backend(),
     ) else {
@@ -3765,7 +3765,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     };
     let mut phase = OuterPhase::BreakawayCampaign {
         campaign: BreakawayCampaign {
-            inputs: stage_c_inputs(usable),
+            inputs: integral_inputs(usable),
             phase: BreakawayCampaignPhase::Confirmation {
                 state: BandConfirmationState::PlannedConfirmation,
                 session,
@@ -3899,7 +3899,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
 // --- campaign's Stage-C digest record, before the Stage-C hand-off ------------
 
 #[test]
-fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_record() {
+fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_integral_digest_record() {
     let candidate: u16 = 512;
     let (_p_start, _p_top, usable, _ceiling_binding_source) =
         current_gain_span(TmcMechanicalRpm::from_register(100), 2_448).unwrap();
@@ -3914,7 +3914,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
     };
     let mut phase = OuterPhase::BreakawayCampaign {
         campaign: BreakawayCampaign {
-            inputs: stage_c_inputs(usable),
+            inputs: integral_inputs(usable),
             phase: BreakawayCampaignPhase::Confirmation {
                 state: BandConfirmationState::PlannedConfirmation,
                 session,
@@ -3997,7 +3997,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_stage_c_digest_
     };
     assert_eq!(campaign_terminal.accepted, 1);
     assert_ne!(
-        campaign_terminal.stage_c_plan_digest, 0,
+        campaign_terminal.integral_plan_digest, 0,
         "an accepted campaign's closure record must carry the Stage-C plan digest"
     );
     assert_eq!(
@@ -4548,7 +4548,7 @@ async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
     ) else {
         panic!("the crafted discovery rungs must nominate a confirmable candidate");
     };
-    let inputs = stage_c_inputs(usable);
+    let inputs = integral_inputs(usable);
     let frozen_torque_cap = inputs.hard_torque_limit;
     let budget = test_budget();
     let mut engine = CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
@@ -4660,7 +4660,7 @@ fn position_of(events: &[HandOffEvent], wanted: HandOffEvent) -> usize {
 /// workflow on the following tick. So the boundary phase event trails the plan
 /// event, and both precede the first integral evidence.
 #[foci_firmware_macros::fixture_test]
-async fn the_engine_reports_one_stage_c_plan_before_any_integral_evidence() {
+async fn the_engine_reports_one_integral_plan_before_any_integral_evidence() {
     let events = engine_hand_off_events().await;
 
     assert_eq!(

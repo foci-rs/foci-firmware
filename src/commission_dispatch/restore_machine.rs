@@ -16,8 +16,8 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::autotune::CommissionError;
 use crate::commission_dispatch::{
     CommissionOutcome, CommissionRetention, DispatchState, PostActions, ReplyPayload,
-    StepperPostAction, disarm_velocity_workflow, fixed_gain_amplitude,
-    outer_restore_position_stable, record_restore_summary, restore, robustness, stage_c,
+    StepperPostAction, disarm_velocity_workflow, fixed_gain_amplitude, integral,
+    outer_restore_position_stable, record_restore_summary, restore, robustness,
     validate_outer_gains, zero_adc_cal_result, zero_commission_result, zero_outer_result,
 };
 use crate::commissioning::CommissioningEngine;
@@ -72,7 +72,7 @@ struct OwnedTerminalData {
     velocity_workflow_restored: bool,
     baseline_restored: bool,
     use_handled_stop_take: bool,
-    reproduction: Option<stage_c::StageCReproductionReport>,
+    reproduction: Option<integral::IntegralReproductionReport>,
     authority: Option<
         crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
     >,
@@ -1007,7 +1007,7 @@ impl TerminalRestoreMachine {
                             .zip(engine.fixed_gain_amplitude_plan_digest())
                     });
                     if !disarm_velocity_workflow(engine, backend, state).await {
-                        retention.stage_c.observe_fault();
+                        retention.integral.observe_fault();
                         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
                         terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
                         terminal.safety_fault = None;
@@ -1016,10 +1016,10 @@ impl TerminalRestoreMachine {
                             terminal,
                             order,
                             plan_digest,
-                            retention.stage_c,
+                            retention.integral,
                         );
                     } else {
-                        retention.stage_c.observe_fault();
+                        retention.integral.observe_fault();
                         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
                         terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
                         terminal.safety_fault = None;
@@ -1067,13 +1067,13 @@ impl TerminalRestoreMachine {
                         .take()
                         .expect("staged terminal restore requires Stage-C retention");
                     let mut terminal =
-                        robustness::apply_robustness_terminal(terminal, retention.stage_c);
+                        robustness::apply_robustness_terminal(terminal, retention.integral);
                     let deploy = (terminal.outcome == RobustnessOutcome::Complete)
                         .then(|| {
                             engine
                                 .as_ref()
                                 .and_then(CommissioningEngine::entry_snapshot)
-                                .zip(retention.stage_c.acceptance_point())
+                                .zip(retention.integral.acceptance_point())
                         })
                         .flatten();
                     match deploy {
@@ -1201,7 +1201,7 @@ impl TerminalRestoreMachine {
                     if !disarm_velocity_workflow(engine, backend, state).await
                         || !self.terminal.baseline_restored
                     {
-                        retention.stage_c.observe_fault();
+                        retention.integral.observe_fault();
                         terminal.outcome = VelocityIntegralOutcome::Fault;
                         terminal.cause =
                             IntegralOutcomeCause::Error(CommissionError::Spi.status_code());
@@ -1215,7 +1215,7 @@ impl TerminalRestoreMachine {
                     engine
                         .as_mut()
                         .expect("engine slot is None on VelocityIntegralTerminal")
-                        .emit_stage_c_terminal_trace(
+                        .emit_integral_terminal_trace(
                             backend,
                             &terminal,
                             self.terminal.reproduction,
@@ -1231,7 +1231,7 @@ impl TerminalRestoreMachine {
                     };
                     if let Some(record) = engine
                         .as_ref()
-                        .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
+                        .and_then(|engine| engine.attach_integral_rest_boundary(&mut terminal))
                     {
                         #[cfg(feature = "trace")]
                         backend.record_velocity_sweep_trace_record(record);
@@ -1395,7 +1395,7 @@ impl TerminalRestoreMachine {
         };
         if let Some(record) = engine
             .as_ref()
-            .and_then(|engine| engine.attach_stage_c_rest_boundary(&mut terminal))
+            .and_then(|engine| engine.attach_integral_rest_boundary(&mut terminal))
         {
             #[cfg(feature = "trace")]
             backend.record_velocity_sweep_trace_record(record);
@@ -1405,14 +1405,14 @@ impl TerminalRestoreMachine {
         #[cfg(feature = "trace")]
         let promotion_source_diagnostic = engine.as_ref().map_or(
             (0, false),
-            CommissioningEngine::stage_c_promotion_source_diagnostic,
+            CommissioningEngine::integral_promotion_source_diagnostic,
         );
         let breakaway_execution_plan = engine
             .as_ref()
-            .and_then(CommissioningEngine::breakaway_stage_c_execution_plan);
+            .and_then(CommissioningEngine::breakaway_integral_execution_plan);
         #[cfg(feature = "trace")]
         let promotion_execution_plan_present = breakaway_execution_plan.is_some();
-        let mut dispatch = stage_c::apply_stage_c_terminal(terminal, retention.stage_c);
+        let mut dispatch = integral::apply_integral_terminal(terminal, retention.integral);
         #[cfg(feature = "trace")]
         let promotion_authority_present = dispatch.authority.is_some();
 
@@ -1428,31 +1428,31 @@ impl TerminalRestoreMachine {
             && let (Some(execution_plan), Some(authority)) =
                 (breakaway_execution_plan, dispatch.authority)
         {
-            match stage_c::breakaway_acceptance_point(
+            match integral::breakaway_acceptance_point(
                 self.channel,
                 &authority,
                 execution_plan,
                 &dispatch.terminal,
             ) {
-                Ok(stage_c::AcceptanceInstall::Installed(point)) => {
+                Ok(integral::AcceptanceInstall::Installed(point)) => {
                     defmt::info!("velocity-integral promotion: acceptance point installed");
-                    retention.stage_c.install_acceptance_point(point);
+                    retention.integral.install_acceptance_point(point);
                     #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 1;
                     }
                 }
-                Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
+                Ok(integral::AcceptanceInstall::MissingTargetTerminus) => {
                     defmt::warn!("velocity-integral promotion: missing target terminus");
                     dispatch.terminal.cause = IntegralOutcomeCause::Dispatch(
-                        stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS,
+                        integral::INTEGRAL_DISPATCH_CAUSE_NO_ACCEPTANCE_TERMINUS,
                     );
                     #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 2;
                     }
                 }
-                Ok(stage_c::AcceptanceInstall::NotAcceptanceTerminal) => {
+                Ok(integral::AcceptanceInstall::NotAcceptanceTerminal) => {
                     defmt::info!("velocity-integral promotion: not an acceptance terminal");
                     #[cfg(feature = "trace")]
                     {
@@ -1461,10 +1461,11 @@ impl TerminalRestoreMachine {
                 }
                 Err(()) => {
                     defmt::warn!("velocity-integral promotion: evidence integrity fault");
-                    retention.stage_c.observe_fault();
+                    retention.integral.observe_fault();
                     dispatch.terminal.outcome = VelocityIntegralOutcome::Fault;
-                    dispatch.terminal.cause =
-                        IntegralOutcomeCause::Dispatch(stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+                    dispatch.terminal.cause = IntegralOutcomeCause::Dispatch(
+                        integral::INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY,
+                    );
                     dispatch.terminal.safety_fault = None;
                     dispatch.reproduction = None;
                     dispatch.authority = None;
@@ -1480,7 +1481,7 @@ impl TerminalRestoreMachine {
         {
             let (acceptance_source_code, phase_live) = promotion_source_diagnostic;
             backend.record_velocity_sweep_trace_record(
-                crate::commissioning::outer::velocity::integral_reporting::encode_stage_c_promotion_diagnostic(
+                crate::commissioning::outer::velocity::integral_reporting::encode_integral_promotion_diagnostic(
                     crate::commissioning::outer::velocity::integral_reporting::StageCPromotionDiagnostic {
                         channel: self.channel,
                         outcome: crate::commissioning::outer::velocity::integral_reporting::outcome_code(

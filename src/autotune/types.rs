@@ -244,7 +244,7 @@ pub enum CommissionError {
     /// before motion. Code 64.
     CampaignPlanInvalid,
     /// Stage-C authority could not be bound from an accepted confirmation. Code 65.
-    StageCAuthorityDenied,
+    IntegralAuthorityDenied,
     /// A periodic sampling grid was configured with a zero period. Code 67.
     SchedulePeriodZero,
     /// A grid deadline was advanced before its previous deadline was due, so
@@ -357,7 +357,7 @@ impl CommissionError {
             Self::TargetRateInvalid => 62,
             Self::ZeroElapsedSample => 63,
             Self::CampaignPlanInvalid => 64,
-            Self::StageCAuthorityDenied => 65,
+            Self::IntegralAuthorityDenied => 65,
             Self::DiscoveryBandNotSelected => 66,
             Self::SchedulePeriodZero => 67,
             Self::ScheduleEarlyInvocation => 68,
@@ -640,7 +640,7 @@ mod tests {
             CommissionError::TargetRateInvalid,
             CommissionError::ZeroElapsedSample,
             CommissionError::CampaignPlanInvalid,
-            CommissionError::StageCAuthorityDenied,
+            CommissionError::IntegralAuthorityDenied,
             CommissionError::DiscoveryBandNotSelected,
             CommissionError::SchedulePeriodZero,
             CommissionError::ScheduleEarlyInvocation,
@@ -686,7 +686,7 @@ mod tests {
         assert_eq!(CommissionError::TargetRateInvalid.status_code(), 62);
         assert_eq!(CommissionError::ZeroElapsedSample.status_code(), 63);
         assert_eq!(CommissionError::CampaignPlanInvalid.status_code(), 64);
-        assert_eq!(CommissionError::StageCAuthorityDenied.status_code(), 65);
+        assert_eq!(CommissionError::IntegralAuthorityDenied.status_code(), 65);
         assert_eq!(CommissionError::DiscoveryBandNotSelected.status_code(), 66);
         assert_eq!(CommissionError::SchedulePeriodZero.status_code(), 67);
         assert_eq!(CommissionError::ScheduleEarlyInvocation.status_code(), 68);

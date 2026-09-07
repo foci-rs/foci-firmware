@@ -32,7 +32,7 @@ pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
 /// A Stage-C plan built under this schema binds the accepted
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
 /// Stage-B sweep digest -- see
-/// [`super::integral_plan::bind_breakaway_stage_c_authority`]. Historical
+/// [`super::integral_plan::bind_breakaway_integral_authority`]. Historical
 /// schemas up to and including [`INTEGRAL_PLAN_SCHEMA_REVISION`] keep
 /// their exact digest and behavior; this schema is additive.
 ///
@@ -196,7 +196,7 @@ pub fn build_combined_integral_ladder(
 
 /// Derive the exact Stage-C continuation duration without summing rounded
 /// phase reports.
-pub fn stage_c_continuation_geometry(
+pub fn integral_continuation_geometry(
     stage_b: VelocitySweepPlan,
     pwm_hz: u32,
 ) -> Result<CombinedWorkflowGeometry, VelocityIntegralPlanError> {

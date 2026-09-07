@@ -43,7 +43,7 @@ enum TuneRoute {
         crate::commission_dispatch::fixed_gain_amplitude::FixedGainAmplitudePreflight,
     ),
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
-    StageCResume(crate::commission_dispatch::stage_c::StageCPreflight),
+    IntegralResume(crate::commission_dispatch::integral::IntegralPreflight),
     Robustness(crate::commission_dispatch::robustness::RobustnessPreflight),
 }
 
@@ -52,36 +52,36 @@ enum TuneRoute {
 /// Every rejection here names retained state that disagrees with the request,
 /// so each keeps a plan digest where one exists. The empty-slot case is not a
 /// rejection and is built separately.
-fn stage_c_resume_rejection_terminal(
+fn integral_resume_rejection_terminal(
     run_sequence: u32,
-    rejection: crate::commission_dispatch::stage_c::StageCPreflightRejection,
+    rejection: crate::commission_dispatch::integral::IntegralPreflightRejection,
     retained_plan_digest: u64,
 ) -> crate::commissioning::types::VelocityIntegralTerminal {
-    use crate::commission_dispatch::stage_c::{
-        STAGE_C_CAUSE_PLAN_MISMATCH, StageCPreflightRejection, failed_stage_c_terminal,
-        missing_authority_stage_c_terminal,
+    use crate::commission_dispatch::integral::{
+        INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH, IntegralPreflightRejection,
+        failed_integral_terminal, missing_authority_integral_terminal,
     };
 
     match rejection {
-        StageCPreflightRejection::NoTransitionCapableOperatingPoint(failure) => {
-            failed_stage_c_terminal(run_sequence, failure)
+        IntegralPreflightRejection::NoTransitionCapableOperatingPoint(failure) => {
+            failed_integral_terminal(run_sequence, failure)
         }
         // Both remaining rejections mean retained authority exists and the
         // request disagrees with it, so both name the retained plan. Only the
         // empty slot reports no plan at all, which is what lets the host tell
         // "nothing to resume" apart from "that is not what was retained".
-        StageCPreflightRejection::RejectedPlanMismatch { retained, .. } => {
-            let mut terminal = missing_authority_stage_c_terminal(run_sequence);
+        IntegralPreflightRejection::RejectedPlanMismatch { retained, .. } => {
+            let mut terminal = missing_authority_integral_terminal(run_sequence);
             terminal.cause = crate::commissioning::types::IntegralOutcomeCause::Dispatch(
-                STAGE_C_CAUSE_PLAN_MISMATCH,
+                INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH,
             );
             terminal.plan_digest = retained.plan_digest;
             terminal
         }
-        StageCPreflightRejection::InvalidPlan => {
-            let mut terminal = missing_authority_stage_c_terminal(run_sequence);
+        IntegralPreflightRejection::InvalidPlan => {
+            let mut terminal = missing_authority_integral_terminal(run_sequence);
             terminal.cause = crate::commissioning::types::IntegralOutcomeCause::Dispatch(
-                STAGE_C_CAUSE_PLAN_MISMATCH,
+                INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH,
             );
             terminal.plan_digest = retained_plan_digest;
             terminal
@@ -89,14 +89,14 @@ fn stage_c_resume_rejection_terminal(
     }
 }
 
-/// Build the `stage_c_resume` route's disclosed workflow envelope.
+/// Build the `integral_resume` route's disclosed workflow envelope.
 ///
 /// `reproduce_ms` is the retained Stage-C plan's own `maximum_workflow_ms`. An
 /// admitted resume continues inline into robustness on the same dispatch, so
 /// the disclosed envelope has to bound reproduce plus the robustness worst
 /// case: the host arms one wait covering the whole run instead of re-arming
 /// a second wait when robustness starts.
-fn build_stage_c_resume_workflow_plan(
+fn build_integral_resume_workflow_plan(
     run_sequence: u32,
     reproduce_ms: u32,
     recovery_maximum_slot_us: u32,
@@ -302,7 +302,7 @@ pub async fn handle_tmc_control_request_with_stages<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,
     runtime: &mut TmcControlRuntime,
-    stage_c_candidate: &mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
+    integral_candidate: &mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
     tmc: &mut Tmc4671Spi<Spi>,
     board: &mut Board,
 ) -> TmcControlRequestOutcome
@@ -363,7 +363,7 @@ where
                     // A routine same-channel re-enable may auto-calibrate after the
                     // required disarm/cooling interval; preserve that channel's
                     // Stage-C authority across the alignment lifecycle.
-                    stage_c_candidate.preserve_for_same_channel_calibration(board.channel());
+                    integral_candidate.preserve_for_same_channel_calibration(board.channel());
                     runtime.set_commission_engine(
                         CommissioningEngine::new_calibrate_for_tmc_with_gains_and_trace_seq(
                             0,
@@ -461,7 +461,7 @@ where
             // Host homing explicitly calibrates after the required disarm/cooling
             // interval. Preserve same-channel Stage-C authority across that
             // alignment lifecycle.
-            stage_c_candidate.preserve_for_same_channel_calibration(board.channel());
+            integral_candidate.preserve_for_same_channel_calibration(board.channel());
             runtime.clear_calibrated();
             board
                 .tmc_state()
@@ -725,7 +725,7 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            stage_c_candidate.invalidate_for_unrelated_commissioning();
+            integral_candidate.invalidate_for_unrelated_commissioning();
             runtime.clear_calibrated();
             board
                 .tmc_state()
@@ -840,7 +840,7 @@ where
                 action @ (crate::tmc::AutotuneAction::FixedGainAmplitudeAscending
                 | crate::tmc::AutotuneAction::FixedGainAmplitudeDescending) => {
                     let amplitude_config =
-                        crate::commission_dispatch::stage_c::StageCPreflightConfig {
+                        crate::commission_dispatch::integral::IntegralPreflightConfig {
                             encoder_counts_per_rev,
                             torque_limit: current_limit.raw(),
                             limit_evidence_capability: board.velocity_limit_evidence_capability(),
@@ -853,7 +853,7 @@ where
                             request,
                             &amplitude_config,
                             run_sequence,
-                            stage_c_candidate,
+                            integral_candidate,
                         );
                     let preflight = match result {
                         Ok(preflight) => preflight,
@@ -862,7 +862,7 @@ where
                                 failed_fixed_gain_amplitude_terminal(
                                     run_sequence,
                                     rejection,
-                                    stage_c_candidate,
+                                    integral_candidate,
                                 );
                             board.record_velocity_sweep_trace_record(
                                 crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
@@ -904,7 +904,7 @@ where
                     TuneRoute::FixedGainAmplitude(preflight)
                 }
                 crate::tmc::AutotuneAction::StageCResume => {
-                    let config = crate::commission_dispatch::stage_c::StageCPreflightConfig {
+                    let config = crate::commission_dispatch::integral::IntegralPreflightConfig {
                         encoder_counts_per_rev,
                         torque_limit: current_limit.raw(),
                         limit_evidence_capability: board.velocity_limit_evidence_capability(),
@@ -917,16 +917,16 @@ where
                     // minutes when the operator asked to reproduce a plan that
                     // does not exist. Translate it here rather than changing
                     // what the shared preflight means.
-                    let refusal = match crate::commission_dispatch::stage_c::
-                        preflight_stage_c_request(request, &config, run_sequence, stage_c_candidate)
+                    let refusal = match crate::commission_dispatch::integral::
+                        preflight_integral_request(request, &config, run_sequence, integral_candidate)
                     {
                         Ok(Some(preflight)) => Ok(preflight),
-                        Ok(None) => Err(crate::commission_dispatch::stage_c::
-                            missing_authority_stage_c_terminal(run_sequence)),
-                        Err(rejection) => Err(stage_c_resume_rejection_terminal(
+                        Ok(None) => Err(crate::commission_dispatch::integral::
+                            missing_authority_integral_terminal(run_sequence)),
+                        Err(rejection) => Err(integral_resume_rejection_terminal(
                             run_sequence,
                             rejection,
-                            stage_c_candidate
+                            integral_candidate
                                 .authority()
                                 .map_or(0, |authority| authority.identity.plan_digest),
                         )),
@@ -949,7 +949,7 @@ where
                             return TmcControlRequestOutcome::skip_tick_tail();
                         }
                     };
-                    let workflow = build_stage_c_resume_workflow_plan(
+                    let workflow = build_integral_resume_workflow_plan(
                         run_sequence,
                         preflight.plan.maximum_workflow_ms,
                         preflight.plan.recovery_maximum_slot_us,
@@ -972,7 +972,7 @@ where
                         run_sequence,
                         plan: preflight.plan,
                     });
-                    TuneRoute::StageCResume(preflight)
+                    TuneRoute::IntegralResume(preflight)
                 }
                 crate::tmc::AutotuneAction::BreakawaySeeded => {
                     let (campaign, workflow) = match crate::commissioning::outer::velocity::
@@ -1009,7 +1009,7 @@ where
                     let preflight =
                         match crate::commission_dispatch::robustness::preflight_robustness_reversal(
                             run_sequence,
-                            stage_c_candidate,
+                            integral_candidate,
                         ) {
                             Ok(preflight) => preflight,
                             Err(rejection) => {
@@ -1146,9 +1146,9 @@ where
                             ),
                         );
                     }
-                    TuneRoute::StageCResume(preflight) => {
+                    TuneRoute::IntegralResume(preflight) => {
                         runtime.set_commission_engine(
-                            CommissioningEngine::new_outer_for_tmc_with_stage_c_preflight(
+                            CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
                                 oid,
                                 tmc_state,
                                 outer_params,
@@ -1240,7 +1240,7 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            stage_c_candidate.invalidate_for_unrelated_commissioning();
+            integral_candidate.invalidate_for_unrelated_commissioning();
             board
                 .tmc_state()
                 .cancel_requested
@@ -1376,13 +1376,13 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    let mut stage_c_candidate =
+    let mut integral_candidate =
         crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new();
     handle_tmc_control_request_with_stages(
         req,
         pre_request,
         runtime,
-        &mut stage_c_candidate,
+        &mut integral_candidate,
         tmc,
         board,
     )
@@ -1564,7 +1564,7 @@ mod tests {
         use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut stage_c = IntegralRetentionSlot::new();
+        let mut integral = IntegralRetentionSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         let mut board = RecordingBoard::skip_tick_tail();
         let request = TmcRequest::new(0, TmcRequestKind::SetEnable(false));
@@ -1573,7 +1573,7 @@ mod tests {
             request,
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         );
@@ -1816,7 +1816,7 @@ mod tests {
         }
     }
 
-    fn retained_stage_c_authority()
+    fn retained_integral_authority()
     -> crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             IntegralAuthoritySummary, IntegralPlanIdentity,
@@ -2696,14 +2696,14 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = IntegralRetentionSlot::new();
+        let mut integral = IntegralRetentionSlot::new();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
             tune_request_with_action(crate::tmc::AutotuneAction::FixedGainAmplitudeAscending),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
@@ -2743,8 +2743,8 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = IntegralRetentionSlot::new();
-        stage_c.install_acceptance_point(
+        let mut integral = IntegralRetentionSlot::new();
+        integral.install_acceptance_point(
             crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
                 velocity_sweep_request(),
                 AcceptanceMatrixProgress::ReadyAscending,
@@ -2756,7 +2756,7 @@ mod tests {
             tune_request_with_action(crate::tmc::AutotuneAction::FixedGainAmplitudeAscending),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
@@ -2781,7 +2781,7 @@ mod tests {
         assert_eq!(board.velocity_sweep_records.len(), 3);
         assert!(runtime.is_commission_active());
         assert_eq!(
-            stage_c.acceptance_point().unwrap().progress,
+            integral.acceptance_point().unwrap().progress,
             AcceptanceMatrixProgress::ReadyAscending
         );
     }
@@ -2800,8 +2800,8 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = IntegralRetentionSlot::new();
-        stage_c.install_acceptance_point(
+        let mut integral = IntegralRetentionSlot::new();
+        integral.install_acceptance_point(
             crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
                 velocity_sweep_request(),
                 AcceptanceMatrixProgress::ReadyAscending,
@@ -2813,7 +2813,7 @@ mod tests {
             tune_request_with_action(crate::tmc::AutotuneAction::RobustnessReversal),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
@@ -2855,7 +2855,7 @@ mod tests {
         );
     }
 
-    fn resumable_stage_c_plan()
+    fn resumable_integral_plan()
     -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
         use crate::commission_dispatch::test_support::breakaway_confirmation_for_test;
         use crate::commissioning::outer::OuterMotionBudget;
@@ -2912,16 +2912,16 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = IntegralRetentionSlot::new();
-        let plan = resumable_stage_c_plan();
-        crate::commission_dispatch::stage_c::install_authority_from_plan(0, &mut stage_c, plan);
+        let mut integral = IntegralRetentionSlot::new();
+        let plan = resumable_integral_plan();
+        crate::commission_dispatch::integral::install_authority_from_plan(0, &mut integral, plan);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
             tune_request_with_action(crate::tmc::AutotuneAction::StageCResume),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
@@ -2959,7 +2959,7 @@ mod tests {
         assert_eq!(board.velocity_sweep_records.len(), 3);
         assert!(runtime.is_commission_active());
         assert_eq!(
-            stage_c
+            integral
                 .authority()
                 .map(|authority| authority.identity.plan_digest),
             Some(plan.digest())
@@ -2970,7 +2970,7 @@ mod tests {
     fn resume_workflow_plan_budget_covers_robustness() {
         let reproduce_ms = 12_000;
 
-        let plan = build_stage_c_resume_workflow_plan(0, reproduce_ms, 3_000_000);
+        let plan = build_integral_resume_workflow_plan(0, reproduce_ms, 3_000_000);
 
         assert!(
             plan.maximum_workflow_ms
@@ -2995,10 +2995,13 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = IntegralRetentionSlot::new();
-        let plan = resumable_stage_c_plan();
-        let retained =
-            crate::commission_dispatch::stage_c::install_authority_from_plan(0, &mut stage_c, plan);
+        let mut integral = IntegralRetentionSlot::new();
+        let plan = resumable_integral_plan();
+        let retained = crate::commission_dispatch::integral::install_authority_from_plan(
+            0,
+            &mut integral,
+            plan,
+        );
         let mut request = tune_request_with_action(crate::tmc::AutotuneAction::StageCResume);
         let TmcRequestKind::Tune {
             max_stroke_travel_mrev,
@@ -3014,7 +3017,7 @@ mod tests {
             request,
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
@@ -3030,7 +3033,7 @@ mod tests {
         assert_eq!(
             terminal.cause,
             crate::commissioning::types::IntegralOutcomeCause::Dispatch(
-                crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+                crate::commission_dispatch::integral::INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH
             )
         );
         // The host tells "nothing retained" from "not what was retained" by the
@@ -3038,7 +3041,7 @@ mod tests {
         assert_eq!(terminal.plan_digest, retained.identity.plan_digest);
         assert_ne!(terminal.plan_digest, 0);
         assert!(!runtime.is_commission_active());
-        assert_eq!(stage_c.authority(), Some(retained));
+        assert_eq!(integral.authority(), Some(retained));
         let spi = tmc.into_inner();
         assert!(spi.write_attempts.iter().all(|(addr, _)| {
             *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
@@ -3060,11 +3063,11 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = IntegralRetentionSlot::new();
-        let retained = crate::commission_dispatch::stage_c::install_authority_from_plan(
+        let mut integral = IntegralRetentionSlot::new();
+        let retained = crate::commission_dispatch::integral::install_authority_from_plan(
             0,
-            &mut stage_c,
-            resumable_stage_c_plan(),
+            &mut integral,
+            resumable_integral_plan(),
         );
         // No Stage-B plan reconstructs from this, so the preflight refuses
         // before it can compare digests. The refusal still has to say which
@@ -3083,7 +3086,7 @@ mod tests {
             request,
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
@@ -3099,13 +3102,13 @@ mod tests {
         assert_eq!(
             terminal.cause,
             crate::commissioning::types::IntegralOutcomeCause::Dispatch(
-                crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
+                crate::commission_dispatch::integral::INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH
             )
         );
         assert_eq!(terminal.plan_digest, retained.identity.plan_digest);
         assert_ne!(terminal.plan_digest, 0);
         assert!(!runtime.is_commission_active());
-        assert_eq!(stage_c.authority(), Some(retained));
+        assert_eq!(integral.authority(), Some(retained));
     }
 
     #[fixture_test]
@@ -3123,19 +3126,19 @@ mod tests {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         runtime.set_motor_enabled_for_test(true);
         runtime.set_calibrated_for_test(true);
-        let mut stage_c = IntegralRetentionSlot::new();
+        let mut integral = IntegralRetentionSlot::new();
         let point = crate::commission_dispatch::fixed_gain_amplitude::test_acceptance_point(
             velocity_sweep_request(),
             AcceptanceMatrixProgress::ReadyDescending,
         );
-        stage_c.install_acceptance_point(point);
+        integral.install_acceptance_point(point);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
         handle_tmc_control_request_with_stages(
             tune_request_with_action(crate::tmc::AutotuneAction::FixedGainAmplitudeAscending),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
@@ -3148,7 +3151,7 @@ mod tests {
             terminal.cause,
             FixedGainAmplitudeCause::AmplitudeOrderMismatch
         );
-        assert_eq!(stage_c.acceptance_point(), Some(point));
+        assert_eq!(integral.acceptance_point(), Some(point));
         assert!(!runtime.is_commission_active());
         assert!(tmc.into_inner().write_attempts.iter().all(|(addr, _)| {
             *addr != foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
@@ -3158,14 +3161,14 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn same_channel_explicit_calibration_preserves_stage_c_authority() {
+    async fn same_channel_explicit_calibration_preserves_integral_authority() {
         use crate::commissioning::outer::velocity::integral_reproduction::{
             IntegralRetentionSlot, IntegralRetentionSlotState,
         };
 
         let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut stage_c = IntegralRetentionSlot::new();
-        stage_c.install_authority(retained_stage_c_authority());
+        let mut integral = IntegralRetentionSlot::new();
+        integral.install_authority(retained_integral_authority());
         let mut board = RecordingBoard::skip_tick_tail();
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
@@ -3173,14 +3176,14 @@ mod tests {
             TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 7 }),
             TmcPreRequestDisposition::ContinueRequest,
             &mut runtime,
-            &mut stage_c,
+            &mut integral,
             &mut tmc,
             &mut board,
         )
         .await;
 
-        assert_eq!(stage_c.state(), IntegralRetentionSlotState::AuthorityOnly);
-        assert_eq!(stage_c.authority(), Some(retained_stage_c_authority()));
+        assert_eq!(integral.state(), IntegralRetentionSlotState::AuthorityOnly);
+        assert_eq!(integral.authority(), Some(retained_integral_authority()));
         assert_eq!(
             runtime.pending_commission_kind(),
             Some(EngineKind::Calibrate)

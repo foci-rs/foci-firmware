@@ -14,13 +14,13 @@ use super::integral_plan::{
     ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION, INTEGRAL_MAX_POSITIVE_RUNGS,
     INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG, IntegralAcquisitionAuthority,
     IntegralSlotOrder, VelocityIntegralPlan, VelocityIntegralPlanError,
-    bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
+    bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms,
     max_transition_capable_p, native_rung_count, native_velocity_i_at,
     plan_breakaway_velocity_integral_response, recovery_quantization_exposed, response_horizon,
-    transition_capable_stage_c_gain, velocity_i_tau_us,
+    transition_capable_integral_gain, velocity_i_tau_us,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -329,7 +329,7 @@ fn preflight_duration_reserves_the_fixed_cleanup_window() {
 }
 
 #[test]
-fn stage_c_plan_freezes_geometry_and_conservative_duration() {
+fn integral_plan_freezes_geometry_and_conservative_duration() {
     let plan = build_test_breakaway_plan();
 
     assert_eq!(plan.schema_revision, BREAKAWAY_INTEGRAL_SCHEMA_REVISION);
@@ -398,29 +398,29 @@ fn execution_plan_copies_i_top_cap() {
 }
 
 /// `CommissioningWorkflowPlan::new` admits exactly `Resume`
-/// (`stage_b_ms == 0 && stage_c_ms != 0`); every other shape it can name is
+/// (`stage_b_ms == 0 && integral_ms != 0`); every other shape it can name is
 /// rejected -- the fixed-gain-amplitude and breakaway shapes have their own
 /// dedicated constructors instead (see
 /// `workflow_kind_discriminants_are_a_clean_zero_through_four_sequence`).
 #[test]
 fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
-    let stage_c = build_test_breakaway_plan();
+    let integral = build_test_breakaway_plan();
 
     let resume = CommissioningWorkflowPlan::new(
         9,
         VelocityAutotuneWorkflowKind::Resume,
         0,
-        stage_c.maximum_workflow_ms,
+        integral.maximum_workflow_ms,
     )
     .unwrap();
 
-    assert_eq!(resume.maximum_workflow_ms, stage_c.maximum_workflow_ms);
+    assert_eq!(resume.maximum_workflow_ms, integral.maximum_workflow_ms);
     assert_eq!(
         CommissioningWorkflowPlan::new(
             9,
             VelocityAutotuneWorkflowKind::Resume,
             1,
-            stage_c.maximum_workflow_ms,
+            integral.maximum_workflow_ms,
         ),
         Err(VelocityIntegralPlanError::InvalidRequest),
         "Resume names no Stage-B duration"
@@ -434,7 +434,7 @@ fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
         10,
         VelocityAutotuneWorkflowKind::Resume,
         0,
-        stage_c.maximum_workflow_ms,
+        integral.maximum_workflow_ms,
     )
     .unwrap();
     assert_ne!(resume.digest(), different_sequence.digest());
@@ -667,26 +667,26 @@ fn confirmation_is_eight_strokes_at_the_declared_family_size() {
 fn envelope_sums_microseconds_across_every_phase_and_rounds_outward_once() {
     let recovery_slot_count = 56_u32;
     let recovery_maximum_slot_us = 3_000_000_u32;
-    let stage_c_maximum_us =
+    let integral_maximum_us =
         u64::from(integral_workflow_maximum_ms(25_000, 3_000).unwrap()) * 1_000;
 
     let total_us = breakaway_workflow_envelope_us(
         recovery_slot_count,
         recovery_maximum_slot_us,
-        stage_c_maximum_us,
+        integral_maximum_us,
     )
     .unwrap();
     let expected_us = breakaway_probe_slots_us().unwrap()
         + u64::from(recovery_slot_count) * u64::from(recovery_maximum_slot_us)
         + breakaway_discovery_slots_us(MAX_SWEEP_RUNGS as u8).unwrap()
         + breakaway_confirmation_slots_us().unwrap()
-        + stage_c_maximum_us;
+        + integral_maximum_us;
     assert_eq!(total_us, expected_us);
 
     let total_ms = breakaway_workflow_envelope_ms(
         recovery_slot_count,
         recovery_maximum_slot_us,
-        stage_c_maximum_us,
+        integral_maximum_us,
     )
     .unwrap();
     assert_eq!(total_ms, u32::try_from(total_us.div_ceil(1_000)).unwrap());
@@ -700,7 +700,7 @@ fn envelope_sums_microseconds_across_every_phase_and_rounds_outward_once() {
 
 #[test]
 fn envelope_arithmetic_is_checked_against_overflow() {
-    // `stage_c_maximum_us` alone large enough to overflow the running `u64`
+    // `integral_maximum_us` alone large enough to overflow the running `u64`
     // sum must be rejected, not wrapped.
     assert_eq!(
         breakaway_workflow_envelope_us(0, 0, u64::MAX),
@@ -780,7 +780,7 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
         .expect("rung-18-class evidence confirms within the 70-80% band");
     assert_eq!(acceptance.nominated_p(), nominated_p);
 
-    let bound = bind_breakaway_stage_c_authority(
+    let bound = bind_breakaway_integral_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
         Ok(acceptance),
@@ -848,10 +848,10 @@ fn new_breakaway_authority_stores_confirmation_intervals() {
 // binary can't even name it. The guarantee is structural, checked by every
 // build of this crate: every call site in every module other than
 // `integral_plan.rs` must obtain a `ConfirmedAcquisitionDigest` from
-// `bind_breakaway_stage_c_authority`, with no other route to one.
+// `bind_breakaway_integral_authority`, with no other route to one.
 
 #[test]
-fn stage_c_authority_rejects_a_discovery_or_probe_digest() {
+fn integral_authority_rejects_a_discovery_or_probe_digest() {
     let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
     let discovery_plan = plan_additive_discovery_ladder(breakaway_discovery_request(
         floor,
@@ -868,7 +868,7 @@ fn stage_c_authority_rejects_a_discovery_or_probe_digest() {
 
     // The discovery digest is offered where the confirmation digest belongs.
     assert_eq!(
-        bind_breakaway_stage_c_authority(
+        bind_breakaway_integral_authority(
             discovery_plan.plan_digest,
             confirmation_plan,
             Ok(acceptance),
@@ -877,13 +877,17 @@ fn stage_c_authority_rejects_a_discovery_or_probe_digest() {
     );
     // The probe digest is rejected the same way.
     assert_eq!(
-        bind_breakaway_stage_c_authority(probe_plan.plan_digest, confirmation_plan, Ok(acceptance)),
+        bind_breakaway_integral_authority(
+            probe_plan.plan_digest,
+            confirmation_plan,
+            Ok(acceptance)
+        ),
         Err(BreakawayAuthorityBindingError::AcquisitionDigestMismatch)
     );
 }
 
 #[test]
-fn stage_c_authority_rejects_a_failed_confirmation_even_with_a_matching_digest() {
+fn integral_authority_rejects_a_failed_confirmation_even_with_a_matching_digest() {
     let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
     let discovery_plan = plan_additive_discovery_ladder(breakaway_discovery_request(
         floor,
@@ -901,7 +905,7 @@ fn stage_c_authority_rejects_a_failed_confirmation_even_with_a_matching_digest()
     let failure =
         TargetBandConfirmationInconclusive(BandConfirmationFailureCause::ResponseLocation);
     assert_eq!(
-        bind_breakaway_stage_c_authority(
+        bind_breakaway_integral_authority(
             confirmation_plan.plan_digest,
             confirmation_plan,
             Err(failure)
@@ -911,7 +915,7 @@ fn stage_c_authority_rejects_a_failed_confirmation_even_with_a_matching_digest()
 }
 
 #[test]
-fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
+fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
     let (probe_plan, floor, breakaway) = breakaway_probe_and_floor();
     let discovery_plan = plan_additive_discovery_ladder(breakaway_discovery_request(
         floor,
@@ -934,7 +938,7 @@ fn stage_c_authority_rejects_an_acceptance_for_a_different_candidate() {
         .expect("rung-18-class evidence confirms within the 70-80% band");
     assert_eq!(mismatched_acceptance.nominated_p(), breakaway_gain(512));
     assert_eq!(
-        bind_breakaway_stage_c_authority(
+        bind_breakaway_integral_authority(
             confirmation_plan.plan_digest,
             confirmation_plan,
             Ok(mismatched_acceptance),
@@ -959,8 +963,8 @@ fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
 
 /// Physical acquisition context for the breakaway fixtures below, built from
 /// the same [`stage_b_plan`] fixture the legacy tests use so the confirmed
-/// gain 512 is known (from `stage_c_plan_freezes_geometry_and_conservative_duration`)
-/// to pass [`super::integral_plan::transition_capable_stage_c_gain`] under
+/// gain 512 is known (from `integral_plan_freezes_geometry_and_conservative_duration`)
+/// to pass [`super::integral_plan::transition_capable_integral_gain`] under
 /// `pwm_hz = 25_000`, `encoder_counts_per_rev = 4_000`.
 fn breakaway_acquisition_context() -> AcquisitionContext {
     let stage_b = stage_b_plan();
@@ -978,14 +982,14 @@ fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
 }
 
 /// Mint the breakaway confirmation token for `confirmation_plan` through the
-/// real [`bind_breakaway_stage_c_authority`] gate, exactly as a live campaign
+/// real [`bind_breakaway_integral_authority`] gate, exactly as a live campaign
 /// would, rather than fabricating the digest. The token is the only input the
 /// Stage-C gate accepts as authority.
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
         evaluate_band_confirmation(confirmation_plan.nominated_p, forward, reverse).unwrap();
-    bind_breakaway_stage_c_authority(
+    bind_breakaway_integral_authority(
         confirmation_plan.plan_digest,
         confirmation_plan,
         Ok(acceptance),
@@ -1016,8 +1020,8 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 /// the only campaign that produces candidates.
 #[test]
 fn retained_breakaway_authority_regenerates_its_exact_plan() {
-    use crate::commission_dispatch::stage_c::{
-        StageCPreflightConfig, install_authority_from_plan, preflight_stage_c_request,
+    use crate::commission_dispatch::integral::{
+        IntegralPreflightConfig, install_authority_from_plan, preflight_integral_request,
     };
     use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
@@ -1037,9 +1041,9 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
     let mut slot = IntegralRetentionSlot::new();
     install_authority_from_plan(0, &mut slot, plan);
 
-    let preflight = preflight_stage_c_request(
+    let preflight = preflight_integral_request(
         stage_b_request(),
-        &StageCPreflightConfig {
+        &IntegralPreflightConfig {
             encoder_counts_per_rev: 4_000,
             torque_limit: 2_816,
             limit_evidence_capability: super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
@@ -1071,9 +1075,9 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
 /// Execution then does its target-rate math against the stale resolution.
 #[test]
 fn a_resume_under_changed_physical_context_is_refused() {
-    use crate::commission_dispatch::stage_c::{
-        StageCPreflightConfig, StageCPreflightRejection, install_authority_from_plan,
-        preflight_stage_c_request,
+    use crate::commission_dispatch::integral::{
+        IntegralPreflightConfig, IntegralPreflightRejection, install_authority_from_plan,
+        preflight_integral_request,
     };
     use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
@@ -1092,7 +1096,7 @@ fn a_resume_under_changed_physical_context_is_refused() {
     .expect("the campaign's own Stage-C plan");
     let mut slot = IntegralRetentionSlot::new();
     install_authority_from_plan(0, &mut slot, plan);
-    let config = |pwm_hz, encoder_counts_per_rev| StageCPreflightConfig {
+    let config = |pwm_hz, encoder_counts_per_rev| IntegralPreflightConfig {
         encoder_counts_per_rev,
         torque_limit: 2_816,
         limit_evidence_capability: super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
@@ -1102,15 +1106,15 @@ fn a_resume_under_changed_physical_context_is_refused() {
 
     for (pwm_hz, counts) in [(26_000, 4_000), (25_000, 8_000)] {
         let rejection =
-            preflight_stage_c_request(stage_b_request(), &config(pwm_hz, counts), 13, &slot)
+            preflight_integral_request(stage_b_request(), &config(pwm_hz, counts), 13, &slot)
                 .expect_err("a moved physical context must not resume");
-        assert!(matches!(rejection, StageCPreflightRejection::InvalidPlan));
+        assert!(matches!(rejection, IntegralPreflightRejection::InvalidPlan));
     }
 
     // The unchanged context still resumes, so the guard is not simply refusing
     // everything.
     assert!(
-        preflight_stage_c_request(stage_b_request(), &config(25_000, 4_000), 13, &slot)
+        preflight_integral_request(stage_b_request(), &config(25_000, 4_000), 13, &slot)
             .expect("the retained context is unchanged")
             .is_some()
     );
@@ -1118,9 +1122,9 @@ fn a_resume_under_changed_physical_context_is_refused() {
 
 #[test]
 fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
-    use crate::commission_dispatch::stage_c::{
-        StageCPreflightConfig, StageCPreflightRejection, install_authority_from_plan,
-        preflight_stage_c_request,
+    use crate::commission_dispatch::integral::{
+        IntegralPreflightConfig, IntegralPreflightRejection, install_authority_from_plan,
+        preflight_integral_request,
     };
     use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
 
@@ -1142,9 +1146,9 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
     let mut changed = stage_b_request();
     changed.max_stroke_travel_mrev += 1;
 
-    let rejection = preflight_stage_c_request(
+    let rejection = preflight_integral_request(
         changed,
-        &StageCPreflightConfig {
+        &IntegralPreflightConfig {
             encoder_counts_per_rev: 4_000,
             torque_limit: 2_816,
             limit_evidence_capability: super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
@@ -1158,13 +1162,13 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
 
     assert!(matches!(
         rejection,
-        StageCPreflightRejection::RejectedPlanMismatch { .. }
+        IntegralPreflightRejection::RejectedPlanMismatch { .. }
     ));
     assert_eq!(slot.authority(), Some(retained));
 }
 
 #[test]
-fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
+fn breakaway_integral_admits_the_confirmed_p_unchanged() {
     let nominated_p = breakaway_gain(512);
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
@@ -1236,7 +1240,7 @@ fn execution_plan_reports_acceptance_source_from_authority() {
 /// parameter for it to fall back to, so a failing confirmed gain can only
 /// ever produce a refusal, never a plan built around a substitute P.
 #[test]
-fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_authority() {
+fn breakaway_integral_refuses_without_motion_when_the_confirmed_p_fails_current_authority() {
     let nominated_p = breakaway_gain(1_024);
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
@@ -1244,7 +1248,7 @@ fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_a
     // A torque authority this small cannot carry any nonzero I prefix at the
     // Q4.12 gain scale, regardless of the confirmed P: this simultaneously
     // stands in for both "transition capability" and "current authority" in
-    // the brief's checklist, because `transition_capable_stage_c_gain`
+    // the brief's checklist, because `transition_capable_integral_gain`
     // evaluates them as one combined datasheet-derived guard.
     context.usable_torque_limit = 1;
 
@@ -1269,7 +1273,7 @@ fn breakaway_stage_c_refuses_without_motion_when_the_confirmed_p_fails_current_a
 }
 
 /// The nomination ceiling is the exact monotone inverse of the Stage-C
-/// admission gate: the returned P passes `transition_capable_stage_c_gain` and
+/// admission gate: the returned P passes `transition_capable_integral_gain` and
 /// the next-higher P fails it. Values are a live acquisition context
 /// (322 RPM, usable torque 2534, 4000 cpr, 25 kHz), where the ceiling is 897 --
 /// below the confirmed P=925 that discovery nominated and Stage C refused.
@@ -1279,11 +1283,11 @@ fn max_transition_capable_p_is_the_inverse_of_the_admission_gate() {
         .expect("valid acquisition context");
     assert_eq!(ceiling, 897);
     assert!(
-        transition_capable_stage_c_gain(ceiling, 322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
+        transition_capable_integral_gain(ceiling, 322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
             .expect("valid inputs")
     );
     assert!(
-        !transition_capable_stage_c_gain(ceiling + 1, 322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
+        !transition_capable_integral_gain(ceiling + 1, 322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
             .expect("valid inputs")
     );
 }
@@ -1324,13 +1328,13 @@ fn max_transition_capable_p_is_zero_when_nothing_is_capable() {
         .expect("valid acquisition context");
     assert_eq!(ceiling, 0);
     assert!(
-        !transition_capable_stage_c_gain(1, 322, 4_000, 25_000, MOVING_STROKE_US, 1)
+        !transition_capable_integral_gain(1, 322, 4_000, 25_000, MOVING_STROKE_US, 1)
             .expect("valid inputs")
     );
 }
 
 #[test]
-fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_budget() {
+fn breakaway_integral_refuses_without_motion_when_the_fixed_schedule_exceeds_the_budget() {
     let nominated_p = breakaway_gain(512);
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
@@ -1358,7 +1362,7 @@ fn breakaway_stage_c_refuses_without_motion_when_the_fixed_schedule_exceeds_the_
 }
 
 #[test]
-fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validate() {
+fn breakaway_integral_rejects_a_confirmation_plan_whose_contract_does_not_validate() {
     let nominated_p = breakaway_gain(512);
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);
@@ -1401,7 +1405,7 @@ fn breakaway_stage_c_rejects_a_confirmation_plan_whose_contract_does_not_validat
 }
 
 #[test]
-fn breakaway_stage_c_rejects_a_token_minted_for_a_different_confirmation_plan() {
+fn breakaway_integral_rejects_a_token_minted_for_a_different_confirmation_plan() {
     let nominated_p = breakaway_gain(512);
     let confirmation_plan_a = breakaway_confirmation_plan(nominated_p);
     let token_a = breakaway_token_for(confirmation_plan_a);
@@ -1427,14 +1431,14 @@ fn breakaway_stage_c_rejects_a_token_minted_for_a_different_confirmation_plan() 
 /// The round-2 acceptance criterion: there is NO in-crate path that reaches
 /// breakaway Stage-C plan construction without a genuine
 /// [`ConfirmedAcquisitionDigest`] token. The gate's only authority input is the
-/// token, which can be minted solely by [`bind_breakaway_stage_c_authority`]
+/// token, which can be minted solely by [`bind_breakaway_integral_authority`]
 /// from a real `Ok(BandConfirmationAcceptance)` -- itself unforgeable. A caller
 /// can still fabricate a self-consistent `BandConfirmationPlan` for an arbitrary
 /// gain (all fixed fields correct, `plan_digest = plan.digest()`), but cannot
 /// mint a token whose value equals that forged plan's digest without a genuine
 /// all-eight acceptance of THAT plan, so the plan-to-token binding refuses it.
 #[test]
-fn breakaway_stage_c_requires_a_token_matching_the_confirmation_plan() {
+fn breakaway_integral_requires_a_token_matching_the_confirmation_plan() {
     // A forged plan for an arbitrary candidate, contract-valid and
     // digest-self-consistent -- exactly what an in-crate attacker could build.
     let forged_plan = breakaway_confirmation_plan(breakaway_gain(384));
@@ -1456,7 +1460,7 @@ fn breakaway_stage_c_requires_a_token_matching_the_confirmation_plan() {
     // surface, and it is closed. (A token genuinely minted for the forged plan
     // would require driving `evaluate_band_confirmation` to accept THAT plan,
     // which is the real confirmation gate, not a bypass; the admit-on-genuine
-    // path is covered by `breakaway_stage_c_admits_the_confirmed_p_unchanged`.)
+    // path is covered by `breakaway_integral_admits_the_confirmed_p_unchanged`.)
     assert_eq!(
         plan_breakaway_velocity_integral_response(
             genuine_token,
@@ -1474,7 +1478,7 @@ fn breakaway_stage_c_requires_a_token_matching_the_confirmation_plan() {
 }
 
 #[test]
-fn breakaway_stage_c_refuses_when_plan_time_physical_context_differs_from_live() {
+fn breakaway_integral_refuses_when_plan_time_physical_context_differs_from_live() {
     let nominated_p = breakaway_gain(512);
     let confirmation_plan = breakaway_confirmation_plan(nominated_p);
     let token = breakaway_token_for(confirmation_plan);

@@ -294,14 +294,14 @@ mod tests {
 
         let report = rest_selection_diagnostic();
         let shared = encode_rest_selection(report).unwrap();
-        let stage_c = super::super::integral_reporting::encode_velocity_integral_event(
+        let integral = super::super::integral_reporting::encode_velocity_integral_event(
             crate::commissioning::types::VelocityIntegralEvent::RestSelection(report),
         );
         let amplitude =
             super::super::fixed_gain_amplitude_reporting::encode_fixed_gain_amplitude_event(
                 crate::commissioning::types::FixedGainAmplitudeEvent::RestSelection(report),
             );
-        assert_eq!(stage_c.as_bytes(), shared.as_bytes());
+        assert_eq!(integral.as_bytes(), shared.as_bytes());
         assert_eq!(amplitude.as_bytes(), shared.as_bytes());
     }
 

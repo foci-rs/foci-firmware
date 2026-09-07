@@ -132,25 +132,25 @@ fn velocity_current_guard_contract() {
     assert_eq!(polled_quantized.contact, VelocityCurrentContact::None);
     assert!(polled_quantized.moving_clip_uncertain());
 
-    let stage_c = breakaway_stage_c_plan(VelocityLimitEvidenceCapability::LatchedFlag);
+    let integral = breakaway_integral_plan(VelocityLimitEvidenceCapability::LatchedFlag);
     assert_eq!(
-        stage_c.limit_evidence_capability,
+        integral.limit_evidence_capability,
         VelocityLimitEvidenceCapability::LatchedFlag
     );
     assert_eq!(
-        stage_c.execution_plan().limit_evidence_capability,
+        integral.execution_plan().limit_evidence_capability,
         VelocityLimitEvidenceCapability::LatchedFlag
     );
     let best_effort_stage_c =
-        breakaway_stage_c_plan(VelocityLimitEvidenceCapability::BestEffortPolling);
+        breakaway_integral_plan(VelocityLimitEvidenceCapability::BestEffortPolling);
     assert_eq!(
         best_effort_stage_c.limit_evidence_capability,
         VelocityLimitEvidenceCapability::BestEffortPolling
     );
-    assert_ne!(stage_c.digest(), best_effort_stage_c.digest());
+    assert_ne!(integral.digest(), best_effort_stage_c.digest());
 }
 
-fn breakaway_stage_c_plan(
+fn breakaway_integral_plan(
     limit_evidence_capability: VelocityLimitEvidenceCapability,
 ) -> crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan {
     use crate::commissioning::outer::velocity::integral_plan::{

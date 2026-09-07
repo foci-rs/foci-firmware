@@ -326,7 +326,7 @@ pub(crate) fn encode_campaign_terminal(
     record.push_u8(report.phase);
     record.push_u8(report.terminal_cause);
     record.push_u8(report.accepted);
-    push_u64(&mut record, report.stage_c_plan_digest);
+    push_u64(&mut record, report.integral_plan_digest);
     record.push_u8(report.error_code);
     record
 }

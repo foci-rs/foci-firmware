@@ -1494,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_c_resume_decodes_and_carries_no_amplitude_order() {
+    fn integral_resume_decodes_and_carries_no_amplitude_order() {
         // Resuming Stage C replays one retained plan, so it selects neither an
         // amplitude order nor a mirrored slot schedule.
         assert_eq!(

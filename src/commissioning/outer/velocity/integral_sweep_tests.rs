@@ -370,7 +370,7 @@ fn completed_recovery_report() -> RungOriginRecoveryReport {
 }
 
 #[test]
-fn live_stage_c_schedule_records_one_selector_per_observation() {
+fn live_integral_schedule_records_one_selector_per_observation() {
     let mut live_plan = plan();
     live_plan.positive_rung_count = 13;
     live_plan.recovery_slot_count = 15;
@@ -481,13 +481,13 @@ fn live_amplitude_schedule_records_one_selector_per_completed_rest_decision() {
 }
 
 #[test]
-fn stage_c_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
-    let stage_c_plan = plan();
-    let mut stage_c = VelocityIntegralRuntime::new(17, stage_c_plan);
-    let before = stage_c.integrity.digest();
+fn integral_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
+    let integral_plan = plan();
+    let mut integral = VelocityIntegralRuntime::new(17, integral_plan);
+    let before = integral.integrity.digest();
     let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(selection)) =
         record_integral_recovery_rest_selection(
-            &mut stage_c,
+            &mut integral,
             completed_rest_selection(),
             RecoveryStage::Integral,
             4,
@@ -496,14 +496,14 @@ fn stage_c_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
         panic!("Stage C must emit its selector diagnostic")
     };
     let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RecoveryRest(diagnostic)) =
-        record_integral_recovery_rest(&mut stage_c, completed_recovery_rest_analysis())
+        record_integral_recovery_rest(&mut integral, completed_recovery_rest_analysis())
     else {
         panic!("Stage C must emit its recovery-rest diagnostic")
     };
     assert_eq!(diagnostic.run_sequence, 17);
     assert_eq!(selection.evidence_sequence, 1);
     assert_eq!(diagnostic.evidence_sequence, 2);
-    assert_eq!(diagnostic.plan_digest, stage_c.plan.plan_digest);
+    assert_eq!(diagnostic.plan_digest, integral.plan.plan_digest);
     assert_eq!(selection.plan_digest, diagnostic.plan_digest);
     assert_eq!(selection.stage as u8, diagnostic.stage as u8);
     assert_eq!(selection.rung_index, diagnostic.rung_index);
@@ -511,17 +511,17 @@ fn stage_c_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
     assert_eq!(diagnostic.rung_index, 4);
     let recovery = RungOriginRecoveryEvidence {
         run_sequence: 17,
-        evidence_sequence: stage_c.integrity.next_evidence_sequence(),
+        evidence_sequence: integral.integrity.next_evidence_sequence(),
         report: completed_recovery_report(),
     };
-    let VelocityIntegralEvent::Recovery(recovery) = stage_c
+    let VelocityIntegralEvent::Recovery(recovery) = integral
         .integrity
         .record(VelocityIntegralEvent::Recovery(recovery))
     else {
         unreachable!()
     };
     assert_eq!(recovery.evidence_sequence, diagnostic.evidence_sequence + 1);
-    assert_ne!(stage_c.integrity.digest(), before);
+    assert_ne!(integral.integrity.digest(), before);
 
     let mut amplitude_plan = plan();
     amplitude_plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
@@ -1134,7 +1134,7 @@ fn integral_recovery_containment_is_cause_five_before_the_bookend() {
 }
 
 #[test]
-fn completed_stage_c_recovery_rest_rejection_is_cause_53() {
+fn completed_integral_recovery_rest_rejection_is_cause_53() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -1660,7 +1660,7 @@ fn settle_transition_metrics_retain_exact_first_and_last_context() {
 }
 
 #[test]
-fn stage_c_terminal_causes_reserve_bookend_and_rest_boundary_values() {
+fn integral_terminal_causes_reserve_bookend_and_rest_boundary_values() {
     assert_eq!(super::integral_sweep::INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, 8);
     assert_eq!(
         super::integral_sweep::INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
@@ -1803,7 +1803,7 @@ fn completed_i_zero_cleanup_rejection_is_inconclusive_rest() {
 }
 
 #[test]
-fn stage_c_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
+fn integral_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
     for closing_bookend in [false, true] {
         let mut phase = phase();
         let mut workspace = TransientBuffer::new();
@@ -3005,7 +3005,7 @@ fn contained_recovery_after_an_eligible_bookend_is_nonblocking() {
 }
 
 #[test]
-fn stage_c_safety_fault_uses_the_dedicated_terminal() {
+fn integral_safety_fault_uses_the_dedicated_terminal() {
     let phase = phase();
     let StepResult::VelocityIntegralTerminal(terminal) =
         integral_fault_terminal(&phase, CommissionError::SafetyEnvelopeViolation, None)
@@ -3183,7 +3183,7 @@ fn recovery_rest_rejection_records_the_amplitude_owner() {
 }
 
 #[test]
-fn non_amplitude_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_amplitude() {
+fn non_amplitude_recover_rung_rest_unconfirmed_is_attributed_to_integral_not_amplitude() {
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral {
