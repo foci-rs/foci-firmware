@@ -86,12 +86,21 @@ pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBacken
 /// Re-verifies the calibration sentinel against the live TMC4671 readback.
 ///
 /// Runs fresh on every [`arm_motor_electrical`] call, which makes it FOCI's
-/// re-arm gate after a chip reset: a reset zeros
-/// [`TmcChannelState::motor_sentinel`]'s target register (the TMC4671's
-/// power-on default), so this comparison fails deterministically until
-/// commissioning re-establishes it. A sticky latch alternative was
-/// rejected: it would cache a result no more trustworthy than this
-/// recheck, since nothing else can set it.
+/// re-arm gate after a chip reset: a reset restores this register's
+/// power-on value (`MOTOR_TYPE`=0, `N_POLE_PAIRS`=1, i.e. `0x0000_0001` per
+/// the TMC4671-LA datasheet, Rev 1 02/2024, register 0x1B), which differs
+/// from the commissioned value cached in
+/// [`TmcChannelState::motor_sentinel`], so the readback comparison below
+/// fails deterministically until commissioning re-establishes it. A sticky
+/// latch alternative was rejected: it would cache a result no more
+/// trustworthy than this recheck, since nothing else can set it.
+///
+/// The TMC4671 has no equivalent to Klipper's `CS_ACTUAL` reset indicator:
+/// `STATUS_FLAGS` is a fault/limit bitfield with no driving-vs-reset
+/// signal, so FOCI detects a reset by comparing configured registers
+/// against their expected values instead — this sentinel plus the
+/// [`verify_pi_representation`](crate::tmc_control::pi_representation::verify_pi_representation)
+/// check below.
 ///
 /// # Errors
 ///
