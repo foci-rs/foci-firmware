@@ -33,14 +33,6 @@ pub enum CommissionPhase {
     /// Reversal-standstill robustness gate over the matrix-accepted point.
     /// Wire code 21.
     ReversalStandstillRobustnessGate,
-    /// Outer phase — Position-loop P ramp-up. Wire code 22.
-    PositionTune,
-    /// Outer phase — Filter selection based on validation metrics. Wire code 23.
-    FilterTune,
-    /// Outer phase — Assemble and transmit final results to host. Wire code 24.
-    Commit,
-    /// Outer commissioning completed. Wire code 25.
-    OuterDone,
     /// Encoder alignment — drive rotor to the D-axis, zero
     /// ABN_DECODER_COUNT and offset, switch PHI_E_SELECTION to ABN
     /// while still driving. Runs between EncoderCheck and ElectricalId
@@ -77,10 +69,6 @@ impl CommissionPhase {
             Self::IntegralGainResponseCharacterization => 19,
             Self::FixedGainAmplitudeValidation => 20,
             Self::ReversalStandstillRobustnessGate => 21,
-            Self::PositionTune => 22,
-            Self::FilterTune => 23,
-            Self::Commit => 24,
-            Self::OuterDone => 25,
             Self::EncoderAlign => 16,
             Self::ClosedLoopEntry => 17,
         }
@@ -101,10 +89,6 @@ impl CommissionPhase {
         ("IntegralGainResponseCharacterization", 19),
         ("FixedGainAmplitudeValidation", 20),
         ("ReversalStandstillRobustnessGate", 21),
-        ("PositionTune", 22),
-        ("FilterTune", 23),
-        ("Commit", 24),
-        ("OuterDone", 25),
         ("EncoderAlign", 16),
         ("ClosedLoopEntry", 17),
     ];

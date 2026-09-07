@@ -749,10 +749,6 @@ mod tests {
             CommissionPhase::ReversalStandstillRobustnessGate.to_u8(),
             21
         );
-        assert_eq!(CommissionPhase::PositionTune.to_u8(), 22);
-        assert_eq!(CommissionPhase::FilterTune.to_u8(), 23);
-        assert_eq!(CommissionPhase::Commit.to_u8(), 24);
-        assert_eq!(CommissionPhase::OuterDone.to_u8(), 25);
     }
 
     #[test]
@@ -776,10 +772,6 @@ mod tests {
                 ("IntegralGainResponseCharacterization", 19),
                 ("FixedGainAmplitudeValidation", 20),
                 ("ReversalStandstillRobustnessGate", 21),
-                ("PositionTune", 22),
-                ("FilterTune", 23),
-                ("Commit", 24),
-                ("OuterDone", 25),
                 ("EncoderAlign", 16),
                 ("ClosedLoopEntry", 17),
             ]
