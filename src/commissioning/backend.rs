@@ -674,8 +674,14 @@ where
         use core::sync::atomic::Ordering::Relaxed;
 
         let tmc = self.tmc_state();
-        let incomplete = report.failed_writes > 0;
-        tmc.safe_state_incomplete.store(incomplete, Relaxed);
+        let last_pass_failed = report.failed_writes > 0;
+        // Every restore pass leaves the compound latch set: a clean pass
+        // alone does not confirm the chip is safe to arm, only a fresh
+        // sentinel pass does (see arm_motor_electrical). Only that sentinel
+        // success clears safe_state_incomplete.
+        tmc.safe_state_incomplete.store(true, Relaxed);
+        tmc.safe_state_last_pass_failed
+            .store(last_pass_failed, Relaxed);
         tmc.safe_state_failed_writes
             .store(report.failed_writes, Relaxed);
         tmc.safe_state_first_failed_register
@@ -684,15 +690,10 @@ where
             .store(report.first_failed_sub_addr.unwrap_or(0xFF), Relaxed);
         tmc.safe_state_failure_timestamp_ms
             .store(timestamp_ms, Relaxed);
-        let consecutive_failed_passes = if incomplete {
-            tmc.safe_state_consecutive_failed_passes
-                .load(Relaxed)
-                .saturating_add(1)
-        } else {
-            0
-        };
-        tmc.safe_state_consecutive_failed_passes
-            .store(consecutive_failed_passes, Relaxed);
+        tmc.safe_state_pass_count.store(
+            tmc.safe_state_pass_count.load(Relaxed).saturating_add(1),
+            Relaxed,
+        );
     }
 }
 
@@ -1049,6 +1050,9 @@ mod tests {
         LAST_VELOCITY_DELTA.store(0, Relaxed);
         TEST_TMC_STATE.motor_sentinel.store(0, Relaxed);
         TEST_TMC_STATE.safe_state_incomplete.store(false, Relaxed);
+        TEST_TMC_STATE
+            .safe_state_last_pass_failed
+            .store(false, Relaxed);
         TEST_TMC_STATE.safe_state_failed_writes.store(0, Relaxed);
         TEST_TMC_STATE
             .safe_state_first_failed_register
@@ -1059,9 +1063,7 @@ mod tests {
         TEST_TMC_STATE
             .safe_state_failure_timestamp_ms
             .store(0, Relaxed);
-        TEST_TMC_STATE
-            .safe_state_consecutive_failed_passes
-            .store(0, Relaxed);
+        TEST_TMC_STATE.safe_state_pass_count.store(0, Relaxed);
     }
 
     #[fixture_test]
@@ -1114,6 +1116,7 @@ mod tests {
         backend.record_safe_state_report(report, 12_345);
 
         assert!(TEST_TMC_STATE.safe_state_incomplete.load(Relaxed));
+        assert!(TEST_TMC_STATE.safe_state_last_pass_failed.load(Relaxed));
         assert_eq!(TEST_TMC_STATE.safe_state_failed_writes.load(Relaxed), 2);
         assert_eq!(
             TEST_TMC_STATE
@@ -1131,33 +1134,27 @@ mod tests {
             TEST_TMC_STATE.safe_state_failure_timestamp_ms.load(Relaxed),
             12_345
         );
-        assert_eq!(
-            TEST_TMC_STATE
-                .safe_state_consecutive_failed_passes
-                .load(Relaxed),
-            1
-        );
+        assert_eq!(TEST_TMC_STATE.safe_state_pass_count.load(Relaxed), 1);
 
         backend.record_safe_state_report(report, 12_346);
         assert_eq!(
-            TEST_TMC_STATE
-                .safe_state_consecutive_failed_passes
-                .load(Relaxed),
+            TEST_TMC_STATE.safe_state_pass_count.load(Relaxed),
             2,
-            "consecutive failed passes should accumulate"
+            "every completed pass counts, not just failed ones"
         );
     }
 
     #[fixture_test]
-    fn shared_backend_clears_safe_state_incomplete_on_clean_report() {
+    fn shared_backend_clean_report_leaves_incomplete_latch_set_but_clears_last_pass_failed() {
         let _guard = TEST_LOCK
             .lock()
             .expect("commissioning backend test lock is available");
         reset_hooks();
-        TEST_TMC_STATE.safe_state_incomplete.store(true, Relaxed);
+        TEST_TMC_STATE.safe_state_incomplete.store(false, Relaxed);
         TEST_TMC_STATE
-            .safe_state_consecutive_failed_passes
-            .store(3, Relaxed);
+            .safe_state_last_pass_failed
+            .store(true, Relaxed);
+        TEST_TMC_STATE.safe_state_pass_count.store(3, Relaxed);
 
         let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
         let mut enable_pin = RecordingPin::default();
@@ -1176,13 +1173,18 @@ mod tests {
         };
         backend.record_safe_state_report(report, 0);
 
-        assert!(!TEST_TMC_STATE.safe_state_incomplete.load(Relaxed));
+        assert!(
+            TEST_TMC_STATE.safe_state_incomplete.load(Relaxed),
+            "only arm_motor_electrical's sentinel success may clear the compound latch"
+        );
+        assert!(
+            !TEST_TMC_STATE.safe_state_last_pass_failed.load(Relaxed),
+            "a clean pass should clear the last-pass-failed flag"
+        );
         assert_eq!(
-            TEST_TMC_STATE
-                .safe_state_consecutive_failed_passes
-                .load(Relaxed),
-            0,
-            "a clean pass should reset the consecutive-failure count"
+            TEST_TMC_STATE.safe_state_pass_count.load(Relaxed),
+            4,
+            "a clean pass still counts as a completed restore attempt"
         );
     }
 

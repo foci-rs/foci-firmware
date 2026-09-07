@@ -231,14 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn restore_persists_incomplete_report_via_backend() {
+    fn restore_persists_last_pass_failed_via_backend() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             backend.fail_on_write = Some(UQ_UD_EXT.addr());
 
             restore_safe_state_via_backend(&mut backend).await;
 
-            assert!(backend.safe_state_incomplete);
+            assert!(backend.safe_state_last_pass_failed);
             let recorded = backend
                 .safe_state_report
                 .expect("record_safe_state_report should have been called");
@@ -248,37 +248,53 @@ mod tests {
     }
 
     #[test]
-    fn restore_tracks_consecutive_failed_pass_count() {
+    fn restore_tracks_total_pass_count_regardless_of_outcome() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
             backend.fail_on_write = Some(UQ_UD_EXT.addr());
 
             restore_safe_state_via_backend(&mut backend).await;
-            assert_eq!(backend.safe_state_failed_pass_count, 1);
+            assert_eq!(backend.safe_state_pass_count, 1);
 
             restore_safe_state_via_backend(&mut backend).await;
-            assert_eq!(
-                backend.safe_state_failed_pass_count, 2,
-                "consecutive failed passes should accumulate"
-            );
+            assert_eq!(backend.safe_state_pass_count, 2);
 
             backend.fail_on_write = None;
             restore_safe_state_via_backend(&mut backend).await;
             assert_eq!(
-                backend.safe_state_failed_pass_count, 0,
-                "a clean pass should reset the consecutive-failure count"
+                backend.safe_state_pass_count, 3,
+                "a clean pass still counts as a completed restore attempt"
+            );
+            assert!(
+                !backend.safe_state_last_pass_failed,
+                "the clean pass should still update the last-pass-failed flag"
             );
         });
     }
 
     #[test]
-    fn restore_clears_incomplete_report_on_clean_pass() {
+    fn restore_clears_last_pass_failed_on_clean_pass() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
 
             restore_safe_state_via_backend(&mut backend).await;
 
-            assert!(!backend.safe_state_incomplete);
+            assert!(!backend.safe_state_last_pass_failed);
+        });
+    }
+
+    #[test]
+    fn restore_alone_never_clears_the_compound_incomplete_latch() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+
+            restore_safe_state_via_backend(&mut backend).await;
+
+            assert!(
+                backend.safe_state_incomplete,
+                "a restore pass alone does not confirm a fresh sentinel pass; \
+                 only arm_motor_electrical may clear this latch"
+            );
         });
     }
 
@@ -310,7 +326,7 @@ mod tests {
     fn restore_identifies_which_pid_sum_failed_when_not_the_first() {
         pollster::block_on(async {
             let mut backend = MockBackend::new();
-            // All four sums share PID_ERROR_PID_TORQUE_ERROR_SUM.addr (0x6C) as
+            // All four sums share PID_ERROR_PID_TORQUE_ERROR_SUM.addr (0x6D) as
             // their selector register; occurrence 2 (0-indexed) is the third
             // selector write in iteration order, i.e. velocity's.
             backend.fail_on_write_occurrence =

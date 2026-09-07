@@ -82,11 +82,22 @@ pub struct TmcChannelState {
     /// inactive". Used by `arm_motor_electrical` to detect silent chip
     /// resets between commission and arm.
     pub motor_sentinel: AtomicU32,
+    /// Set by every `restore_safe_state_via_backend` pass, whether or not it
+    /// had failures — a restore alone does not confirm the chip is safe to
+    /// arm, only a fresh sentinel pass does. Cleared only by
+    /// `arm_motor_electrical` immediately after `verify_motor_sentinel`
+    /// succeeds, before any settling write or enable-pin assertion. This is
+    /// the compound "safe-state pass AND fresh sentinel pass" latch the
+    /// re-arm gate is built on; do not clear it anywhere else.
+    pub safe_state_incomplete: AtomicBool,
     /// Set when the most recent `restore_safe_state_via_backend` pass had
     /// one or more verified-write or PID-error-sum-clear failures. Checked
-    /// by `arm_motor_electrical`, which refuses to arm while this is set.
-    /// Cleared by the next restore pass that completes with zero failures.
-    pub safe_state_incomplete: AtomicBool,
+    /// by `arm_motor_electrical`, which refuses to arm — without even
+    /// attempting the sentinel check — while this is set. Cleared by the
+    /// next restore pass that completes with zero failures. Distinct from
+    /// `safe_state_incomplete`: this only reflects the last restore pass
+    /// itself, not whether a sentinel pass has confirmed it since.
+    pub safe_state_last_pass_failed: AtomicBool,
     /// Failed-write count from the most recent safe-state restore pass.
     pub safe_state_failed_writes: AtomicU8,
     /// Address of the first register or sub-register write that failed
@@ -102,9 +113,10 @@ pub struct TmcChannelState {
     /// Board-monotonic millisecond timestamp of the most recent safe-state
     /// restore pass. Diagnostic only: wraps every ~49 days.
     pub safe_state_failure_timestamp_ms: AtomicU32,
-    /// Number of consecutive safe-state restore passes that had failures,
-    /// reset to zero by the next pass that completes with zero failures.
-    pub safe_state_consecutive_failed_passes: AtomicU16,
+    /// Total number of completed safe-state restore passes, whether clean
+    /// or not. Saturates rather than wraps. Never reset by a clean pass —
+    /// only by [`TmcChannelState::reset`].
+    pub safe_state_pass_count: AtomicU16,
     /// Whether firmware established the fixed Q8.8-P/Q4.12-I representation.
     pi_representation_established: AtomicBool,
     /// Configured mechanical ABN encoder pulses per revolution.
@@ -234,11 +246,12 @@ impl TmcChannelState {
             enable_pin_asserted: AtomicBool::new(false),
             motor_sentinel: AtomicU32::new(0),
             safe_state_incomplete: AtomicBool::new(false),
+            safe_state_last_pass_failed: AtomicBool::new(false),
             safe_state_failed_writes: AtomicU8::new(0),
             safe_state_first_failed_register: AtomicU8::new(0xFF),
             safe_state_first_failed_sub_addr: AtomicU8::new(0xFF),
             safe_state_failure_timestamp_ms: AtomicU32::new(0),
-            safe_state_consecutive_failed_passes: AtomicU16::new(0),
+            safe_state_pass_count: AtomicU16::new(0),
             pi_representation_established: AtomicBool::new(false),
             encoder_ppr: AtomicU32::new(0),
             encoder_counts_per_rev: AtomicU32::new(0),
@@ -302,11 +315,12 @@ impl TmcChannelState {
         self.motor_armed.store(false, Relaxed);
         self.motor_sentinel.store(0, Relaxed);
         self.safe_state_incomplete.store(false, Relaxed);
+        self.safe_state_last_pass_failed.store(false, Relaxed);
         self.safe_state_failed_writes.store(0, Relaxed);
         self.safe_state_first_failed_register.store(0xFF, Relaxed);
         self.safe_state_first_failed_sub_addr.store(0xFF, Relaxed);
         self.safe_state_failure_timestamp_ms.store(0, Relaxed);
-        self.safe_state_consecutive_failed_passes.store(0, Relaxed);
+        self.safe_state_pass_count.store(0, Relaxed);
         self.clear_pi_representation_established();
         self.encoder_ppr.store(0, Relaxed);
         self.encoder_counts_per_rev.store(0, Relaxed);

@@ -158,7 +158,7 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
 
     if state
         .tmc
-        .safe_state_incomplete
+        .safe_state_last_pass_failed
         .load(core::sync::atomic::Ordering::Relaxed)
     {
         defmt::error!("arm_motor_electrical: safe-state cleanup incomplete, refusing arm");
@@ -166,6 +166,12 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
     }
 
     verify_motor_sentinel(backend, state.tmc).await?;
+    // The compound "safe-state pass AND fresh sentinel pass" latch clears
+    // only here, once both halves have actually succeeded.
+    state
+        .tmc
+        .safe_state_incomplete
+        .store(false, core::sync::atomic::Ordering::Relaxed);
 
     settle_closed_loop_hold_before_enable(backend).await?;
 
@@ -364,7 +370,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn arm_motor_electrical_refuses_when_safe_state_incomplete() {
+    async fn arm_motor_electrical_refuses_when_last_safe_state_pass_failed() {
         use core::sync::atomic::Ordering;
         let mut backend = MockBackend::new();
         let (_, mut en, mut gains) = fresh_state_locals();
@@ -380,7 +386,7 @@ mod tests {
             )
             .await;
         tmc_state()
-            .safe_state_incomplete
+            .safe_state_last_pass_failed
             .store(true, Ordering::Relaxed);
         let spi_log_len_before = backend.spi_log.len();
 
@@ -393,15 +399,76 @@ mod tests {
         assert_eq!(
             backend.spi_log.len(),
             spi_log_len_before,
-            "must not touch the chip at all while the latch is set"
+            "must not touch the chip at all while the last restore pass failed"
         );
-        assert!(!backend.enable_pin, "must not enable while latch is set");
+        assert!(
+            !backend.enable_pin,
+            "must not enable while the last restore pass failed"
+        );
         assert!(!*state.motor_enabled);
+
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+        tmc_state()
+            .safe_state_last_pass_failed
+            .store(false, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_clears_incomplete_latch_only_after_sentinel_succeeds() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        // Simulate a clean restore pass: last_pass_failed clear, but the
+        // compound latch still set because no sentinel pass has happened
+        // since.
+        tmc_state()
+            .safe_state_last_pass_failed
+            .store(false, Ordering::Relaxed);
+        tmc_state()
+            .safe_state_incomplete
+            .store(true, Ordering::Relaxed);
+
+        // A sentinel mismatch must leave the compound latch set.
+        backend.read_override = Some((
+            foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr(),
+            0x0002_0032 ^ 1,
+        ));
+        let mismatched = arm_motor_electrical(&mut backend, &mut state).await;
+        assert_eq!(
+            mismatched,
+            Err(crate::autotune::CommissionError::ChipResetDetected)
+        );
+        assert!(
+            tmc_state().safe_state_incomplete.load(Ordering::Relaxed),
+            "a failed sentinel check must not clear the compound latch"
+        );
+        backend.read_override = None;
+
+        // A successful sentinel pass clears it.
+        arm_motor_electrical(&mut backend, &mut state)
+            .await
+            .expect("sentinel should match once the override is removed");
+        assert!(
+            !tmc_state().safe_state_incomplete.load(Ordering::Relaxed),
+            "a successful sentinel pass must clear the compound latch"
+        );
 
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
         tmc_state()
             .safe_state_incomplete
             .store(false, Ordering::Relaxed);
+        *state.motor_enabled = false;
     }
 
     #[fixture_test]

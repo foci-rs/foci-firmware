@@ -710,6 +710,10 @@ mod tests {
     #[test]
     fn commission_cancelled_has_status_code_74() {
         assert_eq!(CommissionError::Cancelled.status_code(), 74);
+    }
+
+    #[test]
+    fn commission_safe_state_incomplete_has_status_code_75() {
         assert_eq!(CommissionError::SafeStateIncomplete.status_code(), 75);
     }
 

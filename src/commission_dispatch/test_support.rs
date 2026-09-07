@@ -383,16 +383,21 @@ pub struct MockBackend {
     /// Last value written to `UQ_UD_EXT`, tracked only when
     /// `script_resistance_current_proportional_to_ud` is set.
     last_uq_ud_ext_write: u32,
-    /// Whether the most recent `record_safe_state_report` call reported
-    /// `failed_writes > 0`.
+    /// Set by every `record_safe_state_report` call, mirroring
+    /// `TmcChannelState::safe_state_incomplete`: a clean pass alone does not
+    /// clear this, only a caller explicitly confirming a fresh sentinel pass
+    /// would (this mock has no sentinel concept, so nothing clears it).
     pub safe_state_incomplete: bool,
+    /// Whether the most recent `record_safe_state_report` call reported
+    /// `failed_writes > 0`, mirroring `TmcChannelState::safe_state_last_pass_failed`.
+    pub safe_state_last_pass_failed: bool,
     /// The report from the most recent `record_safe_state_report` call.
     pub safe_state_report: Option<crate::tmc_safe_state::SafeStateRestoreReport>,
     /// The timestamp from the most recent `record_safe_state_report` call.
     pub safe_state_report_timestamp_ms: Option<u32>,
-    /// Number of consecutive `record_safe_state_report` calls that reported
-    /// `failed_writes > 0`, reset to zero by the next clean call.
-    pub safe_state_failed_pass_count: u16,
+    /// Total number of `record_safe_state_report` calls, whether clean or
+    /// not, mirroring `TmcChannelState::safe_state_pass_count`.
+    pub safe_state_pass_count: u16,
 }
 
 impl MockBackend {
@@ -463,9 +468,10 @@ impl MockBackend {
             script_resistance_current_proportional_to_ud: false,
             last_uq_ud_ext_write: 0,
             safe_state_incomplete: false,
+            safe_state_last_pass_failed: false,
             safe_state_report: None,
             safe_state_report_timestamp_ms: None,
-            safe_state_failed_pass_count: 0,
+            safe_state_pass_count: 0,
         }
     }
 
@@ -817,12 +823,9 @@ impl CommissionMotorControl for MockBackend {
         report: crate::tmc_safe_state::SafeStateRestoreReport,
         timestamp_ms: u32,
     ) {
-        self.safe_state_incomplete = report.failed_writes > 0;
-        self.safe_state_failed_pass_count = if self.safe_state_incomplete {
-            self.safe_state_failed_pass_count.saturating_add(1)
-        } else {
-            0
-        };
+        self.safe_state_incomplete = true;
+        self.safe_state_last_pass_failed = report.failed_writes > 0;
+        self.safe_state_pass_count = self.safe_state_pass_count.saturating_add(1);
         self.safe_state_report = Some(report);
         self.safe_state_report_timestamp_ms = Some(timestamp_ms);
     }
