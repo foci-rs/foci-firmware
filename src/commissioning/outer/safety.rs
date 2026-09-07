@@ -28,7 +28,7 @@ pub(super) const OUTER_SAFETY_SAMPLE_PERIOD_US: u64 = 1_000;
 #[allow(dead_code)]
 pub(super) const OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS: usize = 1;
 
-const STAGE_C_POSITION_RESERVE_COUNTS: Option<u32> = None;
+const INTEGRAL_POSITION_RESERVE_COUNTS: Option<u32> = None;
 
 /// Host-provided motor-local motion budget for outer commissioning.
 #[derive(Debug, Clone, Copy, defmt::Format)]
@@ -351,7 +351,7 @@ impl OuterSafetyLimits {
         counts_per_rev: u32,
     ) -> Result<(), EncoderMathError> {
         self.configure_velocity_sweep_encoder_resolution(counts_per_rev)?;
-        self.tighten_position_window(STAGE_C_POSITION_RESERVE_COUNTS);
+        self.tighten_position_window(INTEGRAL_POSITION_RESERVE_COUNTS);
         Ok(())
     }
 

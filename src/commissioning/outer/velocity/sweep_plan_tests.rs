@@ -1,5 +1,5 @@
 use super::super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
-use super::super::combined_plan::{STAGE_B_PLAN_SCHEMA_REVISION, STAGE_C_PLAN_SCHEMA_REVISION};
+use super::super::combined_plan::{INTEGRAL_PLAN_SCHEMA_REVISION, STAGE_B_PLAN_SCHEMA_REVISION};
 use super::{
     CEILING_BINDING_CURRENT_LIMIT, CEILING_BINDING_REPRESENTABILITY_CLAMP, CLAMP_ENVELOPE,
     CLAMP_TRAVEL, CURRENT_HEADROOM_DEN, CURRENT_HEADROOM_NUM, EFFECTIVE_CEILING_ENCODER,
@@ -87,7 +87,7 @@ fn combined_plan_uses_operational_current_authority_and_new_schemas() {
     assert_eq!(historical.p_top.raw(), 2_457);
     assert_eq!(combined.schema_revision, STAGE_B_PLAN_SCHEMA_REVISION);
     assert_eq!(STAGE_B_PLAN_SCHEMA_REVISION, 14);
-    assert_eq!(STAGE_C_PLAN_SCHEMA_REVISION, 13);
+    assert_eq!(INTEGRAL_PLAN_SCHEMA_REVISION, 13);
     assert_eq!(combined.recovery_nominal_slot_us, 2_316_958);
     assert_eq!(combined.nominal_workflow_ms, 282_923);
     assert_eq!(combined.target_velocity_rpm.raw(), 263);

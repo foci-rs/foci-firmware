@@ -2880,7 +2880,7 @@ mod tests {
             ExactRateInterval, IntegralRunEvidence,
         };
         use crate::commissioning::types::{
-            StageCCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
+            IntegralOutcomeCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
         };
 
         let mut engine = breakaway_safety_engine(9);
@@ -2891,9 +2891,9 @@ mod tests {
             plan_digest: 0x1111_2222_3333_4444,
             digest: 0x0123_4567_89ab_cdef,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: StageCCause::Engine(0),
+            cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -2973,7 +2973,7 @@ mod tests {
             OuterMotionBudget, PositiveIRestBoundary, VelocitySettleMetrics,
         };
         use crate::commissioning::types::{
-            StageCCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
+            IntegralOutcomeCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
         };
         use foci_tmc4671::pid::PidPGain;
 
@@ -3102,9 +3102,9 @@ mod tests {
             plan_digest: plan.digest(),
             digest: 0,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: StageCCause::Engine(0),
+            cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,

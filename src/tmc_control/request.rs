@@ -72,15 +72,17 @@ fn stage_c_resume_rejection_terminal(
         // "nothing to resume" apart from "that is not what was retained".
         StageCPreflightRejection::RejectedPlanMismatch { retained, .. } => {
             let mut terminal = missing_authority_stage_c_terminal(run_sequence);
-            terminal.cause =
-                crate::commissioning::types::StageCCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
+            terminal.cause = crate::commissioning::types::IntegralOutcomeCause::Dispatch(
+                STAGE_C_CAUSE_PLAN_MISMATCH,
+            );
             terminal.plan_digest = retained.plan_digest;
             terminal
         }
         StageCPreflightRejection::InvalidPlan => {
             let mut terminal = missing_authority_stage_c_terminal(run_sequence);
-            terminal.cause =
-                crate::commissioning::types::StageCCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
+            terminal.cause = crate::commissioning::types::IntegralOutcomeCause::Dispatch(
+                STAGE_C_CAUSE_PLAN_MISMATCH,
+            );
             terminal.plan_digest = retained_plan_digest;
             terminal
         }
@@ -1824,11 +1826,11 @@ mod tests {
             identity: IntegralPlanIdentity {
                 channel: 0,
                 build_features: 1,
-                schema_revision: crate::commissioning::outer::velocity::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
+                schema_revision: crate::commissioning::outer::velocity::integral_plan::INTEGRAL_EVIDENCE_SCHEMA_REVISION,
                 plan_digest: 2,
             },
             acquisition: breakaway_acquisition_for_test(),
-            final_p: 724,
+            fixed_p: 724,
             directional_memberships: [0x001c_0000; 2],
             stage_b_joint_membership: 0x001c_0000,
             joint_membership: 0x0004_0000,
@@ -3027,7 +3029,7 @@ mod tests {
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(
             terminal.cause,
-            crate::commissioning::types::StageCCause::Dispatch(
+            crate::commissioning::types::IntegralOutcomeCause::Dispatch(
                 crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
             )
         );
@@ -3096,7 +3098,7 @@ mod tests {
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(
             terminal.cause,
-            crate::commissioning::types::StageCCause::Dispatch(
+            crate::commissioning::types::IntegralOutcomeCause::Dispatch(
                 crate::commission_dispatch::stage_c::STAGE_C_CAUSE_PLAN_MISMATCH
             )
         );

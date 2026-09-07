@@ -456,7 +456,7 @@ mod tests {
                 channel: 0,
                 build_features: 0x1234,
                 schema_revision:
-                    crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+                    crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
                 plan_digest: 0x1111_2222_3333_4444,
             },
             order: FixedGainAmplitudeOrder::Ascending,
@@ -529,7 +529,7 @@ mod tests {
         );
         assert_eq!(
             disclosed,
-            crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+            crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
         );
     }
 

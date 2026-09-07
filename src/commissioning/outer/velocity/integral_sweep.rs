@@ -16,12 +16,12 @@ use crate::commissioning::outer::{
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     FixedGainAmplitudeCause, FixedGainAmplitudeEvent, FixedGainAmplitudeEvidence,
-    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, OUTER_SAFETY_FAULT_CURRENT,
-    OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
-    RecoveryRestDiagnostic, RestSelectionDiagnostic, RestSelectionOwner,
-    RungOriginRecoveryEvidence, StageCCause, StepResult, VelocityIntegralEvent,
-    VelocityIntegralObservation, VelocityIntegralOutcome, VelocityIntegralRungReport,
-    VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
+    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, IntegralOutcomeCause,
+    OUTER_SAFETY_FAULT_CURRENT, OUTER_SAFETY_FAULT_OBSERVATION_GAP,
+    OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault, RecoveryRestDiagnostic,
+    RestSelectionDiagnostic, RestSelectionOwner, RungOriginRecoveryEvidence, StepResult,
+    VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
+    VelocityIntegralRungReport, VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -42,7 +42,7 @@ use super::integral_evidence::{
     classify_integral_observation,
 };
 use super::integral_plan::{
-    AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_MAX_POSITIVE_RUNGS,
+    AcceptanceSource, INTEGRAL_MAX_POSITIVE_RUNGS, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US,
     VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan, integral_gain_at,
 };
 use super::recovery::{
@@ -84,11 +84,11 @@ pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 =
 const OPENING_WORD_BASE: usize = 0;
 const AMPLITUDE_MEAN_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
-const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
+const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * INTEGRAL_MAX_POSITIVE_RUNGS * 2;
 
 pub(super) const INTEGRAL_SLOT_COUNT: u8 = 8;
 const _: () = assert!(
-    INTEGRAL_SLOT_COUNT as u32 == super::integral_plan::STAGE_C_OBSERVATIONS_PER_RUNG,
+    INTEGRAL_SLOT_COUNT as u32 == super::integral_plan::INTEGRAL_OBSERVATIONS_PER_RUNG,
     "the engine slot count and the plan observation count are the same quantity"
 );
 
@@ -604,10 +604,10 @@ pub(super) fn combined_slot_transition_us(
 }
 
 fn interval_word_index(direction: usize, rung: usize) -> Option<usize> {
-    if direction >= 2 || rung >= STAGE_C_MAX_POSITIVE_RUNGS {
+    if direction >= 2 || rung >= INTEGRAL_MAX_POSITIVE_RUNGS {
         None
     } else {
-        Some(POSITIVE_WORD_BASE + (direction * STAGE_C_MAX_POSITIVE_RUNGS + rung) * 2)
+        Some(POSITIVE_WORD_BASE + (direction * INTEGRAL_MAX_POSITIVE_RUNGS + rung) * 2)
     }
 }
 
@@ -743,7 +743,7 @@ pub(super) fn plan_integral_recovery(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Integral,
             rung_index: data.rung_index,
-            p: PidPGain::new(data.plan.final_p).expect("validated Stage-C P remains nonzero"),
+            p: PidPGain::new(data.plan.fixed_p).expect("validated Stage-C P remains nonzero"),
             target_velocity_rpm: TmcMechanicalRpm::from_register(target_velocity_rpm),
             planned_velocity_mrev_s,
             start_offset_counts: safety.unwrapped_position,
@@ -823,7 +823,7 @@ pub(super) fn record_integral_recovery_rest_selection(
         owner: if is_fixed_gain_amplitude(data.plan) {
             RestSelectionOwner::FixedGainAmplitudeRecovery
         } else {
-            RestSelectionOwner::StageCRecovery
+            RestSelectionOwner::IntegralRecovery
         },
         rung_index,
         direction: u8::MAX,
@@ -928,7 +928,7 @@ pub(super) fn terminal_from_data(
     data: &VelocityIntegralRuntime,
     evidence: super::integral_evidence::IntegralRunEvidence,
     outcome: VelocityIntegralOutcome,
-    cause: StageCCause,
+    cause: IntegralOutcomeCause,
     safety_fault: Option<OuterSafetyFault>,
     rest_rejection_after_sufficiency: bool,
     rest_rejection_owner: Option<RestSelectionOwner>,
@@ -941,7 +941,7 @@ pub(super) fn terminal_from_data(
         outcome,
         cause,
         breakaway_acceptance: data.plan.acceptance_source == AcceptanceSource::Breakaway,
-        final_p: data.plan.final_p,
+        fixed_p: data.plan.fixed_p,
         recovery_unavailable: data.recovery_unavailable,
         recovered_with_current_headroom: data.recovered_with_current_headroom,
         recovery_quantization_exposed: data.plan.recovery_quantization_exposed,
@@ -982,7 +982,7 @@ pub(crate) fn integral_fault_terminal(
         data,
         super::integral_evidence::IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
         VelocityIntegralOutcome::Fault,
-        StageCCause::Error(error.status_code()),
+        IntegralOutcomeCause::Error(error.status_code()),
         safety_fault,
         false,
         None,
@@ -1016,7 +1016,7 @@ fn compact_summary(
     slot: usize,
     direction: VelocityDirection,
 ) -> Result<VelocityObservationSummary, CommissionError> {
-    let p = PidPGain::new(data.plan.final_p).map_err(|_| CommissionError::InvalidSchedule)?;
+    let p = PidPGain::new(data.plan.fixed_p).map_err(|_| CommissionError::InvalidSchedule)?;
     let interval = data.rung_intervals[slot];
     let direction_rate = match direction {
         VelocityDirection::Forward => [1, 1],
@@ -1126,7 +1126,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
                 data,
                 super::integral_evidence::IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
                 VelocityIntegralOutcome::Fault,
-                StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
+                IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
                 None,
                 false,
                 None,
@@ -1147,7 +1147,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
                     data,
                     evidence,
                     VelocityIntegralOutcome::Fault,
-                    StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
+                    IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
                     None,
                     false,
                     None,
@@ -1157,7 +1157,9 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
                 data,
                 evidence,
                 VelocityIntegralOutcome::Inconclusive,
-                StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code()),
+                IntegralOutcomeCause::Error(
+                    CommissionError::VelocityRestNotConfirmed.status_code(),
+                ),
                 None,
                 true,
                 data.rest_unconfirmed_owner,
@@ -1167,7 +1169,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
             data,
             evidence,
             VelocityIntegralOutcome::Inconclusive,
-            StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code()),
+            IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code()),
             None,
             false,
             None,
@@ -1178,7 +1180,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
             data,
             evidence,
             VelocityIntegralOutcome::Inconclusive,
-            StageCCause::Engine(INTEGRAL_CAUSE_RECOVERY),
+            IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_RECOVERY),
             None,
             false,
             None,
@@ -1191,7 +1193,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
             data,
             evidence,
             VelocityIntegralOutcome::CompleteCandidate,
-            StageCCause::Engine(if data.positive_i_rest_boundary_after_sufficiency {
+            IntegralOutcomeCause::Engine(if data.positive_i_rest_boundary_after_sufficiency {
                 INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY
             } else if current_terminus.is_some() {
                 INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY
@@ -1206,7 +1208,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
             data,
             evidence,
             VelocityIntegralOutcome::Inconclusive,
-            StageCCause::Engine(
+            IntegralOutcomeCause::Engine(
                 if data.positive_i_rest_boundary.is_some()
                     && !data.positive_i_rest_boundary_after_sufficiency
                 {
@@ -1235,7 +1237,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
             data,
             evidence,
             VelocityIntegralOutcome::Fault,
-            StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
+            IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
             None,
             false,
             None,
@@ -1279,7 +1281,7 @@ fn moving_analysis(
     else {
         return Ok(None);
     };
-    let p = PidPGain::new(data.plan.final_p).map_err(|_| CommissionError::InvalidSchedule)?;
+    let p = PidPGain::new(data.plan.fixed_p).map_err(|_| CommissionError::InvalidSchedule)?;
     let direction = direction_for_slot(data.plan.slot_order, data.slot)?;
     let mut input = VelocityObservationInput {
         direction,
@@ -1447,7 +1449,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let Some(i_raw) = integral_i_at(plan, data.rung_index) else {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             };
-            let p = match PidPGain::new(plan.final_p) {
+            let p = match PidPGain::new(plan.fixed_p) {
                 Ok(value) => value,
                 Err(_) => {
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -1697,7 +1699,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
         } => {
             let boundary =
                 finish_velocity_current_moving_phase(&mut data.current_observer, backend).await;
-            let p = match PidPGain::new(data.plan.final_p) {
+            let p = match PidPGain::new(data.plan.fixed_p) {
                 Ok(value) => value,
                 Err(_) => {
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -1996,9 +1998,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Ok(ScoredRestPoll::Diagnostic(decision)) => {
                     let owner = match integral_rung_kind(data.plan, data.rung_index) {
                         IntegralRungKind::OpeningAnchor | IntegralRungKind::ClosingBookend => {
-                            RestSelectionOwner::StageCAnchor
+                            RestSelectionOwner::IntegralAnchor
                         }
-                        IntegralRungKind::Positive => RestSelectionOwner::StageCPositiveObservation,
+                        IntegralRungKind::Positive => {
+                            RestSelectionOwner::IntegralPositiveObservation
+                        }
                         IntegralRungKind::FixedGainAmplitude => {
                             RestSelectionOwner::FixedGainAmplitudeObservation
                         }
@@ -2081,7 +2085,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 data.rest_unconfirmed_owner =
                     Some(match integral_rung_kind(data.plan, data.rung_index) {
                         IntegralRungKind::OpeningAnchor | IntegralRungKind::ClosingBookend => {
-                            RestSelectionOwner::StageCAnchor
+                            RestSelectionOwner::IntegralAnchor
                         }
                         // The sibling if-branch above already claims every Positive rung.
                         IntegralRungKind::Positive => unreachable!(),
@@ -2154,7 +2158,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             if data.positive_i_rest_boundary.is_none() {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
-            let p = match PidPGain::new(data.plan.final_p) {
+            let p = match PidPGain::new(data.plan.fixed_p) {
                 Ok(value) => value,
                 Err(_) => {
                     return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -2327,7 +2331,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     return record_integral_observation_rest_selection(
                         data,
                         decision,
-                        RestSelectionOwner::StageCCleanup,
+                        RestSelectionOwner::IntegralCleanup,
                     );
                 }
                 Ok(ScoredRestPoll::Complete(result)) => result,
@@ -2360,7 +2364,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             safety.end_primitive();
             if !cleanup.confirmed_rest {
                 data.rest_unconfirmed = true;
-                data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCCleanup);
+                data.rest_unconfirmed_owner = Some(RestSelectionOwner::IntegralCleanup);
                 *state = VelocityIntegralState::Terminal;
                 return StepResult::ReadyNow;
             }
@@ -2501,7 +2505,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     data.rest_unconfirmed_owner = Some(if is_fixed_gain_amplitude(data.plan) {
                         RestSelectionOwner::FixedGainAmplitudeRecovery
                     } else {
-                        RestSelectionOwner::StageCRecovery
+                        RestSelectionOwner::IntegralRecovery
                     });
                     *state = VelocityIntegralState::Terminal;
                     StepResult::ReadyNow

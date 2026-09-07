@@ -47,8 +47,8 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::types::{
     FixedGainAmplitudeCause, FixedGainAmplitudeEvent, FixedGainAmplitudeOutcome,
-    RestSelectionOwner, RungOriginRecoveryEvidence, StageCCause, StepResult, VelocityIntegralEvent,
-    VelocityIntegralOutcome,
+    IntegralOutcomeCause, RestSelectionOwner, RungOriginRecoveryEvidence, StepResult,
+    VelocityIntegralEvent, VelocityIntegralOutcome,
 };
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -72,7 +72,7 @@ fn plan() -> VelocityIntegralExecutionPlan {
         plan_digest: 7,
         acceptance_plan_digest: 0,
         qualifier_bits: 0,
-        final_p: 1_448,
+        fixed_p: 1_448,
         planned_velocity_mrev_s: 2_929,
         target_velocity_rpm: 176,
         pwm_hz: 25_000,
@@ -383,9 +383,9 @@ fn live_stage_c_schedule_records_one_selector_per_observation() {
             data.rung_index = rung_index;
             data.slot = slot;
             let owner = if rung_index == 0 || rung_index == 14 {
-                RestSelectionOwner::StageCAnchor
+                RestSelectionOwner::IntegralAnchor
             } else {
-                RestSelectionOwner::StageCPositiveObservation
+                RestSelectionOwner::IntegralPositiveObservation
             };
             let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(report)) =
                 record_integral_observation_rest_selection(&mut data, decision, owner)
@@ -417,7 +417,7 @@ fn live_stage_c_schedule_records_one_selector_per_observation() {
             panic!("every completed Stage-C recovery rest decision must emit Event 151");
         };
         assert_eq!(report.evidence_sequence, 121 + u16::from(rung_index));
-        assert_eq!(report.owner, RestSelectionOwner::StageCRecovery);
+        assert_eq!(report.owner, RestSelectionOwner::IntegralRecovery);
         assert_eq!(report.rung_index, rung_index);
         assert_eq!([report.direction, report.slot], [u8::MAX; 2]);
     }
@@ -931,7 +931,7 @@ fn plan_p_and_timing_remain_frozen_across_every_rung() {
     let plan = plan();
     for rung in 0..7 {
         assert!(integral_i_at(plan, rung).is_some());
-        assert_eq!(plan.final_p, 1_448);
+        assert_eq!(plan.fixed_p, 1_448);
         assert_eq!(plan.moving_stroke_us, 512_000);
         assert_eq!(plan.zero_settle_us, 500_000);
         assert_eq!(plan.analysis_budget_us, 236_000);
@@ -1125,7 +1125,7 @@ fn integral_recovery_containment_is_cause_five_before_the_bookend() {
         panic!("contained intermediate recovery must terminate Stage C");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-    assert_eq!(terminal.cause, StageCCause::Engine(5));
+    assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(5));
     assert!(!terminal.recovery_unavailable);
     assert!(!backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
@@ -1152,7 +1152,7 @@ fn completed_stage_c_recovery_rest_rejection_is_cause_53() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+        IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     assert!(!terminal.recovery_unavailable);
 }
@@ -1744,7 +1744,7 @@ fn successful_cleanup_before_directional_floors_is_cause_nine() {
         panic!("successful pre-floor cleanup must terminate with boundary evidence");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
-    assert_eq!(terminal.cause, StageCCause::Engine(9));
+    assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(9));
     assert!(!backend.spi_log.iter().any(|operation| {
         matches!(operation, SpiOp::Write(address, value)
             if *address == PID_VELOCITY_TARGET.addr() && *value != 0)
@@ -1786,19 +1786,19 @@ fn completed_i_zero_cleanup_rejection_is_inconclusive_rest() {
         diagnostic
             .expect("completed cleanup analysis must emit Event 151")
             .owner,
-        RestSelectionOwner::StageCCleanup
+        RestSelectionOwner::IntegralCleanup
     );
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+        IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         unreachable!()
     };
     assert_eq!(
         data.rest_unconfirmed_owner,
-        Some(RestSelectionOwner::StageCCleanup)
+        Some(RestSelectionOwner::IntegralCleanup)
     );
 }
 
@@ -1844,19 +1844,19 @@ fn stage_c_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
         };
 
         let diagnostic = diagnostic.expect("completed Stage-C rest must emit Event 151");
-        assert_eq!(diagnostic.owner, RestSelectionOwner::StageCAnchor);
+        assert_eq!(diagnostic.owner, RestSelectionOwner::IntegralAnchor);
         assert_eq!(diagnostic.slot, 0);
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
         assert_eq!(
             terminal.cause,
-            StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+            IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
         );
         let OuterPhase::VelocityIntegral { data, .. } = &phase else {
             unreachable!()
         };
         assert_eq!(
             data.rest_unconfirmed_owner,
-            Some(RestSelectionOwner::StageCAnchor)
+            Some(RestSelectionOwner::IntegralAnchor)
         );
     }
 }
@@ -1959,7 +1959,7 @@ fn successful_post_floor_cleanup_restores_origin_before_the_bookend() {
     *state = VelocityIntegralState::FinalizeRecovery(RungOriginRecoveryReport {
         stage: RecoveryStage::Integral,
         rung_index: data.rung_index,
-        p_raw: data.plan.final_p,
+        p_raw: data.plan.fixed_p,
         planned_velocity_mrev_s: data.plan.planned_velocity_mrev_s,
         start_offset_counts: 1_500,
         closest_offset_counts: 900,
@@ -2235,7 +2235,7 @@ fn breakaway_clean_sufficiency_preserves_recorded_terminus_through_continuation(
         panic!("clean sufficiency close must reach the terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
-    assert_eq!(terminal.cause, StageCCause::Engine(0));
+    assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(0));
     // The recorded terminus (rung 3) must survive to the terminal as rung + 1.
     assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
 }
@@ -2263,7 +2263,7 @@ fn sufficient_boundary_run_uses_cause_ten_after_the_required_bookend() {
         panic!("a sufficient boundary run must retain the response candidate");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
-    assert_eq!(terminal.cause, StageCCause::Engine(10));
+    assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(10));
 }
 
 #[test]
@@ -2284,7 +2284,7 @@ fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition(
         assert!(workspace.write_workspace_word(124 + index, value as u32));
     }
     data.rest_unconfirmed = true;
-    data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCRecovery);
+    data.rest_unconfirmed_owner = Some(RestSelectionOwner::IntegralRecovery);
     *state = VelocityIntegralState::Terminal;
     let mut backend = MockBackend::new();
 
@@ -2296,12 +2296,12 @@ fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition(
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+        IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     assert!(terminal.rest_rejection_after_sufficiency);
     assert_eq!(
         terminal.rest_rejection_owner,
-        Some(RestSelectionOwner::StageCRecovery)
+        Some(RestSelectionOwner::IntegralRecovery)
     );
 }
 
@@ -2316,7 +2316,7 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
         unreachable!()
     };
     data.rest_unconfirmed = true;
-    data.rest_unconfirmed_owner = Some(RestSelectionOwner::StageCRecovery);
+    data.rest_unconfirmed_owner = Some(RestSelectionOwner::IntegralRecovery);
     *state = VelocityIntegralState::Terminal;
     let mut backend = MockBackend::new();
 
@@ -2328,7 +2328,7 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+        IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
     assert!(!terminal.rest_rejection_after_sufficiency);
     assert_eq!(terminal.rest_rejection_owner, None);
@@ -2364,7 +2364,7 @@ fn amplitude_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
         terminal.cause,
-        StageCCause::Engine(INTEGRAL_CAUSE_INTEGRITY)
+        IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY)
     );
     assert!(!terminal.rest_rejection_after_sufficiency);
     assert_eq!(terminal.rest_rejection_owner, None);
@@ -2936,7 +2936,7 @@ fn excluded_closing_bookend_makes_the_curve_inconclusive() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        StageCCause::Engine(INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE)
+        IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE)
     );
     assert_eq!(terminal.evidence.bookend, [None, None]);
 }
@@ -2993,7 +2993,7 @@ fn contained_recovery_after_an_eligible_bookend_is_nonblocking() {
         panic!("contained final recovery must preserve the Stage-C terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::CompleteCandidate);
-    assert_eq!(terminal.cause, StageCCause::Engine(0));
+    assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(0));
     assert!(terminal.recovery_unavailable);
     assert_eq!(
         terminal.evidence.bookend,
@@ -3015,7 +3015,7 @@ fn stage_c_safety_fault_uses_the_dedicated_terminal() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
         terminal.cause,
-        StageCCause::Error(CommissionError::SafetyEnvelopeViolation.status_code())
+        IntegralOutcomeCause::Error(CommissionError::SafetyEnvelopeViolation.status_code())
     );
     assert_eq!(terminal.expected_observations, 56);
     assert_eq!(terminal.expected_rungs, 7);
@@ -3117,7 +3117,7 @@ fn recovery_rest_rejection_records_the_amplitude_owner() {
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Integral,
             rung_index: data.rung_index,
-            p: PidPGain::new(data.plan.final_p).unwrap(),
+            p: PidPGain::new(data.plan.fixed_p).unwrap(),
             target_velocity_rpm: TmcMechanicalRpm::from_register(264),
             planned_velocity_mrev_s: 4_394,
             start_offset_counts,
@@ -3177,7 +3177,7 @@ fn recovery_rest_rejection_records_the_amplitude_owner() {
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
         assert_eq!(
             terminal.cause,
-            StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+            IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
         );
     }
 }
@@ -3216,7 +3216,7 @@ fn non_amplitude_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_ampl
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Integral,
             rung_index: data.rung_index,
-            p: PidPGain::new(data.plan.final_p).unwrap(),
+            p: PidPGain::new(data.plan.fixed_p).unwrap(),
             target_velocity_rpm: TmcMechanicalRpm::from_register(264),
             planned_velocity_mrev_s: 4_394,
             start_offset_counts,
@@ -3272,12 +3272,12 @@ fn non_amplitude_recover_rung_rest_unconfirmed_is_attributed_to_stage_c_not_ampl
     assert!(data.rest_unconfirmed);
     assert_eq!(
         data.rest_unconfirmed_owner,
-        Some(RestSelectionOwner::StageCRecovery)
+        Some(RestSelectionOwner::IntegralRecovery)
     );
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
         terminal.cause,
-        StageCCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
+        IntegralOutcomeCause::Error(CommissionError::VelocityRestNotConfirmed.status_code())
     );
 }
 
@@ -3320,7 +3320,7 @@ fn positive_observation_unconfirmed_rest_reports_its_diagnostic_owner() {
 
     assert_eq!(
         diagnostic.owner,
-        RestSelectionOwner::StageCPositiveObservation
+        RestSelectionOwner::IntegralPositiveObservation
     );
 }
 

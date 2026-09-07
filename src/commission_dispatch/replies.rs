@@ -747,7 +747,7 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         build_identity: crate::commissioning::outer::velocity::reproduction::BUILD_IDENTITY,
         schema_revision: plan.schema_revision,
         channel: plan.authority.channel,
-        final_p: plan.final_p,
+        final_p: plan.fixed_p,
     });
     sink.foci_velocity_integral_plan_geometry(FociVelocityIntegralPlanGeometry {
         oid,
@@ -3270,9 +3270,9 @@ mod tests {
             plan_digest: 0x1111_2222_3333_4444,
             digest: 0x5555_6666_7777_8888,
             outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: crate::commissioning::types::StageCCause::Engine(7),
+            cause: crate::commissioning::types::IntegralOutcomeCause::Engine(7),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,

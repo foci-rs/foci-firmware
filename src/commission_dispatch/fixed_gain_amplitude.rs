@@ -4,7 +4,7 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 use crate::commission_dispatch::stage_c::StageCPreflightConfig;
 use crate::commissioning::outer::OuterMotionBudget;
-use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
+use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
     FixedGainAmplitudeOrder, FixedGainAmplitudePlan, FixedGainAmplitudePlanError,
     plan_fixed_gain_amplitude,
@@ -167,8 +167,8 @@ pub fn reconstruct_breakaway_plan(
         _ => FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch,
     })?;
     if current.digest() != point.identity.plan_digest
-        || current.schema_revision != BREAKAWAY_STAGE_C_SCHEMA_REVISION
-        || current.final_p != point.selected_p
+        || current.schema_revision != BREAKAWAY_INTEGRAL_SCHEMA_REVISION
+        || current.fixed_p != point.selected_p
         || current.target_velocity_rpm != point.target_velocity_rpm
     {
         return Err(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch);
@@ -206,7 +206,7 @@ pub fn preflight_fixed_gain_amplitude(
     if point.progress != expected_progress {
         return Err(FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch);
     }
-    let current_config = if point.identity.schema_revision == BREAKAWAY_STAGE_C_SCHEMA_REVISION {
+    let current_config = if point.identity.schema_revision == BREAKAWAY_INTEGRAL_SCHEMA_REVISION {
         reconstruct_breakaway_plan(
             point,
             request,
@@ -444,7 +444,7 @@ pub(crate) fn test_acceptance_point(
                 schema_revision: plan.schema_revision,
                 plan_digest: plan.digest(),
             },
-        selected_p: plan.final_p,
+        selected_p: plan.fixed_p,
         selected_i: plan.positive_rungs()[0],
         target_velocity_rpm: plan.target_velocity_rpm,
         selected_response_intervals_q: plan.authority.directional_pooled_intervals,

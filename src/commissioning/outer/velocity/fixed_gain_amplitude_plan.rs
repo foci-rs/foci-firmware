@@ -1,8 +1,8 @@
 //! Immutable fixed-I fixed-gain amplitude planning.
 
 use super::integral_plan::{
-    AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, IntegralSlotOrder,
-    STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan,
+    AcceptanceSource, INTEGRAL_OBSERVATIONS_PER_RUNG, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US,
+    IntegralSlotOrder, VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan,
     VelocityIntegralPlan,
 };
 use super::integral_reproduction::{AcceptancePoint, IntegralPlanIdentity};
@@ -212,7 +212,7 @@ impl FixedGainAmplitudePlan {
             plan_digest: self.digest(),
             acceptance_plan_digest: self.acceptance_identity.plan_digest,
             qualifier_bits: self.qualifier_bits,
-            final_p: self.selected_p,
+            fixed_p: self.selected_p,
             planned_velocity_mrev_s: self.motion_request.requested_velocity_mrev_s,
             target_velocity_rpm: i32::from(top_target),
             pwm_hz: self.pwm_hz,
@@ -312,7 +312,7 @@ pub fn plan_fixed_gain_amplitude(
     if point.identity.build_features != BUILD_FEATURES
         || point.identity.schema_revision != current_config.schema_revision
         || point.identity.plan_digest != current_config.digest()
-        || point.selected_p != current_config.final_p
+        || point.selected_p != current_config.fixed_p
         || point.target_velocity_rpm != current_config.target_velocity_rpm
         || request != current_config.motion_request
         || !recovery_authority_consistent
@@ -329,7 +329,7 @@ pub fn plan_fixed_gain_amplitude(
         .map_err(|_| FixedGainAmplitudePlanError::Arithmetic)?;
     let expected_observations = u16::from(amplitude_count)
         .checked_mul(
-            u16::try_from(STAGE_C_OBSERVATIONS_PER_RUNG)
+            u16::try_from(INTEGRAL_OBSERVATIONS_PER_RUNG)
                 .map_err(|_| FixedGainAmplitudePlanError::Arithmetic)?,
         )
         .ok_or(FixedGainAmplitudePlanError::Arithmetic)?;

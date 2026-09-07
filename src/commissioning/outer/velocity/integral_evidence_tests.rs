@@ -5,8 +5,8 @@ use crate::autotune::velocity_measurement::{
 use foci_tmc4671::pid::PidPGain;
 
 use super::integral_evidence::{
-    ExactRateInterval, IntegralInconclusiveKind, IntegralObservationClass, IntegralRunEvidence,
-    IntegralRunSufficiency, IntegralRungClass, IntegralRungKind, StageCEvidenceError,
+    ExactRateInterval, IntegralEvidenceError, IntegralInconclusiveKind, IntegralObservationClass,
+    IntegralRunEvidence, IntegralRunSufficiency, IntegralRungClass, IntegralRungKind,
     analyze_integral_direction, classify_integral_observation,
 };
 use super::sweep_evidence::{
@@ -402,9 +402,9 @@ fn invalid_rate_width_and_mask_bits_fail_closed() {
             eligible(VelocityDirection::Forward, 1, 2),
         ],
     );
-    assert_eq!(overflow, Err(StageCEvidenceError::Conversion));
+    assert_eq!(overflow, Err(IntegralEvidenceError::Conversion));
 
     let mut run = IntegralRunEvidence::new([interval(100, 200), interval(-200, -100)]);
     run.eligible_masks = [1 << 5, 0];
-    assert_eq!(run.assess(5), Err(StageCEvidenceError::MaskOutOfRange));
+    assert_eq!(run.assess(5), Err(IntegralEvidenceError::MaskOutOfRange));
 }

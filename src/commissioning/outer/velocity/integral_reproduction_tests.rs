@@ -1,6 +1,6 @@
-use super::integral_evidence::{ExactRateInterval, IntegralRunEvidence, StageCEvidenceError};
+use super::integral_evidence::{ExactRateInterval, IntegralEvidenceError, IntegralRunEvidence};
 use super::integral_plan::{
-    STAGE_C_EVIDENCE_SCHEMA_REVISION, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
+    INTEGRAL_EVIDENCE_SCHEMA_REVISION, VelocityIntegralExecutionPlan, VelocityIntegralPlan,
 };
 use super::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, IntegralAuthoritySummary, IntegralPlanIdentity,
@@ -19,7 +19,7 @@ fn identity(channel: u8, digest: u64) -> IntegralPlanIdentity {
     IntegralPlanIdentity {
         channel,
         build_features: 0x1234,
-        schema_revision: STAGE_C_EVIDENCE_SCHEMA_REVISION,
+        schema_revision: INTEGRAL_EVIDENCE_SCHEMA_REVISION,
         plan_digest: digest,
     }
 }
@@ -28,7 +28,7 @@ fn authority(channel: u8, digest: u64) -> IntegralAuthoritySummary {
     IntegralAuthoritySummary {
         identity: identity(channel, digest),
         acquisition: breakaway_acquisition_for_test(),
-        final_p: 1_448,
+        fixed_p: 1_448,
         directional_memberships: [0x0038_0000; 2],
         stage_b_joint_membership: 0x0038_0000,
         joint_membership: 0x0038_0000,
@@ -246,7 +246,7 @@ fn boundary_references_are_reported_but_never_gate_reproduction() {
 #[test]
 fn authority_summary_preserves_model_validity_and_reduced_margin() {
     let retained = authority(0, 7);
-    let rebuilt = retained.stage_c_authority();
+    let rebuilt = retained.integral_authority();
 
     assert_eq!(rebuilt.directional_validity, retained.directional_validity);
     assert_eq!(rebuilt.reduced_margin, retained.reduced_margin);
@@ -267,7 +267,7 @@ fn delta_subtraction_overlap_and_divergence_are_exact() {
     );
     assert_eq!(
         delta_e(interval(i32::MAX, i32::MAX), interval(i32::MIN, i32::MIN)),
-        Err(StageCEvidenceError::Conversion)
+        Err(IntegralEvidenceError::Conversion)
     );
     assert_eq!(
         closed_intersection(interval(0, 5), interval(5, 10)),
@@ -363,7 +363,7 @@ fn two_reproduced_rungs_or_out_of_range_masks_refuse_reproduction() {
     invalid.eligible_masks[0] = 1 << 6;
     assert_eq!(
         compare_integral_runs(invalid, two, 6),
-        Err(StageCEvidenceError::MaskOutOfRange)
+        Err(IntegralEvidenceError::MaskOutOfRange)
     );
 }
 

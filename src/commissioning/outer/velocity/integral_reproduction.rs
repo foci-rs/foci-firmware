@@ -1,7 +1,7 @@
 //! RAM-only Stage-C authority, candidate retention, and curve reproduction.
 
-use super::integral_evidence::{ExactRateInterval, IntegralRunEvidence, StageCEvidenceError};
-use super::integral_plan::{STAGE_C_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan};
+use super::integral_evidence::{ExactRateInterval, IntegralEvidenceError, IntegralRunEvidence};
+use super::integral_plan::{INTEGRAL_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan};
 use super::reproduction::StageBDirectionalValidity;
 
 const DIRECTION_COUNT: usize = 2;
@@ -36,7 +36,7 @@ pub struct IntegralAuthoritySummary {
     /// Which acquisition authorized this Stage-C plan, and its exact digest.
     pub acquisition: super::integral_plan::ConfirmedAcquisitionDigest,
     /// Firmware-authoritative fixed proportional gain.
-    pub final_p: u16,
+    pub fixed_p: u16,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; DIRECTION_COUNT],
     /// Reproduced Stage-B joint-operability component before Stage-C filtering.
@@ -89,7 +89,7 @@ impl IntegralAuthoritySummary {
         schema_revision: u16,
         acquisition: super::integral_plan::ConfirmedAcquisitionDigest,
         plan: VelocityIntegralExecutionPlan,
-        authority: super::integral_plan::StageCAuthority,
+        authority: super::integral_plan::IntegralAcquisitionAuthority,
     ) -> Self {
         Self {
             identity: IntegralPlanIdentity {
@@ -99,7 +99,7 @@ impl IntegralAuthoritySummary {
                 plan_digest: plan.plan_digest,
             },
             acquisition,
-            final_p: plan.final_p,
+            fixed_p: plan.fixed_p,
             directional_memberships: authority.directional_memberships,
             stage_b_joint_membership: authority.stage_b_joint_membership,
             joint_membership: authority.joint_membership,
@@ -123,8 +123,8 @@ impl IntegralAuthoritySummary {
     }
 
     /// Rebuild the exact Stage-B handoff used by Stage-C planning.
-    pub const fn stage_c_authority(self) -> super::integral_plan::StageCAuthority {
-        super::integral_plan::StageCAuthority {
+    pub const fn integral_authority(self) -> super::integral_plan::IntegralAcquisitionAuthority {
+        super::integral_plan::IntegralAcquisitionAuthority {
             channel: self.identity.channel,
             acquisition: self.acquisition,
             directional_memberships: self.directional_memberships,
@@ -140,7 +140,8 @@ impl IntegralAuthoritySummary {
 
     /// Whether one direction carries a reproduced cross-P model interval.
     pub const fn model_interval_available(&self, direction: usize) -> bool {
-        self.stage_c_authority().model_interval_available(direction)
+        self.integral_authority()
+            .model_interval_available(direction)
     }
 }
 
@@ -501,12 +502,12 @@ const _: () = assert!(core::mem::size_of::<IntegralRetentionSlot>() <= 656);
 pub fn delta_e(
     rung: ExactRateInterval,
     anchor: ExactRateInterval,
-) -> Result<ExactRateInterval, StageCEvidenceError> {
+) -> Result<ExactRateInterval, IntegralEvidenceError> {
     let low = i64::from(rung.low_q) - i64::from(anchor.high_q);
     let high = i64::from(rung.high_q) - i64::from(anchor.low_q);
     ExactRateInterval::new(
-        i32::try_from(low).map_err(|_| StageCEvidenceError::Conversion)?,
-        i32::try_from(high).map_err(|_| StageCEvidenceError::Conversion)?,
+        i32::try_from(low).map_err(|_| IntegralEvidenceError::Conversion)?,
+        i32::try_from(high).map_err(|_| IntegralEvidenceError::Conversion)?,
     )
 }
 
@@ -536,7 +537,7 @@ pub const fn closed_intersection(
 pub fn signed_divergence_gap(
     previous: ExactRateInterval,
     current: ExactRateInterval,
-) -> Result<i32, StageCEvidenceError> {
+) -> Result<i32, IntegralEvidenceError> {
     let gap = if current.low_q > previous.high_q {
         i64::from(current.low_q) - i64::from(previous.high_q)
     } else if current.high_q < previous.low_q {
@@ -544,7 +545,7 @@ pub fn signed_divergence_gap(
     } else {
         0
     };
-    i32::try_from(gap).map_err(|_| StageCEvidenceError::Conversion)
+    i32::try_from(gap).map_err(|_| IntegralEvidenceError::Conversion)
 }
 
 /// Compare two sufficient raw curves without contiguity or cross-direction gates.
@@ -552,7 +553,7 @@ pub fn compare_integral_runs(
     previous: IntegralRunEvidence,
     current: IntegralRunEvidence,
     positive_rung_count: usize,
-) -> Result<IntegralReproductionDelta, StageCEvidenceError> {
+) -> Result<IntegralReproductionDelta, IntegralEvidenceError> {
     compare_integral_runs_with_boundaries(previous, current, positive_rung_count, None, None)
 }
 
@@ -562,9 +563,9 @@ fn compare_integral_runs_with_boundaries(
     positive_rung_count: usize,
     previous_rest_boundary: Option<IntegralRestBoundaryReference>,
     current_rest_boundary: Option<IntegralRestBoundaryReference>,
-) -> Result<IntegralReproductionDelta, StageCEvidenceError> {
-    if positive_rung_count == 0 || positive_rung_count > STAGE_C_MAX_POSITIVE_RUNGS {
-        return Err(StageCEvidenceError::MaskOutOfRange);
+) -> Result<IntegralReproductionDelta, IntegralEvidenceError> {
+    if positive_rung_count == 0 || positive_rung_count > INTEGRAL_MAX_POSITIVE_RUNGS {
+        return Err(IntegralEvidenceError::MaskOutOfRange);
     }
     let valid_mask = (1_u32 << positive_rung_count) - 1;
     if previous
@@ -573,7 +574,7 @@ fn compare_integral_runs_with_boundaries(
         .chain(current.eligible_masks.iter())
         .any(|mask| mask & !valid_mask != 0)
     {
-        return Err(StageCEvidenceError::MaskOutOfRange);
+        return Err(IntegralEvidenceError::MaskOutOfRange);
     }
 
     let mut result = IntegralReproductionDelta {

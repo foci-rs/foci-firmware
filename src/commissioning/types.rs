@@ -551,13 +551,13 @@ pub enum RestSelectionOwner {
     /// Selected final-P Stage-B recovery.
     StageBSelectedRecovery = 2,
     /// Stage-C opening anchor or closing bookend.
-    StageCAnchor = 3,
+    IntegralAnchor = 3,
     /// Stage-C positive-I observation.
-    StageCPositiveObservation = 4,
+    IntegralPositiveObservation = 4,
     /// Stage-C origin recovery.
-    StageCRecovery = 5,
+    IntegralRecovery = 5,
     /// Positive-I I=0 cleanup.
-    StageCCleanup = 6,
+    IntegralCleanup = 6,
     /// Amplitude observation.
     FixedGainAmplitudeObservation = 7,
     /// Amplitude origin recovery.
@@ -644,7 +644,7 @@ pub struct VelocityIntegralPlanned {
     /// Exact Stage-C stage-plan digest.
     pub plan_digest: u64,
     /// Firmware-authoritative fixed proportional gain.
-    pub final_p: u16,
+    pub fixed_p: u16,
     /// Number of positive-I rungs between the two I=0 anchors.
     pub positive_rung_count: u8,
     /// Conservative complete Stage-C duration.
@@ -968,7 +968,7 @@ pub struct RobustnessReversalTerminal {
 /// The three source enumerations are independently numbered and can share a
 /// raw value, so the namespace must travel with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum StageCCause {
+pub enum IntegralOutcomeCause {
     /// From `integral_sweep::INTEGRAL_CAUSE_*`.
     Engine(u8),
     /// From `CommissionError::status_code()`.
@@ -977,7 +977,7 @@ pub enum StageCCause {
     Dispatch(u8),
 }
 
-impl StageCCause {
+impl IntegralOutcomeCause {
     /// Wire discriminator identifying which namespace `raw_value` belongs
     /// to: 0 = engine, 1 = error, 2 = dispatch.
     pub(crate) const fn namespace_code(self) -> u8 {
@@ -1009,8 +1009,8 @@ pub struct VelocityIntegralTerminal {
     pub digest: u64,
     /// Terminal measurement-stage class.
     pub outcome: VelocityIntegralOutcome,
-    /// Dedicated Stage-C phase-local cause, namespaced (see [`StageCCause`]).
-    pub cause: StageCCause,
+    /// Dedicated Stage-C phase-local cause, namespaced (see [`IntegralOutcomeCause`]).
+    pub cause: IntegralOutcomeCause,
     /// Whether this terminal came from a breakaway-campaign acceptance run.
     ///
     /// Terminus-independent: a breakaway `Complete` that finished on
@@ -1024,7 +1024,7 @@ pub struct VelocityIntegralTerminal {
     ///
     /// Carried verbatim from the plan for every Stage-C workflow. Not zeroed
     /// for a non-target-recording (e.g. reproduced Stage-B) terminal.
-    pub final_p: u16,
+    pub fixed_p: u16,
     /// Final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: bool,
     /// Final bookend recovery proved passive in-band rest after clamp contact.
@@ -2409,18 +2409,18 @@ mod fixed_gain_amplitude_code_tests {
 
 #[cfg(test)]
 mod stage_c_cause_tests {
-    use super::StageCCause;
+    use super::IntegralOutcomeCause;
 
     #[test]
     fn namespace_and_raw_value_round_trip_per_variant() {
-        assert_eq!(StageCCause::Engine(4).namespace_code(), 0);
-        assert_eq!(StageCCause::Engine(4).raw_value(), 4);
+        assert_eq!(IntegralOutcomeCause::Engine(4).namespace_code(), 0);
+        assert_eq!(IntegralOutcomeCause::Engine(4).raw_value(), 4);
 
-        assert_eq!(StageCCause::Error(4).namespace_code(), 1);
-        assert_eq!(StageCCause::Error(4).raw_value(), 4);
+        assert_eq!(IntegralOutcomeCause::Error(4).namespace_code(), 1);
+        assert_eq!(IntegralOutcomeCause::Error(4).raw_value(), 4);
 
-        assert_eq!(StageCCause::Dispatch(4).namespace_code(), 2);
-        assert_eq!(StageCCause::Dispatch(4).raw_value(), 4);
+        assert_eq!(IntegralOutcomeCause::Dispatch(4).namespace_code(), 2);
+        assert_eq!(IntegralOutcomeCause::Dispatch(4).raw_value(), 4);
     }
 
     /// The same raw value from each namespace must stay distinguishable by
@@ -2428,9 +2428,9 @@ mod stage_c_cause_tests {
     /// same number to different things is not itself a bug.
     #[test]
     fn colliding_raw_values_remain_distinguishable_by_namespace() {
-        let engine = StageCCause::Engine(4);
-        let error = StageCCause::Error(4);
-        let dispatch = StageCCause::Dispatch(4);
+        let engine = IntegralOutcomeCause::Engine(4);
+        let error = IntegralOutcomeCause::Error(4);
+        let dispatch = IntegralOutcomeCause::Dispatch(4);
 
         assert_ne!(engine.namespace_code(), error.namespace_code());
         assert_ne!(engine.namespace_code(), dispatch.namespace_code());

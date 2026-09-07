@@ -2,7 +2,7 @@
 
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::integral_plan::{
-    StageCFailedAdmission, VelocityIntegralPlan, VelocityIntegralPlanError,
+    IntegralFailedAdmission, VelocityIntegralPlan, VelocityIntegralPlanError,
 };
 use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, IntegralAuthoritySummary, IntegralPlanIdentity,
@@ -12,7 +12,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 use crate::commissioning::types::{
-    StageCCause, VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
+    IntegralOutcomeCause, VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
     VelocityIntegralTerminal,
 };
 
@@ -61,7 +61,7 @@ impl StageCPreflight {
             run_sequence: self.run_sequence,
             evidence_sequence: 0,
             plan_digest: self.identity.plan_digest,
-            final_p: self.plan.final_p,
+            fixed_p: self.plan.fixed_p,
             positive_rung_count: self.plan.positive_rung_count,
             maximum_workflow_ms: self.plan.maximum_workflow_ms,
         })
@@ -103,7 +103,7 @@ pub enum StageCPreflightRejection {
         retained: IntegralPlanIdentity,
     },
     /// The reproduced operating component contains no Stage-C-safe test point.
-    NoTransitionCapableOperatingPoint(StageCFailedAdmission),
+    NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
 }
 
 /// Cross-run comparison attached to the Stage-C terminal.
@@ -162,7 +162,7 @@ pub(crate) fn breakaway_acceptance_point(
     terminal: &VelocityIntegralTerminal,
 ) -> Result<AcceptanceInstall, ()> {
     use crate::commissioning::outer::velocity::combined_plan::{
-        BREAKAWAY_STAGE_C_SCHEMA_REVISION, CombinedTargetStatus,
+        BREAKAWAY_INTEGRAL_SCHEMA_REVISION, CombinedTargetStatus,
     };
     use crate::commissioning::outer::velocity::integral_reporting::{
         terminal_target_status, terminal_target_terminus,
@@ -192,7 +192,7 @@ pub(crate) fn breakaway_acceptance_point(
     if terminal_target_status(terminal) != Some(CombinedTargetStatus::TargetReached) {
         return Err(());
     }
-    if terminal.plan_digest != plan.plan_digest || terminal.final_p != authority.final_p {
+    if terminal.plan_digest != plan.plan_digest || terminal.fixed_p != authority.fixed_p {
         return Err(());
     }
     let selected_i = integral_i_at(plan, positive_index.checked_add(1).ok_or(())?).ok_or(())?;
@@ -211,10 +211,10 @@ pub(crate) fn breakaway_acceptance_point(
         identity: IntegralPlanIdentity {
             channel,
             build_features: BUILD_FEATURES,
-            schema_revision: BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+            schema_revision: BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
             plan_digest: terminal.plan_digest,
         },
-        selected_p: authority.final_p,
+        selected_p: authority.fixed_p,
         selected_i,
         target_velocity_rpm: authority.target_velocity_rpm,
         selected_response_intervals_q: authority.directional_pooled_intervals,
@@ -276,7 +276,7 @@ fn preflight_retained_breakaway(
     };
     let plan = match plan_retained_breakaway_velocity_integral_response(
         token,
-        authority.final_p,
+        authority.fixed_p,
         context,
         authority.directional_pooled_intervals,
         authority.confidence_q,
@@ -358,7 +358,7 @@ pub fn apply_stage_c_terminal(
 ) -> StageCTerminalDispatch {
     let Some(authority) = stage_c_candidate.authority() else {
         terminal.outcome = VelocityIntegralOutcome::Fault;
-        terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+        terminal.cause = IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
         return StageCTerminalDispatch {
             terminal,
             reproduction: None,
@@ -368,7 +368,7 @@ pub fn apply_stage_c_terminal(
     if terminal.plan_digest != authority.identity.plan_digest {
         stage_c_candidate.observe_fault();
         terminal.outcome = VelocityIntegralOutcome::Fault;
-        terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+        terminal.cause = IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
         return StageCTerminalDispatch {
             terminal,
             reproduction: None,
@@ -435,7 +435,8 @@ pub fn apply_stage_c_terminal(
                 }
                 IntegralReproductionDecision::RepeatabilityMismatch(delta) => {
                     terminal.outcome = VelocityIntegralOutcome::Inconclusive;
-                    terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH);
+                    terminal.cause =
+                        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH);
                     // The sole defmt signal for why a resume came back Inconclusive:
                     // which shared rungs reproduced vs diverged, per direction.
                     defmt::warn!(
@@ -454,12 +455,13 @@ pub fn apply_stage_c_terminal(
                 }
                 IntegralReproductionDecision::RejectedPlanMismatch { .. } => {
                     terminal.outcome = VelocityIntegralOutcome::RejectedPlanMismatch;
-                    terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
+                    terminal.cause = IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_PLAN_MISMATCH);
                     None
                 }
                 IntegralReproductionDecision::EvidenceIntegrityFault => {
                     terminal.outcome = VelocityIntegralOutcome::Fault;
-                    terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+                    terminal.cause =
+                        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
                     None
                 }
             }
@@ -479,7 +481,7 @@ pub fn apply_stage_c_terminal(
         VelocityIntegralOutcome::Complete | VelocityIntegralOutcome::RejectedPlanMismatch => {
             stage_c_candidate.observe_fault();
             terminal.outcome = VelocityIntegralOutcome::Fault;
-            terminal.cause = StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+            terminal.cause = IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
             None
         }
     };
@@ -508,9 +510,9 @@ pub fn missing_authority_stage_c_terminal(run_sequence: u32) -> VelocityIntegral
         plan_digest: 0,
         digest: 0,
         outcome: VelocityIntegralOutcome::Failed,
-        cause: StageCCause::Dispatch(STAGE_C_CAUSE_NO_RETAINED_AUTHORITY),
+        cause: IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_NO_RETAINED_AUTHORITY),
         breakaway_acceptance: false,
-        final_p: 0,
+        fixed_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: false,
@@ -532,7 +534,7 @@ pub fn missing_authority_stage_c_terminal(run_sequence: u32) -> VelocityIntegral
 
 pub(crate) fn failed_stage_c_terminal(
     run_sequence: u32,
-    failure: StageCFailedAdmission,
+    failure: IntegralFailedAdmission,
 ) -> VelocityIntegralTerminal {
     use crate::commissioning::outer::velocity::integral_evidence::{
         ExactRateInterval, IntegralRunEvidence,
@@ -544,9 +546,9 @@ pub(crate) fn failed_stage_c_terminal(
         plan_digest: failure.plan_digest,
         digest: 0,
         outcome: VelocityIntegralOutcome::Failed,
-        cause: StageCCause::Dispatch(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT),
+        cause: IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT),
         breakaway_acceptance: false,
-        final_p: 0,
+        fixed_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: false,

@@ -2,7 +2,7 @@
 
 use crate::autotune::velocity_measurement::{StationarityResult, VelocityDirection};
 
-use super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS;
+use super::integral_plan::INTEGRAL_MAX_POSITIVE_RUNGS;
 use super::sweep_consensus::{DirectionalConsensusClass, depth_three_consensus};
 use super::sweep_evidence::{
     VelocityObservationClass, VelocityObservationInput, VelocityObservationSummary,
@@ -28,9 +28,9 @@ impl ExactRateInterval {
     };
 
     /// Construct a checked closed interval.
-    pub const fn new(low_q: i32, high_q: i32) -> Result<Self, StageCEvidenceError> {
+    pub const fn new(low_q: i32, high_q: i32) -> Result<Self, IntegralEvidenceError> {
         if low_q > high_q {
-            Err(StageCEvidenceError::InvalidInterval)
+            Err(IntegralEvidenceError::InvalidInterval)
         } else {
             Ok(Self { low_q, high_q })
         }
@@ -153,7 +153,7 @@ pub struct IntegralRunEvidence {
     /// Opening I=0 intervals in forward, reverse order.
     pub opening: [ExactRateInterval; DIRECTION_COUNT],
     /// Positive-I intervals in direction-major order; masks carry presence.
-    pub positive: [[ExactRateInterval; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
+    pub positive: [[ExactRateInterval; INTEGRAL_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
     /// Per-direction positive-I eligibility masks.
     pub eligible_masks: [u32; DIRECTION_COUNT],
     /// Optional closing I=0 intervals.
@@ -167,7 +167,7 @@ impl IntegralRunEvidence {
     pub const fn new(opening: [ExactRateInterval; DIRECTION_COUNT]) -> Self {
         Self {
             opening,
-            positive: [[ExactRateInterval::EMPTY; STAGE_C_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
+            positive: [[ExactRateInterval::EMPTY; INTEGRAL_MAX_POSITIVE_RUNGS]; DIRECTION_COUNT],
             eligible_masks: [0; DIRECTION_COUNT],
             bookend: [None; DIRECTION_COUNT],
             current_terminus: None,
@@ -180,15 +180,15 @@ impl IntegralRunEvidence {
         direction: usize,
         rung: usize,
         interval: ExactRateInterval,
-    ) -> Result<(), StageCEvidenceError> {
-        if direction >= DIRECTION_COUNT || rung >= STAGE_C_MAX_POSITIVE_RUNGS {
-            return Err(StageCEvidenceError::MaskOutOfRange);
+    ) -> Result<(), IntegralEvidenceError> {
+        if direction >= DIRECTION_COUNT || rung >= INTEGRAL_MAX_POSITIVE_RUNGS {
+            return Err(IntegralEvidenceError::MaskOutOfRange);
         }
         let bit = 1_u32
-            .checked_shl(u32::try_from(rung).map_err(|_| StageCEvidenceError::MaskOutOfRange)?)
-            .ok_or(StageCEvidenceError::MaskOutOfRange)?;
+            .checked_shl(u32::try_from(rung).map_err(|_| IntegralEvidenceError::MaskOutOfRange)?)
+            .ok_or(IntegralEvidenceError::MaskOutOfRange)?;
         if self.eligible_masks[direction] & bit != 0 {
-            return Err(StageCEvidenceError::DuplicateRung);
+            return Err(IntegralEvidenceError::DuplicateRung);
         }
         self.positive[direction][rung] = interval;
         self.eligible_masks[direction] |= bit;
@@ -199,9 +199,9 @@ impl IntegralRunEvidence {
     pub fn assess(
         self,
         positive_rung_count: usize,
-    ) -> Result<IntegralRunSufficiency, StageCEvidenceError> {
-        if positive_rung_count == 0 || positive_rung_count > STAGE_C_MAX_POSITIVE_RUNGS {
-            return Err(StageCEvidenceError::MaskOutOfRange);
+    ) -> Result<IntegralRunSufficiency, IntegralEvidenceError> {
+        if positive_rung_count == 0 || positive_rung_count > INTEGRAL_MAX_POSITIVE_RUNGS {
+            return Err(IntegralEvidenceError::MaskOutOfRange);
         }
         let valid_mask = (1_u32 << positive_rung_count) - 1;
         if self
@@ -212,7 +212,7 @@ impl IntegralRunEvidence {
                 .current_terminus
                 .is_some_and(|rung| usize::from(rung) >= positive_rung_count)
         {
-            return Err(StageCEvidenceError::MaskOutOfRange);
+            return Err(IntegralEvidenceError::MaskOutOfRange);
         }
         let sufficient = self
             .eligible_masks
@@ -252,7 +252,7 @@ impl IntegralRunEvidence {
 
 /// Evidence-integrity failure while building one Stage-C curve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum StageCEvidenceError {
+pub enum IntegralEvidenceError {
     /// A raw interval had reversed bounds.
     InvalidInterval,
     /// An observation's direction, gain, or interval was inconsistent.
@@ -316,7 +316,7 @@ pub fn analyze_integral_direction(
     direction: VelocityDirection,
     kind: IntegralRungKind,
     observations: [VelocityObservationSummary; OBSERVATIONS_PER_DIRECTION],
-) -> Result<IntegralRungEvidence, StageCEvidenceError> {
+) -> Result<IntegralRungEvidence, IntegralEvidenceError> {
     let p = observations[0].p;
     if observations.iter().any(|observation| {
         observation.direction != direction
@@ -324,7 +324,7 @@ pub fn analyze_integral_direction(
             || observation.settled_rate_interval_q[0] > observation.settled_rate_interval_q[1]
             || observation.deficit_interval_q[0] > observation.deficit_interval_q[1]
     }) {
-        return Err(StageCEvidenceError::MismatchedObservation);
+        return Err(IntegralEvidenceError::MismatchedObservation);
     }
 
     let mut observation_classes = [IntegralObservationClass::Fault; OBSERVATIONS_PER_DIRECTION];
@@ -334,9 +334,9 @@ pub fn analyze_integral_direction(
         observation_classes[index] = class;
         if class == IntegralObservationClass::Usable {
             let low_q = i32::try_from(observation.deficit_interval_q[0])
-                .map_err(|_| StageCEvidenceError::Conversion)?;
+                .map_err(|_| IntegralEvidenceError::Conversion)?;
             let high_q = i32::try_from(observation.deficit_interval_q[1])
-                .map_err(|_| StageCEvidenceError::Conversion)?;
+                .map_err(|_| IntegralEvidenceError::Conversion)?;
             observation_intervals[index] = Some(ExactRateInterval::new(low_q, high_q)?);
         }
     }

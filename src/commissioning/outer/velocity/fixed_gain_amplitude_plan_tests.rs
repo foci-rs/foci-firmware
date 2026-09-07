@@ -174,7 +174,7 @@ fn breakaway_point(plan: super::integral_plan::VelocityIntegralPlan) -> Acceptan
             schema_revision: plan.schema_revision,
             plan_digest: plan.digest(),
         },
-        selected_p: plan.final_p,
+        selected_p: plan.fixed_p,
         selected_i: plan.positive_rungs()[0],
         target_velocity_rpm: plan.target_velocity_rpm,
         selected_response_intervals_q: plan.authority.directional_pooled_intervals,
@@ -194,7 +194,7 @@ fn amplitude_accepts_a_genuine_breakaway_authority_point() {
     let current = breakaway_plan();
     assert_eq!(
         current.schema_revision,
-        super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     );
     let accepted = plan_fixed_gain_amplitude(
         breakaway_point(current),
@@ -207,7 +207,7 @@ fn amplitude_accepts_a_genuine_breakaway_authority_point() {
     assert!(accepted.recovery_lower_rate_q.iter().all(|&rate| rate > 0));
     assert_eq!(
         accepted.acceptance_identity.schema_revision,
-        super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     );
 }
 
@@ -283,7 +283,7 @@ fn live_amplitude_geometry_and_orders_are_exact() {
     assert_eq!(
         (
             super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION,
-            super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+            super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
             FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         ),
         (14, 18, 6)
@@ -539,7 +539,7 @@ fn forward_first_leaves_the_stage_c_plan_digest_untouched() {
     assert_eq!(plan.digest(), explicit.digest());
     assert_eq!(
         plan.schema_revision,
-        super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+        super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
         "the schema must not move for a mirrored run"
     );
 }

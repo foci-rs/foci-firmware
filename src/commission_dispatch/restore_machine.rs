@@ -24,8 +24,8 @@ use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionTerminal;
 use crate::commissioning::types::{
     AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, FixedGainAmplitudeCause,
-    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, OuterResult, RobustnessOutcome,
-    RobustnessReversalTerminal, StageCCause, StepResult, VelocityIntegralOutcome,
+    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, IntegralOutcomeCause, OuterResult,
+    RobustnessOutcome, RobustnessReversalTerminal, StepResult, VelocityIntegralOutcome,
     VelocityIntegralTerminal,
 };
 use crate::pid::OuterLoopGains;
@@ -1203,7 +1203,8 @@ impl TerminalRestoreMachine {
                     {
                         retention.stage_c.observe_fault();
                         terminal.outcome = VelocityIntegralOutcome::Fault;
-                        terminal.cause = StageCCause::Error(CommissionError::Spi.status_code());
+                        terminal.cause =
+                            IntegralOutcomeCause::Error(CommissionError::Spi.status_code());
                         terminal.recovery_unavailable = true;
                         terminal.safety_fault = None;
                         self.terminal.reproduction = None;
@@ -1239,7 +1240,8 @@ impl TerminalRestoreMachine {
                     }
                     if !disarm_velocity_workflow(engine, backend, state).await {
                         terminal.outcome = VelocityIntegralOutcome::Fault;
-                        terminal.cause = StageCCause::Error(CommissionError::Spi.status_code());
+                        terminal.cause =
+                            IntegralOutcomeCause::Error(CommissionError::Spi.status_code());
                         terminal.recovery_unavailable = true;
                         terminal.safety_fault = None;
                     }
@@ -1442,8 +1444,9 @@ impl TerminalRestoreMachine {
                 }
                 Ok(stage_c::AcceptanceInstall::MissingTargetTerminus) => {
                     defmt::warn!("velocity-integral promotion: missing target terminus");
-                    dispatch.terminal.cause =
-                        StageCCause::Dispatch(stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS);
+                    dispatch.terminal.cause = IntegralOutcomeCause::Dispatch(
+                        stage_c::STAGE_C_CAUSE_NO_ACCEPTANCE_TERMINUS,
+                    );
                     #[cfg(feature = "trace")]
                     {
                         promotion_installer_result = 2;
@@ -1461,7 +1464,7 @@ impl TerminalRestoreMachine {
                     retention.stage_c.observe_fault();
                     dispatch.terminal.outcome = VelocityIntegralOutcome::Fault;
                     dispatch.terminal.cause =
-                        StageCCause::Dispatch(stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
+                        IntegralOutcomeCause::Dispatch(stage_c::STAGE_C_CAUSE_EVIDENCE_INTEGRITY);
                     dispatch.terminal.safety_fault = None;
                     dispatch.reproduction = None;
                     dispatch.authority = None;
@@ -1536,7 +1539,7 @@ impl TerminalRestoreMachine {
             }
             TerminalPayload::VelocityIntegral(mut terminal) => {
                 terminal.outcome = VelocityIntegralOutcome::Fault;
-                terminal.cause = StageCCause::Error(status);
+                terminal.cause = IntegralOutcomeCause::Error(status);
                 terminal.recovery_unavailable = true;
                 terminal.safety_fault = None;
                 ReplyPayload::VelocityIntegralTerminal {

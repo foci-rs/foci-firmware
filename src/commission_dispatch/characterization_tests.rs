@@ -180,9 +180,9 @@ struct OpTrace {
     engine_consumed: bool,
 }
 
-/// Pack a `StageCCause`'s namespace and raw value into one `u16` so the two
+/// Pack a `IntegralOutcomeCause`'s namespace and raw value into one `u16` so the two
 /// namespaces (`Engine`/`Error`/`Dispatch`) never alias each other.
-fn stage_c_cause_code(cause: crate::commissioning::types::StageCCause) -> u16 {
+fn stage_c_cause_code(cause: crate::commissioning::types::IntegralOutcomeCause) -> u16 {
     (u16::from(cause.namespace_code()) << 8) | u16::from(cause.raw_value())
 }
 
@@ -1072,9 +1072,9 @@ fn sample_velocity_integral_terminal() -> crate::commissioning::types::VelocityI
         plan_digest: 0x1111_2222_3333_4444,
         digest: 0x5555_6666_7777_8888,
         outcome: VelocityIntegralOutcome::Inconclusive,
-        cause: crate::commissioning::types::StageCCause::Engine(0),
+        cause: crate::commissioning::types::IntegralOutcomeCause::Engine(0),
         breakaway_acceptance: false,
-        final_p: 0,
+        fixed_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: false,

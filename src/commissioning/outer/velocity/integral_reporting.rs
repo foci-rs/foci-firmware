@@ -104,10 +104,10 @@ pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
     // workflow; breakaway never set them, so removing that
     // dead branch does not change the wire `recovery_flags` byte.
     let owner_code: u8 = match report.rest_rejection_owner {
-        Some(RestSelectionOwner::StageCAnchor) | None => 0b00,
-        Some(RestSelectionOwner::StageCPositiveObservation) => 0b01,
-        Some(RestSelectionOwner::StageCRecovery) => 0b10,
-        Some(RestSelectionOwner::StageCCleanup) => 0b11,
+        Some(RestSelectionOwner::IntegralAnchor) | None => 0b00,
+        Some(RestSelectionOwner::IntegralPositiveObservation) => 0b01,
+        Some(RestSelectionOwner::IntegralRecovery) => 0b10,
+        Some(RestSelectionOwner::IntegralCleanup) => 0b11,
         Some(_) => 0b00,
     };
     (u8::from(report.recovery_unavailable) * TERMINAL_RECOVERY_UNAVAILABLE)
@@ -238,7 +238,7 @@ pub(crate) fn encode_velocity_integral_event(
             record.push_u32(report.run_sequence);
             record.push_u16(report.evidence_sequence);
             push_u64(&mut record, report.plan_digest);
-            record.push_u16(report.final_p);
+            record.push_u16(report.fixed_p);
             record.push_u8(report.positive_rung_count);
             record.push_u32(report.maximum_workflow_ms);
             record
@@ -283,7 +283,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u16(plan.schema_revision);
     core.push_u8(plan.authority.channel);
     push_u64(&mut core, plan.authority.acquisition.get());
-    core.push_u16(plan.final_p);
+    core.push_u16(plan.fixed_p);
     for membership in plan.authority.directional_memberships {
         core.push_u32(membership);
     }
@@ -310,8 +310,8 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     core.push_u8(plan.limit_evidence_capability as u8);
     if matches!(
         plan.schema_revision,
-        super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION
-            | super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        super::integral_plan::INTEGRAL_EVIDENCE_SCHEMA_REVISION
+            | super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     ) {
         core.push_u16(plan.i_top_cap);
     }
@@ -525,7 +525,7 @@ fn encode_velocity_integral_plan_marker(
     record.push_u8(0);
     record.push_u32(run_sequence);
     push_u64(&mut record, plan.plan_digest);
-    record.push_u16(plan.final_p);
+    record.push_u16(plan.fixed_p);
     record.push_u32(plan.planned_velocity_mrev_s);
     record.push_i32(plan.target_velocity_rpm);
     record.push_u32(plan.pwm_hz);
@@ -867,7 +867,7 @@ mod tests {
     use crate::commissioning::outer::velocity::velocity_clamp::{
         VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
     };
-    use crate::commissioning::types::StageCCause;
+    use crate::commissioning::types::IntegralOutcomeCause;
     use crate::commissioning::types::VelocityIntegralObservation;
     use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
     use foci_tmc4671::pid::PidPGain;
@@ -932,7 +932,7 @@ mod tests {
             run_sequence: 0x0102_0304,
             evidence_sequence: 0x0506,
             plan_digest: 0x0708_090A_0B0C_0D0E,
-            final_p: 0x1011,
+            fixed_p: 0x1011,
             positive_rung_count: 0x12,
             maximum_workflow_ms: 0x1314_1516,
         };
@@ -947,15 +947,15 @@ mod tests {
 
     #[test]
     fn plan_trace_core_appends_i_top_cap_only_at_schema_seventeen_or_eighteen() {
-        let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
+        let mut positive_i = [0; super::super::integral_plan::INTEGRAL_MAX_POSITIVE_RUNGS];
         for (index, gain) in positive_i.iter_mut().enumerate() {
             *gain = u16::try_from(index + 1).unwrap();
         }
         let mut plan = super::super::integral_plan::VelocityIntegralPlan {
             slot_order: IntegralSlotOrder::ForwardFirst,
             build_features: 3,
-            schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
-            authority: super::super::integral_plan::StageCAuthority {
+            schema_revision: super::super::integral_plan::INTEGRAL_EVIDENCE_SCHEMA_REVISION,
+            authority: super::super::integral_plan::IntegralAcquisitionAuthority {
                 channel: 0,
                 acquisition: breakaway_acquisition_for_test(),
                 directional_memberships: [0x0038_0000, 0x0038_0000],
@@ -973,7 +973,7 @@ mod tests {
                 confidence_q: 0,
                 band_position_q: 0,
             },
-            final_p: 1_448,
+            fixed_p: 1_448,
             planned_velocity_mrev_s: 4_394,
             target_velocity_rpm: 264,
             pwm_hz: 25_000,
@@ -1118,15 +1118,15 @@ mod tests {
 
     #[test]
     fn stage_c_probe_constrained_flags_and_trace_plan_preserve_reconstruction_inputs() {
-        let mut positive_i = [0; super::super::integral_plan::STAGE_C_MAX_POSITIVE_RUNGS];
+        let mut positive_i = [0; super::super::integral_plan::INTEGRAL_MAX_POSITIVE_RUNGS];
         for (index, gain) in positive_i.iter_mut().enumerate() {
             *gain = u16::try_from(index + 1).unwrap();
         }
         let plan = super::super::integral_plan::VelocityIntegralPlan {
             slot_order: IntegralSlotOrder::ForwardFirst,
             build_features: 3,
-            schema_revision: super::super::integral_plan::STAGE_C_EVIDENCE_SCHEMA_REVISION,
-            authority: super::super::integral_plan::StageCAuthority {
+            schema_revision: super::super::integral_plan::INTEGRAL_EVIDENCE_SCHEMA_REVISION,
+            authority: super::super::integral_plan::IntegralAcquisitionAuthority {
                 channel: 0,
                 acquisition: breakaway_acquisition_for_test(),
                 directional_memberships: [0x0038_0000, 0x0038_0000],
@@ -1144,7 +1144,7 @@ mod tests {
                 confidence_q: 0,
                 band_position_q: 0,
             },
-            final_p: 1_448,
+            fixed_p: 1_448,
             planned_velocity_mrev_s: 4_394,
             target_velocity_rpm: 264,
             pwm_hz: 25_000,
@@ -1235,7 +1235,7 @@ mod tests {
             plan_digest: 0x0123_4567_89ab_cdef,
             acceptance_plan_digest: 0,
             qualifier_bits: 0,
-            final_p: 1_448,
+            fixed_p: 1_448,
             planned_velocity_mrev_s: 4_394,
             target_velocity_rpm: 264,
             pwm_hz: 25_000,
@@ -1319,7 +1319,7 @@ mod tests {
             run_sequence: 7,
             evidence_sequence: 1,
             plan_digest: 0x0123_4567_89ab_cdef,
-            final_p: 1_448,
+            fixed_p: 1_448,
             positive_rung_count: 5,
             maximum_workflow_ms: 69_888,
         };
@@ -1450,9 +1450,9 @@ mod tests {
             plan_digest: 0x0123_4567_89ab_cdef,
             digest: 0xfedc_ba98_7654_3210,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: StageCCause::Engine(0),
+            cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -1518,9 +1518,9 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: StageCCause::Engine(0x2A),
+            cause: IntegralOutcomeCause::Engine(0x2A),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -1538,7 +1538,7 @@ mod tests {
             run_completed_us: 0,
             safety_fault: None,
             rest_rejection_after_sufficiency: true,
-            rest_rejection_owner: Some(RestSelectionOwner::StageCRecovery),
+            rest_rejection_owner: Some(RestSelectionOwner::IntegralRecovery),
         };
         terminal.evidence.eligible_masks = [0x0000_0007, 0x0000_0003];
         terminal.evidence.bookend = [
@@ -1594,9 +1594,9 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: StageCCause::Engine(0),
+            cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: true,
             recovered_with_current_headroom: true,
             recovery_quantization_exposed: true,
@@ -1634,9 +1634,9 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: StageCCause::Engine(8),
+            cause: IntegralOutcomeCause::Engine(8),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: true,
             recovery_quantization_exposed: true,
@@ -1680,9 +1680,9 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Inconclusive,
-            cause: StageCCause::Error(53),
+            cause: IntegralOutcomeCause::Error(53),
             breakaway_acceptance: false,
-            final_p: 0,
+            fixed_p: 0,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -1705,10 +1705,10 @@ mod tests {
         assert_eq!(terminal_recovery_flags(&terminal) & 0xf0, 0);
 
         for (owner, code) in [
-            (RestSelectionOwner::StageCAnchor, 0b00),
-            (RestSelectionOwner::StageCPositiveObservation, 0b01),
-            (RestSelectionOwner::StageCRecovery, 0b10),
-            (RestSelectionOwner::StageCCleanup, 0b11),
+            (RestSelectionOwner::IntegralAnchor, 0b00),
+            (RestSelectionOwner::IntegralPositiveObservation, 0b01),
+            (RestSelectionOwner::IntegralRecovery, 0b10),
+            (RestSelectionOwner::IntegralCleanup, 0b11),
         ] {
             terminal.rest_rejection_after_sufficiency = true;
             terminal.rest_rejection_owner = Some(owner);
@@ -1737,9 +1737,9 @@ mod tests {
             plan_digest: 0,
             digest: 0,
             outcome: VelocityIntegralOutcome::Complete,
-            cause: StageCCause::Engine(0),
+            cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: true,
-            final_p: 512,
+            fixed_p: 512,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,

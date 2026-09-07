@@ -4528,7 +4528,7 @@ fn route_discovery_outcome(
 /// Route an accepted held-out confirmation through the ONE authorized Stage-C
 /// chain: [`bind_breakaway_stage_c_authority`] -> `ConfirmedAcquisitionDigest`
 /// token -> [`plan_breakaway_velocity_integral_response`], which builds the
-/// `StageCAuthority` internally from the token.
+/// `IntegralAcquisitionAuthority` internally from the token.
 ///
 /// This is the sole breakaway path from a confirmed acceptance to a Stage-C
 /// plan. It is reachable only from [`BandConfirmationOutcome::Accepted`]; it
@@ -4556,7 +4556,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
             };
         }
     };
-    // The gate builds the `StageCAuthority` itself from the token, so no
+    // The gate builds the `IntegralAcquisitionAuthority` itself from the token, so no
     // pre-built authority is handed across. `channel` and the plan-time
     // PWM/encoder freeze travel in the acquisition context; the gate rejects
     // if the plan-time physical parameters diverge from the live ones passed

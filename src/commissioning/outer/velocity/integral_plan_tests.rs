@@ -8,12 +8,12 @@ use super::breakaway_plan::{
     PROBE_MAX_OBSERVATIONS, UpwardBreakawayProbePlan, plan_additive_discovery_ladder,
     plan_upward_breakaway_probe, resolve_grid_floor,
 };
-use super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
+use super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, BreakawayAuthorityBindingError,
-    ConfirmedAcquisitionDigest, IntegralSlotOrder, STAGE_C_EVIDENCE_SCHEMA_REVISION,
-    STAGE_C_MAX_POSITIVE_RUNGS, STAGE_C_MIN_POSITIVE_I, STAGE_C_OBSERVATIONS_PER_RUNG,
-    StageCAuthority, VelocityIntegralPlan, VelocityIntegralPlanError,
+    ConfirmedAcquisitionDigest, INTEGRAL_EVIDENCE_SCHEMA_REVISION, INTEGRAL_MAX_POSITIVE_RUNGS,
+    INTEGRAL_MIN_POSITIVE_I, INTEGRAL_OBSERVATIONS_PER_RUNG, IntegralAcquisitionAuthority,
+    IntegralSlotOrder, VelocityIntegralPlan, VelocityIntegralPlanError,
     bind_breakaway_stage_c_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
@@ -51,8 +51,8 @@ fn stage_b_request() -> VelocitySweepRequest {
     }
 }
 
-fn authority() -> StageCAuthority {
-    StageCAuthority {
+fn authority() -> IntegralAcquisitionAuthority {
+    IntegralAcquisitionAuthority {
         channel: 0,
         acquisition: breakaway_token_for(breakaway_confirmation_plan(breakaway_gain(512))),
         directional_memberships: [0x0007_0000, 0x0007_0000],
@@ -193,8 +193,8 @@ fn accepted_confirmation_evidence() -> (ConfirmationDirectionalInput, Confirmati
 
 #[test]
 fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 17);
-    assert_eq!(STAGE_C_MIN_POSITIVE_I, 1);
+    assert_eq!(INTEGRAL_EVIDENCE_SCHEMA_REVISION, 17);
+    assert_eq!(INTEGRAL_MIN_POSITIVE_I, 1);
     assert_eq!(velocity_i_tau_us(1, 25_000), Some(41_943_040));
     assert_eq!(velocity_i_tau_us(1_024, 25_000), Some(40_960));
 
@@ -313,8 +313,8 @@ fn q4_12_deployment_bridge_is_evidence_not_native_geometry() {
 
 #[test]
 fn confidence_family_counts_both_anchors() {
-    assert_eq!(STAGE_C_MAX_POSITIVE_RUNGS, 30);
-    assert_eq!(STAGE_C_OBSERVATIONS_PER_RUNG, 8);
+    assert_eq!(INTEGRAL_MAX_POSITIVE_RUNGS, 30);
+    assert_eq!(INTEGRAL_OBSERVATIONS_PER_RUNG, 8);
     assert_eq!(confidence_family_size(12), Ok(56));
     assert_eq!(confidence_family_size(30), Ok(128));
     assert_eq!(
@@ -332,13 +332,13 @@ fn preflight_duration_reserves_the_fixed_cleanup_window() {
 fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     let plan = build_test_breakaway_plan();
 
-    assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
-    assert_eq!(plan.final_p, 512);
+    assert_eq!(plan.schema_revision, BREAKAWAY_INTEGRAL_SCHEMA_REVISION);
+    assert_eq!(plan.fixed_p, 512);
     assert_eq!(
         plan.positive_rungs(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 724, 1_024]
     );
-    // family_size = confidence_family_size(13) = (13 + 2) * STAGE_C_OBSERVATIONS_PER_DIRECTION.
+    // family_size = confidence_family_size(13) = (13 + 2) * INTEGRAL_OBSERVATIONS_PER_DIRECTION.
     assert_eq!(plan.family_size, 60);
     assert_eq!(plan.total_rung_count, 15);
     assert_eq!(plan.expected_observations, 120);
@@ -352,7 +352,7 @@ fn stage_c_plan_freezes_geometry_and_conservative_duration() {
     assert_eq!(plan.nominal_workflow_ms, 177_751);
     assert_eq!(plan.maximum_workflow_ms, 195_496);
     let base_us = u32::from(plan.total_rung_count)
-        * STAGE_C_OBSERVATIONS_PER_RUNG
+        * INTEGRAL_OBSERVATIONS_PER_RUNG
         * (MOVING_STROKE_US + ZERO_SETTLE_US + SETTLE_ANALYSIS_BUDGET_US);
     let recovery_us = u32::from(plan.total_rung_count) * plan.recovery_nominal_slot_us;
     assert_eq!(
@@ -481,7 +481,7 @@ fn model_interval_availability_is_typed_by_directional_validity() {
     assert!(!value.model_interval_available(2));
 }
 
-const SLOT_COUNT: u8 = STAGE_C_OBSERVATIONS_PER_RUNG as u8;
+const SLOT_COUNT: u8 = INTEGRAL_OBSERVATIONS_PER_RUNG as u8;
 
 /// The slot index and the travel direction must round-trip in both directions.
 ///
@@ -793,10 +793,10 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     assert_ne!(discovery_plan.plan_digest, probe_plan.plan_digest);
 
     // The token is the only way to fill a breakaway authority's acquisition:
-    // `StageCAuthority::new_breakaway` takes a `ConfirmedAcquisitionDigest`,
+    // `IntegralAcquisitionAuthority::new_breakaway` takes a `ConfirmedAcquisitionDigest`,
     // not a bare `u64`, so this call could not have compiled with a hand-picked
     // digest, only with the value the gate above actually validated.
-    let authority = StageCAuthority::new_breakaway(
+    let authority = IntegralAcquisitionAuthority::new_breakaway(
         0,
         bound,
         acceptance.held_out_response_intervals_q,
@@ -828,7 +828,7 @@ fn new_breakaway_authority_stores_confirmation_intervals() {
     let token = breakaway_token_for(confirmation_plan);
     let intervals = [[3_i32, 9], [-9, -3]];
 
-    let authority = StageCAuthority::new_breakaway(0, token, intervals, 0, 0);
+    let authority = IntegralAcquisitionAuthority::new_breakaway(0, token, intervals, 0, 0);
 
     assert_eq!(authority.directional_pooled_intervals, intervals);
 }
@@ -838,7 +838,7 @@ fn new_breakaway_authority_stores_confirmation_intervals() {
 // `mod.rs` (`pub mod integral_plan; #[cfg(test)] mod integral_plan_tests;`),
 // not a descendant of `integral_plan`, so it has no access to that private
 // field: neither `ConfirmedAcquisitionDigest(42)` nor
-// `StageCAuthority::new_breakaway(0, ConfirmedAcquisitionDigest(42))` would
+// `IntegralAcquisitionAuthority::new_breakaway(0, ConfirmedAcquisitionDigest(42))` would
 // compile in this file (the compiler's own suggestion when the digest chain
 // test above was still returning a bare `u64` was literally to wrap it in
 // `ConfirmedAcquisitionDigest(..)` here, followed by a note that doing so
@@ -1056,7 +1056,7 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
     assert_eq!(preflight.identity.plan_digest, plan.digest());
     assert_eq!(
         preflight.identity.schema_revision,
-        BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     );
     assert_eq!(preflight.run_sequence, 11);
 }
@@ -1183,8 +1183,8 @@ fn breakaway_stage_c_admits_the_confirmed_p_unchanged() {
     )
     .expect("the exact confirmed P passes every plan-time safety check");
 
-    assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
-    assert_eq!(plan.final_p, nominated_p.raw());
+    assert_eq!(plan.schema_revision, BREAKAWAY_INTEGRAL_SCHEMA_REVISION);
+    assert_eq!(plan.fixed_p, nominated_p.raw());
     assert_eq!(plan.authority.acquisition, token);
     assert_eq!(
         plan.authority.acquisition.get(),
@@ -1451,7 +1451,7 @@ fn breakaway_stage_c_requires_a_token_matching_the_confirmation_plan() {
 
     // Pairing the only obtainable token with the forged plan is refused: no
     // Stage-C plan for gain 384 is ever constructed. The token is the gate's
-    // sole authority input -- there is no `StageCAuthority` parameter through
+    // sole authority input -- there is no `IntegralAcquisitionAuthority` parameter through
     // which a forged authority could enter -- so this is the whole attack
     // surface, and it is closed. (A token genuinely minted for the forged plan
     // would require driving `evaluate_band_confirmation` to accept THAT plan,
@@ -1601,7 +1601,7 @@ fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() 
 #[test]
 fn schema_17_still_hashes_i_top_cap_in_its_digest() {
     let mut plan = build_test_breakaway_plan();
-    plan.schema_revision = STAGE_C_EVIDENCE_SCHEMA_REVISION;
+    plan.schema_revision = INTEGRAL_EVIDENCE_SCHEMA_REVISION;
     assert_eq!(plan.schema_revision, 17);
     let baseline = plan.digest();
     plan.i_top_cap = plan.i_top_cap.wrapping_add(1);
@@ -1611,7 +1611,7 @@ fn schema_17_still_hashes_i_top_cap_in_its_digest() {
 #[test]
 fn schema_16_breakaway_plan_also_hashes_i_top_cap_changes_in_its_digest() {
     let mut plan = build_test_breakaway_plan();
-    assert_eq!(plan.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
+    assert_eq!(plan.schema_revision, BREAKAWAY_INTEGRAL_SCHEMA_REVISION);
     let baseline = plan.digest();
     plan.i_top_cap = plan.i_top_cap.wrapping_add(1);
     assert_ne!(plan.digest(), baseline);

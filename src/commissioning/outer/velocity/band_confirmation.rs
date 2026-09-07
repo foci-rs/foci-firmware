@@ -783,7 +783,7 @@ pub struct BandConfirmationAcceptance {
     /// `pub(crate)`, not private: unlike `nominated_p`, this field carries no
     /// unforgeability requirement of its own (the struct as a whole is still
     /// unforgeable because `nominated_p` stays private), and both
-    /// [`super::integral_plan::StageCAuthority::new_breakaway`]'s test and the
+    /// [`super::integral_plan::IntegralAcquisitionAuthority::new_breakaway`]'s test and the
     /// breakaway campaign need to read it directly from a sibling,
     /// non-descendant module, so a `nominated_p`-style
     /// private-field-plus-accessor pair would only add ceremony here.

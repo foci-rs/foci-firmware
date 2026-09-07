@@ -194,7 +194,7 @@ fn fixed_gain_amplitude_engine() -> CommissioningEngine {
             schema_revision: current.schema_revision,
             plan_digest: current.digest(),
         },
-        selected_p: current.final_p,
+        selected_p: current.fixed_p,
         selected_i: current.positive_rungs()[0],
         target_velocity_rpm: current.target_velocity_rpm,
         selected_response_intervals_q: current.authority.directional_pooled_intervals,

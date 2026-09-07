@@ -1,10 +1,10 @@
 use super::combined_plan::{
-    BREAKAWAY_STAGE_B_SCHEMA_REVISION, BREAKAWAY_STAGE_C_SCHEMA_REVISION, CombinedPlanError,
-    CombinedRateInterval, CombinedTargetStatus, STAGE_B_PLAN_SCHEMA_REVISION,
-    STAGE_C_PLAN_SCHEMA_REVISION, build_combined_integral_ladder, integral_deficit_reaches_target,
+    BREAKAWAY_INTEGRAL_SCHEMA_REVISION, BREAKAWAY_STAGE_B_SCHEMA_REVISION, CombinedPlanError,
+    CombinedRateInterval, CombinedTargetStatus, INTEGRAL_PLAN_SCHEMA_REVISION,
+    STAGE_B_PLAN_SCHEMA_REVISION, build_combined_integral_ladder, integral_deficit_reaches_target,
     integral_response_reaches_target, proportional_response_in_initial_band,
 };
-use super::integral_plan::{STAGE_C_EVIDENCE_SCHEMA_REVISION, build_integral_ladder};
+use super::integral_plan::{INTEGRAL_EVIDENCE_SCHEMA_REVISION, build_integral_ladder};
 use super::sweep_plan::{MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US};
 use crate::commissioning::outer::OUTER_MAX_VELOCITY_I;
 
@@ -107,19 +107,19 @@ fn signed_deficit_target_uses_the_conservative_directional_endpoints() {
 #[test]
 fn combined_geometry_appends_the_exact_cap_without_changing_history() {
     assert_eq!(STAGE_B_PLAN_SCHEMA_REVISION, 14);
-    assert_eq!(STAGE_C_PLAN_SCHEMA_REVISION, 13);
-    assert_eq!(STAGE_C_EVIDENCE_SCHEMA_REVISION, 17);
+    assert_eq!(INTEGRAL_PLAN_SCHEMA_REVISION, 13);
+    assert_eq!(INTEGRAL_EVIDENCE_SCHEMA_REVISION, 17);
     // The breakaway campaign is additive: it must not renumber or otherwise
     // disturb any historical Stage-B or Stage-C schema revision.
     assert_eq!(BREAKAWAY_STAGE_B_SCHEMA_REVISION, 17);
-    assert_eq!(BREAKAWAY_STAGE_C_SCHEMA_REVISION, 18);
+    assert_eq!(BREAKAWAY_INTEGRAL_SCHEMA_REVISION, 18);
     assert_ne!(
         BREAKAWAY_STAGE_B_SCHEMA_REVISION,
         STAGE_B_PLAN_SCHEMA_REVISION
     );
     assert_ne!(
-        BREAKAWAY_STAGE_C_SCHEMA_REVISION,
-        STAGE_C_PLAN_SCHEMA_REVISION
+        BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
+        INTEGRAL_PLAN_SCHEMA_REVISION
     );
 
     let historical = build_integral_ladder(

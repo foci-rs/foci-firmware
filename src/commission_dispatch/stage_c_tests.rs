@@ -18,7 +18,9 @@ use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::{
     RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep,
 };
-use crate::commissioning::types::{StageCCause, VelocityIntegralOutcome, VelocityIntegralTerminal};
+use crate::commissioning::types::{
+    IntegralOutcomeCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
+};
 use foci_firmware_macros::fixture_test;
 
 const CHANNEL: u8 = 0;
@@ -99,7 +101,7 @@ fn breakaway_stage_c_plan()
 
 /// The retained breakaway authority summary, as `apply_stage_c_terminal` holds
 /// it at the reproduced-`Complete` promotion (`acquisition ==
-/// ConfirmedBreakaway`, held-out intervals, campaign `final_p`/target).
+/// ConfirmedBreakaway`, held-out intervals, campaign `fixed_p`/target).
 fn breakaway_authority_summary(
     plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
 ) -> IntegralAuthoritySummary {
@@ -126,9 +128,9 @@ fn breakaway_terminal(
         plan_digest: plan.digest(),
         digest: 0x1234_5678_9abc_def0,
         outcome,
-        cause: StageCCause::Engine(0),
+        cause: IntegralOutcomeCause::Engine(0),
         breakaway_acceptance: true,
-        final_p: authority.final_p,
+        fixed_p: authority.fixed_p,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: plan.recovery_quantization_exposed,
@@ -150,7 +152,7 @@ fn breakaway_terminal(
 
 #[test]
 fn breakaway_reproduced_complete_installs_token_carrying_point() {
-    use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
+    use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
     use crate::commissioning::outer::velocity::integral_i_at;
 
     let plan = breakaway_stage_c_plan();
@@ -174,10 +176,10 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
         };
     assert_eq!(
         installed.identity.schema_revision,
-        BREAKAWAY_STAGE_C_SCHEMA_REVISION
+        BREAKAWAY_INTEGRAL_SCHEMA_REVISION
     );
     assert_eq!(installed.identity.plan_digest, terminal.plan_digest);
-    assert_eq!(installed.selected_p, authority.final_p);
+    assert_eq!(installed.selected_p, authority.fixed_p);
     assert_eq!(
         installed.selected_response_intervals_q,
         authority.directional_pooled_intervals
@@ -277,9 +279,9 @@ fn terminal(
         plan_digest: plan.digest(),
         digest: 0x1234_5678_9abc_def0,
         outcome,
-        cause: StageCCause::Engine(0),
+        cause: IntegralOutcomeCause::Engine(0),
         breakaway_acceptance: false,
-        final_p: 0,
+        fixed_p: 0,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: plan.recovery_quantization_exposed,
@@ -321,11 +323,11 @@ fn a_resume_without_retained_authority_fails_closed_and_carries_no_plan() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
     assert_eq!(
         terminal.cause,
-        StageCCause::Dispatch(STAGE_C_CAUSE_NO_RETAINED_AUTHORITY)
+        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_NO_RETAINED_AUTHORITY)
     );
     assert_ne!(
         terminal.cause,
-        StageCCause::Dispatch(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT)
+        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT)
     );
     assert_eq!(terminal.run_sequence, 4);
     assert_eq!(terminal.plan_digest, 0);
@@ -420,10 +422,10 @@ fn sufficient_runs_advance_candidate_compare_and_complete_lifecycle() {
     );
     second_terminal.rest_boundary_rung_plus_one = 5;
     second_terminal.rest_boundary_slot_plus_one = 2;
-    second_terminal.cause = StageCCause::Engine(10);
+    second_terminal.cause = IntegralOutcomeCause::Engine(10);
     let second = apply_stage_c_terminal(second_terminal, &mut slot);
     assert_eq!(second.terminal.outcome, VelocityIntegralOutcome::Complete);
-    assert_eq!(second.terminal.cause, StageCCause::Engine(10));
+    assert_eq!(second.terminal.cause, IntegralOutcomeCause::Engine(10));
     let reproduction = second.reproduction.unwrap();
     assert_eq!(
         reproduction
@@ -489,7 +491,7 @@ fn reproduced_complete_without_current_terminus_still_installs() {
         super::stage_c::AcceptanceInstall::Installed(point) => point,
         other => panic!("expected install, got {other:?}"),
     };
-    assert_eq!(installed.selected_p, authority.final_p);
+    assert_eq!(installed.selected_p, authority.fixed_p);
 }
 
 #[test]
@@ -518,7 +520,7 @@ fn sufficient_mismatch_replaces_candidate_and_keeps_authority() {
     );
     assert_eq!(
         dispatch.terminal.cause,
-        StageCCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH)
+        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_REPRODUCTION_MISMATCH)
     );
     assert!(dispatch.reproduction.is_some());
     assert_eq!(slot.state(), IntegralRetentionSlotState::Candidate);
@@ -571,7 +573,7 @@ fn unexpected_complete_terminal_fails_closed_in_retained_stage_c_dispatch() {
     assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
         dispatch.terminal.cause,
-        StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY)
+        IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY)
     );
     assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 }
@@ -587,32 +589,32 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
         (
             VelocityIntegralOutcome::Complete,
             VelocityIntegralOutcome::Fault,
-            StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
+            IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
         ),
         (
             VelocityIntegralOutcome::CompleteCandidate,
             VelocityIntegralOutcome::CompleteCandidate,
-            StageCCause::Engine(0),
+            IntegralOutcomeCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::Inconclusive,
             VelocityIntegralOutcome::Inconclusive,
-            StageCCause::Engine(0),
+            IntegralOutcomeCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::Fault,
             VelocityIntegralOutcome::Fault,
-            StageCCause::Engine(0),
+            IntegralOutcomeCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::Failed,
             VelocityIntegralOutcome::Failed,
-            StageCCause::Engine(0),
+            IntegralOutcomeCause::Engine(0),
         ),
         (
             VelocityIntegralOutcome::RejectedPlanMismatch,
             VelocityIntegralOutcome::Fault,
-            StageCCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
+            IntegralOutcomeCause::Dispatch(STAGE_C_CAUSE_EVIDENCE_INTEGRITY),
         ),
     ];
 
@@ -647,7 +649,7 @@ fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
     );
 
     let mut rest_terminal = terminal(VelocityIntegralOutcome::Inconclusive, empty_evidence());
-    rest_terminal.cause = StageCCause::Error(
+    rest_terminal.cause = IntegralOutcomeCause::Error(
         crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code(),
     );
     let dispatch = apply_stage_c_terminal(rest_terminal, &mut slot);
@@ -658,7 +660,7 @@ fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
     );
     assert_eq!(
         dispatch.terminal.cause,
-        StageCCause::Error(
+        IntegralOutcomeCause::Error(
             crate::autotune::CommissionError::VelocityRestNotConfirmed.status_code()
         )
     );

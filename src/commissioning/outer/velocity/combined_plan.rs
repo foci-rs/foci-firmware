@@ -4,7 +4,7 @@ use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
 use foci_tmc4671::pid::PidPGain;
 
 use super::integral_plan::{
-    INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralLadder,
+    INTEGRAL_OBSERVATIONS_PER_RUNG, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralLadder,
     VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
 };
 use super::operating_region::CompactSignedRate;
@@ -17,7 +17,7 @@ pub const STAGE_B_PLAN_SCHEMA_REVISION: u16 = 14;
 /// First Stage-B schema with cap-safe target quantization.
 pub const FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION: u16 = 10;
 /// Live Stage-C schema for the shared Stage-C continuation planner.
-pub const STAGE_C_PLAN_SCHEMA_REVISION: u16 = 13;
+pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
 /// Live Stage-B schema for the breakaway-seeded campaign.
 ///
 /// The breakaway probe, additive discovery, and held-out confirmation plans
@@ -33,7 +33,7 @@ pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
 /// Stage-B sweep digest -- see
 /// [`super::integral_plan::bind_breakaway_stage_c_authority`]. Historical
-/// schemas up to and including [`STAGE_C_PLAN_SCHEMA_REVISION`] keep
+/// schemas up to and including [`INTEGRAL_PLAN_SCHEMA_REVISION`] keep
 /// their exact digest and behavior; this schema is additive.
 ///
 /// 16 -> 18 (17 belongs to the half-octave standalone range): rung-origin
@@ -42,7 +42,7 @@ pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
 /// captures emitted one only for fixed-gain-amplitude runs. That is an evidence
 /// grammar change, not a measurement rule change, so offline decoding has to
 /// be able to tell the two apart rather than widen the existing range.
-pub const BREAKAWAY_STAGE_C_SCHEMA_REVISION: u16 = 18;
+pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 18;
 
 const P_RESPONSE_LOW_PERCENT: i128 = 70;
 const P_RESPONSE_HIGH_PERCENT: i128 = 80;
@@ -218,7 +218,7 @@ pub fn stage_c_continuation_geometry(
         .checked_add(2)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let i_observations = u16::from(total_i_rungs)
-        .checked_mul(STAGE_C_OBSERVATIONS_PER_RUNG as u16)
+        .checked_mul(INTEGRAL_OBSERVATIONS_PER_RUNG as u16)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let i_family_size = confidence_family_size(ladder.rungs.len())?;
     let primitive_us = u64::from(stage_b.moving_stroke_us)

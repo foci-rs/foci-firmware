@@ -10,7 +10,7 @@ use crate::commissioning::outer::velocity::band_confirmation::{
     BandConfirmationPlan, ConfirmationDirectionalInput, DiscoveryObservationAtom,
     evaluate_band_confirmation, plan_band_confirmation,
 };
-use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
+use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION;
 use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder;
 use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
@@ -207,7 +207,7 @@ fn breakaway_point(
             schema_revision: plan.schema_revision,
             plan_digest: plan.digest(),
         },
-        selected_p: plan.final_p,
+        selected_p: plan.fixed_p,
         selected_i: plan.positive_rungs()[0],
         target_velocity_rpm: plan.target_velocity_rpm,
         selected_response_intervals_q: plan.authority.directional_pooled_intervals,
@@ -239,8 +239,8 @@ fn breakaway_reconstructs_and_verifies_from_token() {
     .expect("a genuine breakaway point reconstructs");
 
     assert_eq!(rebuilt.digest(), point.identity.plan_digest);
-    assert_eq!(rebuilt.schema_revision, BREAKAWAY_STAGE_C_SCHEMA_REVISION);
-    assert_eq!(rebuilt.final_p, point.selected_p);
+    assert_eq!(rebuilt.schema_revision, BREAKAWAY_INTEGRAL_SCHEMA_REVISION);
+    assert_eq!(rebuilt.fixed_p, point.selected_p);
     assert_eq!(rebuilt.target_velocity_rpm, point.target_velocity_rpm);
 }
 

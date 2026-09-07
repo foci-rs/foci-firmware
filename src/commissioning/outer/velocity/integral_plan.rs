@@ -18,15 +18,15 @@ use super::sweep_plan::{
 use super::velocity_clamp::VelocityLimitEvidenceCapability;
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
-pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 17;
+pub const INTEGRAL_EVIDENCE_SCHEMA_REVISION: u16 = 17;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
-pub const STAGE_C_MAX_POSITIVE_RUNGS: usize = 30;
+pub const INTEGRAL_MAX_POSITIVE_RUNGS: usize = 30;
 /// Minimum representable positive Q4.12 velocity-I gain.
-pub const STAGE_C_MIN_POSITIVE_I: u16 = 1;
+pub const INTEGRAL_MIN_POSITIVE_I: u16 = 1;
 /// Independent observations collected in one direction at every Stage-C rung.
-pub const STAGE_C_OBSERVATIONS_PER_DIRECTION: u16 = 4;
+pub const INTEGRAL_OBSERVATIONS_PER_DIRECTION: u16 = 4;
 /// Forward and reverse observations collected at every Stage-C rung.
-pub const STAGE_C_OBSERVATIONS_PER_RUNG: u32 = 8;
+pub const INTEGRAL_OBSERVATIONS_PER_RUNG: u32 = 8;
 /// Maximum combined entry-plus-exit SPI time reserved for one moving slot.
 pub const INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US: u32 = 20_000;
 
@@ -35,7 +35,7 @@ const CONFIDENCE_FAMILY_MAX: u16 = 128;
 
 /// Reproduced Stage-B evidence that authorizes one fixed-P Stage-C plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct StageCAuthority {
+pub struct IntegralAcquisitionAuthority {
     /// Physical firmware channel.
     pub channel: u8,
     /// The unforgeable token of the accepted breakaway confirmation that
@@ -64,7 +64,7 @@ pub struct StageCAuthority {
     pub band_position_q: u16,
 }
 
-impl StageCAuthority {
+impl IntegralAcquisitionAuthority {
     /// Whether one direction carries a reproduced cross-P model interval.
     pub const fn model_interval_available(&self, direction: usize) -> bool {
         if direction >= self.directional_validity.len() {
@@ -124,7 +124,7 @@ pub struct VelocityIntegralLadder {
     /// Largest I whose time constant spans half the shortest suffix.
     pub i_top_cap: u16,
     /// Fixed low-I prefix followed by whole-octave rungs no greater than `i_top_cap`.
-    pub rungs: Vec<u16, STAGE_C_MAX_POSITIVE_RUNGS>,
+    pub rungs: Vec<u16, INTEGRAL_MAX_POSITIVE_RUNGS>,
 }
 
 /// Complete immutable Stage-C plan emitted before its first stroke.
@@ -135,9 +135,9 @@ pub struct VelocityIntegralPlan {
     /// Stage-C evidence schema.
     pub schema_revision: u16,
     /// Reproduced Stage-B authority.
-    pub authority: StageCAuthority,
+    pub authority: IntegralAcquisitionAuthority,
     /// Fixed proportional gain.
-    pub final_p: u16,
+    pub fixed_p: u16,
     /// Frozen encoder-domain amplitude.
     pub planned_velocity_mrev_s: u32,
     /// Frozen signed-target magnitude in mechanical RPM register units.
@@ -147,7 +147,7 @@ pub struct VelocityIntegralPlan {
     /// Mechanical encoder quadrature counts per revolution used by rate inversion.
     pub encoder_counts_per_rev: u32,
     /// Whole-octave positive-I rungs; unused entries are zero.
-    pub positive_i: [u16; STAGE_C_MAX_POSITIVE_RUNGS],
+    pub positive_i: [u16; INTEGRAL_MAX_POSITIVE_RUNGS],
     /// Number of valid positive-I entries.
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
@@ -214,7 +214,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.schema_revision);
         hash_value!(self.authority.channel);
         hash_value!(self.authority.acquisition.get());
-        hash_value!(self.final_p);
+        hash_value!(self.fixed_p);
         for membership in self.authority.directional_memberships {
             hash_value!(membership);
         }
@@ -283,8 +283,8 @@ impl VelocityIntegralPlan {
         }
         if matches!(
             self.schema_revision,
-            STAGE_C_EVIDENCE_SCHEMA_REVISION
-                | super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
+            INTEGRAL_EVIDENCE_SCHEMA_REVISION
+                | super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION
         ) {
             hash_value!(self.i_top_cap);
         }
@@ -299,7 +299,7 @@ impl VelocityIntegralPlan {
             plan_digest: self.digest(),
             acceptance_plan_digest: 0,
             qualifier_bits: 0,
-            final_p: self.final_p,
+            fixed_p: self.fixed_p,
             planned_velocity_mrev_s: self.planned_velocity_mrev_s,
             target_velocity_rpm: self.target_velocity_rpm,
             pwm_hz: self.pwm_hz,
@@ -460,7 +460,7 @@ pub struct VelocityIntegralExecutionPlan {
     /// fields below, which reflect the *current* run instead.
     pub qualifier_bits: u16,
     /// Fixed proportional gain.
-    pub final_p: u16,
+    pub fixed_p: u16,
     /// Frozen encoder-domain amplitude.
     pub planned_velocity_mrev_s: u32,
     /// Frozen signed-target magnitude.
@@ -548,9 +548,9 @@ impl VelocityIntegralExecutionPlan {
 
 /// Exact identity retained when Stage C has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct StageCFailedAdmission {
+pub struct IntegralFailedAdmission {
     /// Digest of the rejected authority and controller geometry, tagged with
-    /// [`STAGE_C_EVIDENCE_SCHEMA_REVISION`].
+    /// [`INTEGRAL_EVIDENCE_SCHEMA_REVISION`].
     pub plan_digest: u64,
     /// The commissioning probe clamp removed every Stage-B-operable rung.
     pub probe_constrained_test_point: bool,
@@ -570,7 +570,7 @@ pub enum VelocityIntegralPlanError {
     /// Checked planner arithmetic exceeded its representation.
     Arithmetic,
     /// The reproduced Stage-B component contains no transition-capable Stage-C rung.
-    NoTransitionCapableOperatingPoint(StageCFailedAdmission),
+    NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
     /// A breakaway confirmation plan's recomputed digest, or its fixed family
     /// size, capture profile, or acceptance rule, did not match what
     /// [`plan_breakaway_velocity_integral_response`] requires before it may
@@ -592,7 +592,7 @@ pub enum VelocityIntegralPlanError {
 /// Rejected attempt to bind Stage-C authority to a breakaway confirmation.
 ///
 /// Returned only by [`bind_breakaway_stage_c_authority`], the single gate
-/// that may produce the digest a breakaway-schema [`StageCAuthority::
+/// that may produce the digest a breakaway-schema [`IntegralAcquisitionAuthority::
 /// stage_b_plan_digest`] carries. Every rejection is fail-closed: no digest,
 /// discovery or otherwise, ever authorizes Stage C unless it is exactly the
 /// digest of a [`BandConfirmationPlan`] whose held-out block accepted.
@@ -623,9 +623,9 @@ pub enum BreakawayAuthorityBindingError {
 /// code inside `integral_plan.rs` can. This makes "Stage C authorized by
 /// anything other than an accepted confirmation" a compile-time
 /// impossibility for every breakaway authority built through
-/// [`StageCAuthority::new_breakaway`], not merely an untested code path.
+/// [`IntegralAcquisitionAuthority::new_breakaway`], not merely an untested code path.
 ///
-/// The type is `pub` only so [`StageCAuthority::acquisition`] can name it.
+/// The type is `pub` only so [`IntegralAcquisitionAuthority::acquisition`] can name it.
 /// Its field is private and no public constructor exists, so the
 /// unforgeability above holds outside the crate as well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -633,7 +633,7 @@ pub struct ConfirmedAcquisitionDigest(u64);
 
 impl ConfirmedAcquisitionDigest {
     /// The validated digest, exactly as carried by
-    /// [`StageCAuthority::acquisition`].
+    /// [`IntegralAcquisitionAuthority::acquisition`].
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -783,7 +783,7 @@ pub fn build_integral_ladder(
     if pwm_hz == 0 || moving_stroke_us == 0 || shortest_suffix_us < 2 || maximum_i == 0 {
         return Err(VelocityIntegralPlanError::InvalidRequest);
     }
-    let i_start = STAGE_C_MIN_POSITIVE_I;
+    let i_start = INTEGRAL_MIN_POSITIVE_I;
     if maximum_i < i_start {
         return Err(VelocityIntegralPlanError::InsufficientStructuralSpan);
     }
@@ -821,9 +821,9 @@ pub fn confidence_family_size(positive_rungs: usize) -> Result<u16, VelocityInte
         .checked_add(2)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let family = rungs
-        .checked_mul(usize::from(STAGE_C_OBSERVATIONS_PER_DIRECTION))
+        .checked_mul(usize::from(INTEGRAL_OBSERVATIONS_PER_DIRECTION))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-    if positive_rungs > STAGE_C_MAX_POSITIVE_RUNGS || family > usize::from(CONFIDENCE_FAMILY_MAX) {
+    if positive_rungs > INTEGRAL_MAX_POSITIVE_RUNGS || family > usize::from(CONFIDENCE_FAMILY_MAX) {
         return Err(VelocityIntegralPlanError::ConfidenceFamilyTooLarge);
     }
     u16::try_from(family).map_err(|_| VelocityIntegralPlanError::Arithmetic)
@@ -975,7 +975,7 @@ pub fn integral_workflow_maximum_ms(
         .checked_add(2)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let observations = total_rungs
-        .checked_mul(STAGE_C_OBSERVATIONS_PER_RUNG as usize)
+        .checked_mul(INTEGRAL_OBSERVATIONS_PER_RUNG as usize)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let primitive_us = MOVING_STROKE_US
         .checked_add(ZERO_SETTLE_US)
@@ -1024,7 +1024,7 @@ pub fn breakaway_probe_slots_us() -> Result<u64, VelocityIntegralPlanError> {
 /// fits inside the pre-motion envelope.
 pub fn breakaway_discovery_slots_us(rung_count: u8) -> Result<u64, VelocityIntegralPlanError> {
     u64::from(rung_count)
-        .checked_mul(u64::from(STAGE_C_OBSERVATIONS_PER_RUNG))
+        .checked_mul(u64::from(INTEGRAL_OBSERVATIONS_PER_RUNG))
         .and_then(|slots| slots.checked_mul(u64::from(BREAKAWAY_DISCOVERY_PRIMITIVE_US)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)
 }
@@ -1094,9 +1094,9 @@ pub fn breakaway_workflow_envelope_ms(
 /// accepted, bound to its digest.
 ///
 /// The breakaway campaign has no Stage-B sweep plan, so a breakaway-schema
-/// [`StageCAuthority::stage_b_plan_digest`] instead carries the accepted
+/// [`IntegralAcquisitionAuthority::stage_b_plan_digest`] instead carries the accepted
 /// [`BandConfirmationPlan`]'s digest, obtained only through this function and
-/// only via [`StageCAuthority::new_breakaway`]. The returned
+/// only via [`IntegralAcquisitionAuthority::new_breakaway`]. The returned
 /// [`ConfirmedAcquisitionDigest`] cannot be constructed any other way: this
 /// is the single gate, and it is fail-closed in both directions the safety
 /// invariant forbids:
@@ -1156,7 +1156,7 @@ pub(crate) struct AcquisitionContext {
     /// Physical firmware channel the breakaway Stage-C authority is minted for.
     ///
     /// Consumed only by [`plan_breakaway_velocity_integral_response`], which
-    /// builds its [`StageCAuthority`] internally from the confirmation token so
+    /// builds its [`IntegralAcquisitionAuthority`] internally from the confirmation token so
     /// no forged authority can be passed in. [`From`] leaves this zero; the
     /// fixed-gain-amplitude preflight overwrites it with the real channel
     /// immediately after constructing from it.
@@ -1217,13 +1217,13 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// genuine `Ok(`[`BandConfirmationAcceptance`]`)` -- itself unforgeable (its
 /// `nominated_p` field is private) -- so this gate cannot be reached for an
 /// arbitrary gain without a real all-eight held-out pass. The gate builds the
-/// [`StageCAuthority`] INTERNALLY via [`StageCAuthority::new_breakaway`]; it
-/// never accepts a pre-built `StageCAuthority`, closing the bypass where a
+/// [`IntegralAcquisitionAuthority`] INTERNALLY via [`IntegralAcquisitionAuthority::new_breakaway`]; it
+/// never accepts a pre-built `IntegralAcquisitionAuthority`, closing the bypass where a
 /// caller forged one by struct literal (its fields are `pub`) and paired it
 /// with a self-consistent but fabricated `BandConfirmationPlan`.
 /// `held_out_response_intervals_q` is not an authority input -- it gates
 /// nothing here and carries only the same accepted block's pooled response
-/// interval through to `StageCAuthority::directional_pooled_intervals`, for
+/// interval through to `IntegralAcquisitionAuthority::directional_pooled_intervals`, for
 /// the acceptance-point recovery authority downstream planning reads from the
 /// resulting plan.
 ///
@@ -1247,7 +1247,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// physical-context match; authority built from the token;
 /// [`transition_capable_stage_c_gain`] for the exact confirmed gain; then the
 /// shared tail's own recovery-geometry and duration admission. Emits schema
-/// [`super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION`], using the
+/// [`super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION`], using the
 /// existing non-combined integral ladder unchanged.
 ///
 /// `confidence_q`/`band_position_q` are carried-through diagnostics only:
@@ -1285,9 +1285,9 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
         return Err(VelocityIntegralPlanError::PhysicalContextMismatch);
     }
     // Build the authority INTERNALLY from the token. The gate never accepts a
-    // pre-built `StageCAuthority`, so a caller cannot forge one (its fields are
+    // pre-built `IntegralAcquisitionAuthority`, so a caller cannot forge one (its fields are
     // `pub`) and pass it in to bypass confirmation.
-    let authority = StageCAuthority::new_breakaway(
+    let authority = IntegralAcquisitionAuthority::new_breakaway(
         context.channel,
         token,
         held_out_response_intervals_q,
@@ -1312,8 +1312,8 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     plan_velocity_integral_response_from_source(
         IntegralPlanSource {
             authority,
-            final_p: fixed_p,
-            schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+            fixed_p,
+            schema_revision: super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
             probe_constrained_test_point: false,
         },
         context,
@@ -1344,7 +1344,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 /// uses, which has no meaning here.
 ///
 /// `held_out_response_intervals_q` must be the exact value
-/// [`StageCAuthority::directional_pooled_intervals`] carried on the plan being
+/// [`IntegralAcquisitionAuthority::directional_pooled_intervals`] carried on the plan being
 /// resumed -- callers read it back from the retained
 /// [`super::integral_reproduction::IntegralAuthoritySummary`], which
 /// `IntegralAuthoritySummary::from_plan` captured from the original accepted
@@ -1361,7 +1361,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
-    final_p: u16,
+    fixed_p: u16,
     context: AcquisitionContext,
     held_out_response_intervals_q: [[i32; 2]; 2],
     confidence_q: u16,
@@ -1375,7 +1375,7 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     {
         return Err(VelocityIntegralPlanError::PhysicalContextMismatch);
     }
-    let authority = StageCAuthority::new_breakaway(
+    let authority = IntegralAcquisitionAuthority::new_breakaway(
         context.channel,
         token,
         held_out_response_intervals_q,
@@ -1383,7 +1383,7 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
         band_position_q,
     );
     if !transition_capable_stage_c_gain(
-        final_p,
+        fixed_p,
         context.target_velocity_rpm,
         encoder_counts_per_rev,
         pwm_hz,
@@ -1395,8 +1395,8 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     plan_velocity_integral_response_from_source(
         IntegralPlanSource {
             authority,
-            final_p,
-            schema_revision: super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
+            fixed_p,
+            schema_revision: super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
             probe_constrained_test_point: false,
         },
         context,
@@ -1408,8 +1408,8 @@ pub(crate) fn plan_retained_breakaway_velocity_integral_response(
 
 #[derive(Debug, Clone, Copy)]
 struct IntegralPlanSource {
-    authority: StageCAuthority,
-    final_p: u16,
+    authority: IntegralAcquisitionAuthority,
+    fixed_p: u16,
     schema_revision: u16,
     probe_constrained_test_point: bool,
 }
@@ -1468,7 +1468,7 @@ fn plan_velocity_integral_response_from_source(
         .checked_add(2)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let expected_observations = u16::from(total_rung_count)
-        .checked_mul(STAGE_C_OBSERVATIONS_PER_RUNG as u16)
+        .checked_mul(INTEGRAL_OBSERVATIONS_PER_RUNG as u16)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let recovery = plan_rung_origin_recovery(
         motion_budget,
@@ -1508,10 +1508,10 @@ fn plan_velocity_integral_response_from_source(
         .and_then(|value| value.checked_add(ZERO_SETTLE_US))
         .and_then(|value| value.checked_add(SETTLE_ANALYSIS_BUDGET_US))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-    let mut positive_i = [0; STAGE_C_MAX_POSITIVE_RUNGS];
+    let mut positive_i = [0; INTEGRAL_MAX_POSITIVE_RUNGS];
     positive_i[..ladder.rungs.len()].copy_from_slice(ladder.rungs.as_slice());
     let recovery_quantization_exposed = recovery_quantization_exposed(
-        source.final_p,
+        source.fixed_p,
         context.target_velocity_rpm,
         encoder_counts_per_rev,
         pwm_hz,
@@ -1523,7 +1523,7 @@ fn plan_velocity_integral_response_from_source(
         build_features: BUILD_FEATURES,
         schema_revision: source.schema_revision,
         authority: source.authority,
-        final_p: source.final_p,
+        fixed_p: source.fixed_p,
         planned_velocity_mrev_s: context.planned_velocity_mrev_s,
         target_velocity_rpm: context.target_velocity_rpm,
         pwm_hz,
