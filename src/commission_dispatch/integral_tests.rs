@@ -51,14 +51,14 @@ fn request() -> VelocitySweepRequest {
     }
 }
 
-fn stage_b_plan() -> crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan {
+fn proportional_plan() -> crate::commissioning::outer::velocity::sweep_plan::VelocitySweepPlan {
     plan_velocity_sweep(
         request(),
         COUNTS_PER_REV,
         TORQUE_LIMIT,
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
-    .expect("valid Stage-B plan")
+    .expect("valid Proportional plan")
 }
 
 fn breakaway_integral_plan()
@@ -70,8 +70,8 @@ fn breakaway_integral_plan()
 
     let confirmation = breakaway_confirmation_for_test();
 
-    let stage_b = stage_b_plan();
-    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    let proportional = proportional_plan();
+    let mut context = AcquisitionContext::from(proportional.execution_plan(proportional.digest()));
     context.plan_time_pwm_hz = PWM_HZ;
     context.plan_time_encoder_counts_per_rev = COUNTS_PER_REV;
 
@@ -643,7 +643,7 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
 }
 
 #[test]
-fn inconclusive_rest_discards_candidate_but_retains_stage_b_authority() {
+fn inconclusive_rest_discards_candidate_but_retains_proportional_authority() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_authority(retained_authority());
     apply_integral_terminal(

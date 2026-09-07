@@ -272,9 +272,9 @@ mod tests {
     fn rest_selection_codes_and_stage_encoders_are_shared() {
         assert_eq!(
             [
-                RestSelectionOwner::StageBObservation as u8,
-                RestSelectionOwner::StageBRecovery as u8,
-                RestSelectionOwner::StageBSelectedRecovery as u8,
+                RestSelectionOwner::ProportionalObservation as u8,
+                RestSelectionOwner::ProportionalRecovery as u8,
+                RestSelectionOwner::ProportionalSelectedRecovery as u8,
                 RestSelectionOwner::IntegralAnchor as u8,
                 RestSelectionOwner::IntegralPositiveObservation as u8,
                 RestSelectionOwner::IntegralRecovery as u8,

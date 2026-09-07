@@ -109,17 +109,17 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
     use crate::commissioning::outer::velocity::integral_plan::{
         AcquisitionContext, plan_retained_breakaway_velocity_integral_response,
     };
-    use crate::commissioning::outer::velocity::sweep_plan::plan_stage_b_velocity_sweep;
+    use crate::commissioning::outer::velocity::sweep_plan::plan_proportional_velocity_sweep;
 
     let request = plan_request();
-    let stage_b = plan_stage_b_velocity_sweep(
+    let proportional = plan_proportional_velocity_sweep(
         request,
         COUNTS_PER_REV,
         TORQUE_LIMIT,
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
-    .expect("a valid Stage-B sweep");
-    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    .expect("a valid Proportional sweep");
+    let mut context = AcquisitionContext::from(proportional.execution_plan(proportional.digest()));
     context.channel = 0;
     context.plan_time_pwm_hz = PWM_HZ;
     context.plan_time_encoder_counts_per_rev = COUNTS_PER_REV;

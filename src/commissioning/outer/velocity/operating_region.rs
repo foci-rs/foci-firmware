@@ -705,9 +705,9 @@ pub struct SelectedDirectionalRegion {
     pub settled_rate_difference_q: i64,
 }
 
-/// Complete Stage B evidence handoff without applying a gain-acceptance policy.
+/// Complete Proportional evidence handoff without applying a gain-acceptance policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct StageBHandoff {
+pub struct ProportionalHandoff {
     /// Firmware-owned provisional P nomination.
     pub nomination: ProvisionalPNomination,
     /// Forward then reverse selected directional model evidence.
@@ -867,7 +867,7 @@ impl HandoffTrackers {
         nomination: ProvisionalPNomination,
         gains: &[PidPGain],
         nominated_rates_q: [i64; 2],
-    ) -> Option<StageBHandoff> {
+    ) -> Option<ProportionalHandoff> {
         if self.model_direction_mask() != 3 {
             return None;
         }
@@ -885,7 +885,7 @@ impl HandoffTrackers {
         )?;
         let coverage_mask = u8::from(forward.coverage == CoverageKind::FullCoverage)
             | (u8::from(reverse.coverage == CoverageKind::FullCoverage) << 1);
-        Some(StageBHandoff {
+        Some(ProportionalHandoff {
             nomination,
             directional: [forward, reverse],
             coverage_mask,
@@ -913,7 +913,7 @@ pub struct OperatingRegionRuntime {
 }
 
 impl OperatingRegionRuntime {
-    /// Construct empty Stage B operating-region state.
+    /// Construct empty Proportional operating-region state.
     pub const fn new() -> Self {
         Self {
             directional: [

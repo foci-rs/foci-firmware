@@ -126,7 +126,7 @@ pub struct IntegralTerminalDispatch {
     pub terminal: VelocityIntegralTerminal,
     /// Comparison evidence present only for a second sufficient run.
     pub reproduction: Option<IntegralReproductionReport>,
-    /// Retained Stage-B authority used for anchor comparison and context.
+    /// Retained Proportional authority used for anchor comparison and context.
     pub authority: Option<IntegralAuthoritySummary>,
 }
 
@@ -314,7 +314,7 @@ fn preflight_retained_breakaway(
 
 /// Reconstruct and identity-check retained Stage-C authority before any SPI work.
 ///
-/// `Ok(None)` means no Stage-C authority exists and admission must proceed to Stage B.
+/// `Ok(None)` means no Stage-C authority exists and admission must proceed to Proportional.
 pub fn preflight_integral_request(
     request: VelocitySweepRequest,
     config: &IntegralPreflightConfig,

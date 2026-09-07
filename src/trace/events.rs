@@ -64,7 +64,7 @@ pub const EVENT_COMMISSION_VELOCITY_SWEEP_PLAN: u16 = 124;
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION: u16 = 125;
 /// Disturbance-based velocity-sweep rung verdict.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_RUNG: u16 = 126;
-/// Derived Stage B structured-boundary, region, and handoff evidence.
+/// Derived Proportional structured-boundary, region, and handoff evidence.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED: u16 = 127;
 /// Disturbance-based velocity-sweep detailed terminal.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL: u16 = 128;
@@ -113,7 +113,7 @@ pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION: u16 = 147;
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_AMPLITUDE: u16 = 148;
 /// Fixed-I velocity fixed-gain-amplitude terminal.
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_TERMINAL: u16 = 149;
-/// Selected Stage-B recovery lead-in and scored-rest evidence.
+/// Selected Proportional recovery lead-in and scored-rest evidence.
 pub const EVENT_COMMISSION_SELECTED_RECOVERY_REST: u16 = 150;
 /// Exact scored-rest suffix selection diagnostic.
 pub const EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC: u16 = 151;

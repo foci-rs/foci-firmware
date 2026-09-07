@@ -133,7 +133,7 @@ use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US,
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, SETTLE_ANALYSIS_BUDGET_US,
     VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
-    plan_stage_b_velocity_sweep,
+    plan_proportional_velocity_sweep,
 };
 use super::velocity_clamp::{
     VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
@@ -3858,7 +3858,7 @@ impl BreakawayCampaign {
 /// from the same host sweep request the combined workflow admits.
 ///
 /// This is pure command admission: it commands no motion and touches no backend.
-/// It reuses [`plan_stage_b_velocity_sweep`] to derive the shared target
+/// It reuses [`plan_proportional_velocity_sweep`] to derive the shared target
 /// velocity, planned amplitude, and per-slot recovery reservations, and
 /// [`integral_continuation_geometry`] for the worst-case Stage-C continuation, then
 /// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
@@ -3876,7 +3876,7 @@ pub(crate) fn plan_breakaway_campaign_command(
     channel: u8,
     run_sequence: u32,
 ) -> Result<(BreakawayCampaign, CommissioningWorkflowPlan), CommissionError> {
-    let plan = plan_stage_b_velocity_sweep(
+    let plan = plan_proportional_velocity_sweep(
         request,
         encoder_counts_per_rev,
         hard_torque_limit,

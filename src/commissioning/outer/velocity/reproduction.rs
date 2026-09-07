@@ -1,5 +1,5 @@
-/// Stage B evidence schema revision stamped on every emitted plan.
-pub const STAGE_B_EVIDENCE_SCHEMA_REVISION: u16 = 8;
+/// Proportional evidence schema revision stamped on every emitted plan.
+pub const PROPORTIONAL_EVIDENCE_SCHEMA_REVISION: u16 = 8;
 
 // Injected by build.rs: `BUILD_IDENTITY`, the first four bytes of the
 // foci-firmware HEAD commit (or 0 when unresolved). Pure image provenance; it is
@@ -30,7 +30,7 @@ pub const BUILD_FEATURES: u16 = BUILD_FEATURE_Q4_12_GAINS
 /// Cross-run validity of one selected directional model or fragment.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum StageBDirectionalValidity {
+pub enum ProportionalDirectionalValidity {
     /// Either run has no selected directional evidence.
     NoRegion = 0,
     /// At least one run retains only a one- or two-rung fragment.

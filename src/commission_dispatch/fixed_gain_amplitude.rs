@@ -17,7 +17,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
     AcceptanceMatrixProgress, AcceptancePoint, IntegralRetentionSlot,
 };
 use crate::commissioning::outer::velocity::sweep_plan::{
-    VelocitySweepRequest, plan_stage_b_velocity_sweep,
+    VelocitySweepRequest, plan_proportional_velocity_sweep,
 };
 use crate::commissioning::outer::velocity::velocity_clamp::derive_probe_limit;
 use crate::commissioning::types::{
@@ -98,29 +98,29 @@ pub fn reconstruct_breakaway_plan(
     let token = point
         .token
         .ok_or(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch)?;
-    // Breakaway has no Stage-B phase of its own; the campaign that produced
+    // Breakaway has no Proportional phase of its own; the campaign that produced
     // this point derived its planned velocity, target RPM, hard torque limit,
     // and limit-evidence capability from exactly this same
-    // `plan_stage_b_velocity_sweep` reconstruction
+    // `plan_proportional_velocity_sweep` reconstruction
     // (`breakaway_campaign::plan_breakaway_campaign_command`), so this
     // reproduces those fields identically. The plan-time physical context
     // guard inside the breakaway builder compares against the live
     // `pwm_hz`/`encoder_counts_per_rev` passed below; there is no separately
     // retained plan-time value here, so any live drift is instead caught by
     // the digest check at the end of this function.
-    let stage_b = plan_stage_b_velocity_sweep(
+    let proportional = plan_proportional_velocity_sweep(
         request,
         encoder_counts_per_rev,
         torque_limit,
         limit_evidence_capability,
     )
     .map_err(|_| FixedGainAmplitudePreflightRejection::InvalidPlan)?;
-    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    let mut context = AcquisitionContext::from(proportional.execution_plan(proportional.digest()));
     context.channel = point.identity.channel;
     context.plan_time_pwm_hz = pwm_hz;
     context.plan_time_encoder_counts_per_rev = encoder_counts_per_rev;
-    // `usable_torque_limit` is the one field the generic Stage-B sweep gets
-    // wrong for this path: `plan_stage_b_velocity_sweep` plans with
+    // `usable_torque_limit` is the one field the generic Proportional sweep gets
+    // wrong for this path: `plan_proportional_velocity_sweep` plans with
     // `use_operational_limit = true` and so stamps the UNSCALED hard limit.
     // The campaign never uses that value for its gain span -- it derives
     // `usable_torque_limit` from `current_gain_span`, which applies the
@@ -129,7 +129,7 @@ pub fn reconstruct_breakaway_plan(
     // That headroom depends only on `hard_torque_limit`, not on the target
     // velocity or any live measurement, so it reproduces exactly here.
     // `VelocityIntegralPlan::digest()` hashes `usable_torque_limit`, so
-    // leaving the Stage-B sweep's stamped value in place would make a
+    // leaving the Proportional sweep's stamped value in place would make a
     // genuine breakaway point's digest never match.
     let operational_limit = PidTorqueFluxLimit::new(u32::from(torque_limit))
         .map_err(|_| FixedGainAmplitudePreflightRejection::InvalidPlan)?;
@@ -353,14 +353,14 @@ pub(crate) fn test_acceptance_point(
     const TORQUE_LIMIT: u16 = 2_816;
     const PWM_HZ: u32 = 25_000;
 
-    let stage_b = plan_stage_b_velocity_sweep(
+    let proportional = plan_proportional_velocity_sweep(
         request,
         ENCODER_COUNTS_PER_REV,
         TORQUE_LIMIT,
         crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
-    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    let mut context = AcquisitionContext::from(proportional.execution_plan(proportional.digest()));
     context.channel = 0;
     context.plan_time_pwm_hz = PWM_HZ;
     context.plan_time_encoder_counts_per_rev = ENCODER_COUNTS_PER_REV;

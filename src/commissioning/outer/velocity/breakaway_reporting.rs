@@ -28,7 +28,7 @@ use crate::commissioning::types::{
 #[cfg(any(test, feature = "trace"))]
 use crate::commissioning::types::BandConfirmationObservation;
 
-use super::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION;
+use super::combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION;
 
 use super::band_confirmation::{
     BandConfirmationFailureCause, BandConfirmationPlan, CONFIRMATION_BAND_LOWER_PERCENT,
@@ -388,7 +388,7 @@ pub(crate) fn discovery_plan_report(
         evidence_sequence,
         plan_digest: plan.plan_digest,
         prior_plan_digest: plan.probe_plan_digest,
-        schema_revision: BREAKAWAY_STAGE_B_SCHEMA_REVISION,
+        schema_revision: BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION,
         family_size: plan.confidence_family_size,
         rung_count: plan.rung_count,
         observations_per_direction: plan.observations_per_direction,

@@ -3101,7 +3101,7 @@ fn a_resolved_probe_breakaway_emits_its_plan_brackets_and_the_discovery_plan_in_
     // to see fanned out are gone.
     assert_eq!(
         planned.schema_revision,
-        crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION
+        crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION
     );
     assert!(planned.rung_count > 0);
 }

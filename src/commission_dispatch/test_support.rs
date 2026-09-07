@@ -274,7 +274,7 @@ pub struct MockBackend {
     /// Characterization-only raw velocity observations.
     #[cfg(feature = "trace")]
     pub velocity_trace_observations: Vec<crate::trace::stream::VelocityTraceObservation, 2_048>,
-    /// Canonical Stage B records emitted into the trace stream.
+    /// Canonical Proportional records emitted into the trace stream.
     #[cfg(feature = "trace")]
     pub velocity_sweep_trace_records:
         Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord, 128>,

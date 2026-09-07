@@ -287,7 +287,7 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     for membership in plan.authority.directional_memberships {
         core.push_u32(membership);
     }
-    core.push_u32(plan.authority.stage_b_joint_membership);
+    core.push_u32(plan.authority.proportional_joint_membership);
     core.push_u32(plan.authority.joint_membership);
     for validity in plan.authority.directional_validity {
         core.push_u8(validity as u8);
@@ -959,10 +959,10 @@ mod tests {
                 channel: 0,
                 acquisition: breakaway_acquisition_for_test(),
                 directional_memberships: [0x0038_0000, 0x0038_0000],
-                stage_b_joint_membership: 0x0038_0000,
+                proportional_joint_membership: 0x0038_0000,
                 joint_membership: 0x0018_0000,
                 directional_validity: [
-                    super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                    super::super::reproduction::ProportionalDirectionalValidity::ReproducedRegionCoversFinalP;
                     2
                 ],
                 reduced_margin: false,
@@ -1130,10 +1130,10 @@ mod tests {
                 channel: 0,
                 acquisition: breakaway_acquisition_for_test(),
                 directional_memberships: [0x0038_0000, 0x0038_0000],
-                stage_b_joint_membership: 0x0038_0000,
+                proportional_joint_membership: 0x0038_0000,
                 joint_membership: 0x0018_0000,
                 directional_validity: [
-                    super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                    super::super::reproduction::ProportionalDirectionalValidity::ReproducedRegionCoversFinalP;
                     2
                 ],
                 reduced_margin: false,
@@ -1197,7 +1197,7 @@ mod tests {
         assert_eq!(records[0].as_bytes().len(), 99);
         assert_eq!(
             &records[0].as_bytes()[43..47],
-            &plan.authority.stage_b_joint_membership.to_le_bytes()
+            &plan.authority.proportional_joint_membership.to_le_bytes()
         );
         assert_eq!(
             &records[0].as_bytes()[47..51],
@@ -1205,7 +1205,7 @@ mod tests {
         );
         assert_eq!(
             &records[0].as_bytes()[51..53],
-            &[super::super::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP
+            &[super::super::reproduction::ProportionalDirectionalValidity::ReproducedRegionCoversFinalP
                 as u8; 2]
         );
         assert_eq!(records[0].as_bytes()[53], 0);

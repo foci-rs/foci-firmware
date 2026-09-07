@@ -12,26 +12,26 @@ use super::sweep_consensus::DirectionalConsensusClass;
 use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTLE_US};
 
-/// Live Stage-B schema for the shared Stage-B velocity sweep planner.
-pub const STAGE_B_PLAN_SCHEMA_REVISION: u16 = 14;
-/// First Stage-B schema with cap-safe target quantization.
-pub const FIRST_CAP_SAFE_STAGE_B_SCHEMA_REVISION: u16 = 10;
+/// Live Proportional schema for the shared Proportional velocity sweep planner.
+pub const PROPORTIONAL_PLAN_SCHEMA_REVISION: u16 = 14;
+/// First Proportional schema with cap-safe target quantization.
+pub const FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION: u16 = 10;
 /// Live Stage-C schema for the shared Stage-C continuation planner.
 pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
-/// Live Stage-B schema for the breakaway-seeded campaign.
+/// Live Proportional schema for the breakaway-seeded campaign.
 ///
 /// The breakaway probe, additive discovery, and held-out confirmation plans
-/// replace the combined proportional sweep entirely; there is no Stage-B
+/// replace the combined proportional sweep entirely; there is no Proportional
 /// sweep plan under this schema. See
 /// `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md`. Historical
-/// schemas 8 through [`STAGE_B_PLAN_SCHEMA_REVISION`] keep their exact
+/// schemas 8 through [`PROPORTIONAL_PLAN_SCHEMA_REVISION`] keep their exact
 /// digest and behavior; this schema is additive.
-pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
+pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
 /// Live Stage-C schema for the breakaway-seeded campaign.
 ///
 /// A Stage-C plan built under this schema binds the accepted
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
-/// Stage-B sweep digest -- see
+/// Proportional sweep digest -- see
 /// [`super::integral_plan::bind_breakaway_integral_authority`]. Historical
 /// schemas up to and including [`INTEGRAL_PLAN_SCHEMA_REVISION`] keep
 /// their exact digest and behavior; this schema is additive.
@@ -97,7 +97,7 @@ pub struct CombinedRateInterval {
     pub high_q: i64,
 }
 
-/// Selected Stage-B response retained only through the combined continuation.
+/// Selected Proportional response retained only through the combined continuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct CombinedSelectedResponse {
     /// Proportional gain whose two directional intervals entered the band.
@@ -197,18 +197,18 @@ pub fn build_combined_integral_ladder(
 /// Derive the exact Stage-C continuation duration without summing rounded
 /// phase reports.
 pub fn integral_continuation_geometry(
-    stage_b: VelocitySweepPlan,
+    proportional: VelocitySweepPlan,
     pwm_hz: u32,
 ) -> Result<CombinedWorkflowGeometry, VelocityIntegralPlanError> {
-    if stage_b.rung_count == 0
-        || stage_b.observations_per_direction == 0
-        || stage_b.recovery_slot_count != stage_b.rung_count
+    if proportional.rung_count == 0
+        || proportional.observations_per_direction == 0
+        || proportional.recovery_slot_count != proportional.rung_count
     {
         return Err(VelocityIntegralPlanError::InvalidRequest);
     }
     let ladder = build_combined_integral_ladder(
         pwm_hz,
-        stage_b.moving_stroke_us,
+        proportional.moving_stroke_us,
         super::sweep_plan::MIN_SETTLE_CAPTURE_US,
         crate::commissioning::outer::OUTER_MAX_VELOCITY_I,
     )?;
@@ -221,12 +221,12 @@ pub fn integral_continuation_geometry(
         .checked_mul(INTEGRAL_OBSERVATIONS_PER_RUNG as u16)
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let i_family_size = confidence_family_size(ladder.rungs.len())?;
-    let primitive_us = u64::from(stage_b.moving_stroke_us)
-        .checked_add(u64::from(stage_b.zero_settle_us))
+    let primitive_us = u64::from(proportional.moving_stroke_us)
+        .checked_add(u64::from(proportional.zero_settle_us))
         .and_then(|value| value.checked_add(u64::from(SETTLE_ANALYSIS_BUDGET_US)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
-    let p_observations = u64::from(stage_b.rung_count)
-        .checked_mul(u64::from(stage_b.observations_per_direction))
+    let p_observations = u64::from(proportional.rung_count)
+        .checked_mul(u64::from(proportional.observations_per_direction))
         .and_then(|value| value.checked_mul(2))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let p_base_us = p_observations
@@ -234,15 +234,15 @@ pub fn integral_continuation_geometry(
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let p_nominal_us = p_base_us
         .checked_add(
-            u64::from(stage_b.recovery_slot_count)
-                .checked_mul(u64::from(stage_b.recovery_nominal_slot_us))
+            u64::from(proportional.recovery_slot_count)
+                .checked_mul(u64::from(proportional.recovery_nominal_slot_us))
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let p_maximum_us = p_base_us
         .checked_add(
-            u64::from(stage_b.recovery_slot_count)
-                .checked_mul(u64::from(stage_b.recovery_maximum_slot_us))
+            u64::from(proportional.recovery_slot_count)
+                .checked_mul(u64::from(proportional.recovery_maximum_slot_us))
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
@@ -258,7 +258,7 @@ pub fn integral_continuation_geometry(
     let i_nominal_us = i_base_us
         .checked_add(
             u64::from(total_i_rungs)
-                .checked_mul(u64::from(stage_b.recovery_nominal_slot_us))
+                .checked_mul(u64::from(proportional.recovery_nominal_slot_us))
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
         .and_then(|value| value.checked_add(slot_transition_us))
@@ -267,7 +267,7 @@ pub fn integral_continuation_geometry(
     let i_maximum_us = i_base_us
         .checked_add(
             u64::from(total_i_rungs)
-                .checked_mul(u64::from(stage_b.recovery_maximum_slot_us))
+                .checked_mul(u64::from(proportional.recovery_maximum_slot_us))
                 .ok_or(VelocityIntegralPlanError::Arithmetic)?,
         )
         .and_then(|value| value.checked_add(slot_transition_us))

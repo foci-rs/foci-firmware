@@ -10,7 +10,7 @@ use super::band_confirmation::{
 };
 use super::breakaway_plan::PROBE_MAX_OBSERVATIONS;
 use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
-use super::reproduction::{BUILD_FEATURES, StageBDirectionalValidity};
+use super::reproduction::{BUILD_FEATURES, ProportionalDirectionalValidity};
 use super::sweep_plan::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US,
     VelocitySweepExecutionPlan, VelocitySweepRequest, ZERO_SETTLE_US,
@@ -33,24 +33,24 @@ pub const INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US: u32 = 20_000;
 const MICROS_PER_SECOND: u64 = 1_000_000;
 const CONFIDENCE_FAMILY_MAX: u16 = 128;
 
-/// Reproduced Stage-B evidence that authorizes one fixed-P Stage-C plan.
+/// Reproduced Proportional evidence that authorizes one fixed-P Stage-C plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralAcquisitionAuthority {
     /// Physical firmware channel.
     pub channel: u8,
     /// The unforgeable token of the accepted breakaway confirmation that
-    /// authorized this Stage-C plan. There is no Stage-B sweep plan behind
-    /// it: the breakaway campaign has no Stage-B phase, so nothing
+    /// authorized this Stage-C plan. There is no Proportional sweep plan behind
+    /// it: the breakaway campaign has no Proportional phase, so nothing
     /// recomputes from the request.
     pub acquisition: ConfirmedAcquisitionDigest,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
-    /// Reproduced Stage-B joint-operability component before Stage-C filtering.
-    pub stage_b_joint_membership: u32,
+    /// Reproduced Proportional joint-operability component before Stage-C filtering.
+    pub proportional_joint_membership: u32,
     /// Stage-C transition-capable subset of the reproduced joint component.
     pub joint_membership: u32,
-    /// Cross-run validity of the forward and reverse Stage-B models.
-    pub directional_validity: [StageBDirectionalValidity; 2],
+    /// Cross-run validity of the forward and reverse Proportional models.
+    pub directional_validity: [ProportionalDirectionalValidity; 2],
     /// Whether the selected joint component contains fewer than three rungs.
     pub reduced_margin: bool,
     /// Reproduced pooled intervals, or `[0, 0]` where model comparison is unavailable.
@@ -72,15 +72,15 @@ impl IntegralAcquisitionAuthority {
         }
         matches!(
             self.directional_validity[direction],
-            StageBDirectionalValidity::ReproducedRegionCoversFinalP
-                | StageBDirectionalValidity::ReproducedRegionTransferred
+            ProportionalDirectionalValidity::ReproducedRegionCoversFinalP
+                | ProportionalDirectionalValidity::ReproducedRegionTransferred
         )
     }
 
     /// Construct breakaway-campaign Stage-C authority bound to a confirmed
     /// acquisition digest.
     ///
-    /// The breakaway campaign has no reproduced Stage-B directional evidence,
+    /// The breakaway campaign has no reproduced Proportional directional evidence,
     /// so every membership/validity field is the same empty/zero value a
     /// nonretained, same-command authority uses.
     /// `directional_pooled_intervals` is
@@ -88,7 +88,7 @@ impl IntegralAcquisitionAuthority {
     /// held-out confirmation block's own pooled response interval, already in
     /// the same signed settled-rate-Q domain this field carries on the other
     /// paths (see [`super::band_confirmation::BandConfirmationAcceptance`]'s
-    /// field doc), not a reproduced Stage-B value.
+    /// field doc), not a reproduced Proportional value.
     /// The only way to obtain a [`ConfirmedAcquisitionDigest`] is a successful
     /// call to [`bind_breakaway_integral_authority`], so this constructor makes
     /// "Integral authorized by anything other than an accepted confirmation"
@@ -105,9 +105,9 @@ impl IntegralAcquisitionAuthority {
             channel,
             acquisition: confirmed_digest,
             directional_memberships: [0; 2],
-            stage_b_joint_membership: 0,
+            proportional_joint_membership: 0,
             joint_membership: 0,
-            directional_validity: [StageBDirectionalValidity::NoRegion; 2],
+            directional_validity: [ProportionalDirectionalValidity::NoRegion; 2],
             reduced_margin: false,
             directional_pooled_intervals: held_out_response_intervals_q,
             confidence_q,
@@ -134,7 +134,7 @@ pub struct VelocityIntegralPlan {
     pub build_features: u16,
     /// Stage-C evidence schema.
     pub schema_revision: u16,
-    /// Reproduced Stage-B authority.
+    /// Reproduced Proportional authority.
     pub authority: IntegralAcquisitionAuthority,
     /// Fixed proportional gain.
     pub fixed_p: u16,
@@ -186,7 +186,7 @@ pub struct VelocityIntegralPlan {
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
-    /// The commissioning probe clamp removed at least one Stage-B-operable rung.
+    /// The commissioning probe clamp removed at least one Proportional-operable rung.
     pub probe_constrained_test_point: bool,
     /// Complete motion/travel request retained for plan identity.
     pub motion_request: VelocitySweepRequest,
@@ -218,7 +218,7 @@ impl VelocityIntegralPlan {
         for membership in self.authority.directional_memberships {
             hash_value!(membership);
         }
-        hash_value!(self.authority.stage_b_joint_membership);
+        hash_value!(self.authority.proportional_joint_membership);
         hash_value!(self.authority.joint_membership);
         for validity in self.authority.directional_validity {
             hash_value!(validity as u8);
@@ -505,12 +505,12 @@ pub struct VelocityIntegralExecutionPlan {
     pub acquisition_kind: VelocityIntegralAcquisitionKind,
     /// Which acquisition category authorized this plan.
     ///
-    /// Isolates breakaway from reproduced Stage-B within `acquisition_kind ==
+    /// Isolates breakaway from reproduced Proportional within `acquisition_kind ==
     /// ResponseLadder`; see [`Self::records_target_terminus`].
     pub acceptance_source: AcceptanceSource,
     /// Exact fixed targets for an amplitude acquisition; zero for response ladders.
     pub amplitude_targets_rpm: [i16; 5],
-    /// Selected Stage-B response intervals; zero for an amplitude acquisition,
+    /// Selected Proportional response intervals; zero for an amplitude acquisition,
     /// which carries its identity and qualifiers in `acceptance_plan_digest`
     /// and `qualifier_bits` instead.
     pub selected_response_intervals_q: [[i32; 2]; 2],
@@ -518,7 +518,7 @@ pub struct VelocityIntegralExecutionPlan {
     pub recovery_lower_rate_q: [u64; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
-    /// The commissioning probe clamp removed at least one Stage-B-operable rung.
+    /// The commissioning probe clamp removed at least one Proportional-operable rung.
     pub probe_constrained_test_point: bool,
     /// Execution order of the fixed forward and reverse observation slots.
     pub slot_order: IntegralSlotOrder,
@@ -538,7 +538,7 @@ const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 1
 impl VelocityIntegralExecutionPlan {
     /// Whether a target-reaching run on this plan records a target terminus.
     ///
-    /// True only for an accepted breakaway confirmation. A reproduced Stage-B
+    /// True only for an accepted breakaway confirmation. A reproduced Proportional
     /// response ladder must not record a terminus even though it shares
     /// `acquisition_kind == VelocityIntegralAcquisitionKind::ResponseLadder`.
     pub const fn records_target_terminus(&self) -> bool {
@@ -552,7 +552,7 @@ pub struct IntegralFailedAdmission {
     /// Digest of the rejected authority and controller geometry, tagged with
     /// [`INTEGRAL_EVIDENCE_SCHEMA_REVISION`].
     pub plan_digest: u64,
-    /// The commissioning probe clamp removed every Stage-B-operable rung.
+    /// The commissioning probe clamp removed every Proportional-operable rung.
     pub probe_constrained_test_point: bool,
 }
 
@@ -561,7 +561,7 @@ pub struct IntegralFailedAdmission {
 pub enum VelocityIntegralPlanError {
     /// A required duration, scale, or workflow component was invalid.
     InvalidRequest,
-    /// Stage-B authority does not belong to the supplied stage plan.
+    /// Proportional authority does not belong to the supplied stage plan.
     MismatchedAuthority,
     /// Fewer than three positive-I rungs fit the acquisition geometry.
     InsufficientStructuralSpan,
@@ -569,7 +569,7 @@ pub enum VelocityIntegralPlanError {
     ConfidenceFamilyTooLarge,
     /// Checked planner arithmetic exceeded its representation.
     Arithmetic,
-    /// The reproduced Stage-B component contains no transition-capable Stage-C rung.
+    /// The reproduced Proportional component contains no transition-capable Stage-C rung.
     NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
     /// A breakaway confirmation plan's recomputed digest, or its fixed family
     /// size, capture profile, or acceptance rule, did not match what
@@ -593,7 +593,7 @@ pub enum VelocityIntegralPlanError {
 ///
 /// Returned only by [`bind_breakaway_integral_authority`], the single gate
 /// that may produce the digest a breakaway-schema [`IntegralAcquisitionAuthority::
-/// stage_b_plan_digest`] carries. Every rejection is fail-closed: no digest,
+/// proportional_plan_digest`] carries. Every rejection is fail-closed: no digest,
 /// discovery or otherwise, ever authorizes Integral unless it is exactly the
 /// digest of a [`BandConfirmationPlan`] whose held-out block accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -1093,8 +1093,8 @@ pub fn breakaway_workflow_envelope_ms(
 /// breakaway campaign: proof that `confirmation_plan`'s held-out block
 /// accepted, bound to its digest.
 ///
-/// The breakaway campaign has no Stage-B sweep plan, so a breakaway-schema
-/// [`IntegralAcquisitionAuthority::stage_b_plan_digest`] instead carries the accepted
+/// The breakaway campaign has no Proportional sweep plan, so a breakaway-schema
+/// [`IntegralAcquisitionAuthority::proportional_plan_digest`] instead carries the accepted
 /// [`BandConfirmationPlan`]'s digest, obtained only through this function and
 /// only via [`IntegralAcquisitionAuthority::new_breakaway`]. The returned
 /// [`ConfirmedAcquisitionDigest`] cannot be constructed any other way: this
@@ -1136,10 +1136,10 @@ pub(crate) fn bind_breakaway_integral_authority(
 /// Explicit physical acquisition inputs the shared Stage-C tail needs.
 ///
 /// The breakaway campaign ([`plan_breakaway_velocity_integral_response`]) has
-/// no Stage-B sweep plan at all and builds one directly from its own campaign
+/// no Proportional sweep plan at all and builds one directly from its own campaign
 /// parameters instead of fabricating a `VelocitySweepExecutionPlan`. The
 /// fixed-gain-amplitude preflight (`commission_dispatch::fixed_gain_amplitude`) still
-/// reconstructs a Stage-B sweep plan to source these physical fields, via
+/// reconstructs a Proportional sweep plan to source these physical fields, via
 /// [`From`], then overwrites the breakaway-only fields below directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct AcquisitionContext {
@@ -1239,7 +1239,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// `context` does not match the live `pwm_hz`/`encoder_counts_per_rev`, so
 /// confirmation evidence gathered under one physical timebase cannot seed a
 /// plan admitted under another. `context` carries the breakaway campaign's own
-/// physical acquisition parameters -- there is no reproduced Stage-B sweep plan
+/// physical acquisition parameters -- there is no reproduced Proportional sweep plan
 /// to read them from.
 ///
 /// Order of checks, all before any plan is constructed: confirmation-plan
@@ -1340,7 +1340,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 ///
 /// The caller must still compare the resulting plan digest against the retained
 /// identity. That comparison is what proves the request reproduces the retained
-/// plan, and it replaces the Stage-B digest check the reproduced-Stage-B path
+/// plan, and it replaces the Proportional digest check the reproduced-Proportional path
 /// uses, which has no meaning here.
 ///
 /// `held_out_response_intervals_q` must be the exact value

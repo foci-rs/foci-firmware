@@ -28,11 +28,11 @@ impl CommissioningWorkflowPlan {
     pub fn new(
         run_sequence: u32,
         shape: VelocityAutotuneWorkflowKind,
-        stage_b_ms: u32,
+        proportional_ms: u32,
         integral_ms: u32,
     ) -> Result<Self, VelocityIntegralPlanError> {
         let valid = match shape {
-            VelocityAutotuneWorkflowKind::Resume => stage_b_ms == 0 && integral_ms != 0,
+            VelocityAutotuneWorkflowKind::Resume => proportional_ms == 0 && integral_ms != 0,
             VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
             | VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
             | VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
@@ -41,7 +41,7 @@ impl CommissioningWorkflowPlan {
         if !valid {
             return Err(VelocityIntegralPlanError::InvalidRequest);
         }
-        let maximum_workflow_ms = stage_b_ms
+        let maximum_workflow_ms = proportional_ms
             .checked_add(integral_ms)
             .ok_or(VelocityIntegralPlanError::Arithmetic)?;
         Ok(Self {

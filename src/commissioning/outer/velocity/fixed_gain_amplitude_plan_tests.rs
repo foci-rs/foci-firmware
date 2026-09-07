@@ -23,7 +23,7 @@ use super::sweep_consensus::{
 };
 use super::sweep_evidence::VelocityObservationClass;
 use super::sweep_plan::{
-    RequestedVelocitySource, VelocitySweepRequest, plan_stage_b_velocity_sweep,
+    RequestedVelocitySource, VelocitySweepRequest, plan_proportional_velocity_sweep,
 };
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::OuterMotionBudget;
@@ -138,14 +138,14 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 /// One genuine schema-16 breakaway plan, built through the real
 /// discovery-confirmation-token path (see the module doc above).
 fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
-    let stage_b = plan_stage_b_velocity_sweep(
+    let proportional = plan_proportional_velocity_sweep(
         breakaway_request(),
         COUNTS_PER_REV,
         TORQUE_LIMIT,
         super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
-    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    let mut context = AcquisitionContext::from(proportional.execution_plan(proportional.digest()));
     context.channel = 0;
     context.plan_time_pwm_hz = PWM_HZ;
     context.plan_time_encoder_counts_per_rev = COUNTS_PER_REV;
@@ -282,7 +282,7 @@ fn live_amplitude_geometry_and_orders_are_exact() {
     assert_eq!(ascending.maximum_workflow_ms, 66_456);
     assert_eq!(
         (
-            super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION,
+            super::combined_plan::PROPORTIONAL_PLAN_SCHEMA_REVISION,
             super::combined_plan::BREAKAWAY_INTEGRAL_SCHEMA_REVISION,
             FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         ),

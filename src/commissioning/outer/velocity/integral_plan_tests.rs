@@ -33,12 +33,12 @@ use super::sweep_plan::{
 };
 use super::workflow_plan::{CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind};
 use crate::autotune::velocity_measurement::VelocityDirection;
-use crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity;
+use crate::commissioning::outer::velocity::reproduction::ProportionalDirectionalValidity;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 use crate::commissioning::types::ResponseHorizonClass;
 use foci_tmc4671::pid::PidPGain;
 
-fn stage_b_request() -> VelocitySweepRequest {
+fn proportional_request() -> VelocitySweepRequest {
     VelocitySweepRequest {
         requested_velocity_mrev_s: 6_666,
         machine_velocity_ceiling_mrev_s: 10_000,
@@ -56,9 +56,9 @@ fn authority() -> IntegralAcquisitionAuthority {
         channel: 0,
         acquisition: breakaway_token_for(breakaway_confirmation_plan(breakaway_gain(512))),
         directional_memberships: [0x0007_0000, 0x0007_0000],
-        stage_b_joint_membership: 0x0007_0000,
+        proportional_joint_membership: 0x0007_0000,
         joint_membership: 0x0007_0000,
-        directional_validity: [StageBDirectionalValidity::ReproducedRegionCoversFinalP; 2],
+        directional_validity: [ProportionalDirectionalValidity::ReproducedRegionCoversFinalP; 2],
         reduced_margin: false,
         directional_pooled_intervals: [[17_000_000, 18_000_000], [-19_000_000, -18_000_000]],
         confidence_q: 0,
@@ -66,9 +66,9 @@ fn authority() -> IntegralAcquisitionAuthority {
     }
 }
 
-fn stage_b_plan() -> super::sweep_plan::VelocitySweepPlan {
+fn proportional_plan() -> super::sweep_plan::VelocitySweepPlan {
     plan_velocity_sweep(
-        stage_b_request(),
+        proportional_request(),
         4_000,
         2_816,
         super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
@@ -398,7 +398,7 @@ fn execution_plan_copies_i_top_cap() {
 }
 
 /// `CommissioningWorkflowPlan::new` admits exactly `Resume`
-/// (`stage_b_ms == 0 && integral_ms != 0`); every other shape it can name is
+/// (`proportional_ms == 0 && integral_ms != 0`); every other shape it can name is
 /// rejected -- the fixed-gain-amplitude and breakaway shapes have their own
 /// dedicated constructors instead (see
 /// `workflow_kind_discriminants_are_a_clean_zero_through_four_sequence`).
@@ -423,7 +423,7 @@ fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
             integral.maximum_workflow_ms,
         ),
         Err(VelocityIntegralPlanError::InvalidRequest),
-        "Resume names no Stage-B duration"
+        "Resume names no Proportional duration"
     );
     assert_eq!(
         CommissioningWorkflowPlan::new(9, VelocityAutotuneWorkflowKind::Resume, 0, 0),
@@ -464,14 +464,17 @@ fn invalid_geometry_rejects_before_motion() {
 #[test]
 fn model_interval_availability_is_typed_by_directional_validity() {
     let availability = [
-        (StageBDirectionalValidity::NoRegion, false),
-        (StageBDirectionalValidity::Fragment, false),
-        (StageBDirectionalValidity::RegionNotReproduced, false),
+        (ProportionalDirectionalValidity::NoRegion, false),
+        (ProportionalDirectionalValidity::Fragment, false),
+        (ProportionalDirectionalValidity::RegionNotReproduced, false),
         (
-            StageBDirectionalValidity::ReproducedRegionCoversFinalP,
+            ProportionalDirectionalValidity::ReproducedRegionCoversFinalP,
             true,
         ),
-        (StageBDirectionalValidity::ReproducedRegionTransferred, true),
+        (
+            ProportionalDirectionalValidity::ReproducedRegionTransferred,
+            true,
+        ),
     ];
     let mut value = authority();
     for (validity, expected) in availability {
@@ -805,7 +808,7 @@ fn breakaway_digest_chain_binds_each_successive_plan() {
     );
     assert_eq!(authority.acquisition, bound);
     assert_eq!(authority.acquisition.get(), confirmation_plan.plan_digest);
-    assert_eq!(authority.stage_b_joint_membership, 0);
+    assert_eq!(authority.proportional_joint_membership, 0);
     assert_eq!(authority.joint_membership, 0);
     // The digest chain also carries the held-out block's own pooled response
     // interval through to the authority, not a placeholder zero.
@@ -951,7 +954,7 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
 
 /// Pins a breakaway-sourced plan's exact digest. Breakaway plans now also
 /// receive the half-octave insertion, so this value changes whenever the
-/// ladder generation changes -- unlike the earlier ReproducedStageB-only
+/// ladder generation changes -- unlike the earlier ReproducedProportional-only
 /// gating, there is no longer an untouched path to separately pin.
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
@@ -962,13 +965,13 @@ fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
 // --- Breakaway Stage-C constructor -------------------------------------------
 
 /// Physical acquisition context for the breakaway fixtures below, built from
-/// the same [`stage_b_plan`] fixture the legacy tests use so the confirmed
+/// the same [`proportional_plan`] fixture the legacy tests use so the confirmed
 /// gain 512 is known (from `integral_plan_freezes_geometry_and_conservative_duration`)
 /// to pass [`super::integral_plan::transition_capable_integral_gain`] under
 /// `pwm_hz = 25_000`, `encoder_counts_per_rev = 4_000`.
 fn breakaway_acquisition_context() -> AcquisitionContext {
-    let stage_b = stage_b_plan();
-    let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
+    let proportional = proportional_plan();
+    let mut context = AcquisitionContext::from(proportional.execution_plan(proportional.digest()));
     // The breakaway gate refuses if the plan-time physical context diverges from
     // the live pwm/encoder it is handed; every fixture below passes 25 kHz /
     // 4_000, so freeze the same values here.
@@ -1013,9 +1016,9 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 
 /// A campaign's Stage-C plan must be resumable from retained authority alone.
 ///
-/// The breakaway campaign has no Stage-B phase, so nothing recomputes a sweep
+/// The breakaway campaign has no Proportional phase, so nothing recomputes a sweep
 /// plan for it. Before this the preflight compared the retained confirmation
-/// token against a freshly planned Stage-B digest and refused every resume,
+/// token against a freshly planned Proportional digest and refused every resume,
 /// which made the `CompleteCandidate` to `Complete` promotion unreachable for
 /// the only campaign that produces candidates.
 #[test]
@@ -1042,7 +1045,7 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
     install_authority_from_plan(0, &mut slot, plan);
 
     let preflight = preflight_integral_request(
-        stage_b_request(),
+        proportional_request(),
         &IntegralPreflightConfig {
             encoder_counts_per_rev: 4_000,
             torque_limit: 2_816,
@@ -1066,7 +1069,7 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
 }
 
 /// The plan-digest check is the only identity guard on the resume path, so it
-/// has to carry the weight the Stage-B digest comparison carries elsewhere.
+/// has to carry the weight the Proportional digest comparison carries elsewhere.
 /// Live PWM and encoder resolution must be re-checked, not assumed.
 ///
 /// The plan digest cannot catch this on its own: a plan rebuilt from retained
@@ -1106,7 +1109,7 @@ fn a_resume_under_changed_physical_context_is_refused() {
 
     for (pwm_hz, counts) in [(26_000, 4_000), (25_000, 8_000)] {
         let rejection =
-            preflight_integral_request(stage_b_request(), &config(pwm_hz, counts), 13, &slot)
+            preflight_integral_request(proportional_request(), &config(pwm_hz, counts), 13, &slot)
                 .expect_err("a moved physical context must not resume");
         assert!(matches!(rejection, IntegralPreflightRejection::InvalidPlan));
     }
@@ -1114,7 +1117,7 @@ fn a_resume_under_changed_physical_context_is_refused() {
     // The unchanged context still resumes, so the guard is not simply refusing
     // everything.
     assert!(
-        preflight_integral_request(stage_b_request(), &config(25_000, 4_000), 13, &slot)
+        preflight_integral_request(proportional_request(), &config(25_000, 4_000), 13, &slot)
             .expect("the retained context is unchanged")
             .is_some()
     );
@@ -1143,7 +1146,7 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
     .expect("the campaign's own Stage-C plan");
     let mut slot = IntegralRetentionSlot::new();
     let retained = install_authority_from_plan(0, &mut slot, plan);
-    let mut changed = stage_b_request();
+    let mut changed = proportional_request();
     changed.max_stroke_travel_mrev += 1;
 
     let rejection = preflight_integral_request(
@@ -1194,7 +1197,7 @@ fn breakaway_integral_admits_the_confirmed_p_unchanged() {
         plan.authority.acquisition.get(),
         confirmation_plan.plan_digest
     );
-    assert_eq!(plan.authority.stage_b_joint_membership, 0);
+    assert_eq!(plan.authority.proportional_joint_membership, 0);
     assert_eq!(plan.authority.joint_membership, 0);
     assert!(!plan.probe_constrained_test_point);
     // The existing non-combined ladder, not the exact-cap combined shape.
@@ -1598,7 +1601,7 @@ fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() 
 }
 
 /// Schema 17 no longer has a live producer (it was `plan_velocity_integral_response`'s
-/// exclusive schema, removed with `IntegralAcquisition::ReproducedStageB`), but
+/// exclusive schema, removed with `IntegralAcquisition::ReproducedProportional`), but
 /// `digest()`'s schema-16-or-17 gate stays for historical trace-capture
 /// replay compatibility, so this checks the surviving `17` arm directly on a
 /// plan with the schema field overridden.

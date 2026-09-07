@@ -461,9 +461,9 @@ pub struct VelocityJointRegionReport {
     pub p_high: u16,
 }
 
-/// Per-run Stage B handoff emitted after every region record.
+/// Per-run Proportional handoff emitted after every region record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct VelocityStageBHandoffReport {
+pub struct VelocityProportionalHandoffReport {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
@@ -472,11 +472,11 @@ pub struct VelocityStageBHandoffReport {
     pub joint_union: u32,
     /// Directions whose selected per-run evidence is a valid model region.
     pub model_direction_mask: u8,
-    /// Sufficient report-only Stage B handoff.
-    pub handoff: crate::commissioning::outer::velocity::operating_region::StageBHandoff,
+    /// Sufficient report-only Proportional handoff.
+    pub handoff: crate::commissioning::outer::velocity::operating_region::ProportionalHandoff,
 }
 
-/// One causally sequenced rung-origin recovery record shared by Stage B and Integral.
+/// One causally sequenced rung-origin recovery record shared by Proportional and Integral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct RungOriginRecoveryEvidence {
     /// Caller-assigned run sequence.
@@ -522,7 +522,7 @@ pub struct RecoveryRestDiagnostic {
     pub(crate) scored_max_displacement_counts: i32,
     /// Proportional gain used by the selected response.
     pub(crate) p_raw: u16,
-    /// Monotonic evidence sequence within the Stage-B run.
+    /// Monotonic evidence sequence within the Proportional run.
     pub(crate) evidence_sequence: u16,
     /// Largest sampled absolute velocity-loop output during recovery.
     pub(crate) peak_torque_target_abs: u16,
@@ -544,12 +544,12 @@ pub struct RecoveryRestDiagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum RestSelectionOwner {
-    /// Ordinary Stage-B observation.
-    StageBObservation = 0,
-    /// Ordinary Stage-B origin recovery.
-    StageBRecovery = 1,
-    /// Selected final-P Stage-B recovery.
-    StageBSelectedRecovery = 2,
+    /// Ordinary Proportional observation.
+    ProportionalObservation = 0,
+    /// Ordinary Proportional origin recovery.
+    ProportionalRecovery = 1,
+    /// Selected final-P Proportional recovery.
+    ProportionalSelectedRecovery = 2,
     /// Stage-C opening anchor or closing bookend.
     IntegralAnchor = 3,
     /// Stage-C positive-I observation.
@@ -610,7 +610,7 @@ pub struct VelocityPrimitiveCurrentEvidence {
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the owning stage.
     pub evidence_sequence: u16,
-    /// Owning stage: zero for Stage B and one for Integral.
+    /// Owning stage: zero for Proportional and one for Integral.
     pub stage: u8,
     /// Zero-based rung index.
     pub rung_index: u8,
@@ -1023,7 +1023,7 @@ pub struct VelocityIntegralTerminal {
     /// Fixed Stage-C proportional gain carried on the terminal.
     ///
     /// Carried verbatim from the plan for every Stage-C workflow. Not zeroed
-    /// for a non-target-recording (e.g. reproduced Stage-B) terminal.
+    /// for a non-target-recording (e.g. reproduced Proportional) terminal.
     pub fixed_p: u16,
     /// Final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: bool,
@@ -1165,7 +1165,7 @@ pub struct AdditiveDiscoveryPlanned {
     /// Exact digest of the probe plan whose search located this ladder's breakaway.
     pub prior_plan_digest: u64,
     /// Breakaway-campaign schema/rule revision under which this ladder was
-    /// resolved (`combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION`). Carried in
+    /// resolved (`combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION`). Carried in
     /// the plan summary so an offline decoder can regenerate the exact ladder
     /// under the same rules the firmware applied and cross-check its recomputed
     /// digest against `plan_digest`.

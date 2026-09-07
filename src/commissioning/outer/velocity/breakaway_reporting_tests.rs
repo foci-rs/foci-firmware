@@ -328,7 +328,7 @@ fn discovery_plan_report_carries_floor_breakaway_ceiling_and_step() {
     assert_eq!(report.prior_plan_digest, request.probe_plan_digest);
     assert_eq!(
         report.schema_revision,
-        super::super::combined_plan::BREAKAWAY_STAGE_B_SCHEMA_REVISION
+        super::super::combined_plan::BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION
     );
     assert_eq!(report.family_size, plan.confidence_family_size);
     assert_eq!(report.rung_count, plan.rung_count);

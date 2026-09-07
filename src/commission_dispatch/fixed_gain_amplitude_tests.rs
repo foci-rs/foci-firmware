@@ -26,7 +26,8 @@ use crate::commissioning::outer::velocity::sweep_consensus::{
 };
 use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
 use crate::commissioning::outer::velocity::sweep_plan::{
-    RequestedVelocitySource, VelocitySweepRequest, current_gain_span, plan_stage_b_velocity_sweep,
+    RequestedVelocitySource, VelocitySweepRequest, current_gain_span,
+    plan_proportional_velocity_sweep,
 };
 use crate::commissioning::outer::velocity::workflow_plan::{
     CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind,
@@ -152,14 +153,14 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
 /// production rather than the reconstruction checking itself.
 fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDigest) {
     let request = breakaway_request();
-    let stage_b = plan_stage_b_velocity_sweep(
+    let proportional = plan_proportional_velocity_sweep(
         request,
         COUNTS_PER_REV,
         TORQUE_LIMIT,
         VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
     )
     .unwrap();
-    let execution_plan = stage_b.execution_plan(stage_b.digest());
+    let execution_plan = proportional.execution_plan(proportional.digest());
     let mut context = AcquisitionContext::from(execution_plan);
     context.channel = CHANNEL;
     context.plan_time_pwm_hz = PWM_HZ;

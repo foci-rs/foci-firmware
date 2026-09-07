@@ -175,7 +175,7 @@ where
 
     /// Emit a host reply using board-local sender glue.
     fn emit_reply(&mut self, payload: ReplyPayload);
-    /// Record one canonical Stage B record in the trace stream. No-op unless a
+    /// Record one canonical Proportional record in the trace stream. No-op unless a
     /// board provides a `trace`-gated implementation.
     fn record_velocity_sweep_trace_record(
         &mut self,
@@ -911,8 +911,8 @@ where
                         channel: board.channel(),
                         pwm_hz: board.pwm_freq_hz(),
                     };
-                    // `Ok(None)` is the admission path's "proceed to Stage B"
-                    // signal. A resume has no Stage B to fall back to, and
+                    // `Ok(None)` is the admission path's "proceed to Proportional"
+                    // signal. A resume has no Proportional to fall back to, and
                     // running a campaign here would actuate the motor for
                     // minutes when the operator asked to reproduce a plan that
                     // does not exist. Translate it here rather than changing
@@ -1832,10 +1832,10 @@ mod tests {
             acquisition: breakaway_acquisition_for_test(),
             fixed_p: 724,
             directional_memberships: [0x001c_0000; 2],
-            stage_b_joint_membership: 0x001c_0000,
+            proportional_joint_membership: 0x001c_0000,
             joint_membership: 0x0004_0000,
             directional_validity: [
-                crate::commissioning::outer::velocity::reproduction::StageBDirectionalValidity::ReproducedRegionCoversFinalP;
+                crate::commissioning::outer::velocity::reproduction::ProportionalDirectionalValidity::ReproducedRegionCoversFinalP;
                 2
             ],
             reduced_margin: true,
@@ -2648,7 +2648,7 @@ mod tests {
 
     #[fixture_test]
     async fn encoder_not_ready_tune_fails_as_commission_phase_not_velocity_sweep_terminal() {
-        // Reach the Stage-B preflight with the encoder domain unestablished:
+        // Reach the Proportional preflight with the encoder domain unestablished:
         // the current limit is stored (so the NoCurrent pre-check passes) but
         // motion scale is never configured, so `encoder_counts_per_rev()` is
         // None and the preflight rejects before any workflow plan is emitted.
@@ -3069,7 +3069,7 @@ mod tests {
             &mut integral,
             resumable_integral_plan(),
         );
-        // No Stage-B plan reconstructs from this, so the preflight refuses
+        // No Proportional plan reconstructs from this, so the preflight refuses
         // before it can compare digests. The refusal still has to say which
         // retained plan the operator failed to resume.
         let mut request = tune_request_with_action(crate::tmc::AutotuneAction::StageCResume);

@@ -8,7 +8,7 @@ use super::integral_reproduction::{
     IntegralRetentionSlotState, RetainedIntegralEvidence, closed_intersection,
     compare_integral_runs, delta_e, signed_divergence_gap,
 };
-use super::reproduction::{BUILD_FEATURES, StageBDirectionalValidity};
+use super::reproduction::{BUILD_FEATURES, ProportionalDirectionalValidity};
 use crate::commission_dispatch::test_support::breakaway_acquisition_for_test;
 
 fn interval(low_q: i32, high_q: i32) -> ExactRateInterval {
@@ -30,11 +30,11 @@ fn authority(channel: u8, digest: u64) -> IntegralAuthoritySummary {
         acquisition: breakaway_acquisition_for_test(),
         fixed_p: 1_448,
         directional_memberships: [0x0038_0000; 2],
-        stage_b_joint_membership: 0x0038_0000,
+        proportional_joint_membership: 0x0038_0000,
         joint_membership: 0x0038_0000,
         directional_validity: [
-            StageBDirectionalValidity::ReproducedRegionCoversFinalP,
-            StageBDirectionalValidity::ReproducedRegionTransferred,
+            ProportionalDirectionalValidity::ReproducedRegionCoversFinalP,
+            ProportionalDirectionalValidity::ReproducedRegionTransferred,
         ],
         reduced_margin: true,
         directional_pooled_intervals: [[10, 20], [-20, -10]],

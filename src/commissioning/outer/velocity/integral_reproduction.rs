@@ -2,7 +2,7 @@
 
 use super::integral_evidence::{ExactRateInterval, IntegralEvidenceError, IntegralRunEvidence};
 use super::integral_plan::{INTEGRAL_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan};
-use super::reproduction::StageBDirectionalValidity;
+use super::reproduction::ProportionalDirectionalValidity;
 
 const DIRECTION_COUNT: usize = 2;
 
@@ -28,7 +28,7 @@ pub struct IntegralPlanIdentity {
     pub plan_digest: u64,
 }
 
-/// Compact Stage-B-derived authority retained across Stage-C commands.
+/// Compact Proportional-derived authority retained across Stage-C commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralAuthoritySummary {
     /// Exact pre-motion identity.
@@ -39,12 +39,12 @@ pub struct IntegralAuthoritySummary {
     pub fixed_p: u16,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; DIRECTION_COUNT],
-    /// Reproduced Stage-B joint-operability component before Stage-C filtering.
-    pub stage_b_joint_membership: u32,
+    /// Reproduced Proportional joint-operability component before Stage-C filtering.
+    pub proportional_joint_membership: u32,
     /// Stage-C transition-capable subset of the reproduced joint component.
     pub joint_membership: u32,
-    /// Cross-run validity of the forward and reverse Stage-B models.
-    pub directional_validity: [StageBDirectionalValidity; DIRECTION_COUNT],
+    /// Cross-run validity of the forward and reverse Proportional models.
+    pub directional_validity: [ProportionalDirectionalValidity; DIRECTION_COUNT],
     /// Whether the selected joint component contains fewer than three rungs.
     pub reduced_margin: bool,
     /// Reproduced pooled intervals, or selected response intervals for a combined plan.
@@ -77,7 +77,7 @@ pub struct IntegralAuthoritySummary {
     pub family_size: u16,
     /// Conservative Stage-C schedule maximum.
     pub maximum_workflow_ms: u32,
-    /// The commissioning probe clamp removed at least one Stage-B-operable rung.
+    /// The commissioning probe clamp removed at least one Proportional-operable rung.
     pub probe_constrained_test_point: bool,
 }
 
@@ -101,7 +101,7 @@ impl IntegralAuthoritySummary {
             acquisition,
             fixed_p: plan.fixed_p,
             directional_memberships: authority.directional_memberships,
-            stage_b_joint_membership: authority.stage_b_joint_membership,
+            proportional_joint_membership: authority.proportional_joint_membership,
             joint_membership: authority.joint_membership,
             directional_validity: authority.directional_validity,
             reduced_margin: authority.reduced_margin,
@@ -122,13 +122,13 @@ impl IntegralAuthoritySummary {
         }
     }
 
-    /// Rebuild the exact Stage-B handoff used by Stage-C planning.
+    /// Rebuild the exact Proportional handoff used by Stage-C planning.
     pub const fn integral_authority(self) -> super::integral_plan::IntegralAcquisitionAuthority {
         super::integral_plan::IntegralAcquisitionAuthority {
             channel: self.identity.channel,
             acquisition: self.acquisition,
             directional_memberships: self.directional_memberships,
-            stage_b_joint_membership: self.stage_b_joint_membership,
+            proportional_joint_membership: self.proportional_joint_membership,
             joint_membership: self.joint_membership,
             directional_validity: self.directional_validity,
             reduced_margin: self.reduced_margin,
@@ -213,9 +213,9 @@ pub struct AcceptancePoint {
 /// Externally visible lifecycle state of the Stage-C RAM slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralRetentionSlotState {
-    /// No Stage-B handoff authority is retained.
+    /// No Proportional handoff authority is retained.
     Empty,
-    /// Stage-B authority exists but no sufficient Stage-C curve is retained.
+    /// Proportional authority exists but no sufficient Stage-C curve is retained.
     AuthorityOnly,
     /// Authority and one sufficient Stage-C curve await reproduction.
     Candidate,
@@ -347,7 +347,7 @@ impl IntegralRetentionSlot {
         }
     }
 
-    /// Install newly reproduced Stage-B handoff authority.
+    /// Install newly reproduced Proportional handoff authority.
     pub fn install_authority(&mut self, authority: IntegralAuthoritySummary) {
         self.retained = RetainedIntegral::AuthorityOnly(authority);
     }
