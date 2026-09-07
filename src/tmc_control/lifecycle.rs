@@ -2,6 +2,7 @@
 
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::types::CommissioningBackend;
+use crate::state::tmc::TmcChannelState;
 
 const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 
@@ -82,6 +83,42 @@ pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBacken
     Ok(())
 }
 
+/// Re-verifies the calibration sentinel against the live TMC4671 readback.
+///
+/// Runs fresh on every [`arm_motor_electrical`] call, which makes it FOCI's
+/// re-arm gate after a chip reset: a reset zeros
+/// [`TmcChannelState::motor_sentinel`]'s target register (the TMC4671's
+/// power-on default), so this comparison fails deterministically until
+/// commissioning re-establishes it. A sticky latch alternative was
+/// rejected: it would cache a result no more trustworthy than this
+/// recheck, since nothing else can set it.
+///
+/// # Errors
+///
+/// Returns [`crate::autotune::CommissionError::ChipResetDetected`] if the
+/// sentinel is inactive or does not match the TMC4671 readback.
+async fn verify_motor_sentinel<B: CommissioningBackend>(
+    backend: &mut B,
+    tmc: &TmcChannelState,
+) -> Result<(), crate::autotune::CommissionError> {
+    use core::sync::atomic::Ordering::Relaxed;
+    use foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS;
+
+    let expected = tmc.motor_sentinel.load(Relaxed);
+    if expected == 0 {
+        defmt::error!("arm_motor_electrical: missing MOTOR_TYPE sentinel");
+        return Err(crate::autotune::CommissionError::ChipResetDetected);
+    }
+
+    backend
+        .read_register_verified(MOTOR_TYPE_N_POLE_PAIRS, expected)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::ChipResetDetected)?;
+    crate::tmc_control::pi_representation::verify_pi_representation(backend, tmc)
+        .await
+        .map_err(|_| crate::autotune::CommissionError::ChipResetDetected)
+}
+
 /// Mark the motor electrically energized after verified calibration.
 ///
 /// Asserts `state.calibrated`; verifies the calibration sentinel register;
@@ -102,28 +139,13 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
     backend: &mut B,
     state: &mut DispatchState<'_>,
 ) -> Result<(), crate::autotune::CommissionError> {
-    use core::sync::atomic::Ordering::Relaxed;
-    use foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS;
-
     assert!(
         *state.calibrated,
         "FATAL: arm_motor_electrical called with calibrated=false; \
          SPI restore must precede arm"
     );
 
-    let expected = state.tmc.motor_sentinel.load(Relaxed);
-    if expected == 0 {
-        defmt::error!("arm_motor_electrical: missing MOTOR_TYPE sentinel");
-        return Err(crate::autotune::CommissionError::ChipResetDetected);
-    }
-
-    backend
-        .read_register_verified(MOTOR_TYPE_N_POLE_PAIRS, expected)
-        .await
-        .map_err(|_| crate::autotune::CommissionError::ChipResetDetected)?;
-    crate::tmc_control::pi_representation::verify_pi_representation(backend, state.tmc)
-        .await
-        .map_err(|_| crate::autotune::CommissionError::ChipResetDetected)?;
+    verify_motor_sentinel(backend, state.tmc).await?;
 
     settle_closed_loop_hold_before_enable(backend).await?;
 
