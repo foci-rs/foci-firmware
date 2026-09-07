@@ -1,14 +1,15 @@
-//! Firmware-owned admission and retained lifecycle for velocity confidence matrices.
+//! Firmware-owned admission and retained lifecycle for fixed-gain amplitude validation runs.
 
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 use crate::commission_dispatch::stage_c::StageCPreflightConfig;
 use crate::commissioning::outer::OuterMotionBudget;
-use crate::commissioning::outer::velocity::acceptance_plan::{
-    AcceptanceMatrixOrder, AcceptanceMatrixPlan, AcceptanceMatrixPlanError, plan_acceptance_matrix,
-};
 use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
 use crate::commissioning::outer::velocity::current_guard::derive_probe_limit;
+use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
+    FixedGainAmplitudeOrder, FixedGainAmplitudePlan, FixedGainAmplitudePlanError,
+    plan_fixed_gain_amplitude,
+};
 use crate::commissioning::outer::velocity::integral_plan::{
     AcquisitionContext, VelocityIntegralPlan, VelocityIntegralPlanError,
     plan_retained_breakaway_velocity_integral_response,
@@ -20,7 +21,7 @@ use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepRequest, plan_stage_b_velocity_sweep,
 };
 use crate::commissioning::types::{
-    AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
+    FixedGainAmplitudeCause, FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal,
 };
 
 pub use crate::tmc::AutotuneAction;
@@ -28,45 +29,47 @@ pub use crate::tmc::AutotuneAction;
 use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 
 impl AutotuneAction {
-    /// Return the immutable amplitude order for a matrix action.
-    pub const fn matrix_order(self) -> Option<AcceptanceMatrixOrder> {
+    /// Return the immutable amplitude order for an amplitude action.
+    pub const fn amplitude_order(self) -> Option<FixedGainAmplitudeOrder> {
         match self {
             Self::BreakawaySeeded | Self::StageCResume | Self::RobustnessReversal => None,
-            Self::MatrixAscending => Some(AcceptanceMatrixOrder::Ascending),
-            Self::MatrixDescending => Some(AcceptanceMatrixOrder::Descending),
+            Self::FixedGainAmplitudeAscending => Some(FixedGainAmplitudeOrder::Ascending),
+            Self::FixedGainAmplitudeDescending => Some(FixedGainAmplitudeOrder::Descending),
         }
     }
 
-    /// Return the immutable observation slot order for a matrix action.
+    /// Return the immutable observation slot order for an amplitude action.
     ///
     /// Amplitude order and slot order are independent dimensions that share one
     /// wire byte; this keeps them separate in the type system.
-    pub const fn matrix_slot_order(self) -> Option<IntegralSlotOrder> {
+    pub const fn amplitude_slot_order(self) -> Option<IntegralSlotOrder> {
         match self {
             Self::BreakawaySeeded | Self::StageCResume | Self::RobustnessReversal => None,
-            Self::MatrixAscending | Self::MatrixDescending => Some(IntegralSlotOrder::ForwardFirst),
+            Self::FixedGainAmplitudeAscending | Self::FixedGainAmplitudeDescending => {
+                Some(IntegralSlotOrder::ForwardFirst)
+            }
         }
     }
 }
 
-/// Exact matrix plan accepted before any SPI write or enable assertion.
+/// Exact amplitude plan accepted before any SPI write or enable assertion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcceptanceMatrixPreflight {
-    /// Sole immutable matrix plan used for disclosure and execution.
-    pub plan: AcceptanceMatrixPlan,
+pub struct FixedGainAmplitudePreflight {
+    /// Sole immutable amplitude plan used for disclosure and execution.
+    pub plan: FixedGainAmplitudePlan,
     /// Caller-assigned trace sequence.
     pub run_sequence: u32,
 }
 
-/// Definitive zero-motion matrix admission rejection.
+/// Definitive zero-motion amplitude admission rejection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum AcceptanceMatrixPreflightRejection {
+pub enum FixedGainAmplitudePreflightRejection {
     /// No target-reaching combined operating point is retained.
     MissingAcceptancePoint,
     /// Current controller geometry does not reconstruct the retained identity.
     AcceptancePointIdentityMismatch,
     /// The action does not match the retained two-run progress.
-    MatrixOrderMismatch,
+    AmplitudeOrderMismatch,
     /// Exact plan arithmetic or geometry was invalid.
     InvalidPlan,
 }
@@ -91,10 +94,10 @@ pub fn reconstruct_breakaway_plan(
     torque_limit: u16,
     limit_evidence_capability: u32,
     pwm_hz: u32,
-) -> Result<VelocityIntegralPlan, AcceptanceMatrixPreflightRejection> {
+) -> Result<VelocityIntegralPlan, FixedGainAmplitudePreflightRejection> {
     let token = point
         .token
-        .ok_or(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)?;
+        .ok_or(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch)?;
     // Breakaway has no Stage-B phase of its own; the campaign that produced
     // this point derived its planned velocity, target RPM, hard torque limit,
     // and limit-evidence capability from exactly this same
@@ -111,7 +114,7 @@ pub fn reconstruct_breakaway_plan(
         torque_limit,
         limit_evidence_capability,
     )
-    .map_err(|_| AcceptanceMatrixPreflightRejection::InvalidPlan)?;
+    .map_err(|_| FixedGainAmplitudePreflightRejection::InvalidPlan)?;
     let mut context = AcquisitionContext::from(stage_b.execution_plan(stage_b.digest()));
     context.channel = point.identity.channel;
     context.plan_time_pwm_hz = pwm_hz;
@@ -129,9 +132,9 @@ pub fn reconstruct_breakaway_plan(
     // leaving the Stage-B sweep's stamped value in place would make a
     // genuine breakaway point's digest never match.
     let operational_limit = PidTorqueFluxLimit::new(u32::from(torque_limit))
-        .map_err(|_| AcceptanceMatrixPreflightRejection::InvalidPlan)?;
+        .map_err(|_| FixedGainAmplitudePreflightRejection::InvalidPlan)?;
     context.usable_torque_limit = derive_probe_limit(operational_limit)
-        .map_err(|_| AcceptanceMatrixPreflightRejection::InvalidPlan)?
+        .map_err(|_| FixedGainAmplitudePreflightRejection::InvalidPlan)?
         .raw();
     let motion_budget = OuterMotionBudget {
         requested_velocity_mrev_s: request.requested_velocity_mrev_s,
@@ -159,49 +162,49 @@ pub fn reconstruct_breakaway_plan(
         | VelocityIntegralPlanError::InvalidRequest
         | VelocityIntegralPlanError::ConfidenceFamilyTooLarge
         | VelocityIntegralPlanError::InsufficientStructuralSpan => {
-            AcceptanceMatrixPreflightRejection::InvalidPlan
+            FixedGainAmplitudePreflightRejection::InvalidPlan
         }
-        _ => AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch,
+        _ => FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch,
     })?;
     if current.digest() != point.identity.plan_digest
         || current.schema_revision != BREAKAWAY_STAGE_C_SCHEMA_REVISION
         || current.final_p != point.selected_p
         || current.target_velocity_rpm != point.target_velocity_rpm
     {
-        return Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch);
+        return Err(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch);
     }
     Ok(current)
 }
 
-/// Validate a retained point and derive one immutable matrix without mutating retention.
+/// Validate a retained point and derive one immutable amplitude plan without mutating retention.
 ///
 /// Reconstructs the plan the retained point identifies before checking it:
 /// breakaway points rebuild theirs deterministically from the carried
 /// confirmation token via [`reconstruct_breakaway_plan`]; every other
 /// identity is rejected. No full plan is retained -- only the compact
 /// [`AcceptancePoint`] the caller reads from `stage_c_candidate`.
-pub fn preflight_acceptance_matrix(
+pub fn preflight_fixed_gain_amplitude(
     action: AutotuneAction,
     request: VelocitySweepRequest,
     config: &StageCPreflightConfig,
     run_sequence: u32,
     stage_c_candidate: &StageCCandidateSlot,
-) -> Result<AcceptanceMatrixPreflight, AcceptanceMatrixPreflightRejection> {
+) -> Result<FixedGainAmplitudePreflight, FixedGainAmplitudePreflightRejection> {
     let point = stage_c_candidate
         .acceptance_point()
-        .ok_or(AcceptanceMatrixPreflightRejection::MissingAcceptancePoint)?;
+        .ok_or(FixedGainAmplitudePreflightRejection::MissingAcceptancePoint)?;
     let order = action
-        .matrix_order()
-        .ok_or(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch)?;
+        .amplitude_order()
+        .ok_or(FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch)?;
     let slot_order = action
-        .matrix_slot_order()
-        .ok_or(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch)?;
+        .amplitude_slot_order()
+        .ok_or(FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch)?;
     let expected_progress = match order {
-        AcceptanceMatrixOrder::Ascending => AcceptanceMatrixProgress::ReadyAscending,
-        AcceptanceMatrixOrder::Descending => AcceptanceMatrixProgress::ReadyDescending,
+        FixedGainAmplitudeOrder::Ascending => AcceptanceMatrixProgress::ReadyAscending,
+        FixedGainAmplitudeOrder::Descending => AcceptanceMatrixProgress::ReadyDescending,
     };
     if point.progress != expected_progress {
-        return Err(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch);
+        return Err(FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch);
     }
     let current_config = if point.identity.schema_revision == BREAKAWAY_STAGE_C_SCHEMA_REVISION {
         reconstruct_breakaway_plan(
@@ -213,94 +216,95 @@ pub fn preflight_acceptance_matrix(
             config.pwm_hz,
         )?
     } else {
-        return Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch);
+        return Err(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch);
     };
-    let plan = plan_acceptance_matrix(point, request, order, slot_order, current_config).map_err(
-        |error| match error {
-            AcceptanceMatrixPlanError::IdentityMismatch => {
-                AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch
+    let plan = plan_fixed_gain_amplitude(point, request, order, slot_order, current_config)
+        .map_err(|error| match error {
+            FixedGainAmplitudePlanError::IdentityMismatch => {
+                FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch
             }
-            AcceptanceMatrixPlanError::UnsupportedTargets
-            | AcceptanceMatrixPlanError::Arithmetic => {
-                AcceptanceMatrixPreflightRejection::InvalidPlan
+            FixedGainAmplitudePlanError::UnsupportedTargets
+            | FixedGainAmplitudePlanError::Arithmetic => {
+                FixedGainAmplitudePreflightRejection::InvalidPlan
             }
-        },
-    )?;
-    Ok(AcceptanceMatrixPreflight { plan, run_sequence })
+        })?;
+    Ok(FixedGainAmplitudePreflight { plan, run_sequence })
 }
 
-/// Apply one active matrix terminal after disarm-first restoration.
-pub fn apply_acceptance_matrix_terminal(
-    mut terminal: AcceptanceMatrixTerminal,
-    order: AcceptanceMatrixOrder,
+/// Apply one active amplitude terminal after disarm-first restoration.
+pub fn apply_fixed_gain_amplitude_terminal(
+    mut terminal: FixedGainAmplitudeTerminal,
+    order: FixedGainAmplitudeOrder,
     expected_plan_digest: u64,
     stage_c_candidate: &mut StageCCandidateSlot,
-) -> AcceptanceMatrixTerminal {
+) -> FixedGainAmplitudeTerminal {
     let Some(point) = stage_c_candidate.acceptance_point() else {
-        terminal.outcome = AcceptanceMatrixOutcome::Fault;
-        terminal.cause = AcceptanceMatrixCause::EvidenceIntegrity;
+        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
         return terminal;
     };
     let expected_progress = match order {
-        AcceptanceMatrixOrder::Ascending => AcceptanceMatrixProgress::ReadyAscending,
-        AcceptanceMatrixOrder::Descending => AcceptanceMatrixProgress::ReadyDescending,
+        FixedGainAmplitudeOrder::Ascending => AcceptanceMatrixProgress::ReadyAscending,
+        FixedGainAmplitudeOrder::Descending => AcceptanceMatrixProgress::ReadyDescending,
     };
     if point.identity.plan_digest != terminal.acceptance_plan_digest
         || terminal.plan_digest != expected_plan_digest
         || point.progress != expected_progress
     {
         stage_c_candidate.observe_fault();
-        terminal.outcome = AcceptanceMatrixOutcome::Fault;
-        terminal.cause = AcceptanceMatrixCause::EvidenceIntegrity;
+        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
         return terminal;
     }
 
     let transition_ok = match terminal.outcome {
-        AcceptanceMatrixOutcome::Complete => match order {
-            AcceptanceMatrixOrder::Ascending => stage_c_candidate.advance_matrix_progress(),
-            AcceptanceMatrixOrder::Descending => stage_c_candidate.close_matrix_progress(),
+        FixedGainAmplitudeOutcome::Complete => match order {
+            FixedGainAmplitudeOrder::Ascending => stage_c_candidate.advance_matrix_progress(),
+            FixedGainAmplitudeOrder::Descending => stage_c_candidate.close_matrix_progress(),
         },
-        AcceptanceMatrixOutcome::Inconclusive
-            if terminal.cause == AcceptanceMatrixCause::VelocityRestNotConfirmed =>
+        FixedGainAmplitudeOutcome::Inconclusive
+            if terminal.cause == FixedGainAmplitudeCause::VelocityRestNotConfirmed =>
         {
             true
         }
-        AcceptanceMatrixOutcome::Inconclusive => stage_c_candidate.close_matrix_progress(),
-        AcceptanceMatrixOutcome::Fault => {
+        FixedGainAmplitudeOutcome::Inconclusive => stage_c_candidate.close_matrix_progress(),
+        FixedGainAmplitudeOutcome::Fault => {
             stage_c_candidate.observe_fault();
             true
         }
-        AcceptanceMatrixOutcome::Failed => true,
+        FixedGainAmplitudeOutcome::Failed => true,
     };
     if !transition_ok {
         stage_c_candidate.observe_fault();
-        terminal.outcome = AcceptanceMatrixOutcome::Fault;
-        terminal.cause = AcceptanceMatrixCause::EvidenceIntegrity;
+        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
     }
     terminal
 }
 
-/// Build one definitive zero-motion matrix terminal from admission policy.
-pub fn failed_acceptance_matrix_terminal(
+/// Build one definitive zero-motion amplitude terminal from admission policy.
+pub fn failed_fixed_gain_amplitude_terminal(
     run_sequence: u32,
-    rejection: AcceptanceMatrixPreflightRejection,
+    rejection: FixedGainAmplitudePreflightRejection,
     stage_c_candidate: &StageCCandidateSlot,
-) -> AcceptanceMatrixTerminal {
+) -> FixedGainAmplitudeTerminal {
     let cause = match rejection {
-        AcceptanceMatrixPreflightRejection::MissingAcceptancePoint => {
-            AcceptanceMatrixCause::MissingAcceptancePoint
+        FixedGainAmplitudePreflightRejection::MissingAcceptancePoint => {
+            FixedGainAmplitudeCause::MissingAcceptancePoint
         }
-        AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch => {
-            AcceptanceMatrixCause::AcceptancePointIdentityMismatch
+        FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch => {
+            FixedGainAmplitudeCause::AcceptancePointIdentityMismatch
         }
-        AcceptanceMatrixPreflightRejection::MatrixOrderMismatch => {
-            AcceptanceMatrixCause::MatrixOrderMismatch
+        FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch => {
+            FixedGainAmplitudeCause::AmplitudeOrderMismatch
         }
-        AcceptanceMatrixPreflightRejection::InvalidPlan => AcceptanceMatrixCause::EvidenceIntegrity,
+        FixedGainAmplitudePreflightRejection::InvalidPlan => {
+            FixedGainAmplitudeCause::EvidenceIntegrity
+        }
     };
-    AcceptanceMatrixTerminal {
+    FixedGainAmplitudeTerminal {
         schema_revision:
-            crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+            crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         run_sequence,
         evidence_sequence: 0,
         acceptance_plan_digest: stage_c_candidate
@@ -308,7 +312,7 @@ pub fn failed_acceptance_matrix_terminal(
             .map_or(0, |point| point.identity.plan_digest),
         plan_digest: 0,
         digest: 0,
-        outcome: AcceptanceMatrixOutcome::Failed,
+        outcome: FixedGainAmplitudeOutcome::Failed,
         cause,
         attempted_masks: [0; 2],
         eligible_masks: [0; 2],

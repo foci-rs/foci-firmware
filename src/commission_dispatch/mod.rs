@@ -9,11 +9,11 @@
 
 // pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
-pub mod acceptance;
-#[cfg(test)]
-mod acceptance_tests;
 #[cfg(test)]
 mod characterization_tests;
+pub mod fixed_gain_amplitude;
+#[cfg(test)]
+mod fixed_gain_amplitude_tests;
 #[cfg(test)]
 mod manifest_completeness_tests;
 pub mod post_actions;
@@ -350,16 +350,16 @@ pub enum ReplyPayload {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
     },
-    /// Complete immutable fixed-I confidence-matrix plan disclosed before motion.
-    AcceptanceMatrixPlan {
+    /// Complete immutable fixed-I fixed-gain amplitude plan disclosed before motion.
+    FixedGainAmplitudePlan {
         oid: u8,
         run_sequence: u32,
-        plan: crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixPlan,
+        plan: crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudePlan,
     },
-    /// Compact firmware-authored fixed-I confidence-matrix terminal.
-    AcceptanceMatrixTerminal {
+    /// Compact firmware-authored fixed-I fixed-gain amplitude terminal.
+    FixedGainAmplitudeTerminal {
         oid: u8,
-        terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
+        terminal: crate::commissioning::types::FixedGainAmplitudeTerminal,
     },
     /// Compact firmware-authored reversal-standstill robustness-gate terminal.
     RobustnessReversalTerminal {
@@ -569,7 +569,9 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
         CommissionError::ChipResetDetected => CalibrationError::ChipResetDetected,
         CommissionError::MotorEnabled => CalibrationError::AlreadyEnabled,
         CommissionError::EncoderFault => CalibrationError::EncoderFault,
-        CommissionError::ClosedLoopActivationUnstable => CalibrationError::ClosedLoopActivationUnstable,
+        CommissionError::ClosedLoopActivationUnstable => {
+            CalibrationError::ClosedLoopActivationUnstable
+        }
         CommissionError::Cancelled => CalibrationError::Cancelled,
         _ => CalibrationError::InternalError,
     };
@@ -642,7 +644,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        StepResult::AcceptanceMatrixEvent(_) => CommissionOutcome::Continue,
+        StepResult::FixedGainAmplitudeEvent(_) => CommissionOutcome::Continue,
         StepResult::BreakawayCampaignEvent(event) => {
             let engine_ref = engine
                 .as_ref()
@@ -673,7 +675,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
             }
         }
         terminal @ (StepResult::VelocityIntegralTerminal(_)
-        | StepResult::AcceptanceMatrixTerminal(_)
+        | StepResult::FixedGainAmplitudeTerminal(_)
         | StepResult::RobustnessReversalTerminal(_)
         | StepResult::SelftestDone
         | StepResult::InnerFailed(_)
@@ -736,8 +738,8 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     mut retention: CommissionRetention<'_>,
 ) -> CommissionOutcome {
     let staged = match result {
-        StepResult::AcceptanceMatrixTerminal(terminal) => {
-            crate::commissioning::schedule::CommissionTerminal::AcceptanceMatrix(terminal)
+        StepResult::FixedGainAmplitudeTerminal(terminal) => {
+            crate::commissioning::schedule::CommissionTerminal::FixedGainAmplitude(terminal)
         }
         StepResult::RobustnessReversalTerminal(terminal) => {
             crate::commissioning::schedule::CommissionTerminal::RobustnessReversal(terminal)

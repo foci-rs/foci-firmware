@@ -87,15 +87,15 @@ wire_code = 20
 label = "Fixed-gain amplitude validation"
 trace_ident = "FixedGainAmplitudeValidation"
 doc = """
-Stage-C fixed-P velocity-integral acceptance sweep (ascending or
-descending amplitude) against the matrix-nominated point. Wire code 20."""
+Stage-C fixed-P velocity-integral fixed-gain sweep (ascending or
+descending amplitude) against the retained acceptance point. Wire code 20."""
 [[phase]]
 ident = "ReversalStandstillRobustnessGate"
 wire_code = 21
 label = "Reversal standstill robustness gate"
 trace_ident = "ReversalStandstillRobustnessGate"
 doc = """
-Reversal-standstill robustness gate over the matrix-accepted point.
+Reversal-standstill robustness gate over the retained acceptance point.
 Wire code 21."""
 [[phase]]
 ident = "EncoderAlign"
@@ -143,15 +143,15 @@ wire_code = 0
 const_stem = "SHAPE_RESUME"
 doc = "Resume Stage C from retained firmware authority."
 [[workflow_shape]]
-ident = "AcceptanceMatrixAscending"
+ident = "FixedGainAmplitudeAscending"
 wire_code = 1
-const_stem = "SHAPE_MATRIX_ASCENDING"
-doc = "Run the retained fixed-I acceptance matrix from low to high amplitude."
+const_stem = "SHAPE_FIXED_GAIN_AMPLITUDE_ASCENDING"
+doc = "Run the retained fixed-I gain from low to high amplitude."
 [[workflow_shape]]
-ident = "AcceptanceMatrixDescending"
+ident = "FixedGainAmplitudeDescending"
 wire_code = 2
-const_stem = "SHAPE_MATRIX_DESCENDING"
-doc = "Run the retained fixed-I acceptance matrix from high to low amplitude."
+const_stem = "SHAPE_FIXED_GAIN_AMPLITUDE_DESCENDING"
+doc = "Run the retained fixed-I gain from high to low amplitude."
 [[workflow_shape]]
 ident = "BreakawaySeededProportionalThenIntegral"
 wire_code = 3
@@ -164,20 +164,20 @@ ident = "ReversalStandstillRobustnessGate"
 wire_code = 4
 const_stem = "SHAPE_ROBUSTNESS_REVERSAL"
 doc = """
-Run the reversal-standstill robustness gate over the accepted point.
+Run the reversal-standstill robustness gate over the retained acceptance point.
 Distinct from every acquisition shape so the host arms the extended run
 timeout for the multi-cycle probe instead of the 5 s plan window."""
 
 [[action]]
-ident = "MatrixAscending"
+ident = "FixedGainAmplitudeAscending"
 wire_code = 1
-label = "matrix_ascending"
-doc = "Run the retained fixed-I matrix from lowest to highest amplitude."
+label = "amplitude_up"
+doc = "Run the retained fixed-I gain from lowest to highest amplitude."
 [[action]]
-ident = "MatrixDescending"
+ident = "FixedGainAmplitudeDescending"
 wire_code = 2
-label = "matrix_descending"
-doc = "Run the retained fixed-I matrix from highest to lowest amplitude."
+label = "amplitude_down"
+doc = "Run the retained fixed-I gain from highest to lowest amplitude."
 [[action]]
 ident = "BreakawaySeeded"
 wire_code = 7
@@ -187,7 +187,7 @@ Run the breakaway probe, additive discovery, held-out confirmation, and
 the existing velocity-integral continuation as one bounded command.
 
 This is the production `Tune` path: a non-trace build routes the request
-through the breakaway/velocity-integral/acceptance engine just like a
+through the breakaway/velocity-integral/fixed-gain-amplitude engine just like a
 trace build. The `trace` feature adds only the raw evidence emission on
 top of the same campaign, not the campaign itself."""
 [[action]]

@@ -1025,9 +1025,9 @@ pub struct FociResistanceAxis {
 #[cfg(test)]
 mod resistance_reply_size_tests {
     use super::{
-        FociClosedLoopActivation, FociCommissionResult, FociCommissionTiming, FociCurrentLoopFilters,
-        FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis, FociResistanceProfile,
-        FociResistanceRun, FociRobustnessCycleEvidence,
+        FociClosedLoopActivation, FociCommissionResult, FociCommissionTiming,
+        FociCurrentLoopFilters, FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis,
+        FociResistanceProfile, FociResistanceRun, FociRobustnessCycleEvidence,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -2837,9 +2837,9 @@ pub struct FociVelocityIntegralPlanRung {
     pub tau_us: u32,
 }
 
-/// Immutable fixed-I velocity confidence-matrix plan.
+/// Immutable fixed-I fixed-gain amplitude plan.
 #[klipper_reply]
-pub struct FociAcceptanceMatrixPlan<'a> {
+pub struct FociFixedGainAmplitudePlan<'a> {
     /// Endpoint object id.
     pub oid: u8,
     /// Zero-based fragment index; the plan spans two fragments.
@@ -2848,9 +2848,9 @@ pub struct FociAcceptanceMatrixPlan<'a> {
     pub payload: &'a [u8],
 }
 
-/// Compact fixed-I velocity confidence-matrix terminal.
+/// Compact fixed-I fixed-gain amplitude terminal.
 #[klipper_reply]
-pub struct FociAcceptanceMatrixTerminal<'a> {
+pub struct FociFixedGainAmplitudeTerminal<'a> {
     /// Endpoint object id.
     pub oid: u8,
     /// Exact fixed-layout schema-1 payload.
@@ -2898,8 +2898,8 @@ mod velocity_sweep_reply_tests {
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
-    use crate::commissioning::outer::velocity::acceptance_reporting::{
-        ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES, ACCEPTANCE_TERMINAL_REPLY_BYTES,
+    use crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::{
+        FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES, FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES,
     };
 
     const PAYLOAD_WITH_ID_MAX: usize = 59;
@@ -2924,21 +2924,21 @@ mod velocity_sweep_reply_tests {
     }
 
     #[test]
-    fn acceptance_matrix_replies_fit_one_protocol_frame() {
+    fn fixed_gain_amplitude_replies_fit_one_protocol_frame() {
         assert_fits(
-            &FociAcceptanceMatrixPlan {
+            &FociFixedGainAmplitudePlan {
                 oid: u8::MAX,
                 fragment: u8::MAX,
-                payload: &[u8::MAX; ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES],
+                payload: &[u8::MAX; FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES],
             },
-            "acceptance matrix plan fragment",
+            "fixed-gain amplitude plan fragment",
         );
         assert_fits(
-            &FociAcceptanceMatrixTerminal {
+            &FociFixedGainAmplitudeTerminal {
                 oid: u8::MAX,
-                payload: &[u8::MAX; ACCEPTANCE_TERMINAL_REPLY_BYTES],
+                payload: &[u8::MAX; FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES],
             },
-            "acceptance matrix terminal",
+            "fixed-gain amplitude terminal",
         );
     }
 

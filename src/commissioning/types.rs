@@ -306,7 +306,7 @@ pub enum EngineKind {
     /// Engine constructed via `new_selftest` — diagnostic selftest run.
     Selftest,
     /// Engine constructed via one of the live outer constructors
-    /// (`new_outer_for_tmc_with_acceptance_preflight`, `_with_stage_c_preflight`,
+    /// (`new_outer_for_tmc_with_fixed_gain_amplitude_preflight`, `_with_stage_c_preflight`,
     /// `_with_breakaway_campaign`, `_with_robustness`) — Stage 2 mechanical/velocity tune.
     OuterTune,
 }
@@ -558,10 +558,10 @@ pub enum RestSelectionOwner {
     StageCRecovery = 5,
     /// Positive-I I=0 cleanup.
     StageCCleanup = 6,
-    /// Matrix observation.
-    MatrixObservation = 7,
-    /// Matrix origin recovery.
-    MatrixRecovery = 8,
+    /// Amplitude observation.
+    FixedGainAmplitudeObservation = 7,
+    /// Amplitude origin recovery.
+    FixedGainAmplitudeRecovery = 8,
 }
 
 /// Exact trace-only evidence for one completed scored-rest selector decision.
@@ -795,10 +795,10 @@ pub enum VelocityIntegralOutcome {
     Failed = 5,
 }
 
-/// Firmware-owned terminal outcome for one fixed velocity confidence matrix.
+/// Firmware-owned terminal outcome for one fixed fixed-gain amplitude validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
-pub enum AcceptanceMatrixOutcome {
+pub enum FixedGainAmplitudeOutcome {
     /// The declared schedule closed with at least three eligible amplitudes per direction.
     Complete = 0,
     /// Motion stayed safe but the directional floor was not met.
@@ -809,10 +809,10 @@ pub enum AcceptanceMatrixOutcome {
     Failed = 3,
 }
 
-/// Matrix-local terminal cause; never mirrored into generic commissioning status.
+/// Amplitude-local terminal cause; never mirrored into generic commissioning status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
-pub enum AcceptanceMatrixCause {
+pub enum FixedGainAmplitudeCause {
     /// No failure or insufficiency.
     None = 0,
     /// Fewer than three shared amplitudes remained in at least one direction.
@@ -823,8 +823,8 @@ pub enum AcceptanceMatrixCause {
     MissingAcceptancePoint = 3,
     /// The retained point does not bind the reconstructed plan.
     AcceptancePointIdentityMismatch = 4,
-    /// The requested order contradicts retained matrix progress.
-    MatrixOrderMismatch = 5,
+    /// The requested order contradicts retained amplitude progress.
+    AmplitudeOrderMismatch = 5,
     /// Fixed evidence storage was exhausted.
     EvidenceCapacity = 6,
     /// Canonical counts, masks, or identities violated their contract.
@@ -833,23 +833,23 @@ pub enum AcceptanceMatrixCause {
     VelocityRestNotConfirmed = 53,
 }
 
-/// One completed amplitude report with canonical matrix sequencing.
+/// One completed amplitude report with canonical amplitude sequencing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct AcceptanceAmplitudeEvidence {
+pub struct FixedGainAmplitudeEvidence {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
-    /// Monotonic evidence sequence within the matrix run.
+    /// Monotonic evidence sequence within the amplitude run.
     pub evidence_sequence: u16,
-    /// Exact immutable matrix-plan digest.
+    /// Exact immutable amplitude-plan digest.
     pub plan_digest: u64,
     /// Exact two-direction amplitude fold.
     pub report:
-        crate::commissioning::outer::velocity::acceptance_evidence::AcceptanceAmplitudeReport,
+        crate::commissioning::outer::velocity::fixed_gain_amplitude_evidence::FixedGainAmplitudeReport,
 }
 
-/// Trace-only evidence produced by one fixed-I confidence matrix.
+/// Trace-only evidence produced by one fixed-I confidence amplitude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum AcceptanceMatrixEvent {
+pub enum FixedGainAmplitudeEvent {
     /// One intrinsic moving observation.
     Observation(VelocityIntegralObservation),
     /// Current and zero-target rest evidence for one primitive.
@@ -861,13 +861,13 @@ pub enum AcceptanceMatrixEvent {
     /// Exact per-suffix scored-rest selector evidence.
     RestSelection(RestSelectionDiagnostic),
     /// One complete four-observation fold per direction.
-    Amplitude(AcceptanceAmplitudeEvidence),
+    Amplitude(FixedGainAmplitudeEvidence),
 }
 
-/// Compact terminal for one acceptance-matrix acquisition.
+/// Compact terminal for one fixed-gain-amplitude acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct AcceptanceMatrixTerminal {
-    /// Independent matrix evidence schema.
+pub struct FixedGainAmplitudeTerminal {
+    /// Independent amplitude evidence schema.
     pub schema_revision: u16,
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
@@ -875,14 +875,14 @@ pub struct AcceptanceMatrixTerminal {
     pub evidence_sequence: u16,
     /// Exact retained combined-plan identity.
     pub acceptance_plan_digest: u64,
-    /// Exact matrix-plan digest.
+    /// Exact amplitude-plan digest.
     pub plan_digest: u64,
-    /// Rolling canonical matrix evidence digest.
+    /// Rolling canonical amplitude evidence digest.
     pub digest: u64,
-    /// Matrix-local terminal class.
-    pub outcome: AcceptanceMatrixOutcome,
-    /// Matrix-local terminal cause.
-    pub cause: AcceptanceMatrixCause,
+    /// Amplitude-local terminal class.
+    pub outcome: FixedGainAmplitudeOutcome,
+    /// Amplitude-local terminal cause.
+    pub cause: FixedGainAmplitudeCause,
     /// Per-direction amplitudes whose schedules began.
     pub attempted_masks: [u8; 2],
     /// Per-direction amplitudes with unique depth-three consensus.
@@ -901,9 +901,9 @@ pub struct AcceptanceMatrixTerminal {
     pub emitted_amplitudes: u8,
     /// Packed inherited validity and evidence-quality qualifiers.
     pub qualifier_bits: u16,
-    /// Monotonic timestamp before the first matrix motion.
+    /// Monotonic timestamp before the first amplitude motion.
     pub run_started_us: u64,
-    /// Monotonic timestamp after the final matrix action.
+    /// Monotonic timestamp after the final amplitude action.
     pub run_completed_us: u64,
     /// Exact safety-fault context, when present.
     pub safety_fault: Option<OuterSafetyFault>,
@@ -1622,7 +1622,7 @@ pub struct BreakawayRecoveryOriginMismatch {
 /// full at the terminal transition -- `breakaway_campaign`'s own
 /// `CollectedInBandRungs`/`ConfirmationDirectionalInput` retain it across the
 /// whole phase for exactly this reason. The dispatch bridge loops over it to
-/// emit one wire record per item, the same way `emit_acceptance_matrix_plan`
+/// emit one wire record per item, the same way `emit_fixed_gain_amplitude_plan`
 /// already fans one Rust value out to several wire fragments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
@@ -1729,9 +1729,9 @@ pub enum StepResult {
     /// The report-only Stage-C response sweep reached a terminal result.
     VelocityIntegralTerminal(VelocityIntegralTerminal),
     /// Trace-only fixed-I velocity confidence evidence became available.
-    AcceptanceMatrixEvent(AcceptanceMatrixEvent),
-    /// One fixed-I velocity confidence matrix reached its terminal.
-    AcceptanceMatrixTerminal(AcceptanceMatrixTerminal),
+    FixedGainAmplitudeEvent(FixedGainAmplitudeEvent),
+    /// One fixed-I fixed-gain amplitude validation reached its terminal.
+    FixedGainAmplitudeTerminal(FixedGainAmplitudeTerminal),
     /// One reversal-standstill robustness gate reached its terminal.
     RobustnessReversalTerminal(RobustnessReversalTerminal),
     /// Streamed breakaway-campaign evidence became available.
@@ -2382,28 +2382,28 @@ mod commission_timing_tests {
 }
 
 #[cfg(test)]
-mod acceptance_matrix_code_tests {
-    use super::{AcceptanceMatrixCause, AcceptanceMatrixOutcome};
+mod fixed_gain_amplitude_code_tests {
+    use super::{FixedGainAmplitudeCause, FixedGainAmplitudeOutcome};
 
     #[test]
-    fn acceptance_matrix_wire_namespace_is_stable() {
-        assert_eq!(AcceptanceMatrixOutcome::Complete as u8, 0);
-        assert_eq!(AcceptanceMatrixOutcome::Inconclusive as u8, 1);
-        assert_eq!(AcceptanceMatrixOutcome::Fault as u8, 2);
-        assert_eq!(AcceptanceMatrixOutcome::Failed as u8, 3);
+    fn fixed_gain_amplitude_wire_namespace_is_stable() {
+        assert_eq!(FixedGainAmplitudeOutcome::Complete as u8, 0);
+        assert_eq!(FixedGainAmplitudeOutcome::Inconclusive as u8, 1);
+        assert_eq!(FixedGainAmplitudeOutcome::Fault as u8, 2);
+        assert_eq!(FixedGainAmplitudeOutcome::Failed as u8, 3);
 
-        assert_eq!(AcceptanceMatrixCause::None as u8, 0);
-        assert_eq!(AcceptanceMatrixCause::InsufficientSharedFloor as u8, 1);
-        assert_eq!(AcceptanceMatrixCause::RecoveryUnavailable as u8, 2);
-        assert_eq!(AcceptanceMatrixCause::MissingAcceptancePoint as u8, 3);
+        assert_eq!(FixedGainAmplitudeCause::None as u8, 0);
+        assert_eq!(FixedGainAmplitudeCause::InsufficientSharedFloor as u8, 1);
+        assert_eq!(FixedGainAmplitudeCause::RecoveryUnavailable as u8, 2);
+        assert_eq!(FixedGainAmplitudeCause::MissingAcceptancePoint as u8, 3);
         assert_eq!(
-            AcceptanceMatrixCause::AcceptancePointIdentityMismatch as u8,
+            FixedGainAmplitudeCause::AcceptancePointIdentityMismatch as u8,
             4
         );
-        assert_eq!(AcceptanceMatrixCause::MatrixOrderMismatch as u8, 5);
-        assert_eq!(AcceptanceMatrixCause::EvidenceCapacity as u8, 6);
-        assert_eq!(AcceptanceMatrixCause::EvidenceIntegrity as u8, 7);
-        assert_eq!(AcceptanceMatrixCause::VelocityRestNotConfirmed as u8, 53);
+        assert_eq!(FixedGainAmplitudeCause::AmplitudeOrderMismatch as u8, 5);
+        assert_eq!(FixedGainAmplitudeCause::EvidenceCapacity as u8, 6);
+        assert_eq!(FixedGainAmplitudeCause::EvidenceIntegrity as u8, 7);
+        assert_eq!(FixedGainAmplitudeCause::VelocityRestNotConfirmed as u8, 53);
     }
 }
 

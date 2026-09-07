@@ -5,7 +5,8 @@
 //! `PHI_E_SELECTION` to the ABN decoder before any closed-loop operation.
 
 use super::{
-    ElectricalIdentificationData, ElectricalIdentificationState, EncoderAlignState, EncoderCheckState, InnerPhase,
+    ElectricalIdentificationData, ElectricalIdentificationState, EncoderAlignState,
+    EncoderCheckState, InnerPhase,
 };
 use crate::autotune::{ClosedLoopActivationState, CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::CalibrateEntryGains;

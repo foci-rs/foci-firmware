@@ -2,7 +2,7 @@
 
 use crate::autotune::{CommissionError, CommissionPhase};
 use crate::commissioning::types::{
-    AcceptanceMatrixTerminal, AdcCalResult, CommissionResult, EngineKind, OuterResult,
+    AdcCalResult, CommissionResult, EngineKind, FixedGainAmplitudeTerminal, OuterResult,
     RobustnessReversalTerminal, StepResult, VelocityIntegralEvent, VelocityIntegralTerminal,
 };
 
@@ -77,8 +77,8 @@ pub enum CommissionTerminal {
     CommissionDone(CommissionResult),
     /// Report-only Stage-C response sweep completed, remained inconclusive, or faulted.
     VelocityIntegral(VelocityIntegralTerminal),
-    /// One fixed-I velocity confidence matrix completed, remained inconclusive, or faulted.
-    AcceptanceMatrix(AcceptanceMatrixTerminal),
+    /// One fixed-I fixed-gain amplitude validation completed, remained inconclusive, or faulted.
+    FixedGainAmplitude(FixedGainAmplitudeTerminal),
     /// One reversal-standstill robustness gate completed, remained inconclusive, or faulted.
     RobustnessReversal(RobustnessReversalTerminal),
 }
@@ -93,7 +93,7 @@ impl CommissionTerminal {
             Self::SelftestDone => StepResult::SelftestDone,
             Self::CommissionDone(result) => StepResult::CommissionDone(result),
             Self::VelocityIntegral(result) => StepResult::VelocityIntegralTerminal(result),
-            Self::AcceptanceMatrix(result) => StepResult::AcceptanceMatrixTerminal(result),
+            Self::FixedGainAmplitude(result) => StepResult::FixedGainAmplitudeTerminal(result),
             Self::RobustnessReversal(result) => StepResult::RobustnessReversalTerminal(result),
         }
     }
@@ -198,7 +198,7 @@ pub fn adapt_step_result(
         StepResult::VelocityIntegralTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::VelocityIntegral(result),
         }),
-        StepResult::AcceptanceMatrixEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
+        StepResult::FixedGainAmplitudeEvent(_) => Ok(CommissionPoll::ReadyNow { event: None }),
         StepResult::BreakawayCampaignEvent(event) => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
             Ok(CommissionPoll::ReadyNow {
@@ -220,8 +220,8 @@ pub fn adapt_step_result(
                 }),
             })
         }
-        StepResult::AcceptanceMatrixTerminal(result) => Ok(CommissionPoll::Terminal {
-            result: CommissionTerminal::AcceptanceMatrix(result),
+        StepResult::FixedGainAmplitudeTerminal(result) => Ok(CommissionPoll::Terminal {
+            result: CommissionTerminal::FixedGainAmplitude(result),
         }),
         StepResult::RobustnessReversalTerminal(result) => Ok(CommissionPoll::Terminal {
             result: CommissionTerminal::RobustnessReversal(result),
@@ -350,16 +350,16 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_matrix_evidence_stays_out_of_scheduler_events() {
+    fn fixed_gain_amplitude_evidence_stays_out_of_scheduler_events() {
         let report =
-            crate::commissioning::outer::velocity::acceptance_evidence::AcceptanceAmplitudeReport {
+            crate::commissioning::outer::velocity::fixed_gain_amplitude_evidence::FixedGainAmplitudeReport {
                 amplitude_index: 0,
                 target_rpm: 16,
                 directions: core::array::from_fn(|_| {
-                    crate::commissioning::outer::velocity::acceptance_evidence::
-                        AcceptanceDirectionalEvidence {
+                    crate::commissioning::outer::velocity::fixed_gain_amplitude_evidence::
+                        FixedGainAmplitudeDirectionalEvidence {
                             availability: crate::commissioning::outer::velocity::
-                                acceptance_evidence::AcceptanceAmplitudeAvailability::Unattempted,
+                                fixed_gain_amplitude_evidence::FixedGainAmplitudeAvailability::Unattempted,
                             consensus: crate::commissioning::outer::velocity::sweep_consensus::
                                 DirectionalConsensus {
                                     classification: crate::commissioning::outer::velocity::
@@ -380,8 +380,8 @@ mod tests {
                         }
                 }),
             };
-        let event = crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(
-            crate::commissioning::types::AcceptanceAmplitudeEvidence {
+        let event = crate::commissioning::types::FixedGainAmplitudeEvent::Amplitude(
+            crate::commissioning::types::FixedGainAmplitudeEvidence {
                 run_sequence: 1,
                 evidence_sequence: 2,
                 plan_digest: 3,
@@ -390,7 +390,7 @@ mod tests {
         );
 
         assert!(matches!(
-            adapt_step_result(StepResult::AcceptanceMatrixEvent(event), 42_000, None).unwrap(),
+            adapt_step_result(StepResult::FixedGainAmplitudeEvent(event), 42_000, None).unwrap(),
             CommissionPoll::ReadyNow { event: None }
         ));
     }

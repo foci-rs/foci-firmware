@@ -279,8 +279,8 @@ mod tests {
                 RestSelectionOwner::StageCPositiveObservation as u8,
                 RestSelectionOwner::StageCRecovery as u8,
                 RestSelectionOwner::StageCCleanup as u8,
-                RestSelectionOwner::MatrixObservation as u8,
-                RestSelectionOwner::MatrixRecovery as u8,
+                RestSelectionOwner::FixedGainAmplitudeObservation as u8,
+                RestSelectionOwner::FixedGainAmplitudeRecovery as u8,
             ],
             [0, 1, 2, 3, 4, 5, 6, 7, 8]
         );
@@ -297,11 +297,12 @@ mod tests {
         let stage_c = super::super::integral_reporting::encode_velocity_integral_event(
             crate::commissioning::types::VelocityIntegralEvent::RestSelection(report),
         );
-        let matrix = super::super::acceptance_reporting::encode_acceptance_event(
-            crate::commissioning::types::AcceptanceMatrixEvent::RestSelection(report),
-        );
+        let amplitude =
+            super::super::fixed_gain_amplitude_reporting::encode_fixed_gain_amplitude_event(
+                crate::commissioning::types::FixedGainAmplitudeEvent::RestSelection(report),
+            );
         assert_eq!(stage_c.as_bytes(), shared.as_bytes());
-        assert_eq!(matrix.as_bytes(), shared.as_bytes());
+        assert_eq!(amplitude.as_bytes(), shared.as_bytes());
     }
 
     #[test]

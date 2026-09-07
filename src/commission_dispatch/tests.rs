@@ -261,7 +261,10 @@ impl CommissionReplySink for ReplyRecorder {
         });
     }
 
-    fn foci_closed_loop_activation(&mut self, report: crate::tmc_diagnostics::ClosedLoopActivationReport) {
+    fn foci_closed_loop_activation(
+        &mut self,
+        report: crate::tmc_diagnostics::ClosedLoopActivationReport,
+    ) {
         self.events.push(ReplyEvent::ClosedLoopActivation {
             entry_status: report.entry_status,
             drift_count: report.drift_count,
@@ -738,7 +741,10 @@ fn phase_changed_returns_oid_phase_kind() {
                 engine_kind,
             } => {
                 assert_eq!(oid, 7);
-                assert_eq!(phase_id, crate::autotune::CommissionPhase::ClosedLoopActivation);
+                assert_eq!(
+                    phase_id,
+                    crate::autotune::CommissionPhase::ClosedLoopActivation
+                );
                 assert_eq!(
                     engine_kind,
                     crate::commissioning::types::EngineKind::Commission
@@ -2518,7 +2524,7 @@ fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
 ///
 /// Field values mirror the fixture `replies.rs`'s own dispatch tests already
 /// build for the same struct; this promotes that pattern out from behind the
-/// now-removed acceptance-matrix-only feature flag rather than inventing new
+/// now-removed fixed-gain-amplitude-only feature flag rather than inventing new
 /// evidence.
 fn sample_velocity_integral_terminal_for_test()
 -> crate::commissioning::types::VelocityIntegralTerminal {

@@ -1099,7 +1099,10 @@ mod tests {
         phase
     }
 
-    fn closed_loop_phase_at_with_attempt(state: ClosedLoopActivationState, attempt: u8) -> InnerPhase {
+    fn closed_loop_phase_at_with_attempt(
+        state: ClosedLoopActivationState,
+        attempt: u8,
+    ) -> InnerPhase {
         let mut phase = closed_loop_phase_at(state);
         let InnerPhase::ClosedLoopActivation {
             attempt: phase_attempt,
@@ -2372,15 +2375,16 @@ mod tests {
                 flux_count: -4,
                 status_flags: 0,
             });
-            let mut phase =
-                closed_loop_phase_at_without_inner(ClosedLoopActivationState::SustainedHoldSample {
+            let mut phase = closed_loop_phase_at_without_inner(
+                ClosedLoopActivationState::SustainedHoldSample {
                     accumulator,
                     started_us: 0,
                     next_sample_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
                     deadline_us: HOLD_GATE_SAMPLE_PERIOD_US as u64,
                     requested_sample_period_us: HOLD_GATE_SAMPLE_PERIOD_US as u16,
                     sample_overrun: false,
-                });
+                },
+            );
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = HOLD_GATE_SAMPLE_PERIOD_US as u64;

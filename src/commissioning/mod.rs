@@ -44,18 +44,20 @@ use crate::trace::events::{
     EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG, TraceEventLevel, u32_arg,
 };
 // Raw FTRC trace-channel event ids: used only inside the raw-trace helpers
-// kept on `trace` (Stage-C/matrix/breakaway terminal and evidence emission).
+// kept on `trace` (Stage-C/amplitude/breakaway terminal and evidence emission).
 #[cfg(feature = "trace")]
 use crate::trace::events::{
-    EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE, EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
-    EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL,
-    EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL,
-    EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN,
-    EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL, EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION,
-    EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN, EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT,
-    EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL, EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
+    EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN,
+    EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_TERMINAL, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_MARGIN,
+    EVENT_COMMISSION_BREAKAWAY_DISCOVERY_PLAN, EVENT_COMMISSION_BREAKAWAY_DISCOVERY_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_PROBE_DECISION, EVENT_COMMISSION_BREAKAWAY_PROBE_PLAN,
+    EVENT_COMMISSION_BREAKAWAY_PROBE_RESULT, EVENT_COMMISSION_BREAKAWAY_PROBE_TERMINAL,
+    EVENT_COMMISSION_BREAKAWAY_RAW_OBSERVATION,
     EVENT_COMMISSION_BREAKAWAY_RECOVERY_ORIGIN_MISMATCH,
-    EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
+    EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED,
+    EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_AMPLITUDE,
+    EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
+    EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_TERMINAL, EVENT_COMMISSION_OUTER_SAFETY_TIMING,
     EVENT_COMMISSION_VELOCITY_INTEGRAL_COMPLETE, EVENT_COMMISSION_VELOCITY_INTEGRAL_TERMINAL,
 };
 use foci_tmc4671::pid::{PidIGain, PidPGain};
@@ -679,13 +681,13 @@ impl CommissioningEngine {
         Self::assemble_outer(scaffold, phase)
     }
 
-    /// Create one direct fixed-I matrix engine from an exact disclosed plan.
-    pub fn new_outer_for_tmc_with_acceptance_preflight(
+    /// Create one direct fixed-I amplitude engine from an exact disclosed plan.
+    pub fn new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,
         params: OuterTuneParams,
         entry_snapshot: EntrySnapshot,
-        preflight: crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight,
+        preflight: crate::commission_dispatch::fixed_gain_amplitude::FixedGainAmplitudePreflight,
     ) -> Self {
         let scaffold = Self::outer_scaffold(
             oid,
@@ -707,7 +709,7 @@ impl CommissioningEngine {
 
     /// Create a reversal-standstill robustness engine from a preflighted point.
     ///
-    /// Mirrors [`Self::new_outer_for_tmc_with_acceptance_preflight`] but
+    /// Mirrors [`Self::new_outer_for_tmc_with_fixed_gain_amplitude_preflight`] but
     /// configures the outer safety envelope up front from the accepted point's
     /// own probe velocity, because the robustness stepper's `Setup` -- unlike the
     /// Stage-C/acceptance stepper -- assumes the encoder domain and velocity
@@ -764,11 +766,13 @@ impl CommissioningEngine {
         Ok(Self::assemble_outer(scaffold, phase))
     }
 
-    /// Return the order of the active fixed-I acceptance matrix.
-    pub(crate) fn acceptance_matrix_order(
+    /// Return the order of the active fixed-I fixed-gain amplitude run.
+    pub(crate) fn fixed_gain_amplitude_order(
         &self,
-    ) -> Option<crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrder> {
-        use crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrder;
+    ) -> Option<
+        crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder,
+    > {
+        use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder;
         use crate::commissioning::outer::velocity::integral_plan::VelocityIntegralAcquisitionKind;
 
         let EngineMode::Outer {
@@ -779,18 +783,18 @@ impl CommissioningEngine {
             return None;
         };
         match data.plan.acquisition_kind {
-            VelocityIntegralAcquisitionKind::AcceptanceAscending => {
-                Some(AcceptanceMatrixOrder::Ascending)
+            VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending => {
+                Some(FixedGainAmplitudeOrder::Ascending)
             }
-            VelocityIntegralAcquisitionKind::AcceptanceDescending => {
-                Some(AcceptanceMatrixOrder::Descending)
+            VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
+                Some(FixedGainAmplitudeOrder::Descending)
             }
             VelocityIntegralAcquisitionKind::ResponseLadder => None,
         }
     }
 
-    /// Return the exact digest of the active fixed-I acceptance matrix.
-    pub(crate) fn acceptance_matrix_plan_digest(&self) -> Option<u64> {
+    /// Return the exact digest of the active fixed-I fixed-gain amplitude plan.
+    pub(crate) fn fixed_gain_amplitude_plan_digest(&self) -> Option<u64> {
         let EngineMode::Outer {
             phase: OuterPhase::VelocityIntegral { data, .. },
             ..
@@ -801,9 +805,9 @@ impl CommissioningEngine {
         matches!(
             data.plan.acquisition_kind,
             crate::commissioning::outer::velocity::integral_plan::
-                VelocityIntegralAcquisitionKind::AcceptanceAscending
+                VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
                 | crate::commissioning::outer::velocity::integral_plan::
-                    VelocityIntegralAcquisitionKind::AcceptanceDescending
+                    VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
         )
         .then_some(data.plan.plan_digest)
     }
@@ -1264,29 +1268,33 @@ impl CommissioningEngine {
         self.trace_run.terminal = true;
     }
 
-    /// Emit the authoritative matrix terminal after disarm and retained-state policy.
+    /// Emit the authoritative amplitude terminal after disarm and retained-state policy.
     #[cfg(feature = "trace")]
-    pub(crate) fn emit_acceptance_matrix_terminal_trace<B: CommissioningBackend>(
+    pub(crate) fn emit_fixed_gain_amplitude_terminal_trace<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
-        terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
+        terminal: crate::commissioning::types::FixedGainAmplitudeTerminal,
     ) {
         self.emit_outer_safety_timing_trace(backend, terminal.run_sequence);
         backend.record_velocity_sweep_trace_record(
-            crate::commissioning::outer::velocity::acceptance_reporting::encode_acceptance_terminal(
+            crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::encode_fixed_gain_amplitude_terminal(
                 &terminal,
             ),
         );
         let level = match terminal.outcome {
-            crate::commissioning::types::AcceptanceMatrixOutcome::Complete => TraceEventLevel::Info,
-            crate::commissioning::types::AcceptanceMatrixOutcome::Inconclusive
-            | crate::commissioning::types::AcceptanceMatrixOutcome::Failed => TraceEventLevel::Warn,
-            crate::commissioning::types::AcceptanceMatrixOutcome::Fault => TraceEventLevel::Error,
+            crate::commissioning::types::FixedGainAmplitudeOutcome::Complete => {
+                TraceEventLevel::Info
+            }
+            crate::commissioning::types::FixedGainAmplitudeOutcome::Inconclusive
+            | crate::commissioning::types::FixedGainAmplitudeOutcome::Failed => {
+                TraceEventLevel::Warn
+            }
+            crate::commissioning::types::FixedGainAmplitudeOutcome::Fault => TraceEventLevel::Error,
         };
         self.emit_trace_phase_end(backend, PHASE_END_OK, TraceEventLevel::Info);
         backend.record_commission_trace_event(CommissionTraceEvent {
             level,
-            event_id: EVENT_COMMISSION_ACCEPTANCE_MATRIX_TERMINAL,
+            event_id: EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_TERMINAL,
             engine_kind: EngineKind::OuterTune,
             payload: [i32::from(terminal.evidence_sequence), 0],
             payload_count: 1,
@@ -1358,48 +1366,48 @@ impl CommissioningEngine {
             }
             StepResult::VelocityIntegralTerminal(_) => {}
             #[cfg(feature = "trace")]
-            StepResult::AcceptanceMatrixEvent(event) => {
+            StepResult::FixedGainAmplitudeEvent(event) => {
                 let (record, event_id, sequence) = match event {
-                    crate::commissioning::types::AcceptanceMatrixEvent::Observation(report) => (
-                        crate::commissioning::outer::velocity::acceptance_reporting::
-                            encode_acceptance_observation(*report),
-                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
+                    crate::commissioning::types::FixedGainAmplitudeEvent::Observation(report) => (
+                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
+                            encode_fixed_gain_amplitude_observation(*report),
+                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
                         report.evidence_sequence,
                     ),
-                    crate::commissioning::types::AcceptanceMatrixEvent::Current(report) => (
-                        crate::commissioning::outer::velocity::acceptance_reporting::
-                            encode_acceptance_current(*report),
-                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
+                    crate::commissioning::types::FixedGainAmplitudeEvent::Current(report) => (
+                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
+                            encode_fixed_gain_amplitude_current(*report),
+                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
                         report.evidence_sequence,
                     ),
-                    crate::commissioning::types::AcceptanceMatrixEvent::Recovery(report) => (
-                        crate::commissioning::outer::velocity::acceptance_reporting::
-                            encode_acceptance_recovery(*report),
-                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_OBSERVATION,
+                    crate::commissioning::types::FixedGainAmplitudeEvent::Recovery(report) => (
+                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
+                            encode_fixed_gain_amplitude_recovery(*report),
+                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION,
                         report.evidence_sequence,
                     ),
-                    crate::commissioning::types::AcceptanceMatrixEvent::RecoveryRest(report) => (
+                    crate::commissioning::types::FixedGainAmplitudeEvent::RecoveryRest(report) => (
                         crate::commissioning::outer::velocity::sweep_reporting::
                             encode_recovery_rest(*report),
                         EVENT_COMMISSION_SELECTED_RECOVERY_REST,
                         report.evidence_sequence,
                     ),
-                    crate::commissioning::types::AcceptanceMatrixEvent::RestSelection(report) => (
+                    crate::commissioning::types::FixedGainAmplitudeEvent::RestSelection(report) => (
                         crate::commissioning::outer::velocity::sweep_reporting::
                             encode_rest_selection(*report)
                             .expect("completed scored-rest diagnostic is coherent"),
                         EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC,
                         report.evidence_sequence,
                     ),
-                    crate::commissioning::types::AcceptanceMatrixEvent::Amplitude(report) => (
-                        crate::commissioning::outer::velocity::acceptance_reporting::
-                            encode_acceptance_amplitude(
+                    crate::commissioning::types::FixedGainAmplitudeEvent::Amplitude(report) => (
+                        crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
+                            encode_fixed_gain_amplitude_amplitude(
                                 report.run_sequence,
                                 report.evidence_sequence,
                                 report.plan_digest,
                                 report.report,
                             ),
-                        EVENT_COMMISSION_ACCEPTANCE_MATRIX_AMPLITUDE,
+                        EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_AMPLITUDE,
                         report.evidence_sequence,
                     ),
                 };
@@ -1414,11 +1422,11 @@ impl CommissioningEngine {
                 });
             }
             #[cfg(not(feature = "trace"))]
-            StepResult::AcceptanceMatrixEvent(_) => {}
-            StepResult::AcceptanceMatrixTerminal(_) => {}
+            StepResult::FixedGainAmplitudeEvent(_) => {}
+            StepResult::FixedGainAmplitudeTerminal(_) => {}
             // The robustness terminal's Klipper reply is built from the same
             // evidence over the `commission_dispatch::replies` path, exactly like
-            // the acceptance-matrix terminal above; this FTRC raw-trace hook has
+            // the fixed-gain-amplitude terminal above; this FTRC raw-trace hook has
             // nothing to add for it.
             StepResult::RobustnessReversalTerminal(_) => {}
             // The campaign engine that produces these
@@ -1477,7 +1485,7 @@ impl CommissioningEngine {
     /// stream: the dedicated bulk USB interface `foci-trace` captures,
     /// physically separate from the Klipper command-reply connection
     /// `commission_dispatch::replies::emit_breakaway_campaign_event` feeds
-    /// with the same evidence. Mirrors the `AcceptanceMatrixEvent` arm above:
+    /// with the same evidence. Mirrors the `FixedGainAmplitudeEvent` arm above:
     /// one canonical-record push per wire record, one lightweight
     /// `CommissionTraceEvent` marker per tick.
     /// A batch variant (every in-band rung's margin, every resolved ladder
@@ -1902,7 +1910,7 @@ mod tests {
             288
         );
         assert_eq!(
-            size_of::<crate::commissioning::types::AcceptanceMatrixEvent>(),
+            size_of::<crate::commissioning::types::FixedGainAmplitudeEvent>(),
             288
         );
         assert_eq!(

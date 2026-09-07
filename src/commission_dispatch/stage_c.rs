@@ -145,7 +145,7 @@ pub enum AcceptanceInstall {
     MissingTargetTerminus,
 }
 
-/// Derive one token-carrying matrix handoff from a reproduced breakaway `Complete`.
+/// Derive one token-carrying amplitude handoff from a reproduced breakaway `Complete`.
 ///
 /// A breakaway point sources the token and signed recovery intervals from the
 /// run's breakaway authority; it cannot be reconstructed from the request

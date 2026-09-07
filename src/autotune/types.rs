@@ -658,7 +658,10 @@ mod tests {
             seen[code] = true;
         }
         assert_eq!(CommissionError::CurrentHoldFailed.status_code(), 42);
-        assert_eq!(CommissionError::ClosedLoopActivationUnstable.status_code(), 43);
+        assert_eq!(
+            CommissionError::ClosedLoopActivationUnstable.status_code(),
+            43
+        );
         assert_eq!(CommissionError::ElectricalModelNoSamples.status_code(), 44);
         assert_eq!(CommissionError::ElectricalModelScaleZero.status_code(), 45);
         assert_eq!(CommissionError::ElectricalThetaTooLarge.status_code(), 46);
@@ -788,8 +791,8 @@ mod tests {
             VelocityAutotuneWorkflowKind::DECLARATION_ORDER,
             &[
                 ("Resume", 0),
-                ("AcceptanceMatrixAscending", 1),
-                ("AcceptanceMatrixDescending", 2),
+                ("FixedGainAmplitudeAscending", 1),
+                ("FixedGainAmplitudeDescending", 2),
                 ("BreakawaySeededProportionalThenIntegral", 3),
                 ("ReversalStandstillRobustnessGate", 4),
             ]
@@ -797,8 +800,8 @@ mod tests {
         assert_eq!(
             AutotuneAction::DECLARATION_ORDER,
             &[
-                ("MatrixAscending", 1),
-                ("MatrixDescending", 2),
+                ("FixedGainAmplitudeAscending", 1),
+                ("FixedGainAmplitudeDescending", 2),
                 ("BreakawaySeeded", 7),
                 ("StageCResume", 8),
                 ("RobustnessReversal", 9),

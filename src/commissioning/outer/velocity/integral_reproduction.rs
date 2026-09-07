@@ -170,15 +170,15 @@ pub struct StageCCandidateSummary {
     pub run_digest: u64,
 }
 
-/// Next matrix acquisition allowed by one retained acceptance point.
+/// Next amplitude acquisition allowed by one retained acceptance point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum AcceptanceMatrixProgress {
-    /// The ascending matrix is the next allowed acquisition.
+    /// The ascending amplitude is the next allowed acquisition.
     ReadyAscending = 0,
-    /// The ascending matrix completed and the descending matrix is next.
+    /// The ascending amplitude completed and the descending amplitude is next.
     ReadyDescending = 1,
-    /// The fixed two-run matrix sequence is closed.
+    /// The fixed two-run amplitude sequence is closed.
     Closed = 2,
 }
 
@@ -203,9 +203,9 @@ pub struct AcceptancePoint {
     pub qualifier_bits: u16,
     /// Unforgeable breakaway confirmation token that authorized this point.
     /// A breakaway plan cannot be reconstructed from the request alone, so the
-    /// matrix preflight rebuilds it deterministically from this token.
+    /// amplitude preflight rebuilds it deterministically from this token.
     pub token: Option<super::integral_plan::ConfirmedAcquisitionDigest>,
-    /// Next allowed matrix acquisition.
+    /// Next allowed amplitude acquisition.
     pub progress: AcceptanceMatrixProgress,
 }
 
@@ -218,7 +218,7 @@ pub enum StageCSlotState {
     AuthorityOnly,
     /// Authority and one sufficient Stage-C curve await reproduction.
     Candidate,
-    /// One target-reaching breakaway point awaits its fixed matrix sequence.
+    /// One target-reaching breakaway point awaits its fixed amplitude sequence.
     AcceptancePoint,
 }
 
@@ -370,7 +370,7 @@ impl StageCCandidateSlot {
         }
     }
 
-    /// Advance a completed ascending matrix to the descending acquisition.
+    /// Advance a completed ascending amplitude to the descending acquisition.
     pub fn advance_matrix_progress(&mut self) -> bool {
         let RetainedStageC::AcceptancePoint(mut point) = self.retained else {
             return false;
@@ -383,7 +383,7 @@ impl StageCCandidateSlot {
         true
     }
 
-    /// Close a nonclosed matrix sequence after its final safe terminal.
+    /// Close a nonclosed amplitude sequence after its final safe terminal.
     pub fn close_matrix_progress(&mut self) -> bool {
         let RetainedStageC::AcceptancePoint(mut point) = self.retained else {
             return false;

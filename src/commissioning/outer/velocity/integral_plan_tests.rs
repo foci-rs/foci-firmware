@@ -399,7 +399,7 @@ fn execution_plan_copies_i_top_cap() {
 
 /// `CommissioningWorkflowPlan::new` admits exactly `Resume`
 /// (`stage_b_ms == 0 && stage_c_ms != 0`); every other shape it can name is
-/// rejected -- the acceptance-matrix and breakaway shapes have their own
+/// rejected -- the fixed-gain-amplitude and breakaway shapes have their own
 /// dedicated constructors instead (see
 /// `workflow_kind_discriminants_are_a_clean_zero_through_four_sequence`).
 #[test]
@@ -486,7 +486,7 @@ const SLOT_COUNT: u8 = STAGE_C_OBSERVATIONS_PER_RUNG as u8;
 /// The slot index and the travel direction must round-trip in both directions.
 ///
 /// `rung_classes` and `rung_intervals` are written by raw slot index and read
-/// back by (observation, direction) in `acceptance_amplitude_report`. If the two
+/// back by (observation, direction) in `fixed_gain_amplitude_report`. If the two
 /// mappings ever disagree, forward evidence is filed as reverse and the run is
 /// silently wrong rather than failing. This pins them together.
 #[test]
@@ -566,11 +566,11 @@ fn forward_first_preserves_the_historical_parity_mapping() {
 fn workflow_kind_discriminants_are_a_clean_zero_through_four_sequence() {
     assert_eq!(VelocityAutotuneWorkflowKind::Resume as u8, 0);
     assert_eq!(
-        VelocityAutotuneWorkflowKind::AcceptanceMatrixAscending as u8,
+        VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending as u8,
         1
     );
     assert_eq!(
-        VelocityAutotuneWorkflowKind::AcceptanceMatrixDescending as u8,
+        VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending as u8,
         2
     );
     assert_eq!(
@@ -583,7 +583,7 @@ fn workflow_kind_discriminants_are_a_clean_zero_through_four_sequence() {
     );
 
     // The breakaway shape has its own dedicated constructor, matching the
-    // existing precedent set by the acceptance-matrix shapes: it is not
+    // existing precedent set by the fixed-gain-amplitude shapes: it is not
     // constructible through the generic two-duration `new`.
     assert_eq!(
         CommissioningWorkflowPlan::new(

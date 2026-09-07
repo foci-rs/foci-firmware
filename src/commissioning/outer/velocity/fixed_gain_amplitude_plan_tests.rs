@@ -1,12 +1,12 @@
-use super::acceptance_plan::{
-    ACCEPTANCE_MATRIX_AMPLITUDES, ACCEPTANCE_MATRIX_CAPTURE_ALLOWANCE_S,
-    ACCEPTANCE_MATRIX_SCHEMA_REVISION, AcceptanceMatrixOrder, AcceptanceMatrixPlanError,
-    decode_schedule_order_code, derive_acceptance_targets, plan_acceptance_matrix,
-    schedule_order_code,
-};
 use super::band_confirmation::{
     BandConfirmationPlan, ConfirmationDirectionalInput, DiscoveryObservationAtom,
     evaluate_band_confirmation, plan_band_confirmation,
+};
+use super::fixed_gain_amplitude_plan::{
+    FIXED_GAIN_AMPLITUDE_CAPTURE_ALLOWANCE_S, FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
+    FIXED_GAIN_AMPLITUDE_TARGETS, FixedGainAmplitudeOrder, FixedGainAmplitudePlanError,
+    decode_schedule_order_code, derive_fixed_gain_amplitude_targets, plan_fixed_gain_amplitude,
+    schedule_order_code,
 };
 use super::integral_plan::{
     AcceptanceSource, AcquisitionContext, ConfirmedAcquisitionDigest, IntegralSlotOrder,
@@ -31,7 +31,7 @@ const COUNTS_PER_REV: u32 = 4_000;
 const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 
-// --- Breakaway matrix-authority fixtures ------------------------------------
+// --- Breakaway amplitude-authority fixtures ------------------------------------
 //
 // A schema-16 breakaway plan can only be minted through the real confirmation
 // gate (`ConfirmedAcquisitionDigest`'s inner field is private outside
@@ -188,20 +188,20 @@ fn breakaway_point(plan: super::integral_plan::VelocityIntegralPlan) -> Acceptan
 /// its own authority (well-ordered, correctly signed intervals; in-range
 /// `selected_i`), not just a combined one.
 #[test]
-fn matrix_accepts_a_genuine_breakaway_authority_point() {
+fn amplitude_accepts_a_genuine_breakaway_authority_point() {
     let current = breakaway_plan();
     assert_eq!(
         current.schema_revision,
         super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION
     );
-    let accepted = plan_acceptance_matrix(
+    let accepted = plan_fixed_gain_amplitude(
         breakaway_point(current),
         breakaway_request(),
-        AcceptanceMatrixOrder::Ascending,
+        FixedGainAmplitudeOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
-    .expect("a genuine breakaway point carries matrix acceptance authority");
+    .expect("a genuine breakaway point carries amplitude acceptance authority");
     assert!(accepted.recovery_lower_rate_q.iter().all(|&rate| rate > 0));
     assert_eq!(
         accepted.acceptance_identity.schema_revision,
@@ -210,11 +210,11 @@ fn matrix_accepts_a_genuine_breakaway_authority_point() {
 }
 
 /// A genuine breakaway point is otherwise identical to one the gate accepts
-/// (see `matrix_accepts_a_genuine_breakaway_authority_point`); mutating only
+/// (see `amplitude_accepts_a_genuine_breakaway_authority_point`); mutating only
 /// `selected_i` outside the retained ladder must isolate the rejection to the
 /// rung-membership check, not the new interval-authority check alongside it.
 #[test]
-fn matrix_rejects_authority_point_with_selected_i_out_of_range() {
+fn amplitude_rejects_authority_point_with_selected_i_out_of_range() {
     let current = breakaway_plan();
     assert!(
         !current.positive_rungs().contains(&u16::MAX),
@@ -224,29 +224,29 @@ fn matrix_rejects_authority_point_with_selected_i_out_of_range() {
     invalid.selected_i = u16::MAX;
 
     assert_eq!(
-        plan_acceptance_matrix(
+        plan_fixed_gain_amplitude(
             invalid,
             breakaway_request(),
-            AcceptanceMatrixOrder::Ascending,
+            FixedGainAmplitudeOrder::Ascending,
             IntegralSlotOrder::ForwardFirst,
             current,
         ),
-        Err(AcceptanceMatrixPlanError::IdentityMismatch)
+        Err(FixedGainAmplitudePlanError::IdentityMismatch)
     );
 }
 
 #[test]
-fn live_matrix_geometry_and_orders_are_exact() {
-    assert_eq!(ACCEPTANCE_MATRIX_SCHEMA_REVISION, 6);
-    assert_eq!(AcceptanceMatrixOrder::Ascending as u8, 1);
-    assert_eq!(AcceptanceMatrixOrder::Descending as u8, 2);
-    assert_eq!(ACCEPTANCE_MATRIX_AMPLITUDES, 5);
-    assert_eq!(ACCEPTANCE_MATRIX_CAPTURE_ALLOWANCE_S, 110);
+fn live_amplitude_geometry_and_orders_are_exact() {
+    assert_eq!(FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION, 6);
+    assert_eq!(FixedGainAmplitudeOrder::Ascending as u8, 1);
+    assert_eq!(FixedGainAmplitudeOrder::Descending as u8, 2);
+    assert_eq!(FIXED_GAIN_AMPLITUDE_TARGETS, 5);
+    assert_eq!(FIXED_GAIN_AMPLITUDE_CAPTURE_ALLOWANCE_S, 110);
     let current = breakaway_plan();
-    let ascending = plan_acceptance_matrix(
+    let ascending = plan_fixed_gain_amplitude(
         breakaway_point(current),
         breakaway_request(),
-        AcceptanceMatrixOrder::Ascending,
+        FixedGainAmplitudeOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
@@ -282,17 +282,17 @@ fn live_matrix_geometry_and_orders_are_exact() {
         (
             super::combined_plan::STAGE_B_PLAN_SCHEMA_REVISION,
             super::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
-            ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+            FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         ),
         (14, 18, 6)
     );
     assert_eq!([160 + 23, 120 + 15, 40 + 5], [183, 135, 45]);
     assert_eq!((183 + 135 + 45) * 78, 28_314);
 
-    let descending = plan_acceptance_matrix(
+    let descending = plan_fixed_gain_amplitude(
         breakaway_point(current),
         breakaway_request(),
-        AcceptanceMatrixOrder::Descending,
+        FixedGainAmplitudeOrder::Descending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
@@ -310,10 +310,10 @@ fn live_matrix_geometry_and_orders_are_exact() {
 #[test]
 fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
     let current = breakaway_plan();
-    let mut historical = plan_acceptance_matrix(
+    let mut historical = plan_fixed_gain_amplitude(
         breakaway_point(current),
         breakaway_request(),
-        AcceptanceMatrixOrder::Ascending,
+        FixedGainAmplitudeOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
@@ -325,29 +325,35 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
 
 #[test]
 fn target_derivation_rounds_half_up_and_rejects_unsupported_geometry() {
-    assert_eq!(derive_acceptance_targets(263), Ok([16, 33, 66, 132, 263]));
-    assert_eq!(derive_acceptance_targets(257), Ok([16, 32, 64, 129, 257]));
     assert_eq!(
-        derive_acceptance_targets(7),
-        Err(AcceptanceMatrixPlanError::UnsupportedTargets)
+        derive_fixed_gain_amplitude_targets(263),
+        Ok([16, 33, 66, 132, 263])
     );
     assert_eq!(
-        derive_acceptance_targets(8),
-        Err(AcceptanceMatrixPlanError::UnsupportedTargets)
+        derive_fixed_gain_amplitude_targets(257),
+        Ok([16, 32, 64, 129, 257])
     );
     assert_eq!(
-        derive_acceptance_targets(i32::MAX),
-        Err(AcceptanceMatrixPlanError::Arithmetic)
+        derive_fixed_gain_amplitude_targets(7),
+        Err(FixedGainAmplitudePlanError::UnsupportedTargets)
+    );
+    assert_eq!(
+        derive_fixed_gain_amplitude_targets(8),
+        Err(FixedGainAmplitudePlanError::UnsupportedTargets)
+    );
+    assert_eq!(
+        derive_fixed_gain_amplitude_targets(i32::MAX),
+        Err(FixedGainAmplitudePlanError::Arithmetic)
     );
 }
 
 #[test]
 fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
     let current = breakaway_plan();
-    let ascending = plan_acceptance_matrix(
+    let ascending = plan_fixed_gain_amplitude(
         breakaway_point(current),
         breakaway_request(),
-        AcceptanceMatrixOrder::Ascending,
+        FixedGainAmplitudeOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
@@ -356,14 +362,14 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
 
     assert_eq!(
         execution.acquisition_kind,
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
     );
-    // The fixed-I acceptance matrix never records a target terminus; it is
+    // The fixed-I fixed-gain amplitude never records a target terminus; it is
     // distinguished from a response ladder by `acquisition_kind` alone.
     assert_eq!(execution.acceptance_source, AcceptanceSource::NonBreakaway);
     assert!(!execution.records_target_terminus());
     assert_eq!(execution.i_start, 1);
-    assert_eq!(execution.matrix_targets_rpm, [16, 33, 66, 132, 263]);
+    assert_eq!(execution.amplitude_targets_rpm, [16, 33, 66, 132, 263]);
     assert_eq!(execution.positive_rung_count, 5);
     assert_eq!(execution.family_size, 20);
     assert_eq!(execution.target_velocity_rpm, 263);
@@ -382,37 +388,37 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
 }
 
 #[test]
-fn matrix_plan_rejects_identity_and_request_drift() {
+fn amplitude_plan_rejects_identity_and_request_drift() {
     let current = breakaway_plan();
     let mut stale = breakaway_point(current);
     stale.identity.plan_digest ^= 1;
     assert_eq!(
-        plan_acceptance_matrix(
+        plan_fixed_gain_amplitude(
             stale,
             breakaway_request(),
-            AcceptanceMatrixOrder::Ascending,
+            FixedGainAmplitudeOrder::Ascending,
             IntegralSlotOrder::ForwardFirst,
             current
         ),
-        Err(AcceptanceMatrixPlanError::IdentityMismatch)
+        Err(FixedGainAmplitudePlanError::IdentityMismatch)
     );
 
     let mut changed_request = breakaway_request();
     changed_request.max_duration_ms += 1;
     assert_eq!(
-        plan_acceptance_matrix(
+        plan_fixed_gain_amplitude(
             breakaway_point(current),
             changed_request,
-            AcceptanceMatrixOrder::Ascending,
+            FixedGainAmplitudeOrder::Ascending,
             IntegralSlotOrder::ForwardFirst,
             current,
         ),
-        Err(AcceptanceMatrixPlanError::IdentityMismatch)
+        Err(FixedGainAmplitudePlanError::IdentityMismatch)
     );
 }
 
 #[test]
-fn matrix_plan_rejects_wrong_sided_recovery_authority() {
+fn amplitude_plan_rejects_wrong_sided_recovery_authority() {
     let current = breakaway_plan();
     let genuine = breakaway_point(current).selected_response_intervals_q;
     for intervals in [
@@ -425,30 +431,30 @@ fn matrix_plan_rejects_wrong_sided_recovery_authority() {
         // zero-boundary) interval before the recovery-geometry computation
         // ever runs, so this is an identity rejection, not an arithmetic one.
         assert_eq!(
-            plan_acceptance_matrix(
+            plan_fixed_gain_amplitude(
                 invalid,
                 breakaway_request(),
-                AcceptanceMatrixOrder::Ascending,
+                FixedGainAmplitudeOrder::Ascending,
                 IntegralSlotOrder::ForwardFirst,
                 current,
             ),
-            Err(AcceptanceMatrixPlanError::IdentityMismatch)
+            Err(FixedGainAmplitudePlanError::IdentityMismatch)
         );
     }
 }
 
 #[test]
-fn matrix_digest_binds_every_explicit_plan_dimension() {
+fn amplitude_digest_binds_every_explicit_plan_dimension() {
     let current = breakaway_plan();
-    let base = plan_acceptance_matrix(
+    let base = plan_fixed_gain_amplitude(
         breakaway_point(current),
         breakaway_request(),
-        AcceptanceMatrixOrder::Ascending,
+        FixedGainAmplitudeOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
     .unwrap();
-    let mutate = |change: fn(&mut super::acceptance_plan::AcceptanceMatrixPlan)| {
+    let mutate = |change: fn(&mut super::fixed_gain_amplitude_plan::FixedGainAmplitudePlan)| {
         let mut changed = base;
         change(&mut changed);
         assert_ne!(base.digest(), changed.digest());
@@ -482,8 +488,8 @@ fn matrix_digest_binds_every_explicit_plan_dimension() {
 #[test]
 fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
     for order in [
-        AcceptanceMatrixOrder::Ascending,
-        AcceptanceMatrixOrder::Descending,
+        FixedGainAmplitudeOrder::Ascending,
+        FixedGainAmplitudeOrder::Descending,
     ] {
         assert_eq!(
             schedule_order_code(order, IntegralSlotOrder::ForwardFirst),

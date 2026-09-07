@@ -152,7 +152,7 @@ pub struct VelocityIntegralPlan {
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
     /// from, for a `Breakaway`-sourced plan; `0` (not applicable) for
-    /// matrix-sourced plans, which never regenerate one.
+    /// amplitude-sourced plans, which never regenerate one.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -230,7 +230,7 @@ impl VelocityIntegralPlan {
         }
         // Preserves the wire/offline plan digest across the
         // removal of `combined_selected_response`. Every surviving plan
-        // (breakaway, matrix, resume) always had that field `None` -- only
+        // (breakaway, amplitude, resume) always had that field `None` -- only
         // the deleted live combined P-then-I workflow ever set it `Some` --
         // so `u8::from(combined_selected_response.is_some())` was always the
         // constant byte 0 here. Hashing that same constant keeps `digest()`
@@ -321,7 +321,7 @@ impl VelocityIntegralPlan {
             limit_evidence_capability: self.limit_evidence_capability,
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: AcceptanceSource::Breakaway,
-            matrix_targets_rpm: [0; 5],
+            amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q,
             recovery_lower_rate_q: [0; 2],
             recovery_quantization_exposed: self.recovery_quantization_exposed,
@@ -345,9 +345,9 @@ pub enum IntegralSlotOrder {
     ///
     /// `ReverseFirst` and `PairedOutAndBack`, the two mirrored orders this type
     /// once offered, were producible only by the live combined P-then-I
-    /// workflow and the mirrored-matrix actions. Both were removed, and
+    /// workflow and the mirrored-amplitude actions. Both were removed, and
     /// with them every surviving live producer of this type
-    /// -- `AutotuneAction::slot_order`, `AutotuneAction::matrix_slot_order`,
+    /// -- `AutotuneAction::slot_order`, `AutotuneAction::amplitude_slot_order`,
     /// and the sole `VelocityIntegralPlan` constructor -- became unconditional
     /// `ForwardFirst`. The variants were removed in T9. The type stays an enum
     /// rather than collapsing to a unit so the wire contract (`report_code`)
@@ -412,16 +412,16 @@ impl IntegralSlotOrder {
 pub enum VelocityIntegralAcquisitionKind {
     /// Historical opening-anchor, positive-I response ladder, and bookend.
     ResponseLadder = 0,
-    /// Fixed-I acceptance amplitudes in ascending order.
-    AcceptanceAscending = 1,
-    /// Fixed-I acceptance amplitudes in descending order.
-    AcceptanceDescending = 2,
+    /// Fixed-I fixed-gain amplitudes in ascending order.
+    FixedGainAmplitudeAscending = 1,
+    /// Fixed-I fixed-gain amplitudes in descending order.
+    FixedGainAmplitudeDescending = 2,
 }
 
 /// Which acquisition authorized one Stage-C execution plan.
 ///
 /// `acquisition_kind == ResponseLadder` alone cannot distinguish these: an
-/// accepted breakaway confirmation and a fixed-I acceptance-matrix plan can
+/// accepted breakaway confirmation and a fixed-I fixed-gain-amplitude plan can
 /// both report that same acquisition kind. This discriminator isolates
 /// breakaway so [`VelocityIntegralExecutionPlan::records_target_terminus`]
 /// can admit it without over-admitting a plan that carries no target evidence
@@ -444,17 +444,17 @@ pub enum AcceptanceSource {
 pub struct VelocityIntegralExecutionPlan {
     /// Exact complete-plan digest.
     pub plan_digest: u64,
-    /// Retained acceptance-plan identity digest for a matrix-sourced plan,
-    /// matched against dispatches that resume it; `0` off the matrix path
+    /// Retained acceptance-plan identity digest for an amplitude-sourced plan,
+    /// matched against dispatches that resume it; `0` off the amplitude path
     /// (`acceptance_source != AcceptanceSource::NonBreakaway` implies this
     /// acquisition never carries one). Copied verbatim from
-    /// `AcceptanceMatrixPlan.acceptance_identity.plan_digest`, never
+    /// `FixedGainAmplitudePlan.acceptance_identity.plan_digest`, never
     /// recomputed.
     pub acceptance_plan_digest: u64,
     /// Packed operating-point, model-validity, and evidence-quality
-    /// qualifiers for a matrix-sourced plan, frozen at the original
-    /// breakaway-acceptance install; `0` off the matrix path. Copied
-    /// verbatim from `AcceptanceMatrixPlan.qualifier_bits` — this is a
+    /// qualifiers for an amplitude-sourced plan, frozen at the original
+    /// breakaway-acceptance install; `0` off the amplitude path. Copied
+    /// verbatim from `FixedGainAmplitudePlan.qualifier_bits` — this is a
     /// distinct, earlier snapshot from this struct's own
     /// `recovery_quantization_exposed`/`probe_constrained_test_point`
     /// fields below, which reflect the *current* run instead.
@@ -475,7 +475,7 @@ pub struct VelocityIntegralExecutionPlan {
     pub positive_rung_count: u8,
     /// Largest native positive-I ladder cap the half-octave rung was derived
     /// from, for a `Breakaway`-sourced plan; `0` (not applicable) for
-    /// matrix-sourced plans, which never regenerate one.
+    /// amplitude-sourced plans, which never regenerate one.
     pub i_top_cap: u16,
     /// Family-wise observation count per direction.
     pub family_size: u16,
@@ -501,20 +501,20 @@ pub struct VelocityIntegralExecutionPlan {
     pub usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Response-ladder or fixed-I acceptance acquisition.
+    /// Response-ladder or fixed-I fixed-gain amplitude acquisition.
     pub acquisition_kind: VelocityIntegralAcquisitionKind,
     /// Which acquisition category authorized this plan.
     ///
     /// Isolates breakaway from reproduced Stage-B within `acquisition_kind ==
     /// ResponseLadder`; see [`Self::records_target_terminus`].
     pub acceptance_source: AcceptanceSource,
-    /// Exact fixed targets for a matrix acquisition; zero for response ladders.
-    pub matrix_targets_rpm: [i16; 5],
-    /// Selected Stage-B response intervals; zero for a matrix acquisition,
+    /// Exact fixed targets for an amplitude acquisition; zero for response ladders.
+    pub amplitude_targets_rpm: [i16; 5],
+    /// Selected Stage-B response intervals; zero for an amplitude acquisition,
     /// which carries its identity and qualifiers in `acceptance_plan_digest`
     /// and `qualifier_bits` instead.
     pub selected_response_intervals_q: [[i32; 2]; 2],
-    /// Conservative top-point settled-rate bounds used only for matrix recovery deadlines.
+    /// Conservative top-point settled-rate bounds used only for amplitude recovery deadlines.
     pub recovery_lower_rate_q: [u64; 2],
     /// One opposite-sign meter quantum can contact the probe clamp during recovery.
     pub recovery_quantization_exposed: bool,
@@ -711,7 +711,7 @@ pub(crate) fn native_rung_count(i_top_cap: u16) -> u8 {
 /// (`upper_octave`, `lower_octave = upper_octave / 2`) is entirely within
 /// the pure-octave region (`lower_octave >= 4`), never inside the fixed
 /// `1, 2, 3` prefix. `i_top_cap = 0` (the not-applicable sentinel used by
-/// matrix-sourced plans) always yields `None`.
+/// amplitude-sourced plans) always yields `None`.
 pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
     let count = native_rung_count(i_top_cap);
     if count == 0 {
@@ -738,7 +738,7 @@ pub(crate) fn integral_top_gap_candidate(i_top_cap: u16) -> Option<u16> {
 /// the native fixed-prefix/octave sequence, with the half-octave candidate
 /// (if any) inserted immediately before the final native rung.
 ///
-/// `i_top_cap == 0` is the not-applicable sentinel (matrix-sourced plans,
+/// `i_top_cap == 0` is the not-applicable sentinel (amplitude-sourced plans,
 /// per `VelocityIntegralPlan`/`VelocityIntegralExecutionPlan` doc comments)
 /// and always delegates straight to [`native_velocity_i_at`] with no
 /// augmentation and no bound -- this is the exact pre-existing behavior
@@ -1138,7 +1138,7 @@ pub(crate) fn bind_breakaway_stage_c_authority(
 /// The breakaway campaign ([`plan_breakaway_velocity_integral_response`]) has
 /// no Stage-B sweep plan at all and builds one directly from its own campaign
 /// parameters instead of fabricating a `VelocitySweepExecutionPlan`. The
-/// acceptance-matrix preflight (`commission_dispatch::acceptance`) still
+/// fixed-gain-amplitude preflight (`commission_dispatch::fixed_gain_amplitude`) still
 /// reconstructs a Stage-B sweep plan to source these physical fields, via
 /// [`From`], then overwrites the breakaway-only fields below directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -1158,7 +1158,7 @@ pub(crate) struct AcquisitionContext {
     /// Consumed only by [`plan_breakaway_velocity_integral_response`], which
     /// builds its [`StageCAuthority`] internally from the confirmation token so
     /// no forged authority can be passed in. [`From`] leaves this zero; the
-    /// acceptance-matrix preflight overwrites it with the real channel
+    /// fixed-gain-amplitude preflight overwrites it with the real channel
     /// immediately after constructing from it.
     pub(crate) channel: u8,
     /// Plan-time PWM carrier frequency the confirmation evidence was gathered
@@ -1168,7 +1168,7 @@ pub(crate) struct AcquisitionContext {
     /// handed to it at Stage-C construction, so confirmation evidence measured
     /// under one physical timebase can never seed a Stage-C plan admitted under
     /// another. [`From`] leaves this zero (fail-closed: zero never matches a
-    /// live frequency); the acceptance-matrix preflight overwrites it with the
+    /// live frequency); the fixed-gain-amplitude preflight overwrites it with the
     /// live value immediately after constructing from it.
     pub(crate) plan_time_pwm_hz: u32,
     /// Plan-time encoder counts per mechanical revolution the confirmation
@@ -1176,7 +1176,7 @@ pub(crate) struct AcquisitionContext {
     ///
     /// Cross-checked against the live encoder resolution by the breakaway gate,
     /// exactly like [`Self::plan_time_pwm_hz`]. [`From`] leaves this zero; the
-    /// acceptance-matrix preflight overwrites it the same way.
+    /// fixed-gain-amplitude preflight overwrites it the same way.
     pub(crate) plan_time_encoder_counts_per_rev: u32,
 }
 

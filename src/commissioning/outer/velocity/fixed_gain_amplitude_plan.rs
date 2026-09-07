@@ -1,4 +1,4 @@
-//! Immutable fixed-I velocity acceptance-matrix planning.
+//! Immutable fixed-I fixed-gain amplitude planning.
 
 use super::current_guard::VelocityLimitEvidenceCapability;
 use super::integral_plan::{
@@ -12,21 +12,21 @@ use super::reproduction::BUILD_FEATURES;
 use super::sweep_plan::VelocitySweepRequest;
 use crate::autotune::velocity_measurement::VelocityDirection;
 
-/// Current independent velocity-acceptance matrix schema.
-pub const ACCEPTANCE_MATRIX_SCHEMA_REVISION: u16 = 6;
+/// Current independent fixed-gain amplitude schema.
+pub const FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION: u16 = 6;
 /// Number of frozen target amplitudes in each run.
-pub const ACCEPTANCE_MATRIX_AMPLITUDES: usize = 5;
-/// Capture-wrapper allowance for one matrix command.
-pub const ACCEPTANCE_MATRIX_CAPTURE_ALLOWANCE_S: u32 = 110;
+pub const FIXED_GAIN_AMPLITUDE_TARGETS: usize = 5;
+/// Capture-wrapper allowance for one amplitude command.
+pub const FIXED_GAIN_AMPLITUDE_CAPTURE_ALLOWANCE_S: u32 = 110;
 
-const TARGET_DIVISORS: [i32; ACCEPTANCE_MATRIX_AMPLITUDES] = [16, 8, 4, 2, 1];
+const TARGET_DIVISORS: [i32; FIXED_GAIN_AMPLITUDE_TARGETS] = [16, 8, 4, 2, 1];
 const MICROS_PER_MILLISECOND: u64 = 1_000;
 const OBSERVATIONS_PER_DIRECTION_PER_AMPLITUDE: u16 = 4;
 
 /// Immutable amplitude order selected by the operator-facing acquisition action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
-pub enum AcceptanceMatrixOrder {
+pub enum FixedGainAmplitudeOrder {
     /// Lowest to highest frozen target.
     Ascending = 1,
     /// Highest to lowest frozen target.
@@ -39,7 +39,7 @@ pub enum AcceptanceMatrixOrder {
 /// `ForwardFirst` encodes as zero, so every non-mirrored run keeps the byte it
 /// had before slot order was recorded.
 pub const fn schedule_order_code(
-    order: AcceptanceMatrixOrder,
+    order: FixedGainAmplitudeOrder,
     slot_order: IntegralSlotOrder,
 ) -> u8 {
     (order as u8) | (slot_order.report_code() << 4)
@@ -48,16 +48,16 @@ pub const fn schedule_order_code(
 /// Recover the amplitude and slot orders from one packed wire byte.
 pub const fn decode_schedule_order_code(
     code: u8,
-) -> Option<(AcceptanceMatrixOrder, IntegralSlotOrder)> {
+) -> Option<(FixedGainAmplitudeOrder, IntegralSlotOrder)> {
     let order = match code & 0x0f {
-        1 => AcceptanceMatrixOrder::Ascending,
-        2 => AcceptanceMatrixOrder::Descending,
+        1 => FixedGainAmplitudeOrder::Ascending,
+        2 => FixedGainAmplitudeOrder::Descending,
         _ => return None,
     };
     let slot_order = match code >> 4 {
         0 => IntegralSlotOrder::ForwardFirst,
         // 1 and 2 were `ReverseFirst`/`PairedOutAndBack`. Their only producers
-        // (the live combined P-then-I workflow and the mirrored-matrix
+        // (the live combined P-then-I workflow and the mirrored-amplitude
         // actions) were removed, and with them the variants themselves,
         // so a wire byte carrying either nibble can no
         // longer name a live order. Reject it as decode failure rather than
@@ -67,9 +67,9 @@ pub const fn decode_schedule_order_code(
     Some((order, slot_order))
 }
 
-/// Failure to construct one exact fixed-I acceptance matrix.
+/// Failure to construct one exact fixed-I fixed-gain amplitude plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum AcceptanceMatrixPlanError {
+pub enum FixedGainAmplitudePlanError {
     /// The retained point and reconstructed combined plan do not bind exactly.
     IdentityMismatch,
     /// Rounding produced a zero or duplicate target.
@@ -78,19 +78,19 @@ pub enum AcceptanceMatrixPlanError {
     Arithmetic,
 }
 
-/// Complete immutable acceptance-matrix plan emitted before motion.
+/// Complete immutable fixed-gain-amplitude plan emitted before motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct AcceptanceMatrixPlan {
-    /// Independent matrix evidence schema.
+pub struct FixedGainAmplitudePlan {
+    /// Independent amplitude evidence schema.
     pub schema_revision: u16,
     /// Combined Stage-C identity that established the operating point.
     pub acceptance_identity: StageCPlanIdentity,
     /// Immutable acquisition order.
-    pub order: AcceptanceMatrixOrder,
+    pub order: FixedGainAmplitudeOrder,
     /// Immutable execution order of the forward and reverse observation slots.
     pub slot_order: IntegralSlotOrder,
     /// Exact order-dependent mechanical-RPM targets.
-    pub target_rpm: [i16; ACCEPTANCE_MATRIX_AMPLITUDES],
+    pub target_rpm: [i16; FIXED_GAIN_AMPLITUDE_TARGETS],
     /// Firmware-selected proportional gain.
     pub selected_p: u16,
     /// Firmware-selected raw Q4.12 integral gain.
@@ -141,7 +141,7 @@ pub struct AcceptanceMatrixPlan {
     pub motion_request: VelocitySweepRequest,
 }
 
-impl AcceptanceMatrixPlan {
+impl FixedGainAmplitudePlan {
     /// Hash every exact acceptance, geometry, duration, and safety field.
     pub fn digest(self) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -173,7 +173,10 @@ impl AcceptanceMatrixPlan {
         hash_value!(self.zero_settle_us);
         hash_value!(self.analysis_budget_us);
         hash_value!(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US);
-        if matches!(self.schema_revision, 3 | ACCEPTANCE_MATRIX_SCHEMA_REVISION) {
+        if matches!(
+            self.schema_revision,
+            3 | FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION
+        ) {
             hash_value!(super::recovery::STABILIZED_RECOVERY_SCHEDULE_CODE);
         }
         hash_value!(self.nominal_workflow_ms);
@@ -201,7 +204,7 @@ impl AcceptanceMatrixPlan {
         hash
     }
 
-    /// Compact the emitted matrix into existing velocity-integral execution state.
+    /// Compact the emitted amplitude plan into existing velocity-integral execution state.
     pub fn execution_plan(self) -> VelocityIntegralExecutionPlan {
         let top_target = self.target_rpm.iter().copied().max().unwrap_or(0);
         VelocityIntegralExecutionPlan {
@@ -216,7 +219,7 @@ impl AcceptanceMatrixPlan {
             encoder_counts_per_rev: self.encoder_counts_per_rev,
             i_start: self.selected_i,
             positive_rung_count: self.amplitude_count,
-            // Not applicable to a fixed-I acceptance-matrix acquisition;
+            // Not applicable to a fixed-I fixed-gain-amplitude acquisition;
             // only a response-ladder plan regenerates a half-octave rung
             // from this field.
             i_top_cap: 0,
@@ -238,16 +241,16 @@ impl AcceptanceMatrixPlan {
                 _ => VelocityLimitEvidenceCapability::LatchedFlag,
             },
             acquisition_kind: match self.order {
-                AcceptanceMatrixOrder::Ascending => {
-                    VelocityIntegralAcquisitionKind::AcceptanceAscending
+                FixedGainAmplitudeOrder::Ascending => {
+                    VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
                 }
-                AcceptanceMatrixOrder::Descending => {
-                    VelocityIntegralAcquisitionKind::AcceptanceDescending
+                FixedGainAmplitudeOrder::Descending => {
+                    VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
                 }
             },
             acceptance_source: AcceptanceSource::NonBreakaway,
-            matrix_targets_rpm: self.target_rpm,
-            // Matrix acquisitions carry no real Stage-B response intervals;
+            amplitude_targets_rpm: self.target_rpm,
+            // Amplitude acquisitions carry no real Stage-B response intervals;
             // the retained identity and qualifiers now have their own
             // fields below.
             selected_response_intervals_q: [[0; 2]; 2],
@@ -259,37 +262,37 @@ impl AcceptanceMatrixPlan {
 }
 
 /// Derive five positive, unique targets with round-to-nearest halves upward.
-pub fn derive_acceptance_targets(
+pub fn derive_fixed_gain_amplitude_targets(
     top_target_rpm: i32,
-) -> Result<[i16; ACCEPTANCE_MATRIX_AMPLITUDES], AcceptanceMatrixPlanError> {
+) -> Result<[i16; FIXED_GAIN_AMPLITUDE_TARGETS], FixedGainAmplitudePlanError> {
     if top_target_rpm <= 0 || top_target_rpm > i32::from(i16::MAX) {
-        return Err(AcceptanceMatrixPlanError::Arithmetic);
+        return Err(FixedGainAmplitudePlanError::Arithmetic);
     }
-    let mut targets = [0_i16; ACCEPTANCE_MATRIX_AMPLITUDES];
+    let mut targets = [0_i16; FIXED_GAIN_AMPLITUDE_TARGETS];
     for (index, divisor) in TARGET_DIVISORS.into_iter().enumerate() {
         let rounded = top_target_rpm
             .checked_add(divisor / 2)
-            .ok_or(AcceptanceMatrixPlanError::Arithmetic)?
+            .ok_or(FixedGainAmplitudePlanError::Arithmetic)?
             / divisor;
         targets[index] =
-            i16::try_from(rounded).map_err(|_| AcceptanceMatrixPlanError::Arithmetic)?;
+            i16::try_from(rounded).map_err(|_| FixedGainAmplitudePlanError::Arithmetic)?;
         if targets[index] <= 0 || (index != 0 && targets[index] <= targets[index - 1]) {
-            return Err(AcceptanceMatrixPlanError::UnsupportedTargets);
+            return Err(FixedGainAmplitudePlanError::UnsupportedTargets);
         }
     }
     Ok(targets)
 }
 
-/// Build one immutable matrix entirely from retained firmware authority.
-pub fn plan_acceptance_matrix(
+/// Build one immutable amplitude plan entirely from retained firmware authority.
+pub fn plan_fixed_gain_amplitude(
     point: AcceptancePoint,
     request: VelocitySweepRequest,
-    order: AcceptanceMatrixOrder,
+    order: FixedGainAmplitudeOrder,
     slot_order: IntegralSlotOrder,
     current_config: VelocityIntegralPlan,
-) -> Result<AcceptanceMatrixPlan, AcceptanceMatrixPlanError> {
+) -> Result<FixedGainAmplitudePlan, FixedGainAmplitudePlanError> {
     // Every retained authority family (combined and breakaway alike) must carry
-    // matrix acceptance authority: well-ordered, correctly signed response
+    // amplitude acceptance authority: well-ordered, correctly signed response
     // intervals per direction, not merely a nonempty pair. This is the same
     // `commanded_side_lower_rate_q` call the recovery geometry below performs,
     // so the gate and the computation can never disagree about what "finite"
@@ -315,67 +318,67 @@ pub fn plan_acceptance_matrix(
         || !recovery_authority_consistent
         || !current_config.positive_rungs().contains(&point.selected_i)
     {
-        return Err(AcceptanceMatrixPlanError::IdentityMismatch);
+        return Err(FixedGainAmplitudePlanError::IdentityMismatch);
     }
 
-    let mut target_rpm = derive_acceptance_targets(point.target_velocity_rpm)?;
-    if order == AcceptanceMatrixOrder::Descending {
+    let mut target_rpm = derive_fixed_gain_amplitude_targets(point.target_velocity_rpm)?;
+    if order == FixedGainAmplitudeOrder::Descending {
         target_rpm.reverse();
     }
-    let amplitude_count = u8::try_from(ACCEPTANCE_MATRIX_AMPLITUDES)
-        .map_err(|_| AcceptanceMatrixPlanError::Arithmetic)?;
+    let amplitude_count = u8::try_from(FIXED_GAIN_AMPLITUDE_TARGETS)
+        .map_err(|_| FixedGainAmplitudePlanError::Arithmetic)?;
     let expected_observations = u16::from(amplitude_count)
         .checked_mul(
             u16::try_from(STAGE_C_OBSERVATIONS_PER_RUNG)
-                .map_err(|_| AcceptanceMatrixPlanError::Arithmetic)?,
+                .map_err(|_| FixedGainAmplitudePlanError::Arithmetic)?,
         )
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?;
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?;
     let family_size = u16::from(amplitude_count)
         .checked_mul(OBSERVATIONS_PER_DIRECTION_PER_AMPLITUDE)
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?;
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?;
     let recovery_lower_rate_q = [
         commanded_side_lower_rate_q(
             VelocityDirection::Forward,
             i64::from(point.selected_response_intervals_q[0][0]),
             i64::from(point.selected_response_intervals_q[0][1]),
         )
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?,
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?,
         commanded_side_lower_rate_q(
             VelocityDirection::Reverse,
             i64::from(point.selected_response_intervals_q[1][0]),
             i64::from(point.selected_response_intervals_q[1][1]),
         )
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?,
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?,
     ];
     let primitive_us = u64::from(current_config.moving_stroke_us)
         .checked_add(u64::from(current_config.zero_settle_us))
         .and_then(|value| value.checked_add(u64::from(current_config.analysis_budget_us)))
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?;
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?;
     let observation_us = u64::from(expected_observations)
         .checked_mul(primitive_us)
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?;
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?;
     let transition_us = u64::from(expected_observations)
         .checked_mul(u64::from(INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US))
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?;
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?;
     let cleanup_us = u64::from(current_config.zero_settle_us)
         .checked_add(u64::from(current_config.analysis_budget_us))
-        .ok_or(AcceptanceMatrixPlanError::Arithmetic)?;
+        .ok_or(FixedGainAmplitudePlanError::Arithmetic)?;
     let duration_ms = |recovery_slot_us: u32| {
         observation_us
             .checked_add(
                 u64::from(amplitude_count)
                     .checked_mul(u64::from(recovery_slot_us))
-                    .ok_or(AcceptanceMatrixPlanError::Arithmetic)?,
+                    .ok_or(FixedGainAmplitudePlanError::Arithmetic)?,
             )
             .and_then(|value| value.checked_add(transition_us))
             .and_then(|value| value.checked_add(cleanup_us))
             .and_then(|value| value.checked_add(MICROS_PER_MILLISECOND - 1))
             .and_then(|value| u32::try_from(value / MICROS_PER_MILLISECOND).ok())
-            .ok_or(AcceptanceMatrixPlanError::Arithmetic)
+            .ok_or(FixedGainAmplitudePlanError::Arithmetic)
     };
 
-    Ok(AcceptanceMatrixPlan {
-        schema_revision: ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+    Ok(FixedGainAmplitudePlan {
+        schema_revision: FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         acceptance_identity: point.identity,
         order,
         slot_order,

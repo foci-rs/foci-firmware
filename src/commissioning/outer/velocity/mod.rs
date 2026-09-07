@@ -1,22 +1,22 @@
 //! Velocity-loop commissioning phases.
 
-pub mod acceptance_evidence;
-#[cfg(test)]
-mod acceptance_evidence_tests;
-pub mod acceptance_plan;
-#[cfg(test)]
-mod acceptance_plan_tests;
-pub(crate) mod acceptance_reporting;
 pub mod band_confirmation;
 pub(crate) mod breakaway_campaign;
 pub(crate) mod breakaway_excursion;
 pub mod breakaway_plan;
 pub(crate) mod breakaway_reporting;
 pub mod breakaway_search;
+pub mod fixed_gain_amplitude_evidence;
+#[cfg(test)]
+mod fixed_gain_amplitude_evidence_tests;
+pub mod fixed_gain_amplitude_plan;
+#[cfg(test)]
+mod fixed_gain_amplitude_plan_tests;
+pub(crate) mod fixed_gain_amplitude_reporting;
 // breakaway_trace_reporting is the raw FTRC trace-record encoder for the
 // breakaway campaign; kept on `trace` per the established general rule,
 // which now applies uniformly since Task 12 removed the old
-// acceptance-matrix-only trace feature.
+// fixed-gain-amplitude-only trace feature.
 #[cfg(feature = "trace")]
 pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;

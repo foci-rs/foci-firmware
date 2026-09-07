@@ -105,7 +105,7 @@ pub struct RobustnessPreflight {
 ///
 /// Reads [`StageCCandidateSlot::acceptance_point`] only; never calls
 /// `advance_matrix_progress`/`close_matrix_progress`, so a failed or
-/// completed reversal probe cannot itself move the acceptance-matrix
+/// completed reversal probe cannot itself move the fixed-gain-amplitude
 /// lifecycle forward.
 pub fn preflight_robustness_reversal(
     run_sequence: u32,

@@ -16,15 +16,15 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::autotune::CommissionError;
 use crate::commission_dispatch::{
     CommissionOutcome, CommissionRetention, DispatchState, PostActions, ReplyPayload,
-    StepperPostAction, acceptance, disarm_velocity_workflow, outer_restore_position_stable,
-    record_restore_summary, restore, robustness, stage_c, validate_outer_gains,
-    zero_adc_cal_result, zero_commission_result, zero_outer_result,
+    StepperPostAction, disarm_velocity_workflow, fixed_gain_amplitude,
+    outer_restore_position_stable, record_restore_summary, restore, robustness, stage_c,
+    validate_outer_gains, zero_adc_cal_result, zero_commission_result, zero_outer_result,
 };
 use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionTerminal;
 use crate::commissioning::types::{
-    AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal, AdcCalResult,
-    CommissionResult, CommissioningBackend, EngineKind, OuterResult, RobustnessOutcome,
+    AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, FixedGainAmplitudeCause,
+    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, OuterResult, RobustnessOutcome,
     RobustnessReversalTerminal, StageCCause, StepResult, VelocityIntegralOutcome,
     VelocityIntegralTerminal,
 };
@@ -53,7 +53,7 @@ enum TerminalPayload {
     OuterDone(OuterResult),
     OuterFailed,
     VelocityIntegral(VelocityIntegralTerminal),
-    AcceptanceMatrix(AcceptanceMatrixTerminal),
+    FixedGainAmplitude(FixedGainAmplitudeTerminal),
     RobustnessReversal(RobustnessReversalTerminal),
 }
 
@@ -135,8 +135,8 @@ enum RestoreCursor {
     OuterFailedArm,
     OuterFailedArmDisarm(u8),
 
-    AcceptanceStagedDisarmVelocity,
-    AcceptanceDisarm,
+    FixedGainAmplitudeStagedDisarmVelocity,
+    FixedGainAmplitudeDisarm,
 
     RobustnessStagedClassify,
     RobustnessRestoreBaseline,
@@ -205,9 +205,9 @@ impl TerminalRestoreMachine {
                 TerminalPayload::VelocityIntegral(terminal),
                 RestoreCursor::VelocityDisarmVelocity,
             ),
-            StepResult::AcceptanceMatrixTerminal(terminal) => (
-                TerminalPayload::AcceptanceMatrix(terminal),
-                RestoreCursor::AcceptanceDisarm,
+            StepResult::FixedGainAmplitudeTerminal(terminal) => (
+                TerminalPayload::FixedGainAmplitude(terminal),
+                RestoreCursor::FixedGainAmplitudeDisarm,
             ),
             StepResult::RobustnessReversalTerminal(terminal) => (
                 TerminalPayload::RobustnessReversal(terminal),
@@ -217,7 +217,7 @@ impl TerminalRestoreMachine {
             | StepResult::At(_)
             | StepResult::PhaseChanged(_)
             | StepResult::VelocityIntegralEvent(_)
-            | StepResult::AcceptanceMatrixEvent(_)
+            | StepResult::FixedGainAmplitudeEvent(_)
             | StepResult::BreakawayCampaignEvent(_)
             | StepResult::BreakawayStageCPlanReady { .. } => {
                 unreachable!("nonterminal step result cannot start a terminal restore")
@@ -233,7 +233,7 @@ impl TerminalRestoreMachine {
     }
 
     /// Begin a staged terminal restore, applying the retained-evidence policy
-    /// the velocity-integral, acceptance-matrix, and robustness terminals carry.
+    /// the velocity-integral, fixed-gain-amplitude, and robustness terminals carry.
     pub fn start_staged(result: CommissionTerminal, channel: u8, pwm_maxcnt: u16) -> Self {
         match result {
             CommissionTerminal::VelocityIntegral(terminal) => Self {
@@ -243,11 +243,11 @@ impl TerminalRestoreMachine {
                 terminal: OwnedTerminalData::new(TerminalPayload::VelocityIntegral(terminal)),
                 engine_consumed: false,
             },
-            CommissionTerminal::AcceptanceMatrix(terminal) => Self {
+            CommissionTerminal::FixedGainAmplitude(terminal) => Self {
                 channel,
                 pwm_maxcnt,
-                cursor: RestoreCursor::AcceptanceStagedDisarmVelocity,
-                terminal: OwnedTerminalData::new(TerminalPayload::AcceptanceMatrix(terminal)),
+                cursor: RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity,
+                terminal: OwnedTerminalData::new(TerminalPayload::FixedGainAmplitude(terminal)),
                 engine_consumed: false,
             },
             CommissionTerminal::RobustnessReversal(terminal) => Self {
@@ -989,28 +989,30 @@ impl TerminalRestoreMachine {
                     ));
                 }
 
-                // --- acceptance matrix ----------------------------------------
-                RestoreCursor::AcceptanceStagedDisarmVelocity => {
-                    let TerminalPayload::AcceptanceMatrix(mut terminal) =
+                // --- fixed-gain amplitude ----------------------------------------
+                RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity => {
+                    let TerminalPayload::FixedGainAmplitude(mut terminal) =
                         self.terminal.payload.clone()
                     else {
-                        unreachable!("acceptance cursor without an acceptance payload")
+                        unreachable!(
+                            "fixed-gain amplitude cursor without a fixed-gain amplitude payload"
+                        )
                     };
                     let retention = retention
                         .take()
                         .expect("staged terminal restore requires Stage-C retention");
-                    let matrix_context = engine.as_ref().and_then(|engine| {
+                    let amplitude_context = engine.as_ref().and_then(|engine| {
                         engine
-                            .acceptance_matrix_order()
-                            .zip(engine.acceptance_matrix_plan_digest())
+                            .fixed_gain_amplitude_order()
+                            .zip(engine.fixed_gain_amplitude_plan_digest())
                     });
                     if !disarm_velocity_workflow(engine, backend, state).await {
                         retention.stage_c.observe_fault();
-                        terminal.outcome = AcceptanceMatrixOutcome::Fault;
-                        terminal.cause = AcceptanceMatrixCause::EvidenceIntegrity;
+                        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+                        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
                         terminal.safety_fault = None;
-                    } else if let Some((order, plan_digest)) = matrix_context {
-                        terminal = acceptance::apply_acceptance_matrix_terminal(
+                    } else if let Some((order, plan_digest)) = amplitude_context {
+                        terminal = fixed_gain_amplitude::apply_fixed_gain_amplitude_terminal(
                             terminal,
                             order,
                             plan_digest,
@@ -1018,29 +1020,32 @@ impl TerminalRestoreMachine {
                         );
                     } else {
                         retention.stage_c.observe_fault();
-                        terminal.outcome = AcceptanceMatrixOutcome::Fault;
-                        terminal.cause = AcceptanceMatrixCause::EvidenceIntegrity;
+                        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+                        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
                         terminal.safety_fault = None;
                     }
-                    self.terminal.payload = TerminalPayload::AcceptanceMatrix(terminal);
+                    self.terminal.payload = TerminalPayload::FixedGainAmplitude(terminal);
                     #[cfg(feature = "trace")]
                     engine
                         .as_mut()
-                        .expect("engine slot is None on AcceptanceMatrixTerminal")
-                        .emit_acceptance_matrix_terminal_trace(backend, terminal);
-                    self.cursor = RestoreCursor::AcceptanceDisarm;
+                        .expect("engine slot is None on FixedGainAmplitudeTerminal")
+                        .emit_fixed_gain_amplitude_terminal_trace(backend, terminal);
+                    self.cursor = RestoreCursor::FixedGainAmplitudeDisarm;
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::AcceptanceDisarm => {
-                    let TerminalPayload::AcceptanceMatrix(terminal) = self.terminal.payload.clone()
+                RestoreCursor::FixedGainAmplitudeDisarm => {
+                    let TerminalPayload::FixedGainAmplitude(terminal) =
+                        self.terminal.payload.clone()
                     else {
-                        unreachable!("acceptance cursor without an acceptance payload")
+                        unreachable!(
+                            "fixed-gain amplitude cursor without a fixed-gain amplitude payload"
+                        )
                     };
                     crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     state.tmc.commission_in_flight.store(false, Relaxed);
                     let consumed = self.take_engine(engine);
                     return RestoreStep::Done(CommissionOutcome::Terminal {
-                        reply: ReplyPayload::AcceptanceMatrixTerminal {
+                        reply: ReplyPayload::FixedGainAmplitudeTerminal {
                             oid: consumed.oid(),
                             terminal,
                         },
@@ -1541,11 +1546,11 @@ impl TerminalRestoreMachine {
                     authority: None,
                 }
             }
-            TerminalPayload::AcceptanceMatrix(mut terminal) => {
-                terminal.outcome = AcceptanceMatrixOutcome::Fault;
-                terminal.cause = AcceptanceMatrixCause::EvidenceIntegrity;
+            TerminalPayload::FixedGainAmplitude(mut terminal) => {
+                terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+                terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
                 terminal.safety_fault = None;
-                ReplyPayload::AcceptanceMatrixTerminal { oid, terminal }
+                ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal }
             }
             TerminalPayload::RobustnessReversal(mut terminal) => {
                 terminal.outcome = RobustnessOutcome::Failed;

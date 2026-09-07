@@ -1,4 +1,4 @@
-//! Exact per-amplitude evidence for fixed-I velocity confidence matrices.
+//! Exact per-amplitude evidence for fixed-I fixed-gain amplitude validation runs.
 
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -6,14 +6,14 @@ use super::sweep_consensus::{
 };
 use super::sweep_evidence::VelocityObservationClass;
 
-/// Number of amplitudes in one immutable matrix.
-pub const ACCEPTANCE_AMPLITUDE_COUNT: usize = 5;
-const FULL_AMPLITUDE_MASK: u8 = (1 << ACCEPTANCE_AMPLITUDE_COUNT) - 1;
+/// Number of amplitudes in one immutable run.
+pub const FIXED_GAIN_AMPLITUDE_COUNT: usize = 5;
+const FULL_AMPLITUDE_MASK: u8 = (1 << FIXED_GAIN_AMPLITUDE_COUNT) - 1;
 
 /// Availability of one amplitude and direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
-pub enum AcceptanceAmplitudeAvailability {
+pub enum FixedGainAmplitudeAvailability {
     /// A unique depth-three response interval is available.
     Eligible = 0,
     /// The low-amplitude acquisition could not resolve a unique response.
@@ -32,7 +32,7 @@ pub enum AcceptanceAmplitudeAvailability {
 
 /// Inputs for one direction's four-observation fold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AcceptanceDirectionInput {
+pub struct FixedGainAmplitudeDirectionInput {
     /// Exact signed target in encoder rate-Q.
     pub signed_target_rate_q: i64,
     /// Four-bit schedule-completion mask.
@@ -49,11 +49,11 @@ pub struct AcceptanceDirectionInput {
     pub precision_floor_candidate: bool,
 }
 
-/// Exact direction-level result for one matrix amplitude.
+/// Exact direction-level result for one amplitude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct AcceptanceDirectionalEvidence {
+pub struct FixedGainAmplitudeDirectionalEvidence {
     /// Availability classification independent of other amplitudes.
-    pub availability: AcceptanceAmplitudeAvailability,
+    pub availability: FixedGainAmplitudeAvailability,
     /// Exact consensus components and observation masks.
     pub consensus: DirectionalConsensus,
     /// Signed target in encoder rate-Q.
@@ -72,18 +72,18 @@ pub struct AcceptanceDirectionalEvidence {
 
 /// Exact report for both directions at one frozen target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct AcceptanceAmplitudeReport {
+pub struct FixedGainAmplitudeReport {
     /// Zero-based index in the immutable order.
     pub amplitude_index: u8,
     /// Exact frozen mechanical-RPM target.
     pub target_rpm: i16,
     /// Forward and reverse direction evidence.
-    pub directions: [AcceptanceDirectionalEvidence; 2],
+    pub directions: [FixedGainAmplitudeDirectionalEvidence; 2],
 }
 
 /// Exact five-bit availability masks for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct AcceptanceRunMasks {
+pub struct FixedGainAmplitudeRunMasks {
     /// Amplitudes whose schedules began.
     pub attempted: [u8; 2],
     /// Amplitudes with unique depth-three consensus.
@@ -96,7 +96,7 @@ pub struct AcceptanceRunMasks {
 
 /// Checked evidence-construction failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum AcceptanceEvidenceError {
+pub enum FixedGainAmplitudeEvidenceError {
     /// A supplied closed interval was inverted.
     InvalidInterval,
     /// Checked integer arithmetic exceeded its representation.
@@ -108,7 +108,7 @@ pub enum AcceptanceEvidenceError {
 /// Compute the robust location of three or four intrinsically usable means.
 pub fn robust_rate_location(
     means_q: [Option<i32>; CONSENSUS_OBSERVATIONS_PER_DIRECTION],
-) -> Result<Option<i32>, AcceptanceEvidenceError> {
+) -> Result<Option<i32>, FixedGainAmplitudeEvidenceError> {
     let mut values = [0_i32; CONSENSUS_OBSERVATIONS_PER_DIRECTION];
     let mut count = 0;
     for value in means_q.into_iter().flatten() {
@@ -129,23 +129,23 @@ pub fn robust_rate_location(
             let midpoint = i64::from(values[1]) + difference / 2;
             i32::try_from(midpoint)
                 .map(Some)
-                .map_err(|_| AcceptanceEvidenceError::Arithmetic)
+                .map_err(|_| FixedGainAmplitudeEvidenceError::Arithmetic)
         }
         _ => Ok(None),
     }
 }
 
 /// Fold four intrinsic observations into one exact directional amplitude result.
-pub fn classify_acceptance_amplitude(
-    input: AcceptanceDirectionInput,
-) -> Result<AcceptanceDirectionalEvidence, AcceptanceEvidenceError> {
+pub fn classify_fixed_gain_amplitude(
+    input: FixedGainAmplitudeDirectionInput,
+) -> Result<FixedGainAmplitudeDirectionalEvidence, FixedGainAmplitudeEvidenceError> {
     if input
         .intervals
         .iter()
         .flatten()
         .any(|interval| interval[0] > interval[1])
     {
-        return Err(AcceptanceEvidenceError::InvalidInterval);
+        return Err(FixedGainAmplitudeEvidenceError::InvalidInterval);
     }
     let consensus = depth_three_consensus(input.collected_mask, input.classes, input.intervals);
     let fault = input.classes.iter().any(|class| {
@@ -160,30 +160,30 @@ pub fn classify_acceptance_amplitude(
         .classes
         .contains(&VelocityObservationClass::CurrentHeadroom);
     let availability = if fault {
-        AcceptanceAmplitudeAvailability::Fault
+        FixedGainAmplitudeAvailability::Fault
     } else if current {
-        AcceptanceAmplitudeAvailability::CurrentHeadroom
+        FixedGainAmplitudeAvailability::CurrentHeadroom
     } else {
         match consensus.classification {
             DirectionalConsensusClass::EligibleConsensus => {
-                AcceptanceAmplitudeAvailability::Eligible
+                FixedGainAmplitudeAvailability::Eligible
             }
             DirectionalConsensusClass::AmbiguousConsensus => {
-                AcceptanceAmplitudeAvailability::Ambiguous
+                FixedGainAmplitudeAvailability::Ambiguous
             }
             DirectionalConsensusClass::InsufficientConsensus
             | DirectionalConsensusClass::IncompleteRung
                 if input.precision_floor_candidate =>
             {
-                AcceptanceAmplitudeAvailability::BelowPrecisionFloor
+                FixedGainAmplitudeAvailability::BelowPrecisionFloor
             }
             DirectionalConsensusClass::InsufficientConsensus
             | DirectionalConsensusClass::IncompleteRung => {
-                AcceptanceAmplitudeAvailability::Insufficient
+                FixedGainAmplitudeAvailability::Insufficient
             }
         }
     };
-    let response_interval_q = (availability == AcceptanceAmplitudeAvailability::Eligible)
+    let response_interval_q = (availability == FixedGainAmplitudeAvailability::Eligible)
         .then_some(consensus.components[0]);
     let deficit_interval_q = response_interval_q.map(|interval| {
         [
@@ -191,7 +191,7 @@ pub fn classify_acceptance_amplitude(
             input.signed_target_rate_q - i64::from(interval[0]),
         ]
     });
-    Ok(AcceptanceDirectionalEvidence {
+    Ok(FixedGainAmplitudeDirectionalEvidence {
         availability,
         consensus,
         signed_target_rate_q: input.signed_target_rate_q,
@@ -204,9 +204,9 @@ pub fn classify_acceptance_amplitude(
 }
 
 /// Validate one run's exact masks and test the three-amplitude directional floor.
-pub fn acceptance_run_sufficient(
-    masks: AcceptanceRunMasks,
-) -> Result<bool, AcceptanceEvidenceError> {
+pub fn fixed_gain_amplitude_run_sufficient(
+    masks: FixedGainAmplitudeRunMasks,
+) -> Result<bool, FixedGainAmplitudeEvidenceError> {
     for direction in 0..2 {
         let attempted = masks.attempted[direction];
         let eligible = masks.eligible[direction];
@@ -221,7 +221,7 @@ pub fn acceptance_run_sufficient(
             || attempted & unattempted != 0
             || attempted | unattempted != FULL_AMPLITUDE_MASK
         {
-            return Err(AcceptanceEvidenceError::InvalidMasks);
+            return Err(FixedGainAmplitudeEvidenceError::InvalidMasks);
         }
     }
     Ok(masks.eligible.iter().all(|mask| mask.count_ones() >= 3))

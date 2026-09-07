@@ -36,7 +36,7 @@ fn is_terminal(result: &StepResult) -> bool {
     matches!(
         result,
         StepResult::VelocityIntegralTerminal(_)
-            | StepResult::AcceptanceMatrixTerminal(_)
+            | StepResult::FixedGainAmplitudeTerminal(_)
             | StepResult::RobustnessReversalTerminal(_)
             | StepResult::OuterDone(_)
             | StepResult::OuterFailed(_)
@@ -175,10 +175,10 @@ fn response_ladder_engine() -> CommissioningEngine {
     response_ladder_engine_with_params(plan_matched_outer_params())
 }
 
-fn acceptance_matrix_engine() -> CommissioningEngine {
-    use crate::commission_dispatch::acceptance::AcceptanceMatrixPreflight;
-    use crate::commissioning::outer::velocity::acceptance_plan::{
-        AcceptanceMatrixOrder, plan_acceptance_matrix,
+fn fixed_gain_amplitude_engine() -> CommissioningEngine {
+    use crate::commission_dispatch::fixed_gain_amplitude::FixedGainAmplitudePreflight;
+    use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
+        FixedGainAmplitudeOrder, plan_fixed_gain_amplitude,
     };
     use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
     use crate::commissioning::outer::velocity::integral_reproduction::{
@@ -204,21 +204,21 @@ fn acceptance_matrix_engine() -> CommissioningEngine {
         token: None,
         progress: AcceptanceMatrixProgress::ReadyAscending,
     };
-    let plan = plan_acceptance_matrix(
+    let plan = plan_fixed_gain_amplitude(
         point,
         plan_request(),
-        AcceptanceMatrixOrder::Ascending,
+        FixedGainAmplitudeOrder::Ascending,
         IntegralSlotOrder::ForwardFirst,
         current,
     )
-    .expect("a genuine breakaway point carries matrix acceptance authority");
+    .expect("a genuine breakaway point carries amplitude acceptance authority");
 
-    CommissioningEngine::new_outer_for_tmc_with_acceptance_preflight(
+    CommissioningEngine::new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
         0,
         crate::state::tmc::tmc_channel0(),
         plan_matched_outer_params(),
         sample_entry_snapshot(),
-        AcceptanceMatrixPreflight {
+        FixedGainAmplitudePreflight {
             plan,
             run_sequence: 11,
         },
@@ -381,8 +381,8 @@ async fn direct_response_ladder_emits_only_its_initial_phase() {
 }
 
 #[fixture_test]
-async fn acceptance_matrix_reports_fixed_gain_amplitude_validation() {
-    let mut engine = acceptance_matrix_engine();
+async fn fixed_gain_amplitude_reports_fixed_gain_amplitude_validation() {
+    let mut engine = fixed_gain_amplitude_engine();
     let mut backend = outer_backend();
 
     assert_eq!(

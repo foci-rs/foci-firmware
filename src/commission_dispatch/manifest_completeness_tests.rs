@@ -197,7 +197,7 @@ fn manifest_entry_fields(source: &str, method: &str) -> (String, Vec<(String, St
     // entry missing its own reply:/fields: block would silently read the
     // *next* entry's instead of failing -- a false pass, not caught by
     // adjacent entries that happen to share the same field shape (e.g.
-    // foci_acceptance_matrix_terminal and foci_robustness_cycle_evidence
+    // foci_fixed_gain_amplitude_terminal and foci_robustness_cycle_evidence
     // are both just { oid: u8, payload: &[u8] }).
     let entry_end = after.find("entry {").unwrap_or(after.len());
     let entry = &after[..entry_end];

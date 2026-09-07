@@ -244,7 +244,7 @@ fn velocity_current_prevention_configuration_matrix() {
                                 );
                                 let plan = planned.unwrap_or_else(|error| {
                                     panic!(
-                                        "matrix plan failed: encoder={encoder_counts_per_rev} \
+                                        "sweep plan failed: encoder={encoder_counts_per_rev} \
                                          pwm={pwm_hz} target={target_rpm} \
                                          meter={velocity_meter} filter={filter_enabled} \
                                          limit={operational_limit} bed={bed_mm}: {error:?}"

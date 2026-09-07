@@ -1,7 +1,7 @@
 //! Command-level velocity-autotune workflow selection and disclosure.
 //!
 //! [`VelocityAutotuneWorkflowKind`] names which whole command workflow a host
-//! requested -- resume, an acceptance-matrix order, the breakaway-seeded
+//! requested -- resume, an fixed-gain-amplitude order, the breakaway-seeded
 //! campaign, or the robustness-reversal gate -- not a phase or subphase within
 //! one of them. It is disclosed, alongside its conservative duration envelope,
 //! before any motion so the host can arm the correct wait timeout.
@@ -33,8 +33,8 @@ impl CommissioningWorkflowPlan {
     ) -> Result<Self, VelocityIntegralPlanError> {
         let valid = match shape {
             VelocityAutotuneWorkflowKind::Resume => stage_b_ms == 0 && stage_c_ms != 0,
-            VelocityAutotuneWorkflowKind::AcceptanceMatrixAscending
-            | VelocityAutotuneWorkflowKind::AcceptanceMatrixDescending
+            VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
+            | VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
             | VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
             | VelocityAutotuneWorkflowKind::ReversalStandstillRobustnessGate => false,
         };
@@ -52,10 +52,10 @@ impl CommissioningWorkflowPlan {
         })
     }
 
-    /// Construct one checked fixed-I acceptance-matrix workflow envelope.
-    pub fn new_acceptance_matrix(
+    /// Construct one checked fixed-I fixed-gain-amplitude workflow envelope.
+    pub fn new_fixed_gain_amplitude(
         run_sequence: u32,
-        order: super::acceptance_plan::AcceptanceMatrixOrder,
+        order: super::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder,
         nominal_workflow_ms: u32,
         maximum_workflow_ms: u32,
     ) -> Result<Self, VelocityIntegralPlanError> {
@@ -66,11 +66,11 @@ impl CommissioningWorkflowPlan {
             return Err(VelocityIntegralPlanError::InvalidRequest);
         }
         let shape = match order {
-            super::acceptance_plan::AcceptanceMatrixOrder::Ascending => {
-                VelocityAutotuneWorkflowKind::AcceptanceMatrixAscending
+            super::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder::Ascending => {
+                VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
             }
-            super::acceptance_plan::AcceptanceMatrixOrder::Descending => {
-                VelocityAutotuneWorkflowKind::AcceptanceMatrixDescending
+            super::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder::Descending => {
+                VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
             }
         };
         Ok(Self {

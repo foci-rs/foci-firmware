@@ -187,7 +187,7 @@ fn breakaway_reproduced_complete_installs_token_carrying_point() {
         installed.selected_i,
         integral_i_at(execution, 3).expect("in range")
     );
-    // The token is carried so the matrix preflight can reconstruct the plan.
+    // The token is carried so the amplitude preflight can reconstruct the plan.
     assert_eq!(installed.token, Some(authority.acquisition));
     assert!(installed.token.is_some());
 }

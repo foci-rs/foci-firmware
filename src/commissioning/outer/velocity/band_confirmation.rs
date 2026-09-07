@@ -766,7 +766,7 @@ pub struct BandConfirmationAcceptance {
     /// strictly negative (`high_q < 0`), formed as `[-high_magnitude_q,
     /// -low_magnitude_q]` so `low_q <= high_q` still holds. This is what
     /// [`super::recovery::commanded_side_lower_rate_q`] requires of both
-    /// directions, and what the acceptance-matrix installer downstream
+    /// directions, and what the fixed-gain-amplitude installer downstream
     /// ultimately reads this value as.
     ///
     /// Derived from the same per-atom commanded-side magnitude and

@@ -1772,7 +1772,7 @@ fn discovery_step_from_probe_fault(step: BreakawayProbeStep) -> AdditiveDiscover
 }
 
 /// Positive commanded-magnitude target rate shared by both directions, matching
-/// the existing `acceptance_target_rate_q` conversion in `integral_sweep.rs`.
+/// the existing `fixed_gain_amplitude_target_rate_q` conversion in `integral_sweep.rs`.
 fn discovery_target_rate_q(
     target_velocity_rpm: TmcMechanicalRpm,
     counts_per_rev: u32,

@@ -405,7 +405,7 @@ pub(crate) enum OuterPhase {
         workspace: super::velocity::breakaway_campaign::BreakawayProbeWorkspace,
         safety: OuterSafetyLimits,
     },
-    /// Reversal-standstill robustness gate over the matrix-accepted point.
+    /// Reversal-standstill robustness gate over the retained acceptance point.
     ///
     /// Reads the retained accepted point read-only; it never advances or closes
     /// `AcceptanceMatrixProgress`. Its cooperative stepper owns its own capture
@@ -432,7 +432,7 @@ impl OuterPhase {
     /// Return the stable phase ID for the active non-terminal outer phase.
     ///
     /// `VelocityIntegral` dispatches on its plan's `acquisition_kind`: the
-    /// response ladder and the acceptance sweep are distinct workflows on the
+    /// response ladder and the fixed-gain amplitude sweep are distinct workflows on the
     /// wire even though they share this engine variant.
     pub(crate) fn current_phase_id(&self) -> Option<CommissionPhase> {
         use super::velocity::integral_plan::VelocityIntegralAcquisitionKind;
@@ -442,8 +442,8 @@ impl OuterPhase {
                 VelocityIntegralAcquisitionKind::ResponseLadder => {
                     CommissionPhase::IntegralGainResponseCharacterization
                 }
-                VelocityIntegralAcquisitionKind::AcceptanceAscending
-                | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
+                VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+                | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
                     CommissionPhase::FixedGainAmplitudeValidation
                 }
             }),
@@ -500,7 +500,7 @@ mod tests {
             limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
             acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: AcceptanceSource::NonBreakaway,
-            matrix_targets_rpm: [0; 5],
+            amplitude_targets_rpm: [0; 5],
             selected_response_intervals_q: [[0; 2]; 2],
             recovery_lower_rate_q: [13_217_792, 12_827_648],
             recovery_quantization_exposed: true,
@@ -542,12 +542,12 @@ mod tests {
             Some(CommissionPhase::IntegralGainResponseCharacterization)
         );
         assert_eq!(
-            velocity_integral_phase(VelocityIntegralAcquisitionKind::AcceptanceAscending)
+            velocity_integral_phase(VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending)
                 .current_phase_id(),
             Some(CommissionPhase::FixedGainAmplitudeValidation)
         );
         assert_eq!(
-            velocity_integral_phase(VelocityIntegralAcquisitionKind::AcceptanceDescending)
+            velocity_integral_phase(VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending)
                 .current_phase_id(),
             Some(CommissionPhase::FixedGainAmplitudeValidation)
         );

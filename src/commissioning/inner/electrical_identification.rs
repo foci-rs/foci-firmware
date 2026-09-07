@@ -6,8 +6,8 @@
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
 use super::{
-    DelayCaptureState, DelayCompletedCapture, ElectricalIdentificationData, ElectricalIdentificationState,
-    InductanceCaptureState, InductanceRestoreOperation, InnerPhase,
+    DelayCaptureState, DelayCompletedCapture, ElectricalIdentificationData,
+    ElectricalIdentificationState, InductanceCaptureState, InductanceRestoreOperation, InnerPhase,
 };
 use crate::autotune::{
     CommissionError, CommissionPhase, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
@@ -213,7 +213,10 @@ fn electrical_id_measurement_diagnostic(
 /// (`dV_count / dI_count * 1000`), so it feeds the per-coil tau and gain math
 /// directly without conversion. Returns `(count_slope, count_slope, samples)`
 /// because the diagnostic retains both established count-space evidence slots.
-fn per_coil_resistance_slope(data: &ElectricalIdentificationData, coil_idx: usize) -> Option<(u32, u32, u32)> {
+fn per_coil_resistance_slope(
+    data: &ElectricalIdentificationData,
+    coil_idx: usize,
+) -> Option<(u32, u32, u32)> {
     let result = data.resistance_result?;
     let axis = if coil_idx == 0 {
         result.axis0
@@ -438,8 +441,11 @@ fn begin_inductance_restore<B: CommissioningBackend>(
     timing: Option<CaptureTimingEvidence>,
 ) -> StepResult {
     backend.set_enable_pin(false);
-    let timing_accepted =
-        timing.is_some() && !matches!(state, ElectricalIdentificationState::InductanceSample { .. });
+    let timing_accepted = timing.is_some()
+        && !matches!(
+            state,
+            ElectricalIdentificationState::InductanceSample { .. }
+        );
     *state = ElectricalIdentificationState::InductanceRestore {
         operation: InductanceRestoreOperation::RetainedUqUdExt,
         primary_error,
@@ -1557,7 +1563,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 0,
                 crate::commissioning::types::COMMISSION_TIMING_REJECTED,
             );
-            *electrical_identification_state = ElectricalIdentificationState::ResistanceIdentify { runner };
+            *electrical_identification_state =
+                ElectricalIdentificationState::ResistanceIdentify { runner };
             StepResult::ReadyNow
         }
 
@@ -1583,7 +1590,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         0,
                         crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
                     );
-                    *electrical_identification_state = ElectricalIdentificationState::InductanceSetup;
+                    *electrical_identification_state =
+                        ElectricalIdentificationState::InductanceSetup;
                     StepResult::ReadyNow
                 }
                 crate::resistance_identification::ResistancePoll::Complete(Err(error)) => {
@@ -1601,7 +1609,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if data.encoder_domain.is_none() {
                 return fail_electrical_id(phase, diagnostics, CommissionError::EncoderFault);
             }
-            *electrical_identification_state = ElectricalIdentificationState::InductanceSetupOperation { operation: 0 };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceSetupOperation { operation: 0 };
             StepResult::ReadyNow
         }
 
@@ -1671,7 +1680,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 );
             };
             backend.set_enable_pin(true);
-            *electrical_identification_state = ElectricalIdentificationState::InductanceWaitVelocity { deadline_us };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceWaitVelocity { deadline_us };
             StepResult::ReadyNow
         }
 
@@ -1700,7 +1710,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     None,
                 );
             }
-            *electrical_identification_state = ElectricalIdentificationState::InductanceReadEncoderStart;
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceReadEncoderStart;
             StepResult::ReadyNow
         }
 
@@ -1717,7 +1728,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     );
                 }
             };
-            *electrical_identification_state = ElectricalIdentificationState::InductanceApplyDrive { encoder_start };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceApplyDrive { encoder_start };
             StepResult::ReadyNow
         }
 
@@ -1748,11 +1760,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let encoder_domain = data
                 .encoder_domain
                 .expect("validated before inductance setup");
-            *electrical_identification_state = ElectricalIdentificationState::InductanceDriveSettle {
-                deadline_us,
-                encoder_start: *encoder_start,
-                encoder_domain,
-            };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceDriveSettle {
+                    deadline_us,
+                    encoder_start: *encoder_start,
+                    encoder_domain,
+                };
             StepResult::At(deadline_us)
         }
 
@@ -1764,10 +1777,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
             }
-            *electrical_identification_state = ElectricalIdentificationState::InductanceReadPreStatus {
-                encoder_start: *encoder_start,
-                encoder_domain: *encoder_domain,
-            };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceReadPreStatus {
+                    encoder_start: *encoder_start,
+                    encoder_domain: *encoder_domain,
+                };
             StepResult::ReadyNow
         }
 
@@ -1796,11 +1810,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     None,
                 );
             }
-            *electrical_identification_state = ElectricalIdentificationState::InductanceReadStartPhi {
-                encoder_start: *encoder_start,
-                encoder_domain: *encoder_domain,
-                status_flags_or,
-            };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceReadStartPhi {
+                    encoder_start: *encoder_start,
+                    encoder_domain: *encoder_domain,
+                    status_flags_or,
+                };
             StepResult::ReadyNow
         }
 
@@ -1867,11 +1882,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             match poll_inductance_sample(backend, diagnostics, capture, now_us).await {
                 Ok(InductanceSamplePoll::At) => StepResult::At(capture.next_sample_us),
                 Ok(InductanceSamplePoll::Complete { elapsed_us, timing }) => {
-                    *electrical_identification_state = ElectricalIdentificationState::InductanceReadStatus {
-                        capture: *capture,
-                        completed_elapsed_us: elapsed_us,
-                        timing,
-                    };
+                    *electrical_identification_state =
+                        ElectricalIdentificationState::InductanceReadStatus {
+                            capture: *capture,
+                            completed_elapsed_us: elapsed_us,
+                            timing,
+                        };
                     StepResult::ReadyNow
                 }
                 Err(error) => {
@@ -1919,11 +1935,12 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     Some(timing),
                 );
             }
-            *electrical_identification_state = ElectricalIdentificationState::InductanceReadEncoder {
-                capture: next_capture,
-                completed_elapsed_us,
-                timing,
-            };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceReadEncoder {
+                    capture: next_capture,
+                    completed_elapsed_us,
+                    timing,
+                };
             StepResult::ReadyNow
         }
 
@@ -2097,7 +2114,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             let Some(deadline_us) = backend.elapsed_us().checked_add(ELECTRICAL_COOLDOWN_US) else {
                 return fail_electrical_id(phase, diagnostics, CommissionError::InvalidSchedule);
             };
-            *electrical_identification_state = ElectricalIdentificationState::InductanceDisable { deadline_us };
+            *electrical_identification_state =
+                ElectricalIdentificationState::InductanceDisable { deadline_us };
             StepResult::At(deadline_us)
         }
 
@@ -2114,7 +2132,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         // ---------------------------------------------------------------
         ElectricalIdentificationState::DelaySetup => {
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
-            *electrical_identification_state = ElectricalIdentificationState::DelaySetupOperation { operation: 0 };
+            *electrical_identification_state =
+                ElectricalIdentificationState::DelaySetupOperation { operation: 0 };
             StepResult::ReadyNow
         }
 
@@ -2155,7 +2174,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     None,
                 );
             };
-            *electrical_identification_state = ElectricalIdentificationState::DelayPreSettle { deadline_us };
+            *electrical_identification_state =
+                ElectricalIdentificationState::DelayPreSettle { deadline_us };
             StepResult::At(deadline_us)
         }
 
@@ -2195,7 +2215,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     );
                 }
             };
-            *electrical_identification_state = ElectricalIdentificationState::DelayApplyStep { baseline };
+            *electrical_identification_state =
+                ElectricalIdentificationState::DelayApplyStep { baseline };
             StepResult::ReadyNow
         }
 
@@ -2255,10 +2276,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Ok(DelaySamplePoll::At) => StepResult::At(capture.next_sample_us),
                 Ok(DelaySamplePoll::Complete(completed)) => {
                     data.delay_timing = Some(completed.timing);
-                    *electrical_identification_state = ElectricalIdentificationState::DelayStopMotion {
-                        primary_error: None,
-                        completed: Some(completed),
-                    };
+                    *electrical_identification_state =
+                        ElectricalIdentificationState::DelayStopMotion {
+                            primary_error: None,
+                            completed: Some(completed),
+                        };
                     StepResult::ReadyNow
                 }
                 Err(error) => {
@@ -2327,7 +2349,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             }
 
             if let Some(error) = *primary_error {
-                return match begin_delay_cooldown(electrical_identification_state, backend, Some(error)) {
+                return match begin_delay_cooldown(
+                    electrical_identification_state,
+                    backend,
+                    Some(error),
+                ) {
                     Ok(result) => result,
                     Err(error) => fail_electrical_id(phase, diagnostics, error),
                 };
@@ -2342,7 +2368,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     Err(error) => fail_electrical_id(phase, diagnostics, error),
                 };
             };
-            *electrical_identification_state = ElectricalIdentificationState::DelayEvaluate { completed };
+            *electrical_identification_state =
+                ElectricalIdentificationState::DelayEvaluate { completed };
             StepResult::ReadyNow
         }
 
@@ -2631,7 +2658,10 @@ mod tests {
         let state = ElectricalIdentificationState::InductanceSetup;
 
         assert!(data.resistance_result.is_some());
-        assert!(matches!(state, ElectricalIdentificationState::InductanceSetup));
+        assert!(matches!(
+            state,
+            ElectricalIdentificationState::InductanceSetup
+        ));
     }
 
     #[test]
@@ -3007,7 +3037,10 @@ mod tests {
             let InnerPhase::ElectricalIdentification { state, data } = &phase else {
                 panic!("expected electrical-id cooldown, got {phase:?}");
             };
-            assert!(matches!(state, ElectricalIdentificationState::InductanceDisable { .. }));
+            assert!(matches!(
+                state,
+                ElectricalIdentificationState::InductanceDisable { .. }
+            ));
             assert!(data.inductance.is_some());
             assert!(!backend.enable_pin);
             let enable_low = enable_position(&backend.spi_log, false);
@@ -3106,7 +3139,9 @@ mod tests {
     ) -> crate::selftest::CommissionDiagnostic {
         diagnostics
             .iter()
-            .find(|event| event.phase == CommissionPhase::ElectricalIdentification.to_u8() && event.code == 33)
+            .find(|event| {
+                event.phase == CommissionPhase::ElectricalIdentification.to_u8() && event.code == 33
+            })
             .expect("inductance capture rejection should retain branch detail")
     }
 
@@ -4079,7 +4114,10 @@ mod tests {
                 .iter()
                 .find(|event| event.code == DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY)
                 .expect("frequency rejection should retain realized-frequency evidence");
-            assert_eq!(detail.phase, CommissionPhase::ElectricalIdentification.to_u8());
+            assert_eq!(
+                detail.phase,
+                CommissionPhase::ElectricalIdentification.to_u8()
+            );
             assert_eq!(detail.status, 1);
             assert!(detail.value0 > INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ);
             assert!(detail.value1 < NOMINAL_INDUCTANCE_CAPTURE_US);
@@ -4339,7 +4377,9 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
+                data: ElectricalIdentificationData::new(u32::from(
+                    backend.tmc_config().excitation_voltage,
+                )),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4402,7 +4442,9 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
+                data: ElectricalIdentificationData::new(u32::from(
+                    backend.tmc_config().excitation_voltage,
+                )),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4479,7 +4521,9 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
+                data: ElectricalIdentificationData::new(u32::from(
+                    backend.tmc_config().excitation_voltage,
+                )),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4533,7 +4577,9 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
+                data: ElectricalIdentificationData::new(u32::from(
+                    backend.tmc_config().excitation_voltage,
+                )),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4603,7 +4649,9 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(backend.tmc_config().excitation_voltage)),
+                data: ElectricalIdentificationData::new(u32::from(
+                    backend.tmc_config().excitation_voltage,
+                )),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -5180,7 +5228,10 @@ mod tests {
                     let InnerPhase::ElectricalIdentification { state, data } = &phase else {
                         panic!("expected electrical ID: {phase:?}");
                     };
-                    assert!(matches!(state, ElectricalIdentificationState::DelayCooldown { .. }));
+                    assert!(matches!(
+                        state,
+                        ElectricalIdentificationState::DelayCooldown { .. }
+                    ));
                     assert_eq!(data.delay_estimate_us, Some(350));
                     assert!(data.delay_timing.is_some());
                     assert!(!backend.enable_pin);
@@ -5346,7 +5397,10 @@ mod tests {
     #[test]
     fn model_failure_diagnostic_codes_are_stable() {
         let no_samples = diagnostic_for_model_assembly_failure(ModelAssemblyError::SampleCount);
-        assert_eq!(no_samples.phase, CommissionPhase::ElectricalIdentification.to_u8());
+        assert_eq!(
+            no_samples.phase,
+            CommissionPhase::ElectricalIdentification.to_u8()
+        );
         assert_eq!(no_samples.code, 20);
         assert_eq!(no_samples.status, 1);
 

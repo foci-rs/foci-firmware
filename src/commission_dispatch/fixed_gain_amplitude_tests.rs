@@ -1,17 +1,17 @@
-use super::acceptance::{
-    AcceptanceMatrixPreflightRejection, AutotuneAction, apply_acceptance_matrix_terminal,
-    preflight_acceptance_matrix, reconstruct_breakaway_plan,
+use super::fixed_gain_amplitude::{
+    AutotuneAction, FixedGainAmplitudePreflightRejection, apply_fixed_gain_amplitude_terminal,
+    preflight_fixed_gain_amplitude, reconstruct_breakaway_plan,
 };
 use super::stage_c::StageCPreflightConfig;
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
-use crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixOrder;
 use crate::commissioning::outer::velocity::band_confirmation::{
     BandConfirmationPlan, ConfirmationDirectionalInput, DiscoveryObservationAtom,
     evaluate_band_confirmation, plan_band_confirmation,
 };
 use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
+use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudeOrder;
 use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
 use crate::commissioning::outer::velocity::integral_plan::{
     AcquisitionContext, ConfirmedAcquisitionDigest, VelocityIntegralPlan,
@@ -32,7 +32,7 @@ use crate::commissioning::outer::velocity::workflow_plan::{
     CommissioningWorkflowPlan, VelocityAutotuneWorkflowKind,
 };
 use crate::commissioning::types::{
-    AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal,
+    FixedGainAmplitudeCause, FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal,
 };
 use foci_tmc4671::pid::PidPGain;
 
@@ -41,7 +41,7 @@ const COUNTS_PER_REV: u32 = 4_000;
 const PWM_HZ: u32 = 25_000;
 const TORQUE_LIMIT: u16 = 2_816;
 
-fn matrix_config() -> StageCPreflightConfig {
+fn amplitude_config() -> StageCPreflightConfig {
     StageCPreflightConfig {
         encoder_counts_per_rev: COUNTS_PER_REV,
         torque_limit: TORQUE_LIMIT,
@@ -51,7 +51,7 @@ fn matrix_config() -> StageCPreflightConfig {
     }
 }
 
-// --- Breakaway matrix-authority fixtures ------------------------------------
+// --- Breakaway amplitude-authority fixtures ------------------------------------
 //
 // A schema-16 breakaway plan can only be minted through the real confirmation
 // gate (`ConfirmedAcquisitionDigest`'s inner field is private outside
@@ -262,7 +262,7 @@ fn breakaway_reconstruct_rejects_tampered_intervals() {
             VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
             PWM_HZ,
         ),
-        Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)
+        Err(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch)
     );
 }
 
@@ -283,7 +283,7 @@ fn breakaway_reconstruct_rejects_tampered_selected_p() {
             VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
             PWM_HZ,
         ),
-        Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)
+        Err(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch)
     );
 }
 
@@ -304,21 +304,21 @@ fn breakaway_reconstruct_rejects_point_without_token() {
             VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
             PWM_HZ,
         ),
-        Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)
+        Err(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch)
     );
 }
 
-fn terminal(plan_digest: u64, outcome: AcceptanceMatrixOutcome) -> AcceptanceMatrixTerminal {
-    AcceptanceMatrixTerminal {
+fn terminal(plan_digest: u64, outcome: FixedGainAmplitudeOutcome) -> FixedGainAmplitudeTerminal {
+    FixedGainAmplitudeTerminal {
         schema_revision:
-            crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+            crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         run_sequence: 9,
         evidence_sequence: 1,
         acceptance_plan_digest: breakaway_plan_and_token().0.digest(),
         plan_digest,
         digest: 0x1234,
         outcome,
-        cause: AcceptanceMatrixCause::None,
+        cause: FixedGainAmplitudeCause::None,
         attempted_masks: [0b1_1111; 2],
         eligible_masks: [0b1_1111; 2],
         current_terminus_masks: [0; 2],
@@ -334,16 +334,16 @@ fn terminal(plan_digest: u64, outcome: AcceptanceMatrixOutcome) -> AcceptanceMat
     }
 }
 
-fn rest_unconfirmed_terminal(plan_digest: u64) -> AcceptanceMatrixTerminal {
-    let mut terminal = terminal(plan_digest, AcceptanceMatrixOutcome::Inconclusive);
-    terminal.cause = AcceptanceMatrixCause::VelocityRestNotConfirmed;
+fn rest_unconfirmed_terminal(plan_digest: u64) -> FixedGainAmplitudeTerminal {
+    let mut terminal = terminal(plan_digest, FixedGainAmplitudeOutcome::Inconclusive);
+    terminal.cause = FixedGainAmplitudeCause::VelocityRestNotConfirmed;
     terminal
 }
 
 #[test]
 fn action_codes_and_invalid_values_are_exact() {
-    assert_eq!(AutotuneAction::MatrixAscending as u8, 1);
-    assert_eq!(AutotuneAction::MatrixDescending as u8, 2);
+    assert_eq!(AutotuneAction::FixedGainAmplitudeAscending as u8, 1);
+    assert_eq!(AutotuneAction::FixedGainAmplitudeDescending as u8, 2);
     assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
     assert_eq!(AutotuneAction::StageCResume as u8, 8);
     for byte in [0u8, 3, 4, 5, 6, 10] {
@@ -351,11 +351,11 @@ fn action_codes_and_invalid_values_are_exact() {
     }
     assert_eq!(
         AutotuneAction::from_u8(1),
-        Some(AutotuneAction::MatrixAscending)
+        Some(AutotuneAction::FixedGainAmplitudeAscending)
     );
     assert_eq!(
         AutotuneAction::from_u8(2),
-        Some(AutotuneAction::MatrixDescending)
+        Some(AutotuneAction::FixedGainAmplitudeDescending)
     );
     assert_eq!(
         AutotuneAction::from_u8(7),
@@ -374,25 +374,28 @@ fn action_codes_and_invalid_values_are_exact() {
         AutotuneAction::RobustnessReversal.slot_order(),
         IntegralSlotOrder::ForwardFirst
     );
-    assert_eq!(AutotuneAction::RobustnessReversal.matrix_order(), None);
-    assert_eq!(AutotuneAction::RobustnessReversal.matrix_slot_order(), None);
-    // The breakaway campaign runs its own schedule; it is neither a matrix
+    assert_eq!(AutotuneAction::RobustnessReversal.amplitude_order(), None);
+    assert_eq!(
+        AutotuneAction::RobustnessReversal.amplitude_slot_order(),
+        None
+    );
+    // The breakaway campaign runs its own schedule; it is neither an amplitude
     // acquisition nor a classic forward/reverse slot order.
     assert_eq!(
         AutotuneAction::BreakawaySeeded.slot_order(),
         IntegralSlotOrder::ForwardFirst
     );
-    assert_eq!(AutotuneAction::BreakawaySeeded.matrix_order(), None);
-    assert_eq!(AutotuneAction::BreakawaySeeded.matrix_slot_order(), None);
+    assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_order(), None);
+    assert_eq!(AutotuneAction::BreakawaySeeded.amplitude_slot_order(), None);
 
     // Slot order is defined for every surviving acquisition.
     for (action, slot_order) in [
         (
-            AutotuneAction::MatrixAscending,
+            AutotuneAction::FixedGainAmplitudeAscending,
             IntegralSlotOrder::ForwardFirst,
         ),
         (
-            AutotuneAction::MatrixDescending,
+            AutotuneAction::FixedGainAmplitudeDescending,
             IntegralSlotOrder::ForwardFirst,
         ),
     ] {
@@ -402,77 +405,77 @@ fn action_codes_and_invalid_values_are_exact() {
     // Amplitude order and slot order are independent dimensions of one action.
     for (action, order, slot_order) in [
         (
-            AutotuneAction::MatrixAscending,
-            AcceptanceMatrixOrder::Ascending,
+            AutotuneAction::FixedGainAmplitudeAscending,
+            FixedGainAmplitudeOrder::Ascending,
             IntegralSlotOrder::ForwardFirst,
         ),
         (
-            AutotuneAction::MatrixDescending,
-            AcceptanceMatrixOrder::Descending,
+            AutotuneAction::FixedGainAmplitudeDescending,
+            FixedGainAmplitudeOrder::Descending,
             IntegralSlotOrder::ForwardFirst,
         ),
     ] {
-        assert_eq!(action.matrix_order(), Some(order), "{action:?} order");
+        assert_eq!(action.amplitude_order(), Some(order), "{action:?} order");
         assert_eq!(
-            action.matrix_slot_order(),
+            action.amplitude_slot_order(),
             Some(slot_order),
             "{action:?} slot order"
         );
     }
-    assert_eq!(AutotuneAction::StageCResume.matrix_order(), None);
-    assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
-    let ascending = CommissioningWorkflowPlan::new_acceptance_matrix(
+    assert_eq!(AutotuneAction::StageCResume.amplitude_order(), None);
+    assert_eq!(AutotuneAction::StageCResume.amplitude_slot_order(), None);
+    let ascending = CommissioningWorkflowPlan::new_fixed_gain_amplitude(
         1,
-        AcceptanceMatrixOrder::Ascending,
+        FixedGainAmplitudeOrder::Ascending,
         63_041,
         66_456,
     )
     .unwrap();
-    let descending = CommissioningWorkflowPlan::new_acceptance_matrix(
+    let descending = CommissioningWorkflowPlan::new_fixed_gain_amplitude(
         2,
-        AcceptanceMatrixOrder::Descending,
+        FixedGainAmplitudeOrder::Descending,
         63_041,
         66_456,
     )
     .unwrap();
     assert_eq!(
         ascending.shape,
-        VelocityAutotuneWorkflowKind::AcceptanceMatrixAscending
+        VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
     );
     assert_eq!(
         descending.shape,
-        VelocityAutotuneWorkflowKind::AcceptanceMatrixDescending
+        VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
     );
 }
 
 #[test]
 fn preflight_requires_matching_point_and_order_without_mutation() {
     let (current, token) = breakaway_plan_and_token();
-    let config = matrix_config();
+    let config = amplitude_config();
     let mut empty = StageCCandidateSlot::new();
     assert_eq!(
-        preflight_acceptance_matrix(
-            AutotuneAction::MatrixAscending,
+        preflight_fixed_gain_amplitude(
+            AutotuneAction::FixedGainAmplitudeAscending,
             breakaway_request(),
             &config,
             7,
             &empty,
         ),
-        Err(AcceptanceMatrixPreflightRejection::MissingAcceptancePoint)
+        Err(FixedGainAmplitudePreflightRejection::MissingAcceptancePoint)
     );
 
     let mut stale = breakaway_point(current, token, AcceptanceMatrixProgress::ReadyAscending);
     stale.identity.plan_digest ^= 1;
     empty.install_acceptance_point(stale);
     assert_eq!(
-        preflight_acceptance_matrix(
-            AutotuneAction::MatrixAscending,
+        preflight_fixed_gain_amplitude(
+            AutotuneAction::FixedGainAmplitudeAscending,
             breakaway_request(),
             &config,
             7,
             &empty,
         ),
-        Err(AcceptanceMatrixPreflightRejection::AcceptancePointIdentityMismatch)
+        Err(FixedGainAmplitudePreflightRejection::AcceptancePointIdentityMismatch)
     );
     assert_eq!(empty.acceptance_point(), Some(stale));
 
@@ -480,71 +483,71 @@ fn preflight_requires_matching_point_and_order_without_mutation() {
         breakaway_point(current, token, AcceptanceMatrixProgress::ReadyDescending);
     empty.install_acceptance_point(ready_descending);
     assert_eq!(
-        preflight_acceptance_matrix(
-            AutotuneAction::MatrixAscending,
+        preflight_fixed_gain_amplitude(
+            AutotuneAction::FixedGainAmplitudeAscending,
             breakaway_request(),
             &config,
             7,
             &empty,
         ),
-        Err(AcceptanceMatrixPreflightRejection::MatrixOrderMismatch)
+        Err(FixedGainAmplitudePreflightRejection::AmplitudeOrderMismatch)
     );
     assert_eq!(empty.acceptance_point(), Some(ready_descending));
 }
 
 #[test]
-fn preflight_admits_only_the_expected_matrix_direction() {
+fn preflight_admits_only_the_expected_amplitude_direction() {
     let (current, token) = breakaway_plan_and_token();
-    let config = matrix_config();
+    let config = amplitude_config();
     let mut slot = StageCCandidateSlot::new();
     slot.install_acceptance_point(breakaway_point(
         current,
         token,
         AcceptanceMatrixProgress::ReadyAscending,
     ));
-    let ascending = preflight_acceptance_matrix(
-        AutotuneAction::MatrixAscending,
+    let ascending = preflight_fixed_gain_amplitude(
+        AutotuneAction::FixedGainAmplitudeAscending,
         breakaway_request(),
         &config,
         7,
         &slot,
     )
     .unwrap();
-    assert_eq!(ascending.plan.order, AcceptanceMatrixOrder::Ascending);
+    assert_eq!(ascending.plan.order, FixedGainAmplitudeOrder::Ascending);
 
     slot.advance_matrix_progress();
-    let descending = preflight_acceptance_matrix(
-        AutotuneAction::MatrixDescending,
+    let descending = preflight_fixed_gain_amplitude(
+        AutotuneAction::FixedGainAmplitudeDescending,
         breakaway_request(),
         &config,
         8,
         &slot,
     )
     .unwrap();
-    assert_eq!(descending.plan.order, AcceptanceMatrixOrder::Descending);
+    assert_eq!(descending.plan.order, FixedGainAmplitudeOrder::Descending);
 }
 
 #[test]
 fn safe_terminals_advance_or_close_and_fault_clears() {
     let (current, token) = breakaway_plan_and_token();
-    let config = matrix_config();
+    let config = amplitude_config();
     let mut slot = StageCCandidateSlot::new();
     slot.install_acceptance_point(breakaway_point(
         current,
         token,
         AcceptanceMatrixProgress::ReadyAscending,
     ));
-    let ascending = preflight_acceptance_matrix(
-        AutotuneAction::MatrixAscending,
+    let ascending = preflight_fixed_gain_amplitude(
+        AutotuneAction::FixedGainAmplitudeAscending,
         breakaway_request(),
         &config,
         7,
         &slot,
     )
     .unwrap();
-    apply_acceptance_matrix_terminal(
-        terminal(ascending.plan.digest(), AcceptanceMatrixOutcome::Complete),
-        AcceptanceMatrixOrder::Ascending,
+    apply_fixed_gain_amplitude_terminal(
+        terminal(ascending.plan.digest(), FixedGainAmplitudeOutcome::Complete),
+        FixedGainAmplitudeOrder::Ascending,
         ascending.plan.digest(),
         &mut slot,
     );
@@ -553,20 +556,20 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
         AcceptanceMatrixProgress::ReadyDescending
     );
 
-    let descending = preflight_acceptance_matrix(
-        AutotuneAction::MatrixDescending,
+    let descending = preflight_fixed_gain_amplitude(
+        AutotuneAction::FixedGainAmplitudeDescending,
         breakaway_request(),
         &config,
         8,
         &slot,
     )
     .unwrap();
-    apply_acceptance_matrix_terminal(
+    apply_fixed_gain_amplitude_terminal(
         terminal(
             descending.plan.digest(),
-            AcceptanceMatrixOutcome::Inconclusive,
+            FixedGainAmplitudeOutcome::Inconclusive,
         ),
-        AcceptanceMatrixOrder::Descending,
+        FixedGainAmplitudeOrder::Descending,
         descending.plan.digest(),
         &mut slot,
     );
@@ -580,9 +583,9 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
         token,
         AcceptanceMatrixProgress::ReadyAscending,
     ));
-    apply_acceptance_matrix_terminal(
-        terminal(ascending.plan.digest(), AcceptanceMatrixOutcome::Fault),
-        AcceptanceMatrixOrder::Ascending,
+    apply_fixed_gain_amplitude_terminal(
+        terminal(ascending.plan.digest(), FixedGainAmplitudeOutcome::Fault),
+        FixedGainAmplitudeOrder::Ascending,
         ascending.plan.digest(),
         &mut slot,
     );
@@ -590,19 +593,19 @@ fn safe_terminals_advance_or_close_and_fault_clears() {
 }
 
 #[test]
-fn rest_unconfirmed_preserves_the_exact_point_and_matrix_order() {
+fn rest_unconfirmed_preserves_the_exact_point_and_amplitude_order() {
     let (current, token) = breakaway_plan_and_token();
-    let config = matrix_config();
+    let config = amplitude_config();
 
     for (action, order, progress) in [
         (
-            AutotuneAction::MatrixAscending,
-            AcceptanceMatrixOrder::Ascending,
+            AutotuneAction::FixedGainAmplitudeAscending,
+            FixedGainAmplitudeOrder::Ascending,
             AcceptanceMatrixProgress::ReadyAscending,
         ),
         (
-            AutotuneAction::MatrixDescending,
-            AcceptanceMatrixOrder::Descending,
+            AutotuneAction::FixedGainAmplitudeDescending,
+            FixedGainAmplitudeOrder::Descending,
             AcceptanceMatrixProgress::ReadyDescending,
         ),
     ] {
@@ -610,24 +613,24 @@ fn rest_unconfirmed_preserves_the_exact_point_and_matrix_order() {
         slot.install_acceptance_point(breakaway_point(current, token, progress));
         let before = slot.acceptance_point().unwrap();
         let preflight =
-            preflight_acceptance_matrix(action, breakaway_request(), &config, 9, &slot).unwrap();
+            preflight_fixed_gain_amplitude(action, breakaway_request(), &config, 9, &slot).unwrap();
 
-        let terminal = apply_acceptance_matrix_terminal(
+        let terminal = apply_fixed_gain_amplitude_terminal(
             rest_unconfirmed_terminal(preflight.plan.digest()),
             order,
             preflight.plan.digest(),
             &mut slot,
         );
 
-        assert_eq!(terminal.outcome, AcceptanceMatrixOutcome::Inconclusive);
+        assert_eq!(terminal.outcome, FixedGainAmplitudeOutcome::Inconclusive);
         assert_eq!(
             terminal.cause,
-            AcceptanceMatrixCause::VelocityRestNotConfirmed
+            FixedGainAmplitudeCause::VelocityRestNotConfirmed
         );
         assert_eq!(slot.acceptance_point(), Some(before));
         assert!(
-            preflight_acceptance_matrix(action, breakaway_request(), &config, 10, &slot).is_ok(),
-            "the same matrix order must remain admissible after a rest rejection"
+            preflight_fixed_gain_amplitude(action, breakaway_request(), &config, 10, &slot).is_ok(),
+            "the same amplitude order must remain admissible after a rest rejection"
         );
     }
 }

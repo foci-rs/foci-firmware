@@ -55,7 +55,7 @@ fn live_geometry_derives_band_and_slots_from_the_budget() {
 }
 
 #[test]
-fn matrix_lowest_target_cannot_author_recovery_geometry() {
+fn amplitude_lowest_target_cannot_author_recovery_geometry() {
     let legacy_low_target_mrev_s = 16_u32 * 1_000 / 60;
 
     assert_eq!(legacy_low_target_mrev_s, 266);

@@ -4,7 +4,7 @@
 //! function here takes one already-assembled `breakaway_reporting` wire
 //! record and pushes its fields, in a fixed order, into a
 //! [`VelocitySweepCanonicalRecord`] -- the same bounded byte-buffer type the
-//! velocity-sweep and acceptance-matrix encoders already use, despite its
+//! velocity-sweep and fixed-gain-amplitude encoders already use, despite its
 //! name (it is a generic canonical-record primitive, not sweep-specific; see
 //! its own doc comment). `commissioning::mod::emit_trace_after_step` hands
 //! each encoded record to `CommissioningBackend::record_velocity_sweep_trace_record`,
@@ -17,7 +17,7 @@
 //! *within* the breakaway family -- it is only meaningful alongside the
 //! `EVENT_COMMISSION_BREAKAWAY_*` id the surrounding `CommissionTraceEvent`
 //! marker carries (mirroring how `sweep_reporting`'s own tags 0-11 are local
-//! to the velocity-sweep family, and `acceptance_reporting`'s tags 0-3 are a
+//! to the velocity-sweep family, and `fixed_gain_amplitude_reporting`'s tags 0-3 are a
 //! separate, independently-numbered family). The frame layouts here are the
 //! contract `foci-trace`'s host-side decoder reconstructs breakaway evidence
 //! from: every layout is pinned by a golden byte-sequence test below.

@@ -14,11 +14,11 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    AdcResidualReport, ClosedLoopActivationReport, CommissionTimingReport, CurrentLoopFiltersReport,
-    CurrentLoopHoldReport, CurrentLoopRunReport, CurrentValidationAxisReport,
-    CurrentValidationEnvelopeReport, CurrentValidationSettledSampleReport, EncoderAlignmentReport,
-    InductanceEstimateReport, InductanceFrameReport, InductanceRunReport, ResistanceAxisReport,
-    ResistanceRunReport,
+    AdcResidualReport, ClosedLoopActivationReport, CommissionTimingReport,
+    CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
+    CurrentValidationAxisReport, CurrentValidationEnvelopeReport,
+    CurrentValidationSettledSampleReport, EncoderAlignmentReport, InductanceEstimateReport,
+    InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -50,9 +50,9 @@ macro_rules! __commission_reply_manifest {
     ($callback:path) => {
         $callback! {
             entry {
-                name: foci_acceptance_matrix_terminal,
-                doc: "Emit one compact fixed-I confidence-matrix terminal.",
-                reply: foci_firmware::ankyra::replies::FociAcceptanceMatrixTerminal<'_>,
+                name: foci_fixed_gain_amplitude_terminal,
+                doc: "Emit one compact fixed-I fixed-gain amplitude terminal.",
+                reply: foci_firmware::ankyra::replies::FociFixedGainAmplitudeTerminal<'_>,
                 fields: { oid: u8, payload: &[u8] },
             }
             entry {
@@ -129,9 +129,9 @@ macro_rules! __commission_reply_manifest {
                 fields: { oid: u8, payload: &[u8] },
             }
             entry {
-                name: foci_acceptance_matrix_plan,
-                doc: "Emit one immutable fixed-I confidence-matrix plan.",
-                reply: foci_firmware::ankyra::replies::FociAcceptanceMatrixPlan<'_>,
+                name: foci_fixed_gain_amplitude_plan,
+                doc: "Emit one immutable fixed-I fixed-gain amplitude plan.",
+                reply: foci_firmware::ankyra::replies::FociFixedGainAmplitudePlan<'_>,
                 fields: { oid: u8, fragment: u8, payload: &[u8] },
             }
             entry {
@@ -556,7 +556,7 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
 /// Fan one campaign evidence event out to the Task-7 `emit_breakaway_*`
 /// bridges, looping over any batch evidence a terminal variant carries (every
 /// in-band rung's margin, every resolved ladder rung, every fresh held-out
-/// stroke) the same way [`emit_acceptance_matrix_plan`] already loops one
+/// stroke) the same way [`emit_fixed_gain_amplitude_plan`] already loops one
 /// Rust value out to several wire fragments.
 pub fn emit_breakaway_campaign_event<S: CommissionReplySink>(
     sink: &mut S,
@@ -645,22 +645,22 @@ pub fn emit_breakaway_ceiling_source<S: CommissionReplySink>(
     });
 }
 
-/// Emit the single compact matrix-plan reply disclosed before motion.
-pub fn emit_acceptance_matrix_plan<S: CommissionReplySink>(
+/// Emit the single compact amplitude-plan reply disclosed before motion.
+pub fn emit_fixed_gain_amplitude_plan<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
     run_sequence: u32,
-    plan: crate::commissioning::outer::velocity::acceptance_plan::AcceptanceMatrixPlan,
+    plan: crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FixedGainAmplitudePlan,
 ) {
-    use crate::commissioning::outer::velocity::acceptance_reporting::{
-        ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES, encode_acceptance_plan_reply,
+    use crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::{
+        FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES, encode_fixed_gain_amplitude_plan_reply,
     };
-    let payload = encode_acceptance_plan_reply(run_sequence, plan);
+    let payload = encode_fixed_gain_amplitude_plan_reply(run_sequence, plan);
     for (fragment, chunk) in payload
-        .chunks(ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES)
+        .chunks(FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES)
         .enumerate()
     {
-        sink.foci_acceptance_matrix_plan(crate::ankyra::replies::FociAcceptanceMatrixPlan {
+        sink.foci_fixed_gain_amplitude_plan(crate::ankyra::replies::FociFixedGainAmplitudePlan {
             oid,
             fragment: fragment as u8,
             payload: chunk,
@@ -668,18 +668,20 @@ pub fn emit_acceptance_matrix_plan<S: CommissionReplySink>(
     }
 }
 
-/// Emit the single compact matrix terminal.
-pub fn emit_acceptance_matrix_terminal<S: CommissionReplySink>(
+/// Emit the single compact amplitude terminal.
+pub fn emit_fixed_gain_amplitude_terminal<S: CommissionReplySink>(
     sink: &mut S,
     oid: u8,
-    terminal: crate::commissioning::types::AcceptanceMatrixTerminal,
+    terminal: crate::commissioning::types::FixedGainAmplitudeTerminal,
 ) {
-    let payload = crate::commissioning::outer::velocity::acceptance_reporting::
-        encode_acceptance_terminal_reply(terminal);
-    sink.foci_acceptance_matrix_terminal(crate::ankyra::replies::FociAcceptanceMatrixTerminal {
-        oid,
-        payload: &payload,
-    });
+    let payload = crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
+        encode_fixed_gain_amplitude_terminal_reply(terminal);
+    sink.foci_fixed_gain_amplitude_terminal(
+        crate::ankyra::replies::FociFixedGainAmplitudeTerminal {
+            oid,
+            payload: &payload,
+        },
+    );
 }
 
 /// Emit the single compact reversal-standstill robustness-gate terminal.
@@ -983,13 +985,13 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
         ReplyPayload::VelocityIntegralRefusal { oid, terminal } => {
             emit_velocity_integral_terminal(sink, oid, terminal, None, None);
         }
-        ReplyPayload::AcceptanceMatrixPlan {
+        ReplyPayload::FixedGainAmplitudePlan {
             oid,
             run_sequence,
             plan,
-        } => emit_acceptance_matrix_plan(sink, oid, run_sequence, plan),
-        ReplyPayload::AcceptanceMatrixTerminal { oid, terminal } => {
-            emit_acceptance_matrix_terminal(sink, oid, terminal);
+        } => emit_fixed_gain_amplitude_plan(sink, oid, run_sequence, plan),
+        ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal } => {
+            emit_fixed_gain_amplitude_terminal(sink, oid, terminal);
         }
         ReplyPayload::RobustnessReversalTerminal { oid, terminal } => {
             if let Some(fault) = terminal.safety_fault {
@@ -1037,7 +1039,8 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
 ) {
     for priority in [true, false] {
         for event in diagnostics.iter() {
-            let is_electrical_timing = event.phase == CommissionPhase::ElectricalIdentification.to_u8()
+            let is_electrical_timing = event.phase
+                == CommissionPhase::ElectricalIdentification.to_u8()
                 && matches!(event.code, 34..=41);
             if is_electrical_timing == priority {
                 sink.foci_commission_detail(oid, event);
@@ -1391,7 +1394,10 @@ fn commission_current_loop_hold_report(oid: u8, inner: &InnerResult) -> CurrentL
     }
 }
 
-fn commission_closed_loop_activation_report(oid: u8, inner: &InnerResult) -> ClosedLoopActivationReport {
+fn commission_closed_loop_activation_report(
+    oid: u8,
+    inner: &InnerResult,
+) -> ClosedLoopActivationReport {
     ClosedLoopActivationReport {
         oid,
         entry_status: inner.closed_loop_activation_status,

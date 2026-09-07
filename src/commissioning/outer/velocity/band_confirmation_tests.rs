@@ -876,7 +876,7 @@ fn confirmation_evaluation_carries_no_hidden_state_across_independent_calls() {
     );
 
     // The actual downstream contract: `recovery::commanded_side_lower_rate_q`
-    // is what the acceptance-matrix installer calls on this exact field, and
+    // is what the fixed-gain-amplitude installer calls on this exact field, and
     // it requires forward's low strictly positive, reverse's high strictly
     // negative. Assert both directions satisfy it -- not just that the
     // interval is well-ordered, which a same-signed-for-both bug would also

@@ -12,7 +12,7 @@
 //! | `StepResult` (sub-case)                          | mandatory cleanup on failure                                                             | fault/cause stamped                                    | reply                        | `engine.take()` | arms? |
 //! |---------------------------------------------------|-------------------------------------------------------------------------------------------|----------------------------------------------------------|-------------------------------|-------------------|-------|
 //! | `VelocityIntegralTerminal`                         | `disarm_velocity_workflow`: no operational limit -> `disarm_motor` (always `Ok`); with a limit -> `PID_VELOCITY_TARGET=0`, clear velocity error sum, *then* `disarm_motor`, *then* restore the operational current-limit clamp | on `disarm_velocity_workflow` failure: outcome forced to `Fault`, `cause=Error(Spi)`, `recovery_unavailable=true`, `safety_fault=None` | `VelocityIntegralTerminal`   | always           | never |
-//! | `AcceptanceMatrixTerminal`                         | `disarm_motor` unconditionally, before any terminal post-processing                       | terminal passed through unmodified                       | `AcceptanceMatrixTerminal`   | always           | never |
+//! | `FixedGainAmplitudeTerminal`                         | `disarm_motor` unconditionally, before any terminal post-processing                       | terminal passed through unmodified                       | `FixedGainAmplitudeTerminal`   | always           | never |
 //! | `RobustnessReversalTerminal` (outcome != `Complete`) | restore `entry_snapshot()` to registers if present; `disarm_motor` always runs afterward   | restore failure or missing snapshot -> `Failed`/`ROBUSTNESS_CAUSE_SAFETY_FAULT` | `RobustnessReversalTerminal` | always           | never |
 //! | `RobustnessReversalTerminal` (outcome == `Complete`) | **no** baseline restore attempted; `disarm_motor` still runs unconditionally              | terminal passed through unmodified                       | `RobustnessReversalTerminal` | always           | never (deploy/arm happens only in `drive_commission_result_with_stages`, out of this function's scope) |
 //! | `SelftestDone`                                     | `restore_calibrate_gains`; failure is logged only, no disarm/arm, no lifecycle events      | none (`done_status=0` always)                             | `Selftest`                   | always           | never |
@@ -37,7 +37,7 @@
 //! | `OuterFailed` (restore succeeds, stable, arm succeeds -- soft failure) | none                                                                        | the original upstream error (still nonzero: `OuterFailed` always reports *some* failure) | `TuneResult` | always | **yes** (`ArmPreservePosition`) |
 //!
 //! Non-terminal arms (`ReadyNow`, `At`, `PhaseChanged`, `VelocityIntegralEvent`,
-//! `AcceptanceMatrixEvent`, `BreakawayCampaignEvent`, `BreakawayStageCPlanReady`)
+//! `FixedGainAmplitudeEvent`, `BreakawayCampaignEvent`, `BreakawayStageCPlanReady`)
 //! never touch `engine.take()`, never call `arm_motor_electrical`/`disarm_motor`,
 //! and are the only arms safe to poll repeatedly: every terminal arm calls
 //! `engine.take().expect(..)`, so re-driving the same already-consumed engine
@@ -60,7 +60,8 @@ use super::*;
 use crate::autotune::CommissionProfile;
 use crate::commissioning::backend::CommissionMotorControl;
 use crate::commissioning::types::{
-    AcceptanceMatrixCause, AcceptanceMatrixOutcome, AcceptanceMatrixTerminal, RobustnessOutcome,
+    FixedGainAmplitudeCause, FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal,
+    RobustnessOutcome,
 };
 use crate::tmc_control::lifecycle::LifecycleFlag;
 use foci_firmware_macros::fixture_test;
@@ -117,16 +118,16 @@ fn sample_outer_result() -> crate::commissioning::types::OuterResult {
     }
 }
 
-fn zero_acceptance_matrix_terminal() -> AcceptanceMatrixTerminal {
-    AcceptanceMatrixTerminal {
+fn zero_fixed_gain_amplitude_terminal() -> FixedGainAmplitudeTerminal {
+    FixedGainAmplitudeTerminal {
         schema_revision: 1,
         run_sequence: 1,
         evidence_sequence: 0,
         acceptance_plan_digest: 0,
         plan_digest: 0,
         digest: 0,
-        outcome: AcceptanceMatrixOutcome::Complete,
-        cause: AcceptanceMatrixCause::None,
+        outcome: FixedGainAmplitudeOutcome::Complete,
+        cause: FixedGainAmplitudeCause::None,
         attempted_masks: [0, 0],
         eligible_masks: [0, 0],
         current_terminus_masks: [0, 0],
@@ -148,7 +149,7 @@ fn zero_acceptance_matrix_terminal() -> AcceptanceMatrixTerminal {
 /// nested evidence types make that impractical).
 ///
 /// `outcome_class` carries the reply's own semantic outcome discriminant
-/// (`RobustnessOutcome`, `AcceptanceMatrixOutcome`, `VelocityIntegralOutcome`)
+/// (`RobustnessOutcome`, `FixedGainAmplitudeOutcome`, `VelocityIntegralOutcome`)
 /// as its `u8` value, for the three reply families that separate "what
 /// class of result" from "what caused it". It is `None` for the flat-status
 /// replies (`CalibrateResult`, `CommissionResult`, `TuneResult`, `Selftest`,
@@ -198,7 +199,7 @@ fn terminal_shape(reply: &ReplyPayload) -> (Option<u8>, Option<u16>) {
             Some(terminal.outcome as u8),
             Some(stage_c_cause_code(terminal.cause)),
         ),
-        ReplyPayload::AcceptanceMatrixTerminal { terminal, .. } => {
+        ReplyPayload::FixedGainAmplitudeTerminal { terminal, .. } => {
             (Some(terminal.outcome as u8), Some(terminal.cause as u16))
         }
         ReplyPayload::RobustnessReversalTerminal { terminal, .. } => (
@@ -909,10 +910,10 @@ async fn robustness_reversal_terminal_restores_baseline_before_disarm_on_reject(
     );
 }
 
-// --- stage-c / acceptance matrix -------------------------------------------
+// --- stage-c / fixed-gain amplitude -------------------------------------------
 
 #[fixture_test]
-async fn acceptance_matrix_terminal_disarms_unconditionally() {
+async fn fixed_gain_amplitude_terminal_disarms_unconditionally() {
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
     let mut cal = true;
@@ -924,7 +925,7 @@ async fn acceptance_matrix_terminal_disarms_unconditionally() {
     ));
 
     let trace = run_variant(
-        StepResult::AcceptanceMatrixTerminal(zero_acceptance_matrix_terminal()),
+        StepResult::FixedGainAmplitudeTerminal(zero_fixed_gain_amplitude_terminal()),
         &mut engine,
         &mut backend,
         &mut state,
@@ -937,7 +938,7 @@ async fn acceptance_matrix_terminal_disarms_unconditionally() {
         OutcomeTag::Terminal {
             stop_trace: true,
             stepper: StepperPostAction::Stop,
-            outcome_class: Some(AcceptanceMatrixOutcome::Complete as u8),
+            outcome_class: Some(FixedGainAmplitudeOutcome::Complete as u8),
         }
     );
     assert!(contains(
@@ -1326,8 +1327,8 @@ fn all_terminal_variants() -> [TerminalVariant; 20] {
             ..BASE
         },
         TerminalVariant {
-            name: "acceptance_matrix_terminal",
-            result: || StepResult::AcceptanceMatrixTerminal(zero_acceptance_matrix_terminal()),
+            name: "fixed_gain_amplitude_terminal",
+            result: || StepResult::FixedGainAmplitudeTerminal(zero_fixed_gain_amplitude_terminal()),
             engine: commission_engine,
             entry_calibrated: true,
             entry_motor_enabled: true,

@@ -446,8 +446,8 @@ impl AutotuneAction {
     ) -> crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder {
         use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
         match self {
-            Self::MatrixAscending
-            | Self::MatrixDescending
+            Self::FixedGainAmplitudeAscending
+            | Self::FixedGainAmplitudeDescending
             | Self::BreakawaySeeded
             | Self::StageCResume
             | Self::RobustnessReversal => IntegralSlotOrder::ForwardFirst,
@@ -1494,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_c_resume_decodes_and_carries_no_matrix_order() {
+    fn stage_c_resume_decodes_and_carries_no_amplitude_order() {
         // Resuming Stage C replays one retained plan, so it selects neither an
         // amplitude order nor a mirrored slot schedule.
         assert_eq!(
@@ -1507,8 +1507,8 @@ mod tests {
         );
         assert_eq!(AutotuneAction::from_u8(10), None);
         assert_eq!(AutotuneAction::StageCResume as u8, 8);
-        assert_eq!(AutotuneAction::StageCResume.matrix_order(), None);
-        assert_eq!(AutotuneAction::StageCResume.matrix_slot_order(), None);
+        assert_eq!(AutotuneAction::StageCResume.amplitude_order(), None);
+        assert_eq!(AutotuneAction::StageCResume.amplitude_slot_order(), None);
         // Retained authority does not carry the acquisition's slot order, so a
         // resume reconstructs at the default. Every surviving action only ever
         // selects `ForwardFirst`, so the reconstruction is exact, not merely a

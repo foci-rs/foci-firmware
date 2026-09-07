@@ -15,8 +15,8 @@ use crate::commissioning::outer::{
 };
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
-    AcceptanceAmplitudeEvidence, AcceptanceMatrixCause, AcceptanceMatrixEvent,
-    AcceptanceMatrixOutcome, AcceptanceMatrixTerminal, OUTER_SAFETY_FAULT_CURRENT,
+    FixedGainAmplitudeCause, FixedGainAmplitudeEvent, FixedGainAmplitudeEvidence,
+    FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal, OUTER_SAFETY_FAULT_CURRENT,
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
     RecoveryRestDiagnostic, RestSelectionDiagnostic, RestSelectionOwner,
     RungOriginRecoveryEvidence, StageCCause, StepResult, VelocityIntegralEvent,
@@ -30,17 +30,17 @@ use foci_tmc4671::registers::{
     PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET,
 };
 
-use super::acceptance_evidence::{
-    ACCEPTANCE_AMPLITUDE_COUNT, AcceptanceAmplitudeAvailability, AcceptanceAmplitudeReport,
-    AcceptanceDirectionInput, AcceptanceRunMasks, acceptance_run_sufficient,
-    classify_acceptance_amplitude,
-};
 use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
 use super::current_guard::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentZeroPhase, begin_velocity_current_primitive,
     finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
     read_velocity_pid_input_abs, read_velocity_pid_output_abs,
+};
+use super::fixed_gain_amplitude_evidence::{
+    FIXED_GAIN_AMPLITUDE_COUNT, FixedGainAmplitudeAvailability, FixedGainAmplitudeDirectionInput,
+    FixedGainAmplitudeReport, FixedGainAmplitudeRunMasks, classify_fixed_gain_amplitude,
+    fixed_gain_amplitude_run_sufficient,
 };
 use super::integral_evidence::{
     ExactRateInterval, IntegralInconclusiveKind, IntegralRunSufficiency, IntegralRungClass,
@@ -82,7 +82,7 @@ pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
 const OPENING_WORD_BASE: usize = 0;
-const MATRIX_MEAN_WORD_BASE: usize = 0;
+const AMPLITUDE_MEAN_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
 const BOOKEND_WORD_BASE: usize = POSITIVE_WORD_BASE + 2 * STAGE_C_MAX_POSITIVE_RUNGS * 2;
 
@@ -95,9 +95,9 @@ const _: () = assert!(
 pub(super) fn integral_rung_count(plan: VelocityIntegralExecutionPlan) -> Option<u8> {
     match plan.acquisition_kind {
         VelocityIntegralAcquisitionKind::ResponseLadder => plan.positive_rung_count.checked_add(2),
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
-        | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
-            u8::try_from(plan.matrix_targets_rpm.len()).ok()
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
+            u8::try_from(plan.amplitude_targets_rpm.len()).ok()
         }
     }
 }
@@ -128,9 +128,9 @@ pub(super) fn integral_target_rpm_at(
         VelocityIntegralAcquisitionKind::ResponseLadder => {
             (rung_index < integral_rung_count(plan)?).then_some(plan.target_velocity_rpm)
         }
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
-        | VelocityIntegralAcquisitionKind::AcceptanceDescending => plan
-            .matrix_targets_rpm
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => plan
+            .amplitude_targets_rpm
             .get(usize::from(rung_index))
             .copied()
             .map(i32::from),
@@ -169,9 +169,9 @@ pub(super) fn integral_rung_kind(
             IntegralRungKind::ClosingBookend
         }
         VelocityIntegralAcquisitionKind::ResponseLadder => IntegralRungKind::Positive,
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
-        | VelocityIntegralAcquisitionKind::AcceptanceDescending => {
-            IntegralRungKind::AcceptanceAmplitude
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
+            IntegralRungKind::FixedGainAmplitude
         }
     }
 }
@@ -182,10 +182,12 @@ pub(super) fn apply_integral_current_headroom(
 ) {
     if matches!(
         data.plan.acquisition_kind,
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
-            | VelocityIntegralAcquisitionKind::AcceptanceDescending
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+            | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
     ) {
-        if data.plan.acquisition_kind == VelocityIntegralAcquisitionKind::AcceptanceDescending {
+        if data.plan.acquisition_kind
+            == VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
+        {
             data.rung_index = data.rung_index.saturating_add(1);
             if data.rung_index < integral_rung_count(data.plan).unwrap_or(0) {
                 *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
@@ -309,9 +311,9 @@ fn reset_rung(
     data.slot = 0;
     data.rung_classes = [VelocityObservationClass::InvalidEvidenceFault; 8];
     data.rung_intervals = [ExactRateInterval::EMPTY; 8];
-    if is_acceptance_matrix(data.plan) {
+    if is_fixed_gain_amplitude(data.plan) {
         for slot in 0..usize::from(INTEGRAL_SLOT_COUNT) {
-            if !workspace.write_workspace_word(MATRIX_MEAN_WORD_BASE + slot, 0) {
+            if !workspace.write_workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot, 0) {
                 return Err(CommissionError::InvalidSchedule);
             }
         }
@@ -320,13 +322,13 @@ fn reset_rung(
     Ok(())
 }
 
-pub(super) fn store_matrix_rung_mean(
+pub(super) fn store_amplitude_rung_mean(
     workspace: &mut TransientBuffer,
     slot: usize,
     value: i32,
 ) -> Result<(), CommissionError> {
     if slot >= usize::from(INTEGRAL_SLOT_COUNT)
-        || !workspace.write_workspace_word(MATRIX_MEAN_WORD_BASE + slot, value as u32)
+        || !workspace.write_workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot, value as u32)
     {
         Err(CommissionError::InvalidSchedule)
     } else {
@@ -334,7 +336,7 @@ pub(super) fn store_matrix_rung_mean(
     }
 }
 
-pub(super) fn matrix_rung_mean(
+pub(super) fn amplitude_rung_mean(
     workspace: &TransientBuffer,
     slot: usize,
 ) -> Result<i32, CommissionError> {
@@ -342,7 +344,7 @@ pub(super) fn matrix_rung_mean(
         return Err(CommissionError::InvalidSchedule);
     }
     workspace
-        .workspace_word(MATRIX_MEAN_WORD_BASE + slot)
+        .workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot)
         .map(|value| value as i32)
         .ok_or(CommissionError::InvalidSchedule)
 }
@@ -365,11 +367,11 @@ fn rung_blocking_level(data: &VelocityIntegralData, slot: usize) -> u8 {
     ((data.rung_blocking_levels >> (slot * 4)) & 0x0f) as u8
 }
 
-fn acceptance_attempted_masks(data: &VelocityIntegralData) -> [u8; 2] {
+fn fixed_gain_amplitude_attempted_masks(data: &VelocityIntegralData) -> [u8; 2] {
     [data.opening_direction_mask, data.bookend_available_mask]
 }
 
-fn set_acceptance_attempted(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
+fn set_fixed_gain_amplitude_attempted(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
     if direction == 0 {
         data.opening_direction_mask |= bit;
     } else {
@@ -377,14 +379,14 @@ fn set_acceptance_attempted(data: &mut VelocityIntegralData, direction: usize, b
     }
 }
 
-fn acceptance_current_masks(data: &VelocityIntegralData) -> [u8; 2] {
+fn fixed_gain_amplitude_current_masks(data: &VelocityIntegralData) -> [u8; 2] {
     [
         data.current_terminus.unwrap_or(0),
         data.target_terminus.unwrap_or(0),
     ]
 }
 
-fn set_acceptance_current(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
+fn set_fixed_gain_amplitude_current(data: &mut VelocityIntegralData, direction: usize, bit: u8) {
     let value = if direction == 0 {
         &mut data.current_terminus
     } else {
@@ -393,15 +395,15 @@ fn set_acceptance_current(data: &mut VelocityIntegralData, direction: usize, bit
     *value = Some(value.unwrap_or(0) | bit);
 }
 
-pub(super) fn is_acceptance_matrix(plan: VelocityIntegralExecutionPlan) -> bool {
+pub(super) fn is_fixed_gain_amplitude(plan: VelocityIntegralExecutionPlan) -> bool {
     matches!(
         plan.acquisition_kind,
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
-            | VelocityIntegralAcquisitionKind::AcceptanceDescending
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+            | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
     )
 }
 
-fn acceptance_target_rate_q(
+fn fixed_gain_amplitude_target_rate_q(
     plan: VelocityIntegralExecutionPlan,
     rung_index: u8,
 ) -> Result<i64, CommissionError> {
@@ -417,25 +419,25 @@ fn acceptance_target_rate_q(
 }
 
 fn acceptance_identity_and_qualifiers(plan: VelocityIntegralExecutionPlan) -> Option<(u64, u16)> {
-    if !is_acceptance_matrix(plan) {
+    if !is_fixed_gain_amplitude(plan) {
         return None;
     }
     Some((plan.acceptance_plan_digest, plan.qualifier_bits))
 }
 
-pub(super) fn acceptance_amplitude_report(
+pub(super) fn fixed_gain_amplitude_report(
     data: &mut VelocityIntegralData,
     workspace: &TransientBuffer,
-) -> Result<AcceptanceAmplitudeReport, CommissionError> {
+) -> Result<FixedGainAmplitudeReport, CommissionError> {
     let amplitude = usize::from(data.rung_index);
     let bit = 1_u8
         .checked_shl(u32::from(data.rung_index))
         .ok_or(CommissionError::InvalidSchedule)?;
-    let target_rate_q = acceptance_target_rate_q(data.plan, data.rung_index)?;
+    let target_rate_q = fixed_gain_amplitude_target_rate_q(data.plan, data.rung_index)?;
     let precision_floor_candidate = integral_target_rpm_at(data.plan, data.rung_index)
         == data
             .plan
-            .matrix_targets_rpm
+            .amplitude_targets_rpm
             .iter()
             .copied()
             .min()
@@ -454,13 +456,13 @@ pub(super) fn acceptance_amplitude_report(
         let means_q: [Result<Option<i32>, CommissionError>; 4] =
             core::array::from_fn(|observation| {
                 (classes[observation] == VelocityObservationClass::Eligible)
-                    .then(|| matrix_rung_mean(workspace, slot(observation)))
+                    .then(|| amplitude_rung_mean(workspace, slot(observation)))
                     .transpose()
             });
         let means_q = [means_q[0]?, means_q[1]?, means_q[2]?, means_q[3]?];
         let blocking_levels =
             core::array::from_fn(|observation| rung_blocking_level(data, slot(observation)));
-        classify_acceptance_amplitude(AcceptanceDirectionInput {
+        classify_fixed_gain_amplitude(FixedGainAmplitudeDirectionInput {
             signed_target_rate_q: if direction == 0 {
                 target_rate_q
             } else {
@@ -480,15 +482,15 @@ pub(super) fn acceptance_amplitude_report(
         directions[1].map_err(|_| CommissionError::InvalidSchedule)?,
     ];
     for (direction, evidence) in directions.iter().enumerate() {
-        set_acceptance_attempted(data, direction, bit);
-        if evidence.availability == AcceptanceAmplitudeAvailability::Eligible {
+        set_fixed_gain_amplitude_attempted(data, direction, bit);
+        if evidence.availability == FixedGainAmplitudeAvailability::Eligible {
             data.eligible_masks[direction] |= u32::from(bit);
         }
-        if evidence.availability == AcceptanceAmplitudeAvailability::CurrentHeadroom {
-            set_acceptance_current(data, direction, bit);
+        if evidence.availability == FixedGainAmplitudeAvailability::CurrentHeadroom {
+            set_fixed_gain_amplitude_current(data, direction, bit);
         }
     }
-    Ok(AcceptanceAmplitudeReport {
+    Ok(FixedGainAmplitudeReport {
         amplitude_index: u8::try_from(amplitude).map_err(|_| CommissionError::InvalidSchedule)?,
         target_rpm: i16::try_from(
             integral_target_rpm_at(data.plan, data.rung_index)
@@ -499,57 +501,57 @@ pub(super) fn acceptance_amplitude_report(
     })
 }
 
-pub(super) fn acceptance_terminal(
+pub(super) fn fixed_gain_amplitude_terminal(
     data: &VelocityIntegralData,
     faulted: bool,
     safety_fault: Option<OuterSafetyFault>,
-) -> AcceptanceMatrixTerminal {
+) -> FixedGainAmplitudeTerminal {
     let eligible_masks = [
         u8::try_from(data.eligible_masks[0])
-            .expect("matrix eligibility is written only through five-bit masks"),
+            .expect("amplitude eligibility is written only through five-bit masks"),
         u8::try_from(data.eligible_masks[1])
-            .expect("matrix eligibility is written only through five-bit masks"),
+            .expect("amplitude eligibility is written only through five-bit masks"),
     ];
-    let full_mask = (1_u8 << ACCEPTANCE_AMPLITUDE_COUNT) - 1;
-    let masks = AcceptanceRunMasks {
-        attempted: acceptance_attempted_masks(data),
+    let full_mask = (1_u8 << FIXED_GAIN_AMPLITUDE_COUNT) - 1;
+    let masks = FixedGainAmplitudeRunMasks {
+        attempted: fixed_gain_amplitude_attempted_masks(data),
         eligible: eligible_masks,
-        current_terminus: acceptance_current_masks(data),
-        unattempted: acceptance_attempted_masks(data).map(|mask| full_mask & !mask),
+        current_terminus: fixed_gain_amplitude_current_masks(data),
+        unattempted: fixed_gain_amplitude_attempted_masks(data).map(|mask| full_mask & !mask),
     };
     let identity = acceptance_identity_and_qualifiers(data.plan);
     let (outcome, cause) = if faulted || identity.is_none() {
         (
-            AcceptanceMatrixOutcome::Fault,
-            AcceptanceMatrixCause::EvidenceIntegrity,
+            FixedGainAmplitudeOutcome::Fault,
+            FixedGainAmplitudeCause::EvidenceIntegrity,
         )
     } else {
-        match acceptance_run_sufficient(masks) {
+        match fixed_gain_amplitude_run_sufficient(masks) {
             Err(_) => (
-                AcceptanceMatrixOutcome::Fault,
-                AcceptanceMatrixCause::EvidenceIntegrity,
+                FixedGainAmplitudeOutcome::Fault,
+                FixedGainAmplitudeCause::EvidenceIntegrity,
             ),
             Ok(_) if data.rest_unconfirmed => (
-                AcceptanceMatrixOutcome::Inconclusive,
-                AcceptanceMatrixCause::VelocityRestNotConfirmed,
+                FixedGainAmplitudeOutcome::Inconclusive,
+                FixedGainAmplitudeCause::VelocityRestNotConfirmed,
             ),
             Ok(_) if data.recovery_failure || data.recovery_unavailable => (
-                AcceptanceMatrixOutcome::Inconclusive,
-                AcceptanceMatrixCause::RecoveryUnavailable,
+                FixedGainAmplitudeOutcome::Inconclusive,
+                FixedGainAmplitudeCause::RecoveryUnavailable,
             ),
             Ok(true) => (
-                AcceptanceMatrixOutcome::Complete,
-                AcceptanceMatrixCause::None,
+                FixedGainAmplitudeOutcome::Complete,
+                FixedGainAmplitudeCause::None,
             ),
             Ok(false) => (
-                AcceptanceMatrixOutcome::Inconclusive,
-                AcceptanceMatrixCause::InsufficientSharedFloor,
+                FixedGainAmplitudeOutcome::Inconclusive,
+                FixedGainAmplitudeCause::InsufficientSharedFloor,
             ),
         }
     };
     let (acceptance_plan_digest, qualifier_bits) = identity.unwrap_or((0, 0));
-    AcceptanceMatrixTerminal {
-        schema_revision: super::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+    FixedGainAmplitudeTerminal {
+        schema_revision: super::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
         run_sequence: data.integrity.run_sequence(),
         evidence_sequence: data.integrity.next_evidence_sequence(),
         acceptance_plan_digest,
@@ -562,10 +564,10 @@ pub(super) fn acceptance_terminal(
         current_terminus_masks: masks.current_terminus,
         unattempted_masks: masks.unattempted,
         expected_observations: u16::from(INTEGRAL_SLOT_COUNT)
-            * u16::try_from(ACCEPTANCE_AMPLITUDE_COUNT)
+            * u16::try_from(FIXED_GAIN_AMPLITUDE_COUNT)
                 .expect("fixed amplitude count fits terminal"),
         emitted_observations: data.emitted_observations,
-        expected_amplitudes: u8::try_from(ACCEPTANCE_AMPLITUDE_COUNT)
+        expected_amplitudes: u8::try_from(FIXED_GAIN_AMPLITUDE_COUNT)
             .expect("fixed amplitude count fits terminal"),
         emitted_amplitudes: u8::try_from(data.emitted_rungs)
             .expect("emitted amplitude count cannot exceed the five-rung plan"),
@@ -688,7 +690,7 @@ pub(super) fn plan_integral_recovery(
     safety: &OuterSafetyLimits,
 ) -> Result<RungOriginRecoveryRuntime, CommissionError> {
     let direction = usize::from(safety.unwrapped_position >= 0);
-    let target_velocity_rpm = if is_acceptance_matrix(data.plan) {
+    let target_velocity_rpm = if is_fixed_gain_amplitude(data.plan) {
         data.plan.target_velocity_rpm
     } else {
         integral_target_rpm_at(data.plan, data.rung_index)
@@ -702,8 +704,8 @@ pub(super) fn plan_integral_recovery(
             safety.counts_per_rev(),
             direction,
         )?,
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
-        | VelocityIntegralAcquisitionKind::AcceptanceDescending => Some(
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => Some(
             *data
                 .plan
                 .recovery_lower_rate_q
@@ -712,7 +714,7 @@ pub(super) fn plan_integral_recovery(
                 .ok_or(CommissionError::InvalidSchedule)?,
         ),
     };
-    let planned_velocity_mrev_s = if is_acceptance_matrix(data.plan) {
+    let planned_velocity_mrev_s = if is_fixed_gain_amplitude(data.plan) {
         data.plan.planned_velocity_mrev_s
     } else {
         u32::try_from(target_velocity_rpm)
@@ -781,11 +783,11 @@ pub(super) fn record_integral_recovery_rest(
         current_contact_code: analysis.current_contact_code,
         disposition: analysis.disposition,
     };
-    if is_acceptance_matrix(data.plan) {
+    if is_fixed_gain_amplitude(data.plan) {
         let event = data
             .integrity
-            .record_acceptance(AcceptanceMatrixEvent::RecoveryRest(diagnostic));
-        StepResult::AcceptanceMatrixEvent(event)
+            .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::RecoveryRest(diagnostic));
+        StepResult::FixedGainAmplitudeEvent(event)
     } else {
         let event = data
             .integrity
@@ -812,8 +814,8 @@ pub(super) fn record_integral_recovery_rest_selection(
         zero_compatible_mask: decision.zero_compatible_mask,
         selected_mask: decision.selected_mask,
         stage,
-        owner: if is_acceptance_matrix(data.plan) {
-            RestSelectionOwner::MatrixRecovery
+        owner: if is_fixed_gain_amplitude(data.plan) {
+            RestSelectionOwner::FixedGainAmplitudeRecovery
         } else {
             RestSelectionOwner::StageCRecovery
         },
@@ -823,11 +825,11 @@ pub(super) fn record_integral_recovery_rest_selection(
         disposition: decision.disposition,
         retained_sample_count: decision.retained_sample_count,
     };
-    if is_acceptance_matrix(data.plan) {
+    if is_fixed_gain_amplitude(data.plan) {
         let event = data
             .integrity
-            .record_acceptance(AcceptanceMatrixEvent::RestSelection(diagnostic));
-        StepResult::AcceptanceMatrixEvent(event)
+            .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::RestSelection(diagnostic));
+        StepResult::FixedGainAmplitudeEvent(event)
     } else {
         let event = data
             .integrity
@@ -860,11 +862,11 @@ pub(super) fn record_integral_observation_rest_selection(
         disposition: decision.disposition,
         retained_sample_count: decision.retained_sample_count,
     };
-    if is_acceptance_matrix(data.plan) {
+    if is_fixed_gain_amplitude(data.plan) {
         let event = data
             .integrity
-            .record_acceptance(AcceptanceMatrixEvent::RestSelection(diagnostic));
-        StepResult::AcceptanceMatrixEvent(event)
+            .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::RestSelection(diagnostic));
+        StepResult::FixedGainAmplitudeEvent(event)
     } else {
         let event = data
             .integrity
@@ -962,9 +964,13 @@ pub(crate) fn integral_fault_terminal(
     let OuterPhase::VelocityIntegral { data, .. } = phase else {
         return StepResult::OuterFailed(error);
     };
-    if is_acceptance_matrix(data.plan) {
+    if is_fixed_gain_amplitude(data.plan) {
         let _ = error;
-        return StepResult::AcceptanceMatrixTerminal(acceptance_terminal(data, true, safety_fault));
+        return StepResult::FixedGainAmplitudeTerminal(fixed_gain_amplitude_terminal(
+            data,
+            true,
+            safety_fault,
+        ));
     }
     terminal_from_data(
         data,
@@ -1101,7 +1107,7 @@ fn retain_rung(
                 }
             }
         }
-        IntegralRungKind::AcceptanceAmplitude => {}
+        IntegralRungKind::FixedGainAmplitude => {}
     }
     Ok(())
 }
@@ -1128,8 +1134,8 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
         if sufficient_before_rest_rejection {
             if matches!(
                 data.rest_unconfirmed_owner,
-                Some(RestSelectionOwner::MatrixObservation)
-                    | Some(RestSelectionOwner::MatrixRecovery)
+                Some(RestSelectionOwner::FixedGainAmplitudeObservation)
+                    | Some(RestSelectionOwner::FixedGainAmplitudeRecovery)
             ) {
                 return terminal_from_data(
                     data,
@@ -1329,8 +1335,10 @@ fn retain_analyzed_observation(
 ) -> Result<(), CommissionError> {
     let source_interval = match data.plan.acquisition_kind {
         VelocityIntegralAcquisitionKind::ResponseLadder => summary.deficit_interval_q,
-        VelocityIntegralAcquisitionKind::AcceptanceAscending
-        | VelocityIntegralAcquisitionKind::AcceptanceDescending => summary.settled_rate_interval_q,
+        VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending => {
+            summary.settled_rate_interval_q
+        }
     };
     let interval = ExactRateInterval::new(
         i32::try_from(source_interval[0]).map_err(|_| CommissionError::InvalidSchedule)?,
@@ -1339,10 +1347,10 @@ fn retain_analyzed_observation(
     .map_err(|_| CommissionError::InvalidSchedule)?;
     data.rung_classes[usize::from(data.slot)] = summary.classification;
     data.rung_intervals[usize::from(data.slot)] = interval;
-    if is_acceptance_matrix(data.plan)
+    if is_fixed_gain_amplitude(data.plan)
         && summary.classification == VelocityObservationClass::Eligible
     {
-        store_matrix_rung_mean(
+        store_amplitude_rung_mean(
             workspace,
             usize::from(data.slot),
             i32::try_from(summary.settled_rate_mean_q)
@@ -1500,7 +1508,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             .await;
                     }
                 };
-            if is_acceptance_matrix(data.plan) {
+            if is_fixed_gain_amplitude(data.plan) {
                 let bit = match 1_u8.checked_shl(u32::from(data.rung_index)) {
                     Some(value) => value,
                     None => {
@@ -1509,7 +1517,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     }
                 };
                 let direction = data.plan.slot_order.direction_index(data.slot);
-                set_acceptance_attempted(data, direction, bit);
+                set_fixed_gain_amplitude_attempted(data, direction, bit);
             }
             let mut clamp_session = match VelocityCurrentClampSession::try_new_with_limit(
                 u32::from(data.plan.hard_torque_limit),
@@ -1801,11 +1809,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             } else {
                 VelocityIntegralState::BeginSettleCapture { settle_deadline_us }
             };
-            if is_acceptance_matrix(data.plan) {
+            if is_fixed_gain_amplitude(data.plan) {
                 let event = data
                     .integrity
-                    .record_acceptance(AcceptanceMatrixEvent::Observation(report));
-                StepResult::AcceptanceMatrixEvent(event)
+                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Observation(report));
+                StepResult::FixedGainAmplitudeEvent(event)
             } else {
                 let event = data
                     .integrity
@@ -1985,8 +1993,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                             RestSelectionOwner::StageCAnchor
                         }
                         IntegralRungKind::Positive => RestSelectionOwner::StageCPositiveObservation,
-                        IntegralRungKind::AcceptanceAmplitude => {
-                            RestSelectionOwner::MatrixObservation
+                        IntegralRungKind::FixedGainAmplitude => {
+                            RestSelectionOwner::FixedGainAmplitudeObservation
                         }
                     };
                     return record_integral_observation_rest_selection(data, decision, owner);
@@ -2071,8 +2079,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         }
                         // The sibling if-branch above already claims every Positive rung.
                         IntegralRungKind::Positive => unreachable!(),
-                        IntegralRungKind::AcceptanceAmplitude => {
-                            RestSelectionOwner::MatrixObservation
+                        IntegralRungKind::FixedGainAmplitude => {
+                            RestSelectionOwner::FixedGainAmplitudeObservation
                         }
                     });
                 *state = VelocityIntegralState::Terminal;
@@ -2080,7 +2088,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 safety.end_primitive();
             }
             if data.observation_current_headroom {
-                if is_acceptance_matrix(data.plan) {
+                if is_fixed_gain_amplitude(data.plan) {
                     let bit = match 1_u8.checked_shl(u32::from(data.rung_index)) {
                         Some(value) => value,
                         None => {
@@ -2088,7 +2096,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                                 .await;
                         }
                     };
-                    set_acceptance_current(
+                    set_fixed_gain_amplitude_current(
                         data,
                         data.plan.slot_order.direction_index(data.slot),
                         bit,
@@ -2124,11 +2132,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 *state = VelocityIntegralState::AnalyzeRung;
             }
             let report = current_report(data, current_evidence);
-            if is_acceptance_matrix(data.plan) {
+            if is_fixed_gain_amplitude(data.plan) {
                 let event = data
                     .integrity
-                    .record_acceptance(AcceptanceMatrixEvent::Current(report));
-                StepResult::AcceptanceMatrixEvent(event)
+                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Current(report));
+                StepResult::FixedGainAmplitudeEvent(event)
             } else {
                 let event = data
                     .integrity
@@ -2383,8 +2391,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             StepResult::ReadyNow
         }
         VelocityIntegralState::AnalyzeRung => {
-            if is_acceptance_matrix(data.plan) {
-                let report = match acceptance_amplitude_report(data, workspace) {
+            if is_fixed_gain_amplitude(data.plan) {
+                let report = match fixed_gain_amplitude_report(data, workspace) {
                     Ok(report) => report,
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
@@ -2394,7 +2402,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
                 *state = VelocityIntegralState::RecoverRung(recovery);
-                let evidence = AcceptanceAmplitudeEvidence {
+                let evidence = FixedGainAmplitudeEvidence {
                     run_sequence: data.integrity.run_sequence(),
                     evidence_sequence: data.integrity.next_evidence_sequence(),
                     plan_digest: data.plan.plan_digest,
@@ -2402,8 +2410,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 };
                 let event = data
                     .integrity
-                    .record_acceptance(AcceptanceMatrixEvent::Amplitude(evidence));
-                return StepResult::AcceptanceMatrixEvent(event);
+                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Amplitude(evidence));
+                return StepResult::FixedGainAmplitudeEvent(event);
             }
             let directions = match (
                 analyze_rung(data, VelocityDirection::Forward),
@@ -2441,7 +2449,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 IntegralRungKind::OpeningAnchor
                 | IntegralRungKind::Positive
                 | IntegralRungKind::ClosingBookend
-                | IntegralRungKind::AcceptanceAmplitude => {
+                | IntegralRungKind::FixedGainAmplitude => {
                     let recovery = match plan_integral_recovery(data, workspace, safety) {
                         Ok(runtime) => runtime,
                         Err(error) => return fail_integral(phase, backend, error).await,
@@ -2484,8 +2492,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
                     data.rest_unconfirmed = true;
-                    data.rest_unconfirmed_owner = Some(if is_acceptance_matrix(data.plan) {
-                        RestSelectionOwner::MatrixRecovery
+                    data.rest_unconfirmed_owner = Some(if is_fixed_gain_amplitude(data.plan) {
+                        RestSelectionOwner::FixedGainAmplitudeRecovery
                     } else {
                         RestSelectionOwner::StageCRecovery
                     });
@@ -2513,8 +2521,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 data.recovered_with_current_headroom = true;
                 if matches!(
                     data.plan.acquisition_kind,
-                    VelocityIntegralAcquisitionKind::AcceptanceAscending
-                        | VelocityIntegralAcquisitionKind::AcceptanceDescending
+                    VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending
+                        | VelocityIntegralAcquisitionKind::FixedGainAmplitudeDescending
                 ) {
                     apply_integral_current_headroom(state, data);
                 } else {
@@ -2557,16 +2565,16 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                         data.rung_index = data.rung_index.saturating_add(1);
                         *state = VelocityIntegralState::PrepareMovingSlot { reset_rung: true };
                     }
-                    IntegralRungKind::AcceptanceAmplitude if contained => {
+                    IntegralRungKind::FixedGainAmplitude if contained => {
                         data.recovery_failure = true;
                         *state = VelocityIntegralState::Terminal;
                     }
-                    IntegralRungKind::AcceptanceAmplitude
-                        if acceptance_current_masks(data) != [0; 2] =>
+                    IntegralRungKind::FixedGainAmplitude
+                        if fixed_gain_amplitude_current_masks(data) != [0; 2] =>
                     {
                         apply_integral_current_headroom(state, data);
                     }
-                    IntegralRungKind::AcceptanceAmplitude => {
+                    IntegralRungKind::FixedGainAmplitude => {
                         data.rung_index = data.rung_index.saturating_add(1);
                         if data.rung_index >= integral_rung_count(data.plan).unwrap_or(0) {
                             *state = VelocityIntegralState::Terminal;
@@ -2581,11 +2589,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 evidence_sequence: data.integrity.next_evidence_sequence(),
                 report,
             };
-            if is_acceptance_matrix(data.plan) {
+            if is_fixed_gain_amplitude(data.plan) {
                 let event = data
                     .integrity
-                    .record_acceptance(AcceptanceMatrixEvent::Recovery(recovery));
-                StepResult::AcceptanceMatrixEvent(event)
+                    .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Recovery(recovery));
+                StepResult::FixedGainAmplitudeEvent(event)
             } else {
                 let event = data
                     .integrity
@@ -2597,8 +2605,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let error = *error;
             fail_integral(phase, backend, error).await
         }
-        VelocityIntegralState::Terminal if is_acceptance_matrix(data.plan) => {
-            StepResult::AcceptanceMatrixTerminal(acceptance_terminal(data, false, None))
+        VelocityIntegralState::Terminal if is_fixed_gain_amplitude(data.plan) => {
+            StepResult::FixedGainAmplitudeTerminal(fixed_gain_amplitude_terminal(data, false, None))
         }
         VelocityIntegralState::Terminal => evidence_terminal(data, workspace),
     }

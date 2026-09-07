@@ -1,27 +1,29 @@
-//! Canonical trace and compact wire reporting for velocity confidence matrices.
+//! Canonical trace and compact wire reporting for fixed-gain amplitude validation runs.
 
 use crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord;
 use crate::commissioning::types::{
-    AcceptanceMatrixEvent, AcceptanceMatrixTerminal, RungOriginRecoveryEvidence,
+    FixedGainAmplitudeEvent, FixedGainAmplitudeTerminal, RungOriginRecoveryEvidence,
     VelocityIntegralEvent, VelocityIntegralObservation, VelocityPrimitiveCurrentEvidence,
 };
 
-use super::acceptance_evidence::{AcceptanceAmplitudeReport, AcceptanceDirectionalEvidence};
-use super::acceptance_plan::{AcceptanceMatrixPlan, schedule_order_code};
+use super::fixed_gain_amplitude_evidence::{
+    FixedGainAmplitudeDirectionalEvidence, FixedGainAmplitudeReport,
+};
+use super::fixed_gain_amplitude_plan::{FixedGainAmplitudePlan, schedule_order_code};
 use super::reproduction::BUILD_IDENTITY;
 
-/// Bytes in the compact ordinary matrix-plan reply payload.
-pub(crate) const ACCEPTANCE_PLAN_REPLY_BYTES: usize = 66;
-/// Payload bytes carried by each matrix-plan reply fragment.
+/// Bytes in the compact ordinary amplitude-plan reply payload.
+pub(crate) const FIXED_GAIN_AMPLITUDE_PLAN_REPLY_BYTES: usize = 66;
+/// Payload bytes carried by each amplitude-plan reply fragment.
 ///
 /// The 66-byte plan cannot cross the transport in one message, so it ships as
 /// two equal fragments that each fit the ordinary payload budget.
-pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES: usize = 33;
-/// Number of matrix-plan reply fragments.
+pub(crate) const FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES: usize = 33;
+/// Number of amplitude-plan reply fragments.
 #[cfg(test)]
-pub(crate) const ACCEPTANCE_PLAN_REPLY_FRAGMENTS: usize = 2;
-/// Bytes in the compact ordinary matrix-terminal reply payload.
-pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 39;
+pub(crate) const FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENTS: usize = 2;
+/// Bytes in the compact ordinary amplitude-terminal reply payload.
+pub(crate) const FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES: usize = 39;
 
 /// Largest byte-array payload an ordinary reply can carry in one message.
 ///
@@ -35,12 +37,12 @@ pub(crate) const ACCEPTANCE_TERMINAL_REPLY_BYTES: usize = 39;
 #[cfg(test)]
 pub(crate) const ORDINARY_REPLY_PAYLOAD_MAX_BYTES: usize = 53;
 
-/// Encode the compact matrix-plan ordinary reply payload.
-pub(crate) fn encode_acceptance_plan_reply(
+/// Encode the compact amplitude-plan ordinary reply payload.
+pub(crate) fn encode_fixed_gain_amplitude_plan_reply(
     run_sequence: u32,
-    plan: AcceptanceMatrixPlan,
-) -> [u8; ACCEPTANCE_PLAN_REPLY_BYTES] {
-    let mut bytes = [0_u8; ACCEPTANCE_PLAN_REPLY_BYTES];
+    plan: FixedGainAmplitudePlan,
+) -> [u8; FIXED_GAIN_AMPLITUDE_PLAN_REPLY_BYTES] {
+    let mut bytes = [0_u8; FIXED_GAIN_AMPLITUDE_PLAN_REPLY_BYTES];
     let mut offset = 0;
     push_reply(&mut bytes, &mut offset, &plan.schema_revision.to_le_bytes());
     push_reply(&mut bytes, &mut offset, &run_sequence.to_le_bytes());
@@ -80,15 +82,15 @@ pub(crate) fn encode_acceptance_plan_reply(
     for lower_rate_q in plan.recovery_lower_rate_q {
         push_reply(&mut bytes, &mut offset, &lower_rate_q.to_le_bytes());
     }
-    debug_assert_eq!(offset, ACCEPTANCE_PLAN_REPLY_BYTES);
+    debug_assert_eq!(offset, FIXED_GAIN_AMPLITUDE_PLAN_REPLY_BYTES);
     bytes
 }
 
-/// Encode the compact matrix-terminal ordinary reply payload.
-pub(crate) fn encode_acceptance_terminal_reply(
-    terminal: AcceptanceMatrixTerminal,
-) -> [u8; ACCEPTANCE_TERMINAL_REPLY_BYTES] {
-    let mut bytes = [0_u8; ACCEPTANCE_TERMINAL_REPLY_BYTES];
+/// Encode the compact amplitude-terminal ordinary reply payload.
+pub(crate) fn encode_fixed_gain_amplitude_terminal_reply(
+    terminal: FixedGainAmplitudeTerminal,
+) -> [u8; FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES] {
+    let mut bytes = [0_u8; FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES];
     let mut offset = 0;
     push_reply(
         &mut bytes,
@@ -131,26 +133,26 @@ pub(crate) fn encode_acceptance_terminal_reply(
         &mut offset,
         &terminal.qualifier_bits.to_le_bytes(),
     );
-    debug_assert_eq!(offset, ACCEPTANCE_TERMINAL_REPLY_BYTES);
+    debug_assert_eq!(offset, FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES);
     bytes
 }
 
 fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, value: &[u8]) {
     let end = offset
         .checked_add(value.len())
-        .expect("fixed matrix reply length fits usize");
+        .expect("fixed amplitude reply length fits usize");
     destination[*offset..end].copy_from_slice(value);
     *offset = end;
 }
 
-/// Encode the complete immutable matrix plan as bounded canonical fragments.
+/// Encode the complete immutable amplitude plan as bounded canonical fragments.
 #[allow(dead_code)]
-pub(crate) fn encode_acceptance_plan(
+pub(crate) fn encode_fixed_gain_amplitude_plan(
     run_sequence: u32,
-    plan: AcceptanceMatrixPlan,
+    plan: FixedGainAmplitudePlan,
 ) -> [VelocitySweepCanonicalRecord; 3] {
     let digest = plan.digest();
-    let mut core = matrix_record_header(0, run_sequence, 0, digest);
+    let mut core = amplitude_record_header(0, run_sequence, 0, digest);
     core.push_u8(0);
     core.push_u16(plan.schema_revision);
     core.push_u8(plan.acceptance_identity.channel);
@@ -171,7 +173,7 @@ pub(crate) fn encode_acceptance_plan(
     core.push_u16(plan.expected_observations);
     core.push_u16(plan.family_size);
 
-    let mut timing = matrix_record_header(0, run_sequence, 0, digest);
+    let mut timing = amplitude_record_header(0, run_sequence, 0, digest);
     timing.push_u8(1);
     timing.push_u32(plan.moving_stroke_us);
     timing.push_u32(plan.zero_settle_us);
@@ -191,7 +193,7 @@ pub(crate) fn encode_acceptance_plan(
     timing.push_u8(u8::from(plan.recovery_quantization_exposed));
     timing.push_u8(u8::from(plan.probe_constrained_test_point));
 
-    let mut motion = matrix_record_header(0, run_sequence, 0, digest);
+    let mut motion = amplitude_record_header(0, run_sequence, 0, digest);
     motion.push_u8(2);
     motion.push_u32(plan.motion_request.requested_velocity_mrev_s);
     motion.push_u32(plan.motion_request.machine_velocity_ceiling_mrev_s);
@@ -204,8 +206,8 @@ pub(crate) fn encode_acceptance_plan(
     [core, timing, motion]
 }
 
-/// Encode one intrinsic moving observation for the matrix trace stream.
-pub(crate) fn encode_acceptance_observation(
+/// Encode one intrinsic moving observation for the amplitude trace stream.
+pub(crate) fn encode_fixed_gain_amplitude_observation(
     report: VelocityIntegralObservation,
 ) -> VelocitySweepCanonicalRecord {
     super::integral_reporting::encode_velocity_integral_event(VelocityIntegralEvent::Observation(
@@ -213,36 +215,38 @@ pub(crate) fn encode_acceptance_observation(
     ))
 }
 
-/// Encode one matrix primitive's current and rest evidence.
-pub(crate) fn encode_acceptance_current(
+/// Encode one amplitude primitive's current and rest evidence.
+pub(crate) fn encode_fixed_gain_amplitude_current(
     report: VelocityPrimitiveCurrentEvidence,
 ) -> VelocitySweepCanonicalRecord {
     crate::ankyra::velocity_sweep_encoding::encode_velocity_primitive_current_evidence(report)
 }
 
-/// Encode one evidence-excluded matrix origin recovery.
-pub(crate) fn encode_acceptance_recovery(
+/// Encode one evidence-excluded amplitude origin recovery.
+pub(crate) fn encode_fixed_gain_amplitude_recovery(
     report: RungOriginRecoveryEvidence,
 ) -> VelocitySweepCanonicalRecord {
     super::sweep_reporting::encode_rung_origin_recovery(report)
 }
 
-/// Encode one trace-only matrix event in its canonical representation.
-pub(crate) fn encode_acceptance_event(
-    event: AcceptanceMatrixEvent,
+/// Encode one trace-only amplitude event in its canonical representation.
+pub(crate) fn encode_fixed_gain_amplitude_event(
+    event: FixedGainAmplitudeEvent,
 ) -> VelocitySweepCanonicalRecord {
     match event {
-        AcceptanceMatrixEvent::Observation(report) => encode_acceptance_observation(report),
-        AcceptanceMatrixEvent::Current(report) => encode_acceptance_current(report),
-        AcceptanceMatrixEvent::Recovery(report) => encode_acceptance_recovery(report),
-        AcceptanceMatrixEvent::RecoveryRest(report) => {
+        FixedGainAmplitudeEvent::Observation(report) => {
+            encode_fixed_gain_amplitude_observation(report)
+        }
+        FixedGainAmplitudeEvent::Current(report) => encode_fixed_gain_amplitude_current(report),
+        FixedGainAmplitudeEvent::Recovery(report) => encode_fixed_gain_amplitude_recovery(report),
+        FixedGainAmplitudeEvent::RecoveryRest(report) => {
             super::sweep_reporting::encode_recovery_rest(report)
         }
-        AcceptanceMatrixEvent::RestSelection(report) => {
+        FixedGainAmplitudeEvent::RestSelection(report) => {
             super::sweep_reporting::encode_rest_selection(report)
                 .expect("completed scored-rest diagnostic is coherent")
         }
-        AcceptanceMatrixEvent::Amplitude(report) => encode_acceptance_amplitude(
+        FixedGainAmplitudeEvent::Amplitude(report) => encode_fixed_gain_amplitude_amplitude(
             report.run_sequence,
             report.evidence_sequence,
             report.plan_digest,
@@ -251,12 +255,12 @@ pub(crate) fn encode_acceptance_event(
     }
 }
 
-/// Encode one completed amplitude fold in the canonical matrix representation.
-pub(crate) fn encode_acceptance_amplitude(
+/// Encode one completed amplitude fold in the canonical amplitude representation.
+pub(crate) fn encode_fixed_gain_amplitude_amplitude(
     run_sequence: u32,
     evidence_sequence: u16,
     plan_digest: u64,
-    report: AcceptanceAmplitudeReport,
+    report: FixedGainAmplitudeReport,
 ) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(2);
@@ -273,7 +277,7 @@ pub(crate) fn encode_acceptance_amplitude(
 
 fn encode_direction(
     record: &mut VelocitySweepCanonicalRecord,
-    direction: AcceptanceDirectionalEvidence,
+    direction: FixedGainAmplitudeDirectionalEvidence,
 ) {
     record.push_u8(direction.availability as u8);
     record.push_u8(direction.consensus.classification as u8);
@@ -287,7 +291,7 @@ fn encode_direction(
     record.push_u8(direction.consensus.included_mask);
     record.push_i32(
         i32::try_from(direction.signed_target_rate_q)
-            .expect("validated matrix target rate fits i32"),
+            .expect("validated amplitude target rate fits i32"),
     );
     encode_optional_interval(record, direction.response_interval_q);
     encode_optional_i32(record, direction.robust_location_q);
@@ -295,8 +299,8 @@ fn encode_direction(
         record,
         direction.deficit_interval_q.map(|interval| {
             [
-                i32::try_from(interval[0]).expect("validated matrix deficit fits i32"),
-                i32::try_from(interval[1]).expect("validated matrix deficit fits i32"),
+                i32::try_from(interval[0]).expect("validated amplitude deficit fits i32"),
+                i32::try_from(interval[1]).expect("validated amplitude deficit fits i32"),
             ]
         }),
     );
@@ -330,9 +334,9 @@ fn encode_optional_i32(record: &mut VelocitySweepCanonicalRecord, value: Option<
     }
 }
 
-/// Encode one matrix terminal in the canonical matrix representation.
-pub(crate) fn encode_acceptance_terminal(
-    terminal: &AcceptanceMatrixTerminal,
+/// Encode one amplitude terminal in the canonical amplitude representation.
+pub(crate) fn encode_fixed_gain_amplitude_terminal(
+    terminal: &FixedGainAmplitudeTerminal,
 ) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(3);
@@ -369,7 +373,7 @@ fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
 }
 
 #[allow(dead_code)]
-fn matrix_record_header(
+fn amplitude_record_header(
     kind: u8,
     run_sequence: u32,
     evidence_sequence: u16,
@@ -386,11 +390,12 @@ fn matrix_record_header(
 #[cfg(test)]
 mod tests {
     use crate::ankyra::velocity_sweep_encoding::VELOCITY_SWEEP_CANONICAL_RECORD_MAX;
-    use crate::commissioning::outer::velocity::acceptance_evidence::{
-        AcceptanceAmplitudeAvailability, AcceptanceAmplitudeReport, AcceptanceDirectionalEvidence,
+    use crate::commissioning::outer::velocity::fixed_gain_amplitude_evidence::{
+        FixedGainAmplitudeAvailability, FixedGainAmplitudeDirectionalEvidence,
+        FixedGainAmplitudeReport,
     };
-    use crate::commissioning::outer::velocity::acceptance_plan::{
-        AcceptanceMatrixOrder, AcceptanceMatrixPlan,
+    use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
+        FixedGainAmplitudeOrder, FixedGainAmplitudePlan,
     };
     use crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder;
     use crate::commissioning::outer::velocity::integral_reproduction::StageCPlanIdentity;
@@ -402,12 +407,12 @@ mod tests {
         RequestedVelocitySource, VelocitySweepRequest,
     };
     use crate::commissioning::types::{
-        AcceptanceMatrixCause, AcceptanceMatrixEvent, AcceptanceMatrixOutcome,
-        AcceptanceMatrixTerminal, RecoveryRestDiagnostic,
+        FixedGainAmplitudeCause, FixedGainAmplitudeEvent, FixedGainAmplitudeOutcome,
+        FixedGainAmplitudeTerminal, RecoveryRestDiagnostic,
     };
 
     #[test]
-    fn matrix_recovery_rest_reuses_the_exact_event_150_record() {
+    fn amplitude_recovery_rest_reuses_the_exact_event_150_record() {
         let report = RecoveryRestDiagnostic {
             plan_digest: 0x0123_4567_89ab_cdef,
             exact_velocity_interval_q: [-17, 29],
@@ -434,18 +439,19 @@ mod tests {
             current_contact_code: 0,
             disposition: 0,
         };
-        let encoded = super::encode_acceptance_event(AcceptanceMatrixEvent::RecoveryRest(report));
+        let encoded =
+            super::encode_fixed_gain_amplitude_event(FixedGainAmplitudeEvent::RecoveryRest(report));
         let shared = super::super::sweep_reporting::encode_recovery_rest(report);
 
         assert_eq!(encoded.as_bytes(), shared.as_bytes());
         assert_eq!(encoded.as_bytes().len(), 89);
     }
 
-    fn plan() -> AcceptanceMatrixPlan {
-        AcceptanceMatrixPlan {
+    fn plan() -> FixedGainAmplitudePlan {
+        FixedGainAmplitudePlan {
             slot_order: IntegralSlotOrder::ForwardFirst,
             schema_revision:
-                crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+                crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
             acceptance_identity: StageCPlanIdentity {
                 channel: 0,
                 build_features: 0x1234,
@@ -453,7 +459,7 @@ mod tests {
                     crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION,
                 plan_digest: 0x1111_2222_3333_4444,
             },
-            order: AcceptanceMatrixOrder::Ascending,
+            order: FixedGainAmplitudeOrder::Ascending,
             target_rpm: [16, 33, 66, 132, 263],
             selected_p: 1_024,
             selected_i: 1_024,
@@ -492,10 +498,10 @@ mod tests {
     }
 
     /// Byte offset of `acceptance_identity.schema_revision` in the encoded
-    /// matrix-plan core record (`records[0]` returned by
-    /// `encode_acceptance_plan`).
+    /// amplitude-plan core record (`records[0]` returned by
+    /// `encode_fixed_gain_amplitude_plan`).
     ///
-    /// Counted from the fixed prefix `encode_acceptance_plan` pushes ahead of
+    /// Counted from the fixed prefix `encode_fixed_gain_amplitude_plan` pushes ahead of
     /// the field: tag(1) + run_sequence(4) + evidence_sequence(2) +
     /// plan_digest(8) + subtype(1) + plan.schema_revision(2) +
     /// acceptance_identity.channel(1) + acceptance_identity.build_features(2)
@@ -507,15 +513,15 @@ mod tests {
         u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
     }
 
-    /// A breakaway-derived matrix run must disclose the breakaway Stage-C
-    /// schema (16), not the outer matrix schema and not the combined
+    /// A breakaway-derived amplitude run must disclose the breakaway Stage-C
+    /// schema (16), not the outer amplitude schema and not the combined
     /// constant, so the wire reply lets the host tell the two acceptance
     /// families apart.
     #[test]
-    fn acceptance_plan_discloses_breakaway_identity_schema() {
+    fn fixed_gain_amplitude_plan_discloses_breakaway_identity_schema() {
         let plan = plan();
 
-        let records = super::encode_acceptance_plan(7, plan);
+        let records = super::encode_fixed_gain_amplitude_plan(7, plan);
 
         let disclosed = read_u16_at(
             records[0].as_bytes(),
@@ -531,7 +537,7 @@ mod tests {
     fn plan_records_preserve_all_fragments_with_one_digest() {
         let plan = plan();
 
-        let records = super::encode_acceptance_plan(7, plan);
+        let records = super::encode_fixed_gain_amplitude_plan(7, plan);
 
         assert_eq!(records.map(|record| record.as_bytes().len()), [75, 72, 43]);
         assert!(
@@ -552,16 +558,16 @@ mod tests {
     fn compact_plan_reply_appends_exact_recovery_bounds() {
         let plan = plan();
 
-        let payload = super::encode_acceptance_plan_reply(7, plan);
+        let payload = super::encode_fixed_gain_amplitude_plan_reply(7, plan);
 
         assert_eq!(payload.len(), 66);
         assert_eq!(&payload[50..58], &13_217_792_u64.to_le_bytes());
         assert_eq!(&payload[58..66], &12_827_648_u64.to_le_bytes());
     }
 
-    fn direction() -> AcceptanceDirectionalEvidence {
-        AcceptanceDirectionalEvidence {
-            availability: AcceptanceAmplitudeAvailability::Eligible,
+    fn direction() -> FixedGainAmplitudeDirectionalEvidence {
+        FixedGainAmplitudeDirectionalEvidence {
+            availability: FixedGainAmplitudeAvailability::Eligible,
             consensus: DirectionalConsensus {
                 classification: DirectionalConsensusClass::EligibleConsensus,
                 components: [[10, 20], [0, 0]],
@@ -581,13 +587,14 @@ mod tests {
 
     #[test]
     fn amplitude_record_is_exact_and_bounded() {
-        let report = AcceptanceAmplitudeReport {
+        let report = FixedGainAmplitudeReport {
             amplitude_index: 4,
             target_rpm: 263,
             directions: [direction(), direction()],
         };
 
-        let record = super::encode_acceptance_amplitude(7, 42, 0x0123_4567_89ab_cdef, report);
+        let record =
+            super::encode_fixed_gain_amplitude_amplitude(7, 42, 0x0123_4567_89ab_cdef, report);
 
         assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
         assert_eq!(&record.as_bytes()[..7], &[2, 7, 0, 0, 0, 42, 0]);
@@ -595,16 +602,16 @@ mod tests {
 
     #[test]
     fn terminal_record_preserves_masks_counts_and_identity() {
-        let terminal = AcceptanceMatrixTerminal {
+        let terminal = FixedGainAmplitudeTerminal {
             schema_revision:
-                crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+                crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
             run_sequence: 7,
             evidence_sequence: 43,
             acceptance_plan_digest: 0x1111_2222_3333_4444,
             plan_digest: 0x5555_6666_7777_8888,
             digest: 0x9999_aaaa_bbbb_cccc,
-            outcome: AcceptanceMatrixOutcome::Inconclusive,
-            cause: AcceptanceMatrixCause::VelocityRestNotConfirmed,
+            outcome: FixedGainAmplitudeOutcome::Inconclusive,
+            cause: FixedGainAmplitudeCause::VelocityRestNotConfirmed,
             attempted_masks: [0b11111; 2],
             eligible_masks: [0b11110, 0b11100],
             current_terminus_masks: [0, 0b10000],
@@ -619,15 +626,15 @@ mod tests {
             safety_fault: None,
         };
 
-        let record = super::encode_acceptance_terminal(&terminal);
+        let record = super::encode_fixed_gain_amplitude_terminal(&terminal);
 
         assert!(record.as_bytes().len() <= VELOCITY_SWEEP_CANONICAL_RECORD_MAX);
         assert_eq!(&record.as_bytes()[..7], &[3, 7, 0, 0, 0, 43, 0]);
         assert_eq!(
             &record.as_bytes()[33..35],
             &[
-                AcceptanceMatrixOutcome::Inconclusive as u8,
-                AcceptanceMatrixCause::VelocityRestNotConfirmed as u8,
+                FixedGainAmplitudeOutcome::Inconclusive as u8,
+                FixedGainAmplitudeCause::VelocityRestNotConfirmed as u8,
             ]
         );
         assert!(
@@ -640,16 +647,16 @@ mod tests {
 
     #[test]
     fn compact_terminal_reply_carries_evidence_sequence() {
-        let terminal = AcceptanceMatrixTerminal {
+        let terminal = FixedGainAmplitudeTerminal {
             schema_revision:
-                crate::commissioning::outer::velocity::acceptance_plan::ACCEPTANCE_MATRIX_SCHEMA_REVISION,
+                crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
             run_sequence: 7,
             evidence_sequence: 43,
             acceptance_plan_digest: 0x1111_2222_3333_4444,
             plan_digest: 0x5555_6666_7777_8888,
             digest: 0x9999_aaaa_bbbb_cccc,
-            outcome: AcceptanceMatrixOutcome::Inconclusive,
-            cause: AcceptanceMatrixCause::VelocityRestNotConfirmed,
+            outcome: FixedGainAmplitudeOutcome::Inconclusive,
+            cause: FixedGainAmplitudeCause::VelocityRestNotConfirmed,
             attempted_masks: [0b11111; 2],
             eligible_masks: [0b11110, 0b11100],
             current_terminus_masks: [0, 0b10000],
@@ -664,7 +671,7 @@ mod tests {
             safety_fault: None,
         };
 
-        let payload = super::encode_acceptance_terminal_reply(terminal);
+        let payload = super::encode_fixed_gain_amplitude_terminal_reply(terminal);
 
         assert_eq!(payload.len(), 39);
         assert_eq!(&payload[6..8], &43_u16.to_le_bytes());
@@ -674,8 +681,8 @@ mod tests {
 #[cfg(test)]
 mod reply_payload_budget_tests {
     use super::{
-        ACCEPTANCE_PLAN_REPLY_BYTES, ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES,
-        ACCEPTANCE_PLAN_REPLY_FRAGMENTS, ACCEPTANCE_TERMINAL_REPLY_BYTES,
+        FIXED_GAIN_AMPLITUDE_PLAN_REPLY_BYTES, FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES,
+        FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENTS, FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES,
         ORDINARY_REPLY_PAYLOAD_MAX_BYTES,
     };
 
@@ -685,12 +692,12 @@ mod reply_payload_budget_tests {
     fn every_ordinary_reply_payload_fits_one_transport_message() {
         for (name, bytes) in [
             (
-                "acceptance matrix plan fragment",
-                ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES,
+                "fixed-gain amplitude plan fragment",
+                FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES,
             ),
             (
-                "acceptance matrix terminal",
-                ACCEPTANCE_TERMINAL_REPLY_BYTES,
+                "fixed-gain amplitude terminal",
+                FIXED_GAIN_AMPLITUDE_TERMINAL_REPLY_BYTES,
             ),
         ] {
             assert!(
@@ -704,8 +711,9 @@ mod reply_payload_budget_tests {
     #[test]
     fn plan_reply_fragments_span_the_entire_payload() {
         assert_eq!(
-            ACCEPTANCE_PLAN_REPLY_FRAGMENT_BYTES * ACCEPTANCE_PLAN_REPLY_FRAGMENTS,
-            ACCEPTANCE_PLAN_REPLY_BYTES
+            FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENT_BYTES
+                * FIXED_GAIN_AMPLITUDE_PLAN_REPLY_FRAGMENTS,
+            FIXED_GAIN_AMPLITUDE_PLAN_REPLY_BYTES
         );
     }
 }

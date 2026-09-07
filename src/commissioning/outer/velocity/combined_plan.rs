@@ -39,7 +39,7 @@ pub const BREAKAWAY_STAGE_B_SCHEMA_REVISION: u16 = 17;
 /// 16 -> 18 (17 belongs to the half-octave standalone range): rung-origin
 /// recovery was unified onto the stabilized rest schedule, so every recovery
 /// that completes a scored rest now emits a rest record where schema-16
-/// captures emitted one only for acceptance-matrix runs. That is an evidence
+/// captures emitted one only for fixed-gain-amplitude runs. That is an evidence
 /// grammar change, not a measurement rule change, so offline decoding has to
 /// be able to tell the two apart rather than widen the existing range.
 pub const BREAKAWAY_STAGE_C_SCHEMA_REVISION: u16 = 18;

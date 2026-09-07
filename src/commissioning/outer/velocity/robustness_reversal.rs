@@ -1,6 +1,6 @@
 //! Cooperative unreset-reversal robustness phase.
 //!
-//! Measures reversal robustness of the matrix-accepted operating point. For
+//! Measures reversal robustness of the retained acceptance operating point. For
 //! each reversal direction the phase runs up to
 //! [`ROBUSTNESS_CYCLES_PER_DIRECTION`] probe cycles; each cycle establishes a
 //! settled cruise with the velocity integrator cleared, then reverses the
@@ -194,7 +194,7 @@ pub(crate) struct RobustnessReversalSession {
 
 impl RobustnessReversalSession {
     /// Freeze the accepted point for a robustness-reversal run. Reads the point
-    /// only; never mutates the candidate slot or its acceptance-matrix progress.
+    /// only; never mutates the candidate slot or its fixed-gain-amplitude progress.
     pub(crate) fn new(point: AcceptancePoint, run_sequence: u32, counts_per_rev: u32) -> Self {
         let (_, thresholds) = constructed_thresholds(&point, counts_per_rev);
         let iae_max_q = thresholds.iae_max_q;
@@ -2277,7 +2277,7 @@ mod tests {
             );
 
             // The phase holds only a copy of the point; the candidate slot's
-            // acceptance-matrix progress is never advanced or closed.
+            // fixed-gain-amplitude progress is never advanced or closed.
             assert_eq!(
                 slot.acceptance_point().expect("point retained").progress,
                 before

@@ -27,10 +27,10 @@ pub enum CommissionPhase {
     BreakawayProportionalAcquisition,
     /// Stage-C fixed-P velocity-integral response ladder. Wire code 19.
     IntegralGainResponseCharacterization,
-    /// Stage-C fixed-P velocity-integral acceptance sweep (ascending or
-    /// descending amplitude) against the matrix-nominated point. Wire code 20.
+    /// Stage-C fixed-P velocity-integral fixed-gain sweep (ascending or
+    /// descending amplitude) against the retained acceptance point. Wire code 20.
     FixedGainAmplitudeValidation,
-    /// Reversal-standstill robustness gate over the matrix-accepted point.
+    /// Reversal-standstill robustness gate over the retained acceptance point.
     /// Wire code 21.
     ReversalStandstillRobustnessGate,
     /// Encoder alignment — drive rotor to the D-axis, zero
@@ -122,14 +122,14 @@ impl BreakawayPhase {
 pub enum VelocityAutotuneWorkflowKind {
     /// Resume Stage C from retained firmware authority.
     Resume = 0,
-    /// Run the retained fixed-I acceptance matrix from low to high amplitude.
-    AcceptanceMatrixAscending = 1,
-    /// Run the retained fixed-I acceptance matrix from high to low amplitude.
-    AcceptanceMatrixDescending = 2,
+    /// Run the retained fixed-I gain from low to high amplitude.
+    FixedGainAmplitudeAscending = 1,
+    /// Run the retained fixed-I gain from high to low amplitude.
+    FixedGainAmplitudeDescending = 2,
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing Stage-C integral continuation as one bounded command.
     BreakawaySeededProportionalThenIntegral = 3,
-    /// Run the reversal-standstill robustness gate over the accepted point.
+    /// Run the reversal-standstill robustness gate over the retained acceptance point.
     /// Distinct from every acquisition shape so the host arms the extended run
     /// timeout for the multi-cycle probe instead of the 5 s plan window.
     ReversalStandstillRobustnessGate = 4,
@@ -140,8 +140,8 @@ impl VelocityAutotuneWorkflowKind {
     #[cfg(test)]
     pub(crate) const DECLARATION_ORDER: &'static [(&'static str, u8)] = &[
         ("Resume", 0),
-        ("AcceptanceMatrixAscending", 1),
-        ("AcceptanceMatrixDescending", 2),
+        ("FixedGainAmplitudeAscending", 1),
+        ("FixedGainAmplitudeDescending", 2),
         ("BreakawaySeededProportionalThenIntegral", 3),
         ("ReversalStandstillRobustnessGate", 4),
     ];
@@ -151,15 +151,15 @@ impl VelocityAutotuneWorkflowKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum AutotuneAction {
-    /// Run the retained fixed-I matrix from lowest to highest amplitude.
-    MatrixAscending = 1,
-    /// Run the retained fixed-I matrix from highest to lowest amplitude.
-    MatrixDescending = 2,
+    /// Run the retained fixed-I gain from lowest to highest amplitude.
+    FixedGainAmplitudeAscending = 1,
+    /// Run the retained fixed-I gain from highest to lowest amplitude.
+    FixedGainAmplitudeDescending = 2,
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
     /// the existing velocity-integral continuation as one bounded command.
     ///
     /// This is the production `Tune` path: a non-trace build routes the request
-    /// through the breakaway/velocity-integral/acceptance engine just like a
+    /// through the breakaway/velocity-integral/fixed-gain-amplitude engine just like a
     /// trace build. The `trace` feature adds only the raw evidence emission on
     /// top of the same campaign, not the campaign itself.
     BreakawaySeeded = 7,
@@ -184,8 +184,8 @@ impl AutotuneAction {
     /// Every variant in declaration order (the defmt::Format index).
     #[cfg(test)]
     pub(crate) const DECLARATION_ORDER: &'static [(&'static str, u8)] = &[
-        ("MatrixAscending", 1),
-        ("MatrixDescending", 2),
+        ("FixedGainAmplitudeAscending", 1),
+        ("FixedGainAmplitudeDescending", 2),
         ("BreakawaySeeded", 7),
         ("StageCResume", 8),
         ("RobustnessReversal", 9),
@@ -196,8 +196,8 @@ impl AutotuneAction {
     /// Decode one wire action without assigning behavior to unknown values.
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
-            1 => Some(Self::MatrixAscending),
-            2 => Some(Self::MatrixDescending),
+            1 => Some(Self::FixedGainAmplitudeAscending),
+            2 => Some(Self::FixedGainAmplitudeDescending),
             7 => Some(Self::BreakawaySeeded),
             8 => Some(Self::StageCResume),
             9 => Some(Self::RobustnessReversal),

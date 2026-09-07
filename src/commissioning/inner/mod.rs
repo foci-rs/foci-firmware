@@ -537,7 +537,9 @@ impl InnerPhase {
             Self::PhaseWiringCheck { .. } => Some(CommissionPhase::PhaseWiringCheck),
             Self::EncoderCheck { .. } => Some(CommissionPhase::EncoderCheck),
             Self::EncoderAlign { .. } => Some(CommissionPhase::EncoderAlign),
-            Self::ElectricalIdentification { .. } => Some(CommissionPhase::ElectricalIdentification),
+            Self::ElectricalIdentification { .. } => {
+                Some(CommissionPhase::ElectricalIdentification)
+            }
             Self::CurrentTune { .. } => Some(CommissionPhase::CurrentTune),
             Self::CurrentValidate { .. } => Some(CommissionPhase::CurrentValidate),
             Self::ClosedLoopActivation { .. } => Some(CommissionPhase::ClosedLoopActivation),
