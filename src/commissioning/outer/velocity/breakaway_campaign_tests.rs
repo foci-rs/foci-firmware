@@ -3152,10 +3152,10 @@ fn a_probe_failure_emits_its_terminal_then_the_campaign_closure_record() {
     assert_eq!(campaign_terminal.accepted, 0);
 }
 
-// --- Probe failure -> campaign terminal, never Stage C ------------------------
+// --- Probe failure -> campaign terminal, never Integral ------------------------
 
 #[test]
-fn a_probe_that_never_moves_terminates_the_campaign_without_reaching_stage_c() {
+fn a_probe_that_never_moves_terminates_the_campaign_without_reaching_integral() {
     let (_campaign, terminal) =
         run_campaign_probe(campaign_request(), false, |_direction, _index| false);
 
@@ -3168,7 +3168,7 @@ fn a_probe_that_never_moves_terminates_the_campaign_without_reaching_stage_c() {
     );
 }
 
-// --- Accept -> Stage C via the token route ------------------------------------
+// --- Accept -> Integral via the token route ------------------------------------
 
 /// Produce a genuine `(acceptance, plan)` by driving a full held-out
 /// confirmation block that accepts at the given candidate gain.
@@ -3195,7 +3195,7 @@ fn an_accepted_confirmation_routes_through_the_token_chain_to_a_integral_plan() 
 
     let outcome = route_confirmed_accept(acceptance, plan, &inputs, &safety, &backend);
 
-    let BreakawayCampaignOutcome::StageCPlanReady(integral_plan) = outcome else {
+    let BreakawayCampaignOutcome::IntegralPlanReady(integral_plan) = outcome else {
         panic!("an accepted, transition-capable P must yield a Stage-C plan: {outcome:?}");
     };
     // The confirmed P is admitted unchanged, and the authority's digest is the
@@ -3209,7 +3209,7 @@ fn an_accepted_confirmation_routes_through_the_token_chain_to_a_integral_plan() 
     );
 }
 
-// --- Accept whose P fails 6a safety refuses Stage C WITHOUT motion -------------
+// --- Accept whose P fails 6a safety refuses Integral WITHOUT motion -------------
 
 #[test]
 fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_integral_without_motion() {
@@ -3225,7 +3225,7 @@ fn an_accept_whose_confirmed_p_fails_6a_safety_refuses_integral_without_motion()
 
     assert!(
         matches!(outcome, BreakawayCampaignOutcome::Terminal { .. }),
-        "a non-transition-capable confirmed P must refuse Stage C: {outcome:?}"
+        "a non-transition-capable confirmed P must refuse Integral: {outcome:?}"
     );
     // The token route touches no backend excitation: refusal is a pure plan-time
     // decision, so no motion (or any register traffic) can have happened.
@@ -3280,7 +3280,7 @@ fn a_confirmed_accept_whose_integral_plan_build_is_refused_reports_a_distinct_ca
     };
     assert_eq!(
         campaign_terminal.terminal_cause,
-        BreakawayTerminalCause::ConfirmationStageCPlanRefused as u8
+        BreakawayTerminalCause::ConfirmationIntegralPlanRefused as u8
     );
     assert_eq!(campaign_terminal.accepted, 0);
     assert_eq!(campaign_terminal.integral_plan_digest, 0);
@@ -3739,7 +3739,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     // for this accepted candidate, using the same frozen inputs the hand-off
     // will use, so the assertion checks the hand-off carried that exact plan.
     let (expected_acceptance, expected_plan) = accepted_confirmation(candidate);
-    let BreakawayCampaignOutcome::StageCPlanReady(expected_stage_c) = route_confirmed_accept(
+    let BreakawayCampaignOutcome::IntegralPlanReady(expected_integral) = route_confirmed_accept(
         expected_acceptance,
         expected_plan,
         &integral_inputs(usable),
@@ -3748,7 +3748,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     ) else {
         panic!("the accepted, transition-capable candidate must produce a Stage-C plan");
     };
-    let expected_execution_plan = expected_stage_c.execution_plan();
+    let expected_execution_plan = expected_integral.execution_plan();
 
     // Build a campaign sitting on a fresh confirmation block for the same
     // candidate, wrapped in the engine's OuterPhase, and drive it THROUGH the
@@ -3815,7 +3815,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
             // that returns a bare `ReadyNow` leaves the host assembler with no
             // plan, and its first Stage-C observation fails `_require_plan`
             // ("integral-response evidence arrived before exact plan").
-            StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+            StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
                 assert!(
                     matches!(phase, OuterPhase::VelocityIntegral { .. }),
                     "the plan-ready result must accompany the phase transition"
@@ -3859,7 +3859,7 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     // nothing, exactly as observed on hardware.
     use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, adapt_step_result};
     let poll = adapt_step_result(
-        StepResult::BreakawayStageCPlanReady {
+        StepResult::BreakawayIntegralPlanReady {
             run_sequence: 7,
             plan: reported_plan,
         },
@@ -3884,13 +3884,13 @@ fn an_accepted_campaign_hands_off_to_the_velocity_integral_phase() {
     let OuterPhase::VelocityIntegral { data, .. } = &phase else {
         panic!("the phase must have become VelocityIntegral after the accept");
     };
-    // The in-place Confirmed -> Stage C hand-off end to end: the Stage-C data
+    // The in-place Confirmed -> Integral hand-off end to end: the Stage-C data
     // carries the campaign's run_sequence and the exact execution plan the token
     // route produced, not merely a freshly constructed one.
     assert_eq!(data.integrity.run_sequence(), 7);
     assert_eq!(data.plan, expected_execution_plan);
     assert_breakaway_breadcrumb(
-        crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+        crate::diagnostic::BreakawayCheckpoint::IntegralHandedOff,
         false,
     );
 }
@@ -3958,7 +3958,7 @@ fn an_accepted_campaign_emits_its_confirmation_terminal_then_the_integral_digest
         let result =
             pollster::block_on(step_breakaway_campaign_with_trace(&mut phase, &mut backend));
         match result {
-            StepResult::BreakawayStageCPlanReady { .. } => {
+            StepResult::BreakawayIntegralPlanReady { .. } => {
                 assert!(matches!(phase, OuterPhase::VelocityIntegral { .. }));
                 handed_off = true;
                 break;
@@ -4511,7 +4511,7 @@ use crate::autotune::CommissionPhase;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HandOffEvent {
     Phase(CommissionPhase),
-    StageCPlan { oid: u8, run_sequence: u32 },
+    IntegralPlan { oid: u8, run_sequence: u32 },
     CampaignEvidence,
     IntegralEvidence,
 }
@@ -4625,7 +4625,7 @@ async fn engine_hand_off_events() -> std::vec::Vec<HandOffEvent> {
                 CommissionEvent::PhaseChanged { phase_id, .. } => HandOffEvent::Phase(phase_id),
                 CommissionEvent::VelocityIntegralPlan {
                     oid, run_sequence, ..
-                } => HandOffEvent::StageCPlan { oid, run_sequence },
+                } => HandOffEvent::IntegralPlan { oid, run_sequence },
                 CommissionEvent::BreakawayCampaign { .. } => HandOffEvent::CampaignEvidence,
                 CommissionEvent::VelocityIntegral { .. } => HandOffEvent::IntegralEvidence,
             }),
@@ -4666,7 +4666,7 @@ async fn the_engine_reports_one_integral_plan_before_any_integral_evidence() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, HandOffEvent::StageCPlan { .. }))
+            .filter(|event| matches!(event, HandOffEvent::IntegralPlan { .. }))
             .count(),
         1,
         "the hand-off must report its plan exactly once: {events:?}"
@@ -4681,7 +4681,7 @@ async fn the_engine_reports_one_integral_plan_before_any_integral_evidence() {
             HandOffEvent::Phase(CommissionPhase::BreakawayProportionalAcquisition),
             HandOffEvent::Phase(CommissionPhase::IntegralGainResponseCharacterization),
         ],
-        "an accepted campaign names exactly its own workflow and Stage C's"
+        "an accepted campaign names exactly its own workflow and Integral's"
     );
 
     let entry = position_of(
@@ -4690,7 +4690,7 @@ async fn the_engine_reports_one_integral_plan_before_any_integral_evidence() {
     );
     let plan = position_of(
         &events,
-        HandOffEvent::StageCPlan {
+        HandOffEvent::IntegralPlan {
             oid: 3,
             run_sequence: 7,
         },

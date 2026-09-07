@@ -1,4 +1,4 @@
-//! Canonical sequencing, integrity, and trace records for Stage C.
+//! Canonical sequencing, integrity, and trace records for Integral.
 
 use crate::ankyra::velocity_sweep_encoding::{
     VelocitySweepCanonicalRecord, encode_rate_values, extend_velocity_sweep_digest,
@@ -693,7 +693,7 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
 /// seam, to attribute a promotion that produced no installed point (terminal
 /// promotes to `Complete` but `cause` stays engine 0).
 #[cfg(feature = "trace")]
-pub(crate) struct StageCPromotionDiagnostic {
+pub(crate) struct IntegralPromotionDiagnostic {
     /// FOC channel.
     pub channel: u8,
     /// Terminal outcome code (`outcome_code`) at the seam.
@@ -717,10 +717,10 @@ pub(crate) struct StageCPromotionDiagnostic {
     pub installer_result: u8,
 }
 
-/// Encode a [`StageCPromotionDiagnostic`] as a canonical trace record (kind 10).
+/// Encode a [`IntegralPromotionDiagnostic`] as a canonical trace record (kind 10).
 #[cfg(feature = "trace")]
 pub(crate) fn encode_integral_promotion_diagnostic(
-    diagnostic: StageCPromotionDiagnostic,
+    diagnostic: IntegralPromotionDiagnostic,
 ) -> VelocitySweepCanonicalRecord {
     let mut record = VelocitySweepCanonicalRecord::new();
     record.push_u8(40);

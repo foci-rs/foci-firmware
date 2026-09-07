@@ -8,7 +8,7 @@
 //! - [`nominate_confirmation_candidate`]: a pointwise screen, computed purely
 //!   from discovery data, that predicts which rung is most likely to survive a
 //!   fresh family-eight confirmation and how much margin it has. It never
-//!   authorizes Stage C by itself.
+//!   authorizes Integral by itself.
 //! - [`nominate_confirmation_candidate_from_bounds`]: the same screen, run from
 //!   the compact [`DiscoveryRungNominationBounds`] discovery retains per rung
 //!   after collection ([`rung_nomination_bounds`]) instead of the raw
@@ -16,7 +16,7 @@
 //!   raw-atom screen so the two cannot silently diverge.
 //! - [`evaluate_band_confirmation`]: the held-out block. Four fresh
 //!   observations per direction, eight strokes, predeclared before motion.
-//!   Only this function's `Ok` result may authorize Stage C.
+//!   Only this function's `Ok` result may authorize Integral.
 //!
 //! The two use different half-width formulas on purpose. The screen inflates
 //! its predicted half-width by [`NOMINATION_SCREEN_C_SIGMA`] because it is
@@ -358,13 +358,13 @@ pub struct TargetBandUnconfirmableFromDiscovery;
 ///
 /// - Confirmation's own [`rung_confirmable_margin_percent`] calls this with
 ///   `c_sigma = `[`NOMINATION_SCREEN_C_SIGMA`]` and `round_outward = true`: it
-///   is the conservative gate that actually authorizes Stage C, so it inflates
+///   is the conservative gate that actually authorizes Integral, so it inflates
 ///   for a FUTURE held-out family-eight test and defends the exact 70/80
 ///   boundary against floating-point rounding noise.
 /// - The additive discovery driver's own stop-rule containment check
 ///   (`breakaway_campaign.rs::classify_rung_band`) calls this with `c_sigma =
 ///   1.0` and `round_outward = false`: discovery only decides which rungs to
-///   collect and hand to nomination, it never authorizes Stage C itself, and
+///   collect and hand to nomination, it never authorizes Integral itself, and
 ///   under-collecting a borderline-viable rung here is worse than collecting
 ///   one that nomination's own (conservative) screen later rejects. The two
 ///   callers' numeric results are therefore deliberately different at the band
@@ -650,7 +650,7 @@ pub enum NominationRejection {
     Unconfirmable,
     /// Band-admissible rungs existed, but every one's proportional gain exceeds
     /// the Stage-C transition-capability ceiling, so admitting any would clip the
-    /// current clamp during Stage C. Refused before motion.
+    /// current clamp during Integral. Refused before motion.
     NoTransitionCapableCandidate,
 }
 
@@ -731,7 +731,7 @@ pub enum BandConfirmationFailureCause {
     CurrentAuthority,
 }
 
-/// Reported when the held-out family-eight block fails to authorize Stage C.
+/// Reported when the held-out family-eight block fails to authorize Integral.
 ///
 /// No new P is produced. Callers must retain the previously commissioned P
 /// unchanged and must not retry with a second candidate (spec section 7,
@@ -739,7 +739,7 @@ pub enum BandConfirmationFailureCause {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct TargetBandConfirmationInconclusive(pub BandConfirmationFailureCause);
 
-/// Held-out confirmation success: the only value that may authorize Stage C.
+/// Held-out confirmation success: the only value that may authorize Integral.
 ///
 /// This is an unforgeable capability. Its `nominated_p` field is **private**
 /// and this module exposes no public constructor, no `Default`, and no
@@ -1109,7 +1109,7 @@ pub fn plan_band_confirmation(
 ///
 /// Every variant names a value that is frozen for the only admitted
 /// confirmation profile; a plan carrying anything else never drove motion and
-/// never authorizes Stage C.
+/// never authorizes Integral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum BandConfirmationContractError {
     /// `family_size` was not [`CONFIRMATION_FAMILY_SIZE`].

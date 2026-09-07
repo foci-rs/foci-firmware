@@ -219,7 +219,7 @@ impl TerminalRestoreMachine {
             | StepResult::VelocityIntegralEvent(_)
             | StepResult::FixedGainAmplitudeEvent(_)
             | StepResult::BreakawayCampaignEvent(_)
-            | StepResult::BreakawayStageCPlanReady { .. } => {
+            | StepResult::BreakawayIntegralPlanReady { .. } => {
                 unreachable!("nonterminal step result cannot start a terminal restore")
             }
         };
@@ -1482,7 +1482,7 @@ impl TerminalRestoreMachine {
             let (acceptance_source_code, phase_live) = promotion_source_diagnostic;
             backend.record_velocity_sweep_trace_record(
                 crate::commissioning::outer::velocity::integral_reporting::encode_integral_promotion_diagnostic(
-                    crate::commissioning::outer::velocity::integral_reporting::StageCPromotionDiagnostic {
+                    crate::commissioning::outer::velocity::integral_reporting::IntegralPromotionDiagnostic {
                         channel: self.channel,
                         outcome: crate::commissioning::outer::velocity::integral_reporting::outcome_code(
                             dispatch.terminal.outcome,

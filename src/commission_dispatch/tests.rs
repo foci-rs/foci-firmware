@@ -2349,14 +2349,14 @@ fn outer_failed_restore_rejects_monotonic_creep() {
 }
 
 /// A breakaway campaign that fails on a safety envelope violation must be safely
-/// disarmed at the dispatch boundary and must never continue into Stage C.
+/// disarmed at the dispatch boundary and must never continue into Integral.
 ///
 /// The campaign energizes through the documented commissioning exception, so the
 /// dispatch owns the disarm. On the engine's `OuterFailed` terminal the safety
 /// fault de-energizes the motor and produces the outer-failure reply namespace,
 /// never a Stage-C / velocity-integral continuation.
 #[fixture_test]
-async fn breakaway_campaign_safety_failure_disarms_without_reaching_stage_c() {
+async fn breakaway_campaign_safety_failure_disarms_without_reaching_integral() {
     use core::sync::atomic::Ordering::Relaxed;
 
     tmc_state().commission_in_flight.store(true, Relaxed);

@@ -297,7 +297,7 @@ async fn pi_representation_available<Spi: SpiDevice<u8>>(
         .is_ok()
 }
 
-/// Handle one board-routed request with board-wide Stage C retention.
+/// Handle one board-routed request with board-wide Integral retention.
 pub async fn handle_tmc_control_request_with_stages<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,

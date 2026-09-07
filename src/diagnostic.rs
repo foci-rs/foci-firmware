@@ -27,8 +27,8 @@ pub enum BreakawayCheckpoint {
     EventRouting = 6,
     /// A non-accepting campaign terminal was handled by the outer engine.
     CampaignTerminalHandled = 7,
-    /// An accepted campaign was handed off to Stage C.
-    StageCHandedOff = 8,
+    /// An accepted campaign was handed off to Integral.
+    IntegralHandedOff = 8,
     /// The probe is reading the encoder used to seed its safety baseline.
     ProbeSafetyEncoderRead = 9,
     /// The probe is writing the proportional gain for its next observation.
@@ -111,7 +111,7 @@ impl BreakawayCheckpoint {
             5 => Some(Self::Capture),
             6 => Some(Self::EventRouting),
             7 => Some(Self::CampaignTerminalHandled),
-            8 => Some(Self::StageCHandedOff),
+            8 => Some(Self::IntegralHandedOff),
             9 => Some(Self::ProbeSafetyEncoderRead),
             10 => Some(Self::ProbeGainWrite),
             11 => Some(Self::ProbeRampModeWrite),
@@ -1647,12 +1647,12 @@ mod tests {
             })
         );
 
-        store.complete(BreakawayCheckpoint::StageCHandedOff);
+        store.complete(BreakawayCheckpoint::IntegralHandedOff);
         assert_eq!(store.raw_for_test(), 0x4642_5288);
         assert_eq!(
             store.load(),
             Some(BreakawayBreadcrumb {
-                checkpoint: BreakawayCheckpoint::StageCHandedOff,
+                checkpoint: BreakawayCheckpoint::IntegralHandedOff,
                 interrupted: false,
             })
         );

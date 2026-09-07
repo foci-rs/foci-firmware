@@ -2072,7 +2072,7 @@ fn non_breakaway_handled_stop_preserves_completed_integral_breadcrumb() {
     runtime.set_commission_engine(CommissioningEngine::new_calibrate(8));
     crate::diagnostic::set_breakaway_breadcrumb_raw_for_test(0);
     crate::diagnostic::complete_breakaway_campaign(
-        crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+        crate::diagnostic::BreakawayCheckpoint::IntegralHandedOff,
     );
 
     assert!(
@@ -2085,7 +2085,7 @@ fn non_breakaway_handled_stop_preserves_completed_integral_breadcrumb() {
     assert_eq!(
         crate::diagnostic::current_breakaway_breadcrumb_for_test(),
         Some(crate::diagnostic::BreakawayBreadcrumb {
-            checkpoint: crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+            checkpoint: crate::diagnostic::BreakawayCheckpoint::IntegralHandedOff,
             interrupted: false,
         })
     );

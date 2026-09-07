@@ -141,13 +141,13 @@ fn velocity_current_guard_contract() {
         integral.execution_plan().limit_evidence_capability,
         VelocityLimitEvidenceCapability::LatchedFlag
     );
-    let best_effort_stage_c =
+    let best_effort_integral =
         breakaway_integral_plan(VelocityLimitEvidenceCapability::BestEffortPolling);
     assert_eq!(
-        best_effort_stage_c.limit_evidence_capability,
+        best_effort_integral.limit_evidence_capability,
         VelocityLimitEvidenceCapability::BestEffortPolling
     );
-    assert_ne!(integral.digest(), best_effort_stage_c.digest());
+    assert_ne!(integral.digest(), best_effort_integral.digest());
 }
 
 fn breakaway_integral_plan(

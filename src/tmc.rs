@@ -1495,7 +1495,7 @@ mod tests {
 
     #[test]
     fn integral_resume_decodes_and_carries_no_amplitude_order() {
-        // Resuming Stage C replays one retained plan, so it selects neither an
+        // Resuming Integral replays one retained plan, so it selects neither an
         // amplitude order nor a mirrored slot schedule.
         assert_eq!(
             AutotuneAction::from_u8(8),

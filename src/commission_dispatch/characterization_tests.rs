@@ -37,7 +37,7 @@
 //! | `OuterFailed` (restore succeeds, stable, arm succeeds -- soft failure) | none                                                                        | the original upstream error (still nonzero: `OuterFailed` always reports *some* failure) | `TuneResult` | always | **yes** (`ArmPreservePosition`) |
 //!
 //! Non-terminal arms (`ReadyNow`, `At`, `PhaseChanged`, `VelocityIntegralEvent`,
-//! `FixedGainAmplitudeEvent`, `BreakawayCampaignEvent`, `BreakawayStageCPlanReady`)
+//! `FixedGainAmplitudeEvent`, `BreakawayCampaignEvent`, `BreakawayIntegralPlanReady`)
 //! never touch `engine.take()`, never call `arm_motor_electrical`/`disarm_motor`,
 //! and are the only arms safe to poll repeatedly: every terminal arm calls
 //! `engine.take().expect(..)`, so re-driving the same already-consumed engine

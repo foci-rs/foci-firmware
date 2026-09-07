@@ -47,7 +47,7 @@ pub enum CommissionEvent {
     /// digest and rung count, and the reply layer ignores it outright. The
     /// combined Stage-B path emits its plan through
     /// `commission_dispatch`'s continuation reply instead; a breakaway campaign
-    /// reaches Stage C on the scheduled-tick path, which only speaks
+    /// reaches Integral on the scheduled-tick path, which only speaks
     /// [`CommissionEvent`], so it needs this route.
     VelocityIntegralPlan {
         /// Object id of the commissioning channel.
@@ -210,7 +210,7 @@ pub fn adapt_step_result(
         // bare `ReadyNow` here drops it, and the host then fails its first
         // Stage-C observation with "integral-response evidence arrived before
         // exact plan".
-        StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+        StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
             Ok(CommissionPoll::ReadyNow {
                 event: Some(CommissionEvent::VelocityIntegralPlan {

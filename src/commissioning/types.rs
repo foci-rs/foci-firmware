@@ -476,7 +476,7 @@ pub struct VelocityStageBHandoffReport {
     pub handoff: crate::commissioning::outer::velocity::operating_region::StageBHandoff,
 }
 
-/// One causally sequenced rung-origin recovery record shared by Stage B and Stage C.
+/// One causally sequenced rung-origin recovery record shared by Stage B and Integral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct RungOriginRecoveryEvidence {
     /// Caller-assigned run sequence.
@@ -610,7 +610,7 @@ pub struct VelocityPrimitiveCurrentEvidence {
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the owning stage.
     pub evidence_sequence: u16,
-    /// Owning stage: zero for Stage B and one for Stage C.
+    /// Owning stage: zero for Stage B and one for Integral.
     pub stage: u8,
     /// Zero-based rung index.
     pub rung_index: u8,
@@ -964,7 +964,7 @@ pub struct RobustnessReversalTerminal {
 }
 
 /// Namespaced Stage-C terminal cause: engine (`INTEGRAL_CAUSE_*`), error
-/// (`CommissionError::status_code()`), or dispatch (`STAGE_C_CAUSE_*`).
+/// (`CommissionError::status_code()`), or dispatch (`INTEGRAL_DISPATCH_CAUSE_*`).
 /// The three source enumerations are independently numbered and can share a
 /// raw value, so the namespace must travel with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -973,7 +973,7 @@ pub enum IntegralOutcomeCause {
     Engine(u8),
     /// From `CommissionError::status_code()`.
     Error(u8),
-    /// From `commission_dispatch::integral::STAGE_C_CAUSE_*`.
+    /// From `commission_dispatch::integral::INTEGRAL_DISPATCH_CAUSE_*`.
     Dispatch(u8),
 }
 
@@ -1476,7 +1476,7 @@ pub struct BreakawayCampaignTerminal {
     pub phase: u8,
     /// Unified `BreakawayTerminalCause` wire code.
     pub terminal_cause: u8,
-    /// Nonzero when the confirmed candidate was accepted and admitted to Stage C.
+    /// Nonzero when the confirmed candidate was accepted and admitted to Integral.
     pub accepted: u8,
     /// Exact digest of the Stage-C plan bound through the confirmed candidate,
     /// or zero when `accepted == 0`.
@@ -1736,7 +1736,7 @@ pub enum StepResult {
     RobustnessReversalTerminal(RobustnessReversalTerminal),
     /// Streamed breakaway-campaign evidence became available.
     BreakawayCampaignEvent(BreakawayCampaignEvent),
-    /// An accepted breakaway campaign handed off to Stage C, carrying the exact
+    /// An accepted breakaway campaign handed off to Integral, carrying the exact
     /// plan that hand-off installed.
     ///
     /// The plan must be reported, not merely installed. This event carries the
@@ -1744,7 +1744,7 @@ pub enum StepResult {
     /// and the host assembler refuses every Stage-C observation until it has seen
     /// a complete plan. A hand-off that transitions silently strands the host
     /// with no plan and fails the run on its first observation.
-    BreakawayStageCPlanReady {
+    BreakawayIntegralPlanReady {
         /// Campaign run sequence the Stage-C evidence chains to.
         run_sequence: u32,
         /// Exact Stage-C plan installed by the hand-off.

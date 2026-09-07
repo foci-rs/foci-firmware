@@ -549,7 +549,7 @@ mod tests {
                 file_hash: 0,
             }),
             Some((
-                crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+                crate::diagnostic::BreakawayCheckpoint::IntegralHandedOff,
                 false,
             )),
         );

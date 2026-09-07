@@ -901,7 +901,7 @@ fn integral_authority_rejects_a_failed_confirmation_even_with_a_matching_digest(
         plan_band_confirmation(discovery_plan.plan_digest, nominated_p).unwrap();
 
     // The confirmation plan's own digest is well formed and matches exactly,
-    // but the held-out block did not accept: Stage C must still be refused.
+    // but the held-out block did not accept: Integral must still be refused.
     let failure =
         TargetBandConfirmationInconclusive(BandConfirmationFailureCause::ResponseLocation);
     assert_eq!(
@@ -1276,7 +1276,7 @@ fn breakaway_integral_refuses_without_motion_when_the_confirmed_p_fails_current_
 /// admission gate: the returned P passes `transition_capable_integral_gain` and
 /// the next-higher P fails it. Values are a live acquisition context
 /// (322 RPM, usable torque 2534, 4000 cpr, 25 kHz), where the ceiling is 897 --
-/// below the confirmed P=925 that discovery nominated and Stage C refused.
+/// below the confirmed P=925 that discovery nominated and Integral refused.
 #[test]
 fn max_transition_capable_p_is_the_inverse_of_the_admission_gate() {
     let ceiling = max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
@@ -1598,7 +1598,7 @@ fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() 
 }
 
 /// Schema 17 no longer has a live producer (it was `plan_velocity_integral_response`'s
-/// exclusive schema, removed with `StageCAcquisition::ReproducedStageB`), but
+/// exclusive schema, removed with `IntegralAcquisition::ReproducedStageB`), but
 /// `digest()`'s schema-16-or-17 gate stays for historical trace-capture
 /// replay compatibility, so this checks the surviving `17` arm directly on a
 /// plan with the schema field overridden.

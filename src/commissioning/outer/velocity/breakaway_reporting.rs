@@ -111,7 +111,7 @@ pub(crate) enum BreakawayTerminalCause {
     /// non-safety-fault divergence between confirmation acceptance and
     /// Stage-C plan-buildability -- the two are deliberately separate,
     /// stacked admission gates.
-    ConfirmationStageCPlanRefused = 26,
+    ConfirmationIntegralPlanRefused = 26,
     /// [`BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate`]:
     /// discovery selected a band, but every band-admissible rung's gain exceeds
     /// the Stage-C transition-capability ceiling, so nomination refused before

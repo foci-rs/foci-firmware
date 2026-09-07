@@ -46,7 +46,7 @@
 //! early stop on current headroom, because the confirmation contract requires
 //! all eight fresh observations regardless. Its only accept result,
 //! [`BandConfirmationOutcome::Accepted`], is the sole thing a later slice may
-//! use to authorize Stage C; every other outcome is a confirmation-owned
+//! use to authorize Integral; every other outcome is a confirmation-owned
 //! terminal.
 //!
 
@@ -1672,8 +1672,8 @@ fn observation_classifier_inputs(
 ///
 /// Every variant other than [`Self::TargetBandSelected`] and
 /// [`Self::TargetBandSkipped`] is unambiguously a non-nominating terminal; even
-/// those two never authorize Stage C by themselves (spec section 6, "Discovery
-/// does not authorize Stage C") -- they only classify and collect evidence for
+/// those two never authorize Integral by themselves (spec section 6, "Discovery
+/// does not authorize Integral") -- they only classify and collect evidence for
 /// 6d/6e's nomination screen and held-out confirmation. Matching every other
 /// outer velocity phase, this driver never asserts `set_enable_pin` itself and
 /// centralized safe-state restoration on any terminal happens at the surrounding
@@ -2669,7 +2669,7 @@ struct PendingConfirmationRecord {
 
 /// Terminal result of the held-out confirmation campaign.
 ///
-/// [`Self::Accepted`] is the ONLY variant that may authorize Stage C (a later
+/// [`Self::Accepted`] is the ONLY variant that may authorize Integral (a later
 /// slice's job to route); every other variant is a confirmation-owned
 /// terminal and must not. Matching every other outer velocity phase, this
 /// driver never asserts `set_enable_pin` itself, and centralized safe-state
@@ -2812,7 +2812,7 @@ pub(crate) fn begin_band_confirmation(
     // Single canonical contract check, run before the fixed eight-stroke block
     // drives any motion. The same `validate_fixed_contract` gates Stage-C
     // construction, so a plan that reaches confirmation and a plan that reaches
-    // Stage C are held to one identical, non-drifting contract.
+    // Integral are held to one identical, non-drifting contract.
     if validate_fixed_contract(&plan).is_err() {
         return BandConfirmationEntry::Done(BandConfirmationOutcome::SafetyFault {
             error: CommissionError::PlanContractChanged,
@@ -3928,19 +3928,19 @@ pub(crate) fn plan_breakaway_campaign_command(
 
 /// Terminal result of a complete breakaway campaign.
 ///
-/// [`Self::StageCPlanReady`] is the ONLY variant that authorizes Stage C, and it
+/// [`Self::IntegralPlanReady`] is the ONLY variant that authorizes Integral, and it
 /// is reachable only from an accepted held-out confirmation whose confirmed P
 /// also passed the 6a plan-time safety admission. Every other terminal --
 /// including an accepted confirmation whose P the 6a constructor refuses WITHOUT
 /// motion -- is a [`Self::Terminal`] that carries NO Stage-C plan, so no
-/// failure or inconclusive path can begin Stage C.
+/// failure or inconclusive path can begin Integral.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum BreakawayCampaignOutcome {
     /// The confirmed candidate P was accepted and admitted by 6a plan-time
     /// safety; the exact Stage-C plan built through the token route is ready to
     /// hand off to the `VelocityIntegral` phase.
-    StageCPlanReady(VelocityIntegralPlan),
+    IntegralPlanReady(VelocityIntegralPlan),
     /// A non-accept campaign terminal, or an accept whose confirmed P the 6a
     /// constructor refused WITHOUT motion. Never carries a Stage-C plan.
     Terminal {
@@ -4034,7 +4034,7 @@ fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
 fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignOutcome {
     match outcome {
         BandConfirmationOutcome::Accepted { .. } => {
-            unreachable!("Accepted is routed to Stage C by the orchestrator")
+            unreachable!("Accepted is routed to Integral by the orchestrator")
         }
         BandConfirmationOutcome::SafetyFault { error, safety } => {
             BreakawayCampaignOutcome::Terminal { error, safety }
@@ -4536,7 +4536,7 @@ fn route_discovery_outcome(
 /// inconclusive confirmation terminal can even be expressed as an argument, and
 /// no other campaign terminal mints a confirmation token. The 6a
 /// constructor still applies its own plan-time safety admission and MAY refuse
-/// Stage C WITHOUT motion; that refusal is returned here as a
+/// Integral WITHOUT motion; that refusal is returned here as a
 /// [`BreakawayCampaignOutcome::Terminal`], never bypassed. This function touches
 /// no backend excitation and commands no motion; it only reads the frozen PWM
 /// timebase and encoder resolution.
@@ -4582,7 +4582,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
         backend.tmc_config().pwm_freq_hz(),
         safety.counts_per_rev(),
     ) {
-        Ok(integral_plan) => BreakawayCampaignOutcome::StageCPlanReady(integral_plan),
+        Ok(integral_plan) => BreakawayCampaignOutcome::IntegralPlanReady(integral_plan),
         Err(_) => BreakawayCampaignOutcome::Terminal {
             error: CommissionError::VelocityValidationFailed,
             safety: None,
@@ -4594,7 +4594,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
 ///
 /// `authority_ceiling = p_top` (the retained plan-time ceiling), per the spec's
 /// plan-time authority rule: the Stage-C transition-authority guard is applied
-/// only at Stage C, by [`plan_breakaway_velocity_integral_response`], never as a
+/// only at Integral, by [`plan_breakaway_velocity_integral_response`], never as a
 /// pre-sweep discovery ceiling. Dedicated plan-time discovery refusals retain
 /// their discovery-owned terminal causes; structural failures retain the generic
 /// discovery safety fault.
@@ -4990,9 +4990,9 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         BandConfirmationOutcome::Accepted { acceptance, plan } => {
             let done = route_confirmed_accept(acceptance, plan, inputs, safety, backend);
             let (campaign_cause, error_code) = match &done {
-                BreakawayCampaignOutcome::StageCPlanReady(_) => (cause, 0),
+                BreakawayCampaignOutcome::IntegralPlanReady(_) => (cause, 0),
                 BreakawayCampaignOutcome::Terminal { error, .. } => (
-                    super::breakaway_reporting::BreakawayTerminalCause::ConfirmationStageCPlanRefused,
+                    super::breakaway_reporting::BreakawayTerminalCause::ConfirmationIntegralPlanRefused,
                     error.status_code(),
                 ),
             };
@@ -5007,7 +5007,7 @@ fn confirmation_done_advance<B: CommissioningBackend>(
         }
     };
     let (accepted, integral_plan_digest) = match &done {
-        BreakawayCampaignOutcome::StageCPlanReady(plan) => (true, plan.digest()),
+        BreakawayCampaignOutcome::IntegralPlanReady(plan) => (true, plan.digest()),
         BreakawayCampaignOutcome::Terminal { .. } => (false, 0),
     };
     let campaign_terminal = campaign_terminal_event(
@@ -5366,14 +5366,14 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
 /// Engine adapter: step the embedded breakaway campaign by one cooperative tick,
 /// then translate its terminal into the engine's [`StepResult`].
 ///
-/// On an accepted, admitted confirmation this performs the Confirmed -> Stage C
+/// On an accepted, admitted confirmation this performs the Confirmed -> Integral
 /// hand-off in place: it replaces the [`OuterPhase::BreakawayCampaign`] with the
 /// existing [`OuterPhase::VelocityIntegral`] variant carrying the exact Stage-C
 /// plan, so
 /// Stage-C execution state lives in that variant, off the campaign variant's
 /// retained budget. Every non-accept campaign terminal -- including an accept
 /// the 6a constructor refused WITHOUT motion -- fails the outer phase and never
-/// begins Stage C, so no failure or inconclusive path can reach a Stage-C
+/// begins Integral, so no failure or inconclusive path can reach a Stage-C
 /// stroke. Safe-state restoration on the resulting `Failed`/`FailedWithSafety`
 /// terminal happens at the surrounding engine/dispatch boundary, as it does for
 /// every other outer phase.
@@ -5396,7 +5396,7 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
         BreakawayCampaignStep::ReadyNow => StepResult::ReadyNow,
         BreakawayCampaignStep::At(deadline_us) => StepResult::At(deadline_us),
         BreakawayCampaignStep::Event(event) => StepResult::BreakawayCampaignEvent(event),
-        BreakawayCampaignStep::Done(BreakawayCampaignOutcome::StageCPlanReady(plan)) => {
+        BreakawayCampaignStep::Done(BreakawayCampaignOutcome::IntegralPlanReady(plan)) => {
             let old =
                 core::mem::replace(phase, OuterPhase::Failed(CommissionError::InvalidSchedule));
             let OuterPhase::BreakawayCampaign {
@@ -5412,14 +5412,14 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
                 safety,
             };
             crate::diagnostic::complete_breakaway_campaign(
-                crate::diagnostic::BreakawayCheckpoint::StageCHandedOff,
+                crate::diagnostic::BreakawayCheckpoint::IntegralHandedOff,
             );
             // Report the plan with the transition. The combined path emits its
             // Stage-C plan alongside the equivalent transition; returning a bare
             // `ReadyNow` here left the host assembler with no plan at all, so
             // its first Stage-C observation failed `_require_plan` with
             // "integral-response evidence arrived before exact plan".
-            StepResult::BreakawayStageCPlanReady { run_sequence, plan }
+            StepResult::BreakawayIntegralPlanReady { run_sequence, plan }
         }
         BreakawayCampaignStep::Done(BreakawayCampaignOutcome::Terminal {
             error,

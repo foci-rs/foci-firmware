@@ -972,7 +972,7 @@ fn a_usable_tail_reports_no_rejection() {
 
 /// Structured mode must report its rejection too.
 ///
-/// Stage C resets with structured diagnostics, so a rejected tail there took the
+/// Integral resets with structured diagnostics, so a rejected tail there took the
 /// structured completion path, which returned no rejection at all. The gate
 /// statistics were therefore absent from exactly the acquisition that needed
 /// them: four ResolvedSlope exclusions in the 2026-07-29 mirrored capture all

@@ -49,7 +49,7 @@ pub const PROBE_MAX_OBSERVATIONS: u8 = 128;
 /// Threaded from the orchestrator into [`plan_upward_breakaway_probe`] and hashed
 /// into [`UpwardBreakawayProbePlan::digest`], so the whole downstream digest chain --
 /// probe -> discovery (binds the probe digest) -> confirmation (binds the
-/// discovery digest) -> Stage C (binds the confirmation digest) -- is pinned to
+/// discovery digest) -> Integral (binds the confirmation digest) -- is pinned to
 /// the exact command-level envelope and the physical parameters it was planned
 /// against, not merely to the search geometry. These are the same
 /// `AcquisitionContext`-shaped values the Stage-C tail consumes.

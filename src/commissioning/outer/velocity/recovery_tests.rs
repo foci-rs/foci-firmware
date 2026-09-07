@@ -630,7 +630,7 @@ fn moving_phase_drives_inside_the_band_before_settling() {
     // in-band test pushed the rung out of it. Measured across 29 moving
     // recoveries on 2026-08-11: the final position is outward of the closest
     // approach every time, by 11 to 50 counts, leaving a final margin of 0 to
-    // 62. Two rungs finished 2 and 5 counts outside and ended Stage C.
+    // 62. Two rungs finished 2 and 5 counts outside and ended Integral.
     //
     // The moving phase therefore drives to a target inside the band. The band
     // itself is unchanged: it is the settle travel reserve in counts, and the

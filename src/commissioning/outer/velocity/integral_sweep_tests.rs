@@ -493,12 +493,12 @@ fn integral_and_amplitude_place_rest_diagnostics_immediately_before_recovery() {
             4,
         )
     else {
-        panic!("Stage C must emit its selector diagnostic")
+        panic!("Integral must emit its selector diagnostic")
     };
     let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RecoveryRest(diagnostic)) =
         record_integral_recovery_rest(&mut integral, completed_recovery_rest_analysis())
     else {
-        panic!("Stage C must emit its recovery-rest diagnostic")
+        panic!("Integral must emit its recovery-rest diagnostic")
     };
     assert_eq!(diagnostic.run_sequence, 17);
     assert_eq!(selection.evidence_sequence, 1);
@@ -1122,7 +1122,7 @@ fn integral_recovery_containment_is_cause_five_before_the_bookend() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("contained intermediate recovery must terminate Stage C");
+        panic!("contained intermediate recovery must terminate Integral");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(5));
@@ -2291,7 +2291,7 @@ fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition(
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("a rest rejection after sufficiency must still terminate Stage C");
+        panic!("a rest rejection after sufficiency must still terminate Integral");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
@@ -2359,7 +2359,7 @@ fn amplitude_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("an Amplitude owner on this path must still terminate Stage C");
+        panic!("an Amplitude owner on this path must still terminate Integral");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(

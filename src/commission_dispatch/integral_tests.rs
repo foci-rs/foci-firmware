@@ -565,7 +565,7 @@ fn inconclusive_preserves_authority_while_fault_clears_it() {
 #[test]
 fn unexpected_complete_terminal_fails_closed_in_retained_integral_dispatch() {
     // Combined workflow terminals are handled before this retained dispatcher.
-    // Non-combined retained Stage C reports sufficiency as `CompleteCandidate`.
+    // Non-combined retained Integral reports sufficiency as `CompleteCandidate`.
     // A bare `Complete` reaching this function is therefore a contract
     // violation, so it must not be accepted as success.
     let mut slot = IntegralRetentionSlot::new();
@@ -767,7 +767,7 @@ async fn breakaway_integral_plan_ready_retains_terminal_authority() {
     let mut engine = Some(breakaway_engine(plan, &expected_authority));
 
     let outcome = super::drive_commission_result_with_stages(
-        StepResult::BreakawayStageCPlanReady {
+        StepResult::BreakawayIntegralPlanReady {
             run_sequence: 9,
             plan,
         },

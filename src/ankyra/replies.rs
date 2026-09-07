@@ -2616,7 +2616,7 @@ pub struct FociBreakawayCampaignTerminal {
     pub phase: u8,
     /// Unified breakaway-campaign terminal-cause wire code.
     pub terminal_cause: u8,
-    /// Nonzero when the confirmed candidate was accepted and admitted to Stage C.
+    /// Nonzero when the confirmed candidate was accepted and admitted to Integral.
     pub accepted: u8,
     /// Exact low Stage-C plan digest word.
     pub stage_c_plan_digest_low: u32,
@@ -2730,7 +2730,7 @@ pub struct FociVelocityIntegralPlanGeometry {
     pub usable_torque_limit: u16,
 }
 
-/// One direction of Stage-B evidence authorizing Stage C.
+/// One direction of Stage-B evidence authorizing Integral.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanAuthority {
     /// Endpoint object id.

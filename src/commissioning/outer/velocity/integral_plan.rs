@@ -91,7 +91,7 @@ impl IntegralAcquisitionAuthority {
     /// field doc), not a reproduced Stage-B value.
     /// The only way to obtain a [`ConfirmedAcquisitionDigest`] is a successful
     /// call to [`bind_breakaway_integral_authority`], so this constructor makes
-    /// "Stage C authorized by anything other than an accepted confirmation"
+    /// "Integral authorized by anything other than an accepted confirmation"
     /// unrepresentable for every breakaway authority built this way.
     #[allow(dead_code)]
     pub(crate) const fn new_breakaway(
@@ -546,7 +546,7 @@ impl VelocityIntegralExecutionPlan {
     }
 }
 
-/// Exact identity retained when Stage C has no transition-capable test point.
+/// Exact identity retained when Integral has no transition-capable test point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralFailedAdmission {
     /// Digest of the rejected authority and controller geometry, tagged with
@@ -574,7 +574,7 @@ pub enum VelocityIntegralPlanError {
     /// A breakaway confirmation plan's recomputed digest, or its fixed family
     /// size, capture profile, or acceptance rule, did not match what
     /// [`plan_breakaway_velocity_integral_response`] requires before it may
-    /// authorize Stage C.
+    /// authorize Integral.
     InvalidConfirmationPlan,
     /// The breakaway campaign's confirmed proportional gain -- the exact
     /// candidate a held-out confirmation accepted, with no reselection --
@@ -594,12 +594,12 @@ pub enum VelocityIntegralPlanError {
 /// Returned only by [`bind_breakaway_integral_authority`], the single gate
 /// that may produce the digest a breakaway-schema [`IntegralAcquisitionAuthority::
 /// stage_b_plan_digest`] carries. Every rejection is fail-closed: no digest,
-/// discovery or otherwise, ever authorizes Stage C unless it is exactly the
+/// discovery or otherwise, ever authorizes Integral unless it is exactly the
 /// digest of a [`BandConfirmationPlan`] whose held-out block accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum BreakawayAuthorityBindingError {
     /// The held-out confirmation block did not accept; no digest may authorize
-    /// Stage C for this campaign, even though the confirmation plan itself is
+    /// Integral for this campaign, even though the confirmation plan itself is
     /// otherwise well-formed.
     ConfirmationNotAccepted,
     /// The accepted candidate gain does not match the confirmation plan's
@@ -620,7 +620,7 @@ pub enum BreakawayAuthorityBindingError {
 /// under review. A sibling module -- including this module's own test
 /// module, which lives in a separate file and is therefore not a descendant
 /// of this one -- cannot write `ConfirmedAcquisitionDigest(raw_digest)`; only
-/// code inside `integral_plan.rs` can. This makes "Stage C authorized by
+/// code inside `integral_plan.rs` can. This makes "Integral authorized by
 /// anything other than an accepted confirmation" a compile-time
 /// impossibility for every breakaway authority built through
 /// [`IntegralAcquisitionAuthority::new_breakaway`], not merely an untested code path.
@@ -1089,7 +1089,7 @@ pub fn breakaway_workflow_envelope_ms(
     u32::try_from(total_us.div_ceil(1_000)).map_err(|_| VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Validate and return the one token that may authorize Stage C for a
+/// Validate and return the one token that may authorize Integral for a
 /// breakaway campaign: proof that `confirmation_plan`'s held-out block
 /// accepted, bound to its digest.
 ///
@@ -1210,7 +1210,7 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// unconditionally -- there is no joint-membership test-point selection, no
 /// lower-middle or highest-in-band reselection, and no fallback to another
 /// discovery candidate. Every existing plan-time safety check still gates
-/// Stage C, and any failure refuses without motion.
+/// Integral, and any failure refuses without motion.
 ///
 /// The only authority input is `token`, a [`ConfirmedAcquisitionDigest`]. That
 /// token can be minted solely by [`bind_breakaway_integral_authority`] from a
@@ -1327,7 +1327,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 ///
 /// The resume counterpart to [`plan_breakaway_velocity_integral_response`]. It
 /// takes the same unforgeable [`ConfirmedAcquisitionDigest`], so a gain still
-/// cannot reach Stage C without a genuine accepted confirmation; the token here
+/// cannot reach Integral without a genuine accepted confirmation; the token here
 /// comes from the retention slot, which only a plan that already passed that
 /// gate can write.
 ///

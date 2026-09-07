@@ -656,16 +656,16 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
                 },
             }
         }
-        // A breakaway campaign normally reaches Stage C on the scheduled-tick
+        // A breakaway campaign normally reaches Integral on the scheduled-tick
         // path, where `adapt_step_result` carries the plan out as a
         // `CommissionEvent`. This arm covers the request-driven path so the
         // plan is reported either way. Trace records are not emitted here: the
         // engine's own trace hook already emits them for this result, and doing
         // it twice would duplicate the plan on the wire.
-        StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+        StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
             let engine_ref = engine
                 .as_ref()
-                .expect("engine slot is None on BreakawayStageCPlanReady");
+                .expect("engine slot is None on BreakawayIntegralPlanReady");
             CommissionOutcome::Evidence {
                 reply: ReplyPayload::VelocityIntegralPlan {
                     oid: engine_ref.oid(),
@@ -744,11 +744,11 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
         StepResult::RobustnessReversalTerminal(terminal) => {
             crate::commissioning::schedule::CommissionTerminal::RobustnessReversal(terminal)
         }
-        StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+        StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
             integral::install_authority_from_plan(channel, retention.integral, plan);
             let engine_ref = engine
                 .as_ref()
-                .expect("engine slot is None on BreakawayStageCPlanReady");
+                .expect("engine slot is None on BreakawayIntegralPlanReady");
             return CommissionOutcome::Evidence {
                 reply: ReplyPayload::VelocityIntegralPlan {
                     oid: engine_ref.oid(),

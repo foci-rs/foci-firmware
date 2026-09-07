@@ -872,7 +872,7 @@ impl CommissioningEngine {
                 Some(data.plan.hard_torque_limit)
             }
             // The breakaway campaign energizes the motor with an active torque
-            // limit (the frozen `hard_torque_limit` it later hands to Stage C),
+            // limit (the frozen `hard_torque_limit` it later hands to Integral),
             // so safe-state restoration of an armed campaign phase must report
             // it rather than falling through to `None`.
             OuterPhase::BreakawayCampaign { campaign, .. } if campaign.hard_torque_limit() != 0 => {
@@ -1438,7 +1438,7 @@ impl CommissioningEngine {
             #[cfg(not(feature = "trace"))]
             StepResult::BreakawayCampaignEvent(_) => {}
             #[cfg(not(feature = "trace"))]
-            StepResult::BreakawayStageCPlanReady { .. } => {}
+            StepResult::BreakawayIntegralPlanReady { .. } => {}
             #[cfg(feature = "trace")]
             StepResult::BreakawayCampaignEvent(event) => {
                 self.emit_breakaway_campaign_trace(backend, *event);
@@ -1449,7 +1449,7 @@ impl CommissioningEngine {
             // `commission_dispatch` because its plan rides a reply built there;
             // a breakaway hand-off has no such reply, so the engine owns it.
             #[cfg(feature = "trace")]
-            StepResult::BreakawayStageCPlanReady { run_sequence, plan } => {
+            StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
                 for record in
                     crate::commissioning::outer::velocity::integral_reporting::encode_velocity_integral_plan_trace(
                         *run_sequence,

@@ -333,7 +333,7 @@ fn nomination_selects_highest_band_admissible_rung_not_best_margin() {
 }
 
 /// Two in-band rungs, but the highest-P one (925) is above the
-/// transition-capability ceiling (897) and Stage C would refuse it. Nomination
+/// transition-capability ceiling (897) and Integral would refuse it. Nomination
 /// must fall to the highest capable in-band rung (863), which prior tunes
 /// accepted, instead of nominating a gain doomed at admission.
 #[test]
