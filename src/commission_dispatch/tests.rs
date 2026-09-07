@@ -426,8 +426,8 @@ impl CommissionReplySink for ReplyRecorder {
             phase: report.phase,
             terminal_cause: report.terminal_cause,
             accepted: report.accepted,
-            integral_plan_digest_low: report.stage_c_plan_digest_low,
-            integral_plan_digest_high: report.stage_c_plan_digest_high,
+            integral_plan_digest_low: report.integral_plan_digest_low,
+            integral_plan_digest_high: report.integral_plan_digest_high,
             error_code: report.error_code,
         });
     }

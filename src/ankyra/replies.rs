@@ -1750,7 +1750,7 @@ mod breakaway_reply_wire_tests {
             prior_plan_digest_high: 7,
             family_size: 8,
             observations_per_direction: 9,
-            candidate_p_raw: 10,
+            nominated_p_raw: 10,
             band_lower_percent: 11,
             band_upper_percent: 12,
             capture_profile: 13,
@@ -1769,7 +1769,7 @@ mod breakaway_reply_wire_tests {
                 prior_plan_digest_high: u32::MAX,
                 family_size: u16::MAX,
                 observations_per_direction: u16::MAX,
-                candidate_p_raw: u16::MAX,
+                nominated_p_raw: u16::MAX,
                 band_lower_percent: u8::MAX,
                 band_upper_percent: u8::MAX,
                 capture_profile: u8::MAX,
@@ -1859,8 +1859,8 @@ mod breakaway_reply_wire_tests {
             phase: 4,
             terminal_cause: 5,
             accepted: 6,
-            stage_c_plan_digest_low: 7,
-            stage_c_plan_digest_high: 8,
+            integral_plan_digest_low: 7,
+            integral_plan_digest_high: 8,
             error_code: 9,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -1872,8 +1872,8 @@ mod breakaway_reply_wire_tests {
                 phase: u8::MAX,
                 terminal_cause: u8::MAX,
                 accepted: u8::MAX,
-                stage_c_plan_digest_low: u32::MAX,
-                stage_c_plan_digest_high: u32::MAX,
+                integral_plan_digest_low: u32::MAX,
+                integral_plan_digest_high: u32::MAX,
                 error_code: u8::MAX,
             },
             "foci_breakaway_campaign_terminal",
@@ -2528,7 +2528,7 @@ pub struct FociBreakawayConfirmationPlan {
     /// Fresh observations collected per direction.
     pub observations_per_direction: u16,
     /// Nominated proportional gain under held-out test.
-    pub candidate_p_raw: u16,
+    pub nominated_p_raw: u16,
     /// Inclusive lower edge of the confirmable response band, in percent.
     pub band_lower_percent: u8,
     /// Inclusive upper edge of the confirmable response band, in percent.
@@ -2618,10 +2618,10 @@ pub struct FociBreakawayCampaignTerminal {
     pub terminal_cause: u8,
     /// Nonzero when the confirmed candidate was accepted and admitted to Integral.
     pub accepted: u8,
-    /// Exact low Stage-C plan digest word.
-    pub stage_c_plan_digest_low: u32,
-    /// Exact high Stage-C plan digest word.
-    pub stage_c_plan_digest_high: u32,
+    /// Exact low Integral plan digest word.
+    pub integral_plan_digest_low: u32,
+    /// Exact high Integral plan digest word.
+    pub integral_plan_digest_high: u32,
     /// `CommissionError::status_code()` for a campaign terminal that carries a
     /// causally-relevant error, or `0` when the terminal carries no error.
     pub error_code: u8,
@@ -2679,10 +2679,10 @@ pub struct FociVelocityIntegralPlanCore {
     pub plan_digest_low: u32,
     /// Exact high Stage-C plan digest word.
     pub plan_digest_high: u32,
-    /// Exact low authorizing Stage-B plan digest word.
-    pub stage_b_digest_low: u32,
-    /// Exact high authorizing Stage-B plan digest word.
-    pub stage_b_digest_high: u32,
+    /// Exact low authorizing Proportional plan digest word.
+    pub proportional_digest_low: u32,
+    /// Exact high authorizing Proportional plan digest word.
+    pub proportional_digest_high: u32,
     /// Analysis-rule contract this plan was built under.
     pub build_features: u16,
     /// Image identity of the firmware that produced this plan.
@@ -2692,7 +2692,7 @@ pub struct FociVelocityIntegralPlanCore {
     /// Physical firmware channel.
     pub channel: u8,
     /// Reproduced fixed proportional gain.
-    pub final_p: u16,
+    pub fixed_p: u16,
 }
 
 /// Stage-C plan geometry and controller-domain limits.
@@ -3043,13 +3043,13 @@ mod velocity_sweep_reply_tests {
                 fragment: u8::MAX,
                 plan_digest_low: WIDE_U32,
                 plan_digest_high: WIDE_U32,
-                stage_b_digest_low: WIDE_U32,
-                stage_b_digest_high: WIDE_U32,
+                proportional_digest_low: WIDE_U32,
+                proportional_digest_high: WIDE_U32,
                 build_features: u16::MAX,
                 build_identity: WIDE_U32,
                 schema_revision: u16::MAX,
                 channel: u8::MAX,
-                final_p: u16::MAX,
+                fixed_p: u16::MAX,
             },
             "integral_plan_core",
         );

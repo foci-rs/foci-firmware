@@ -84,7 +84,7 @@ macro_rules! __commission_reply_manifest {
                 name: foci_velocity_integral_plan_core,
                 doc: "Emit the velocity-integral plan identity.",
                 reply: foci_firmware::ankyra::replies::FociVelocityIntegralPlanCore,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, stage_b_digest_low: u32, stage_b_digest_high: u32, build_features: u16, build_identity: u32, schema_revision: u16, channel: u8, final_p: u16 },
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, fragment: u8, plan_digest_low: u32, plan_digest_high: u32, proportional_digest_low: u32, proportional_digest_high: u32, build_features: u16, build_identity: u32, schema_revision: u16, channel: u8, fixed_p: u16 },
             }
             entry {
                 name: foci_velocity_integral_plan_geometry,
@@ -193,7 +193,7 @@ macro_rules! __commission_reply_manifest {
                 name: foci_breakaway_confirmation_plan,
                 doc: "Emit the immutable held-out confirmation plan.",
                 reply: foci_firmware::ankyra::replies::FociBreakawayConfirmationPlan,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16, observations_per_direction: u16, candidate_p_raw: u16, band_lower_percent: u8, band_upper_percent: u8, capture_profile: u8, acceptance_rule: u8, nominated_margin_percent_milli: i32 },
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, plan_digest_low: u32, plan_digest_high: u32, prior_plan_digest_low: u32, prior_plan_digest_high: u32, family_size: u16, observations_per_direction: u16, nominated_p_raw: u16, band_lower_percent: u8, band_upper_percent: u8, capture_profile: u8, acceptance_rule: u8, nominated_margin_percent_milli: i32 },
             }
             entry {
                 name: foci_breakaway_confirmation_terminal_identity,
@@ -211,7 +211,7 @@ macro_rules! __commission_reply_manifest {
                 name: foci_breakaway_campaign_terminal,
                 doc: "Emit the canonical closure record for one complete breakaway campaign.",
                 reply: foci_firmware::ankyra::replies::FociBreakawayCampaignTerminal,
-                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, phase: u8, terminal_cause: u8, accepted: u8, stage_c_plan_digest_low: u32, stage_c_plan_digest_high: u32, error_code: u8 },
+                fields: { oid: u8, run_sequence: u32, evidence_sequence: u16, phase: u8, terminal_cause: u8, accepted: u8, integral_plan_digest_low: u32, integral_plan_digest_high: u32, error_code: u8 },
             }
         }
     };
@@ -486,7 +486,7 @@ pub fn emit_breakaway_confirmation_plan<S: CommissionReplySink>(
         prior_plan_digest_high: (report.prior_plan_digest >> 32) as u32,
         family_size: report.family_size,
         observations_per_direction: report.observations_per_direction,
-        candidate_p_raw: report.candidate_p_raw,
+        nominated_p_raw: report.candidate_p_raw,
         band_lower_percent: report.band_lower_percent,
         band_upper_percent: report.band_upper_percent,
         capture_profile: report.capture_profile,
@@ -547,8 +547,8 @@ pub fn emit_breakaway_campaign_terminal<S: CommissionReplySink>(
         phase: report.phase,
         terminal_cause: report.terminal_cause,
         accepted: report.accepted,
-        stage_c_plan_digest_low: report.integral_plan_digest as u32,
-        stage_c_plan_digest_high: (report.integral_plan_digest >> 32) as u32,
+        integral_plan_digest_low: report.integral_plan_digest as u32,
+        integral_plan_digest_high: (report.integral_plan_digest >> 32) as u32,
         error_code: report.error_code,
     });
 }
@@ -741,13 +741,13 @@ pub fn emit_velocity_integral_plan<S: CommissionReplySink>(
         fragment: 0,
         plan_digest_low: digest as u32,
         plan_digest_high: (digest >> 32) as u32,
-        stage_b_digest_low: plan.authority.acquisition.get() as u32,
-        stage_b_digest_high: (plan.authority.acquisition.get() >> 32) as u32,
+        proportional_digest_low: plan.authority.acquisition.get() as u32,
+        proportional_digest_high: (plan.authority.acquisition.get() >> 32) as u32,
         build_features: plan.build_features,
         build_identity: crate::commissioning::outer::velocity::reproduction::BUILD_IDENTITY,
         schema_revision: plan.schema_revision,
         channel: plan.authority.channel,
-        final_p: plan.fixed_p,
+        fixed_p: plan.fixed_p,
     });
     sink.foci_velocity_integral_plan_geometry(FociVelocityIntegralPlanGeometry {
         oid,
