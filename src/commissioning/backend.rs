@@ -1078,10 +1078,6 @@ mod tests {
             .lock()
             .expect("commissioning backend test lock is available");
         reset_hooks();
-        TEST_TMC_STATE.safe_state_incomplete.store(false, Relaxed);
-        TEST_TMC_STATE
-            .safe_state_first_failed_register
-            .store(0xFF, Relaxed);
 
         let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
         let mut enable_pin = RecordingPin::default();
