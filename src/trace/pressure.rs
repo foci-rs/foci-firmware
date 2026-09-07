@@ -183,12 +183,14 @@ impl TracePressureRuntime {
             usb_trace_queue_high_water: inputs.usb_trace_queue_high_water,
             dropped_motion_sample_count: inputs.dropped_motion_sample_count,
             dropped_event_log_count: inputs.dropped_event_log_count,
-            endpoint_not_ready_count: inputs
-                .endpoint_not_ready_count
-                .saturating_add(self.trace_deadline_pressure_count.load(Ordering::Relaxed)),
+            endpoint_not_ready_count: inputs.endpoint_not_ready_count,
             suppressed_status_change_count: self
                 .suppressed_status_change_count
                 .load(Ordering::Relaxed),
+            trace_deadline_pressure_count: self
+                .trace_deadline_pressure_count
+                .load(Ordering::Relaxed),
+            max_spi_sample_cycles: self.max_spi_sample_cycles.load(Ordering::Relaxed),
         }
     }
 }
@@ -246,10 +248,14 @@ pub struct TracePressureStatus {
     pub dropped_motion_sample_count: u32,
     /// Dropped event log count.
     pub dropped_event_log_count: u32,
-    /// Endpoint-not-ready count plus trace deadline pressure.
+    /// USB endpoint-not-ready count, unmodified.
     pub endpoint_not_ready_count: u32,
     /// Suppressed status-change sample count.
     pub suppressed_status_change_count: u32,
+    /// Sampler iterations over the SPI cycle threshold.
+    pub trace_deadline_pressure_count: u32,
+    /// Running maximum of sampler SPI cycles.
+    pub max_spi_sample_cycles: u32,
 }
 
 #[cfg(test)]
@@ -300,8 +306,30 @@ mod tests {
         assert!(runtime.take_control_detail_skip());
         assert!(!runtime.take_control_detail_skip());
         let status = runtime.status_counters(TracePressureStatusInputs::default());
-        assert_eq!(status.endpoint_not_ready_count, 1);
+        assert_eq!(status.endpoint_not_ready_count, 0);
+        assert_eq!(status.trace_deadline_pressure_count, 1);
+        assert_eq!(status.max_spi_sample_cycles, 101);
         assert!(runtime.should_emit_status(10, false, true));
+    }
+
+    #[test]
+    fn max_spi_sample_cycles_tracks_the_largest_sample() {
+        let runtime = TracePressureRuntime::new();
+        runtime.record_spi_sample_cycles(40, 100);
+        runtime.record_spi_sample_cycles(90, 100);
+        runtime.record_spi_sample_cycles(60, 100);
+        let status = runtime.status_counters(TracePressureStatusInputs::default());
+        assert_eq!(status.max_spi_sample_cycles, 90);
+        assert_eq!(status.trace_deadline_pressure_count, 0);
+    }
+
+    #[test]
+    fn a_summed_iteration_over_threshold_counts_once_even_if_no_part_would() {
+        let runtime = TracePressureRuntime::new();
+        runtime.record_spi_sample_cycles(60 + 60, 100);
+        let status = runtime.status_counters(TracePressureStatusInputs::default());
+        assert_eq!(status.trace_deadline_pressure_count, 1);
+        assert_eq!(status.max_spi_sample_cycles, 120);
     }
 
     #[test]
@@ -374,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn status_snapshot_saturates_endpoint_pressure_sum() {
+    fn status_snapshot_keeps_endpoint_count_separate_from_pressure() {
         let runtime = TracePressureRuntime::new();
 
         runtime.record_spi_sample_cycles(101, 100);
@@ -384,6 +412,7 @@ mod tests {
             ..TracePressureStatusInputs::default()
         });
         assert_eq!(status.endpoint_not_ready_count, u32::MAX);
+        assert_eq!(status.trace_deadline_pressure_count, 1);
     }
 
     #[test]
