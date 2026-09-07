@@ -136,6 +136,8 @@ impl<T: ?Sized + ShutdownRecovery> ShutdownRecovery for &mut T {
 pub trait EndstopHost: StateAccess {
     fn configure_input(&mut self, pin: u8, pull_up: bool);
     fn read_pin(&self, pin: u8) -> bool;
+    /// Map a board virtual STALL pin id to its TMC channel, `None` for any other pin.
+    fn stall_channel_for_pin(&self, pin: u8) -> Option<u8>;
 }
 
 impl<T: ?Sized + EndstopHost> EndstopHost for &mut T {
@@ -144,6 +146,9 @@ impl<T: ?Sized + EndstopHost> EndstopHost for &mut T {
     }
     fn read_pin(&self, pin: u8) -> bool {
         (**self).read_pin(pin)
+    }
+    fn stall_channel_for_pin(&self, pin: u8) -> Option<u8> {
+        (**self).stall_channel_for_pin(pin)
     }
 }
 

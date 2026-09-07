@@ -23,7 +23,10 @@ use crate::state::trsync::{ENDSTOP_PIN_IDS, GPIO_MAX_PIN_VALUE};
 /// Configures the specified GPIO pin as input with optional pull-up
 /// resistor for endstop switch reading. Virtual pins (values at or above
 /// [`GPIO_MAX_PIN_VALUE`]) are accepted but skipped for GPIO
-/// configuration.
+/// configuration; if a virtual pin maps to a TMC channel via
+/// [`EndstopHost::stall_channel_for_pin`], that channel's
+/// `stall_endstop_configured` flag is set. Every pin id, real or
+/// virtual, is stored in `ENDSTOP_PIN_IDS`.
 #[klipper_command]
 pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up: u8) {
     let idx = match ctx.register_endstop(oid) {
@@ -41,7 +44,6 @@ pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up
     // Configure GPIO pin as input (only for real GPIO pins, not virtual).
     if pin < GPIO_MAX_PIN_VALUE {
         ctx.configure_input(pin, pull_up != 0);
-        ENDSTOP_PIN_IDS[idx].store(pin, core::sync::atomic::Ordering::Relaxed);
         defmt::info!(
             "config_endstop: oid={} idx={} pin=P{}{}{}",
             oid,
@@ -51,13 +53,16 @@ pub fn config_endstop(ctx: &mut dyn EndstopConfigHost, oid: u8, pin: u8, pull_up
             if pull_up != 0 { " (pull-up)" } else { "" }
         );
     } else {
-        defmt::info!(
-            "config_endstop: oid={} idx={} pin={} (virtual, no GPIO)",
-            oid,
-            idx,
-            pin
-        );
+        if let Some(channel) = ctx.stall_channel_for_pin(pin)
+            && let Some(state) = crate::state::tmc::tmc_channel(channel)
+        {
+            state
+                .stall_endstop_configured
+                .store(true, core::sync::atomic::Ordering::Relaxed);
+        }
+        defmt::info!("config_endstop: oid={} idx={} virtual pin={}", oid, idx, pin);
     }
+    ENDSTOP_PIN_IDS[idx].store(pin, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Arm an endstop for homing.
@@ -150,3 +155,142 @@ impl<T: ?Sized + ShutdownRecovery + TrsyncHost + EndstopHost> EndstopConfigHost 
 /// `foci_firmware::state::trsync::ENDSTOP_PIN_IDS`.
 pub trait EndstopHomeHost: ShutdownRecovery + TrsyncHost {}
 impl<T: ?Sized + ShutdownRecovery + TrsyncHost> EndstopHomeHost for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{ClockSource, StateAccess};
+    use core::sync::atomic::Ordering::Relaxed;
+    use foci_klipper::state::State;
+
+    struct MockCtx {
+        state: State,
+        last_shutdown: Option<ShutdownReason>,
+        configured_inputs: std::vec::Vec<(u8, bool)>,
+    }
+
+    impl MockCtx {
+        fn new() -> Self {
+            Self {
+                state: State::new(),
+                last_shutdown: None,
+                configured_inputs: std::vec::Vec::new(),
+            }
+        }
+    }
+
+    impl StateAccess for MockCtx {
+        fn state(&mut self) -> &mut State {
+            &mut self.state
+        }
+    }
+
+    impl ClockSource for MockCtx {
+        fn now(&self) -> u32 {
+            123
+        }
+    }
+
+    impl ShutdownRecovery for MockCtx {
+        fn enter_shutdown(&mut self) -> bool {
+            true
+        }
+
+        fn reset_to_bootloader(&mut self) -> ! {
+            panic!("reset_to_bootloader not used in tests")
+        }
+
+        fn send_shutdown(&mut self, reason: ShutdownReason, _clock: u32) {
+            self.last_shutdown = Some(reason);
+        }
+    }
+
+    impl TrsyncHost for MockCtx {
+        fn reset_all(&mut self) {
+            panic!("reset_all not used in this test")
+        }
+        fn register_trsync(&mut self, _oid: u8) -> Result<(), ()> {
+            panic!("register_trsync not used in this test")
+        }
+        fn trsync_arm(
+            &mut self,
+            _oid: u8,
+            _report_clock: u32,
+            _report_ticks: u32,
+            _expire_reason: u8,
+        ) -> Result<(), ()> {
+            panic!("trsync_arm not used in this test")
+        }
+        fn trsync_set_timeout(&mut self, _oid: u8, _clock: u32) -> Result<(), ()> {
+            panic!("trsync_set_timeout not used in this test")
+        }
+        fn trsync_trigger(&mut self, _oid: u8, _reason: u8) -> Result<u8, ()> {
+            panic!("trsync_trigger not used in this test")
+        }
+        fn register_endstop(&mut self, _oid: u8) -> Result<usize, ()> {
+            Ok(0)
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn endstop_start_homing(
+            &mut self,
+            _oid: u8,
+            _clock: u32,
+            _sample_ticks: u32,
+            _sample_count: u8,
+            _rest_ticks: u32,
+            _pin_value_expected: bool,
+            _trsync_oid: u8,
+            _trigger_reason: u8,
+        ) -> Result<(), ()> {
+            panic!("endstop_start_homing not used in this test")
+        }
+        fn endstop_query(&mut self, _oid: u8) -> Result<(bool, u32, u8), ()> {
+            panic!("endstop_query not used in this test")
+        }
+        fn link_stepper_stop(&mut self, _stepper_idx: usize, _trsync_oid: u8) -> Result<(), ()> {
+            panic!("link_stepper_stop not used in this test")
+        }
+    }
+
+    impl EndstopHost for MockCtx {
+        fn configure_input(&mut self, pin: u8, pull_up: bool) {
+            self.configured_inputs.push((pin, pull_up));
+        }
+        fn read_pin(&self, _pin: u8) -> bool {
+            false
+        }
+        fn stall_channel_for_pin(&self, pin: u8) -> Option<u8> {
+            if pin == 200 { Some(1) } else { None }
+        }
+    }
+
+    #[test]
+    fn config_endstop_stores_virtual_pin_and_marks_stall_channel() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.stall_endstop_configured.store(false, Relaxed);
+
+        config_endstop(&mut ctx, &mut sender, 5, 200, 0);
+
+        assert_eq!(ENDSTOP_PIN_IDS[0].load(Relaxed), 200);
+        assert!(tmc_state.stall_endstop_configured.load(Relaxed));
+        assert!(
+            ctx.configured_inputs.is_empty(),
+            "virtual pin must not touch GPIO"
+        );
+    }
+
+    #[test]
+    fn config_endstop_configures_gpio_pin_unchanged() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+
+        config_endstop(&mut ctx, &mut sender, 6, 10, 1);
+
+        assert_eq!(ENDSTOP_PIN_IDS[0].load(Relaxed), 10);
+        assert_eq!(ctx.configured_inputs, std::vec![(10, true)]);
+    }
+}
