@@ -1,7 +1,7 @@
 //! Command-level velocity-autotune workflow selection and disclosure.
 //!
 //! [`VelocityAutotuneWorkflowKind`] names which whole command workflow a host
-//! requested -- resume, an fixed-gain-amplitude order, the breakaway-seeded
+//! requested -- resume, a fixed-gain-amplitude order, the breakaway-seeded
 //! campaign, or the robustness-reversal gate -- not a phase or subphase within
 //! one of them. It is disclosed, alongside its conservative duration envelope,
 //! before any motion so the host can arm the correct wait timeout.
