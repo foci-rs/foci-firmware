@@ -2009,6 +2009,45 @@ fn slow_maintenance_fail_closed_signals_emergency_disable() {
 }
 
 #[test]
+fn slow_maintenance_fail_closed_clears_stall_latch_and_retry_counter() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        // A prior clamp-write retry (from an unrelated cause) left the retry
+        // counter non-zero; this fail-closed cause (homing current 0 with a
+        // stall endstop configured) never touches the counter itself, so it
+        // must be the teardown that resets it.
+        runtime.set_homing_clamp_retries_for_test(2);
+        tmc_state.stall_latched.store(true, Relaxed);
+        tmc_state.homing_current_ma.store(0, Relaxed);
+        tmc_state.stall_endstop_configured.store(true, Relaxed);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let homing_state_atomic = core::sync::atomic::AtomicU8::new(1);
+        let triggered = core::sync::atomic::AtomicU8::new(0xFF);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let actions = runtime
+            .apply_slow_maintenance_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &homing_runtime_config(),
+                TmcControlHomingRefs::new(&homing_state_atomic, &triggered),
+            )
+            .await;
+
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, BoardAction::SignalEmergencyDisable))
+        );
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!tmc_state.stall_latched.load(Relaxed));
+        assert!(!runtime.stall_detector_armed_for_test());
+        assert_eq!(runtime.homing_clamp_retries_for_test(), 0);
+    });
+}
+
+#[test]
 fn advance_homing_state_after_channels_waits_for_all_channels() {
     let homing_state = core::sync::atomic::AtomicU8::new(1);
     let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);

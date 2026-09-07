@@ -2032,7 +2032,8 @@ impl TmcControlRuntime {
             HomingMaintenanceResult::RetryCurrentState => return actions,
             HomingMaintenanceResult::FailClosed => {
                 refs.tmc.homing_clamp_active.store(false, Relaxed);
-                self.stall_detector = None;
+                refs.tmc.stall_latched.store(false, Relaxed);
+                self.clear_homing_runtime();
                 push_action(&mut actions, BoardAction::SignalEmergencyDisable);
                 return actions;
             }
@@ -2185,6 +2186,16 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) fn stall_detector_armed_for_test(&self) -> bool {
         self.stall_detector.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn homing_clamp_retries_for_test(&self) -> u8 {
+        self.homing_clamp_retries
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_homing_clamp_retries_for_test(&mut self, value: u8) {
+        self.homing_clamp_retries = value;
     }
 
     #[cfg(test)]

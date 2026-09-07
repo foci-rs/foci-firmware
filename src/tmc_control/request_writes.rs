@@ -22,6 +22,11 @@ pub enum SetCurrentError {
 /// writes `PID_TORQUE_FLUX_LIMITS`, and stores the register value in
 /// channel current-limit state for use by the commissioning engine.
 ///
+/// While a homing clamp is active on this channel (`tmc_state.homing_clamp_active`),
+/// the register write is deferred: the requested run current is still stored
+/// so it takes effect once homing's own restore step reads it back, but
+/// writing it live here would silently lift the homing clamp mid-move.
+///
 /// # Parameters
 ///
 /// - `tmc` — mutable reference to the TMC4671 SPI driver.
@@ -41,6 +46,7 @@ pub async fn apply_set_current<B>(
 where
     B: SpiDevice<u8>,
 {
+    use core::sync::atomic::Ordering::Relaxed;
     use foci_tmc4671::registers::*;
 
     let limit = current_limit_from_run_ma(run_ma, current_scale_ma_per_lsb).map_err(|error| {
@@ -53,6 +59,15 @@ where
         SetCurrentError::InvalidLimit(error)
     })?;
     let register_value = limit.register_value();
+    if tmc_state.homing_clamp_active.load(Relaxed) {
+        tmc_state.store_current_limit(limit, Relaxed);
+        defmt::info!(
+            "TMC4671 current: {}mA RMS -> {} counts (peak), deferred: homing clamp active",
+            run_ma,
+            register_value
+        );
+        return Ok(());
+    }
     if tmc
         .write_register(PID_TORQUE_FLUX_LIMITS, register_value)
         .await
@@ -61,7 +76,7 @@ where
         defmt::error!("TMC4671 SPI write failed: PID_TORQUE_FLUX_LIMITS");
         return Err(SetCurrentError::Spi);
     }
-    tmc_state.store_current_limit(limit, core::sync::atomic::Ordering::Relaxed);
+    tmc_state.store_current_limit(limit, Relaxed);
     defmt::info!(
         "TMC4671 current: {}mA RMS -> {} counts (peak)",
         run_ma,
@@ -270,6 +285,41 @@ mod tests {
             [PID_TORQUE_FLUX_LIMITS.addr() | 0x80, 0x00, 0x00, 0x07, 0x2c]
         );
 
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
+    }
+
+    #[fixture_test]
+    async fn apply_set_current_defers_register_write_while_homing_clamp_active() {
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
+            Ordering::Relaxed,
+        );
+        tmc_state()
+            .homing_clamp_active
+            .store(true, Ordering::Relaxed);
+
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        apply_set_current(&mut tmc, tmc_state(), 1500, 1.155)
+            .await
+            .expect("current write should succeed even while deferred");
+
+        assert_eq!(
+            tmc_state().load_current_limit(Ordering::Relaxed).raw(),
+            0x072c,
+            "the run current must still be stored for homing's restore step to pick up"
+        );
+        assert!(
+            tmc.into_inner().writes.is_empty(),
+            "PID_TORQUE_FLUX_LIMITS must not be written while a homing clamp is active"
+        );
+
+        tmc_state()
+            .homing_clamp_active
+            .store(false, Ordering::Relaxed);
         tmc_state().store_current_limit(
             foci_tmc4671::current_limit::PidTorqueFluxLimit::ZERO,
             Ordering::Relaxed,
