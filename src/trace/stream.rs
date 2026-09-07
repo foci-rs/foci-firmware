@@ -7,7 +7,10 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Firmware trace protocol version. Version 21 adds `stop_rung_index` to
+/// Firmware trace protocol version. Version 22 replaced the computed
+/// critical position_error with the chip's PID_POSITION_ERROR read and
+/// appended the sampler-budget fields to the status payload. Version 21
+/// adds `stop_rung_index` to
 /// the breakaway discovery terminal record: the rung the discovery walk had
 /// reached when it stopped, distinct from the breakaway probe's rung (which
 /// is constant per ladder and appears elsewhere in the record). Version 20
@@ -26,7 +29,7 @@ pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// Version 16 added the measured `moving_pid_output_peak` to the breakaway
 /// raw-observation record. Version 15 published the
 /// physical-excursion upward-probe contract.
-pub const PROTOCOL_VERSION: u8 = 21;
+pub const PROTOCOL_VERSION: u8 = 22;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -99,8 +102,8 @@ pub const CURRENT_PATH_PAYLOAD_LEN: usize = 16;
 pub const PHASE_ADVANCE_PAYLOAD_LEN: usize = 12;
 /// Version-1 control-detail payload length.
 pub const CONTROL_DETAIL_PAYLOAD_LEN: usize = 28;
-/// Version-1 status payload length.
-pub const STATUS_PAYLOAD_LEN: usize = 40;
+/// Version-22 status payload length.
+pub const STATUS_PAYLOAD_LEN: usize = 48;
 /// Version-1 event payload length.
 pub const EVENT_PAYLOAD_LEN: usize = 24;
 /// Characterization velocity-observation payload length.
@@ -281,7 +284,9 @@ pub struct CriticalSample {
     pub step_position: i32,
     /// TMC position actual.
     pub tmc_position_actual: i32,
-    /// Position error.
+    /// TMC4671 `PID_POSITION_ERROR` (target minus actual, position units), read
+    /// from the chip immediately after `PID_POSITION_ACTUAL`. A register read,
+    /// not a host-side difference; sign as the chip defines it.
     pub position_error: i32,
     /// Software command rate in TMC position counts per PWM cycle.
     ///
@@ -403,6 +408,12 @@ pub struct StatusSample {
     pub endpoint_not_ready_count: u32,
     /// Suppressed change-triggered status notifications.
     pub suppressed_status_change_count: u32,
+    /// Trace sampler iterations that exceeded the board's SPI cycle threshold.
+    /// Populated only in the board status source; zero elsewhere.
+    pub trace_deadline_pressure_count: u32,
+    /// Running maximum of trace sampler SPI cycles per control iteration.
+    /// Populated only in the board status source; zero elsewhere.
+    pub max_spi_sample_cycles: u32,
 }
 
 /// Structured event sample.
@@ -549,6 +560,8 @@ pub fn encode_status_payload(sample: &StatusSample, out: &mut [u8; STATUS_PAYLOA
     put_u32(out, 28, sample.dropped_event_log_count);
     put_u32(out, 32, sample.endpoint_not_ready_count);
     put_u32(out, 36, sample.suppressed_status_change_count);
+    put_u32(out, 40, sample.trace_deadline_pressure_count);
+    put_u32(out, 44, sample.max_spi_sample_cycles);
 }
 
 /// Encode a structured event payload.
@@ -705,12 +718,12 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 20);
+        assert_eq!(PROTOCOL_VERSION, 22);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);
         assert_eq!(CONTROL_DETAIL_PAYLOAD_LEN, 28);
-        assert_eq!(STATUS_PAYLOAD_LEN, 40);
+        assert_eq!(STATUS_PAYLOAD_LEN, 48);
         assert_eq!(EVENT_PAYLOAD_LEN, 24);
         const {
             assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
@@ -719,6 +732,30 @@ mod tests {
             assert!(HEADER_LEN + VELOCITY_OBSERVATION_PAYLOAD_LEN <= 64);
             assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
         }
+    }
+
+    #[test]
+    fn critical_payload_carries_signed_chip_position_error_at_bytes_8_to_12() {
+        let mut sample = CriticalSample::default();
+        sample.position_error = -1234;
+        let mut payload = [0xAA; CRITICAL_PAYLOAD_LEN];
+        encode_critical_payload(&sample, &mut payload);
+        assert_eq!(&payload[8..12], &(-1234i32).to_le_bytes());
+        assert!(payload[..8].iter().all(|&b| b == 0));
+        assert!(payload[12..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn status_payload_appends_sampler_budget_fields() {
+        let sample = StatusSample {
+            trace_deadline_pressure_count: 7,
+            max_spi_sample_cycles: 99_999,
+            ..StatusSample::default()
+        };
+        let mut payload = [0xAA; STATUS_PAYLOAD_LEN];
+        encode_status_payload(&sample, &mut payload);
+        assert_eq!(&payload[40..44], &7u32.to_le_bytes());
+        assert_eq!(&payload[44..48], &99_999u32.to_le_bytes());
     }
 
     #[test]

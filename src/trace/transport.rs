@@ -273,6 +273,8 @@ impl StatusSnapshot {
                 dropped_event_log_count: 0,
                 endpoint_not_ready_count: 0,
                 suppressed_status_change_count: 0,
+                trace_deadline_pressure_count: 0,
+                max_spi_sample_cycles: 0,
             },
         }
     }
@@ -295,6 +297,7 @@ pub fn status_nonzero(sample: &StatusSample) -> bool {
         || sample.dropped_event_log_count != 0
         || sample.endpoint_not_ready_count != 0
         || sample.suppressed_status_change_count != 0
+        || sample.trace_deadline_pressure_count != 0
 }
 
 /// Return true when status trigger fields changed.
@@ -308,6 +311,7 @@ pub fn status_changed(previous: &StatusSample, next: &StatusSample) -> bool {
         || previous.dropped_event_log_count != next.dropped_event_log_count
         || previous.endpoint_not_ready_count != next.endpoint_not_ready_count
         || previous.suppressed_status_change_count != next.suppressed_status_change_count
+        || previous.trace_deadline_pressure_count != next.trace_deadline_pressure_count
 }
 
 /// Decide whether a status frame should be emitted for a source slot.
@@ -430,6 +434,8 @@ mod tests {
             dropped_event_log_count: 256,
             endpoint_not_ready_count: 512,
             suppressed_status_change_count: 1024,
+            trace_deadline_pressure_count: 2048,
+            max_spi_sample_cycles: 4096,
         }
     }
 
