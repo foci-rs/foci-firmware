@@ -2188,6 +2188,14 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn arm_stall_detector_for_test(&mut self, threshold: u32, persistence: u8) {
+        self.stall_detector = Some(crate::tmc_control::stall_detector::StallDetector::new(
+            threshold,
+            persistence,
+        ));
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_planner_velocity_scale_for_test(&mut self, numerator: u64) {
         self.planner_velocity_scale = Some(
             crate::motion_scale::PlannerVelocityScale::from_reduced(numerator, 1),

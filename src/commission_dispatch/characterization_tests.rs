@@ -67,6 +67,7 @@ use crate::tmc_control::lifecycle::LifecycleFlag;
 use foci_firmware_macros::fixture_test;
 
 const TEST_MOTOR_SENTINEL: u32 = 0x0002_0032;
+const TEST_RUN_CURRENT_LIMIT: u16 = 0x1234;
 
 fn dispatch_state<'a>(
     calibrated: &'a mut bool,
@@ -92,6 +93,11 @@ async fn seed_motor_sentinel(backend: &mut MockBackend) {
     tmc_state()
         .motor_sentinel
         .store(TEST_MOTOR_SENTINEL, core::sync::atomic::Ordering::Relaxed);
+    tmc_state().store_current_limit(
+        foci_tmc4671::current_limit::PidTorqueFluxLimit::new(u32::from(TEST_RUN_CURRENT_LIMIT))
+            .unwrap(),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     backend
         .write_register(
             foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,

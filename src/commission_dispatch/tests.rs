@@ -125,6 +125,7 @@ fn stepper_state() -> &'static crate::state::stepper::StepperChannelState {
 }
 
 const TEST_MOTOR_SENTINEL: u32 = 0x0002_0032;
+const TEST_RUN_CURRENT_LIMIT: u16 = 0x1234;
 
 #[derive(Debug, PartialEq, Eq)]
 enum ReplyEvent {
@@ -676,6 +677,11 @@ async fn seed_motor_sentinel(backend: &mut MockBackend) {
     tmc_state()
         .motor_sentinel
         .store(TEST_MOTOR_SENTINEL, core::sync::atomic::Ordering::Relaxed);
+    tmc_state().store_current_limit(
+        foci_tmc4671::current_limit::PidTorqueFluxLimit::new(u32::from(TEST_RUN_CURRENT_LIMIT))
+            .unwrap(),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     backend
         .write_register(
             foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,

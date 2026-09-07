@@ -130,10 +130,20 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 
 /// Mark the motor electrically energized after verified calibration.
 ///
-/// Asserts `state.calibrated`; verifies the calibration sentinel register;
-/// sets the enable pin high; updates `state.motor_enabled`. Does NOT touch
-/// channel motor arming — stepper arming is a separate concern (see
+/// Asserts `state.calibrated`; clears any stale homing latch/clamp flags;
+/// verifies the calibration sentinel register; rewrites
+/// `PID_TORQUE_FLUX_LIMITS` from the stored run-current limit; sets the
+/// enable pin high; updates `state.motor_enabled`. Does NOT touch channel
+/// motor arming — stepper arming is a separate concern (see
 /// [`arm_motor_for_steps`]).
+///
+/// The torque-flux rewrite makes this path truthful even when a homing
+/// clamp narrowed the register on a prior arm: a shutdown or disable
+/// landing mid-homing could otherwise leave the clamped value in the chip,
+/// and a plain re-arm would run at it. Clearing `stall_latched` and
+/// `homing_clamp_active` here is safe precisely because this rewrite
+/// always restores the full run-current limit before the motor is
+/// energized.
 ///
 /// `assert!`, not `debug_assert!`: this is a hard motor-safety
 /// contract and must enforce in release builds. Costs one branch
@@ -146,15 +156,23 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// most recent safe-state restore pass had unresolved write failures.
 /// Returns [`crate::autotune::CommissionError::ChipResetDetected`] if the
 /// sentinel is inactive or does not match the TMC4671 readback.
+/// Returns [`crate::autotune::CommissionError::InvalidCurrentLimit`] if the
+/// stored run-current limit is zero (unconfigured).
+/// Returns [`crate::autotune::CommissionError::Spi`] if the torque-flux
+/// limit rewrite fails.
 pub async fn arm_motor_electrical<B: CommissioningBackend>(
     backend: &mut B,
     state: &mut DispatchState<'_>,
 ) -> Result<(), crate::autotune::CommissionError> {
+    use core::sync::atomic::Ordering::Relaxed;
+
     assert!(
         *state.calibrated,
         "FATAL: arm_motor_electrical called with calibrated=false; \
          SPI restore must precede arm"
     );
+    state.tmc.stall_latched.store(false, Relaxed);
+    state.tmc.homing_clamp_active.store(false, Relaxed);
 
     if state
         .tmc
@@ -172,6 +190,19 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
         .tmc
         .safe_state_incomplete
         .store(false, core::sync::atomic::Ordering::Relaxed);
+
+    let run_limit = state.tmc.load_current_limit(Relaxed);
+    if run_limit.raw() == 0 {
+        defmt::error!("arm_motor_electrical: no run current configured");
+        return Err(crate::autotune::CommissionError::InvalidCurrentLimit);
+    }
+    backend
+        .write_register(
+            foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
+            run_limit.register_value(),
+        )
+        .await
+        .map_err(|_| crate::autotune::CommissionError::Spi)?;
 
     settle_closed_loop_hold_before_enable(backend).await?;
 
@@ -249,10 +280,17 @@ pub async fn disarm_motor<B: CommissioningBackend>(backend: &mut B, state: &mut 
 
 /// Apply the shared shutdown safe-state policy for one TMC channel.
 ///
-/// De-energizes the motor through [`disarm_motor`] first, then restores
-/// phase advance, then stops any active commissioning engine. A retained
+/// Drops any runtime-owned homing state (stall detector, clamp retry
+/// budget) and clears the channel's homing latch/clamp flags, then
+/// de-energizes the motor through [`disarm_motor`], then restores phase
+/// advance, then stops any active commissioning engine. A retained
 /// breakaway campaign is completed only after both safe-state operations
 /// succeed.
+///
+/// Both boards' shutdown loops funnel through this shared helper, so a
+/// shutdown landing mid-homing clears the detector synchronously on either
+/// board; the homing tick's state-0 self-heal remains the backstop for a
+/// config reset.
 ///
 /// Returns `true` when the phase-advance restore either was unnecessary or
 /// succeeded. Returns `false` when restore failed; callers should keep retrying
@@ -279,6 +317,11 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
             )
             .await;
     }
+    runtime.clear_homing_runtime();
+    tmc.homing_clamp_active
+        .store(false, core::sync::atomic::Ordering::Relaxed);
+    tmc.stall_latched
+        .store(false, core::sync::atomic::Ordering::Relaxed);
     let mut state = runtime.dispatch_state(tmc, stepper);
     disarm_motor(backend, &mut state).await;
     let phase_advance_restored = runtime.restore_phase_advance_via_backend(backend).await;
@@ -342,6 +385,7 @@ mod tests {
     #[fixture_test]
     async fn arm_then_disarm_returns_to_baseline() {
         use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
         let mut backend = MockBackend::new();
         let (_, mut en, mut gains) = fresh_state_locals();
         let mut cal = true;
@@ -349,6 +393,8 @@ mod tests {
         tmc_state()
             .motor_sentinel
             .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
@@ -488,6 +534,7 @@ mod tests {
     #[fixture_test]
     async fn arm_motor_success_path() {
         use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
         let mut backend = MockBackend::new();
         let (_, mut en, mut gains) = fresh_state_locals();
         let mut cal = true;
@@ -495,6 +542,8 @@ mod tests {
         tmc_state()
             .motor_sentinel
             .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
@@ -516,6 +565,7 @@ mod tests {
     #[fixture_test]
     async fn arm_motor_for_voltage_vectors_keeps_stepper_disarmed() {
         use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
         let mut backend = MockBackend::new();
         let (_, mut en, mut gains) = fresh_state_locals();
         let mut cal = true;
@@ -523,6 +573,8 @@ mod tests {
         tmc_state()
             .motor_sentinel
             .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
@@ -604,10 +656,93 @@ mod tests {
 
     #[fixture_test]
     async fn arm_motor_electrical_succeeds_when_sentinel_matches() {
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
         let mut backend = MockBackend::new();
         tmc_state()
             .motor_sentinel
             .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        let run_limit = PidTorqueFluxLimit::new(0x1234).unwrap();
+        tmc_state().store_current_limit(run_limit, core::sync::atomic::Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.spi_log.clear();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+        assert_eq!(result, Ok(()));
+        assert!(backend.enable_pin);
+        let torque_limit_write_index = backend
+            .spi_log
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    crate::commission_dispatch::test_support::SpiOp::Write(addr, value)
+                        if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS.addr()
+                            && *value == run_limit.register_value()
+                )
+            })
+            .expect("arm should rewrite PID_TORQUE_FLUX_LIMITS from the stored run-current limit");
+        let enable_index = backend
+            .spi_log
+            .iter()
+            .position(|op| {
+                matches!(
+                    op,
+                    crate::commission_dispatch::test_support::SpiOp::EnablePin(true)
+                )
+            })
+            .expect("arm should assert enable");
+        assert!(torque_limit_write_index < enable_index);
+        tmc_state()
+            .motor_sentinel
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_clears_stale_stall_latch() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        tmc_state().motor_sentinel.store(0x0002_0032, Relaxed);
+        tmc_state().store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        tmc_state().stall_latched.store(true, Relaxed);
+        tmc_state().homing_clamp_active.store(true, Relaxed);
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+
+        arm_motor_electrical(&mut backend, &mut state)
+            .await
+            .expect("sentinel and run current should be valid");
+
+        assert!(!tmc_state().stall_latched.load(Relaxed));
+        assert!(!tmc_state().homing_clamp_active.load(Relaxed));
+        tmc_state().motor_sentinel.store(0, Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_refuses_without_run_current() {
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        tmc_state().store_current_limit(
+            PidTorqueFluxLimit::ZERO,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
@@ -617,9 +752,17 @@ mod tests {
         let (_, mut en, mut gains) = fresh_state_locals();
         let mut cal = true;
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+
         let result = arm_motor_electrical(&mut backend, &mut state).await;
-        assert_eq!(result, Ok(()));
-        assert!(backend.enable_pin);
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::InvalidCurrentLimit)
+        );
+        assert!(
+            !backend.enable_pin,
+            "enable pin must remain low without a configured run current"
+        );
         tmc_state()
             .motor_sentinel
             .store(0, core::sync::atomic::Ordering::Relaxed);
@@ -632,10 +775,15 @@ mod tests {
             PID_POSITION_TARGET, STATUS_FLAGS,
         };
 
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
         let mut backend = MockBackend::new();
         tmc_state()
             .motor_sentinel
             .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+        tmc_state().store_current_limit(
+            PidTorqueFluxLimit::new(0x1234).unwrap(),
+            core::sync::atomic::Ordering::Relaxed,
+        );
         let _ = backend
             .write_register(MOTOR_TYPE_N_POLE_PAIRS, 0x0002_0032)
             .await;
@@ -865,6 +1013,29 @@ mod tests {
                 enable_pin_false_index < phase_advance_write_index,
                 "GPIO must be lowered before the phase-advance SPI write: enable_pin_false_index={enable_pin_false_index}, phase_advance_write_index={phase_advance_write_index}"
             );
+        });
+    }
+
+    #[test]
+    fn apply_shutdown_safe_state_clears_homing_runtime() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(0);
+            let tmc = crate::state::tmc::tmc_channel0();
+            let stepper = crate::state::stepper::stepper_channel0();
+            use core::sync::atomic::Ordering::Relaxed;
+            runtime.arm_stall_detector_for_test(100, 2);
+            tmc.homing_clamp_active.store(true, Relaxed);
+            tmc.stall_latched.store(true, Relaxed);
+
+            let _ = apply_shutdown_safe_state(&mut runtime, &mut backend, tmc, stepper).await;
+
+            assert!(!runtime.stall_detector_armed_for_test());
+            assert!(!tmc.homing_clamp_active.load(Relaxed));
+            assert!(!tmc.stall_latched.load(Relaxed));
+
+            tmc.homing_clamp_active.store(false, Relaxed);
+            tmc.stall_latched.store(false, Relaxed);
         });
     }
 
