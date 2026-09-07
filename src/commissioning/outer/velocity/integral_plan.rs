@@ -9,13 +9,13 @@ use super::band_confirmation::{
     TargetBandConfirmationInconclusive, validate_fixed_contract,
 };
 use super::breakaway_plan::PROBE_MAX_OBSERVATIONS;
-use super::current_guard::VelocityLimitEvidenceCapability;
 use super::recovery::{RungOriginRecoveryPlanError, plan_rung_origin_recovery};
 use super::reproduction::{BUILD_FEATURES, StageBDirectionalValidity};
 use super::sweep_plan::{
     MAX_SWEEP_RUNGS, MIN_SETTLE_CAPTURE_US, MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US,
     VelocitySweepExecutionPlan, VelocitySweepRequest, ZERO_SETTLE_US,
 };
+use super::velocity_clamp::VelocityLimitEvidenceCapability;
 
 /// Evidence schema stored in the RAM-only Stage-C candidate slot.
 pub const STAGE_C_EVIDENCE_SCHEMA_REVISION: u16 = 17;

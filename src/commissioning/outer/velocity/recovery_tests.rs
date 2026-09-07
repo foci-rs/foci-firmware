@@ -1,7 +1,3 @@
-use super::current_guard::{
-    VelocityCurrentContact, VelocityCurrentObserver, VelocityCurrentZeroPhase,
-    VelocityLimitEvidenceCapability,
-};
 use super::recovery::{
     RECOVERY_STABILIZATION_US, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage,
     RungOriginRecoveryConfig, RungOriginRecoveryOutcome, RungOriginRecoveryPlanError,
@@ -13,6 +9,10 @@ use super::recovery::{
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     ZERO_SETTLE_US,
+};
+use super::velocity_clamp::{
+    VelocityCurrentContact, VelocityCurrentObserver, VelocityCurrentZeroPhase,
+    VelocityLimitEvidenceCapability,
 };
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RestSelectionDisposition, StationarityWork, VelocityDirection,

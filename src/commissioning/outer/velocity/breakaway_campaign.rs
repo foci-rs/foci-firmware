@@ -2,7 +2,7 @@
 //! discovery, and held-out confirmation over shared guarded-stroke primitives.
 //!
 //! This module drives motion. It reuses the lower-level primitives the trace-gated
-//! velocity sweep (`sweep.rs`) is built from -- [`current_guard`](super::current_guard),
+//! velocity sweep (`sweep.rs`) is built from -- [`velocity_clamp`](super::velocity_clamp),
 //! [`recovery`](super::recovery), and [`sweep_analysis`](super::sweep_analysis)'s
 //! `poll_stationarity`/`poll_scored_rest_confirmation`/`assemble_probe_observation_input`
 //! -- plus the probe-local physical-excursion accumulator. It does not
@@ -104,12 +104,6 @@ use super::breakaway_search::{
     UpwardProbeStep,
 };
 use super::combined_plan::stage_c_continuation_geometry;
-use super::current_guard::{
-    VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
-    VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, begin_velocity_current_primitive,
-    finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
-    read_velocity_pid_input_abs, read_velocity_pid_output_abs,
-};
 use super::integral_plan::{
     AcquisitionContext, VelocityIntegralPlan, bind_breakaway_stage_c_authority,
     breakaway_workflow_envelope_ms, max_transition_capable_p,
@@ -138,6 +132,12 @@ use super::sweep_plan::{
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, SETTLE_ANALYSIS_BUDGET_US,
     VELOCITY_SWEEP_SAMPLE_PERIOD_US, VelocitySweepRequest, ZERO_SETTLE_US,
     plan_stage_b_velocity_sweep,
+};
+use super::velocity_clamp::{
+    VelocityCurrentClampSession, VelocityCurrentGuardError, VelocityCurrentObserver,
+    VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability, begin_velocity_current_primitive,
+    finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
+    read_velocity_pid_input_abs, read_velocity_pid_output_abs,
 };
 use super::workflow_plan::CommissioningWorkflowPlan;
 use super::{clear_velocity_error_sum, clear_velocity_offset};

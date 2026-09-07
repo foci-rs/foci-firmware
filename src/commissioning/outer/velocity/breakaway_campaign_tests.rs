@@ -2671,8 +2671,8 @@ use super::{
     enter_discovery, route_confirmed_accept, route_discovery_outcome,
 };
 use crate::commissioning::outer::state::OuterPhase;
-use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
 use crate::commissioning::outer::velocity::sweep_plan::current_gain_span;
+use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
 use crate::commissioning::types::StepResult;
 
 /// A well-formed campaign request at the shared small target.

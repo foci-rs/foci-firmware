@@ -9,15 +9,15 @@ use foci_tmc4671::pid::{PidGainPair, PidIGain};
 use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET};
 
 use super::super::clear_velocity_error_sum;
-use super::super::current_guard::{
-    VelocityCurrentContact, VelocityCurrentGuardError, VelocityCurrentZeroPhase,
-    finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
-    read_velocity_pid_input_abs, read_velocity_pid_output_abs, restart_velocity_current_primitive,
-};
 use super::super::sweep_analysis::{
     ScoredRestPoll, bounded_rest_displacement, poll_scored_rest_confirmation,
 };
 use super::super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
+use super::super::velocity_clamp::{
+    VelocityCurrentContact, VelocityCurrentGuardError, VelocityCurrentZeroPhase,
+    finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
+    read_velocity_pid_input_abs, read_velocity_pid_output_abs, restart_velocity_current_primitive,
+};
 use super::{
     ExactU64Parts, RECOVERY_STABILIZATION_US, RecoveryBindingSource,
     RecoveryOriginMismatchEvidence, RecoveryRestAnalysis, RecoveryStabilizationSummary,
@@ -693,7 +693,7 @@ async fn recovery_current_headroom<B: CommissioningBackend>(
 }
 
 fn recovery_current_contact(
-    observer: &super::super::current_guard::VelocityCurrentObserver,
+    observer: &super::super::velocity_clamp::VelocityCurrentObserver,
 ) -> bool {
     observer
         .evidence(VelocityCurrentZeroPhase::Recovery)

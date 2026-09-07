@@ -39,10 +39,10 @@ pub use current::{
     CURRENT_AXIS_VALIDATION_LOW_RESPONSE, CURRENT_AXIS_VALIDATION_MOTION,
     CURRENT_AXIS_VALIDATION_PASS, CURRENT_AXIS_VALIDATION_SATURATION,
     CURRENT_AXIS_VALIDATION_STATUS_FLAGS, CURRENT_AXIS_VALIDATION_WRONG_SIGN,
-    CURRENT_AXIS_VALIDATION_ZERO_TARGET, CURRENT_VALIDATION_SETTLED_MAX_SAMPLES, CurrentAxisGate,
-    CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample,
-    classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
-    synthesize_current_gains,
+    CURRENT_AXIS_VALIDATION_ZERO_TARGET, CURRENT_VALIDATION_SETTLED_MAX_SAMPLES,
+    CurrentAxisRetryDecision, CurrentAxisSample, CurrentAxisSampleClassification,
+    CurrentAxisSampleCriteria, classify_current_axis_sample, current_axis_retry_decision,
+    retry_current_loop_gains, synthesize_current_gains,
 };
 pub use equivalent_disturbance::{
     EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16, equivalent_disturbance_from_rate,
@@ -90,8 +90,8 @@ pub use position::{
 pub use types::{
     CLOSED_LOOP_ENTRY_STATUS_FAIL_DRIFT, CLOSED_LOOP_ENTRY_STATUS_FAIL_RUNAWAY,
     CLOSED_LOOP_ENTRY_STATUS_NOT_RUN, CLOSED_LOOP_ENTRY_STATUS_PASS,
-    CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopActivationState, CommissionError, CommissionPhase,
-    CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, SavedGains,
+    CLOSED_LOOP_ENTRY_STATUS_WARN_DRIFT, ClosedLoopActivationState, CommissionError,
+    CommissionPhase, CommissionProfile, CommissionStatus, InnerSequence, OperatingMode, SavedGains,
     ValidationResult,
 };
 pub use velocity_units::{TmcMechanicalRpm, VelocityUnitError};

@@ -1,6 +1,5 @@
 //! Immutable fixed-I fixed-gain amplitude planning.
 
-use super::current_guard::VelocityLimitEvidenceCapability;
 use super::integral_plan::{
     AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, IntegralSlotOrder,
     STAGE_C_OBSERVATIONS_PER_RUNG, VelocityIntegralAcquisitionKind, VelocityIntegralExecutionPlan,
@@ -10,6 +9,7 @@ use super::integral_reproduction::{AcceptancePoint, StageCPlanIdentity};
 use super::recovery::commanded_side_lower_rate_q;
 use super::reproduction::BUILD_FEATURES;
 use super::sweep_plan::VelocitySweepRequest;
+use super::velocity_clamp::VelocityLimitEvidenceCapability;
 use crate::autotune::velocity_measurement::VelocityDirection;
 
 /// Current independent fixed-gain amplitude schema.

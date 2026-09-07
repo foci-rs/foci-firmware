@@ -5,7 +5,6 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use crate::commission_dispatch::stage_c::StageCPreflightConfig;
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::combined_plan::BREAKAWAY_STAGE_C_SCHEMA_REVISION;
-use crate::commissioning::outer::velocity::current_guard::derive_probe_limit;
 use crate::commissioning::outer::velocity::fixed_gain_amplitude_plan::{
     FixedGainAmplitudeOrder, FixedGainAmplitudePlan, FixedGainAmplitudePlanError,
     plan_fixed_gain_amplitude,
@@ -20,6 +19,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
 use crate::commissioning::outer::velocity::sweep_plan::{
     VelocitySweepRequest, plan_stage_b_velocity_sweep,
 };
+use crate::commissioning::outer::velocity::velocity_clamp::derive_probe_limit;
 use crate::commissioning::types::{
     FixedGainAmplitudeCause, FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal,
 };
@@ -125,7 +125,7 @@ pub fn reconstruct_breakaway_plan(
     // The campaign never uses that value for its gain span -- it derives
     // `usable_torque_limit` from `current_gain_span`, which applies the
     // deterministic nine-tenths probe headroom via `derive_probe_limit`
-    // (`sweep_plan::current_gain_span` -> `current_guard::derive_probe_limit`).
+    // (`sweep_plan::current_gain_span` -> `velocity_clamp::derive_probe_limit`).
     // That headroom depends only on `hard_torque_limit`, not on the target
     // velocity or any live measurement, so it reproduces exactly here.
     // `VelocityIntegralPlan::digest()` hashes `usable_torque_limit`, so

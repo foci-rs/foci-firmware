@@ -10,10 +10,11 @@
 
 use crate::autotune::{
     CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopActivationState,
-    CommissionError, CommissionPhase, CommissionProfile, CommissionStatus, CurrentAxisGate,
-    CurrentAxisGateResult, CurrentAxisRetryDecision, CurrentAxisSample, CurrentGainSynthesisInput,
-    CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, TransientBuffer,
-    classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
+    CommissionError, CommissionPhase, CommissionProfile, CommissionStatus,
+    CurrentAxisRetryDecision, CurrentAxisSample, CurrentAxisSampleClassification,
+    CurrentAxisSampleCriteria, CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
+    ElectricalModel, InnerSequence, Permille, TransientBuffer, classify_current_axis_sample,
+    current_axis_retry_decision, retry_current_loop_gains,
 };
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::inner::InnerPhase;
@@ -154,7 +155,7 @@ pub(crate) struct AxisDirectionalEvidence {
     same_axis_sample_count: u8,
     cross_axis_total: i32,
     cross_axis_sample_count: u8,
-    gate: CurrentAxisGateResult,
+    gate: CurrentAxisSampleClassification,
     encoder_delta_counts: i32,
     cross_axis_peak_permille: Permille,
     status_flags: u32,
@@ -446,7 +447,7 @@ fn validation_gate(
     feedback_config: crate::config::FeedbackConfig,
     axis: CurrentValidationAxis,
     sample_delay_ms: u16,
-) -> CurrentAxisGate {
+) -> CurrentAxisSampleCriteria {
     let max_encoder_delta_counts = match axis {
         CurrentValidationAxis::Flux => config.current_validation_flux_max_encoder_delta_counts,
         CurrentValidationAxis::Torque => config.current_validation_torque_max_encoder_delta_counts,
@@ -469,7 +470,7 @@ fn validation_gate(
         (CurrentValidationAxis::Torque, 1) => (250, 1250),
         (CurrentValidationAxis::Torque, _) => (550, 1250),
     };
-    CurrentAxisGate::commissioning_short_sample(
+    CurrentAxisSampleCriteria::commissioning_short_sample(
         min_response_permille,
         max_response_permille,
         max_encoder_delta_counts,
@@ -691,7 +692,7 @@ fn pair_cross_axis_status(
     cross_axis_count: u16,
     feedback_config: crate::config::FeedbackConfig,
 ) -> u8 {
-    let gate = CurrentAxisGate::commissioning_short_sample(
+    let gate = CurrentAxisSampleCriteria::commissioning_short_sample(
         SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
         SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
         u16::MAX,
@@ -711,7 +712,7 @@ fn pair_response_status(
     response_error_count: u16,
     feedback_config: crate::config::FeedbackConfig,
 ) -> u8 {
-    let gate = CurrentAxisGate::commissioning_short_sample(
+    let gate = CurrentAxisSampleCriteria::commissioning_short_sample(
         SETTLED_FLUX_MIN_RESPONSE_PERMILLE,
         SETTLED_FLUX_MAX_RESPONSE_PERMILLE,
         u16::MAX,
@@ -4212,7 +4213,7 @@ mod tests {
             same_axis_sample_count: 1,
             cross_axis_total: 0,
             cross_axis_sample_count: 1,
-            gate: CurrentAxisGateResult {
+            gate: CurrentAxisSampleClassification {
                 status,
                 response_permille: Permille::ZERO,
                 cross_axis_permille: Permille::ZERO,

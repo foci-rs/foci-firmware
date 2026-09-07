@@ -46,7 +46,6 @@ use foci_tmc4671::registers::{
 };
 
 use super::band_confirmation::{CONFIRMATION_BAND_LOWER_PERCENT, CONFIRMATION_BAND_UPPER_PERCENT};
-use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::integral_reproduction::AcceptancePoint;
 use super::recovery::{
     RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryStage, RungOriginRecoveryConfig,
@@ -69,6 +68,7 @@ use super::sweep_analysis::{ScoredRestPoll, deficit_interval_q, poll_scored_rest
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, SETTLE_ANALYSIS_BUDGET_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
 };
+use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
 /// Outer velocity ramp mode: single-direction velocity ramp, I applied through

@@ -70,7 +70,7 @@ pub struct StageCAuthoritySummary {
     /// from configuration at resume time.
     pub usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
-    pub(crate) limit_evidence_capability: super::current_guard::VelocityLimitEvidenceCapability,
+    pub(crate) limit_evidence_capability: super::velocity_clamp::VelocityLimitEvidenceCapability,
     /// Number of positive-I rungs.
     pub positive_rung_count: u8,
     /// Simultaneous interval family size per direction.

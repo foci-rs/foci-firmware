@@ -856,9 +856,6 @@ mod tests {
     use crate::commissioning::outer::state::{
         PositiveIRestBoundary, VelocitySettleMetrics, VelocitySettleTransition,
     };
-    use crate::commissioning::outer::velocity::current_guard::{
-        VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
-    };
     use crate::commissioning::outer::velocity::integral_evidence::{
         ExactRateInterval, IntegralRungEvidence,
     };
@@ -866,6 +863,9 @@ mod tests {
     use crate::commissioning::outer::velocity::recovery::RecoveryStage;
     use crate::commissioning::outer::velocity::sweep_evidence::{
         VelocityObservationClass, VelocityObservationSummary,
+    };
+    use crate::commissioning::outer::velocity::velocity_clamp::{
+        VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
     };
     use crate::commissioning::types::StageCCause;
     use crate::commissioning::types::VelocityIntegralObservation;
@@ -996,7 +996,7 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability:
-                super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+                super::super::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
             recovery_quantization_exposed: true,
             probe_constrained_test_point: true,
             motion_request: super::super::sweep_plan::VelocitySweepRequest {
@@ -1167,7 +1167,7 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability:
-                super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+                super::super::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
             recovery_quantization_exposed: true,
             probe_constrained_test_point: true,
             motion_request: super::super::sweep_plan::VelocitySweepRequest {
@@ -1211,7 +1211,7 @@ mod tests {
         assert_eq!(records[0].as_bytes()[53], 0);
         assert_eq!(
             records[0].as_bytes()[96],
-            super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u8
+            super::super::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling as u8
         );
         assert_eq!(
             &records[0].as_bytes()[97..99],
@@ -1255,7 +1255,7 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability:
-                super::super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+                super::super::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
             acquisition_kind:
                 super::super::integral_plan::VelocityIntegralAcquisitionKind::ResponseLadder,
             acceptance_source: super::super::integral_plan::AcceptanceSource::NonBreakaway,

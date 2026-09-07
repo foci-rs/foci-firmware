@@ -41,7 +41,7 @@ pub async fn disarm_and_restore_velocity_limit<B: CommissioningBackend>(
     crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
 
     let mut clamp =
-        crate::commissioning::outer::velocity::current_guard::VelocityCurrentClampSession::try_new(
+        crate::commissioning::outer::velocity::velocity_clamp::VelocityCurrentClampSession::try_new(
             u32::from(operational_limit),
         )
         .map_err(|_| RestoreError::VelocityClamp)?;

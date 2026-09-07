@@ -2447,7 +2447,7 @@ mod tests {
         use crate::commissioning::outer::velocity::breakaway_campaign::{
             BreakawayCampaign, BreakawayCampaignRequest,
         };
-        use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
+        use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
 
         let result = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
@@ -2473,7 +2473,7 @@ mod tests {
         use crate::commissioning::outer::velocity::breakaway_campaign::{
             BreakawayCampaign, BreakawayCampaignRequest,
         };
-        use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
+        use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
 
         let campaign = BreakawayCampaign::new(BreakawayCampaignRequest {
             target_velocity_rpm: TmcMechanicalRpm::from_register(100),
@@ -2954,9 +2954,6 @@ mod tests {
             ConfirmationDirectionalInput, DiscoveryObservationAtom, evaluate_band_confirmation,
             plan_band_confirmation,
         };
-        use crate::commissioning::outer::velocity::current_guard::{
-            VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
-        };
         use crate::commissioning::outer::velocity::integral_evidence::{
             ExactRateInterval, IntegralRunEvidence,
         };
@@ -2969,6 +2966,9 @@ mod tests {
             CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
         };
         use crate::commissioning::outer::velocity::sweep_evidence::VelocityObservationClass;
+        use crate::commissioning::outer::velocity::velocity_clamp::{
+            VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
+        };
         use crate::commissioning::outer::{
             OuterMotionBudget, PositiveIRestBoundary, VelocitySettleMetrics,
         };

@@ -1,4 +1,3 @@
-use super::current_guard::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::integral_plan::IntegralSlotOrder;
 use super::integral_plan::{
     AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan,
@@ -23,6 +22,7 @@ use super::recovery::{
     plan_rung_origin_recovery,
 };
 use super::sweep_plan::RequestedVelocitySource;
+use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use crate::autotune::CommissionError;
 use crate::autotune::TmcMechanicalRpm;
 use crate::autotune::TransientBuffer;
@@ -1688,7 +1688,7 @@ fn seed_boundary(data: &mut VelocityIntegralData, rung_index: u8, slot: u8) {
         ),
         active_settle: VelocitySettleMetrics::EMPTY,
         zero_phase_current: observer
-            .evidence(super::current_guard::VelocityCurrentZeroPhase::Braking)
+            .evidence(super::velocity_clamp::VelocityCurrentZeroPhase::Braking)
             .unwrap(),
         cleanup_confirmed: false,
     });

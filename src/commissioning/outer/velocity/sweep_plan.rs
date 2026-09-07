@@ -3,11 +3,11 @@ use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidPGain, RegisterGain};
 use heapless::Vec;
 
-use super::current_guard::{VelocityLimitEvidenceCapability, derive_probe_limit};
 use super::recovery::{
     RECOVERY_STABILIZATION_US, RungOriginRecoveryPlanError, STABILIZED_RECOVERY_SCHEDULE_CODE,
     plan_rung_origin_recovery,
 };
+use super::velocity_clamp::{VelocityLimitEvidenceCapability, derive_probe_limit};
 
 /// Numerator of the runtime velocity-envelope proportional margin.
 pub const ENVELOPE_PROPORTIONAL_NUM: u32 = 3;

@@ -157,7 +157,7 @@ pub struct CurrentAxisSample {
 
 /// Current-loop short-sample validation gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct CurrentAxisGate {
+pub struct CurrentAxisSampleCriteria {
     /// Minimum allowed same-axis response, in permille of target.
     pub min_response_permille: Permille,
     /// Maximum allowed same-axis response, in permille of target.
@@ -178,7 +178,7 @@ pub struct CurrentAxisGate {
     pub actionable_status_mask: u32,
 }
 
-impl CurrentAxisGate {
+impl CurrentAxisSampleCriteria {
     /// Build a commissioning current-validation sample gate.
     pub const fn commissioning_short_sample(
         min_response_permille: u16,
@@ -201,7 +201,7 @@ impl CurrentAxisGate {
 
 /// Classified current-loop short-sample result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct CurrentAxisGateResult {
+pub struct CurrentAxisSampleClassification {
     /// `CURRENT_AXIS_VALIDATION_*` status code.
     pub status: u8,
     /// Same-axis current response normalized to target, in permille.
@@ -219,10 +219,10 @@ pub struct CurrentAxisGateResult {
 /// Classify one current-axis short sample against a fixed gate.
 pub fn classify_current_axis_sample(
     sample: &CurrentAxisSample,
-    gate: &CurrentAxisGate,
-) -> CurrentAxisGateResult {
+    gate: &CurrentAxisSampleCriteria,
+) -> CurrentAxisSampleClassification {
     if sample.target == 0 {
-        return CurrentAxisGateResult {
+        return CurrentAxisSampleClassification {
             status: CURRENT_AXIS_VALIDATION_ZERO_TARGET,
             response_permille: Permille::ZERO,
             cross_axis_permille: Permille::ZERO,
@@ -279,7 +279,7 @@ pub fn classify_current_axis_sample(
         CURRENT_AXIS_VALIDATION_PASS
     };
 
-    CurrentAxisGateResult {
+    CurrentAxisSampleClassification {
         status,
         response_permille,
         cross_axis_permille,
@@ -1066,7 +1066,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1092,7 +1092,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1116,7 +1116,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1140,7 +1140,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1165,7 +1165,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1191,7 +1191,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 850,
                 1150,
                 4,
@@ -1216,7 +1216,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 850,
                 1150,
                 4,
@@ -1241,7 +1241,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 850,
                 1150,
                 4,
@@ -1266,7 +1266,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 850,
                 1150,
                 4,
@@ -1291,7 +1291,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 850,
                 1150,
                 4,
@@ -1316,7 +1316,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1341,7 +1341,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1365,7 +1365,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1393,7 +1393,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4, feedback_config),
+            &CurrentAxisSampleCriteria::commissioning_short_sample(700, 1250, 4, feedback_config),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
@@ -1416,7 +1416,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4, feedback_config),
+            &CurrentAxisSampleCriteria::commissioning_short_sample(700, 1250, 4, feedback_config),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_STATUS_FLAGS);
@@ -1439,7 +1439,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(700, 1250, 4, feedback_config),
+            &CurrentAxisSampleCriteria::commissioning_short_sample(700, 1250, 4, feedback_config),
         );
 
         assert_eq!(gate.status, CURRENT_AXIS_VALIDATION_PASS);
@@ -1458,7 +1458,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1482,7 +1482,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1506,7 +1506,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1530,7 +1530,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,
@@ -1554,7 +1554,7 @@ mod tests {
         };
         let gate = classify_current_axis_sample(
             &sample,
-            &CurrentAxisGate::commissioning_short_sample(
+            &CurrentAxisSampleCriteria::commissioning_short_sample(
                 700,
                 1250,
                 4,

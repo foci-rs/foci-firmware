@@ -47,7 +47,7 @@ fn authority(channel: u8, digest: u64) -> StageCAuthoritySummary {
         hard_torque_limit: 2_816,
         usable_torque_limit: 2_534,
         limit_evidence_capability:
-            super::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+            super::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
         positive_rung_count: 6,
         family_size: 32,
         maximum_workflow_ms: 79_872,

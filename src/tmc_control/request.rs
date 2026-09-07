@@ -1840,7 +1840,7 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability:
-                crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+                crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
             directional_pooled_intervals: [[100, 120], [-130, -100]],
             confidence_q: 0,
             band_position_q: 0,
@@ -2870,7 +2870,7 @@ mod tests {
             hard_torque_limit: 2_816,
             usable_torque_limit: 2_534,
             limit_evidence_capability:
-                crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability::BestEffortPolling,
+                crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling,
             channel: 0,
             plan_time_pwm_hz: 25_000,
             plan_time_encoder_counts_per_rev: 4_000,

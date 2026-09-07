@@ -6,11 +6,11 @@ use crate::commissioning::types::{OuterSafetyFault, RestSelectionOwner};
 use crate::autotune::velocity_measurement::{
     DyadicBlocker, RawVelocityObservation, StationarityWork, VelocityMeasurementError,
 };
-use crate::commissioning::outer::velocity::current_guard::{
-    VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
-};
 use crate::commissioning::outer::velocity::recovery::{
     RungOriginRecoveryReport, RungOriginRecoveryRuntime,
+};
+use crate::commissioning::outer::velocity::velocity_clamp::{
+    VelocityCurrentObserver, VelocityCurrentPhaseEvidence,
 };
 use crate::commissioning::outer::velocity::{
     integral_evidence::ExactRateInterval, integral_plan::VelocityIntegralExecutionPlan,
@@ -466,11 +466,11 @@ mod tests {
     use crate::autotune::{CommissionError, CommissionPhase};
 
     use crate::commissioning::outer::OuterSafetyLimits;
-    use crate::commissioning::outer::velocity::current_guard::VelocityLimitEvidenceCapability;
     use crate::commissioning::outer::velocity::integral_plan::{
         AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
         VelocityIntegralExecutionPlan,
     };
+    use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
 
     fn minimal_velocity_integral_plan() -> VelocityIntegralExecutionPlan {
         VelocityIntegralExecutionPlan {

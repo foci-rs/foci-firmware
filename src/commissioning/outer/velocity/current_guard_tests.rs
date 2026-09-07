@@ -1,13 +1,13 @@
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 use super::VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT;
-use super::current_guard::{
+use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
+use super::velocity_clamp::{
     VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
     VelocityCurrentObserver, VelocityCurrentZeroPhase, VelocityLimitEvidenceCapability,
     begin_velocity_current_primitive, classify_phase_evidence, derive_probe_limit,
     finish_velocity_current_moving_phase, restart_velocity_current_primitive,
 };
-use super::sweep_plan::{RequestedVelocitySource, VelocitySweepRequest, plan_velocity_sweep};
 use crate::commission_dispatch::test_support::{
     MockBackend, SpiOp, breakaway_confirmation_for_test,
 };

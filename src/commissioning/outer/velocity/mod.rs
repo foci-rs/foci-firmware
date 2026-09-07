@@ -22,7 +22,6 @@ pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;
 #[cfg(test)]
 mod combined_plan_tests;
-pub(crate) mod current_guard;
 #[cfg(test)]
 mod current_guard_tests;
 pub mod integral_evidence;
@@ -59,15 +58,16 @@ mod sweep_consensus_tests;
 pub mod sweep_evidence;
 pub mod sweep_plan;
 pub(crate) mod sweep_reporting;
+pub(crate) mod velocity_clamp;
 pub mod workflow_plan;
 
 /// Wire value declaring best-effort polling for velocity-limit evidence.
 pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT: u32 =
-    current_guard::VelocityLimitEvidenceCapability::BestEffortPolling as u32;
+    velocity_clamp::VelocityLimitEvidenceCapability::BestEffortPolling as u32;
 
 /// Wire value declaring latched velocity-limit status evidence.
 pub const VELOCITY_LIMIT_EVIDENCE_CAPABILITY_LATCHED_FLAG: u32 =
-    current_guard::VelocityLimitEvidenceCapability::LatchedFlag as u32;
+    velocity_clamp::VelocityLimitEvidenceCapability::LatchedFlag as u32;
 
 pub(crate) use breakaway_campaign::{
     breakaway_campaign_fault_terminal, breakaway_campaign_pending_terminal,

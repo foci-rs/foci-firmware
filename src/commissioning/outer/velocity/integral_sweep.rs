@@ -31,12 +31,6 @@ use foci_tmc4671::registers::{
 };
 
 use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
-use super::current_guard::{
-    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
-    VelocityCurrentZeroPhase, begin_velocity_current_primitive,
-    finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
-    read_velocity_pid_input_abs, read_velocity_pid_output_abs,
-};
 use super::fixed_gain_amplitude_evidence::{
     FIXED_GAIN_AMPLITUDE_COUNT, FixedGainAmplitudeAvailability, FixedGainAmplitudeDirectionInput,
     FixedGainAmplitudeReport, FixedGainAmplitudeRunMasks, classify_fixed_gain_amplitude,
@@ -66,6 +60,12 @@ use super::sweep_evidence::{
 };
 use super::sweep_plan::{
     MAX_SAFETY_OBSERVATION_GAP_US, MIN_SETTLE_CAPTURE_US, VELOCITY_SWEEP_SAMPLE_PERIOD_US,
+};
+use super::velocity_clamp::{
+    VelocityCurrentClampSession, VelocityCurrentContact, VelocityCurrentGuardError,
+    VelocityCurrentZeroPhase, begin_velocity_current_primitive,
+    finish_velocity_current_moving_phase, finish_velocity_current_zero_phase,
+    read_velocity_pid_input_abs, read_velocity_pid_output_abs,
 };
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
@@ -1239,7 +1239,7 @@ fn evidence_terminal(data: &VelocityIntegralData, workspace: &TransientBuffer) -
 
 fn current_report(
     data: &mut VelocityIntegralData,
-    current_evidence: super::current_guard::VelocityCurrentPhaseEvidence,
+    current_evidence: super::velocity_clamp::VelocityCurrentPhaseEvidence,
 ) -> VelocityPrimitiveCurrentEvidence {
     VelocityPrimitiveCurrentEvidence {
         run_sequence: data.integrity.run_sequence(),

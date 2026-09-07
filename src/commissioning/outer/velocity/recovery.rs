@@ -15,8 +15,8 @@ use crate::commissioning::outer::state::{VELOCITY_SWEEP_BLOCK_LEVELS, VelocityOb
 use crate::commissioning::types::OuterSafetyFault;
 use foci_tmc4671::pid::PidPGain;
 
-use super::current_guard::VelocityCurrentObserver;
 use super::sweep_plan::{MOVING_STROKE_US, SETTLE_ANALYSIS_BUDGET_US, ZERO_SETTLE_US};
+use super::velocity_clamp::VelocityCurrentObserver;
 
 const MREV_PER_REV: u128 = 1_000;
 const MICROS_PER_SECOND: u128 = 1_000_000;

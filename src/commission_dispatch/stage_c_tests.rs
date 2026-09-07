@@ -850,7 +850,7 @@ fn outer_safety_timing_terminal_order_stage_c_resume() {
         use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
         use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
         use crate::commissioning::CommissioningEngine;
-        use crate::commissioning::outer::velocity::current_guard::{
+        use crate::commissioning::outer::velocity::velocity_clamp::{
             VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
         };
         use crate::commissioning::outer::{PositiveIRestBoundary, VelocitySettleMetrics};
@@ -977,7 +977,7 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
         use crate::autotune::velocity_measurement::{StationarityExclusion, StationarityResult};
         use crate::commission_dispatch::test_support::{MockBackend, SpiOp, fresh_state_locals};
         use crate::commissioning::CommissioningEngine;
-        use crate::commissioning::outer::velocity::current_guard::{
+        use crate::commissioning::outer::velocity::velocity_clamp::{
             VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
         };
         use crate::commissioning::outer::{PositiveIRestBoundary, VelocitySettleMetrics};
