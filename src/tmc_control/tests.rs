@@ -19,9 +19,9 @@ use crate::tmc_control::request::live_gain_failure_outcome;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 
+use crate::tmc_control::test_spi::RuntimeMockSpi;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 use foci_tmc4671::registers::{
     ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR, CONFIG_BIQUAD_T_ENABLE,
     PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
@@ -31,86 +31,6 @@ use foci_tmc4671::registers::{
     STATUS_FLAGS, STEP_WIDTH,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MockSpiError;
-
-impl embedded_hal_async::spi::Error for MockSpiError {
-    fn kind(&self) -> ErrorKind {
-        ErrorKind::Other
-    }
-}
-
-#[derive(Default)]
-struct RuntimeMockSpi {
-    writes: std::vec::Vec<(u8, u32)>,
-    write_attempts: std::vec::Vec<(u8, u32)>,
-    read_requests: std::vec::Vec<u8>,
-    reads: std::collections::VecDeque<u32>,
-    failed_write_addresses: std::vec::Vec<u8>,
-}
-
-impl RuntimeMockSpi {
-    fn with_read(mut self, value: u32) -> Self {
-        self.reads.push_back(value);
-        self
-    }
-
-    fn fail_writes_to(mut self, addr: u8) -> Self {
-        self.failed_write_addresses.push(addr);
-        self
-    }
-
-    fn attempted_write_to(&self, register: foci_tmc4671::registers::Register) -> bool {
-        self.write_attempts
-            .iter()
-            .any(|(addr, _)| *addr == register.addr())
-    }
-
-    fn read_requested(&self, register: foci_tmc4671::registers::Register) -> bool {
-        self.read_requests
-            .iter()
-            .any(|addr| *addr == register.addr())
-    }
-}
-
-impl ErrorType for RuntimeMockSpi {
-    type Error = MockSpiError;
-}
-
-impl SpiDevice<u8> for RuntimeMockSpi {
-    async fn transaction(
-        &mut self,
-        operations: &mut [Operation<'_, u8>],
-    ) -> Result<(), Self::Error> {
-        for op in operations {
-            match op {
-                Operation::Write(buf) if buf.len() == 5 => {
-                    let addr = buf[0] & 0x7f;
-                    let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
-                    self.write_attempts.push((addr, value));
-                    if self.failed_write_addresses.contains(&addr) {
-                        return Err(MockSpiError);
-                    }
-                    self.writes.push((addr, value));
-                }
-                Operation::Write(buf) if buf.len() == 1 => {
-                    self.read_requests.push(buf[0]);
-                }
-                Operation::Read(buf) => {
-                    let value = self.reads.pop_front().unwrap_or(0);
-                    buf.copy_from_slice(&value.to_be_bytes());
-                }
-                Operation::Write(_) | Operation::DelayNs(_) => {}
-                Operation::Transfer(read, write) => {
-                    read.copy_from_slice(write);
-                }
-                Operation::TransferInPlace(_) => {}
-            }
-        }
-        Ok(())
-    }
-}
 
 fn assert_no_actions(actions: &BoardActions) {
     assert_eq!(actions.len(), 0, "expected no board actions");

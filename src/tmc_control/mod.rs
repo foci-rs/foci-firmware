@@ -10,6 +10,7 @@ pub mod commission_poll;
 pub mod config;
 pub mod current_limit;
 pub mod dispatch;
+pub mod driver;
 pub mod filters;
 pub mod helpers;
 pub mod interlock;
@@ -25,6 +26,8 @@ pub mod state;
 
 #[cfg(test)]
 mod pi_representation_tests;
+#[cfg(test)]
+pub(crate) mod test_spi;
 #[cfg(test)]
 mod tests;
 
@@ -42,6 +45,10 @@ pub use commission_poll::{
     PollDriverAction, classify_absolute_wait, classify_wait_request, nonterminal_continuation,
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
+pub use driver::{
+    AuditResult, BootstrapStep, ChannelDriver, CommissionNext, DriveCtx, DriverPhase, ParkReason,
+    UnitOutcome,
+};
 pub use interlock::fault_interlock_tripped;
 pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_request};
 pub use scheduler::{

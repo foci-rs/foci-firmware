@@ -1,0 +1,246 @@
+//! Shared mock SPI and commissioning-backend test support for `tmc_control`.
+
+use core::convert::Infallible;
+use core::sync::atomic::AtomicU64;
+
+use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
+
+use crate::commissioning::backend::{CommissionBackendHooks, SharedCommissioningBackend};
+use crate::config::{FeedbackConfig, TmcConfig};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MockSpiError;
+
+impl embedded_hal_async::spi::Error for MockSpiError {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::Other
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RuntimeMockSpi {
+    pub(crate) writes: std::vec::Vec<(u8, u32)>,
+    pub(crate) write_attempts: std::vec::Vec<(u8, u32)>,
+    pub(crate) read_requests: std::vec::Vec<u8>,
+    pub(crate) reads: std::collections::VecDeque<u32>,
+    pub(crate) failed_write_addresses: std::vec::Vec<u8>,
+    pub(crate) echo_writes: bool,
+    pub(crate) fail_reads: bool,
+    pub(crate) last_read_request: Option<u8>,
+    pub(crate) written: std::collections::BTreeMap<u8, u32>,
+}
+
+impl RuntimeMockSpi {
+    pub(crate) fn with_read(mut self, value: u32) -> Self {
+        self.reads.push_back(value);
+        self
+    }
+
+    pub(crate) fn fail_writes_to(mut self, addr: u8) -> Self {
+        self.failed_write_addresses.push(addr);
+        self
+    }
+
+    pub(crate) fn attempted_write_to(&self, register: foci_tmc4671::registers::Register) -> bool {
+        self.write_attempts
+            .iter()
+            .any(|(addr, _)| *addr == register.addr())
+    }
+
+    pub(crate) fn read_requested(&self, register: foci_tmc4671::registers::Register) -> bool {
+        self.read_requests
+            .iter()
+            .any(|addr| *addr == register.addr())
+    }
+
+    /// Read back every verified write's own value instead of a seeded read.
+    pub(crate) fn echo_writes(mut self) -> Self {
+        self.echo_writes = true;
+        self
+    }
+
+    /// Fail every register read.
+    #[allow(dead_code)]
+    pub(crate) fn fail_reads(mut self) -> Self {
+        self.fail_reads = true;
+        self
+    }
+}
+
+impl ErrorType for RuntimeMockSpi {
+    type Error = MockSpiError;
+}
+
+impl SpiDevice<u8> for RuntimeMockSpi {
+    async fn transaction(
+        &mut self,
+        operations: &mut [Operation<'_, u8>],
+    ) -> Result<(), Self::Error> {
+        for op in operations {
+            match op {
+                Operation::Write(buf) if buf.len() == 5 => {
+                    let addr = buf[0] & 0x7f;
+                    let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                    self.write_attempts.push((addr, value));
+                    if self.failed_write_addresses.contains(&addr) {
+                        return Err(MockSpiError);
+                    }
+                    self.writes.push((addr, value));
+                    self.written.insert(addr, value);
+                }
+                Operation::Write(buf) if buf.len() == 1 => {
+                    let addr = buf[0] & 0x7f;
+                    self.read_requests.push(buf[0]);
+                    self.last_read_request = Some(addr);
+                }
+                Operation::Read(buf) => {
+                    if self.fail_reads {
+                        return Err(MockSpiError);
+                    }
+                    let value = self.reads.pop_front().unwrap_or_else(|| {
+                        if self.echo_writes {
+                            self.last_read_request
+                                .and_then(|addr| self.written.get(&addr).copied())
+                                .unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    });
+                    buf.copy_from_slice(&value.to_be_bytes());
+                }
+                Operation::Write(_) | Operation::DelayNs(_) => {}
+                Operation::Transfer(read, write) => {
+                    read.copy_from_slice(write);
+                }
+                Operation::TransferInPlace(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+impl embedded_hal::spi::SpiDevice<u8> for RuntimeMockSpi {
+    fn transaction(
+        &mut self,
+        operations: &mut [embedded_hal::spi::Operation<'_, u8>],
+    ) -> Result<(), Self::Error> {
+        for op in operations {
+            match op {
+                embedded_hal::spi::Operation::Write(buf) if buf.len() == 5 => {
+                    let addr = buf[0] & 0x7f;
+                    let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                    self.write_attempts.push((addr, value));
+                    if self.failed_write_addresses.contains(&addr) {
+                        return Err(MockSpiError);
+                    }
+                    self.writes.push((addr, value));
+                    self.written.insert(addr, value);
+                }
+                embedded_hal::spi::Operation::Write(buf) if buf.len() == 1 => {
+                    let addr = buf[0] & 0x7f;
+                    self.read_requests.push(buf[0]);
+                    self.last_read_request = Some(addr);
+                }
+                embedded_hal::spi::Operation::Read(buf) => {
+                    if self.fail_reads {
+                        return Err(MockSpiError);
+                    }
+                    let value = self.reads.pop_front().unwrap_or_else(|| {
+                        if self.echo_writes {
+                            self.last_read_request
+                                .and_then(|addr| self.written.get(&addr).copied())
+                                .unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    });
+                    buf.copy_from_slice(&value.to_be_bytes());
+                }
+                embedded_hal::spi::Operation::Write(_)
+                | embedded_hal::spi::Operation::DelayNs(_) => {}
+                embedded_hal::spi::Operation::Transfer(read, write) => {
+                    read.copy_from_slice(write);
+                }
+                embedded_hal::spi::Operation::TransferInPlace(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Enable pin stand-in that records its level.
+#[derive(Debug, Default)]
+pub(crate) struct TestPin {
+    pub(crate) high: bool,
+}
+
+impl embedded_hal::digital::ErrorType for TestPin {
+    type Error = Infallible;
+}
+
+impl embedded_hal::digital::OutputPin for TestPin {
+    fn set_low(&mut self) -> Result<(), Infallible> {
+        self.high = false;
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Infallible> {
+        self.high = true;
+        Ok(())
+    }
+}
+
+/// Monotonic clock the test hooks report.
+pub(crate) static ELAPSED_US: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
+    pwm_maxcnt: 3999,
+    tmc_clock_hz: 25_000_000,
+    bbm_h: 10,
+    bbm_l: 10,
+    dsadc_mdec_a: 331,
+    dsadc_mdec_b: 331,
+    adc_i_select: 0x1800_0100,
+    excitation_voltage: 512,
+    bandwidth_hz: 50.0,
+    electrical_model_theta_e_us: 160,
+    current_validation_flux_max_encoder_delta_counts: 4,
+    current_validation_torque_max_encoder_delta_counts: 16,
+    resistance_max_expected_current_count: 1600,
+    resistance_scale_metadata_validated: false,
+};
+pub(crate) static TEST_FEEDBACK_CONFIGS: [FeedbackConfig; 8] = {
+    let mut configs = [FeedbackConfig::abn_abn(); 8];
+    configs[3] = FeedbackConfig {
+        phi_e_source: crate::config::FeedbackSource::Analog,
+        position_source: crate::config::FeedbackSource::Abn,
+    };
+    configs
+};
+
+/// Board hooks for driver tests.
+pub(crate) struct TestHooks;
+
+impl CommissionBackendHooks for TestHooks {
+    fn commission_tmc_config() -> &'static TmcConfig {
+        &TEST_CONFIG
+    }
+
+    fn commission_feedback_configs() -> &'static [FeedbackConfig] {
+        &TEST_FEEDBACK_CONFIGS
+    }
+
+    fn commission_elapsed_us() -> u64 {
+        ELAPSED_US.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn commission_is_shutdown_requested() -> bool {
+        false
+    }
+
+    async fn commission_delay_us(_us: u32) {}
+}
+
+/// Backend over the mock SPI, the same type the boards build over real hardware.
+pub(crate) type TestBackend<'a> =
+    SharedCommissioningBackend<'a, RuntimeMockSpi, TestPin, TestHooks>;
