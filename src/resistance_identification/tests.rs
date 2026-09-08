@@ -1682,6 +1682,59 @@ fn setup_refuses_to_clear_status_flags_when_the_interlock_is_tripped() {
 }
 
 #[test]
+fn setup_refuses_to_enable_when_the_interlock_trips_after_the_status_clear() {
+    let mut backend = FakeResistanceBackend::standard();
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+
+    let mut now = 1_000;
+    let cleared = |backend: &FakeResistanceBackend| {
+        backend
+            .writes
+            .iter()
+            .any(|write| write.addr == STATUS_FLAGS.addr())
+    };
+    for _ in 0..32 {
+        if cleared(&backend) {
+            break;
+        }
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+    assert!(cleared(&backend), "setup never reached the STATUS_FLAGS clear");
+    assert!(!backend.enable_pin);
+
+    // The fault latches in the window the clear just opened: firmware holds it,
+    // but the chip's own copy was erased, so the re-read below comes back clean.
+    backend.interlock_tripped = true;
+
+    assert_eq!(
+        poll_runner(&mut runner, &mut backend, now),
+        ResistancePoll::ReadyNow
+    );
+
+    assert!(
+        !backend.enable_pin,
+        "setup must not raise the enable pin behind a tripped interlock"
+    );
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::CriticalStatus)
+    );
+    assert_eq!(
+        finish_restoration(&mut runner, &mut backend, now),
+        Err(ResistanceError::CriticalStatus)
+    );
+}
+
+#[test]
 fn warning_only_status_is_retained_without_terminating_sample() {
     let mut backend = FakeResistanceBackend::standard();
     let mut runner = ResistanceRunner::new(

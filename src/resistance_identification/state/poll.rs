@@ -146,6 +146,12 @@ impl ResistanceRunner {
         if operation < 10 {
             self.state = ResistanceState::Setup(operation + 1);
         } else {
+            // Step 9 erased the chip's copy of STATUS_FLAGS, so step 10's
+            // re-read cannot see a fault latched since. Re-check the firmware
+            // interlock, with no await before the pin write.
+            if backend.interlock_tripped() {
+                return self.fail(backend, ResistanceError::CriticalStatus);
+            }
             if self.mode == ResistanceRunMode::CommissioningManagedEnable {
                 backend.set_enable_pin(true);
             }
