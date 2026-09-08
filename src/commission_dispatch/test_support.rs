@@ -285,6 +285,9 @@ pub struct MockBackend {
     pub enable_pin: bool,
     /// Value returned by `interlock_tripped`; tests set it to inject a fault.
     pub interlock_tripped: bool,
+    /// If `Some(addr)`, trip the interlock once that address has been written,
+    /// modelling an ISR latching a fault during the SPI transfer itself.
+    pub trip_interlock_on_write: Option<u8>,
     /// Log of every `delay_us` call, in order.
     pub delay_us_log: Vec<u32, 32>,
     /// If `Some(addr)`, `write_register` returns `Err(MockSpiError)` for that address.
@@ -426,6 +429,7 @@ impl MockBackend {
             trace_emission_order: Vec::new(),
             enable_pin: false,
             interlock_tripped: false,
+            trip_interlock_on_write: None,
             delay_us_log: Vec::new(),
             fail_on_write: None,
             fail_on_write_occurrence: None,
@@ -750,6 +754,9 @@ impl CommissionRegisterIo for MockBackend {
             self.advanced_pi_representation = val;
         }
         let _ = self.registers.insert(addr, val);
+        if self.trip_interlock_on_write == Some(addr) {
+            self.interlock_tripped = true;
+        }
         Ok(())
     }
 

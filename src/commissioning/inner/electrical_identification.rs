@@ -1652,53 +1652,54 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
         ElectricalIdentificationState::InductanceSetupOperation { operation } => {
             let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
-            let result: Result<(), ()> = match *operation {
+            let result: Result<(), CommissionError> = match *operation {
                 0 => backend
                     .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
                     .await
-                    .map_err(|_| ()),
-                1 => backend.write_register(UQ_UD_EXT, 0).await.map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
+                1 => backend
+                    .write_register(UQ_UD_EXT, 0)
+                    .await
+                    .map_err(|_| CommissionError::Spi),
                 2 => backend
                     .write_register(OPENLOOP_VELOCITY_TARGET, 0)
                     .await
-                    .map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
                 3 => backend
                     .write_register(OPENLOOP_MODE, 0)
                     .await
-                    .map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
                 4 => backend
                     .write_register(OPENLOOP_ACCELERATION, INDUCTANCE_OPENLOOP_ACCELERATION)
                     .await
-                    .map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
                 5 => backend
                     .write_register(
                         OPENLOOP_VELOCITY_TARGET,
                         INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
                     )
                     .await
-                    .map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
                 6 => backend
                     .write_register(PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP)
                     .await
-                    .map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
                 7 => backend
                     .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
                     .await
-                    .map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
                 8 => backend
                     .write_register_verified(PWM_SV_CHOP, 7)
                     .await
                     .map(|_| ())
-                    .map_err(|_| ()),
-                _ => crate::tmc_control::interlock::clear_status_flags_via_backend(backend)
-                    .await
-                    .map_err(|_| ()),
+                    .map_err(|_| CommissionError::Spi),
+                _ => crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await,
             };
-            if result.is_err() {
+            if let Err(error) = result {
                 return begin_inductance_restore(
                     electrical_identification_state,
                     backend,
-                    Some(CommissionError::Spi),
+                    Some(error),
                     None,
                     None,
                 );
@@ -1719,6 +1720,17 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     None,
                 );
             };
+            // The clear above erased the chip's copy of STATUS_FLAGS, so a fault
+            // latched since is only visible in firmware. No await before the pin.
+            if backend.interlock_tripped() {
+                return begin_inductance_restore(
+                    electrical_identification_state,
+                    backend,
+                    Some(CommissionError::FaultInterlock),
+                    None,
+                    None,
+                );
+            }
             backend.set_enable_pin(true);
             *electrical_identification_state =
                 ElectricalIdentificationState::InductanceWaitVelocity { deadline_us };
@@ -3403,6 +3415,56 @@ mod tests {
                     register.addr()
                 );
             }
+        });
+    }
+
+    #[test]
+    fn inductance_setup_refuses_to_enable_when_the_interlock_trips_during_the_status_clear() {
+        pollster::block_on(async {
+            let mut data = ElectricalIdentificationData::new(1024);
+            data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceSetup,
+                data,
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            // The fault latches while the clear's SPI transfer is in flight, so
+            // the chip's copy of STATUS_FLAGS is already gone when it lands.
+            backend.trip_interlock_on_write = Some(STATUS_FLAGS.addr());
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            for _ in 0..11 {
+                let result = step_electrical_identification(
+                    &mut phase,
+                    &mut buf,
+                    InnerSequence::Commission,
+                    &mut selftest_results,
+                    &mut diagnostics,
+                    &mut backend,
+                )
+                .await;
+                assert!(matches!(result, StepResult::ReadyNow));
+            }
+
+            assert!(
+                !backend.enable_pin,
+                "inductance setup must not enable behind a tripped interlock"
+            );
+            let InnerPhase::ElectricalIdentification { state, .. } = &phase else {
+                panic!("expected electrical identification, got {phase:?}");
+            };
+            assert!(
+                matches!(
+                    state,
+                    ElectricalIdentificationState::InductanceRestore {
+                        primary_error: Some(CommissionError::FaultInterlock),
+                        ..
+                    }
+                ),
+                "the interlock refusal must reach the host as FaultInterlock, got {state:?}"
+            );
         });
     }
 
