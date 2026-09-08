@@ -230,7 +230,15 @@ impl ChannelDriver {
             (_, DriverPhase::Parked(_)) => UnitOutcome::Idle,
             (UnitClass::Fast, DriverPhase::Ready) => self.drive_fast(backend, &ctx).await,
             (UnitClass::Maintenance, DriverPhase::Ready) => {
-                self.drive_maintenance(backend, &ctx).await
+                // A maintenance group snapshots which channels are Ready when
+                // it opens and is not cancelled by a later mode change, so its
+                // unit can arrive after commissioning or a restore has taken
+                // the channel. `phase` cannot see that; `mode` can.
+                if self.mode() == ChannelMode::Ready {
+                    self.drive_maintenance(backend, &ctx).await
+                } else {
+                    UnitOutcome::Idle
+                }
             }
             (UnitClass::Commission | UnitClass::Restore, DriverPhase::Ready) => {
                 self.drive_commission(backend, ctx).await
@@ -844,6 +852,31 @@ mod tests {
         let mut rig = Rig::new(spi);
         rig.driver.phase = DriverPhase::Ready;
         rig
+    }
+
+    #[fixture_test]
+    async fn a_maintenance_unit_left_over_from_ready_is_idle_once_commissioning_owns_the_channel() {
+        // A maintenance group opens while the channel is Ready and is not
+        // cancelled by a later mode change, so its per-channel unit can still
+        // be handed out after a commissioning request has taken the channel.
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+        rig.driver.runtime.set_commission_engine(
+            crate::commission_dispatch::test_support::breakaway_campaign_engine(),
+        );
+        assert_eq!(rig.driver.mode(), ChannelMode::Commissioning);
+        let writes_before = rig.spi().writes.len();
+
+        let outcome = rig.drive(UnitClass::Maintenance).await;
+
+        assert!(
+            matches!(outcome, UnitOutcome::Idle),
+            "a stale maintenance unit must not run"
+        );
+        assert_eq!(
+            rig.spi().writes.len(),
+            writes_before,
+            "a stale maintenance unit must not write while commissioning owns the channel"
+        );
     }
 
     #[fixture_test]
