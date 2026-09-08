@@ -16,6 +16,7 @@ pub mod lifecycle;
 pub mod pi_representation;
 pub mod request;
 pub mod request_writes;
+pub mod scheduler;
 pub mod settle;
 pub mod signals;
 pub mod stall_detector;
@@ -41,6 +42,10 @@ pub use commission_poll::{
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_request};
+pub use scheduler::{
+    ChannelMode, ChannelScheduler, MAINTENANCE_PERIOD_US, MaintenanceGroup, STATUS_AUDIT_PERIOD_US,
+    SourceStats, Unit, UnitClass,
+};
 pub use signals::TmcControlSignals;
 pub use state::{
     EmergencyDisableFault, HomingMaintenanceResult, TmcControlRuntime, TmcControlTraceState,
