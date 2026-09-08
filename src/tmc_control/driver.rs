@@ -172,7 +172,7 @@ pub const PWM_LIMIT_MASK: u32 = (1 << 24) | (1 << 25);
 
 impl ChannelDriver {
     /// Create a driver for `channel`, starting at the first bootstrap step.
-    pub fn new(channel: u8) -> Self {
+    pub const fn new(channel: u8) -> Self {
         Self {
             runtime: TmcControlRuntime::new_for_channel(channel),
             phase: DriverPhase::Bootstrap(BootstrapStep::ChipId),
