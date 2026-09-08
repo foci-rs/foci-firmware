@@ -131,8 +131,6 @@ pub struct TmcControlRuntime {
     phase_advance_base_register: u32,
     phase_advance_last_register: u32,
     pid_error_clear_countdown_ms: u8,
-    status_poll_counter: u16,
-    slow_control_accum_us: u16,
     stall_detector: Option<crate::tmc_control::stall_detector::StallDetector>,
     homing_clamp_retries: u8,
     #[cfg(feature = "trace")]
@@ -176,8 +174,6 @@ impl TmcControlRuntime {
             phase_advance_base_register: 0,
             phase_advance_last_register: 0,
             pid_error_clear_countdown_ms: 0,
-            status_poll_counter: 0,
-            slow_control_accum_us: 0,
             stall_detector: None,
             homing_clamp_retries: 0,
             #[cfg(feature = "trace")]
@@ -270,8 +266,6 @@ impl TmcControlRuntime {
         self.phase_advance_base_register = 0;
         self.phase_advance_last_register = 0;
         self.pid_error_clear_countdown_ms = 0;
-        self.status_poll_counter = 0;
-        self.slow_control_accum_us = 0;
         self.clear_homing_runtime();
         #[cfg(feature = "trace")]
         {
@@ -2012,70 +2006,6 @@ impl TmcControlRuntime {
             .await
     }
 
-    /// Apply slow maintenance tick work.
-    ///
-    /// This covers host-requested PID error clear settling, homing position-I
-    /// suppression/restoration, and periodic `STATUS_FLAGS` polling. USB trace
-    /// transport remains board-local.
-    ///
-    /// # Parameters
-    /// - `tmc_spi`: TMC4671 SPI transport for register reads and writes.
-    /// - `refs`: Borrowed channel atomics for this motor.
-    /// - `config`: Runtime control configuration; supplies the board current
-    ///   scale used to clamp the torque limit to the homing current.
-    /// - `homing`: Board-owned homing state atomics.
-    pub async fn apply_slow_maintenance_tick<B>(
-        &mut self,
-        tmc_spi: &mut foci_tmc4671::spi::Tmc4671Spi<B>,
-        refs: TmcControlStateRefs<'_>,
-        config: &TmcControlConfig,
-        homing: TmcControlHomingRefs<'_>,
-    ) -> BoardActions
-    where
-        B: embedded_hal_async::spi::SpiDevice<u8>,
-    {
-        let mut actions = BoardActions::new();
-
-        let homing_snapshot = homing.state.load(Relaxed);
-        match self
-            .apply_slow_channel_maintenance_tick(tmc_spi, refs, config, homing_snapshot)
-            .await
-        {
-            HomingMaintenanceResult::ReadyToAdvance => {}
-            HomingMaintenanceResult::RetryCurrentState => return actions,
-            HomingMaintenanceResult::FailClosed => {
-                refs.tmc.homing_clamp_active.store(false, Relaxed);
-                refs.tmc.stall_latched.store(false, Relaxed);
-                self.clear_homing_runtime();
-                push_action(&mut actions, BoardAction::SignalEmergencyDisable);
-                return actions;
-            }
-        }
-        Self::advance_homing_state_after_channels(homing, homing_snapshot, true);
-
-        self.status_poll_counter += 1;
-        if self.status_poll_counter >= 1000 {
-            self.status_poll_counter = 0;
-            if let Ok(flags) = tmc_spi
-                .read_register(foci_tmc4671::registers::STATUS_FLAGS)
-                .await
-            {
-                const PID_LIMIT_MASK: u32 = 0x0000_FFFF;
-                const PWM_LIMIT_MASK: u32 = (1 << 24) | (1 << 25);
-                const FAULT_MASK: u32 = 1 << 26;
-
-                if flags & FAULT_MASK != 0 {
-                    defmt::error!("TMC4671 STATUS fault: {:#010x}", flags);
-                    push_action(&mut actions, BoardAction::SignalEmergencyDisable);
-                } else if self.motor_enabled && flags & (PID_LIMIT_MASK | PWM_LIMIT_MASK) != 0 {
-                    defmt::warn!("TMC4671 STATUS: {:#010x}", flags);
-                }
-            }
-        }
-
-        actions
-    }
-
     /// Advance the trace control tick for a board-local trace sample.
     #[cfg(feature = "trace")]
     pub fn advance_trace_sample_tick(&mut self) -> u32 {
@@ -2170,22 +2100,6 @@ impl TmcControlRuntime {
         }
     }
 
-    /// Update the slow-control decimation accumulator and return whether slow
-    /// work is due this tick.
-    ///
-    /// The slow path fires at approximately 1 kHz regardless of the fast
-    /// transient period. When `control_period_us` is already at or above 1 ms
-    /// the accumulator is reset and the slow path fires immediately. For faster
-    /// periods the method accumulates microseconds and fires once the total
-    /// reaches 1 000 µs, subtracting 1 000 from the accumulator rather than
-    /// clearing it so that any overshoot carries forward.
-    ///
-    /// # Parameters
-    /// - `control_period_us`: Current control period in microseconds.
-    pub fn update_slow_control(&mut self, control_period_us: u32) -> bool {
-        Self::update_slow_control_accumulator(&mut self.slow_control_accum_us, control_period_us)
-    }
-
     #[cfg(test)]
     pub(crate) fn set_calibrated_for_test(&mut self, value: bool) {
         self.calibrated = value;
@@ -2230,28 +2144,8 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_slow_control_accum_us_for_test(&mut self, value: u16) {
-        self.slow_control_accum_us = value;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn slow_control_accum_us_for_test(&self) -> u16 {
-        self.slow_control_accum_us
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_status_poll_counter_for_test(&mut self, value: u16) {
-        self.status_poll_counter = value;
-    }
-
-    #[cfg(test)]
     pub(crate) fn pid_error_clear_countdown_for_test(&self) -> u8 {
         self.pid_error_clear_countdown_ms
-    }
-
-    #[cfg(test)]
-    pub(crate) fn update_slow_control_for_test(&mut self, control_period_us: u32) -> bool {
-        self.update_slow_control(control_period_us)
     }
 
     #[cfg(test)]

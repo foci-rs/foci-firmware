@@ -1096,7 +1096,6 @@ fn config_reset_runtime_state_clears_owned_flags_and_defaults() {
     runtime.set_calibrated_for_test(true);
     runtime.set_motor_enabled_for_test(true);
     runtime.set_planner_velocity_scale_for_test(1234);
-    runtime.set_slow_control_accum_us_for_test(750);
 
     runtime.reset_runtime_state();
 
@@ -1104,7 +1103,6 @@ fn config_reset_runtime_state_clears_owned_flags_and_defaults() {
     assert!(!runtime.is_motor_enabled());
     assert_eq!(runtime.planner_velocity_scale(), None);
     assert_eq!(runtime.planner_rpm_scale(), None);
-    assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
 }
 
 #[test]
@@ -1335,120 +1333,6 @@ fn pid_error_settle_tick_waits_for_inactive_timer_then_clears() {
                 (STATUS_FLAGS.addr(), 0),
             ]
         );
-    });
-}
-
-#[test]
-fn slow_maintenance_before_status_cadence_returns_empty_without_status_read() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        let config = commissioning_runtime_config();
-        let homing_state = core::sync::atomic::AtomicU8::new(0);
-        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
-        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
-        runtime.set_status_poll_counter_for_test(998);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1 << 26));
-
-        let actions = runtime
-            .apply_slow_maintenance_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                &config,
-                homing,
-            )
-            .await;
-
-        assert_no_actions(&actions);
-        assert!(!tmc.into_inner().read_requested(STATUS_FLAGS));
-    });
-}
-
-#[test]
-fn slow_maintenance_status_poll_non_fault_returns_empty() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        let config = commissioning_runtime_config();
-        let homing_state = core::sync::atomic::AtomicU8::new(0);
-        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
-        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
-        runtime.set_status_poll_counter_for_test(999);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(0));
-
-        let actions = runtime
-            .apply_slow_maintenance_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                &config,
-                homing,
-            )
-            .await;
-
-        assert_no_actions(&actions);
-        assert!(tmc.into_inner().read_requested(STATUS_FLAGS));
-    });
-}
-
-#[test]
-fn slow_maintenance_status_fault_emits_emergency_disable() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        let config = commissioning_runtime_config();
-        let homing_state = core::sync::atomic::AtomicU8::new(0);
-        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
-        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
-        runtime.set_status_poll_counter_for_test(999);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(1 << 26));
-
-        let actions = runtime
-            .apply_slow_maintenance_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                &config,
-                homing,
-            )
-            .await;
-
-        assert_single_signal_emergency_disable(&actions);
-        assert!(tmc.into_inner().read_requested(STATUS_FLAGS));
-    });
-}
-
-#[test]
-fn slow_maintenance_homing_retry_skips_status_poll() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = crate::state::tmc::TmcChannelState::new();
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        let config = commissioning_runtime_config();
-        let homing_state = core::sync::atomic::AtomicU8::new(1);
-        let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
-        let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
-        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
-        runtime.set_status_poll_counter_for_test(999);
-        let raw_spi =
-            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr());
-        let mut tmc = Tmc4671Spi::new(raw_spi);
-
-        let actions = runtime
-            .apply_slow_maintenance_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                &config,
-                homing,
-            )
-            .await;
-
-        assert_no_actions(&actions);
-        assert_eq!(homing_state.load(Relaxed), 1);
-        let raw_spi = tmc.into_inner();
-        assert!(raw_spi.attempted_write_to(ABN_DECODER_PHI_E_PHI_M_OFFSET));
-        assert!(!raw_spi.read_requested(STATUS_FLAGS));
     });
 }
 
@@ -1956,80 +1840,6 @@ fn homing_restore_failure_retries_then_fails_closed() {
             tmc_state.homing_clamp_active.load(Relaxed),
             "clamp stays flagged until a successful restore or the board disable path"
         );
-    });
-}
-
-#[test]
-fn slow_maintenance_fail_closed_signals_emergency_disable() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = homing_state(&mut runtime);
-        tmc_state.homing_current_ma.store(0, Relaxed);
-        tmc_state.stall_endstop_configured.store(true, Relaxed);
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        let homing_state_atomic = core::sync::atomic::AtomicU8::new(1);
-        let triggered = core::sync::atomic::AtomicU8::new(0xFF);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        let actions = runtime
-            .apply_slow_maintenance_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                &homing_runtime_config(),
-                TmcControlHomingRefs::new(&homing_state_atomic, &triggered),
-            )
-            .await;
-
-        assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, BoardAction::SignalEmergencyDisable))
-        );
-        assert_eq!(
-            homing_state_atomic.load(Relaxed),
-            1,
-            "state must not advance on fail-closed"
-        );
-        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
-    });
-}
-
-#[test]
-fn slow_maintenance_fail_closed_clears_stall_latch_and_retry_counter() {
-    pollster::block_on(async {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let tmc_state = homing_state(&mut runtime);
-        // A prior clamp-write retry (from an unrelated cause) left the retry
-        // counter non-zero; this fail-closed cause (homing current 0 with a
-        // stall endstop configured) never touches the counter itself, so it
-        // must be the teardown that resets it.
-        runtime.set_homing_clamp_retries_for_test(2);
-        tmc_state.stall_latched.store(true, Relaxed);
-        tmc_state.homing_current_ma.store(0, Relaxed);
-        tmc_state.stall_endstop_configured.store(true, Relaxed);
-        let stepper_state = crate::state::stepper::StepperChannelState::new();
-        let homing_state_atomic = core::sync::atomic::AtomicU8::new(1);
-        let triggered = core::sync::atomic::AtomicU8::new(0xFF);
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        let actions = runtime
-            .apply_slow_maintenance_tick(
-                &mut tmc,
-                TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                &homing_runtime_config(),
-                TmcControlHomingRefs::new(&homing_state_atomic, &triggered),
-            )
-            .await;
-
-        assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, BoardAction::SignalEmergencyDisable))
-        );
-        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
-        assert!(!tmc_state.stall_latched.load(Relaxed));
-        assert!(!runtime.stall_detector_armed_for_test());
-        assert_eq!(runtime.homing_clamp_retries_for_test(), 0);
     });
 }
 
@@ -2613,25 +2423,6 @@ fn diagnostic_trip_clears_runtime_and_step_acceptance_state() {
     assert!(!stepper.timer_active_mirror.load(Relaxed));
     tmc.reset();
     stepper.reset();
-}
-
-#[test]
-fn slow_control_tick_fires_every_millisecond_under_fast_period() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-
-    assert!(!runtime.update_slow_control_for_test(250));
-    assert!(!runtime.update_slow_control_for_test(250));
-    assert!(!runtime.update_slow_control_for_test(250));
-    assert!(runtime.update_slow_control_for_test(250));
-    assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
-}
-
-#[test]
-fn slow_control_tick_fires_immediately_for_default_period() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-
-    assert!(runtime.update_slow_control_for_test(1_000));
-    assert_eq!(runtime.slow_control_accum_us_for_test(), 0);
 }
 
 #[test]
