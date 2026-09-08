@@ -139,6 +139,11 @@ pub struct ChannelScheduler<const N: usize> {
     audit_stats: SourceStats,
     bootstrap_stats: SourceStats,
     rr_cursor: u8,
+    /// Bit `ch` set once channel `ch` has taken its `Fast` turn in the current
+    /// round. The cursor advances once the round completes, not once per pick:
+    /// a whole cohort of picks would otherwise wrap it back to where it
+    /// started and hand the same channel the first slot at every grid point.
+    rr_served: u8,
     in_flight: Option<Unit>,
 }
 
@@ -168,6 +173,7 @@ impl<const N: usize> ChannelScheduler<N> {
             audit_stats: SourceStats::default(),
             bootstrap_stats: SourceStats::default(),
             rr_cursor: 0,
+            rr_served: 0,
             in_flight: None,
         }
     }
@@ -423,7 +429,12 @@ impl<const N: usize> ChannelScheduler<N> {
             UnitClass::Restore => {}
         }
         if matches!(unit.class, UnitClass::Fast) {
-            self.rr_cursor = (unit.channel + 1) % N as u8;
+            self.rr_served |= 1 << unit.channel;
+            let ready = self.ready_mask();
+            if ready != 0 && self.rr_served & ready == ready {
+                self.rr_served = 0;
+                self.rr_cursor = (self.rr_cursor + 1) % N as u8;
+            }
         }
         self.in_flight = Some(unit);
         Some(unit)
@@ -503,6 +514,18 @@ impl<const N: usize> ChannelScheduler<N> {
 
     const fn all_channels_mask() -> u8 {
         ((1u16 << N) - 1) as u8
+    }
+
+    /// Bit `ch` set for every channel currently in `Ready`, i.e. every channel
+    /// a `Fast` round can expect a turn from.
+    fn ready_mask(&self) -> u8 {
+        let mut mask = 0u8;
+        for (idx, slot) in self.channels.iter().enumerate() {
+            if slot.mode == ChannelMode::Ready {
+                mask |= 1 << idx;
+            }
+        }
+        mask
     }
 }
 
@@ -635,13 +658,13 @@ mod tests {
         let second = s.pick(0, 0).unwrap();
         s.record(0, 0);
         assert_eq!((first.channel, second.channel), (0, 1));
-        // The cursor advances past the last picked channel, so each grid
-        // point starts with the channel that went second last time.
+        // The cursor advances once the round completes, so the next grid point
+        // starts with the channel that went second here.
         let third = s.pick(100, 0).unwrap();
         s.record(100, 0);
         let fourth = s.pick(100, 0).unwrap();
         s.record(100, 0);
-        assert_eq!((third.channel, fourth.channel), (0, 1));
+        assert_eq!((third.channel, fourth.channel), (1, 0));
         // Three channels make the rotation visible. Deadline still comes
         // first: at t=450 channel 1 is overdue from t=200 and goes first;
         // channels 0 and 2 then tie at 450 and the cursor, which sits just
@@ -663,6 +686,44 @@ mod tests {
             t.record(450, 0);
         }
         assert_eq!(later, [1, 2, 0]);
+    }
+
+    /// Serve every channel at each of several grid points and report which
+    /// channel went first at each one.
+    fn first_served_per_grid<const N: usize>(
+        s: &mut ChannelScheduler<N>,
+        period_us: u64,
+        grid_points: usize,
+    ) -> heapless::Vec<u8, 8> {
+        let mut firsts = heapless::Vec::new();
+        for point in 0..grid_points {
+            let now = period_us * point as u64;
+            for slot in 0..N {
+                let unit = s.pick(now, 0).expect("every channel is due");
+                assert_eq!(unit.class, UnitClass::Fast);
+                if slot == 0 {
+                    firsts.push(unit.channel).unwrap();
+                }
+                s.record(now, 0);
+            }
+        }
+        firsts
+    }
+
+    #[test]
+    fn round_robin_rotates_which_channel_goes_first_across_grid_points() {
+        let mut two = ready(0, [100, 100]);
+        assert_eq!(
+            first_served_per_grid(&mut two, 100, 4).as_slice(),
+            &[0, 1, 0, 1],
+            "a full cohort per grid point must not always start with the same channel"
+        );
+
+        let mut three = ready(0, [100, 100, 100]);
+        assert_eq!(
+            first_served_per_grid(&mut three, 100, 4).as_slice(),
+            &[0, 1, 2, 0]
+        );
     }
 
     #[test]
