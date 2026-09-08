@@ -1708,7 +1708,10 @@ fn setup_refuses_to_enable_when_the_interlock_trips_after_the_status_clear() {
             ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
         }
     }
-    assert!(cleared(&backend), "setup never reached the STATUS_FLAGS clear");
+    assert!(
+        cleared(&backend),
+        "setup never reached the STATUS_FLAGS clear"
+    );
     assert!(!backend.enable_pin);
 
     // The fault latches in the window the clear just opened: firmware holds it,
