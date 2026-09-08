@@ -1121,18 +1121,56 @@ mod tests {
         ));
     }
 
+    /// A nonterminal action reaches the driver as one of four continuations.
+    /// `Terminal` and `PollNow` deliberately converge here, so this level
+    /// cannot witness the stale-terminal collapse in `nonterminal_continuation`
+    /// — `promoted_phase_change_reclassifies_terminal_as_immediate_repoll`
+    /// guards that, and the board's own direct call is where it decides
+    /// whether the polling loop ends.
     #[test]
-    fn stale_terminal_classification_with_a_phase_change_collapses_to_poll_now() {
-        let (outcome, _) = commission_outcome(
+    fn commission_outcome_merges_terminal_and_poll_now_but_keeps_yield_and_wait() {
+        for driver_action in [PollDriverAction::Terminal, PollDriverAction::PollNow] {
+            for phase_changed in [true, false] {
+                let event = phase_changed.then(phase_changed_event);
+                let (outcome, reported) = commission_outcome(
+                    ScheduledCommissionTickAction::ReadyNow { event },
+                    driver_action,
+                );
+                assert!(matches!(
+                    outcome,
+                    UnitOutcome::Commission {
+                        next: CommissionNext::PollNow,
+                        ..
+                    }
+                ));
+                assert_eq!(reported, phase_changed);
+            }
+        }
+
+        let (yielded, _) = commission_outcome(
             ScheduledCommissionTickAction::ReadyNow {
                 event: Some(phase_changed_event()),
             },
-            PollDriverAction::Terminal,
+            PollDriverAction::YieldNow,
         );
         assert!(matches!(
-            outcome,
+            yielded,
             UnitOutcome::Commission {
-                next: CommissionNext::PollNow,
+                next: CommissionNext::Yield,
+                ..
+            }
+        ));
+
+        let (waiting, _) = commission_outcome(
+            ScheduledCommissionTickAction::ReadyNow {
+                event: Some(phase_changed_event()),
+            },
+            PollDriverAction::WaitUntil(77),
+        );
+        assert!(matches!(
+            waiting,
+            UnitOutcome::Commission {
+                next: CommissionNext::WaitUntil(77),
                 ..
             }
         ));
