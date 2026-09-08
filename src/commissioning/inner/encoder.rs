@@ -976,7 +976,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                     let voltage = backend.excitation_voltage() as u32;
                     *phase = InnerPhase::ElectricalIdentification {
                         state: ElectricalIdentificationState::ResistanceStart,
-                        data: ElectricalIdentificationData::new(voltage),
+                        data: ElectricalIdentificationData::new(voltage, backend.current_limit()),
                     };
                     StepResult::PhaseChanged(CommissionPhase::ElectricalIdentification)
                 }
@@ -2339,6 +2339,59 @@ mod tests {
             assert_eq!(torque_filter_hz, gains.torque_filter_hz);
             assert_eq!(position_filter_hz, gains.position_filter_hz);
             assert_eq!(flux_filter_hz, gains.flux_filter_hz);
+        });
+    }
+
+    #[test]
+    fn electrical_identification_entry_freezes_the_current_limit() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut phase = InnerPhase::EncoderAlign {
+                state: EncoderAlignState::StopDrive {
+                    old_count: encoder_count(42),
+                    electrical_residual_counts: 2,
+                    stability_counts: 1,
+                    movement_counts: 25,
+                    min_movement_counts: 2,
+                    counts_per_electrical_rev: 80,
+                },
+            };
+            let mut adc_cal = Some(AdcCalResult {
+                adc_i0: 1,
+                adc_i1: 2,
+                encoder_count: 0,
+                encoder_alignment_electrical_residual_counts: 0,
+                encoder_alignment_stability_counts: 0,
+                encoder_alignment_movement_counts: 0,
+                encoder_alignment_min_movement_counts: 0,
+                encoder_alignment_counts_per_electrical_rev: 0,
+                adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+                adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+            });
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(2816);
+
+            let result = step_encoder_align(
+                &mut phase,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::ElectricalIdentification)
+            ));
+            let InnerPhase::ElectricalIdentification { data, .. } = phase else {
+                panic!("commission StopDrive should enter ElectricalIdentification");
+            };
+            assert_eq!(u32::from(data.current_limit), 2816);
         });
     }
 }

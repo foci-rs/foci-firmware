@@ -922,7 +922,10 @@ impl CommissioningEngine {
         };
         *phase = InnerPhase::ElectricalIdentification {
             state: inner::ElectricalIdentificationState::InductanceSample { capture },
-            data: inner::ElectricalIdentificationData::new(1_024),
+            data: inner::ElectricalIdentificationData::new(
+                1_024,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            ),
         };
     }
 
@@ -935,7 +938,10 @@ impl CommissioningEngine {
             .reset(inner::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US as u16);
         *phase = InnerPhase::ElectricalIdentification {
             state: inner::ElectricalIdentificationState::DelaySample { capture },
-            data: inner::ElectricalIdentificationData::new(1_024),
+            data: inner::ElectricalIdentificationData::new(
+                1_024,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            ),
         };
     }
 
@@ -1867,7 +1873,10 @@ mod tests {
 
         let mut phase = inner::InnerPhase::ElectricalIdentification {
             state: inner::ElectricalIdentificationState::ResistanceStart,
-            data: inner::ElectricalIdentificationData::new(1024),
+            data: inner::ElectricalIdentificationData::new(
+                1024,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            ),
         };
         let mut buf = crate::autotune::TransientBuffer::new();
         let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -1948,8 +1957,8 @@ mod tests {
         assert!(engine_step <= 4_336);
         assert_eq!(step_inner, 4_288);
         assert!(step_inner <= 4_288);
-        assert_eq!(electrical_id, 640);
-        assert!(electrical_id <= 640);
+        assert_eq!(electrical_id, 656);
+        assert!(electrical_id <= 656);
         assert!(electrical_id <= 960);
         assert_eq!(scheduled_step, 4_416);
         // The hot path keeps nonterminal classification outside the terminal
@@ -3288,7 +3297,10 @@ mod tests {
         let mut engine =
             CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced);
         if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
-            let mut data = inner::ElectricalIdentificationData::new(512);
+            let mut data = inner::ElectricalIdentificationData::new(
+                512,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            );
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
             *phase = InnerPhase::ElectricalIdentification {
                 state: inner::ElectricalIdentificationState::DelaySample {
@@ -3357,7 +3369,10 @@ mod tests {
                         )
                         .unwrap(),
                     },
-                    data: inner::ElectricalIdentificationData::new(512),
+                    data: inner::ElectricalIdentificationData::new(
+                        512,
+                        crate::commission_dispatch::test_support::current_limit(2816),
+                    ),
                 };
             }
             backend.shutdown_requested = true;
@@ -3404,7 +3419,10 @@ mod tests {
                 max_spi_wall_us: 8,
             };
             if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
-                let mut data = inner::ElectricalIdentificationData::new(512);
+                let mut data = inner::ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                );
                 data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 2;
                 *phase = InnerPhase::ElectricalIdentification {
                     state: inner::ElectricalIdentificationState::InductanceRestore {

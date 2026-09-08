@@ -200,6 +200,8 @@ pub(crate) enum EncoderAlignState {
 pub(crate) struct ElectricalIdentificationData {
     /// Excitation voltage used for all measurements (PIDOUT units).
     pub(crate) voltage: u32,
+    /// Torque/flux current limit frozen at entry to electrical identification.
+    pub(crate) current_limit: foci_tmc4671::current_limit::PidTorqueFluxLimit,
     /// Shared multi-point resistance-identification result. `Some` once the
     /// runner-owned `ResistanceIdentify` sub-state completes; the
     /// inductance/delay/gain path reads its count-slope-milli values from here.
@@ -225,9 +227,13 @@ pub(crate) struct ElectricalIdentificationData {
 }
 
 impl ElectricalIdentificationData {
-    pub(crate) fn new(voltage: u32) -> Self {
+    pub(crate) fn new(
+        voltage: u32,
+        current_limit: foci_tmc4671::current_limit::PidTorqueFluxLimit,
+    ) -> Self {
         Self {
             voltage,
+            current_limit,
             resistance_result: None,
             resistance_timing: None,
             inductance: None,

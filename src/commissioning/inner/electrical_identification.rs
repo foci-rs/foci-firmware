@@ -371,6 +371,7 @@ fn assemble_electrical_model(
 /// real backend.
 struct CommissionResistanceBackend<'a, B: CommissioningBackend> {
     backend: &'a mut B,
+    current_limit: foci_tmc4671::current_limit::PidTorqueFluxLimit,
 }
 
 impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBackend
@@ -426,11 +427,17 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
     }
 
     fn profile(&self) -> crate::resistance_identification::ResistanceProfile {
-        self.backend.tmc_config().resistance_profile(
+        let mut profile = self.backend.tmc_config().resistance_profile(
             self.backend
                 .tmc_config()
                 .resistance_scale_metadata_validated,
-        )
+        );
+        let envelope = crate::tmc_control::current_limit::diagnostic_current_envelope(
+            self.current_limit,
+            crate::resistance_identification::RESISTANCE_DIAGNOSTIC_CURRENT_FRACTION,
+        );
+        profile.max_expected_current_count = profile.max_expected_current_count.min(envelope);
+        profile
     }
 
     fn encoder_counts_per_rev(&self) -> u32 {
@@ -1584,7 +1591,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
         ElectricalIdentificationState::ResistanceIdentify { runner } => {
             let now_us = backend.elapsed_us();
             let poll = runner
-                .poll(&mut CommissionResistanceBackend { backend }, now_us)
+                .poll(
+                    &mut CommissionResistanceBackend {
+                        backend,
+                        current_limit: data.current_limit,
+                    },
+                    now_us,
+                )
                 .await;
             let resistance_timing = runner.timing_evidence();
             data.resistance_timing = Some(resistance_timing.capture_evidence());
@@ -2618,7 +2631,10 @@ mod tests {
     /// Per-coil resistance count-slopes of 1706 milli and accepted rotating-
     /// field reactance evidence from the AC estimator.
     fn representative_data() -> ElectricalIdentificationData {
-        let mut data = ElectricalIdentificationData::new(512);
+        let mut data = ElectricalIdentificationData::new(
+            512,
+            crate::commission_dispatch::test_support::current_limit(2816),
+        );
         data.resistance_result = Some(resistance_result(1706, 1706));
         data.inductance = Some(inductance_evidence_fixture(8_600, 1_000_000));
         data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
@@ -2665,7 +2681,10 @@ mod tests {
 
     #[test]
     fn electrical_id_enters_rotating_inductance_after_resistance() {
-        let mut data = ElectricalIdentificationData::new(768);
+        let mut data = ElectricalIdentificationData::new(
+            768,
+            crate::commission_dispatch::test_support::current_limit(2816),
+        );
         data.resistance_result = Some(resistance_result_fixture());
 
         let state = ElectricalIdentificationState::InductanceSetup;
@@ -2716,7 +2735,10 @@ mod tests {
 
     #[test]
     fn model_assembly_uses_configured_theta() {
-        let mut data = ElectricalIdentificationData::new(512);
+        let mut data = ElectricalIdentificationData::new(
+            512,
+            crate::commission_dispatch::test_support::current_limit(2816),
+        );
         // r_count_slope_milli = 1706 (V=512 / I=300 count-slope).
         data.resistance_result = Some(resistance_result(1706, 1706));
         data.inductance = Some(inductance_evidence_fixture(9_500, 1_000_000));
@@ -3292,7 +3314,10 @@ mod tests {
     #[test]
     fn inductance_setup_bounds_voltage_before_enable_and_starts_hardware_ramp() {
         pollster::block_on(async {
-            let mut data = ElectricalIdentificationData::new(1024);
+            let mut data = ElectricalIdentificationData::new(
+                1024,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            );
             data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::InductanceSetup,
@@ -4253,7 +4278,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::InductanceSetup,
-                data: ElectricalIdentificationData::new(1024),
+                data: ElectricalIdentificationData::new(
+                    1024,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -4285,7 +4313,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(1024),
+                data: ElectricalIdentificationData::new(
+                    1024,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -4322,7 +4353,10 @@ mod tests {
     #[test]
     fn inductance_half_turn_path_tears_down_without_committing_evidence() {
         pollster::block_on(async {
-            let mut data = ElectricalIdentificationData::new(512);
+            let mut data = ElectricalIdentificationData::new(
+                512,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            );
             data.resistance_result = Some(resistance_result_fixture());
             data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
             let mut phase = InnerPhase::ElectricalIdentification {
@@ -4390,9 +4424,10 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(
-                    backend.tmc_config().excitation_voltage,
-                )),
+                data: ElectricalIdentificationData::new(
+                    u32::from(backend.tmc_config().excitation_voltage),
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4455,9 +4490,10 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(
-                    backend.tmc_config().excitation_voltage,
-                )),
+                data: ElectricalIdentificationData::new(
+                    u32::from(backend.tmc_config().excitation_voltage),
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4534,9 +4570,10 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(
-                    backend.tmc_config().excitation_voltage,
-                )),
+                data: ElectricalIdentificationData::new(
+                    u32::from(backend.tmc_config().excitation_voltage),
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4590,9 +4627,10 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(
-                    backend.tmc_config().excitation_voltage,
-                )),
+                data: ElectricalIdentificationData::new(
+                    u32::from(backend.tmc_config().excitation_voltage),
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4662,9 +4700,10 @@ mod tests {
 
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::ResistanceStart,
-                data: ElectricalIdentificationData::new(u32::from(
-                    backend.tmc_config().excitation_voltage,
-                )),
+                data: ElectricalIdentificationData::new(
+                    u32::from(backend.tmc_config().excitation_voltage),
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4706,7 +4745,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::DelaySetup,
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -4779,7 +4821,10 @@ mod tests {
             for transport_failure in [false, true] {
                 let mut phase = InnerPhase::ElectricalIdentification {
                     state: ElectricalIdentificationState::DelaySetup,
-                    data: ElectricalIdentificationData::new(512),
+                    data: ElectricalIdentificationData::new(
+                        512,
+                        crate::commission_dispatch::test_support::current_limit(2816),
+                    ),
                 };
                 let mut buf = TransientBuffer::new();
                 let mut backend = MockBackend::new();
@@ -4849,7 +4894,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::DelayApplyStep { baseline: 0 },
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -4901,7 +4949,10 @@ mod tests {
     #[test]
     fn delay_missed_slot_rejects_without_catch_up_read() {
         pollster::block_on(async {
-            let mut data = ElectricalIdentificationData::new(512);
+            let mut data = ElectricalIdentificationData::new(
+                512,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            );
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::DelaySample {
@@ -4961,7 +5012,10 @@ mod tests {
                 state: ElectricalIdentificationState::DelaySample {
                     capture: delay_capture_state(0, 1_000, 1_200),
                 },
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -5004,7 +5058,10 @@ mod tests {
                 state: ElectricalIdentificationState::DelaySample {
                     capture: delay_capture_state(0, 1_000, 1_200),
                 },
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -5051,7 +5108,10 @@ mod tests {
     #[test]
     fn delay_source_overflow_is_retained_before_restore() {
         pollster::block_on(async {
-            let mut data = ElectricalIdentificationData::new(512);
+            let mut data = ElectricalIdentificationData::new(
+                512,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            );
             data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::DelaySample {
@@ -5122,7 +5182,10 @@ mod tests {
         let mut delay_capture = delay_capture_state(0, 1_000, 1_200);
         let slot = sample_slot(1_200, 200, 1_400).unwrap();
         delay_capture.timing.record_rejected_slot(slot, 1_400);
-        let mut delay_data = ElectricalIdentificationData::new(512);
+        let mut delay_data = ElectricalIdentificationData::new(
+            512,
+            crate::commission_dispatch::test_support::current_limit(2816),
+        );
         delay_data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
         let delay_phase = InnerPhase::ElectricalIdentification {
             state: ElectricalIdentificationState::DelaySample {
@@ -5209,7 +5272,10 @@ mod tests {
                     primary_error: None,
                     completed: Some(completed_delay_capture(&[160, 350, 515])),
                 },
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
@@ -5276,7 +5342,10 @@ mod tests {
                     primary_error: Some(CommissionError::DelayTimingRejected),
                     completed: None,
                 },
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -5316,7 +5385,10 @@ mod tests {
                     primary_error: None,
                     completed: Some(completed_delay_capture(&[160, 320])),
                 },
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -5355,7 +5427,10 @@ mod tests {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::DelayPreSettle { deadline_us: 2_000 },
-                data: ElectricalIdentificationData::new(512),
+                data: ElectricalIdentificationData::new(
+                    512,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
             };
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
@@ -5401,7 +5476,10 @@ mod tests {
     fn data_with_per_coil_currents(c0: i32, c1: i32) -> ElectricalIdentificationData {
         let slope0 = (512_000 / c0.max(1)).max(1);
         let slope1 = (512_000 / c1.max(1)).max(1);
-        let mut data = ElectricalIdentificationData::new(512);
+        let mut data = ElectricalIdentificationData::new(
+            512,
+            crate::commission_dispatch::test_support::current_limit(2816),
+        );
         data.resistance_result = Some(resistance_result(slope0, slope1));
         data.inductance = Some(inductance_evidence_fixture(8_600, 1_000_000));
         data
@@ -5478,7 +5556,10 @@ mod tests {
 
     #[test]
     fn assemble_rejects_zero_l_count_micro_with_model_scale_zero() {
-        let mut data = ElectricalIdentificationData::new(512);
+        let mut data = ElectricalIdentificationData::new(
+            512,
+            crate::commission_dispatch::test_support::current_limit(2816),
+        );
         data.resistance_result = Some(resistance_result(100, 100));
         data.inductance = Some(inductance_evidence_fixture(1, 1_000_000));
         let err = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap_err();
@@ -5497,5 +5578,31 @@ mod tests {
             assembly.warning_flags & INNER_WARN_BIT_RESISTANCE_MISMATCH,
             0
         );
+    }
+
+    #[test]
+    fn resistance_profile_ceiling_binds_to_the_frozen_limit() {
+        use crate::resistance_identification::ResistanceBackend;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
+        let mut backend = MockBackend::new();
+        let adapter = CommissionResistanceBackend {
+            backend: &mut backend,
+            current_limit: PidTorqueFluxLimit::new(2816).unwrap(),
+        };
+        assert_eq!(adapter.profile().max_expected_current_count, 1600);
+    }
+
+    #[test]
+    fn resistance_profile_ceiling_binds_to_a_low_run_current() {
+        use crate::resistance_identification::ResistanceBackend;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
+        let mut backend = MockBackend::new();
+        let adapter = CommissionResistanceBackend {
+            backend: &mut backend,
+            current_limit: PidTorqueFluxLimit::new(367).unwrap(),
+        };
+        assert_eq!(adapter.profile().max_expected_current_count, 220);
     }
 }
