@@ -2116,16 +2116,6 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn homing_clamp_retries_for_test(&self) -> u8 {
-        self.homing_clamp_retries
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_homing_clamp_retries_for_test(&mut self, value: u8) {
-        self.homing_clamp_retries = value;
-    }
-
-    #[cfg(test)]
     pub(crate) fn arm_stall_detector_for_test(&mut self, threshold: u32, persistence: u8) {
         self.stall_detector = Some(crate::tmc_control::stall_detector::StallDetector::new(
             threshold,

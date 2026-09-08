@@ -79,22 +79,6 @@ fn assert_stop_then_shutdown(actions: &BoardActions, reason: ShutdownReason) {
     assert_shutdown_at(actions, 1, reason);
 }
 
-fn assert_single_signal_emergency_disable(actions: &BoardActions) {
-    assert_eq!(
-        actions.len(),
-        1,
-        "expected one SignalEmergencyDisable action"
-    );
-    match &actions[0] {
-        BoardAction::SignalEmergencyDisable => {}
-        BoardAction::Stepper(_) => panic!("expected SignalEmergencyDisable, got Stepper"),
-        BoardAction::Shutdown(_) => panic!("expected SignalEmergencyDisable, got Shutdown"),
-        BoardAction::DelegatedDiagnostic(_) => {
-            panic!("expected SignalEmergencyDisable, got DelegatedDiagnostic")
-        }
-    }
-}
-
 fn assert_single_delegated_request(actions: &BoardActions, expected: &TmcRequest) {
     assert_eq!(actions.len(), 1, "expected one DelegatedDiagnostic action");
     match &actions[0] {
