@@ -1,13 +1,16 @@
 //! Per-channel driver: one scheduler unit in, one bounded piece of TMC work out.
 
+use core::sync::atomic::Ordering::Relaxed;
+
 use crate::commission_dispatch::{CommissionRetention, PostActions, ReplyPayload};
 use crate::commissioning::backend::{
     CommissionTmcSpiAccess, CommissionTmcStateAccess, CommissioningBackend,
 };
 use crate::commissioning::schedule::CommissionEvent;
+use crate::state::tmc::TmcChannelState;
 use crate::tmc_control::bootstrap::{TmcSafetyBootstrapStage, bootstrap_tmc_safety};
 use crate::tmc_control::commission_poll::CommissionPollDriver;
-use crate::tmc_control::config::TmcControlConfig;
+use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
 use crate::tmc_control::scheduler::{ChannelMode, Unit, UnitClass};
 use crate::tmc_control::state::{HomingMaintenanceResult, TmcControlRuntime};
 
@@ -146,17 +149,17 @@ pub struct ChannelDriver {
     /// Board-agnostic channel runtime; request handling reaches it directly.
     pub runtime: TmcControlRuntime,
     phase: DriverPhase,
-    // Consumed by the Fast/Maintenance/Commission arms landing in later tasks.
+    // Consumed by the Commission arm landing in a later task.
     #[allow(dead_code)]
     poll_driver: CommissionPollDriver,
-    #[allow(dead_code)]
     reset_for_fast: bool,
-    #[allow(dead_code)]
     reset_for_maintenance: bool,
-    #[allow(dead_code)]
     last_command_velocity_reference: i32,
     /// Sequence number for commission trace engine events.
     pub commission_trace_engine_seq: u32,
+    /// Homing state the last maintenance unit acted on, for tests only.
+    #[cfg(test)]
+    pub(crate) last_maintenance_homing_active: bool,
     /// Engine and phase currently sampled by the trace stream.
     #[cfg(feature = "trace")]
     pub commission_trace_phase: Option<(
@@ -164,6 +167,11 @@ pub struct ChannelDriver {
         crate::autotune::PhaseId,
     )>,
 }
+
+/// `STATUS_FLAGS` bits that are limiter warnings, not faults.
+pub const PID_LIMIT_MASK: u32 = 0x0000_FFFF;
+/// `STATUS_FLAGS` PWM saturation bits.
+pub const PWM_LIMIT_MASK: u32 = (1 << 24) | (1 << 25);
 
 impl ChannelDriver {
     /// Create a driver for `channel`, starting at the first bootstrap step.
@@ -176,6 +184,8 @@ impl ChannelDriver {
             reset_for_maintenance: false,
             last_command_velocity_reference: 0,
             commission_trace_engine_seq: 0,
+            #[cfg(test)]
+            last_maintenance_homing_active: false,
             #[cfg(feature = "trace")]
             commission_trace_phase: None,
         }
@@ -306,25 +316,157 @@ impl ChannelDriver {
         UnitOutcome::Parked(reason)
     }
 
-    async fn drive_fast<B>(&mut self, _backend: &mut B, _ctx: &DriveCtx<'_>) -> UnitOutcome
-    where
-        B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
-    {
-        UnitOutcome::Idle
+    fn refs<'a>(&self, tmc_state: &'a TmcChannelState) -> TmcControlStateRefs<'a> {
+        let stepper =
+            crate::state::stepper::stepper_channel(self.channel()).expect("validated TMC channel");
+        TmcControlStateRefs::new(tmc_state, stepper)
     }
 
-    async fn drive_maintenance<B>(&mut self, _backend: &mut B, _ctx: &DriveCtx<'_>) -> UnitOutcome
-    where
-        B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
-    {
-        UnitOutcome::Idle
+    /// Consume the shared reset latch for one arm and hand it to the other.
+    fn take_reset(&mut self, tmc_state: &TmcChannelState, fast: bool) -> bool {
+        let latched = tmc_state.feedforward_reset.swap(false, Relaxed);
+        if latched {
+            if fast {
+                self.reset_for_maintenance = true;
+            } else {
+                self.reset_for_fast = true;
+            }
+        }
+        let own = if fast {
+            core::mem::take(&mut self.reset_for_fast)
+        } else {
+            core::mem::take(&mut self.reset_for_maintenance)
+        };
+        latched || own
     }
 
-    async fn drive_audit<B>(&mut self, _backend: &mut B, _ctx: &DriveCtx<'_>) -> UnitOutcome
+    async fn drive_fast<B>(&mut self, backend: &mut B, ctx: &DriveCtx<'_>) -> UnitOutcome
     where
         B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
     {
-        UnitOutcome::Idle
+        let tmc_state = backend.tmc_state();
+        let refs = self.refs(tmc_state);
+        if tmc_state.config_apply_pending.load(Relaxed)
+            && crate::tmc_control::filters::apply_pending_config(
+                backend.tmc_spi(),
+                tmc_state,
+                ctx.config.tmc.pwm_maxcnt,
+            )
+            .await
+            .is_err()
+        {
+            defmt::error!("pending TMC config apply failed");
+            tmc_state.config_apply_pending.store(true, Relaxed);
+        }
+        let reset = self.take_reset(tmc_state, true);
+        self.last_command_velocity_reference =
+            self.runtime
+                .command_velocity_reference(refs, ctx.homing_active, reset);
+        if self
+            .runtime
+            .apply_feedforward_tick(
+                backend.tmc_spi(),
+                refs,
+                ctx.config,
+                ctx.homing_active,
+                reset,
+                false,
+            )
+            .await
+            .is_err()
+        {
+            defmt::warn!("TMC feedforward tick failed");
+        }
+        UnitOutcome::Reschedule {
+            fast_period_us: self.runtime.control_period_us(refs),
+        }
+    }
+
+    async fn drive_maintenance<B>(&mut self, backend: &mut B, ctx: &DriveCtx<'_>) -> UnitOutcome
+    where
+        B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
+    {
+        let tmc_state = backend.tmc_state();
+        let refs = self.refs(tmc_state);
+        let reset = self.take_reset(tmc_state, false);
+        let homing_active = ctx.homing_snapshot != 0;
+        #[cfg(test)]
+        {
+            self.last_maintenance_homing_active = homing_active;
+        }
+        if self
+            .runtime
+            .apply_feedforward_tick(
+                backend.tmc_spi(),
+                refs,
+                ctx.config,
+                homing_active,
+                reset,
+                true,
+            )
+            .await
+            .is_err()
+        {
+            defmt::warn!("TMC slow feedforward tick failed");
+        }
+        self.runtime
+            .apply_phase_and_position_tick(
+                backend.tmc_spi(),
+                refs,
+                self.last_command_velocity_reference,
+                homing_active,
+                reset,
+            )
+            .await;
+        let homing = self
+            .runtime
+            .apply_slow_channel_maintenance_tick(
+                backend.tmc_spi(),
+                refs,
+                ctx.config,
+                ctx.homing_snapshot,
+            )
+            .await;
+        UnitOutcome::Maintenance { homing }
+    }
+
+    async fn drive_audit<B>(&mut self, backend: &mut B, ctx: &DriveCtx<'_>) -> UnitOutcome
+    where
+        B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
+    {
+        let flags = match backend
+            .tmc_spi()
+            .read_register(foci_tmc4671::registers::STATUS_FLAGS)
+            .await
+        {
+            Ok(flags) => flags,
+            Err(_) => {
+                defmt::error!(
+                    "TMC4671 channel {} STATUS audit read failed",
+                    self.channel()
+                );
+                return UnitOutcome::Audit(AuditResult::ReadFailed);
+            }
+        };
+        let result = if flags & ctx.status_mask != 0 {
+            if ctx.status_pin_asserted {
+                AuditResult::Critical { flags }
+            } else {
+                defmt::error!(
+                    "TMC4671 channel {} STATUS fault {:#010x} with inactive pin",
+                    self.channel(),
+                    flags
+                );
+                AuditResult::PinMismatch { flags }
+            }
+        } else if self.runtime.is_motor_enabled() && flags & (PID_LIMIT_MASK | PWM_LIMIT_MASK) != 0
+        {
+            defmt::warn!("TMC4671 channel {} STATUS: {:#010x}", self.channel(), flags);
+            AuditResult::Warning { flags }
+        } else {
+            AuditResult::Clean
+        };
+        UnitOutcome::Audit(result)
     }
 
     async fn drive_commission<B>(&mut self, _backend: &mut B, _ctx: DriveCtx<'_>) -> UnitOutcome
@@ -381,6 +523,34 @@ mod tests {
         }
 
         async fn drive(&mut self, class: UnitClass) -> UnitOutcome {
+            self.drive_with(class, false, false, 0).await
+        }
+
+        async fn drive_with_pin(
+            &mut self,
+            class: UnitClass,
+            status_pin_asserted: bool,
+        ) -> UnitOutcome {
+            self.drive_with(class, status_pin_asserted, false, 0).await
+        }
+
+        async fn drive_with_homing(
+            &mut self,
+            class: UnitClass,
+            homing_active: bool,
+            homing_snapshot: u8,
+        ) -> UnitOutcome {
+            self.drive_with(class, false, homing_active, homing_snapshot)
+                .await
+        }
+
+        async fn drive_with(
+            &mut self,
+            class: UnitClass,
+            status_pin_asserted: bool,
+            homing_active: bool,
+            homing_snapshot: u8,
+        ) -> UnitOutcome {
             let mut backend = TestBackend::new(
                 0,
                 &mut self.tmc,
@@ -389,9 +559,9 @@ mod tests {
             );
             let ctx = DriveCtx {
                 now_us: 0,
-                homing_active: false,
-                homing_snapshot: 0,
-                status_pin_asserted: false,
+                homing_active,
+                homing_snapshot,
+                status_pin_asserted,
                 status_mask: 1 << 26,
                 config: &self.config,
                 retention: CommissionRetention::new(&mut self.slot),
@@ -546,5 +716,194 @@ mod tests {
             UnitOutcome::Idle
         ));
         assert!(rig.spi().writes.is_empty());
+    }
+
+    fn ready_rig(spi: RuntimeMockSpi) -> Rig {
+        let mut rig = Rig::new(spi);
+        rig.driver.phase = DriverPhase::Ready;
+        rig
+    }
+
+    #[fixture_test]
+    async fn fast_unit_applies_pending_config_before_feedforward_and_reschedules() {
+        use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state
+            .config_apply_pending
+            .store(true, core::sync::atomic::Ordering::Relaxed);
+        let mut rig = ready_rig(RuntimeMockSpi::default());
+
+        let outcome = rig.drive(UnitClass::Fast).await;
+
+        let UnitOutcome::Reschedule { fast_period_us } = outcome else {
+            panic!("fast unit must reschedule");
+        };
+        assert_eq!(
+            fast_period_us,
+            rig.driver
+                .runtime
+                .control_period_us(crate::tmc_control::TmcControlStateRefs::new(
+                    tmc_state,
+                    crate::state::stepper::stepper_channel0(),
+                ))
+        );
+        assert!(
+            !tmc_state
+                .config_apply_pending
+                .load(core::sync::atomic::Ordering::Relaxed)
+        );
+        // apply_pending_config's first write is the voltage limit; it must
+        // precede any feedforward write in the log.
+        let writes = &rig.spi().writes;
+        assert!(
+            writes
+                .first()
+                .is_some_and(|(addr, _)| *addr == PIDOUT_UQ_UD_LIMITS.addr())
+        );
+    }
+
+    #[fixture_test]
+    async fn failed_pending_config_apply_leaves_the_flag_set_for_retry() {
+        use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state
+            .config_apply_pending
+            .store(true, core::sync::atomic::Ordering::Relaxed);
+        let mut rig =
+            ready_rig(RuntimeMockSpi::default().fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr()));
+
+        let outcome = rig.drive(UnitClass::Fast).await;
+
+        assert!(matches!(outcome, UnitOutcome::Reschedule { .. }));
+        assert!(
+            tmc_state
+                .config_apply_pending
+                .load(core::sync::atomic::Ordering::Relaxed)
+        );
+    }
+
+    #[fixture_test]
+    async fn reset_latch_reaches_maintenance_after_a_fast_unit_consumed_it() {
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state
+            .feedforward_reset
+            .store(true, core::sync::atomic::Ordering::Relaxed);
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+
+        let _ = rig.drive(UnitClass::Fast).await;
+        assert!(
+            !tmc_state
+                .feedforward_reset
+                .load(core::sync::atomic::Ordering::Relaxed)
+        );
+        assert!(rig.driver.reset_for_maintenance);
+        assert!(!rig.driver.reset_for_fast);
+
+        let _ = rig.drive(UnitClass::Maintenance).await;
+        assert!(!rig.driver.reset_for_maintenance);
+        assert!(!rig.driver.reset_for_fast);
+    }
+
+    #[fixture_test]
+    async fn reset_latch_reaches_fast_after_a_maintenance_unit_consumed_it() {
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state
+            .feedforward_reset
+            .store(true, core::sync::atomic::Ordering::Relaxed);
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+
+        let _ = rig.drive(UnitClass::Maintenance).await;
+        assert!(
+            !tmc_state
+                .feedforward_reset
+                .load(core::sync::atomic::Ordering::Relaxed)
+        );
+        assert!(rig.driver.reset_for_fast);
+        assert!(!rig.driver.reset_for_maintenance);
+
+        let _ = rig.drive(UnitClass::Fast).await;
+        assert!(!rig.driver.reset_for_fast);
+        assert!(!rig.driver.reset_for_maintenance);
+    }
+
+    #[fixture_test]
+    async fn maintenance_uses_the_frozen_homing_snapshot_not_the_live_flag() {
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+        // Live flag says homing, snapshot says not: maintenance must follow the snapshot.
+        let outcome = rig.drive_with_homing(UnitClass::Maintenance, true, 0).await;
+        assert!(matches!(outcome, UnitOutcome::Maintenance { .. }));
+        assert!(!rig.driver.last_maintenance_homing_active);
+        let outcome = rig
+            .drive_with_homing(UnitClass::Maintenance, false, 2)
+            .await;
+        assert!(matches!(outcome, UnitOutcome::Maintenance { .. }));
+        assert!(rig.driver.last_maintenance_homing_active);
+    }
+
+    #[fixture_test]
+    async fn maintenance_unit_reports_the_homing_result_for_the_snapshot() {
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+        let outcome = rig.drive(UnitClass::Maintenance).await;
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Maintenance {
+                homing: HomingMaintenanceResult::ReadyToAdvance
+            }
+        ));
+    }
+
+    #[fixture_test]
+    async fn audit_reads_status_flags_and_never_writes_them() {
+        let mut rig = ready_rig(RuntimeMockSpi::default().with_read(0));
+        let outcome = rig.drive(UnitClass::StatusAudit).await;
+        assert!(matches!(outcome, UnitOutcome::Audit(AuditResult::Clean)));
+        assert!(rig.spi().read_requested(STATUS_FLAGS));
+        assert!(!rig.spi().attempted_write_to(STATUS_FLAGS));
+    }
+
+    #[fixture_test]
+    async fn audit_reports_pin_mismatch_when_a_critical_flag_is_set_but_the_pin_is_inactive() {
+        let mut rig = ready_rig(RuntimeMockSpi::default().with_read(1 << 26));
+        let outcome = rig.drive(UnitClass::StatusAudit).await;
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Audit(AuditResult::PinMismatch { flags }) if flags == 1 << 26
+        ));
+    }
+
+    #[fixture_test]
+    async fn audit_reports_critical_when_the_pin_is_asserted_too() {
+        let mut rig = ready_rig(RuntimeMockSpi::default().with_read(1 << 26));
+        let outcome = rig.drive_with_pin(UnitClass::StatusAudit, true).await;
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Audit(AuditResult::Critical { .. })
+        ));
+    }
+
+    #[fixture_test]
+    async fn audit_reports_read_failure() {
+        let mut rig = ready_rig(RuntimeMockSpi::default().fail_reads());
+        let outcome = rig.drive(UnitClass::StatusAudit).await;
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Audit(AuditResult::ReadFailed)
+        ));
+    }
+
+    #[fixture_test]
+    async fn audit_runs_for_a_parked_channel() {
+        let mut rig = Rig::new(
+            RuntimeMockSpi::default()
+                .echo_writes()
+                .with_read(0xDEAD_BEEF)
+                .with_read(0),
+        );
+        let _ = rig.drive(UnitClass::Bootstrap).await;
+        assert_eq!(rig.driver.mode(), ChannelMode::Parked);
+        assert!(matches!(
+            rig.drive(UnitClass::StatusAudit).await,
+            UnitOutcome::Audit(AuditResult::Clean)
+        ));
     }
 }

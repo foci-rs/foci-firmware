@@ -60,7 +60,6 @@ impl RuntimeMockSpi {
     }
 
     /// Fail every register read.
-    #[allow(dead_code)]
     pub(crate) fn fail_reads(mut self) -> Self {
         self.fail_reads = true;
         self
