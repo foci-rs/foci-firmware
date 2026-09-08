@@ -189,6 +189,8 @@ where
         return handled(empty_report(oid, VELOCITY_LIMIT_LATCH_STATUS_NOT_READY));
     }
 
+    let tmc_state =
+        crate::state::tmc::tmc_channel(ctx.runtime.channel()).expect("validated TMC channel");
     let mut report = empty_report(oid, 0);
     let mut saved = SavedRegisters::default();
     let run_result: Result<(), ()> = async {
@@ -254,10 +256,7 @@ where
         // PID_TORQUE_FLUX_LIMITS as the PI-controller output clamp.
         // STATUS_FLAGS is RW and bit 7 is pid_v_output_limit; writing zero
         // explicitly resets the flags before the focused stimulus.
-        ctx.tmc
-            .write_register(STATUS_FLAGS, 0)
-            .await
-            .map_err(|_| ())?;
+        crate::tmc_control::interlock::clear_status_flags(ctx.tmc, tmc_state).await?;
 
         let pulse_start_us = ctx.delay.now_us();
         report.target_readback =
@@ -285,10 +284,7 @@ where
         reject_unexpected_stimulus_status(report.delayed_status_flags, ctx.feedback_config)?;
         report.delayed_read_elapsed_us = elapsed_u32(delayed_start_us, ctx.delay.now_us());
 
-        ctx.tmc
-            .write_register(STATUS_FLAGS, 0)
-            .await
-            .map_err(|_| ())?;
+        crate::tmc_control::interlock::clear_status_flags(ctx.tmc, tmc_state).await?;
         report.post_clear_status_flags =
             ctx.tmc.read_register(STATUS_FLAGS).await.map_err(|_| ())?;
         reject_actionable_status(report.post_clear_status_flags, ctx.feedback_config)?;

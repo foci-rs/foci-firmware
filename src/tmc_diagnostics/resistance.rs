@@ -78,6 +78,12 @@ where
         // No-op: `ExternallyArmed` mode never asserts/clears the enable pin.
     }
 
+    fn interlock_tripped(&self) -> bool {
+        // An invalid channel counts as tripped, which is fail-closed.
+        crate::state::tmc::tmc_channel(self.ctx.runtime.channel())
+            .is_none_or(crate::tmc_control::interlock::fault_interlock_tripped)
+    }
+
     fn trip_power_stage(&mut self) {
         self.ctx.power_stage.trip_power_stage();
         self.ctx.runtime.contain_diagnostic_trip();

@@ -12,6 +12,7 @@ pub mod current_limit;
 pub mod dispatch;
 pub mod filters;
 pub mod helpers;
+pub mod interlock;
 pub mod lifecycle;
 pub mod pi_representation;
 pub mod request;
@@ -41,6 +42,7 @@ pub use commission_poll::{
     PollDriverAction, classify_absolute_wait, classify_wait_request, nonterminal_continuation,
 };
 pub use config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
+pub use interlock::fault_interlock_tripped;
 pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_request};
 pub use scheduler::{
     ChannelMode, ChannelScheduler, MAINTENANCE_PERIOD_US, MaintenanceGroup, STATUS_AUDIT_PERIOD_US,

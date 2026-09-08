@@ -378,8 +378,7 @@ where
             flags & actionable_mask,
         ));
     }
-    backend
-        .write_register(STATUS_FLAGS, 0)
+    crate::tmc_control::interlock::clear_status_flags_via_backend(backend)
         .await
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)
 }
@@ -404,8 +403,7 @@ where
             flags & actionable_mask,
         ));
     }
-    backend
-        .write_register(STATUS_FLAGS, 0)
+    crate::tmc_control::interlock::clear_status_flags_via_backend(backend)
         .await
         .map_err(|_| VelocityCurrentGuardError::RegisterIo)
 }

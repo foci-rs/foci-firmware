@@ -748,10 +748,7 @@ pub async fn restore_entry_gains<B: CommissioningBackend>(
     .map_err(|_| CommissionError::Spi)?;
 
     // 4. Clear status flags.
-    backend
-        .write_register(STATUS_FLAGS, 0)
-        .await
-        .map_err(|_| CommissionError::Spi)?;
+    crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await?;
 
     // 5. Reload outer gains from snapshot.
     crate::tmc_control::pi_representation::verify_pi_representation(backend, tmc_state)

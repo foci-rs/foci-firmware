@@ -48,6 +48,11 @@ where
 /// corrective current. Per the TMC4671 datasheet, writing `PID_POSITION_ACTUAL`
 /// also writes the same value into `PID_POSITION_TARGET`, avoiding an unwanted
 /// move while re-synchronizing the position accumulator.
+///
+/// # Errors
+///
+/// `Err(())` when the motion scale is unconfigured, a transaction fails, or
+/// the fault interlock is tripped at the `STATUS_FLAGS` clear.
 pub async fn settle_hold_and_clear_pid_errors<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
@@ -80,8 +85,7 @@ where
     }
 
     clear_pid_error_sums(tmc).await?;
-    tmc.write_register(STATUS_FLAGS, 0).await.map_err(|_| ())?;
-    Ok(())
+    crate::tmc_control::interlock::clear_status_flags(tmc, tmc_state).await
 }
 
 #[cfg(test)]
@@ -177,5 +181,34 @@ mod tests {
             tmc.into_inner().writes.is_empty(),
             "missing scale must not substitute or mutate controller state"
         );
+    }
+
+    #[fixture_test]
+    async fn settle_clear_skips_status_flags_when_the_interlock_is_tripped() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::STATUS_FLAGS;
+
+        tmc_state()
+            .configure_motion_scale(crate::state::stepper::stepper_channel0(), 1_000, 3_200)
+            .expect("motion scale should configure");
+        let mut raw_spi = MockRawSpi::default();
+        raw_spi.reads.push_back(0x0000_bb80);
+        raw_spi.reads.push_back(0x0000_bbc0);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        crate::state::lifecycle::FAULT_ACTIVE.store(true, Relaxed);
+
+        let result = settle_hold_and_clear_pid_errors(&mut tmc, tmc_state()).await;
+
+        crate::state::lifecycle::FAULT_ACTIVE.store(false, Relaxed);
+        assert_eq!(result, Err(()));
+        let raw_spi = tmc.into_inner();
+        assert!(
+            !raw_spi
+                .writes
+                .iter()
+                .any(|write| write.first() == Some(&(STATUS_FLAGS.addr() | 0x80))),
+            "STATUS_FLAGS must not be written while the interlock is tripped"
+        );
+        tmc_state().clear_motion_scale(crate::state::stepper::stepper_channel0());
     }
 }

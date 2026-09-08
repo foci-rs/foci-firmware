@@ -283,6 +283,8 @@ pub struct MockBackend {
     pub trace_emission_order: Vec<u16, 256>,
     /// Current state of the TMC4671 enable pin.
     pub enable_pin: bool,
+    /// Value returned by `interlock_tripped`; tests set it to inject a fault.
+    pub interlock_tripped: bool,
     /// Log of every `delay_us` call, in order.
     pub delay_us_log: Vec<u32, 32>,
     /// If `Some(addr)`, `write_register` returns `Err(MockSpiError)` for that address.
@@ -423,6 +425,7 @@ impl MockBackend {
             #[cfg(feature = "trace")]
             trace_emission_order: Vec::new(),
             enable_pin: false,
+            interlock_tripped: false,
             delay_us_log: Vec::new(),
             fail_on_write: None,
             fail_on_write_occurrence: None,
@@ -812,6 +815,10 @@ impl CommissionMotorControl for MockBackend {
     fn set_enable_pin(&mut self, state: bool) {
         self.enable_pin = state;
         self.spi_log.push(SpiOp::EnablePin(state)).ok();
+    }
+
+    fn interlock_tripped(&self) -> bool {
+        self.interlock_tripped
     }
 
     fn record_lifecycle(&mut self, flag: LifecycleFlag, value: bool) {

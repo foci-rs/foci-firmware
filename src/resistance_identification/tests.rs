@@ -131,6 +131,8 @@ struct FakeResistanceBackend {
     scripted_elapsed_index: Cell<usize>,
     record_events: bool,
     events: heapless::Vec<BackendEvent, 64>,
+    /// Value returned by `interlock_tripped`; tests set it to inject a fault.
+    interlock_tripped: bool,
 }
 
 impl FakeResistanceBackend {
@@ -183,6 +185,7 @@ impl FakeResistanceBackend {
             scripted_elapsed_index: Cell::new(0),
             record_events: false,
             events: heapless::Vec::new(),
+            interlock_tripped: false,
         }
     }
 
@@ -440,6 +443,10 @@ impl ResistanceBackend for FakeResistanceBackend {
         self.enable_transitions
             .push(enabled)
             .expect("enable transition log overflow");
+    }
+
+    fn interlock_tripped(&self) -> bool {
+        self.interlock_tripped
     }
 
     fn trip_power_stage(&mut self) {
@@ -1630,6 +1637,46 @@ fn critical_status_stops_measurement_and_lowers_gpio_before_restore_io() {
     );
     assert_eq!(
         finish_restoration(&mut runner, &mut backend, due),
+        Err(ResistanceError::CriticalStatus)
+    );
+}
+
+#[test]
+fn setup_refuses_to_clear_status_flags_when_the_interlock_is_tripped() {
+    let mut backend = FakeResistanceBackend::standard();
+    backend.interlock_tripped = true;
+    let mut runner = ResistanceRunner::new(
+        ResistanceRunMode::CommissioningManagedEnable,
+        backend.profile(),
+        1_000,
+    )
+    .unwrap();
+
+    let mut now = 1_000;
+    for _ in 0..32 {
+        if runner.primary_error().is_some() {
+            break;
+        }
+        match poll_runner(&mut runner, &mut backend, now) {
+            ResistancePoll::ReadyNow => {}
+            ResistancePoll::At(deadline) => now = deadline,
+            ResistancePoll::Complete(result) => panic!("unexpected completion: {result:?}"),
+        }
+    }
+
+    assert_eq!(
+        runner.primary_error(),
+        Some(ResistanceError::CriticalStatus)
+    );
+    assert!(
+        !backend
+            .writes
+            .iter()
+            .any(|write| write.addr == STATUS_FLAGS.addr()),
+        "setup must not write STATUS_FLAGS behind a tripped interlock"
+    );
+    assert_eq!(
+        finish_restoration(&mut runner, &mut backend, now),
         Err(ResistanceError::CriticalStatus)
     );
 }

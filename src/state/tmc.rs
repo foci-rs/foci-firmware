@@ -138,6 +138,8 @@ pub struct TmcChannelState {
     /// bounded TMC request channel. That burst can exceed `TMC_CHANNEL_SIZE`,
     /// and a dropped `#[klipper_command]` is an MCU shutdown.
     pub config_apply_pending: AtomicBool,
+    /// Polled STATUS pin level, stored by the board loop on every wake.
+    pub status_pin_asserted: AtomicBool,
     /// Optional velocity biquad filter cutoff frequency in Hz.
     pub velocity_filter_hz: AtomicOptionalFilterHz,
     /// Optional torque biquad filter cutoff frequency in Hz.
@@ -278,6 +280,7 @@ impl TmcChannelState {
             step_width: AtomicU32::new(0),
             motion_scale_configured: AtomicBool::new(false),
             config_apply_pending: AtomicBool::new(false),
+            status_pin_asserted: AtomicBool::new(false),
             velocity_filter_hz: AtomicOptionalFilterHz::new(None),
             torque_filter_hz: AtomicOptionalFilterHz::new(None),
             position_filter_hz: AtomicOptionalFilterHz::new(None),
@@ -354,6 +357,7 @@ impl TmcChannelState {
         self.encoder_counts_per_rev.store(0, Relaxed);
         self.tmc_grid.store(0, Relaxed);
         self.step_width.store(0, Relaxed);
+        self.status_pin_asserted.store(false, Relaxed);
         self.velocity_filter_hz.store(None, Relaxed);
         self.torque_filter_hz.store(None, Relaxed);
         self.position_filter_hz.store(None, Relaxed);

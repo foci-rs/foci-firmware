@@ -121,7 +121,10 @@ impl ResistanceRunner {
                 }
                 Err(_) => Err(ResistanceError::BackendIo),
             },
-            9 => write(backend, STATUS_FLAGS.addr(), 0).await,
+            9 => {
+                crate::tmc_control::interlock::clear_status_flags_via_resistance_backend(backend)
+                    .await
+            }
             10 => match backend.read_register(STATUS_FLAGS.addr()).await {
                 Ok(flags) => {
                     self.record_status_evidence(flags);

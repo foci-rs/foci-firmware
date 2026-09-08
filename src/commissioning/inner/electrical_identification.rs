@@ -418,6 +418,10 @@ impl<B: CommissioningBackend> crate::resistance_identification::ResistanceBacken
         self.backend.set_enable_pin(enabled);
     }
 
+    fn interlock_tripped(&self) -> bool {
+        self.backend.interlock_tripped()
+    }
+
     fn trip_power_stage(&mut self) {
         self.backend.set_enable_pin(false);
     }
@@ -1648,43 +1652,47 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
         ElectricalIdentificationState::InductanceSetupOperation { operation } => {
             let pidout_limit = data.voltage.min(INDUCTANCE_AC_UD_EXT as u32);
-            let result = match *operation {
-                0 => {
-                    backend
-                        .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
-                        .await
-                }
-                1 => backend.write_register(UQ_UD_EXT, 0).await,
-                2 => backend.write_register(OPENLOOP_VELOCITY_TARGET, 0).await,
-                3 => backend.write_register(OPENLOOP_MODE, 0).await,
-                4 => {
-                    backend
-                        .write_register(OPENLOOP_ACCELERATION, INDUCTANCE_OPENLOOP_ACCELERATION)
-                        .await
-                }
-                5 => {
-                    backend
-                        .write_register(
-                            OPENLOOP_VELOCITY_TARGET,
-                            INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
-                        )
-                        .await
-                }
-                6 => {
-                    backend
-                        .write_register(PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP)
-                        .await
-                }
-                7 => {
-                    backend
-                        .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
-                        .await
-                }
+            let result: Result<(), ()> = match *operation {
+                0 => backend
+                    .write_register(PIDOUT_UQ_UD_LIMITS, pidout_limit)
+                    .await
+                    .map_err(|_| ()),
+                1 => backend.write_register(UQ_UD_EXT, 0).await.map_err(|_| ()),
+                2 => backend
+                    .write_register(OPENLOOP_VELOCITY_TARGET, 0)
+                    .await
+                    .map_err(|_| ()),
+                3 => backend
+                    .write_register(OPENLOOP_MODE, 0)
+                    .await
+                    .map_err(|_| ()),
+                4 => backend
+                    .write_register(OPENLOOP_ACCELERATION, INDUCTANCE_OPENLOOP_ACCELERATION)
+                    .await
+                    .map_err(|_| ()),
+                5 => backend
+                    .write_register(
+                        OPENLOOP_VELOCITY_TARGET,
+                        INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
+                    )
+                    .await
+                    .map_err(|_| ()),
+                6 => backend
+                    .write_register(PHI_E_SELECTION, PHI_E_SELECTION_OPENLOOP)
+                    .await
+                    .map_err(|_| ()),
+                7 => backend
+                    .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
+                    .await
+                    .map_err(|_| ()),
                 8 => backend
                     .write_register_verified(PWM_SV_CHOP, 7)
                     .await
-                    .map(|_| ()),
-                _ => backend.write_register(STATUS_FLAGS, 0).await,
+                    .map(|_| ())
+                    .map_err(|_| ()),
+                _ => crate::tmc_control::interlock::clear_status_flags_via_backend(backend)
+                    .await
+                    .map_err(|_| ()),
             };
             if result.is_err() {
                 return begin_inductance_restore(

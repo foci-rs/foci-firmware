@@ -177,6 +177,11 @@ pub trait CommissionMotorControl {
     /// Set the TMC4671 enable pin state.
     fn set_enable_pin(&mut self, state: bool);
 
+    /// True when a fault is latched, a disable is pending, or the STATUS pin
+    /// is asserted. Checked before every non-bootstrap `STATUS_FLAGS` clear
+    /// and before every enable-pin assertion outside the calibration phases.
+    fn interlock_tripped(&self) -> bool;
+
     /// Record a motor lifecycle flag transition at the exact mutation site.
     ///
     /// Default no-op: production backends do not need an interleaved
@@ -664,6 +669,10 @@ where
 
     fn set_enable_pin(&mut self, state: bool) {
         self.set_commission_enable_pin(state);
+    }
+
+    fn interlock_tripped(&self) -> bool {
+        crate::tmc_control::interlock::fault_interlock_tripped(self.tmc_state())
     }
 
     fn record_safe_state_report(

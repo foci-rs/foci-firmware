@@ -1564,7 +1564,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             if crate::commissioning::helpers::clear_current_integrators(backend)
                 .await
                 .is_err()
-                || backend.write_register(STATUS_FLAGS, 0).await.is_err()
+                || crate::tmc_control::interlock::clear_status_flags_via_backend(backend)
+                    .await
+                    .is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }

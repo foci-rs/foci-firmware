@@ -31,6 +31,8 @@ where
         readiness,
         ..
     } = ctx;
+    let tmc_state =
+        crate::state::tmc::tmc_channel(runtime.channel()).expect("validated TMC channel");
 
     match req {
         TmcRequest {
@@ -110,7 +112,7 @@ where
                     .map_err(|_| ())?;
                 report.torque_before = crate::tmc::decode_signed_upper_half(before);
 
-                tmc.write_register(STATUS_FLAGS, 0).await.map_err(|_| ())?;
+                crate::tmc_control::interlock::clear_status_flags(tmc, tmc_state).await?;
                 tmc.write_register(UQ_UD_EXT, pack_voltage_ext(uq_ext, ud_ext))
                     .await
                     .map_err(|_| ())?;

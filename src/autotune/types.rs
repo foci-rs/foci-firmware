@@ -140,6 +140,10 @@ pub enum CommissionError {
     /// state established at commission. Channel must be re-commissioned
     /// before any further arm attempt. Code 18.
     ChipResetDetected,
+    /// A fault was latched or the STATUS pin was asserted at an interlock
+    /// check, so a `STATUS_FLAGS` clear or an enable-pin assertion was
+    /// refused. Code 77.
+    FaultInterlock,
     /// Shared multi-point resistance identification failed a quality gate or
     /// backend transaction during electrical identification before the
     /// firmware could classify the specific resistance cause. Code 19.
@@ -375,6 +379,7 @@ impl CommissionError {
             Self::Cancelled => 74,
             Self::SafeStateIncomplete => 75,
             Self::InductanceCurrentEnvelope => 76,
+            Self::FaultInterlock => 77,
         }
     }
 }
@@ -659,6 +664,7 @@ mod tests {
             CommissionError::Cancelled,
             CommissionError::SafeStateIncomplete,
             CommissionError::InductanceCurrentEnvelope,
+            CommissionError::FaultInterlock,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -719,6 +725,11 @@ mod tests {
     #[test]
     fn commission_safe_state_incomplete_has_status_code_75() {
         assert_eq!(CommissionError::SafeStateIncomplete.status_code(), 75);
+    }
+
+    #[test]
+    fn commission_fault_interlock_has_status_code_77() {
+        assert_eq!(CommissionError::FaultInterlock.status_code(), 77);
     }
 
     #[test]

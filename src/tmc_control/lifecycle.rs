@@ -28,7 +28,6 @@ pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBacken
     use foci_tmc4671::registers::{
         MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
         PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_POSITION_ACTUAL,
-        STATUS_FLAGS,
     };
 
     let mode = backend
@@ -76,11 +75,7 @@ pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBacken
     )
     .await
     .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    backend
-        .write_register(STATUS_FLAGS, 0)
-        .await
-        .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    Ok(())
+    crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await
 }
 
 /// Re-verifies the calibration sentinel against the live TMC4671 readback.
@@ -160,6 +155,8 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// stored run-current limit is zero (unconfigured).
 /// Returns [`crate::autotune::CommissionError::Spi`] if the torque-flux
 /// limit rewrite fails.
+/// Returns [`crate::autotune::CommissionError::FaultInterlock`] if the fault
+/// interlock is tripped when the enable pin would be raised.
 pub async fn arm_motor_electrical<B: CommissioningBackend>(
     backend: &mut B,
     state: &mut DispatchState<'_>,
@@ -206,6 +203,9 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
 
     settle_closed_loop_hold_before_enable(backend).await?;
 
+    if backend.interlock_tripped() {
+        return Err(crate::autotune::CommissionError::FaultInterlock);
+    }
     backend.set_enable_pin(true);
     *state.motor_enabled = true;
     backend.record_lifecycle(LifecycleFlag::MotorEnabled, true);
@@ -1076,6 +1076,66 @@ mod tests {
                 checkpoint: crate::diagnostic::BreakawayCheckpoint::CampaignInstalled,
                 interrupted: true,
             })
+        );
+    }
+
+    #[fixture_test]
+    async fn arm_refuses_to_raise_the_enable_pin_when_the_interlock_is_tripped() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        state.tmc.motor_sentinel.store(0x0002_0032, Relaxed);
+        state
+            .tmc
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.interlock_tripped = true;
+
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::FaultInterlock)
+        );
+        assert!(!backend.enable_pin);
+        assert!(!*state.motor_enabled);
+
+        state.tmc.motor_sentinel.store(0, Relaxed);
+    }
+
+    #[fixture_test]
+    async fn pre_arm_reset_does_not_clear_status_flags_when_the_interlock_is_tripped() {
+        use foci_tmc4671::registers::{MODE_RAMP_MODE_MOTION, STATUS_FLAGS};
+
+        let mut backend = MockBackend::new();
+        backend
+            .registers
+            .insert(MODE_RAMP_MODE_MOTION.addr(), CLOSED_LOOP_POSITION_MODE)
+            .unwrap();
+        backend.interlock_tripped = true;
+
+        let result = settle_closed_loop_hold_before_enable(&mut backend).await;
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::FaultInterlock)
+        );
+        assert!(
+            !backend.spi_log.iter().any(|op| matches!(
+                op,
+                crate::commission_dispatch::test_support::SpiOp::Write(addr, _)
+                    if *addr == STATUS_FLAGS.addr()
+            )),
+            "STATUS_FLAGS must not be written while the interlock is tripped"
         );
     }
 }

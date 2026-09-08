@@ -38,6 +38,8 @@ where
         readiness,
         ..
     } = ctx;
+    let tmc_state =
+        crate::state::tmc::tmc_channel(runtime.channel()).expect("validated TMC channel");
 
     match req {
         TmcRequest {
@@ -164,7 +166,7 @@ where
                     .await
                     .map_err(|_| ())?;
                 clear_current_step_integrators(tmc).await?;
-                tmc.write_register(STATUS_FLAGS, 0).await.map_err(|_| ())?;
+                crate::tmc_control::interlock::clear_status_flags(tmc, tmc_state).await?;
                 tmc.write_register(MODE_RAMP_MODE_MOTION, CURRENT_STEP_TORQUE_MODE)
                     .await
                     .map_err(|_| ())?;
@@ -395,6 +397,8 @@ where
         readiness,
         ..
     } = ctx;
+    let tmc_state =
+        crate::state::tmc::tmc_channel(runtime.channel()).expect("validated TMC channel");
 
     match req {
         TmcRequest {
@@ -494,7 +498,7 @@ where
                 tmc.write_register(PIDOUT_UQ_UD_LIMITS, u32::from(voltage_limit))
                     .await
                     .map_err(|_| ())?;
-                tmc.write_register(STATUS_FLAGS, 0).await.map_err(|_| ())?;
+                crate::tmc_control::interlock::clear_status_flags(tmc, tmc_state).await?;
 
                 report.encoder_before =
                     tmc.read_register(ABN_DECODER_COUNT).await.map_err(|_| ())?;

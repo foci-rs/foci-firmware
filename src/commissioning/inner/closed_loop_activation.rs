@@ -507,32 +507,33 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     PID_ERROR_PID_TORQUE_ERROR_SUM,
                     0,
                 )
-                .await?;
+                .await
+                .map_err(|_| CommissionError::Spi)?;
                 crate::commissioning::helpers::write_sub_register_checked(
                     backend,
                     PID_ERROR_PID_FLUX_ERROR_SUM,
                     0,
                 )
-                .await?;
+                .await
+                .map_err(|_| CommissionError::Spi)?;
                 crate::commissioning::helpers::write_sub_register_checked(
                     backend,
                     PID_ERROR_PID_VELOCITY_ERROR_SUM,
                     0,
                 )
-                .await?;
+                .await
+                .map_err(|_| CommissionError::Spi)?;
                 crate::commissioning::helpers::write_sub_register_checked(
                     backend,
                     PID_ERROR_PID_POSITION_ERROR_SUM,
                     0,
                 )
-                .await?;
-                backend
-                    .write_register(STATUS_FLAGS, 0)
-                    .await
-                    .map_err(|_| ())
+                .await
+                .map_err(|_| CommissionError::Spi)?;
+                crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await
             };
-            if integrators_ok.await.is_err() {
-                return super::fail_inner(phase, CommissionError::Spi);
+            if let Err(error) = integrators_ok.await {
+                return super::fail_inner(phase, error);
             }
 
             *cle_state = ClosedLoopActivationState::WritePositionConfig;
@@ -676,11 +677,17 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
             if verify_closed_loop_armed_state(backend).await.is_err() {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            if crate::tmc_control::lifecycle::settle_closed_loop_hold_before_enable(backend)
+            match crate::tmc_control::lifecycle::settle_closed_loop_hold_before_enable(backend)
                 .await
-                .is_err()
             {
-                return super::fail_inner(phase, CommissionError::Spi);
+                Ok(()) => {}
+                Err(CommissionError::FaultInterlock) => {
+                    return super::fail_inner(phase, CommissionError::FaultInterlock);
+                }
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            }
+            if backend.interlock_tripped() {
+                return super::fail_inner(phase, CommissionError::FaultInterlock);
             }
             backend.set_enable_pin(true);
 
@@ -1748,6 +1755,71 @@ mod tests {
                 StepResult::InnerFailed(CommissionError::Spi)
             ));
             assert!(!backend.enable_pin, "missing scale must fail closed");
+        });
+    }
+
+    #[test]
+    fn enter_position_mode_refuses_to_enable_when_the_interlock_is_tripped() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+            backend.interlock_tripped = true;
+
+            let result = step_closed_loop_activation(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::FaultInterlock)
+            ));
+            assert!(!backend.enable_pin, "tripped interlock must fail closed");
+            assert!(
+                !backend
+                    .spi_log
+                    .iter()
+                    .any(|op| matches!(op, SpiOp::Write(addr, _) if *addr == STATUS_FLAGS.addr())),
+                "STATUS_FLAGS must not be cleared behind a tripped interlock"
+            );
+        });
+    }
+
+    #[test]
+    fn zero_and_clear_refuses_to_clear_status_flags_when_the_interlock_is_tripped() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::ZeroAndClear);
+            let mut adc_cal = None;
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+            backend.interlock_tripped = true;
+
+            let result = step_closed_loop_activation(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                &mut CommissionDiagnostics::default(),
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::FaultInterlock)
+            ));
+            assert!(
+                !backend
+                    .spi_log
+                    .iter()
+                    .any(|op| matches!(op, SpiOp::Write(addr, _) if *addr == STATUS_FLAGS.addr())),
+                "ZeroAndClear must not write STATUS_FLAGS behind a tripped interlock"
+            );
         });
     }
 
