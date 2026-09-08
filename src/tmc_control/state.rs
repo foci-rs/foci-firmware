@@ -2069,37 +2069,6 @@ impl TmcControlRuntime {
         crate::tmc::velocity_transient_period_us(rate_hz)
     }
 
-    /// Return the fastest requested control period across channel runtimes.
-    pub fn minimum_control_period_us(
-        runtimes: &[TmcControlRuntime],
-        refs: &[TmcControlStateRefs<'_>],
-    ) -> u32 {
-        runtimes
-            .iter()
-            .zip(refs.iter().copied())
-            .map(|(runtime, refs)| runtime.control_period_us(refs))
-            .min()
-            .unwrap_or(1_000)
-    }
-
-    /// Update a caller-owned slow-control accumulator.
-    ///
-    /// This is the board-level form used by multi-channel boards that need one
-    /// shared slow tick for all channels.
-    pub fn update_slow_control_accumulator(accum_us: &mut u16, control_period_us: u32) -> bool {
-        if control_period_us >= 1_000 {
-            *accum_us = 0;
-            return true;
-        }
-        *accum_us = accum_us.saturating_add(u16::try_from(control_period_us).unwrap_or(u16::MAX));
-        if *accum_us >= 1_000 {
-            *accum_us -= 1_000;
-            true
-        } else {
-            false
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn set_calibrated_for_test(&mut self, value: bool) {
         self.calibrated = value;
