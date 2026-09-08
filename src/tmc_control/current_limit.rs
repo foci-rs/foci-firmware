@@ -1,5 +1,6 @@
 //! Checked conversion into the TMC4671 torque/flux current-limit domain.
 
+use crate::autotune::Permille;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 
 /// Failure to convert an RMS current request into the chip register domain.
@@ -44,9 +45,27 @@ pub fn current_limit_from_run_ma(
     PidTorqueFluxLimit::new(counts as u32).map_err(|_| CurrentLimitConversionError::OutOfRange)
 }
 
+/// Diagnostic-current envelope in ADC counts.
+///
+/// `fraction` is a permille ratio of the configured torque/flux current limit.
+/// The product truncates toward zero.
+///
+/// A zero `current_limit` yields a zero envelope, which fails closed at every
+/// comparison site. The encoder phase already rejects a zero limit before
+/// electrical identification runs, so this is a backstop rather than the
+/// primary check.
+#[must_use]
+pub fn diagnostic_current_envelope(current_limit: PidTorqueFluxLimit, fraction: Permille) -> u16 {
+    // `PidTorqueFluxLimit` is at most 0x7fff and callers are asserted at or
+    // below 1000 permille, so the product stays well inside `u32`.
+    let product = u32::from(current_limit) * u32::from(fraction.raw());
+    (product / 1000) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::autotune::Permille;
 
     #[test]
     fn conversion_truncates_before_domain_validation() {
@@ -80,5 +99,29 @@ mod tests {
             current_limit_from_run_ma(u32::MAX, 1.155),
             Err(CurrentLimitConversionError::OutOfRange),
         );
+    }
+
+    #[test]
+    fn diagnostic_envelope_truncates_toward_zero() {
+        let limit = PidTorqueFluxLimit::new(2816).unwrap();
+        // 2816 * 600 / 1000 = 1689.6 -> 1689, so the configured 1600 still binds.
+        assert_eq!(diagnostic_current_envelope(limit, Permille::new(600)), 1689);
+        // 2816 * 200 / 1000 = 563.2 -> 563
+        assert_eq!(diagnostic_current_envelope(limit, Permille::new(200)), 563);
+        // 568 permille falls one count short of preserving the 1600 ceiling.
+        assert_eq!(diagnostic_current_envelope(limit, Permille::new(568)), 1599);
+        assert_eq!(diagnostic_current_envelope(limit, Permille::new(569)), 1602);
+    }
+
+    #[test]
+    fn diagnostic_envelope_zero_limit_fails_closed() {
+        let envelope = diagnostic_current_envelope(PidTorqueFluxLimit::ZERO, Permille::new(600));
+        assert_eq!(envelope, 0);
+    }
+
+    #[test]
+    fn diagnostic_envelope_saturates_within_u16() {
+        let envelope = diagnostic_current_envelope(PidTorqueFluxLimit::MAX, Permille::new(1000));
+        assert_eq!(envelope, 0x7fff);
     }
 }

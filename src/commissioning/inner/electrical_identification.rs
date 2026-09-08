@@ -59,6 +59,19 @@ const INDUCTANCE_MAX_AC_SAMPLE_COUNT: u16 = 256;
 const PHI_E_SELECTION_OPENLOOP: u32 = 2;
 const L_INT_OMEGA_SCALE_MILLI: u64 = 6_283;
 
+/// Diagnostic-current policy for the rotating-field capture, as a permille
+/// fraction of the configured run-current limit.
+///
+/// This phase needs only enough quadrature signal to clear
+/// `INDUCTANCE_MIN_ABS_IQ_MILLI_COUNT`, so it is set for detection sensitivity
+/// rather than to accommodate the measurement.
+const INDUCTANCE_DIAGNOSTIC_CURRENT_FRACTION: Permille = Permille::new(200);
+
+const _: () = assert!(
+    INDUCTANCE_DIAGNOSTIC_CURRENT_FRACTION.raw() >= 1
+        && INDUCTANCE_DIAGNOSTIC_CURRENT_FRACTION.raw() <= 1000
+);
+
 #[cfg(test)]
 const fn scheduled_samples_for_fixed_window(frequency_millihz: u32) -> u32 {
     if frequency_millihz == 0 {

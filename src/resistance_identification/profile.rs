@@ -3,6 +3,21 @@ use super::types::ElectricalAxis;
 /// Standard positive UD point candidates for adaptive resistance identification.
 pub const STANDARD_UD_POINTS: [i16; 8] = [512, 640, 800, 960, 1120, 1280, 1440, 1600];
 
+/// Diagnostic-current policy for the resistance sweep, as a permille fraction
+/// of the configured run-current limit.
+///
+/// The fit only selects points at or above `linear_current_threshold_count`,
+/// so this phase needs a high working range. 600 keeps the sweep below the
+/// configured run current while preserving existing behavior, which needs at
+/// least 569 permille.
+pub const RESISTANCE_DIAGNOSTIC_CURRENT_FRACTION: crate::autotune::Permille =
+    crate::autotune::Permille::new(600);
+
+const _: () = assert!(
+    RESISTANCE_DIAGNOSTIC_CURRENT_FRACTION.raw() >= 1
+        && RESISTANCE_DIAGNOSTIC_CURRENT_FRACTION.raw() <= 1000
+);
+
 // STATUS_FLAGS bit 31 is reserved in the TMC4671 status layout. It may
 // appear in sampled flags, but it is not an actionable resistance-run
 // fault. See `autotune::current::current_loop_actionable_status_mask`'s
