@@ -1559,6 +1559,12 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
+            // A fault latched during the mode write above is only visible in
+            // firmware; the guarded STATUS_FLAGS clear below runs four awaited
+            // sub-register writes later. No await before the pin.
+            if backend.interlock_tripped() {
+                return super::fail_inner(phase, CommissionError::FaultInterlock);
+            }
             backend.set_enable_pin(true);
 
             if crate::commissioning::helpers::clear_current_integrators(backend)
@@ -3090,6 +3096,55 @@ mod tests {
                     StepResult::InnerFailed(CommissionError::FaultInterlock)
                 ),
                 "the refused STATUS_FLAGS clear must not read as an SPI failure: {result:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn validation_step_setup_never_enables_when_the_interlock_trips_during_the_mode_write() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+                *state = CurrentValidateState::AxisStepSetup {
+                    axis: CurrentValidationAxis::Flux,
+                    sample_index: 0,
+                    sample_delay_ms: 0,
+                    direction: CaptureDirection::Forward,
+                };
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+            // The fault latches while the torque-mode write is in flight: the
+            // interlock reads clear on entry and is set by the time the pin
+            // would go high, so a pre-entry guard alone would miss it.
+            backend.trip_interlock_on_write = Some(MODE_RAMP_MODE_MOTION.addr());
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                !backend
+                    .spi_log
+                    .iter()
+                    .any(|op| matches!(op, SpiOp::EnablePin(true))),
+                "a fault latched during the torque-mode write must never be \
+                 followed by an enable-pin assertion: {:?}",
+                backend.spi_log
+            );
+            assert!(
+                matches!(
+                    result,
+                    StepResult::InnerFailed(CommissionError::FaultInterlock)
+                ),
+                "the refusal must reach the host as FaultInterlock: {result:?}"
             );
         });
     }
