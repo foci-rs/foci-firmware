@@ -125,6 +125,9 @@ struct ChannelSlot {
     fast_due_us: u64,
     audit_due_us: u64,
     fast_stats: SourceStats,
+    commission_due_us: Option<u64>,
+    commission_yield_pending: bool,
+    commission_stats: SourceStats,
 }
 
 /// Absolute-deadline scheduler for `N` TMC channels.
@@ -150,6 +153,9 @@ impl<const N: usize> ChannelScheduler<N> {
             fast_due_us: now_us,
             audit_due_us: now_us + STATUS_AUDIT_PERIOD_US,
             fast_stats: SourceStats::default(),
+            commission_due_us: None,
+            commission_yield_pending: false,
+            commission_stats: SourceStats::default(),
         }; N];
         for (slot, period) in channels.iter_mut().zip(fast_period_us) {
             slot.fast_period_us = period.max(1);
@@ -195,6 +201,22 @@ impl<const N: usize> ChannelScheduler<N> {
         slot.fast_due_us = now_us + u64::from(period_us);
     }
 
+    /// Set or clear the commission deadline for `channel`.
+    pub fn set_commission_due(&mut self, channel: u8, due_us: Option<u64>) {
+        self.channels[channel as usize].commission_due_us = due_us;
+    }
+
+    /// The engine asked for a scheduler yield: run other due classes before
+    /// this channel's commission unit is considered again.
+    pub fn note_commission_yield(&mut self, channel: u8) {
+        self.channels[channel as usize].commission_yield_pending = true;
+    }
+
+    /// Commission-poll counters for `channel`.
+    pub fn commission_stats(&self, channel: u8) -> SourceStats {
+        self.channels[channel as usize].commission_stats
+    }
+
     /// Earliest deadline across every source, or `None` when no source is armed.
     pub fn earliest_due_us(&self) -> Option<u64> {
         let mut earliest: Option<u64> = None;
@@ -209,6 +231,15 @@ impl<const N: usize> ChannelScheduler<N> {
             }
             if slot.mode != ChannelMode::Bootstrap {
                 consider(slot.audit_due_us);
+            }
+            match slot.mode {
+                ChannelMode::Commissioning => {
+                    if let Some(due) = slot.commission_due_us {
+                        consider(due);
+                    }
+                }
+                ChannelMode::Restore => consider(slot.mode_since_us),
+                _ => {}
             }
         }
         if self.group.is_some() {
@@ -239,6 +270,48 @@ impl<const N: usize> ChannelScheduler<N> {
                 done,
                 finalize_pending: false,
             });
+        }
+
+        let mut priority: Option<(Unit, u8, bool)> = None;
+        for idx in 0..N {
+            let channel = idx as u8;
+            let rr_distance = (channel + N as u8 - self.rr_cursor) % N as u8;
+            let slot = &self.channels[idx];
+            let candidate = match slot.mode {
+                ChannelMode::Commissioning => slot
+                    .commission_due_us
+                    .filter(|due| *due <= now_us)
+                    .map(|due| {
+                        (
+                            Unit {
+                                class: UnitClass::Commission,
+                                channel,
+                                deadline_us: due,
+                            },
+                            slot.commission_yield_pending,
+                        )
+                    }),
+                ChannelMode::Restore => Some((
+                    Unit {
+                        class: UnitClass::Restore,
+                        channel,
+                        deadline_us: slot.mode_since_us,
+                    },
+                    false,
+                )),
+                _ => None,
+            };
+            if let Some((unit, yielding)) = candidate {
+                let better = match priority {
+                    None => true,
+                    Some((current, current_rr, _)) => {
+                        (unit.deadline_us, rr_distance) < (current.deadline_us, current_rr)
+                    }
+                };
+                if better {
+                    priority = Some((unit, rr_distance, yielding));
+                }
+            }
         }
 
         let mut best: Option<(Unit, u8)> = None;
@@ -317,7 +390,19 @@ impl<const N: usize> ChannelScheduler<N> {
             }
         }
 
-        let (unit, _) = best?;
+        let unit = match (priority, best) {
+            (Some((unit, _, false)), _) => unit,
+            (Some((unit, _, true)), None) => {
+                self.channels[unit.channel as usize].commission_yield_pending = false;
+                unit
+            }
+            (Some((commission, _, true)), Some((other, _))) => {
+                self.channels[commission.channel as usize].commission_yield_pending = false;
+                other
+            }
+            (None, Some((other, _))) => other,
+            (None, None) => return None,
+        };
         let lateness = now_us.saturating_sub(unit.deadline_us);
         match unit.class {
             UnitClass::Fast => self.channels[unit.channel as usize]
@@ -330,7 +415,12 @@ impl<const N: usize> ChannelScheduler<N> {
             }
             UnitClass::StatusAudit => self.audit_stats.on_pick(lateness),
             UnitClass::Bootstrap => self.bootstrap_stats.on_pick(lateness),
-            UnitClass::Commission | UnitClass::Restore => {}
+            UnitClass::Commission => {
+                let slot = &mut self.channels[unit.channel as usize];
+                slot.commission_stats.on_pick(lateness);
+                slot.commission_due_us = None;
+            }
+            UnitClass::Restore => {}
         }
         if matches!(unit.class, UnitClass::Fast) {
             self.rr_cursor = (unit.channel + 1) % N as u8;
@@ -382,7 +472,12 @@ impl<const N: usize> ChannelScheduler<N> {
                 self.channels[idx].mode_since_us = now_us;
                 self.bootstrap_stats.on_record(unit_cycles);
             }
-            UnitClass::Commission | UnitClass::Restore => {}
+            UnitClass::Commission => {
+                self.channels[idx].commission_stats.on_record(unit_cycles);
+            }
+            UnitClass::Restore => {
+                self.channels[idx].mode_since_us = now_us;
+            }
         }
     }
 
@@ -739,5 +834,144 @@ mod tests {
         s.record(100, 99);
         assert_eq!(s.fast_stats(0).max_unit_cycles, 1_234);
         assert_eq!(s.fast_stats(0).requested, 2);
+    }
+
+    fn commissioning<const N: usize>(now: u64, periods: [u32; N], ch: u8) -> ChannelScheduler<N> {
+        let mut s = ready(now, periods);
+        s.set_mode(ch, ChannelMode::Commissioning, now);
+        s
+    }
+
+    #[test]
+    fn due_commission_unit_beats_any_number_of_overdue_units() {
+        let mut s = commissioning(0, [100, 100], 0);
+        // Channel 1 fast is overdue by 900 us, maintenance by 500 us,
+        // channel 1 audit is overdue too; commission became due just now.
+        s.set_commission_due(0, Some(1_000));
+        let unit = s.pick(1_000, 0).unwrap();
+        assert_eq!(
+            (unit.class, unit.channel, unit.deadline_us),
+            (UnitClass::Commission, 0, 1_000)
+        );
+        s.record(1_000, 0);
+    }
+
+    #[test]
+    fn commission_due_mid_unit_waits_exactly_one_unit() {
+        let mut s = commissioning(0, [100, 100], 0);
+        // Channel 1's fast unit is picked at t=0 and runs until t=60.
+        let unit = s.pick(0, 0).unwrap();
+        assert_eq!((unit.class, unit.channel), (UnitClass::Fast, 1));
+        // Commission becomes due at t=20, while that unit is in flight.
+        s.set_commission_due(0, Some(20));
+        assert!(
+            s.pick(40, 0).is_none(),
+            "nothing is picked while a unit is in flight"
+        );
+        s.record(60, 0);
+        let unit = s.pick(60, 0).unwrap();
+        assert_eq!((unit.class, unit.channel), (UnitClass::Commission, 0));
+        assert_eq!(s.commission_stats(0).max_lateness_us, 40);
+        s.record(60, 0);
+    }
+
+    #[test]
+    fn commission_deadline_is_cleared_after_service_until_the_engine_sets_a_new_one() {
+        let mut s = commissioning(0, [1_000], 0);
+        s.set_commission_due(0, Some(0));
+        let _ = s.pick(0, 0).unwrap();
+        s.record(0, 0);
+        assert!(s.pick(0, 0).is_none());
+        assert_eq!(s.earliest_due_us(), Some(1_000));
+        s.set_commission_due(0, Some(500));
+        assert_eq!(s.earliest_due_us(), Some(500));
+    }
+
+    #[test]
+    fn yield_lets_other_classes_run_before_commission_is_considered_again() {
+        let mut s = commissioning(0, [100, 100], 0);
+        s.set_commission_due(0, Some(0));
+        s.note_commission_yield(0);
+        // Channel 1 fast is due at t=0 as well; it must go first.
+        let unit = s.pick(0, 0).unwrap();
+        assert_eq!((unit.class, unit.channel), (UnitClass::Fast, 1));
+        s.record(0, 0);
+        let unit = s.pick(0, 0).unwrap();
+        assert_eq!((unit.class, unit.channel), (UnitClass::Commission, 0));
+        s.record(0, 0);
+    }
+
+    #[test]
+    fn yield_with_nothing_else_due_runs_commission_immediately() {
+        let mut s = commissioning(0, [100, 100], 0);
+        // Consume channel 1's t=0 fast tick first.
+        let _ = s.pick(0, 0).unwrap();
+        s.record(0, 0);
+        s.set_commission_due(0, Some(0));
+        s.note_commission_yield(0);
+        let unit = s.pick(0, 0).unwrap();
+        assert_eq!(unit.class, UnitClass::Commission);
+        s.record(0, 0);
+    }
+
+    #[test]
+    fn fast_delay_during_ready_now_run_is_bounded_by_the_forced_yield_count() {
+        use crate::tmc_control::MAX_CONSECUTIVE_READY_POLLS;
+        let mut s = commissioning(0, [100, 100], 0);
+        // Channel 1's fast tick is due from t=0 and stays overdue while the
+        // engine answers ReadyNow forever; the poll driver forces a YieldNow
+        // after MAX_CONSECUTIVE_READY_POLLS. Model that here.
+        let mut commission_runs = 0u8;
+        let mut now = 0u64;
+        loop {
+            s.set_commission_due(0, Some(now));
+            if commission_runs == MAX_CONSECUTIVE_READY_POLLS {
+                s.note_commission_yield(0);
+            }
+            let unit = s.pick(now, 0).unwrap();
+            now += 10;
+            s.record(now, 0);
+            if unit.class == UnitClass::Fast {
+                assert_eq!(unit.channel, 1);
+                break;
+            }
+            assert_eq!(unit.class, UnitClass::Commission);
+            commission_runs += 1;
+            assert!(commission_runs <= MAX_CONSECUTIVE_READY_POLLS + 1);
+        }
+    }
+
+    #[test]
+    fn restore_units_have_commission_priority_and_stay_due_until_mode_changes() {
+        let mut s = ready(0, [100, 100]);
+        s.set_mode(0, ChannelMode::Restore, 0);
+        let unit = s.pick(0, 0).unwrap();
+        assert_eq!((unit.class, unit.channel), (UnitClass::Restore, 0));
+        s.record(0, 0);
+        let unit = s.pick(0, 0).unwrap();
+        assert_eq!((unit.class, unit.channel), (UnitClass::Restore, 0));
+        s.record(0, 0);
+        s.set_mode(0, ChannelMode::Ready, 0);
+        let unit = s.pick(0, 0).unwrap();
+        assert_eq!(unit.class, UnitClass::Fast);
+        s.record(0, 0);
+    }
+
+    #[test]
+    fn commissioning_channel_gets_no_fast_or_maintenance_but_keeps_audit() {
+        let mut s = commissioning(0, [100, 100], 0);
+        let mut classes_for_ch0 = 0u32;
+        let mut now = 0;
+        while now <= 1_000_000 {
+            while let Some(unit) = s.pick(now, 0) {
+                if unit.channel == 0 && unit.class != UnitClass::MaintenanceFinalize {
+                    assert_eq!(unit.class, UnitClass::StatusAudit);
+                    classes_for_ch0 += 1;
+                }
+                s.record(now, 0);
+            }
+            now = s.earliest_due_us().unwrap();
+        }
+        assert_eq!(classes_for_ch0, 1);
     }
 }
