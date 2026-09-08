@@ -3421,7 +3421,10 @@ mod tests {
     #[test]
     fn inductance_setup_refuses_to_enable_when_the_interlock_trips_during_the_status_clear() {
         pollster::block_on(async {
-            let mut data = ElectricalIdentificationData::new(1024);
+            let mut data = ElectricalIdentificationData::new(
+                1024,
+                crate::commission_dispatch::test_support::current_limit(2816),
+            );
             data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
             let mut phase = InnerPhase::ElectricalIdentification {
                 state: ElectricalIdentificationState::InductanceSetup,
