@@ -1215,6 +1215,54 @@ async fn calibrate_done_preserves_step_epoch_after_gain_restore() {
     clear_motor_sentinel();
 }
 
+#[fixture_test]
+async fn calibrate_arm_reports_a_tripped_interlock_as_fault_interlock() {
+    use core::sync::atomic::Ordering;
+    let mut backend = MockBackend::new();
+    tmc_state().motor_armed.store(false, Ordering::Relaxed);
+    seed_motor_sentinel(&mut backend).await;
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_calibrate(4));
+    backend.interlock_tripped = true;
+
+    let outcome = drive_commission_result(
+        StepResult::CalibrateDone(crate::commissioning::types::AdcCalResult {
+            adc_i0: 1,
+            adc_i1: 2,
+            encoder_count: 3,
+            encoder_alignment_electrical_residual_counts: 0,
+            encoder_alignment_stability_counts: 0,
+            encoder_alignment_movement_counts: 0,
+            encoder_alignment_min_movement_counts: 0,
+            encoder_alignment_counts_per_electrical_rev: 0,
+            adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+            adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+        }),
+        &mut engine,
+        &mut backend,
+        &mut state,
+        4095,
+    )
+    .await;
+
+    assert!(!backend.enable_pin);
+    assert!(!*state.motor_enabled);
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::CalibrateResult { status, .. },
+            ..
+        } => assert_eq!(
+            status,
+            crate::autotune::CommissionError::FaultInterlock.status_code(),
+            "a refused arm must not read as a generic SPI failure"
+        ),
+        _ => panic!("expected a CalibrateResult terminal"),
+    }
+
+    clear_motor_sentinel();
+}
+
 use crate::commissioning::types::OuterResult;
 
 fn sample_outer_result_for_dispatch() -> OuterResult {

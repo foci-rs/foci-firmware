@@ -1564,11 +1564,15 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             if crate::commissioning::helpers::clear_current_integrators(backend)
                 .await
                 .is_err()
-                || crate::tmc_control::interlock::clear_status_flags_via_backend(backend)
-                    .await
-                    .is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
+            }
+            match crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await {
+                Ok(()) => {}
+                Err(CommissionError::FaultInterlock) => {
+                    return super::fail_inner(phase, CommissionError::FaultInterlock);
+                }
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
             }
 
             data.sample_encoder_start =
@@ -3050,6 +3054,43 @@ mod tests {
                     ..
                 }
             ));
+        });
+    }
+
+    #[test]
+    fn validation_step_setup_reports_a_tripped_interlock_as_fault_interlock() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+                *state = CurrentValidateState::AxisStepSetup {
+                    axis: CurrentValidationAxis::Flux,
+                    sample_index: 0,
+                    sample_delay_ms: 0,
+                    direction: CaptureDirection::Forward,
+                };
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let _ = backend.registers.insert(ABN_DECODER_PPR.addr(), 4000);
+            backend.interlock_tripped = true;
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(
+                matches!(
+                    result,
+                    StepResult::InnerFailed(CommissionError::FaultInterlock)
+                ),
+                "the refused STATUS_FLAGS clear must not read as an SPI failure: {result:?}"
+            );
         });
     }
 

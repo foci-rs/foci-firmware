@@ -496,6 +496,9 @@ impl TerminalRestoreMachine {
                                     crate::calibration::CalibrationError::ChipResetDetected
                                         .status_code()
                                 }
+                                CommissionError::FaultInterlock => {
+                                    CommissionError::FaultInterlock.status_code()
+                                }
                                 _ => crate::calibration::CalibrationError::SpiError.status_code(),
                             };
                             self.cursor = RestoreCursor::CalibrateDisarm(status);
