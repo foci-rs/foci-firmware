@@ -1189,6 +1189,70 @@ fn queue_flush_signal_resets_runtime_and_channel_state() {
 }
 
 #[test]
+fn queue_flush_keeps_the_fault_latch_while_the_status_pin_is_asserted() {
+    let shutdown_active = AtomicBool::new(false);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(true);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
+    );
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    stepper.position.store(55, Relaxed);
+    tmc.status_pin_asserted.store(true, Relaxed);
+    queue_flush.store(true, Relaxed);
+
+    let actions = runtime.poll_queue_flush(&signals, &tmc, &stepper);
+
+    assert!(
+        fault_active.load(Relaxed),
+        "a flush must not retire a latch the STATUS pin still reports"
+    );
+    assert_eq!(stepper.position.load(Relaxed), 0);
+    assert_single_stop_now(&actions);
+}
+
+#[test]
+fn queue_flush_keeps_the_fault_latch_while_the_disable_signal_is_pending() {
+    let shutdown_active = AtomicBool::new(false);
+    let queue_flush = AtomicBool::new(false);
+    let fault_active = AtomicBool::new(true);
+    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
+    disable_signal.signal(());
+    let signals = TmcControlSignals::new(
+        &shutdown_active,
+        &queue_flush,
+        &fault_active,
+        &disable_signal,
+    );
+    let tmc = crate::state::tmc::TmcChannelState::new();
+    let stepper = crate::state::stepper::StepperChannelState::new();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+
+    stepper.position.store(55, Relaxed);
+    queue_flush.store(true, Relaxed);
+
+    let actions = runtime.poll_queue_flush(&signals, &tmc, &stepper);
+
+    assert!(
+        fault_active.load(Relaxed),
+        "a flush must not retire a latch while an emergency disable is pending"
+    );
+    assert!(
+        disable_signal.signaled(),
+        "the pending disable must survive for the board's containment check"
+    );
+    assert_eq!(stepper.position.load(Relaxed), 0);
+    assert_single_stop_now(&actions);
+}
+
+#[test]
 fn pid_error_clear_request_loads_hold_settle_countdown() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let tmc = crate::state::tmc::TmcChannelState::new();

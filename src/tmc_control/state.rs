@@ -300,8 +300,16 @@ impl TmcControlRuntime {
     ///
     /// Returns an empty action list when no queue flush was requested. When a
     /// flush is pending, this consumes the signal, resets runtime-local and
-    /// channel-local state, clears the fault latch, and emits `StopNow` so the
-    /// board shell can stop physical stepping.
+    /// channel-local state, and emits `StopNow` so the board shell can stop
+    /// physical stepping.
+    ///
+    /// The fault latch is retired only when neither containment leg reports a
+    /// fault: `tmc.status_pin_asserted`, which the board republishes from its
+    /// polled STATUS level, and a pending emergency disable. A host config
+    /// reset that coincides with a live fault would otherwise hand the board a
+    /// clean slate before its emergency path has read `STATUS_FLAGS`, losing
+    /// the diagnosis of which condition tripped. A caller that never publishes
+    /// `status_pin_asserted` leaves that leg reading clear.
     pub fn poll_queue_flush(
         &mut self,
         signals: &TmcControlSignals,
@@ -313,9 +321,14 @@ impl TmcControlRuntime {
             return actions;
         }
 
+        // Sample before the channel reset, which clears the cached pin level.
+        let contained = tmc.status_pin_asserted.load(Relaxed) || signals.disable_signal.signaled();
+
         self.reset_runtime_state();
         Self::reset_channel_state(tmc, stepper);
-        signals.fault_active.store(false, Relaxed);
+        if !contained {
+            signals.fault_active.store(false, Relaxed);
+        }
         push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
         actions
     }
