@@ -6,10 +6,12 @@ use crate::commission_dispatch::{CommissionRetention, PostActions, ReplyPayload}
 use crate::commissioning::backend::{
     CommissionTmcSpiAccess, CommissionTmcStateAccess, CommissioningBackend,
 };
-use crate::commissioning::schedule::CommissionEvent;
+use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, CommissionTerminal};
+use crate::commissioning::types::EngineKind;
 use crate::state::tmc::TmcChannelState;
+use crate::tmc_control::actions::ScheduledCommissionTickAction;
 use crate::tmc_control::bootstrap::{TmcSafetyBootstrapStage, bootstrap_tmc_safety};
-use crate::tmc_control::commission_poll::CommissionPollDriver;
+use crate::tmc_control::commission_poll::{CommissionPollDriver, PollDriverAction};
 use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
 use crate::tmc_control::scheduler::{ChannelMode, Unit, UnitClass};
 use crate::tmc_control::state::{HomingMaintenanceResult, TmcControlRuntime};
@@ -149,8 +151,6 @@ pub struct ChannelDriver {
     /// Board-agnostic channel runtime; request handling reaches it directly.
     pub runtime: TmcControlRuntime,
     phase: DriverPhase,
-    // Consumed by the Commission arm landing in a later task.
-    #[allow(dead_code)]
     poll_driver: CommissionPollDriver,
     reset_for_fast: bool,
     reset_for_maintenance: bool,
@@ -162,10 +162,7 @@ pub struct ChannelDriver {
     pub(crate) last_maintenance_homing_active: bool,
     /// Engine and phase currently sampled by the trace stream.
     #[cfg(feature = "trace")]
-    pub commission_trace_phase: Option<(
-        crate::commissioning::types::EngineKind,
-        crate::autotune::PhaseId,
-    )>,
+    pub commission_trace_phase: Option<(EngineKind, crate::autotune::CommissionPhase)>,
 }
 
 /// `STATUS_FLAGS` bits that are limiter warnings, not faults.
@@ -469,11 +466,136 @@ impl ChannelDriver {
         UnitOutcome::Audit(result)
     }
 
-    async fn drive_commission<B>(&mut self, _backend: &mut B, _ctx: DriveCtx<'_>) -> UnitOutcome
+    async fn drive_commission<B>(&mut self, backend: &mut B, mut ctx: DriveCtx<'_>) -> UnitOutcome
     where
         B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
     {
-        UnitOutcome::Idle
+        let tmc_state = backend.tmc_state();
+        let stepper =
+            crate::state::stepper::stepper_channel(self.channel()).expect("validated TMC channel");
+
+        if self.runtime.is_restore_pending() {
+            return match self
+                .runtime
+                .poll_commissioning_terminal(backend, &mut ctx.retention, tmc_state, stepper)
+                .await
+            {
+                None => UnitOutcome::Commission {
+                    event: None,
+                    next: CommissionNext::PollNow,
+                },
+                Some(ScheduledCommissionTickAction::Terminal { reply, actions }) => {
+                    self.poll_driver = CommissionPollDriver::new();
+                    #[cfg(feature = "trace")]
+                    {
+                        self.commission_trace_phase = None;
+                    }
+                    UnitOutcome::CommissionTerminal { reply, actions }
+                }
+                Some(_) => {
+                    defmt::error!("terminal restore produced a nonterminal action");
+                    UnitOutcome::Commission {
+                        event: None,
+                        next: CommissionNext::PollNow,
+                    }
+                }
+            };
+        }
+
+        let Some(engine_kind) = self.runtime.pending_commission_kind() else {
+            return UnitOutcome::Idle;
+        };
+        let Some(mut poll) = self.runtime.step_commissioning_scheduled(backend).await else {
+            return UnitOutcome::Idle;
+        };
+        let driver_action = match self.poll_driver.classify(&poll, ctx.now_us) {
+            Ok(action) => action,
+            Err(error) => {
+                poll = CommissionPoll::Terminal {
+                    result: if matches!(engine_kind, EngineKind::OuterTune) {
+                        CommissionTerminal::OuterFailed(error)
+                    } else {
+                        CommissionTerminal::InnerFailed(error)
+                    },
+                };
+                PollDriverAction::Terminal
+            }
+        };
+        let action = match poll {
+            CommissionPoll::Terminal { result } => {
+                self.runtime
+                    .begin_commissioning_terminal(result, ctx.config);
+                return UnitOutcome::Commission {
+                    event: None,
+                    next: CommissionNext::PollNow,
+                };
+            }
+            poll => match self.runtime.classify_commission_poll(poll) {
+                Some(action) => action,
+                None => return UnitOutcome::Idle,
+            },
+        };
+        if let ScheduledCommissionTickAction::ReadyNow { event: Some(event) }
+        | ScheduledCommissionTickAction::At {
+            event: Some(event), ..
+        } = &action
+        {
+            match event {
+                CommissionEvent::VelocityIntegralPlan { plan, .. } => {
+                    crate::commission_dispatch::integral::install_authority_from_plan(
+                        self.channel(),
+                        ctx.retention.integral,
+                        *plan,
+                    );
+                }
+                #[cfg(feature = "trace")]
+                CommissionEvent::PhaseChanged {
+                    phase_id,
+                    engine_kind,
+                    ..
+                } => {
+                    self.commission_trace_phase = Some((*engine_kind, *phase_id));
+                }
+                _ => {}
+            }
+        }
+        let (outcome, _phase_changed) = commission_outcome(action, driver_action);
+        outcome
+    }
+}
+
+/// Map a nonterminal or terminal tick action plus the poll driver's decision
+/// to a driver outcome. Returns the outcome and whether the event was a phase
+/// change (the board needs that for trace phase tracking).
+#[must_use]
+pub fn commission_outcome(
+    action: ScheduledCommissionTickAction,
+    driver_action: PollDriverAction,
+) -> (UnitOutcome, bool) {
+    match action {
+        ScheduledCommissionTickAction::ReadyNow { event }
+        | ScheduledCommissionTickAction::At { event, .. } => {
+            let phase_changed = matches!(event, Some(CommissionEvent::PhaseChanged { .. }));
+            let next = match crate::tmc_control::commission_poll::nonterminal_continuation(
+                driver_action,
+                phase_changed,
+            ) {
+                PollDriverAction::PollNow | PollDriverAction::Terminal => CommissionNext::PollNow,
+                PollDriverAction::YieldNow => CommissionNext::Yield,
+                PollDriverAction::WaitUntil(deadline_us) => CommissionNext::WaitUntil(deadline_us),
+            };
+            (UnitOutcome::Commission { event, next }, phase_changed)
+        }
+        ScheduledCommissionTickAction::WorkflowContinuation => (
+            UnitOutcome::Commission {
+                event: None,
+                next: CommissionNext::PollNow,
+            },
+            false,
+        ),
+        ScheduledCommissionTickAction::Terminal { reply, actions } => {
+            (UnitOutcome::CommissionTerminal { reply, actions }, false)
+        }
     }
 }
 
@@ -905,5 +1027,177 @@ mod tests {
             rig.drive(UnitClass::StatusAudit).await,
             UnitOutcome::Audit(AuditResult::Clean)
         ));
+    }
+
+    fn phase_changed_event() -> CommissionEvent {
+        CommissionEvent::PhaseChanged {
+            oid: 3,
+            phase_id: crate::autotune::CommissionPhase::ClosedLoopActivation,
+            engine_kind: crate::commissioning::types::EngineKind::Commission,
+        }
+    }
+
+    #[test]
+    fn ready_now_action_maps_to_poll_now_and_carries_the_event() {
+        let (outcome, phase_changed) = commission_outcome(
+            ScheduledCommissionTickAction::ReadyNow {
+                event: Some(phase_changed_event()),
+            },
+            PollDriverAction::PollNow,
+        );
+        assert!(phase_changed);
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Commission {
+                event: Some(CommissionEvent::PhaseChanged { oid: 3, .. }),
+                next: CommissionNext::PollNow
+            }
+        ));
+    }
+
+    #[test]
+    fn at_action_maps_to_wait_until_the_engine_timestamp() {
+        let (outcome, _) = commission_outcome(
+            ScheduledCommissionTickAction::At {
+                timestamp_us: 4_200,
+                event: None,
+            },
+            PollDriverAction::WaitUntil(4_200),
+        );
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Commission {
+                event: None,
+                next: CommissionNext::WaitUntil(4_200)
+            }
+        ));
+    }
+
+    #[test]
+    fn yield_now_maps_to_yield() {
+        let (outcome, _) = commission_outcome(
+            ScheduledCommissionTickAction::ReadyNow { event: None },
+            PollDriverAction::YieldNow,
+        );
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Commission {
+                next: CommissionNext::Yield,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stale_terminal_classification_with_a_phase_change_collapses_to_poll_now() {
+        let (outcome, _) = commission_outcome(
+            ScheduledCommissionTickAction::ReadyNow {
+                event: Some(phase_changed_event()),
+            },
+            PollDriverAction::Terminal,
+        );
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Commission {
+                next: CommissionNext::PollNow,
+                ..
+            }
+        ));
+    }
+
+    #[fixture_test]
+    async fn commission_unit_steps_the_engine_once_and_reports_a_commission_outcome() {
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+        rig.driver.runtime.set_commission_engine(
+            crate::commission_dispatch::test_support::breakaway_campaign_engine(),
+        );
+        assert_eq!(rig.driver.mode(), ChannelMode::Commissioning);
+        let writes_before = rig.spi().writes.len();
+
+        let outcome = rig.drive(UnitClass::Commission).await;
+
+        assert!(
+            matches!(
+                outcome,
+                UnitOutcome::Commission { .. } | UnitOutcome::CommissionTerminal { .. }
+            ),
+            "one poll must yield a commission outcome"
+        );
+        assert!(matches!(
+            rig.driver.mode(),
+            ChannelMode::Commissioning | ChannelMode::Restore
+        ));
+        assert!(rig.spi().writes.len() >= writes_before);
+    }
+
+    #[fixture_test]
+    async fn commission_unit_is_idle_when_no_engine_is_active() {
+        let mut rig = ready_rig(RuntimeMockSpi::default());
+        assert!(matches!(
+            rig.drive(UnitClass::Commission).await,
+            UnitOutcome::Idle
+        ));
+        assert!(matches!(
+            rig.drive(UnitClass::Restore).await,
+            UnitOutcome::Idle
+        ));
+    }
+
+    #[fixture_test]
+    async fn restore_unit_advances_the_terminal_restore_one_operation_at_a_time() {
+        use crate::commissioning::schedule::CommissionTerminal;
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+        rig.driver
+            .runtime
+            .set_commission_engine(crate::commissioning::CommissioningEngine::new_calibrate(0));
+        rig.driver.runtime.begin_commissioning_terminal(
+            CommissionTerminal::InnerFailed(crate::autotune::CommissionError::Spi),
+            &rig.config,
+        );
+        assert_eq!(rig.driver.mode(), ChannelMode::Restore);
+
+        let mut polls = 0;
+        loop {
+            polls += 1;
+            match rig.drive(UnitClass::Restore).await {
+                UnitOutcome::Commission {
+                    event: None,
+                    next: CommissionNext::PollNow,
+                } => {
+                    assert!(polls < 64, "restore must terminate");
+                }
+                UnitOutcome::CommissionTerminal { .. } => break,
+                _ => panic!("unexpected restore outcome"),
+            }
+        }
+        assert!(polls > 1, "restore must take more than one operation");
+        assert_eq!(rig.driver.mode(), ChannelMode::Ready);
+    }
+
+    #[test]
+    fn drive_future_is_bounded() {
+        fn size_of_future<F: core::future::Future>(_: &F) -> usize {
+            core::mem::size_of::<F>()
+        }
+        let mut driver = ChannelDriver::new(0);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let mut pin = TestPin::default();
+        let mut slot = IntegralRetentionSlot::new();
+        let config = config();
+        let mut backend =
+            TestBackend::new(0, &mut tmc, &mut pin, crate::state::tmc::tmc_channel0());
+        let ctx = DriveCtx {
+            now_us: 0,
+            homing_active: false,
+            homing_snapshot: 0,
+            status_pin_asserted: false,
+            status_mask: 1 << 26,
+            config: &config,
+            retention: CommissionRetention::new(&mut slot),
+        };
+        let future = driver.drive(unit(UnitClass::Fast), &mut backend, ctx);
+        let size = size_of_future(&future);
+        std::println!("drive future size on host: {size} B");
+        assert!(size <= 12 * 1024, "drive future grew to {size} B on host");
     }
 }
