@@ -767,6 +767,7 @@ fn scheduled_step_keeps_inductance_capture_inside_one_deadline_loop() {
             status_flags_or: 0,
             next_sample_us: 1_000,
             timing: CaptureTiming::new(200, TimingEnvelope::INDUCTANCE),
+            current_envelope: 563,
         });
         runtime.set_commission_engine(engine);
 
@@ -823,6 +824,7 @@ fn scheduled_capture_shutdown_uses_canonical_engine_failure_path() {
             status_flags_or: 0,
             next_sample_us: 1_000,
             timing: CaptureTiming::new(200, TimingEnvelope::INDUCTANCE),
+            current_envelope: 563,
         });
         runtime.set_commission_engine(engine);
 

@@ -264,6 +264,8 @@ pub(crate) struct InductanceCaptureState {
     pub(crate) status_flags_or: u32,
     pub(crate) next_sample_us: u64,
     pub(crate) timing: crate::commissioning::capture_timing::CaptureTiming,
+    /// Diagnostic-current envelope in counts, derived from the frozen limit.
+    pub(crate) current_envelope: u16,
 }
 
 /// Mutually exclusive state retained across electrical-delay sample polls.

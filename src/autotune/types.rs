@@ -288,6 +288,8 @@ pub enum CommissionError {
     /// failures; `arm_motor_electrical` refuses to arm until a subsequent
     /// restore pass completes with zero failures. Code 75.
     SafeStateIncomplete,
+    /// Inductance excitation exceeded the diagnostic-current envelope. Code 76.
+    InductanceCurrentEnvelope,
 }
 
 impl CommissionError {
@@ -372,6 +374,7 @@ impl CommissionError {
             Self::ResistanceNonPositiveSlope => 73,
             Self::Cancelled => 74,
             Self::SafeStateIncomplete => 75,
+            Self::InductanceCurrentEnvelope => 76,
         }
     }
 }
@@ -655,6 +658,7 @@ mod tests {
             CommissionError::RecoveryOriginMismatch,
             CommissionError::Cancelled,
             CommissionError::SafeStateIncomplete,
+            CommissionError::InductanceCurrentEnvelope,
         ];
         let mut seen = [false; 256];
         for e in errors {

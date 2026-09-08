@@ -927,6 +927,12 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     }
 
     let (id_count, iq_count) = decode_rotating_frame_current(actual);
+    let magnitude_sq =
+        i64::from(id_count) * i64::from(id_count) + i64::from(iq_count) * i64::from(iq_count);
+    let envelope = i64::from(capture.current_envelope);
+    if magnitude_sq > envelope * envelope {
+        return Err(CommissionError::InductanceCurrentEnvelope);
+    }
     let current_sample = pack_i16_pair(id_count, iq_count);
     if capture
         .accumulator
@@ -1898,6 +1904,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                         INDUCTANCE_AC_SAMPLE_PERIOD_US,
                         TimingEnvelope::INDUCTANCE,
                     ),
+                    current_envelope:
+                        crate::tmc_control::current_limit::diagnostic_current_envelope(
+                            data.current_limit,
+                            INDUCTANCE_DIAGNOSTIC_CURRENT_FRACTION,
+                        ),
                 },
             };
             StepResult::At(next_sample_us)
@@ -2511,7 +2522,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 mod tests {
     use super::*;
     use crate::autotune::{Permille, TransientBuffer};
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::backend::CommissionBoardConfig;
     use crate::commissioning::inner::ElectricalIdentificationData;
     use crate::commissioning::types::{INDUCTANCE_WARN_STATUS_FLAGS, StepResult};
@@ -2666,6 +2677,7 @@ mod tests {
             status_flags_or: 0,
             next_sample_us: 0,
             timing: CaptureTiming::new(INDUCTANCE_AC_SAMPLE_PERIOD_US, TimingEnvelope::INDUCTANCE),
+            current_envelope: 563,
         }
     }
 
@@ -4405,6 +4417,89 @@ mod tests {
             ));
             assert_ac_teardown_after_failure(&backend);
         });
+    }
+
+    fn inductance_envelope_fixture(sample: u32) -> (InnerPhase, MockBackend) {
+        let mut data = ElectricalIdentificationData::new(512, current_limit(2816));
+        data.resistance_result = Some(resistance_result_fixture());
+        data.encoder_domain = Some(EncoderDomain::new(4000).unwrap());
+        let phase = InnerPhase::ElectricalIdentification {
+            state: ElectricalIdentificationState::InductanceSample {
+                capture: inductance_capture_state(0, 0, 0, 0),
+            },
+            data,
+        };
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
+        let _ = backend
+            .registers
+            .insert(foci_tmc4671::registers::ABN_DECODER_COUNT.addr(), 2000);
+        let mut phi_samples = heapless::Vec::<u32, 128>::new();
+        let mut current_samples = heapless::Vec::<u32, 128>::new();
+        for index in 1..=100u32 {
+            phi_samples
+                .push(u32::from(fixed_window_phi(index, 100)))
+                .ok();
+            current_samples.push(sample).ok();
+        }
+        backend.set_openloop_phi_sequence(phi_samples.as_slice(), 0);
+        backend.set_pid_torque_flux_actual_sequence(current_samples.as_slice());
+        (phase, backend)
+    }
+
+    #[test]
+    fn inductance_sample_at_the_envelope_passes_the_check() {
+        pollster::block_on(async {
+            // id = 0, iq = 563, exactly at the envelope.
+            let (mut phase, mut backend) = inductance_envelope_fixture(563u32 << 16);
+            let mut buf = TransientBuffer::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = drive_inductance_schedule(
+                &mut phase,
+                &mut buf,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(!matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::InductanceCurrentEnvelope)
+            ));
+        });
+    }
+
+    #[test]
+    fn inductance_sample_above_the_envelope_rejects_and_tears_down() {
+        pollster::block_on(async {
+            // id = 0, iq = 564, one count over.
+            let (mut phase, mut backend) = inductance_envelope_fixture(564u32 << 16);
+            let mut buf = TransientBuffer::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = drive_inductance_schedule(
+                &mut phase,
+                &mut buf,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::InductanceCurrentEnvelope)
+            ));
+            assert_ac_teardown_after_failure(&backend);
+        });
+    }
+
+    #[test]
+    fn inductance_current_envelope_has_wire_code_76() {
+        assert_eq!(CommissionError::InductanceCurrentEnvelope.status_code(), 76);
     }
 
     #[test]
