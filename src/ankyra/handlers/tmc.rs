@@ -263,6 +263,10 @@ pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) 
 }
 
 /// Set position/velocity PI gains from host config.
+///
+/// Recorded in channel state and applied by the TMC task on its control
+/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
+/// not enqueue.
 #[klipper_command]
 pub fn tmc_set_position_gains(
     ctx: &mut dyn TmcWriteHost,
@@ -272,7 +276,7 @@ pub fn tmc_set_position_gains(
     velocity_p: u16,
     velocity_i: u16,
 ) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     let (Ok(position_p), Ok(position_i), Ok(velocity_p), Ok(velocity_i)) = (
@@ -284,16 +288,18 @@ pub fn tmc_set_position_gains(
         shutdown_request_validation(ctx);
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_position_gains(
-            channel, position_p, position_i, velocity_p, velocity_i,
-        ))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetPositionGainsLostQueueFull, clock);
-    }
+    state.store_pending_outer_gains(
+        crate::pid::OuterLoopGains {
+            position_p,
+            position_i,
+            velocity_p,
+            velocity_i,
+        },
+        Ordering::Relaxed,
+    );
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_OUTER_GAINS, Ordering::Relaxed);
 }
 
 /// Enable or disable RPM-domain velocity feedforward from host config.
@@ -1141,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    fn tmc_set_position_gains_enqueues_request_without_publishing_unapplied_gains() {
+    fn tmc_set_position_gains_records_pending_without_publishing() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
@@ -1149,47 +1155,56 @@ mod tests {
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
         let confirmed = crate::pid::DEFAULT_OUTER_GAINS;
         tmc_state.store_outer_gains(confirmed, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
 
         tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
 
-        assert_eq!(tmc_state.load_outer_gains(Relaxed), Ok(confirmed));
-        let req = ctx.last_request.borrow().clone().unwrap();
-        assert_eq!(req.channel, 1);
-        let crate::tmc::TmcRequestKind::SetPositionGains {
-            position_p,
-            position_i,
-            velocity_p,
-            velocity_i,
-        } = req.kind
-        else {
-            panic!("expected position gain request");
-        };
-        assert_eq!(position_p.raw(), 256);
-        assert_eq!(position_i.raw(), 3);
-        assert_eq!(velocity_p.raw(), 768);
-        assert_eq!(velocity_i.raw(), 4);
+        let pending = tmc_state.load_pending_outer_gains(Relaxed).unwrap();
+        assert_eq!(pending.position_p.raw(), 256);
+        assert_eq!(pending.position_i.raw(), 3);
+        assert_eq!(pending.velocity_p.raw(), 768);
+        assert_eq!(pending.velocity_i.raw(), 4);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_OUTER_GAINS,
+            0
+        );
+        assert_eq!(
+            tmc_state.load_outer_gains(Relaxed),
+            Ok(confirmed),
+            "handler must never publish unconfirmed gains"
+        );
+        assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
     }
 
     #[test]
-    fn tmc_set_position_gains_queue_full_preserves_confirmed_gains_and_shuts_down() {
+    fn tmc_set_position_gains_queue_full_does_not_shut_down_and_preserves_confirmed_gains() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
+        // A full request channel is exactly the connect-time condition that
+        // used to shut the MCU down; recording config must be immune to it.
+        ctx.accept_request = false;
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
         let confirmed = crate::pid::test_outer_gains(641, 1, 1153, 2);
         tmc_state.store_outer_gains(confirmed, Relaxed);
-        ctx.accept_request = false;
+        tmc_state.config_apply_pending.store(0, Relaxed);
 
         tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
 
+        let pending = tmc_state.load_pending_outer_gains(Relaxed).unwrap();
+        assert_eq!(pending.position_p.raw(), 256);
+        assert_eq!(pending.position_i.raw(), 3);
+        assert_eq!(pending.velocity_p.raw(), 768);
+        assert_eq!(pending.velocity_i.raw(), 4);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_OUTER_GAINS,
+            0
+        );
         assert_eq!(tmc_state.load_outer_gains(Relaxed), Ok(confirmed));
         assert!(ctx.last_request.borrow().is_none());
-        assert_eq!(
-            ctx.last_shutdown,
-            Some(ShutdownReason::TmcSetPositionGainsLostQueueFull)
-        );
+        assert_eq!(ctx.last_shutdown, None);
     }
 
     #[test]
@@ -1211,20 +1226,13 @@ mod tests {
             0x7fff,
             0x7fff,
         );
-        let request = accepted.last_request.borrow().clone().unwrap();
-        let crate::tmc::TmcRequestKind::SetPositionGains {
-            position_p,
-            position_i,
-            velocity_p,
-            velocity_i,
-        } = request.kind
-        else {
-            panic!("expected position gain request");
-        };
-        assert_eq!(position_p.raw(), 0x7fff);
-        assert_eq!(position_i.raw(), 0x7fff);
-        assert_eq!(velocity_p.raw(), 0x7fff);
-        assert_eq!(velocity_i.raw(), 0x7fff);
+        let pending = tmc_state.load_pending_outer_gains(Relaxed).unwrap();
+        assert_eq!(pending.position_p.raw(), 0x7fff);
+        assert_eq!(pending.position_i.raw(), 0x7fff);
+        assert_eq!(pending.velocity_p.raw(), 0x7fff);
+        assert_eq!(pending.velocity_i.raw(), 0x7fff);
+        assert!(accepted.last_request.borrow().is_none());
+        assert_eq!(accepted.last_shutdown, None);
 
         let mut rejected = MockCtx::new(2);
         config_stepper_channel(rejected.state(), 10, 1).unwrap();

@@ -278,6 +278,13 @@ pub struct TmcChannelState {
     pending_inner_gain_flux_i: AtomicU16,
     pending_inner_gain_torque_p: AtomicU16,
     pending_inner_gain_torque_i: AtomicU16,
+    /// Requested outer-loop position/velocity P and I gains, recorded by
+    /// `tmc_set_position_gains` and applied by the TMC task on its control
+    /// tick. See [`TmcChannelState::config_apply_pending`].
+    pending_outer_gain_position_p: AtomicU16,
+    pending_outer_gain_position_i: AtomicU16,
+    pending_outer_gain_velocity_p: AtomicU16,
+    pending_outer_gain_velocity_i: AtomicU16,
     /// Cached ADC_VM mode-5 startup offset.
     adc_vm_offset_raw: AtomicU16,
     /// Number of samples folded into the cached ADC_VM offset.
@@ -392,6 +399,10 @@ impl TmcChannelState {
             pending_inner_gain_flux_i: AtomicU16::new(0),
             pending_inner_gain_torque_p: AtomicU16::new(0),
             pending_inner_gain_torque_i: AtomicU16::new(0),
+            pending_outer_gain_position_p: AtomicU16::new(0),
+            pending_outer_gain_position_i: AtomicU16::new(0),
+            pending_outer_gain_velocity_p: AtomicU16::new(0),
+            pending_outer_gain_velocity_i: AtomicU16::new(0),
             adc_vm_offset_raw: AtomicU16::new(0),
             adc_vm_offset_sample_count: AtomicU8::new(0),
             encoder_reversed: AtomicBool::new(false),
@@ -479,6 +490,10 @@ impl TmcChannelState {
         self.pending_inner_gain_flux_i.store(0, Relaxed);
         self.pending_inner_gain_torque_p.store(0, Relaxed);
         self.pending_inner_gain_torque_i.store(0, Relaxed);
+        self.pending_outer_gain_position_p.store(0, Relaxed);
+        self.pending_outer_gain_position_i.store(0, Relaxed);
+        self.pending_outer_gain_velocity_p.store(0, Relaxed);
+        self.pending_outer_gain_velocity_i.store(0, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.cancel_requested.store(false, Relaxed);
@@ -572,6 +587,31 @@ impl TmcChannelState {
             flux_i: PidIGain::new(self.pending_inner_gain_flux_i.load(ordering))?,
             torque_p: PidPGain::new(self.pending_inner_gain_torque_p.load(ordering))?,
             torque_i: PidIGain::new(self.pending_inner_gain_torque_i.load(ordering))?,
+        })
+    }
+
+    /// Record requested outer-loop gains for the TMC task to apply.
+    pub fn store_pending_outer_gains(&self, gains: OuterLoopGains, ordering: Ordering) {
+        self.pending_outer_gain_position_p
+            .store(gains.position_p.raw(), ordering);
+        self.pending_outer_gain_position_i
+            .store(gains.position_i.raw(), ordering);
+        self.pending_outer_gain_velocity_p
+            .store(gains.velocity_p.raw(), ordering);
+        self.pending_outer_gain_velocity_i
+            .store(gains.velocity_i.raw(), ordering);
+    }
+
+    /// Load and validate the recorded pending outer-loop gains.
+    pub fn load_pending_outer_gains(
+        &self,
+        ordering: Ordering,
+    ) -> Result<OuterLoopGains, PidGainOutOfRange> {
+        Ok(OuterLoopGains {
+            position_p: PidPGain::new(self.pending_outer_gain_position_p.load(ordering))?,
+            position_i: PidIGain::new(self.pending_outer_gain_position_i.load(ordering))?,
+            velocity_p: PidPGain::new(self.pending_outer_gain_velocity_p.load(ordering))?,
+            velocity_i: PidIGain::new(self.pending_outer_gain_velocity_i.load(ordering))?,
         })
     }
 
@@ -819,7 +859,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 172);
+        assert_eq!(size_of::<TmcChannelState>(), 180);
     }
 
     #[test]

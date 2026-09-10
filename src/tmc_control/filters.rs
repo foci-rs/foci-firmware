@@ -541,12 +541,19 @@ where
             .fetch_and(!crate::state::tmc::PENDING_INNER_GAINS, Relaxed);
     }
 
-    // Outer gains are deliberately NOT applied here. `load_outer_gains` holds
-    // gains *confirmed written to hardware*, which is why
-    // `apply_live_outer_gains` reports a per-write status and publishes only
-    // after both writes succeed. Recording a requested value into that state
-    // would publish unconfirmed gains, so moving `tmc_set_position_gains` off
-    // the queue needs a separate pending-gain field first.
+    if (pending & crate::state::tmc::PENDING_OUTER_GAINS) != 0 {
+        let gains = tmc_state
+            .load_pending_outer_gains(Relaxed)
+            .map_err(|_| ())?;
+        let status =
+            crate::tmc_control::helpers::apply_live_outer_gains(tmc_state, tmc, gains).await;
+        if !status.all_ok() {
+            return Err(());
+        }
+        tmc_state
+            .config_apply_pending
+            .fetch_and(!crate::state::tmc::PENDING_OUTER_GAINS, Relaxed);
+    }
 
     if (pending & crate::state::tmc::PENDING_FILTERS) != 0 {
         for (target, filter_hz) in [
@@ -1130,6 +1137,124 @@ mod tests {
 
             tmc_state().clear_pi_representation_established();
             tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_with_outer_gains_bit_publishes_on_success() {
+        use crate::pid::OuterLoopGains;
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::{PID_POSITION_P_POSITION_I, PID_VELOCITY_P_VELOCITY_I};
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            let config = crate::config::TmcConfig::default_for_test();
+
+            tmc_state().mark_pi_representation_established();
+            let gains = OuterLoopGains {
+                position_p: crate::pid::p_gain(11),
+                position_i: crate::pid::i_gain(12),
+                velocity_p: crate::pid::p_gain(13),
+                velocity_i: crate::pid::i_gain(14),
+            };
+            tmc_state().store_pending_outer_gains(gains, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_OUTER_GAINS, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .with_read(foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12);
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains: Option<InnerLoopGains> = None;
+            apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await
+            .expect("apply should succeed");
+
+            let spi = tmc.into_inner();
+            assert!(spi.attempted_write_to(PID_VELOCITY_P_VELOCITY_I));
+            assert!(spi.attempted_write_to(PID_POSITION_P_POSITION_I));
+            assert_eq!(tmc_state().load_outer_gains(Relaxed), Ok(gains));
+            assert_eq!(
+                tmc_state().config_apply_pending.load(Relaxed)
+                    & crate::state::tmc::PENDING_OUTER_GAINS,
+                0,
+                "outer-gains bit should be cleared after a successful apply"
+            );
+
+            tmc_state().clear_pi_representation_established();
+            tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_with_outer_gains_bit_leaves_outer_gains_unchanged_on_write_failure() {
+        use crate::pid::OuterLoopGains;
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            let config = crate::config::TmcConfig::default_for_test();
+
+            tmc_state().mark_pi_representation_established();
+            let previous = OuterLoopGains {
+                position_p: crate::pid::p_gain(1),
+                position_i: crate::pid::i_gain(2),
+                velocity_p: crate::pid::p_gain(3),
+                velocity_i: crate::pid::i_gain(4),
+            };
+            let requested = OuterLoopGains {
+                position_p: crate::pid::p_gain(11),
+                position_i: crate::pid::i_gain(12),
+                velocity_p: crate::pid::p_gain(13),
+                velocity_i: crate::pid::i_gain(14),
+            };
+            tmc_state().store_outer_gains(previous, Relaxed);
+            tmc_state().store_pending_outer_gains(requested, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_OUTER_GAINS, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .with_read(foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12)
+                .fail_writes_to(PID_VELOCITY_P_VELOCITY_I.addr());
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains: Option<InnerLoopGains> = None;
+            let result = apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await;
+
+            assert!(result.is_err(), "apply should fail when a gain write fails");
+            assert_eq!(
+                tmc_state().load_outer_gains(Relaxed),
+                Ok(previous),
+                "load_outer_gains must stay untouched after a failed apply"
+            );
+            assert_ne!(
+                tmc_state().config_apply_pending.load(Relaxed)
+                    & crate::state::tmc::PENDING_OUTER_GAINS,
+                0,
+                "outer-gains bit should stay set for retry after a failed apply"
+            );
+
+            tmc_state().clear_pi_representation_established();
+            tmc_state().config_apply_pending.store(0, Relaxed);
+            tmc_state().store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
         });
     }
 }
