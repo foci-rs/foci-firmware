@@ -163,6 +163,10 @@ pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, inv
 }
 
 /// Set inner loop PI gains from host (explicit override or saved values).
+///
+/// Recorded in channel state and applied by the TMC task on its control
+/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
+/// not enqueue.
 #[klipper_command]
 pub fn tmc_set_pid_gains(
     ctx: &mut dyn TmcWriteHost,
@@ -172,7 +176,7 @@ pub fn tmc_set_pid_gains(
     torque_p: u16,
     torque_i: u16,
 ) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
     let (Ok(flux_p), Ok(flux_i), Ok(torque_p), Ok(torque_i)) = (
@@ -184,16 +188,18 @@ pub fn tmc_set_pid_gains(
         shutdown_request_validation(ctx);
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_pid_gains(
-            channel, flux_p, flux_i, torque_p, torque_i,
-        ))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetPidGainsLostQueueFull, clock);
-    }
+    state.store_pending_inner_gains(
+        crate::pid::InnerLoopGains {
+            flux_p,
+            flux_i,
+            torque_p,
+            torque_i,
+        },
+        Ordering::Relaxed,
+    );
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_INNER_GAINS, Ordering::Relaxed);
 }
 
 /// Set velocity biquad filter cutoff frequency from host config.
@@ -1061,37 +1067,60 @@ mod tests {
     }
 
     #[test]
-    fn tmc_set_pid_gains_accepts_maximum_and_rejects_negative_encoding() {
-        let mut accepted = MockCtx::new(2);
+    fn tmc_set_pid_gains_records_config_without_queueing() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
         let mut sender = ();
-        config_stepper_channel(accepted.state(), 10, 1).unwrap();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.config_apply_pending.store(0, Relaxed);
 
-        tmc_set_pid_gains(
-            &mut accepted,
-            &mut sender,
-            10,
-            0x7fff,
-            0x7fff,
-            0x7fff,
-            0x7fff,
+        tmc_set_pid_gains(&mut ctx, &mut sender, 10, 0x7fff, 0x7fff, 0x7fff, 0x7fff);
+
+        let gains = tmc_state.load_pending_inner_gains(Relaxed).unwrap();
+        assert_eq!(gains.flux_p.raw(), 0x7fff);
+        assert_eq!(gains.flux_i.raw(), 0x7fff);
+        assert_eq!(gains.torque_p.raw(), 0x7fff);
+        assert_eq!(gains.torque_i.raw(), 0x7fff);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_INNER_GAINS,
+            0
         );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
 
-        let request = accepted.last_request.borrow().clone().unwrap();
-        let crate::tmc::TmcRequestKind::SetPidGains {
-            flux_p,
-            flux_i,
-            torque_p,
-            torque_i,
-        } = request.kind
-        else {
-            panic!("expected PID gain request");
-        };
-        assert_eq!(flux_p.raw(), 0x7fff);
-        assert_eq!(flux_i.raw(), 0x7fff);
-        assert_eq!(torque_p.raw(), 0x7fff);
-        assert_eq!(torque_i.raw(), 0x7fff);
+    #[test]
+    fn tmc_set_pid_gains_cannot_shut_down_on_a_full_queue() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        // A full request channel is exactly the connect-time condition that
+        // shut the MCU down; recording config must be immune to it.
+        ctx.accept_request = false;
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.config_apply_pending.store(0, Relaxed);
 
+        tmc_set_pid_gains(&mut ctx, &mut sender, 10, 21, 22, 23, 24);
+
+        let gains = tmc_state.load_pending_inner_gains(Relaxed).unwrap();
+        assert_eq!(gains.flux_p.raw(), 21);
+        assert_eq!(gains.flux_i.raw(), 22);
+        assert_eq!(gains.torque_p.raw(), 23);
+        assert_eq!(gains.torque_i.raw(), 24);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_INNER_GAINS,
+            0
+        );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_pid_gains_rejects_negative_encoding() {
         let mut rejected = MockCtx::new(2);
+        let mut sender = ();
         config_stepper_channel(rejected.state(), 10, 1).unwrap();
 
         tmc_set_pid_gains(

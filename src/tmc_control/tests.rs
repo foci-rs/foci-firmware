@@ -210,7 +210,8 @@ fn apply_live_inner_gains_publishes_only_after_both_writes_succeed() {
             let mut tmc = Tmc4671Spi::new(spi);
 
             let status =
-                apply_live_inner_gains(&mut runtime, &tmc_state, &mut tmc, requested).await;
+                apply_live_inner_gains(runtime.stored_gains_mut(), &tmc_state, &mut tmc, requested)
+                    .await;
             let spi = tmc.into_inner();
 
             assert_eq!(status.first_write_ok, expected_first_ok);
@@ -308,7 +309,9 @@ fn live_gain_write_refuses_before_pi_representation_establishment() {
         };
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
 
-        let status = apply_live_inner_gains(&mut runtime, &tmc_state, &mut tmc, requested).await;
+        let status =
+            apply_live_inner_gains(runtime.stored_gains_mut(), &tmc_state, &mut tmc, requested)
+                .await;
         let spi = tmc.into_inner();
 
         assert!(!status.all_ok());
@@ -331,7 +334,9 @@ fn live_gain_write_refuses_mismatching_pi_representation_before_pid_write() {
         };
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default().with_read(0));
 
-        let status = apply_live_inner_gains(&mut runtime, &tmc_state, &mut tmc, requested).await;
+        let status =
+            apply_live_inner_gains(runtime.stored_gains_mut(), &tmc_state, &mut tmc, requested)
+                .await;
         let spi = tmc.into_inner();
 
         assert!(!status.all_ok());

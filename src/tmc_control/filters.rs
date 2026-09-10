@@ -5,7 +5,15 @@ use foci_tmc4671::registers::SubRegister;
 use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
 
 use crate::commissioning::types::CommissioningBackend;
+use crate::pid::InnerLoopGains;
 use crate::state::tmc::TmcChannelState;
+
+/// Where the pending-config drain publishes state that must only be updated
+/// after a confirmed successful write.
+pub struct PendingConfigSink<'a> {
+    /// Where confirmed inner gains are published after a successful write.
+    pub stored_inner_gains: &'a mut Option<InnerLoopGains>,
+}
 
 /// TMC4671 biquad feedback filter selected by a live filter request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,6 +471,7 @@ pub async fn apply_pending_config<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
     tmc_config: crate::config::TmcConfig,
+    sink: PendingConfigSink<'_>,
 ) -> Result<(), ()>
 where
     B: SpiDevice<u8>,
@@ -511,6 +520,25 @@ where
             !crate::state::tmc::PENDING_ENCODER_DIR,
             Relaxed,
         );
+    }
+
+    if (pending & crate::state::tmc::PENDING_INNER_GAINS) != 0 {
+        let gains = tmc_state
+            .load_pending_inner_gains(Relaxed)
+            .map_err(|_| ())?;
+        let status = crate::tmc_control::helpers::apply_live_inner_gains(
+            sink.stored_inner_gains,
+            tmc_state,
+            tmc,
+            gains,
+        )
+        .await;
+        if !status.all_ok() {
+            return Err(());
+        }
+        tmc_state
+            .config_apply_pending
+            .fetch_and(!crate::state::tmc::PENDING_INNER_GAINS, Relaxed);
     }
 
     // Outer gains are deliberately NOT applied here. `load_outer_gains` holds
@@ -811,6 +839,7 @@ mod tests {
     fn apply_pending_config_with_only_filters_does_not_write_voltage_limit() {
         use core::sync::atomic::Ordering::Relaxed;
 
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             tmc_state()
                 .velocity_filter_hz
@@ -833,9 +862,17 @@ mod tests {
 
             let mut config = crate::config::TmcConfig::default_for_test();
             config.pwm_maxcnt = 4095;
-            apply_pending_config(&mut tmc, tmc_state(), config)
-                .await
-                .expect("apply should succeed");
+            let mut stored_inner_gains = None;
+            apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await
+            .expect("apply should succeed");
 
             let raw_spi = tmc.into_inner();
             use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
@@ -870,6 +907,7 @@ mod tests {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let mut config = crate::config::TmcConfig::default_for_test();
             config.pwm_maxcnt = 4095;
@@ -883,9 +921,17 @@ mod tests {
             let raw_spi = MockRawSpi::default();
             let mut tmc = Tmc4671Spi::new(raw_spi);
 
-            apply_pending_config(&mut tmc, tmc_state(), config)
-                .await
-                .expect("apply should succeed");
+            let mut stored_inner_gains = None;
+            apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await
+            .expect("apply should succeed");
 
             let expected = crate::tmc_control::current_limit::current_limit_from_run_ma(
                 1500,
@@ -925,6 +971,7 @@ mod tests {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::ABN_DECODER_MODE;
 
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
 
@@ -936,9 +983,17 @@ mod tests {
             let raw_spi = MockRawSpi::default();
             let mut tmc = Tmc4671Spi::new(raw_spi);
 
-            apply_pending_config(&mut tmc, tmc_state(), config)
-                .await
-                .expect("apply should succeed");
+            let mut stored_inner_gains = None;
+            apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await
+            .expect("apply should succeed");
 
             let mode = 1u32 << 12;
             let raw_spi = tmc.into_inner();
@@ -965,6 +1020,116 @@ mod tests {
             );
 
             tmc_state().encoder_invert_cfg.store(None, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_with_inner_gains_bit_publishes_into_sink_on_success() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::{PID_FLUX_P_FLUX_I, PID_TORQUE_P_TORQUE_I};
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            let config = crate::config::TmcConfig::default_for_test();
+
+            tmc_state().mark_pi_representation_established();
+            let gains = InnerLoopGains {
+                flux_p: crate::pid::p_gain(11),
+                flux_i: crate::pid::i_gain(12),
+                torque_p: crate::pid::p_gain(13),
+                torque_i: crate::pid::i_gain(14),
+            };
+            tmc_state().store_pending_inner_gains(gains, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_INNER_GAINS, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .with_read(foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12);
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains: Option<InnerLoopGains> = None;
+            apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await
+            .expect("apply should succeed");
+
+            let spi = tmc.into_inner();
+            assert!(spi.attempted_write_to(PID_FLUX_P_FLUX_I));
+            assert!(spi.attempted_write_to(PID_TORQUE_P_TORQUE_I));
+            assert_eq!(stored_inner_gains, Some(gains));
+            assert_eq!(
+                tmc_state().config_apply_pending.load(Relaxed)
+                    & crate::state::tmc::PENDING_INNER_GAINS,
+                0,
+                "inner-gains bit should be cleared after a successful apply"
+            );
+
+            tmc_state().clear_pi_representation_established();
+            tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_with_inner_gains_bit_leaves_sink_untouched_on_write_failure() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PID_FLUX_P_FLUX_I;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            let config = crate::config::TmcConfig::default_for_test();
+
+            tmc_state().mark_pi_representation_established();
+            let previous = InnerLoopGains {
+                flux_p: crate::pid::p_gain(1),
+                flux_i: crate::pid::i_gain(2),
+                torque_p: crate::pid::p_gain(3),
+                torque_i: crate::pid::i_gain(4),
+            };
+            let requested = InnerLoopGains {
+                flux_p: crate::pid::p_gain(11),
+                flux_i: crate::pid::i_gain(12),
+                torque_p: crate::pid::p_gain(13),
+                torque_i: crate::pid::i_gain(14),
+            };
+            tmc_state().store_pending_inner_gains(requested, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_INNER_GAINS, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .with_read(foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12)
+                .fail_writes_to(PID_FLUX_P_FLUX_I.addr());
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains = Some(previous);
+            let result = apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await;
+
+            assert!(result.is_err(), "apply should fail when a gain write fails");
+            assert_eq!(stored_inner_gains, Some(previous));
+            assert_ne!(
+                tmc_state().config_apply_pending.load(Relaxed)
+                    & crate::state::tmc::PENDING_INNER_GAINS,
+                0,
+                "inner-gains bit should stay set for retry after a failed apply"
+            );
+
+            tmc_state().clear_pi_representation_established();
+            tmc_state().config_apply_pending.store(0, Relaxed);
         });
     }
 }

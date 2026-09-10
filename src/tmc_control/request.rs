@@ -508,7 +508,9 @@ where
                 torque_p,
                 torque_i,
             };
-            let write_status = apply_live_inner_gains(runtime, board.tmc_state(), tmc, gains).await;
+            let write_status =
+                apply_live_inner_gains(runtime.stored_gains_mut(), board.tmc_state(), tmc, gains)
+                    .await;
             if let Some(outcome) = live_gain_failure_outcome(write_status) {
                 defmt::warn!("PID gains live write failed");
                 return outcome;

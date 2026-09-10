@@ -356,6 +356,9 @@ impl ChannelDriver {
                 backend.tmc_spi(),
                 tmc_state,
                 ctx.config.tmc,
+                crate::tmc_control::filters::PendingConfigSink {
+                    stored_inner_gains: self.runtime.stored_gains_mut(),
+                },
             )
             .await
             .is_err()

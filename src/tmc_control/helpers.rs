@@ -89,7 +89,7 @@ where
 
 /// Apply live flux/torque register writes and publish the gains after complete success.
 pub async fn apply_live_inner_gains<Spi>(
-    runtime: &mut TmcControlRuntime,
+    stored_inner_gains: &mut Option<InnerLoopGains>,
     tmc_state: &TmcChannelState,
     tmc: &mut Tmc4671Spi<Spi>,
     gains: InnerLoopGains,
@@ -121,7 +121,7 @@ where
         second_write_ok,
     };
     if status.all_ok() {
-        runtime.set_stored_gains(gains);
+        *stored_inner_gains = Some(gains);
     }
     status
 }

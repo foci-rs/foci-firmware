@@ -9,7 +9,7 @@ use embassy_sync::signal::Signal;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainOutOfRange, PidIGain, PidPGain};
 
-use crate::pid::OuterLoopGains;
+use crate::pid::{InnerLoopGains, OuterLoopGains};
 
 /// Maximum number of board-local TMC4671 channels supported by shared firmware.
 pub const MAX_TMC_CHANNELS: usize = 2;
@@ -271,6 +271,13 @@ pub struct TmcChannelState {
     /// tick. See [`AtomicOptionalInvert`] and
     /// [`TmcChannelState::config_apply_pending`].
     pub encoder_invert_cfg: AtomicOptionalInvert,
+    /// Requested inner-loop flux/torque P and I gains, recorded by
+    /// `tmc_set_pid_gains` and applied by the TMC task on its control tick.
+    /// See [`TmcChannelState::config_apply_pending`].
+    pending_inner_gain_flux_p: AtomicU16,
+    pending_inner_gain_flux_i: AtomicU16,
+    pending_inner_gain_torque_p: AtomicU16,
+    pending_inner_gain_torque_i: AtomicU16,
     /// Cached ADC_VM mode-5 startup offset.
     adc_vm_offset_raw: AtomicU16,
     /// Number of samples folded into the cached ADC_VM offset.
@@ -381,6 +388,10 @@ impl TmcChannelState {
             voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
             run_current_ma_cfg: AtomicU32::new(0),
             encoder_invert_cfg: AtomicOptionalInvert::new(None),
+            pending_inner_gain_flux_p: AtomicU16::new(0),
+            pending_inner_gain_flux_i: AtomicU16::new(0),
+            pending_inner_gain_torque_p: AtomicU16::new(0),
+            pending_inner_gain_torque_i: AtomicU16::new(0),
             adc_vm_offset_raw: AtomicU16::new(0),
             adc_vm_offset_sample_count: AtomicU8::new(0),
             encoder_reversed: AtomicBool::new(false),
@@ -464,6 +475,10 @@ impl TmcChannelState {
             .store(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
         self.run_current_ma_cfg.store(0, Relaxed);
         self.encoder_invert_cfg.store(None, Relaxed);
+        self.pending_inner_gain_flux_p.store(0, Relaxed);
+        self.pending_inner_gain_flux_i.store(0, Relaxed);
+        self.pending_inner_gain_torque_p.store(0, Relaxed);
+        self.pending_inner_gain_torque_i.store(0, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.cancel_requested.store(false, Relaxed);
@@ -533,6 +548,31 @@ impl TmcChannelState {
             .store(gains.velocity_p.raw(), ordering);
         self.velocity_i_value
             .store(gains.velocity_i.raw(), ordering);
+    }
+
+    /// Record requested inner-loop gains for the TMC task to apply.
+    pub fn store_pending_inner_gains(&self, gains: InnerLoopGains, ordering: Ordering) {
+        self.pending_inner_gain_flux_p
+            .store(gains.flux_p.raw(), ordering);
+        self.pending_inner_gain_flux_i
+            .store(gains.flux_i.raw(), ordering);
+        self.pending_inner_gain_torque_p
+            .store(gains.torque_p.raw(), ordering);
+        self.pending_inner_gain_torque_i
+            .store(gains.torque_i.raw(), ordering);
+    }
+
+    /// Load and validate the recorded pending inner-loop gains.
+    pub fn load_pending_inner_gains(
+        &self,
+        ordering: Ordering,
+    ) -> Result<InnerLoopGains, PidGainOutOfRange> {
+        Ok(InnerLoopGains {
+            flux_p: PidPGain::new(self.pending_inner_gain_flux_p.load(ordering))?,
+            flux_i: PidIGain::new(self.pending_inner_gain_flux_i.load(ordering))?,
+            torque_p: PidPGain::new(self.pending_inner_gain_torque_p.load(ordering))?,
+            torque_i: PidIGain::new(self.pending_inner_gain_torque_i.load(ordering))?,
+        })
     }
 
     #[cfg(test)]
@@ -779,7 +819,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 164);
+        assert_eq!(size_of::<TmcChannelState>(), 172);
     }
 
     #[test]

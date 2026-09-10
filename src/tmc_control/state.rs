@@ -206,6 +206,11 @@ impl TmcControlRuntime {
         self.stored_gains = Some(gains);
     }
 
+    /// Mutably borrow the stored inner-loop gains slot.
+    pub fn stored_gains_mut(&mut self) -> &mut Option<InnerLoopGains> {
+        &mut self.stored_gains
+    }
+
     /// Return the active commissioning kind when an engine exists.
     pub fn pending_commission_kind(&self) -> Option<crate::commissioning::types::EngineKind> {
         self.commission_engine
