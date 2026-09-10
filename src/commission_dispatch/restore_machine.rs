@@ -122,6 +122,7 @@ enum RestoreCursor {
     /// `keep_result` reproduces the arm-failure reply, which reports the tuned
     /// result rather than the zero-filled one every earlier failure uses.
     OuterDoneDisarm {
+        step: SafeStateRestoreStep,
         status: u8,
         keep_result: bool,
     },
@@ -713,6 +714,7 @@ impl TerminalRestoreMachine {
                             };
                             defmt::error!("OuterDone: position-mode restore failed");
                             self.cursor = RestoreCursor::OuterDoneDisarm {
+                                step: SafeStateRestoreStep::default(),
                                 status: status.status_code(),
                                 keep_result: false,
                             };
@@ -734,6 +736,7 @@ impl TerminalRestoreMachine {
                     {
                         defmt::error!("OuterDone: candidate filter apply SPI failed");
                         self.cursor = RestoreCursor::OuterDoneDisarm {
+                            step: SafeStateRestoreStep::default(),
                             status: CommissionError::Spi.status_code(),
                             keep_result: false,
                         };
@@ -749,6 +752,7 @@ impl TerminalRestoreMachine {
                         Err(error) => {
                             defmt::error!("OuterDone: arm sentinel verify failed: {}", error);
                             self.cursor = RestoreCursor::OuterDoneDisarm {
+                                step: SafeStateRestoreStep::default(),
                                 status: error.status_code(),
                                 keep_result: true,
                             };
@@ -799,13 +803,21 @@ impl TerminalRestoreMachine {
                     }
                 }
                 RestoreCursor::OuterDoneDisarm {
+                    mut step,
                     status,
                     keep_result,
                 } => {
+                    if poll_disarm_motor(&mut step, backend, state).await {
+                        self.cursor = RestoreCursor::OuterDoneDisarm {
+                            step,
+                            status,
+                            keep_result,
+                        };
+                        return RestoreStep::Pending;
+                    }
                     let TerminalPayload::OuterDone(outer) = self.terminal.payload.clone() else {
                         unreachable!("outer-done cursor without an outer-done payload")
                     };
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     state.tmc.commission_in_flight.store(false, Relaxed);
                     let consumed = self.take_engine(engine);
                     return RestoreStep::Done(CommissionOutcome::Terminal {
