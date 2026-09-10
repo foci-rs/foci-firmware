@@ -42,6 +42,7 @@ const DELAY_PRE_SETTLE_US: u64 = 10_000;
 const INDUCTANCE_AC_UD_EXT: i16 = 768;
 const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
 const INDUCTANCE_OPENLOOP_ACCELERATION: u32 = 0x000f_ffff;
+const INDUCTANCE_OPENLOOP_RAMP_POLL_US: u64 = 200;
 const INDUCTANCE_OPENLOOP_RAMP_TIMEOUT_US: u64 = 2_000;
 const INDUCTANCE_AC_SETTLE_US: u64 = 8_500;
 const INDUCTANCE_AC_SAMPLE_PERIOD_US: u16 = 200;
@@ -1751,8 +1752,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
             };
             if velocity != INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM {
-                if backend.elapsed_us() < *deadline_us {
-                    return StepResult::At(*deadline_us);
+                let now_us = backend.elapsed_us();
+                if now_us < *deadline_us {
+                    return StepResult::At(
+                        now_us
+                            .saturating_add(INDUCTANCE_OPENLOOP_RAMP_POLL_US)
+                            .min(*deadline_us),
+                    );
                 }
                 return begin_inductance_restore(
                     electrical_identification_state,
@@ -2551,11 +2557,12 @@ mod tests {
         SignedAnchorEvidence,
     };
     use foci_tmc4671::registers::{
-        MODE_RAMP_MODE_MOTION, MotionMode, OPENLOOP_PHI, OPENLOOP_VELOCITY_TARGET, PHI_E_EXT,
-        PHI_E_SELECTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
-        PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_ACTUAL,
-        PID_TORQUE_FLUX_OFFSET, PID_TORQUE_FLUX_TARGET, PID_VELOCITY_OFFSET, PIDOUT_UQ_UD_LIMITS,
-        PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
+        MODE_RAMP_MODE_MOTION, MotionMode, OPENLOOP_PHI, OPENLOOP_VELOCITY_ACTUAL,
+        OPENLOOP_VELOCITY_TARGET, PHI_E_EXT, PHI_E_SELECTION, PID_ERROR_PID_FLUX_ERROR_SUM,
+        PID_ERROR_PID_POSITION_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
+        PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_OFFSET,
+        PID_TORQUE_FLUX_TARGET, PID_VELOCITY_OFFSET, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP,
+        STATUS_FLAGS, UQ_UD_EXT,
     };
 
     const TEST_THETA_E_US: u32 = 160;
@@ -3508,6 +3515,71 @@ mod tests {
                 StepResult::InnerFailed(CommissionError::InductanceVelocityTimeout)
             ));
             assert_ac_teardown_after_failure(&backend);
+        });
+    }
+
+    #[test]
+    fn inductance_velocity_wait_repolls_before_final_deadline() {
+        pollster::block_on(async {
+            let final_deadline_us = 2_000;
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceWaitVelocity {
+                    deadline_us: final_deadline_us,
+                },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend
+                .registers
+                .insert(OPENLOOP_VELOCITY_ACTUAL.addr(), 600)
+                .ok();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let waiting = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+            let StepResult::At(repoll_us) = waiting else {
+                panic!("expected a scheduled velocity repoll, got {waiting:?}");
+            };
+            assert!(
+                repoll_us > 0 && repoll_us < final_deadline_us,
+                "velocity ramp must be repolled later and before the final deadline"
+            );
+
+            backend.elapsed_us_value = repoll_us;
+            backend
+                .registers
+                .insert(
+                    OPENLOOP_VELOCITY_ACTUAL.addr(),
+                    INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM,
+                )
+                .ok();
+            let ready = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(ready, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                InnerPhase::ElectricalIdentification {
+                    state: ElectricalIdentificationState::InductanceReadEncoderStart,
+                    ..
+                }
+            ));
         });
     }
 
