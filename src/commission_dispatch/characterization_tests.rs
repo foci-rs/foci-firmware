@@ -59,6 +59,7 @@ use super::test_support::{
 use super::*;
 use crate::autotune::CommissionProfile;
 use crate::commissioning::backend::CommissionMotorControl;
+use crate::commissioning::schedule::CommissionTerminal;
 use crate::commissioning::types::{
     FixedGainAmplitudeCause, FixedGainAmplitudeOutcome, FixedGainAmplitudeTerminal,
     RobustnessOutcome,
@@ -1237,7 +1238,7 @@ fn fail_velocity_target_write(backend: &mut MockBackend) {
     backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_TARGET.addr());
 }
 
-fn all_terminal_variants() -> [TerminalVariant; 21] {
+fn all_terminal_variants() -> [TerminalVariant; 22] {
     const BASE: TerminalVariant = TerminalVariant {
         name: "",
         result: || StepResult::SelftestDone,
@@ -1355,6 +1356,15 @@ fn all_terminal_variants() -> [TerminalVariant; 21] {
             name: "outer_failed_soft_failure",
             result: || StepResult::OuterFailed(crate::autotune::CommissionError::NoCurrent),
             engine: robustness_reversal_engine,
+            seed_sentinel: true,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "outer_failed_safety_fault_velocity_limit",
+            result: || StepResult::OuterFailed(crate::autotune::CommissionError::Shutdown),
+            engine: breakaway_campaign_engine,
             seed_sentinel: true,
             entry_calibrated: true,
             entry_motor_enabled: true,
@@ -1631,6 +1641,131 @@ async fn assert_disarm_phase_one_op_per_poll(variant: &TerminalVariant) {
     }
 }
 
+async fn assert_staged_disarm_phase_one_op_per_poll(
+    name: &str,
+    terminal: CommissionTerminal,
+    engine_factory: fn() -> CommissioningEngine,
+    prepare: fn(&mut MockBackend),
+    entry_calibrated: bool,
+    entry_motor_enabled: bool,
+    stored_gains: fn() -> Option<crate::pid::InnerLoopGains>,
+) {
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
+
+    let mut backend = MockBackend::new();
+    reset_channel0();
+    prepare(&mut backend);
+    let mut calibrated = entry_calibrated;
+    let mut motor_enabled = entry_motor_enabled;
+    let mut gains = stored_gains();
+    let mut engine = Some(engine_factory());
+    let mut slot = IntegralRetentionSlot::new();
+    let mut machine = TerminalRestoreMachine::start_staged(terminal, 0, 4095);
+    let mut previous_len = backend.spi_log.len();
+    let mut previous_verified = backend.verified_write_calls;
+    let mut previous_attributed = backend.raw_ops_attributed_to_verified_calls;
+    let mut disarm_phase = false;
+    let mut poll_index = 0usize;
+    loop {
+        poll_index += 1;
+        assert!(poll_index < 128, "{name}: machine did not terminate");
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        let mut retention = CommissionRetention::new(&mut slot);
+        let outcome = machine
+            .poll_step(&mut engine, &mut backend, &mut state, Some(&mut retention))
+            .await;
+        let delta = &backend.spi_log[previous_len..];
+        if !disarm_phase && delta.iter().any(|op| matches!(op, SpiOp::EnablePin(false))) {
+            disarm_phase = true;
+        }
+        if disarm_phase {
+            let verified_delta = backend.verified_write_calls - previous_verified;
+            let attributed_delta =
+                backend.raw_ops_attributed_to_verified_calls - previous_attributed;
+            let total_raw = delta
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            let outside_delta = total_raw.saturating_sub(attributed_delta);
+            let ok = match verified_delta {
+                0 => outside_delta <= 1,
+                1 => outside_delta == 0,
+                _ => false,
+            };
+            assert!(
+                ok,
+                "{name}: poll {poll_index} in the disarm phase: {verified_delta} verified-write \
+                 call(s), {outside_delta} raw register op(s) unattributed to any verified call \
+                 (of {total_raw} total) -- expected at most one logical register operation"
+            );
+        }
+        previous_verified = backend.verified_write_calls;
+        previous_attributed = backend.raw_ops_attributed_to_verified_calls;
+        previous_len = backend.spi_log.len();
+        if matches!(outcome, RestoreStep::Done(_)) {
+            assert!(
+                disarm_phase,
+                "{name}: run finished without ever entering a disarm phase"
+            );
+            break;
+        }
+    }
+}
+
+#[fixture_test]
+async fn fixed_gain_amplitude_staged_disarm_velocity_phase_is_one_op_per_poll() {
+    assert_staged_disarm_phase_one_op_per_poll(
+        "fixed_gain_amplitude_staged_disarm_velocity",
+        CommissionTerminal::FixedGainAmplitude(zero_fixed_gain_amplitude_terminal()),
+        commission_engine,
+        no_prepare,
+        true,
+        true,
+        no_gains,
+    )
+    .await;
+}
+
+#[fixture_test]
+async fn velocity_staged_disarm_velocity_phase_is_one_op_per_poll() {
+    assert!(
+        robustness_reversal_engine()
+            .velocity_operational_torque_limit()
+            .is_none(),
+        "robustness_reversal_engine fixture must not carry an operational torque limit for this test"
+    );
+    assert_staged_disarm_phase_one_op_per_poll(
+        "velocity_staged_disarm_velocity",
+        CommissionTerminal::VelocityIntegral(sample_velocity_integral_terminal()),
+        robustness_reversal_engine,
+        no_prepare,
+        true,
+        true,
+        no_gains,
+    )
+    .await;
+}
+
+#[fixture_test]
+async fn velocity_staged_disarm_velocity_with_operational_limit_phase_is_one_op_per_poll() {
+    assert!(
+        breakaway_campaign_engine()
+            .velocity_operational_torque_limit()
+            .is_some(),
+        "breakaway_campaign_engine fixture must carry an operational torque limit for this test"
+    );
+    assert_staged_disarm_phase_one_op_per_poll(
+        "velocity_staged_disarm_velocity_with_operational_limit",
+        CommissionTerminal::VelocityIntegral(sample_velocity_integral_terminal()),
+        breakaway_campaign_engine,
+        no_prepare,
+        true,
+        true,
+        no_gains,
+    )
+    .await;
+}
+
 #[fixture_test]
 async fn machine_matches_async_trace_for_every_variant() {
     for variant in &all_terminal_variants() {
@@ -1682,6 +1817,21 @@ async fn outer_failed_safety_fault_disarm_phase_is_one_op_per_poll() {
         .into_iter()
         .find(|v| v.name == "outer_failed_safety_fault")
         .expect("outer_failed_safety_fault variant must exist");
+    assert_disarm_phase_one_op_per_poll(&variant).await;
+}
+
+#[fixture_test]
+async fn outer_failed_safety_fault_velocity_limit_disarm_phase_is_one_op_per_poll() {
+    assert!(
+        breakaway_campaign_engine()
+            .velocity_operational_torque_limit()
+            .is_some(),
+        "breakaway_campaign_engine fixture must carry an operational torque limit for this test"
+    );
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "outer_failed_safety_fault_velocity_limit")
+        .expect("outer_failed_safety_fault_velocity_limit variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
 

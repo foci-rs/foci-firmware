@@ -13,50 +13,6 @@ pub enum RestoreError<E> {
     Readback,
 }
 
-/// Erases `RestoreError`'s `Spi(B::Error)` payload, same fix as `GainsRestoreErrorKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub(crate) enum VelocityRestoreErrorKind {
-    Spi,
-    VelocityClamp,
-}
-
-/// Leave a trace velocity workflow disarmed with its operational current limit restored.
-pub async fn disarm_and_restore_velocity_limit<B: CommissioningBackend>(
-    backend: &mut B,
-    state: &mut super::DispatchState<'_>,
-    operational_limit: u16,
-) -> Result<(), VelocityRestoreErrorKind> {
-    use foci_tmc4671::registers::{PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_VELOCITY_TARGET};
-
-    backend
-        .write_register(PID_VELOCITY_TARGET, 0)
-        .await
-        .map_err(|_| VelocityRestoreErrorKind::Spi)?;
-    backend
-        .write_register(
-            PID_ERROR_PID_VELOCITY_ERROR_SUM.addr,
-            u32::from(PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr),
-        )
-        .await
-        .map_err(|_| VelocityRestoreErrorKind::Spi)?;
-    backend
-        .write_register(PID_ERROR_PID_VELOCITY_ERROR_SUM.data, 0)
-        .await
-        .map_err(|_| VelocityRestoreErrorKind::Spi)?;
-
-    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-
-    let mut clamp =
-        crate::commissioning::outer::velocity::velocity_clamp::VelocityCurrentClampSession::try_new(
-            u32::from(operational_limit),
-        )
-        .map_err(|_| VelocityRestoreErrorKind::VelocityClamp)?;
-    clamp
-        .restore_operational_limit(backend)
-        .await
-        .map_err(|_| VelocityRestoreErrorKind::VelocityClamp)
-}
-
 /// SPI restore sequence for the OuterDone success path.
 ///
 /// Writes tuned velocity and position gains, the operational velocity limit,
@@ -358,8 +314,9 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
 /// limit registers back afterward to confirm the writes landed.
 ///
 /// Does **not** touch `PID_TORQUE_FLUX_LIMITS`: the operational current limit
-/// lives in `tmc_state`, not the snapshot, and is restored separately by
-/// [`disarm_and_restore_velocity_limit`], which must run after this helper.
+/// lives in `tmc_state`, not the snapshot, and is restored separately by the
+/// velocity-disarm step's `ClampRestore` phase, which must run after this
+/// helper.
 ///
 /// # Errors
 ///
@@ -425,7 +382,7 @@ pub async fn restore_entry_snapshot_to_registers<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, dispatch_state};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use foci_firmware_macros::fixture_test;
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -457,18 +414,6 @@ mod tests {
             "write_log helper capacity truncated the SPI log"
         );
         writes
-    }
-
-    #[fixture_test]
-    async fn disarm_and_restore_velocity_limit_returns_velocity_restore_error_kind() {
-        let mut backend = MockBackend::new();
-        let mut calibrated = false;
-        let mut motor_enabled = false;
-        let mut gains = None;
-        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
-        let result: Result<(), VelocityRestoreErrorKind> =
-            disarm_and_restore_velocity_limit(&mut backend, &mut state, 1234).await;
-        assert!(result.is_ok());
     }
 
     #[fixture_test]

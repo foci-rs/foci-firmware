@@ -578,28 +578,6 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
     calibration_error.status_code()
 }
 
-async fn disarm_velocity_workflow<B: CommissioningBackend>(
-    engine: &mut Option<CommissioningEngine>,
-    backend: &mut B,
-    state: &mut DispatchState<'_>,
-) -> bool {
-    let Some(operational_limit) = engine
-        .as_ref()
-        .and_then(CommissioningEngine::velocity_operational_torque_limit)
-    else {
-        crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
-        return true;
-    };
-    let restored = restore::disarm_and_restore_velocity_limit(backend, state, operational_limit)
-        .await
-        .is_ok();
-    engine
-        .as_mut()
-        .expect("velocity workflow disappeared during restoration")
-        .mark_velocity_limit_restored();
-    restored
-}
-
 /// Dispatch a single `StepResult` from `CommissioningEngine::step()` to the
 /// appropriate outcome, executing any required SPI work, state mutations, and
 /// atomic stores along the way.

@@ -16,9 +16,9 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::autotune::CommissionError;
 use crate::commission_dispatch::{
     CommissionOutcome, CommissionRetention, DispatchState, PostActions, ReplyPayload,
-    StepperPostAction, disarm_velocity_workflow, fixed_gain_amplitude, integral,
-    outer_restore_position_stable, record_restore_summary, restore, robustness,
-    validate_outer_gains, zero_adc_cal_result, zero_commission_result, zero_outer_result,
+    StepperPostAction, fixed_gain_amplitude, integral, outer_restore_position_stable,
+    record_restore_summary, restore, robustness, validate_outer_gains, zero_adc_cal_result,
+    zero_commission_result, zero_outer_result,
 };
 use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionTerminal;
@@ -128,7 +128,7 @@ enum RestoreCursor {
     },
 
     OuterFailedStagedTiming,
-    OuterFailedDisarmVelocity,
+    OuterFailedDisarmVelocity(Option<VelocityDisarmStep>),
     OuterFailedClassify,
     OuterFailedRestoreEntryGains,
     OuterFailedSafetyRestore,
@@ -138,7 +138,7 @@ enum RestoreCursor {
     OuterFailedArm,
     OuterFailedArmDisarm(SafeStateRestoreStep, u8),
 
-    FixedGainAmplitudeStagedDisarmVelocity,
+    FixedGainAmplitudeStagedDisarmVelocity(Option<VelocityDisarmStep>),
     FixedGainAmplitudeDisarm(SafeStateRestoreStep),
 
     RobustnessStagedClassify,
@@ -147,8 +147,8 @@ enum RestoreCursor {
 
     VelocityStagedPrologue,
     VelocityStagedRestoreBaseline,
-    VelocityStagedDisarmVelocity,
-    VelocityDisarmVelocity,
+    VelocityStagedDisarmVelocity(Option<VelocityDisarmStep>),
+    VelocityDisarmVelocity(Option<VelocityDisarmStep>),
 
     ForceSafeDisarm,
     Finished,
@@ -199,14 +199,14 @@ impl TerminalRestoreMachine {
                 return Self {
                     channel,
                     pwm_maxcnt,
-                    cursor: RestoreCursor::OuterFailedDisarmVelocity,
+                    cursor: RestoreCursor::OuterFailedDisarmVelocity(None),
                     terminal: data,
                     engine_consumed: false,
                 };
             }
             StepResult::VelocityIntegralTerminal(terminal) => (
                 TerminalPayload::VelocityIntegral(terminal),
-                RestoreCursor::VelocityDisarmVelocity,
+                RestoreCursor::VelocityDisarmVelocity(None),
             ),
             StepResult::FixedGainAmplitudeTerminal(terminal) => (
                 TerminalPayload::FixedGainAmplitude(terminal),
@@ -249,7 +249,7 @@ impl TerminalRestoreMachine {
             CommissionTerminal::FixedGainAmplitude(terminal) => Self {
                 channel,
                 pwm_maxcnt,
-                cursor: RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity,
+                cursor: RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(None),
                 terminal: OwnedTerminalData::new(TerminalPayload::FixedGainAmplitude(terminal)),
                 engine_consumed: false,
             },
@@ -264,7 +264,7 @@ impl TerminalRestoreMachine {
                 let mut machine = Self::start(other.into_step_result(), channel, pwm_maxcnt);
                 // Only the staged entry emits the outer safety-timing trace
                 // record, matching the awaited chain this replaced.
-                if matches!(machine.cursor, RestoreCursor::OuterFailedDisarmVelocity) {
+                if matches!(machine.cursor, RestoreCursor::OuterFailedDisarmVelocity(_)) {
                     machine.cursor = RestoreCursor::OuterFailedStagedTiming;
                 }
                 machine
@@ -862,18 +862,30 @@ impl TerminalRestoreMachine {
                             .expect("trace velocity engine disappeared before terminal timing")
                             .emit_outer_safety_timing_trace(backend, run_sequence);
                     }
-                    self.cursor = RestoreCursor::OuterFailedDisarmVelocity;
+                    self.cursor = RestoreCursor::OuterFailedDisarmVelocity(None);
                 }
-                RestoreCursor::OuterFailedDisarmVelocity => {
+                RestoreCursor::OuterFailedDisarmVelocity(step) => {
                     if engine
                         .as_ref()
                         .and_then(CommissioningEngine::velocity_operational_torque_limit)
                         .is_some()
                     {
-                        self.terminal.velocity_workflow_restored =
-                            disarm_velocity_workflow(engine, backend, state).await;
-                        self.cursor = RestoreCursor::OuterFailedClassify;
-                        return RestoreStep::Pending;
+                        let mut step = step.unwrap_or_else(|| VelocityDisarmStep::start(engine));
+                        match poll_velocity_disarm(&mut step, backend, state).await {
+                            None => {
+                                self.cursor = RestoreCursor::OuterFailedDisarmVelocity(Some(step));
+                                return RestoreStep::Pending;
+                            }
+                            Some(restored) => {
+                                self.terminal.velocity_workflow_restored = restored;
+                                engine
+                                    .as_mut()
+                                    .expect("velocity workflow disappeared during restoration")
+                                    .mark_velocity_limit_restored();
+                                self.cursor = RestoreCursor::OuterFailedClassify;
+                                return RestoreStep::Pending;
+                            }
+                        }
                     }
                     self.terminal.velocity_workflow_restored = true;
                     self.cursor = RestoreCursor::OuterFailedClassify;
@@ -1052,49 +1064,68 @@ impl TerminalRestoreMachine {
                 }
 
                 // --- fixed-gain amplitude ----------------------------------------
-                RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity => {
-                    let TerminalPayload::FixedGainAmplitude(mut terminal) =
-                        self.terminal.payload.clone()
-                    else {
-                        unreachable!(
-                            "fixed-gain amplitude cursor without a fixed-gain amplitude payload"
-                        )
-                    };
+                RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(step) => {
                     let retention = retention
                         .take()
                         .expect("staged terminal restore requires Stage-C retention");
-                    let amplitude_context = engine.as_ref().and_then(|engine| {
-                        engine
-                            .fixed_gain_amplitude_order()
-                            .zip(engine.fixed_gain_amplitude_plan_digest())
-                    });
-                    if !disarm_velocity_workflow(engine, backend, state).await {
-                        retention.integral.observe_fault();
-                        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
-                        terminal.safety_fault = None;
-                    } else if let Some((order, plan_digest)) = amplitude_context {
-                        terminal = fixed_gain_amplitude::apply_fixed_gain_amplitude_terminal(
-                            terminal,
-                            order,
-                            plan_digest,
-                            retention.integral,
-                        );
-                    } else {
-                        retention.integral.observe_fault();
-                        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
-                        terminal.safety_fault = None;
+                    let mut step = step.unwrap_or_else(|| VelocityDisarmStep::start(engine));
+                    match poll_velocity_disarm(&mut step, backend, state).await {
+                        None => {
+                            self.cursor =
+                                RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(Some(step));
+                            return RestoreStep::Pending;
+                        }
+                        Some(restored) => {
+                            let TerminalPayload::FixedGainAmplitude(mut terminal) =
+                                self.terminal.payload.clone()
+                            else {
+                                unreachable!(
+                                    "fixed-gain amplitude cursor without a fixed-gain amplitude payload"
+                                )
+                            };
+                            let amplitude_context = engine.as_ref().and_then(|engine| {
+                                engine
+                                    .fixed_gain_amplitude_order()
+                                    .zip(engine.fixed_gain_amplitude_plan_digest())
+                            });
+                            let no_limit_branch = matches!(step, VelocityDisarmStep::Disarm(_));
+                            if !no_limit_branch {
+                                engine
+                                    .as_mut()
+                                    .expect("velocity workflow disappeared during restoration")
+                                    .mark_velocity_limit_restored();
+                            }
+                            if !restored {
+                                retention.integral.observe_fault();
+                                terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+                                terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+                                terminal.safety_fault = None;
+                            } else if let Some((order, plan_digest)) = amplitude_context {
+                                terminal =
+                                    fixed_gain_amplitude::apply_fixed_gain_amplitude_terminal(
+                                        terminal,
+                                        order,
+                                        plan_digest,
+                                        retention.integral,
+                                    );
+                            } else {
+                                retention.integral.observe_fault();
+                                terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+                                terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+                                terminal.safety_fault = None;
+                            }
+                            self.terminal.payload = TerminalPayload::FixedGainAmplitude(terminal);
+                            #[cfg(feature = "trace")]
+                            engine
+                                .as_mut()
+                                .expect("engine slot is None on FixedGainAmplitudeTerminal")
+                                .emit_fixed_gain_amplitude_terminal_trace(backend, terminal);
+                            self.cursor = RestoreCursor::FixedGainAmplitudeDisarm(
+                                SafeStateRestoreStep::default(),
+                            );
+                            return RestoreStep::Pending;
+                        }
                     }
-                    self.terminal.payload = TerminalPayload::FixedGainAmplitude(terminal);
-                    #[cfg(feature = "trace")]
-                    engine
-                        .as_mut()
-                        .expect("engine slot is None on FixedGainAmplitudeTerminal")
-                        .emit_fixed_gain_amplitude_terminal_trace(backend, terminal);
-                    self.cursor =
-                        RestoreCursor::FixedGainAmplitudeDisarm(SafeStateRestoreStep::default());
-                    return RestoreStep::Pending;
                 }
                 RestoreCursor::FixedGainAmplitudeDisarm(mut step) => {
                     if poll_disarm_motor(&mut step, backend, state).await {
@@ -1244,7 +1275,7 @@ impl TerminalRestoreMachine {
                         self.cursor = RestoreCursor::VelocityStagedRestoreBaseline;
                     } else {
                         self.terminal.baseline_restored = false;
-                        self.cursor = RestoreCursor::VelocityStagedDisarmVelocity;
+                        self.cursor = RestoreCursor::VelocityStagedDisarmVelocity(None);
                     }
                 }
                 RestoreCursor::VelocityStagedRestoreBaseline => {
@@ -1255,80 +1286,120 @@ impl TerminalRestoreMachine {
                         restore::restore_entry_snapshot_to_registers(backend, &snapshot)
                             .await
                             .is_ok();
-                    self.cursor = RestoreCursor::VelocityStagedDisarmVelocity;
+                    self.cursor = RestoreCursor::VelocityStagedDisarmVelocity(None);
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::VelocityStagedDisarmVelocity => {
-                    let TerminalPayload::VelocityIntegral(mut terminal) =
-                        self.terminal.payload.clone()
-                    else {
-                        unreachable!("velocity cursor without a velocity payload")
-                    };
+                RestoreCursor::VelocityStagedDisarmVelocity(step) => {
                     let retention = retention
                         .take()
                         .expect("staged terminal restore requires Stage-C retention");
-                    if !disarm_velocity_workflow(engine, backend, state).await
-                        || !self.terminal.baseline_restored
-                    {
-                        retention.integral.observe_fault();
-                        terminal.outcome = VelocityIntegralOutcome::Fault;
-                        terminal.cause =
-                            IntegralOutcomeCause::Error(CommissionError::Spi.status_code());
-                        terminal.recovery_unavailable = true;
-                        terminal.safety_fault = None;
-                        self.terminal.reproduction = None;
-                        self.terminal.authority = None;
+                    let mut step = step.unwrap_or_else(|| VelocityDisarmStep::start(engine));
+                    match poll_velocity_disarm(&mut step, backend, state).await {
+                        None => {
+                            self.cursor = RestoreCursor::VelocityStagedDisarmVelocity(Some(step));
+                            return RestoreStep::Pending;
+                        }
+                        Some(restored) => {
+                            let TerminalPayload::VelocityIntegral(mut terminal) =
+                                self.terminal.payload.clone()
+                            else {
+                                unreachable!("velocity cursor without a velocity payload")
+                            };
+                            let no_limit_branch = matches!(step, VelocityDisarmStep::Disarm(_));
+                            if !no_limit_branch {
+                                engine
+                                    .as_mut()
+                                    .expect("velocity workflow disappeared during restoration")
+                                    .mark_velocity_limit_restored();
+                            }
+                            if !restored || !self.terminal.baseline_restored {
+                                retention.integral.observe_fault();
+                                terminal.outcome = VelocityIntegralOutcome::Fault;
+                                terminal.cause =
+                                    IntegralOutcomeCause::Error(CommissionError::Spi.status_code());
+                                terminal.recovery_unavailable = true;
+                                terminal.safety_fault = None;
+                                self.terminal.reproduction = None;
+                                self.terminal.authority = None;
+                            }
+                            self.terminal.payload = TerminalPayload::VelocityIntegral(terminal);
+                            #[cfg(feature = "trace")]
+                            engine
+                                .as_mut()
+                                .expect("engine slot is None on VelocityIntegralTerminal")
+                                .emit_integral_terminal_trace(
+                                    backend,
+                                    &terminal,
+                                    self.terminal.reproduction,
+                                );
+                            self.cursor = RestoreCursor::VelocityDisarmVelocity(None);
+                            return RestoreStep::Pending;
+                        }
                     }
-                    self.terminal.payload = TerminalPayload::VelocityIntegral(terminal);
-                    #[cfg(feature = "trace")]
-                    engine
-                        .as_mut()
-                        .expect("engine slot is None on VelocityIntegralTerminal")
-                        .emit_integral_terminal_trace(
-                            backend,
-                            &terminal,
-                            self.terminal.reproduction,
-                        );
-                    self.cursor = RestoreCursor::VelocityDisarmVelocity;
-                    return RestoreStep::Pending;
                 }
-                RestoreCursor::VelocityDisarmVelocity => {
-                    let TerminalPayload::VelocityIntegral(mut terminal) =
-                        self.terminal.payload.clone()
-                    else {
-                        unreachable!("velocity cursor without a velocity payload")
+                RestoreCursor::VelocityDisarmVelocity(step) => {
+                    let mut step = match step {
+                        Some(step) => step,
+                        None => {
+                            let TerminalPayload::VelocityIntegral(mut terminal) =
+                                self.terminal.payload.clone()
+                            else {
+                                unreachable!("velocity cursor without a velocity payload")
+                            };
+                            if let Some(record) = engine.as_ref().and_then(|engine| {
+                                engine.attach_integral_rest_boundary(&mut terminal)
+                            }) {
+                                #[cfg(feature = "trace")]
+                                backend.record_velocity_sweep_trace_record(record);
+                                #[cfg(not(feature = "trace"))]
+                                let _ = record;
+                            }
+                            self.terminal.payload = TerminalPayload::VelocityIntegral(terminal);
+                            VelocityDisarmStep::start(engine)
+                        }
                     };
-                    if let Some(record) = engine
-                        .as_ref()
-                        .and_then(|engine| engine.attach_integral_rest_boundary(&mut terminal))
-                    {
-                        #[cfg(feature = "trace")]
-                        backend.record_velocity_sweep_trace_record(record);
-                        #[cfg(not(feature = "trace"))]
-                        let _ = record;
+                    match poll_velocity_disarm(&mut step, backend, state).await {
+                        None => {
+                            self.cursor = RestoreCursor::VelocityDisarmVelocity(Some(step));
+                            return RestoreStep::Pending;
+                        }
+                        Some(restored) => {
+                            let no_limit_branch = matches!(step, VelocityDisarmStep::Disarm(_));
+                            if !no_limit_branch {
+                                engine
+                                    .as_mut()
+                                    .expect("velocity workflow disappeared during restoration")
+                                    .mark_velocity_limit_restored();
+                            }
+                            let TerminalPayload::VelocityIntegral(mut terminal) =
+                                self.terminal.payload.clone()
+                            else {
+                                unreachable!("velocity cursor without a velocity payload")
+                            };
+                            if !restored {
+                                terminal.outcome = VelocityIntegralOutcome::Fault;
+                                terminal.cause =
+                                    IntegralOutcomeCause::Error(CommissionError::Spi.status_code());
+                                terminal.recovery_unavailable = true;
+                                terminal.safety_fault = None;
+                            }
+                            self.terminal.payload = TerminalPayload::VelocityIntegral(terminal);
+                            state.tmc.commission_in_flight.store(false, Relaxed);
+                            let consumed = self.take_engine(engine);
+                            return RestoreStep::Done(CommissionOutcome::Terminal {
+                                reply: ReplyPayload::VelocityIntegralTerminal {
+                                    oid: consumed.oid(),
+                                    terminal,
+                                    reproduction: self.terminal.reproduction,
+                                    authority: self.terminal.authority,
+                                },
+                                actions: PostActions {
+                                    stop_trace: true,
+                                    stepper: StepperPostAction::Stop,
+                                },
+                            });
+                        }
                     }
-                    if !disarm_velocity_workflow(engine, backend, state).await {
-                        terminal.outcome = VelocityIntegralOutcome::Fault;
-                        terminal.cause =
-                            IntegralOutcomeCause::Error(CommissionError::Spi.status_code());
-                        terminal.recovery_unavailable = true;
-                        terminal.safety_fault = None;
-                    }
-                    self.terminal.payload = TerminalPayload::VelocityIntegral(terminal);
-                    state.tmc.commission_in_flight.store(false, Relaxed);
-                    let consumed = self.take_engine(engine);
-                    return RestoreStep::Done(CommissionOutcome::Terminal {
-                        reply: ReplyPayload::VelocityIntegralTerminal {
-                            oid: consumed.oid(),
-                            terminal,
-                            reproduction: self.terminal.reproduction,
-                            authority: self.terminal.authority,
-                        },
-                        actions: PostActions {
-                            stop_trace: true,
-                            stepper: StepperPostAction::Stop,
-                        },
-                    });
                 }
 
                 // --- cancellation ----------------------------------------------
@@ -1677,7 +1748,6 @@ async fn poll_disarm_motor<B: CommissioningBackend>(
     more
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 enum VelocityDisarmStep {
     Disarm(SafeStateRestoreStep),
@@ -1699,7 +1769,6 @@ enum VelocityDisarmStep {
     },
 }
 
-#[allow(dead_code)]
 impl VelocityDisarmStep {
     fn start(engine: &Option<CommissioningEngine>) -> Self {
         match engine
@@ -1712,7 +1781,6 @@ impl VelocityDisarmStep {
     }
 }
 
-#[allow(dead_code)]
 async fn poll_velocity_disarm<B: CommissioningBackend>(
     step: &mut VelocityDisarmStep,
     backend: &mut B,
@@ -1827,94 +1895,5 @@ mod poll_disarm_motor_tests {
         assert_eq!(backend.spi_log, oracle_backend.spi_log);
         assert_eq!(calibrated, oracle_calibrated);
         assert_eq!(motor_enabled, oracle_motor_enabled);
-    }
-}
-
-#[cfg(test)]
-mod velocity_disarm_step_tests {
-    use super::*;
-    use crate::autotune::CommissionProfile;
-    use crate::commission_dispatch::test_support::{
-        MockBackend, SpiOp, breakaway_campaign_engine, dispatch_state,
-    };
-    use foci_firmware_macros::fixture_test;
-
-    async fn assert_matches_disarm_velocity_workflow(
-        engine_factory: impl Fn() -> CommissioningEngine,
-    ) {
-        let mut oracle_backend = MockBackend::new();
-        let mut oracle_engine = Some(engine_factory());
-        let mut oracle_calibrated = true;
-        let mut oracle_motor_enabled = true;
-        let mut oracle_gains = None;
-        let mut oracle_state = dispatch_state(
-            &mut oracle_calibrated,
-            &mut oracle_motor_enabled,
-            &mut oracle_gains,
-        );
-        let oracle_restored =
-            disarm_velocity_workflow(&mut oracle_engine, &mut oracle_backend, &mut oracle_state)
-                .await;
-
-        let mut backend = MockBackend::new();
-        let engine = Some(engine_factory());
-        let mut calibrated = true;
-        let mut motor_enabled = true;
-        let mut gains = None;
-        let mut step = VelocityDisarmStep::start(&engine);
-        let mut polls = 0u32;
-        let restored = loop {
-            assert!(polls < 32, "velocity disarm step did not terminate");
-            let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
-            let ops_before = backend.spi_log.len();
-            let verified_before = backend.verified_write_calls;
-            let attributed_before = backend.raw_ops_attributed_to_verified_calls;
-            let outcome = poll_velocity_disarm(&mut step, &mut backend, &mut state).await;
-            let verified_delta = backend.verified_write_calls - verified_before;
-            let attributed_delta = backend.raw_ops_attributed_to_verified_calls - attributed_before;
-            let total_raw = backend.spi_log[ops_before..]
-                .iter()
-                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
-                .count();
-            let outside_delta = total_raw - attributed_delta;
-            let ok = match verified_delta {
-                0 => outside_delta <= 1,
-                1 => outside_delta == 0,
-                _ => false,
-            };
-            assert!(
-                ok,
-                "poll {polls}: {verified_delta} verified call(s), {outside_delta} unattributed raw op(s)"
-            );
-            polls += 1;
-            if let Some(restored) = outcome {
-                break restored;
-            }
-        };
-
-        assert_eq!(backend.spi_log, oracle_backend.spi_log);
-        assert_eq!(restored, oracle_restored);
-    }
-
-    #[fixture_test]
-    async fn velocity_disarm_step_matches_disarm_velocity_workflow_with_operational_limit() {
-        let engine = breakaway_campaign_engine();
-        assert!(
-            engine.velocity_operational_torque_limit().is_some(),
-            "breakaway_campaign_engine fixture must carry an operational torque limit for this test"
-        );
-        assert_matches_disarm_velocity_workflow(breakaway_campaign_engine).await;
-    }
-
-    #[fixture_test]
-    async fn velocity_disarm_step_matches_disarm_velocity_workflow_without_operational_limit() {
-        let engine_factory = || CommissioningEngine::new_commission(0, CommissionProfile::Balanced);
-        assert!(
-            engine_factory()
-                .velocity_operational_torque_limit()
-                .is_none(),
-            "commission engine fixture must not carry an operational torque limit for this test"
-        );
-        assert_matches_disarm_velocity_workflow(engine_factory).await;
     }
 }
