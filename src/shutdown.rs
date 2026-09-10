@@ -62,14 +62,8 @@ pub enum ShutdownReason {
     TrsyncSetTimeoutFailed,
     TrsyncTriggerFailed,
     InvalidTmcChannel,
-    TmcSetCurrentLostQueueFull,
     FociHomingConfigInvalid,
     TmcSetMotionScaleLostQueueFull,
-    TmcSetEncoderDirLostQueueFull,
-    TmcSetPidGainsLostQueueFull,
-    TmcSetPositionGainsLostQueueFull,
-    TmcSetFilterLostQueueFull,
-    TmcSetVoltageLimitLostQueueFull,
     TmcDiagnosticLostQueueFull,
     Tmc4671ChipIdMismatch,
     Tmc4671SpiFailedAtBoot,
@@ -119,14 +113,8 @@ impl ShutdownReason {
             Self::TrsyncSetTimeoutFailed => "trsync_set_timeout failed",
             Self::TrsyncTriggerFailed => "trsync_trigger failed",
             Self::InvalidTmcChannel => "Invalid TMC channel",
-            Self::TmcSetCurrentLostQueueFull => "tmc_set_current lost (queue full)",
             Self::FociHomingConfigInvalid => "foci_config_homing rejected",
             Self::TmcSetMotionScaleLostQueueFull => "tmc_set_motion_scale lost (queue full)",
-            Self::TmcSetEncoderDirLostQueueFull => "tmc_set_encoder_dir lost (queue full)",
-            Self::TmcSetPidGainsLostQueueFull => "tmc_set_pid_gains lost (queue full)",
-            Self::TmcSetPositionGainsLostQueueFull => "tmc_set_position_gains lost (queue full)",
-            Self::TmcSetFilterLostQueueFull => "tmc_set_filter lost (queue full)",
-            Self::TmcSetVoltageLimitLostQueueFull => "tmc_set_voltage_limit lost (queue full)",
             Self::TmcDiagnosticLostQueueFull => "TMC diagnostic lost (queue full)",
             Self::Tmc4671ChipIdMismatch => "TMC4671 chip ID mismatch",
             Self::Tmc4671SpiFailedAtBoot => "TMC4671 SPI failed at boot",
@@ -274,13 +262,6 @@ macro_rules! dispatch_shutdown {
             $crate::shutdown::ShutdownReason::InvalidTmcChannel => {
                 ::ankyra::klipper_shutdown_from!($sender, "Invalid TMC channel", $clock);
             }
-            $crate::shutdown::ShutdownReason::TmcSetCurrentLostQueueFull => {
-                ::ankyra::klipper_shutdown_from!(
-                    $sender,
-                    "tmc_set_current lost (queue full)",
-                    $clock
-                );
-            }
             $crate::shutdown::ShutdownReason::FociHomingConfigInvalid => {
                 ::ankyra::klipper_shutdown_from!($sender, "foci_config_homing rejected", $clock);
             }
@@ -288,41 +269,6 @@ macro_rules! dispatch_shutdown {
                 ::ankyra::klipper_shutdown_from!(
                     $sender,
                     "tmc_set_motion_scale lost (queue full)",
-                    $clock
-                );
-            }
-            $crate::shutdown::ShutdownReason::TmcSetEncoderDirLostQueueFull => {
-                ::ankyra::klipper_shutdown_from!(
-                    $sender,
-                    "tmc_set_encoder_dir lost (queue full)",
-                    $clock
-                );
-            }
-            $crate::shutdown::ShutdownReason::TmcSetPidGainsLostQueueFull => {
-                ::ankyra::klipper_shutdown_from!(
-                    $sender,
-                    "tmc_set_pid_gains lost (queue full)",
-                    $clock
-                );
-            }
-            $crate::shutdown::ShutdownReason::TmcSetPositionGainsLostQueueFull => {
-                ::ankyra::klipper_shutdown_from!(
-                    $sender,
-                    "tmc_set_position_gains lost (queue full)",
-                    $clock
-                );
-            }
-            $crate::shutdown::ShutdownReason::TmcSetFilterLostQueueFull => {
-                ::ankyra::klipper_shutdown_from!(
-                    $sender,
-                    "tmc_set_filter lost (queue full)",
-                    $clock
-                );
-            }
-            $crate::shutdown::ShutdownReason::TmcSetVoltageLimitLostQueueFull => {
-                ::ankyra::klipper_shutdown_from!(
-                    $sender,
-                    "tmc_set_voltage_limit lost (queue full)",
                     $clock
                 );
             }
@@ -486,14 +432,8 @@ macro_rules! foci_ankyra_config {
                 "trsync_set_timeout failed",
                 "trsync_trigger failed",
                 "Invalid TMC channel",
-                "tmc_set_current lost (queue full)",
                 "foci_config_homing rejected",
                 "tmc_set_motion_scale lost (queue full)",
-                "tmc_set_encoder_dir lost (queue full)",
-                "tmc_set_pid_gains lost (queue full)",
-                "tmc_set_position_gains lost (queue full)",
-                "tmc_set_filter lost (queue full)",
-                "tmc_set_voltage_limit lost (queue full)",
                 "TMC diagnostic lost (queue full)",
                 "TMC4671 chip ID mismatch",
                 "TMC4671 SPI failed at boot",
