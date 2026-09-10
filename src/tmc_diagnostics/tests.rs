@@ -357,6 +357,7 @@ fn velocity_limit_latch_not_ready_returns_status_without_writes() {
         let outcome = run_velocity_limit_latch_request(
             req,
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -426,6 +427,7 @@ fn velocity_limit_latch_runs_fixed_pulse_and_restores_after_disarm() {
         let outcome = run_velocity_limit_latch_request(
             crate::tmc::tmc_velocity_limit_latch_test(0, 7),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -534,6 +536,7 @@ fn velocity_limit_latch_failures_disarm_and_attempt_every_saved_restore() {
             let outcome = run_velocity_limit_latch_request(
                 crate::tmc::tmc_velocity_limit_latch_test(0, 7),
                 DiagnosticContext {
+                    host_liveness_expired: None,
                     tmc: &mut tmc,
                     runtime: &mut runtime,
                     delay: &mut delay,
@@ -637,6 +640,7 @@ fn velocity_limit_latch_encoder_delta_wraps_across_domain_origin() {
         let outcome = run_velocity_limit_latch_request(
             crate::tmc::tmc_velocity_limit_latch_test(0, 7),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -681,6 +685,7 @@ fn velocity_limit_latch_invalid_ppr_aborts_before_stimulus() {
         let outcome = run_velocity_limit_latch_request(
             crate::tmc::tmc_velocity_limit_latch_test(0, 7),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -753,6 +758,7 @@ fn velocity_limit_latch_exact_half_turn_aborts_via_post_measurement_error() {
         let outcome = run_velocity_limit_latch_request(
             crate::tmc::tmc_velocity_limit_latch_test(0, 7),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
