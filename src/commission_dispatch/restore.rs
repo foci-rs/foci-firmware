@@ -169,7 +169,7 @@ fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: 
 /// carrying it would force `CalibrateGainsRestoreStep` (and transitively
 /// `RestoreCursor`) to become generic over the backend's error type, which
 /// would break `RestoreCursor: Copy` across different `B`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum GainsRestoreErrorKind {
     PiRepresentation,
     Spi,
@@ -330,7 +330,7 @@ impl CalibrateGainsRestoreStep {
 ///
 /// Returns [`GainsRestoreErrorKind`] on the first failed write, an SPI read
 /// failure, or invalid stored outer gains.
-#[cfg(test)]
+#[allow(dead_code)]
 pub async fn restore_calibrate_gains<B: CommissioningBackend>(
     backend: &mut B,
     tmc_state: &TmcChannelState,

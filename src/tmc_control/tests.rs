@@ -124,10 +124,11 @@ fn channel_runtime_size_stays_bounded() {
     // `commissioning::tests::size_regression_gates`).
     // 7_568 -> 7_584 / 7_536 -> 7_552: the runtime now owns the homing
     // `Option<StallDetector>` and its clamp-write retry counter.
-    // 7_584 -> 7_600 / 7_552 -> 7_568: the three gain-restore cursor states
-    // (`SelftestRestoreGains`, `InnerFailedRestoreGains`,
-    // `CalibrateRestoreGains`) now carry an `Option<CalibrateGainsRestoreStep>`
-    // so each polls one register operation at a time instead of one shot.
+    // The three gain-restore cursor states (`SelftestRestoreGains`,
+    // `InnerFailedRestoreGains`, `CalibrateRestoreGains`) now carry an
+    // `Option<CalibrateGainsRestoreStep>` so each polls one register
+    // operation at a time instead of one shot; the runtime grows by that
+    // step state's size.
     #[cfg(feature = "trace")]
     assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_600);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
