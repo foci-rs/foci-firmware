@@ -39,6 +39,30 @@ pub enum PendingConfigItem {
     Filters,
 }
 
+/// Take ownership of a pending item before reading the value to apply.
+///
+/// Clearing first is what makes a racing higher-priority setter recoverable:
+/// its `fetch_or` then lands on a bit this pass has already given up, so the
+/// value it recorded is drained next pass instead of being erased by a clear
+/// that belongs to the older value.
+///
+/// `AcqRel`, not the `Relaxed` used everywhere else on this atomic: the whole
+/// guarantee is that the value read afterwards belongs to a claim that has
+/// already happened, and relaxed operations may be reordered against each
+/// other, which would let the read be hoisted above the clear.
+fn claim(tmc_state: &TmcChannelState, bit: u8) {
+    tmc_state
+        .config_apply_pending
+        .fetch_and(!bit, core::sync::atomic::Ordering::AcqRel);
+}
+
+/// Hand a claimed item back after a failed apply, so it is retried.
+fn release(tmc_state: &TmcChannelState, bit: u8) {
+    tmc_state
+        .config_apply_pending
+        .fetch_or(bit, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// Drain configuration recorded by config-time setters, if any is pending.
 ///
 /// Config-time setters record their value in [`TmcChannelState`] and set
@@ -52,18 +76,17 @@ pub enum PendingConfigItem {
 /// [`apply_live_filter`] so a recorded `0` disables its filter, which the
 /// `apply_stored_filters` fast path does not do.
 ///
-/// On `Ok`, every bit observed on entry has been applied and cleared. Config
-/// handlers run at a higher priority than the control and arming paths, so a
-/// bit can be raised while this runs, and where it lands decides what happens
-/// to it: one raised after its own item's clear below survives for the next
-/// drain, but one raised between the load above and that clear is wiped by
-/// it, silently dropping the value the handler had just recorded. Closing
-/// that second case needs per-item compare-and-clear rather than the
-/// unconditional `fetch_and` each branch uses today.
+/// On `Ok`, every bit observed on entry has been applied. Config handlers run
+/// at a higher priority than the control and arming paths, so a bit can be
+/// raised while this runs. Each branch therefore claims its item -- clears the
+/// bit -- before reading the value it writes, so a handler preempting the
+/// apply re-raises the bit against a pass that has already given it up and the
+/// newer value is drained on the next pass rather than erased by this one. A
+/// failed apply re-raises the bit itself, so the item is retried rather than
+/// swallowed by its own claim.
 ///
-/// The always-on assert at the end covers only the first sentence, and checks
-/// it against a local mask rather than the live atomic so a concurrent setter
-/// cannot trip it.
+/// The always-on assert at the end checks the applied mask against a local
+/// snapshot rather than the live atomic so a concurrent setter cannot trip it.
 ///
 /// # Errors
 ///
@@ -83,6 +106,10 @@ pub async fn drain_pending_config<B>(
 where
     B: SpiDevice<u8>,
 {
+    use crate::state::tmc::{
+        PENDING_CURRENT, PENDING_ENCODER_DIR, PENDING_FILTERS, PENDING_INNER_GAINS,
+        PENDING_OUTER_GAINS, PENDING_VOLTAGE_LIMIT,
+    };
     use core::sync::atomic::Ordering::Relaxed;
 
     let pending = tmc_state.config_apply_pending.load(Relaxed);
@@ -91,55 +118,64 @@ where
     }
     let mut handled = 0u8;
 
-    if (pending & crate::state::tmc::PENDING_VOLTAGE_LIMIT) != 0 {
-        crate::tmc_control::request_writes::apply_set_voltage_limit(
+    if (pending & PENDING_VOLTAGE_LIMIT) != 0 {
+        claim(tmc_state, PENDING_VOLTAGE_LIMIT);
+        let voltage_limit = tmc_state.voltage_limit_cfg.load(Relaxed);
+        if crate::tmc_control::request_writes::apply_set_voltage_limit(
             tmc,
             tmc_state,
-            tmc_state.voltage_limit_cfg.load(Relaxed),
+            voltage_limit,
         )
         .await
-        .map_err(|()| PendingConfigItem::VoltageLimit)?;
-        tmc_state
-            .config_apply_pending
-            .fetch_and(!crate::state::tmc::PENDING_VOLTAGE_LIMIT, Relaxed);
-        handled |= crate::state::tmc::PENDING_VOLTAGE_LIMIT;
+        .is_err()
+        {
+            release(tmc_state, PENDING_VOLTAGE_LIMIT);
+            return Err(PendingConfigItem::VoltageLimit);
+        }
+        handled |= PENDING_VOLTAGE_LIMIT;
     }
 
-    if (pending & crate::state::tmc::PENDING_CURRENT) != 0 {
-        crate::tmc_control::request_writes::apply_set_current(
+    if (pending & PENDING_CURRENT) != 0 {
+        claim(tmc_state, PENDING_CURRENT);
+        let run_current_ma = tmc_state.run_current_ma_cfg.load(Relaxed);
+        if crate::tmc_control::request_writes::apply_set_current(
             tmc,
             tmc_state,
-            tmc_state.run_current_ma_cfg.load(Relaxed),
+            run_current_ma,
             tmc_config.current_scale_ma_per_lsb,
         )
         .await
-        .map_err(|_| PendingConfigItem::Current)?;
-        tmc_state
-            .config_apply_pending
-            .fetch_and(!crate::state::tmc::PENDING_CURRENT, Relaxed);
-        handled |= crate::state::tmc::PENDING_CURRENT;
+        .is_err()
+        {
+            release(tmc_state, PENDING_CURRENT);
+            return Err(PendingConfigItem::Current);
+        }
+        handled |= PENDING_CURRENT;
     }
 
-    if (pending & crate::state::tmc::PENDING_ENCODER_DIR) != 0 {
+    if (pending & PENDING_ENCODER_DIR) != 0 {
+        claim(tmc_state, PENDING_ENCODER_DIR);
         // An unset sentinel means the host has not chosen a direction, so
         // there is nothing to write -- but the item is still drained. Leaving
         // the bit set here would strand it forever, since no later drain has
         // anything more to go on.
-        if let Some(invert) = tmc_state.encoder_invert_cfg.load(Relaxed) {
-            crate::tmc_control::request_writes::apply_set_encoder_dir(tmc, tmc_state, invert)
+        if let Some(invert) = tmc_state.encoder_invert_cfg.load(Relaxed)
+            && crate::tmc_control::request_writes::apply_set_encoder_dir(tmc, tmc_state, invert)
                 .await
-                .map_err(|()| PendingConfigItem::EncoderDir)?;
+                .is_err()
+        {
+            release(tmc_state, PENDING_ENCODER_DIR);
+            return Err(PendingConfigItem::EncoderDir);
         }
-        tmc_state
-            .config_apply_pending
-            .fetch_and(!crate::state::tmc::PENDING_ENCODER_DIR, Relaxed);
-        handled |= crate::state::tmc::PENDING_ENCODER_DIR;
+        handled |= PENDING_ENCODER_DIR;
     }
 
-    if (pending & crate::state::tmc::PENDING_INNER_GAINS) != 0 {
-        let gains = tmc_state
-            .load_pending_inner_gains(Relaxed)
-            .map_err(|_| PendingConfigItem::InnerGains)?;
+    if (pending & PENDING_INNER_GAINS) != 0 {
+        claim(tmc_state, PENDING_INNER_GAINS);
+        let Ok(gains) = tmc_state.load_pending_inner_gains(Relaxed) else {
+            release(tmc_state, PENDING_INNER_GAINS);
+            return Err(PendingConfigItem::InnerGains);
+        };
         let status = crate::tmc_control::helpers::apply_live_inner_gains(
             sink.stored_inner_gains,
             tmc_state,
@@ -148,30 +184,29 @@ where
         )
         .await;
         if !status.all_ok() {
+            release(tmc_state, PENDING_INNER_GAINS);
             return Err(PendingConfigItem::InnerGains);
         }
-        tmc_state
-            .config_apply_pending
-            .fetch_and(!crate::state::tmc::PENDING_INNER_GAINS, Relaxed);
-        handled |= crate::state::tmc::PENDING_INNER_GAINS;
+        handled |= PENDING_INNER_GAINS;
     }
 
-    if (pending & crate::state::tmc::PENDING_OUTER_GAINS) != 0 {
-        let gains = tmc_state
-            .load_pending_outer_gains(Relaxed)
-            .map_err(|_| PendingConfigItem::OuterGains)?;
+    if (pending & PENDING_OUTER_GAINS) != 0 {
+        claim(tmc_state, PENDING_OUTER_GAINS);
+        let Ok(gains) = tmc_state.load_pending_outer_gains(Relaxed) else {
+            release(tmc_state, PENDING_OUTER_GAINS);
+            return Err(PendingConfigItem::OuterGains);
+        };
         let status =
             crate::tmc_control::helpers::apply_live_outer_gains(tmc_state, tmc, gains).await;
         if !status.all_ok() {
+            release(tmc_state, PENDING_OUTER_GAINS);
             return Err(PendingConfigItem::OuterGains);
         }
-        tmc_state
-            .config_apply_pending
-            .fetch_and(!crate::state::tmc::PENDING_OUTER_GAINS, Relaxed);
-        handled |= crate::state::tmc::PENDING_OUTER_GAINS;
+        handled |= PENDING_OUTER_GAINS;
     }
 
-    if (pending & crate::state::tmc::PENDING_FILTERS) != 0 {
+    if (pending & PENDING_FILTERS) != 0 {
+        claim(tmc_state, PENDING_FILTERS);
         for (target, filter_hz) in [
             (
                 BiquadFilterTarget::Velocity,
@@ -190,14 +225,15 @@ where
                 tmc_state.flux_filter_hz.load_or_zero(Relaxed),
             ),
         ] {
-            apply_live_filter(tmc, tmc_state, target, filter_hz, tmc_config.pwm_maxcnt)
+            if apply_live_filter(tmc, tmc_state, target, filter_hz, tmc_config.pwm_maxcnt)
                 .await
-                .map_err(|()| PendingConfigItem::Filters)?;
+                .is_err()
+            {
+                release(tmc_state, PENDING_FILTERS);
+                return Err(PendingConfigItem::Filters);
+            }
         }
-        tmc_state
-            .config_apply_pending
-            .fetch_and(!crate::state::tmc::PENDING_FILTERS, Relaxed);
-        handled |= crate::state::tmc::PENDING_FILTERS;
+        handled |= PENDING_FILTERS;
     }
 
     assert!(
@@ -330,6 +366,54 @@ mod tests {
             );
 
             tmc_state().run_current_ma_cfg.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn drain_pending_config_keeps_the_current_bit_when_a_setter_races_the_apply() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            let config = crate::config::TmcConfig::default_for_test();
+
+            tmc_state().run_current_ma_cfg.store(1500, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_CURRENT, Relaxed);
+
+            // A P2 `tmc_set_current` lands while this drain's own SPI write is
+            // in flight: it records a newer run current and re-raises the bit.
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .raise_pending_config_on_write(
+                    PID_TORQUE_FLUX_LIMITS.addr(),
+                    crate::state::tmc::PENDING_CURRENT,
+                    tmc_state(),
+                );
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains = None;
+            drain_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await
+            .expect("apply should succeed");
+
+            assert_ne!(
+                tmc_state().config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+                0,
+                "a setter racing the apply must keep its bit set so the next \
+                 drain applies the newer current instead of losing it"
+            );
+
+            tmc_state().run_current_ma_cfg.store(0, Relaxed);
+            tmc_state().config_apply_pending.store(0, Relaxed);
         });
     }
 

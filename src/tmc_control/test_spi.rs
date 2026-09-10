@@ -28,6 +28,7 @@ pub(crate) struct RuntimeMockSpi {
     pub(crate) fail_reads: bool,
     pub(crate) last_read_request: Option<u8>,
     pub(crate) written: std::collections::BTreeMap<u8, u32>,
+    pub(crate) pending_config_race: Option<(u8, u8, &'static crate::state::tmc::TmcChannelState)>,
 }
 
 impl RuntimeMockSpi {
@@ -64,6 +65,18 @@ impl RuntimeMockSpi {
         self.fail_reads = true;
         self
     }
+
+    /// Raise `bits` in `state.config_apply_pending` while the write to `addr`
+    /// is in flight, modelling a config handler preempting a drain mid-apply.
+    pub(crate) fn raise_pending_config_on_write(
+        mut self,
+        addr: u8,
+        bits: u8,
+        state: &'static crate::state::tmc::TmcChannelState,
+    ) -> Self {
+        self.pending_config_race = Some((addr, bits, state));
+        self
+    }
 }
 
 impl ErrorType for RuntimeMockSpi {
@@ -80,6 +93,13 @@ impl SpiDevice<u8> for RuntimeMockSpi {
                 Operation::Write(buf) if buf.len() == 5 => {
                     let addr = buf[0] & 0x7f;
                     let value = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                    if let Some((race_addr, bits, state)) = self.pending_config_race
+                        && race_addr == addr
+                    {
+                        state
+                            .config_apply_pending
+                            .fetch_or(bits, core::sync::atomic::Ordering::Relaxed);
+                    }
                     self.write_attempts.push((addr, value));
                     if self.failed_write_addresses.contains(&addr) {
                         return Err(MockSpiError);
