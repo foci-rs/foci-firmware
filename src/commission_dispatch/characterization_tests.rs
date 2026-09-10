@@ -1631,3 +1631,12 @@ async fn machine_matches_async_trace_for_every_variant() {
         assert_eq!(golden, via_machine, "variant {} diverged", variant.name);
     }
 }
+
+#[fixture_test]
+async fn inner_failed_commission_disarm_phase_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "inner_failed_commission")
+        .expect("inner_failed_commission variant must exist");
+    assert_disarm_phase_one_op_per_poll(&variant).await;
+}

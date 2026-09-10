@@ -103,7 +103,7 @@ impl OwnedTerminalData {
 enum RestoreCursor {
     SelftestRestoreGains,
 
-    InnerFailedSafeState,
+    InnerFailedSafeState(SafeStateRestoreStep),
     InnerFailedRestoreGains,
 
     CalibrateRestoreGains,
@@ -178,7 +178,7 @@ impl TerminalRestoreMachine {
             ),
             StepResult::InnerFailed(error) => (
                 TerminalPayload::InnerFailed(error),
-                RestoreCursor::InnerFailedSafeState,
+                RestoreCursor::InnerFailedSafeState(SafeStateRestoreStep::default()),
             ),
             StepResult::CalibrateDone(result) => (
                 TerminalPayload::CalibrateDone(result),
@@ -367,10 +367,15 @@ impl TerminalRestoreMachine {
                 }
 
                 // --- inner-failed --------------------------------------------
-                RestoreCursor::InnerFailedSafeState => {
-                    state.tmc.commission_in_flight.store(false, Relaxed);
-                    crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
-                    self.cursor = RestoreCursor::InnerFailedRestoreGains;
+                RestoreCursor::InnerFailedSafeState(mut step) => {
+                    if step.is_start() {
+                        state.tmc.commission_in_flight.store(false, Relaxed);
+                    }
+                    if step.advance(backend).await {
+                        self.cursor = RestoreCursor::InnerFailedSafeState(step);
+                    } else {
+                        self.cursor = RestoreCursor::InnerFailedRestoreGains;
+                    }
                     return RestoreStep::Pending;
                 }
                 RestoreCursor::InnerFailedRestoreGains => {
