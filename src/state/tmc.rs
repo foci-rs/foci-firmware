@@ -220,6 +220,10 @@ pub struct TmcChannelState {
     pub velocity_limit_cfg: AtomicU32,
     /// Configurable operational PIDOUT_UQ_UD_LIMITS value.
     pub voltage_limit_cfg: AtomicU32,
+    /// Requested RMS run current in milliamps, recorded by `tmc_set_current`
+    /// and applied by the TMC task on its control tick. See
+    /// [`TmcChannelState::config_apply_pending`].
+    pub run_current_ma_cfg: AtomicU32,
     /// Cached ADC_VM mode-5 startup offset.
     adc_vm_offset_raw: AtomicU16,
     /// Number of samples folded into the cached ADC_VM offset.
@@ -328,6 +332,7 @@ impl TmcChannelState {
             pid_error_sums_clear: AtomicBool::new(false),
             velocity_limit_cfg: AtomicU32::new(500_000),
             voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
+            run_current_ma_cfg: AtomicU32::new(0),
             adc_vm_offset_raw: AtomicU16::new(0),
             adc_vm_offset_sample_count: AtomicU8::new(0),
             encoder_reversed: AtomicBool::new(false),
@@ -409,6 +414,7 @@ impl TmcChannelState {
         self.velocity_limit_cfg.store(500_000, Relaxed);
         self.voltage_limit_cfg
             .store(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
+        self.run_current_ma_cfg.store(0, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.cancel_requested.store(false, Relaxed);
@@ -724,7 +730,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 160);
+        assert_eq!(size_of::<TmcChannelState>(), 164);
     }
 
     #[test]

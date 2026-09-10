@@ -355,7 +355,7 @@ impl ChannelDriver {
             && crate::tmc_control::filters::apply_pending_config(
                 backend.tmc_spi(),
                 tmc_state,
-                ctx.config.tmc.pwm_maxcnt,
+                ctx.config.tmc,
             )
             .await
             .is_err()

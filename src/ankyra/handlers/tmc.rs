@@ -87,19 +87,19 @@ pub fn tmc_read_register(ctx: &mut dyn TmcWriteHost, oid: u8, addr: u8) {
 /// Set motor run current. The firmware converts milliamps to
 /// `PID_TORQUE_FLUX_LIMITS` register counts using the board-specific
 /// current scaling factor.
+///
+/// Recorded in channel state and applied by the TMC task on its control
+/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
+/// not enqueue.
 #[klipper_command]
 pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
-    let Some((channel, _state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
+    let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_current(channel, run_ma))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetCurrentLostQueueFull, clock);
-    }
+    state.run_current_ma_cfg.store(run_ma, Ordering::Relaxed);
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_CURRENT, Ordering::Relaxed);
 }
 
 /// Configure independent encoder-feedback and planner-motion scales while idle.
@@ -969,18 +969,48 @@ mod tests {
     }
 
     #[test]
-    fn tmc_set_current_routes_by_stepper_oid() {
+    fn tmc_set_current_records_config_without_queueing() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let mut ctx = MockCtx::new(2);
         let mut sender = ();
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.run_current_ma_cfg.store(0, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
 
         tmc_set_current(&mut ctx, &mut sender, 10, 800);
 
-        let req = ctx.last_request.borrow().clone().unwrap();
-        assert!(matches!(
-            req.kind,
-            crate::tmc::TmcRequestKind::SetCurrent { run_ma: 800 }
-        ));
+        assert_eq!(tmc_state.run_current_ma_cfg.load(Relaxed), 800);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+            0
+        );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_current_cannot_shut_down_on_a_full_queue() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        // A full request channel is exactly the connect-time condition that
+        // shut the MCU down; recording config must be immune to it.
+        ctx.accept_request = false;
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.run_current_ma_cfg.store(0, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
+
+        tmc_set_current(&mut ctx, &mut sender, 10, 1500);
+
+        assert_eq!(tmc_state.run_current_ma_cfg.load(Relaxed), 1500);
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+            0
+        );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
     }
 
     #[test]

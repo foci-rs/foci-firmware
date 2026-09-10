@@ -458,11 +458,11 @@ async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
 ///
 /// # Errors
 ///
-/// Returns `Err(())` if any write fails (voltage limit or filter).
+/// Returns `Err(())` if any write fails (voltage limit, current, or filter).
 pub async fn apply_pending_config<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
-    pwm_maxcnt: u16,
+    tmc_config: crate::config::TmcConfig,
 ) -> Result<(), ()>
 where
     B: SpiDevice<u8>,
@@ -485,6 +485,20 @@ where
             !crate::state::tmc::PENDING_VOLTAGE_LIMIT,
             Relaxed,
         );
+    }
+
+    if (pending & crate::state::tmc::PENDING_CURRENT) != 0 {
+        crate::tmc_control::request_writes::apply_set_current(
+            tmc,
+            tmc_state,
+            tmc_state.run_current_ma_cfg.load(Relaxed),
+            tmc_config.current_scale_ma_per_lsb,
+        )
+        .await
+        .map_err(|_| ())?;
+        tmc_state
+            .config_apply_pending
+            .fetch_and(!crate::state::tmc::PENDING_CURRENT, Relaxed);
     }
 
     // Outer gains are deliberately NOT applied here. `load_outer_gains` holds
@@ -513,7 +527,7 @@ where
                 tmc_state.flux_filter_hz.load_or_zero(Relaxed),
             ),
         ] {
-            apply_live_filter(tmc, tmc_state, target, filter_hz, pwm_maxcnt).await?;
+            apply_live_filter(tmc, tmc_state, target, filter_hz, tmc_config.pwm_maxcnt).await?;
         }
         tmc_state.config_apply_pending.fetch_and(
             !crate::state::tmc::PENDING_FILTERS,
@@ -805,7 +819,9 @@ mod tests {
             let raw_spi = MockRawSpi::default();
             let mut tmc = Tmc4671Spi::new(raw_spi);
 
-            apply_pending_config(&mut tmc, tmc_state(), 4095)
+            let mut config = crate::config::TmcConfig::default_for_test();
+            config.pwm_maxcnt = 4095;
+            apply_pending_config(&mut tmc, tmc_state(), config)
                 .await
                 .expect("apply should succeed");
 
@@ -834,6 +850,61 @@ mod tests {
             tmc_state()
                 .flux_filter_hz
                 .store(None, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_with_current_bit_writes_the_converted_torque_flux_limit() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+
+        pollster::block_on(async {
+            let mut config = crate::config::TmcConfig::default_for_test();
+            config.pwm_maxcnt = 4095;
+            config.current_scale_ma_per_lsb = 1.155;
+
+            tmc_state().run_current_ma_cfg.store(1500, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_CURRENT, Relaxed);
+
+            let raw_spi = MockRawSpi::default();
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+
+            apply_pending_config(&mut tmc, tmc_state(), config)
+                .await
+                .expect("apply should succeed");
+
+            let expected = crate::tmc_control::current_limit::current_limit_from_run_ma(
+                1500,
+                config.current_scale_ma_per_lsb,
+            )
+            .expect("test scale should produce a valid limit")
+            .register_value();
+
+            let raw_spi = tmc.into_inner();
+            let frame = |value: u32| -> std::vec::Vec<u8> {
+                let bytes = value.to_be_bytes();
+                std::vec![
+                    PID_TORQUE_FLUX_LIMITS.addr() | 0x80,
+                    bytes[0],
+                    bytes[1],
+                    bytes[2],
+                    bytes[3]
+                ]
+            };
+            assert!(
+                raw_spi.writes.contains(&frame(expected)),
+                "expected a PID_TORQUE_FLUX_LIMITS write of {expected}, got {:?}",
+                raw_spi.writes
+            );
+            assert_eq!(
+                tmc_state().config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+                0,
+                "current bit should be cleared after a successful apply"
+            );
+
+            tmc_state().run_current_ma_cfg.store(0, Relaxed);
         });
     }
 }
