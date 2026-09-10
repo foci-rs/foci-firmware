@@ -887,12 +887,10 @@ mod tests {
     async fn fast_unit_applies_pending_config_before_feedforward_and_reschedules() {
         use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
         let tmc_state = crate::state::tmc::tmc_channel0();
-        tmc_state
-            .config_apply_pending
-            .store(
-                crate::state::tmc::PENDING_VOLTAGE_LIMIT | crate::state::tmc::PENDING_FILTERS,
-                core::sync::atomic::Ordering::Relaxed,
-            );
+        tmc_state.config_apply_pending.store(
+            crate::state::tmc::PENDING_VOLTAGE_LIMIT | crate::state::tmc::PENDING_FILTERS,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         let mut rig = ready_rig(RuntimeMockSpi::default());
 
         let outcome = rig.drive(UnitClass::Fast).await;
@@ -930,12 +928,10 @@ mod tests {
     async fn failed_pending_config_apply_shuts_down_and_leaves_the_flag_set() {
         use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
         let tmc_state = crate::state::tmc::tmc_channel0();
-        tmc_state
-            .config_apply_pending
-            .store(
-                crate::state::tmc::PENDING_VOLTAGE_LIMIT | crate::state::tmc::PENDING_FILTERS,
-                core::sync::atomic::Ordering::Relaxed,
-            );
+        tmc_state.config_apply_pending.store(
+            crate::state::tmc::PENDING_VOLTAGE_LIMIT | crate::state::tmc::PENDING_FILTERS,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         let mut rig =
             ready_rig(RuntimeMockSpi::default().fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr()));
 

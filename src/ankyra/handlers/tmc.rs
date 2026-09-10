@@ -214,7 +214,9 @@ pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
     state
         .velocity_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set torque biquad filter cutoff frequency from host config.
@@ -229,7 +231,9 @@ pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16
     state
         .torque_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set position target biquad filter cutoff frequency from host config.
@@ -244,7 +248,9 @@ pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
     state
         .position_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set flux biquad filter cutoff frequency from host config.
@@ -259,7 +265,9 @@ pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) 
     state
         .flux_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set position/velocity PI gains from host config.
@@ -533,7 +541,9 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
     state
         .voltage_limit_cfg
         .store(voltage_limit, Ordering::Relaxed);
-    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_VOLTAGE_LIMIT, Ordering::Relaxed);
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_VOLTAGE_LIMIT, Ordering::Relaxed);
 }
 
 /// Run a bounded current-loop step diagnostic.
