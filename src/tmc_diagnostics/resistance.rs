@@ -8,10 +8,12 @@ use foci_tmc4671::registers::Register;
 use crate::autotune::Permille;
 use crate::resistance_identification::{
     ResistanceAxisResult, ResistanceBackend, ResistanceBackendError, ResistanceCurrentEvidence,
-    ResistanceProfile, ResistanceRunMode, ResistanceRunResult, run_resistance_identification,
+    ResistanceError, ResistanceProfile, ResistanceRunMode, ResistanceRunResult,
+    run_resistance_identification,
 };
 use crate::tmc::{TmcRequest, TmcRequestKind};
 
+use super::helpers::checked_delay_ms;
 use super::{
     CURRENT_STEP_STATUS_NOT_READY, DiagnosticContext, DiagnosticDelay, DiagnosticOutcome,
     DiagnosticReport, ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport,
@@ -37,11 +39,28 @@ use super::{
 /// commissioning ever ran afterward.
 pub(super) struct DiagnosticResistanceBackend<'ctx, 'a, B, D> {
     ctx: &'ctx mut DiagnosticContext<'a, B, D>,
+    /// Consumed by exactly the next `read_register`/`write_register` call
+    /// after it is set: injects one `Err` to trip the shared runner's
+    /// restore path, then clears itself so the restore writes that follow
+    /// reach real SPI. Never a persistent latch -- see `host_liveness_aborted`.
+    pending_liveness_injection: bool,
+    /// Set once a liveness expiry is observed and never cleared. Read only
+    /// by `run_resistance_test_request` afterward to pick the reported
+    /// status; has no effect on register-call behavior.
+    host_liveness_aborted: bool,
 }
 
 impl<'ctx, 'a, B, D> DiagnosticResistanceBackend<'ctx, 'a, B, D> {
     pub(super) fn new(ctx: &'ctx mut DiagnosticContext<'a, B, D>) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            pending_liveness_injection: false,
+            host_liveness_aborted: false,
+        }
+    }
+
+    pub(super) fn host_liveness_aborted(&self) -> bool {
+        self.host_liveness_aborted
     }
 }
 
@@ -51,6 +70,9 @@ where
     D: DiagnosticDelay,
 {
     async fn read_register(&mut self, addr: u8) -> Result<u32, ResistanceBackendError> {
+        if core::mem::take(&mut self.pending_liveness_injection) {
+            return Err(ResistanceBackendError::Spi);
+        }
         self.ctx
             .tmc
             .read_register(Register::new(addr))
@@ -59,6 +81,9 @@ where
     }
 
     async fn write_register(&mut self, addr: u8, value: u32) -> Result<(), ResistanceBackendError> {
+        if core::mem::take(&mut self.pending_liveness_injection) {
+            return Err(ResistanceBackendError::Spi);
+        }
         self.ctx
             .tmc
             .write_register(Register::new(addr), value)
@@ -67,7 +92,17 @@ where
     }
 
     async fn delay_ms(&mut self, ms: u64) {
-        self.ctx.delay.delay_ms(ms).await;
+        if checked_delay_ms(
+            self.ctx.delay,
+            reborrow_liveness_check(&mut self.ctx.host_liveness_expired),
+            ms,
+        )
+        .await
+        .is_err()
+        {
+            self.pending_liveness_injection = true;
+            self.host_liveness_aborted = true;
+        }
     }
 
     fn elapsed_us(&self) -> u64 {
@@ -112,6 +147,21 @@ where
     fn adc_offsets_ready(&self) -> bool {
         crate::state::tmc::tmc_channel(self.ctx.runtime.channel())
             .is_some_and(|state| state.motor_sentinel.load(Relaxed) != 0)
+    }
+}
+
+// `Option::as_deref_mut()` reborrowed inline at the `checked_delay_ms` call
+// site, across an intervening `.await` in the same async fn, hits a rustc
+// borrow-checker limitation with `&mut dyn Trait` reborrows spanning
+// suspension points (same class already worked around in
+// `current_step.rs`/`torque_sample.rs`/`voltage_step.rs`). An explicit,
+// non-generic reborrow function sidesteps it.
+fn reborrow_liveness_check<'a>(
+    check: &'a mut Option<&mut dyn FnMut() -> bool>,
+) -> Option<&'a mut dyn FnMut() -> bool> {
+    match check {
+        Some(f) => Some(&mut **f),
+        None => None,
     }
 }
 
@@ -203,6 +253,20 @@ pub(super) fn failed_run_report(
     }
 }
 
+/// Which status a terminal resistance failure should report: the dedicated
+/// host-liveness status when the abort was liveness-driven, otherwise the
+/// error's own status code. `error` is only used for its status code in the
+/// non-liveness case -- both paths surface as `ResistanceError::BackendIo`
+/// from the shared runner's point of view, so this is the only place the
+/// two are actually distinguished.
+pub(super) fn terminal_status(error: ResistanceError, host_liveness_aborted: bool) -> u8 {
+    if host_liveness_aborted {
+        crate::autotune::CommissionError::HostLivenessExpired.status_code()
+    } else {
+        error.status_code()
+    }
+}
+
 fn handled(
     profile: ResistanceProfileReport,
     run: ResistanceRunReport,
@@ -258,6 +322,7 @@ where
     let mut backend = DiagnosticResistanceBackend::new(&mut ctx);
     let terminal =
         run_resistance_identification(&mut backend, ResistanceRunMode::ExternallyArmed).await;
+    let host_liveness_aborted = backend.host_liveness_aborted();
     let current = terminal.current();
 
     match terminal.result() {
@@ -271,7 +336,7 @@ where
         }
         Err(error) => handled(
             profile_report,
-            failed_run_report(oid, error.status_code(), current),
+            failed_run_report(oid, terminal_status(error, host_liveness_aborted), current),
             None,
         ),
     }

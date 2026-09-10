@@ -294,6 +294,9 @@ pub enum CommissionError {
     SafeStateIncomplete,
     /// Inductance excitation exceeded the diagnostic-current envelope. Code 76.
     InductanceCurrentEnvelope,
+    /// The host-liveness lease expired during an active diagnostic runner's
+    /// checked delay -- not a genuine backend I/O failure. Code 78.
+    HostLivenessExpired,
 }
 
 impl CommissionError {
@@ -380,6 +383,7 @@ impl CommissionError {
             Self::SafeStateIncomplete => 75,
             Self::InductanceCurrentEnvelope => 76,
             Self::FaultInterlock => 77,
+            Self::HostLivenessExpired => 78,
         }
     }
 }
@@ -665,6 +669,7 @@ mod tests {
             CommissionError::SafeStateIncomplete,
             CommissionError::InductanceCurrentEnvelope,
             CommissionError::FaultInterlock,
+            CommissionError::HostLivenessExpired,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -710,6 +715,7 @@ mod tests {
         assert_eq!(CommissionError::PrimitiveAlreadyOpen.status_code(), 70);
         assert_eq!(CommissionError::PrimitiveStartInFuture.status_code(), 71);
         assert_eq!(CommissionError::RecoveryOriginMismatch.status_code(), 72);
+        assert_eq!(CommissionError::HostLivenessExpired.status_code(), 78);
     }
 
     #[test]

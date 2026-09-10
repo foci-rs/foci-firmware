@@ -2643,3 +2643,260 @@ async fn resistance_test_rejects_during_homing_without_invoking_runner() {
         "expected no SPI writes (no energizing) while homing is active"
     );
 }
+
+#[test]
+fn resistance_backend_delay_ms_liveness_expiry_injects_one_shot_error_then_recovers() {
+    pollster::block_on(async {
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
+        let mut power_stage = MockDiagnosticPowerStage::default();
+        let mut calls = 0u32;
+        // 150ms delay slices into [100, 50]. Checks: pre-loop (1), after
+        // slice 1 (2), after slice 2/the final slice (3) -- expiring on the
+        // 3rd check proves detection after the LAST slice, not just before
+        // each one.
+        let mut expire_after_final_slice = || {
+            calls += 1;
+            calls >= 3
+        };
+        let mut ctx = DiagnosticContext {
+            tmc: &mut tmc,
+            runtime: &mut runtime,
+            delay: &mut delay,
+            power_stage: &mut power_stage,
+            tmc_config: &TEST_TMC_CONFIG,
+            feedback_config: crate::config::FeedbackConfig::abn_abn(),
+            readiness: DiagnosticReadiness {
+                homing_active: false,
+                stepper_active: false,
+                saved_voltage_limit: 777,
+            },
+            host_liveness_expired: Some(&mut expire_after_final_slice),
+        };
+        let mut backend = super::resistance::DiagnosticResistanceBackend::new(&mut ctx);
+
+        crate::resistance_identification::ResistanceBackend::delay_ms(&mut backend, 150).await;
+
+        // The one-shot injection fires on exactly the next register call...
+        let first = crate::resistance_identification::ResistanceBackend::write_register(
+            &mut backend,
+            0x01,
+            0,
+        )
+        .await;
+
+        // ...and is consumed: the restore sequence's subsequent writes are
+        // not suppressed by the persistent host_liveness_aborted flag.
+        let second = crate::resistance_identification::ResistanceBackend::write_register(
+            &mut backend,
+            0x01,
+            5,
+        )
+        .await;
+
+        // A third call proves the one-shot really doesn't re-arm itself --
+        // not just that exactly one Err happened somewhere in the sequence.
+        let third = crate::resistance_identification::ResistanceBackend::write_register(
+            &mut backend,
+            0x01,
+            9,
+        )
+        .await;
+
+        // `backend` (and the `ctx`/`delay` borrow it holds) is not used
+        // again after this point, so `delay.delays_ms` can be read directly
+        // below -- reading it any earlier, while `backend` is still going
+        // to be used again, would not satisfy the borrow checker.
+        let aborted = backend.host_liveness_aborted();
+
+        assert!(aborted); // still true after two more calls -- persistent
+        assert!(first.is_err());
+        assert!(second.is_ok());
+        assert!(third.is_ok());
+        assert_eq!(delay.delays_ms, std::vec![100, 50]);
+    });
+}
+
+#[test]
+fn resistance_terminal_status_prefers_host_liveness_over_backend_error_status() {
+    use crate::resistance_identification::ResistanceError;
+
+    assert_eq!(
+        super::resistance::terminal_status(ResistanceError::BackendIo, true),
+        crate::autotune::CommissionError::HostLivenessExpired.status_code()
+    );
+}
+
+#[test]
+fn resistance_terminal_status_uses_error_status_when_not_liveness_aborted() {
+    use crate::resistance_identification::ResistanceError;
+
+    assert_eq!(
+        super::resistance::terminal_status(ResistanceError::BackendIo, false),
+        ResistanceError::BackendIo.status_code()
+    );
+}
+
+#[fixture_test]
+async fn resistance_test_request_host_liveness_expiry_reports_dedicated_status() {
+    let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
+    channel_state
+        .motor_sentinel
+        .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+
+    let raw_spi = DiagnosticMockSpi::default()
+        .with_read(1600) // ReadSavedLimit: PIDOUT_UQ_UD_LIMITS >= max_abs_ud()
+        .with_read(0x0002_0032) // ReadMotorType: TwoPhase, 50 pole pairs
+        .with_read(7) // Setup(4) verify_read: PWM_SV_CHOP
+        .with_read(3999) // Setup(5) verify_read: PWM_MAXCNT
+        .with_read(2313) // Setup(6) verify_read: PWM_BBM_H_BBM_L = (9<<8)|9
+        .with_read(21_692_747) // Setup(7) verify_read: DSADC_MDEC_B_MDEC_A = (331<<16)|331
+        .with_read(0) // Setup(8): STATUS_FLAGS baseline
+        .with_read(0); // Setup(10): STATUS_FLAGS, no actionable bits
+    let mut tmc = Tmc4671Spi::new(raw_spi);
+    let mut runtime = ready_runtime();
+    let mut delay = MockDelay::default();
+    let mut power_stage = MockDiagnosticPowerStage::default();
+    // Checks: pre-loop (1), post-slice-1/100ms (2), post-slice-2/100ms (3),
+    // post-slice-3/50ms -- the FINAL slice of zero_settle_ms's [100,100,50]
+    // -- (4).
+    let mut calls = 0u32;
+    let mut expire_during_settle_final_slice = || {
+        calls += 1;
+        calls >= 4
+    };
+    let ctx = DiagnosticContext {
+        tmc: &mut tmc,
+        runtime: &mut runtime,
+        delay: &mut delay,
+        power_stage: &mut power_stage,
+        tmc_config: &TEST_TMC_CONFIG,
+        feedback_config: crate::config::FeedbackConfig::abn_abn(),
+        readiness: DiagnosticReadiness {
+            homing_active: false,
+            stepper_active: false,
+            saved_voltage_limit: 777,
+        },
+        host_liveness_expired: Some(&mut expire_during_settle_final_slice),
+    };
+
+    let outcome = super::resistance::run_resistance_test_request(
+        crate::tmc::tmc_resistance_test(0, 7, 0),
+        ctx,
+    )
+    .await;
+
+    channel_state
+        .motor_sentinel
+        .store(0, core::sync::atomic::Ordering::Relaxed);
+
+    let DiagnosticOutcome::Handled(DiagnosticReport::ResistanceTest { run, .. }) = outcome else {
+        panic!("expected resistance test report");
+    };
+
+    assert_eq!(
+        run.status,
+        crate::autotune::CommissionError::HostLivenessExpired.status_code()
+    );
+    assert_eq!(delay.delays_ms, std::vec![100, 100, 50]);
+    // The four-write safe-state restore ran in full, with real values.
+    let raw_spi = tmc.into_inner();
+    let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
+    assert_eq!(
+        restore_tail,
+        [
+            (
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr(),
+                foci_tmc4671::registers::MotionMode::Stopped as u32
+            ),
+            (foci_tmc4671::registers::UQ_UD_EXT.addr(), 0),
+            (foci_tmc4671::registers::PWM_SV_CHOP.addr(), 0),
+            (foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr(), 1600),
+        ]
+    );
+}
+
+#[fixture_test]
+async fn resistance_test_request_genuine_spi_failure_reports_generic_status() {
+    // Identical setup to the liveness test, no liveness signal at all --
+    // instead, fail the PHI_E_EXT write SelectAxis(1) makes. This is after
+    // Setup(0) has already set `energized = true`, so the shared runner's
+    // `fail()` path (not the entry-pre-check `complete_without_restore`
+    // path) runs, exercising the same four-write restore for a genuine,
+    // non-liveness reason.
+    let channel_state = crate::state::tmc::tmc_channel(0).unwrap();
+    channel_state
+        .motor_sentinel
+        .store(0x0002_0032, core::sync::atomic::Ordering::Relaxed);
+
+    let raw_spi = DiagnosticMockSpi::default()
+        .with_read(1600)
+        .with_read(0x0002_0032)
+        .with_read(7)
+        .with_read(3999)
+        .with_read(2313)
+        .with_read(21_692_747)
+        .with_read(0)
+        .with_read(0)
+        .fail_writes_to(foci_tmc4671::registers::PHI_E_EXT.addr());
+    let mut tmc = Tmc4671Spi::new(raw_spi);
+    let mut runtime = ready_runtime();
+    let mut delay = MockDelay::default();
+    let mut power_stage = MockDiagnosticPowerStage::default();
+    let ctx = DiagnosticContext {
+        tmc: &mut tmc,
+        runtime: &mut runtime,
+        delay: &mut delay,
+        power_stage: &mut power_stage,
+        tmc_config: &TEST_TMC_CONFIG,
+        feedback_config: crate::config::FeedbackConfig::abn_abn(),
+        readiness: DiagnosticReadiness {
+            homing_active: false,
+            stepper_active: false,
+            saved_voltage_limit: 777,
+        },
+        host_liveness_expired: None,
+    };
+
+    let outcome = super::resistance::run_resistance_test_request(
+        crate::tmc::tmc_resistance_test(0, 7, 0),
+        ctx,
+    )
+    .await;
+
+    channel_state
+        .motor_sentinel
+        .store(0, core::sync::atomic::Ordering::Relaxed);
+
+    let DiagnosticOutcome::Handled(DiagnosticReport::ResistanceTest { run, .. }) = outcome else {
+        panic!("expected resistance test report");
+    };
+
+    // Proves the two failure modes are actually distinguishable at the
+    // full report level: this status must differ from
+    // CommissionError::HostLivenessExpired.status_code() above.
+    assert_eq!(
+        run.status,
+        crate::resistance_identification::ResistanceError::BackendIo.status_code()
+    );
+    assert_ne!(
+        run.status,
+        crate::autotune::CommissionError::HostLivenessExpired.status_code()
+    );
+    // Restore still ran, for a completely different reason.
+    let raw_spi = tmc.into_inner();
+    let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
+    assert_eq!(
+        restore_tail,
+        [
+            (
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr(),
+                foci_tmc4671::registers::MotionMode::Stopped as u32
+            ),
+            (foci_tmc4671::registers::UQ_UD_EXT.addr(), 0),
+            (foci_tmc4671::registers::PWM_SV_CHOP.addr(), 0),
+            (foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr(), 1600),
+        ]
+    );
+}
