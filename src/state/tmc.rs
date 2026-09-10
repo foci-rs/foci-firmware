@@ -486,10 +486,6 @@ impl TmcChannelState {
             .store(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
         self.run_current_ma_cfg.store(0, Relaxed);
         self.encoder_invert_cfg.store(None, Relaxed);
-        // Must follow the recorded values above: a pending bit outliving the
-        // value it points at would make the next drain push a reset default
-        // to the chip as if the host had asked for it.
-        self.config_apply_pending.store(0, Relaxed);
         self.pending_inner_gain_flux_p.store(0, Relaxed);
         self.pending_inner_gain_flux_i.store(0, Relaxed);
         self.pending_inner_gain_torque_p.store(0, Relaxed);
@@ -498,6 +494,12 @@ impl TmcChannelState {
         self.pending_outer_gain_position_i.store(0, Relaxed);
         self.pending_outer_gain_velocity_p.store(0, Relaxed);
         self.pending_outer_gain_velocity_i.store(0, Relaxed);
+        // Must follow every value the bits point at -- the filter cutoffs and
+        // limits above, and the eight gain atomics directly above. A bit
+        // outliving its value would make the next drain push a reset default
+        // to the chip as if the host had asked for it, and this runs at P1
+        // against handlers that record at P2.
+        self.config_apply_pending.store(0, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.cancel_requested.store(false, Relaxed);
@@ -1063,8 +1065,14 @@ mod tests {
         let channel = TmcChannelState::new();
         channel.run_current_ma_cfg.store(1_500, Relaxed);
         channel.encoder_invert_cfg.store(Some(true), Relaxed);
+        channel.pending_inner_gain_flux_p.store(100, Relaxed);
+        channel.pending_outer_gain_velocity_i.store(200, Relaxed);
         channel.config_apply_pending.store(
-            PENDING_CURRENT | PENDING_ENCODER_DIR | PENDING_FILTERS,
+            PENDING_CURRENT
+                | PENDING_ENCODER_DIR
+                | PENDING_FILTERS
+                | PENDING_INNER_GAINS
+                | PENDING_OUTER_GAINS,
             Relaxed,
         );
 
@@ -1076,6 +1084,8 @@ mod tests {
             "a bit surviving the reset that wiped its recorded value points \
              the drain at a value the host never sent"
         );
+        assert_eq!(channel.pending_inner_gain_flux_p.load(Relaxed), 0);
+        assert_eq!(channel.pending_outer_gain_velocity_i.load(Relaxed), 0);
     }
 
     #[test]

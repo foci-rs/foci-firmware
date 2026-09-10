@@ -52,12 +52,18 @@ pub enum PendingConfigItem {
 /// [`apply_live_filter`] so a recorded `0` disables its filter, which the
 /// `apply_stored_filters` fast path does not do.
 ///
-/// On `Ok`, every bit observed on entry has been applied and cleared. Bits
-/// raised after that first load are deliberately left alone: config handlers
-/// run at a higher priority than the control and arming paths, so a bit can
-/// appear mid-drain, and it belongs to the next drain rather than this one.
-/// An always-on assert enforces the first half of that against a local mask
-/// rather than the live atomic, so a concurrent setter cannot trip it.
+/// On `Ok`, every bit observed on entry has been applied and cleared. Config
+/// handlers run at a higher priority than the control and arming paths, so a
+/// bit can be raised while this runs, and where it lands decides what happens
+/// to it: one raised after its own item's clear below survives for the next
+/// drain, but one raised between the load above and that clear is wiped by
+/// it, silently dropping the value the handler had just recorded. Closing
+/// that second case needs per-item compare-and-clear rather than the
+/// unconditional `fetch_and` each branch uses today.
+///
+/// The always-on assert at the end covers only the first sentence, and checks
+/// it against a local mask rather than the live atomic so a concurrent setter
+/// cannot trip it.
 ///
 /// # Errors
 ///
