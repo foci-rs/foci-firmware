@@ -147,8 +147,15 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// -- so a final `config_apply_pending` check immediately before the enable
 /// pin refuses the arm instead. It returns an error rather than asserting:
 /// this interleaving is ordinary traffic, and the next control tick drains
-/// the bit so the host's retry arms against the value it sent. The residual
-/// window is the few instructions between that load and the GPIO write.
+/// the bit so the host's retry arms against the value it sent.
+///
+/// That check and the enable pin share one critical section. Split apart
+/// they are a check-then-act pair on state a higher-priority task owns, and
+/// a handler landing in between would leave the arm energizing against the
+/// very configuration it had just established was absent. Masking is what
+/// makes the check binding rather than advisory. The section holds an
+/// atomic load and a GPIO write and nothing else -- the refusal is logged
+/// after it, so an RTT write never runs masked.
 ///
 /// The torque-flux rewrite makes this path truthful even when a homing
 /// clamp narrowed the register on a prior arm: a shutdown or disable
@@ -239,11 +246,17 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
         return Err(crate::autotune::CommissionError::FaultInterlock);
     }
 
-    if state.tmc.config_apply_pending.load(Relaxed) != 0 {
+    let armed = critical_section::with(|_| {
+        if state.tmc.config_apply_pending.load(Relaxed) != 0 {
+            return false;
+        }
+        backend.set_enable_pin(true);
+        true
+    });
+    if !armed {
         defmt::error!("arm_motor_electrical: configuration recorded after the drain, refusing arm");
         return Err(crate::autotune::CommissionError::Spi);
     }
-    backend.set_enable_pin(true);
     *state.motor_enabled = true;
     backend.record_lifecycle(LifecycleFlag::MotorEnabled, true);
     Ok(())
@@ -1336,6 +1349,57 @@ mod tests {
                     if *addr == STATUS_FLAGS.addr()
             )),
             "STATUS_FLAGS must not be written while the interlock is tripped"
+        );
+    }
+
+    /// The pending-config check and the enable-pin write must share one
+    /// critical section.
+    ///
+    /// The config handlers run in the P2 USB dispatch task, which preempts
+    /// this P1 arming path. A plain check-then-act pair can therefore be
+    /// split by an interrupt landing between the load and the GPIO write,
+    /// and the arm would energize against configuration it had just
+    /// established was absent. Masking interrupts across both is what closes
+    /// that window.
+    ///
+    /// Guarded at the source because no host test can reproduce it: the fix
+    /// works by making the interleaving unrepresentable, so a synchronous
+    /// test has nothing left to interleave. What a test can still check is
+    /// that the two halves have not drifted back apart.
+    #[test]
+    fn the_pending_config_check_and_the_enable_pin_share_one_critical_section() {
+        let source = include_str!("lifecycle.rs");
+        let source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the module has a non-test half");
+        let body = source
+            .split("pub async fn arm_motor_electrical")
+            .nth(1)
+            .expect("arm_motor_electrical is defined in this module")
+            .split("\n}\n")
+            .next()
+            .expect("the function body is brace-terminated");
+
+        let mask = body
+            .find("critical_section::with")
+            .expect("the arm decision must run with interrupts masked");
+        let check = body
+            .find("config_apply_pending.load(")
+            .expect("the arm must check for configuration recorded after the drain");
+        let energize = body
+            .find("set_enable_pin(true)")
+            .expect("the arm must raise the enable pin");
+
+        assert!(
+            mask < check && check < energize,
+            "the critical section must open before the pending check, which \
+             must precede the enable pin"
+        );
+        assert!(
+            !body[mask..energize].contains(".await"),
+            "an awaiting step between the check and the enable pin hands the \
+             window back to the higher-priority config handlers"
         );
     }
 }
