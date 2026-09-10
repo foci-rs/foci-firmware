@@ -1813,4 +1813,52 @@ mod tests {
             "voltage limit bit should remain clear after calling filter setter"
         );
     }
+
+    /// Regression guard for the whole connect-time config allowlist: exactly
+    /// the nine handlers below must be immune to `QueueFull` (they never
+    /// touch the TMC request queue at all), and `tmc_set_motion_scale` must
+    /// remain the one exception that still enqueues and shuts down on
+    /// `QueueFull`. Individual handlers each have their own focused test
+    /// from the task that converted them; this test exists so a future
+    /// handler that forgets to convert (or a regression that reintroduces
+    /// an enqueue) fails here even if every per-handler test still passes.
+    #[test]
+    fn connect_time_config_handlers_are_immune_to_queue_full() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        assert_eq!(crate::state::tmc::CONNECT_TIME_QUEUE_SLOTS_PER_CHANNEL, 1);
+
+        let mut ctx = MockCtx::new(2);
+        ctx.accept_request = false;
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 20_000);
+        tmc_set_velocity_filter(&mut ctx, &mut sender, 10, 200);
+        tmc_set_torque_filter(&mut ctx, &mut sender, 10, 200);
+        tmc_set_position_filter(&mut ctx, &mut sender, 10, 200);
+        tmc_set_flux_filter(&mut ctx, &mut sender, 10, 200);
+        tmc_set_current(&mut ctx, &mut sender, 10, 800);
+        tmc_set_encoder_dir(&mut ctx, &mut sender, 10, 1, 1);
+        tmc_set_pid_gains(&mut ctx, &mut sender, 10, 21, 22, 23, 24);
+        tmc_set_position_gains(&mut ctx, &mut sender, 10, 256, 3, 768, 4);
+
+        assert!(
+            ctx.last_request.borrow().is_none(),
+            "connect-time config handlers must never enqueue, even under QueueFull"
+        );
+        assert_eq!(
+            ctx.last_shutdown, None,
+            "connect-time config handlers must never shut down on QueueFull"
+        );
+
+        tmc_set_motion_scale(&mut ctx, &mut sender, 10, 1, 1000, 3200);
+
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::TmcSetMotionScaleLostQueueFull),
+            "tmc_set_motion_scale is the one connect-time handler that still \
+             enqueues and must still shut down on QueueFull"
+        );
+    }
 }
