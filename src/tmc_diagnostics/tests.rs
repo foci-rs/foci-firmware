@@ -313,6 +313,7 @@ fn current_step_not_ready_returns_status_without_writes() {
         let outcome = run_current_step_request(
             req,
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -786,6 +787,7 @@ fn current_vector_uses_vector_report_flag() {
         let outcome = run_current_step_request(
             req,
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -837,6 +839,7 @@ fn current_step_success_records_settle_delays_and_restores_limit() {
         let outcome = run_current_step_request(
             tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 20, 3, 555),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -943,6 +946,7 @@ fn flux_current_step_drives_and_reports_flux_axis() {
         let outcome = run_current_step_request(
             tmc_current_step_test(0, 7, CurrentStepAxis::Flux, 20, 3, 555),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -993,6 +997,7 @@ fn current_step_invalid_ppr_aborts_before_excitation() {
         let outcome = run_current_step_request(
             tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 20, 3, 555),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1042,6 +1047,7 @@ fn current_step_exact_half_turn_aborts_via_post_measurement_error() {
         let outcome = run_current_step_request(
             tmc_current_step_test(0, 7, CurrentStepAxis::Torque, 20, 3, 555),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1075,6 +1081,7 @@ fn torque_sample_not_ready_does_not_emit_detail() {
         let outcome = run_current_torque_sample_request(
             tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1117,6 +1124,7 @@ fn current_torque_sample_invalid_ppr_aborts_before_excitation() {
         let outcome = run_current_torque_sample_request(
             tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1173,6 +1181,7 @@ fn current_torque_sample_exact_half_turn_aborts_via_post_measurement_error() {
         let outcome = run_current_torque_sample_request(
             tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1208,6 +1217,7 @@ fn position_offset_rejects_non_position_mode() {
         let outcome = run_position_torque_offset_sample_request(
             tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1254,6 +1264,7 @@ fn position_offset_spi_failure_attempts_offset_restore() {
         let outcome = run_position_torque_offset_sample_request(
             tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1314,6 +1325,7 @@ fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
         let outcome = run_position_torque_offset_sample_request(
             tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1372,6 +1384,7 @@ fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_err
         let outcome = run_position_torque_offset_sample_request(
             tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1407,6 +1420,7 @@ fn voltage_step_rejects_non_position_mode() {
         let outcome = run_voltage_step_request(
             tmc_voltage_step_test(0, 3, 44, -55, 6),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1447,6 +1461,7 @@ fn voltage_step_failure_clears_external_voltage_and_restores_mode() {
         let outcome = run_voltage_step_request(
             tmc_voltage_step_test(0, 3, 44, -55, 6),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1511,6 +1526,7 @@ fn voltage_step_invalid_ppr_aborts_before_excitation() {
         let outcome = run_voltage_step_request(
             tmc_voltage_step_test(0, 3, 44, -55, 6),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1555,6 +1571,7 @@ fn voltage_step_exact_half_turn_aborts_via_post_measurement_error() {
         let outcome = run_voltage_step_request(
             tmc_voltage_step_test(0, 3, 44, -55, 6),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1588,6 +1605,7 @@ fn dispatcher_returns_not_diagnostic_for_normal_request() {
         let outcome = handle_diagnostic_request(
             req.clone(),
             DiagnosticContext {
+                host_liveness_expired: None,
                 tmc: &mut tmc,
                 runtime: &mut runtime,
                 delay: &mut delay,
@@ -1675,6 +1693,7 @@ async fn resistance_test_request_dispatches_to_shared_runner() {
     let outcome = handle_diagnostic_request(
         req,
         DiagnosticContext {
+            host_liveness_expired: None,
             tmc: &mut tmc,
             runtime: &mut runtime,
             delay: &mut delay,
@@ -1726,6 +1745,7 @@ fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
     let mut tmc = Tmc4671Spi::new(DiagnosticMockSpi::default());
     let mut power_stage = MockDiagnosticPowerStage::default();
     let mut ctx = DiagnosticContext {
+        host_liveness_expired: None,
         tmc: &mut tmc,
         runtime: &mut runtime,
         delay: &mut delay,
@@ -1749,6 +1769,7 @@ fn resistance_trip_lowers_board_stage_before_clearing_shared_state() {
     assert!(runtime.is_calibrated());
 
     let mut ctx = DiagnosticContext {
+        host_liveness_expired: None,
         tmc: &mut tmc,
         runtime: &mut runtime,
         delay: &mut delay,
@@ -1799,6 +1820,7 @@ async fn resistance_test_not_armed_reports_no_axes() {
     let outcome = handle_diagnostic_request(
         req,
         DiagnosticContext {
+            host_liveness_expired: None,
             tmc: &mut tmc,
             runtime: &mut runtime,
             delay: &mut delay,
@@ -1869,6 +1891,7 @@ async fn resistance_test_uses_board_monotonic_for_sample_timing() {
     let outcome = handle_diagnostic_request(
         req,
         DiagnosticContext {
+            host_liveness_expired: None,
             tmc: &mut tmc,
             runtime: &mut runtime,
             delay: &mut delay,
@@ -1927,6 +1950,7 @@ async fn resistance_test_rejects_during_homing_without_invoking_runner() {
     let outcome = handle_diagnostic_request(
         req,
         DiagnosticContext {
+            host_liveness_expired: None,
             tmc: &mut tmc,
             runtime: &mut runtime,
             delay: &mut delay,

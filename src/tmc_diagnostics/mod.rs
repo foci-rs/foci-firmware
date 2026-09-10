@@ -103,6 +103,14 @@ pub struct DiagnosticContext<'a, B, D> {
     /// This channel's feedback wiring, used by shared active-diagnostic
     /// runners that check `STATUS_FLAGS` against the current-loop mask.
     pub feedback_config: crate::config::FeedbackConfig,
+    /// Board-supplied host-liveness check, consulted by checked delays.
+    /// `None` means "no check installed" -- treated as never-expired; every
+    /// production call site must supply `Some`, wired to the board's raw
+    /// `lease_expired` result with a freshly sampled timer. Never wire this
+    /// to `classify_lease_check`: its shutdown-active suppression exists to
+    /// stop the P1 loop's own per-tick re-entrancy and does not apply to a
+    /// diagnostic runner's one-shot poll.
+    pub host_liveness_expired: Option<&'a mut dyn FnMut() -> bool>,
 }
 
 /// Report produced by a handled active diagnostic request.
