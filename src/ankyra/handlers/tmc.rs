@@ -206,7 +206,7 @@ pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
     state
         .velocity_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.store(true, Ordering::Relaxed);
+    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set torque biquad filter cutoff frequency from host config.
@@ -221,7 +221,7 @@ pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16
     state
         .torque_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.store(true, Ordering::Relaxed);
+    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set position target biquad filter cutoff frequency from host config.
@@ -236,7 +236,7 @@ pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
     state
         .position_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.store(true, Ordering::Relaxed);
+    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set flux biquad filter cutoff frequency from host config.
@@ -251,7 +251,7 @@ pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) 
     state
         .flux_filter_hz
         .store(Some(filter_hz), Ordering::Relaxed);
-    state.config_apply_pending.store(true, Ordering::Relaxed);
+    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
 }
 
 /// Set position/velocity PI gains from host config.
@@ -519,7 +519,7 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
     state
         .voltage_limit_cfg
         .store(voltage_limit, Ordering::Relaxed);
-    state.config_apply_pending.store(true, Ordering::Relaxed);
+    state.config_apply_pending.fetch_or(crate::state::tmc::PENDING_VOLTAGE_LIMIT, Ordering::Relaxed);
 }
 
 /// Run a bounded current-loop step diagnostic.
@@ -1150,14 +1150,18 @@ mod tests {
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
         tmc_state.velocity_filter_hz.store(None, Relaxed);
-        tmc_state.config_apply_pending.store(false, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
 
         tmc_set_velocity_filter(&mut ctx, &mut sender, 10, 200);
 
         // The cutoff is recorded in channel state...
         assert_eq!(tmc_state.velocity_filter_hz.load(Relaxed), Some(200));
-        // ...and flagged for the TMC task to apply on its control tick...
-        assert!(tmc_state.config_apply_pending.load(Relaxed));
+        // ...and the filter bit is flagged for the TMC task to apply on its
+        // control tick...
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_FILTERS,
+            0
+        );
         // ...without consuming a slot on the bounded request channel.
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
@@ -1175,12 +1179,15 @@ mod tests {
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
         tmc_state.voltage_limit_cfg.store(16_000, Relaxed);
-        tmc_state.config_apply_pending.store(false, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
 
         tmc_set_voltage_limit(&mut ctx, &mut sender, 10, 29_000);
 
         assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 29_000);
-        assert!(tmc_state.config_apply_pending.load(Relaxed));
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_VOLTAGE_LIMIT,
+            0
+        );
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
     }
@@ -1221,7 +1228,10 @@ mod tests {
         // Recorded in channel state for the TMC task to apply on its control
         // tick; config setters no longer consume a request-channel slot.
         assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 20_000);
-        assert!(tmc_state.config_apply_pending.load(Relaxed));
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_VOLTAGE_LIMIT,
+            0
+        );
         assert!(ctx.last_request.borrow().is_none());
         assert_eq!(ctx.last_shutdown, None);
     }
@@ -1241,7 +1251,10 @@ mod tests {
 
         // Raw chip minimum is accepted, not rejected as out of range.
         assert_eq!(tmc_state.voltage_limit_cfg.load(Relaxed), 0);
-        assert!(tmc_state.config_apply_pending.load(Relaxed));
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_VOLTAGE_LIMIT,
+            0
+        );
         assert_eq!(ctx.last_shutdown, None);
     }
 
@@ -1648,5 +1661,32 @@ mod tests {
             2
         );
         assert!(!source.contains("crate::ankyra::handlers::tmc::tmc_set_velocity_feedforward,"));
+    }
+
+    #[test]
+    fn tmc_set_velocity_filter_leaves_voltage_limit_bit_clear() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.velocity_filter_hz.store(None, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
+
+        tmc_set_velocity_filter(&mut ctx, &mut sender, 10, 200);
+
+        let pending = tmc_state.config_apply_pending.load(Relaxed);
+        assert_ne!(
+            pending & crate::state::tmc::PENDING_FILTERS,
+            0,
+            "filter bit should be set after calling filter setter"
+        );
+        assert_eq!(
+            pending & crate::state::tmc::PENDING_VOLTAGE_LIMIT,
+            0,
+            "voltage limit bit should remain clear after calling filter setter"
+        );
     }
 }

@@ -451,14 +451,14 @@ async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
 /// channel. The TMC task calls this from its periodic control tick to push
 /// that recorded state to the chip.
 ///
-/// The pending flag is cleared before the writes are attempted, so a failure
-/// does not spin the tick retrying a bad value; the next setter call re-arms
-/// it. Routes through [`apply_live_filter`] so a recorded `0` disables its
-/// filter, which the `apply_stored_filters` fast path does not do.
+/// Each bit is checked and cleared individually, so a failure writing one
+/// item does not prevent retrying on the next control tick. Routes through
+/// [`apply_live_filter`] so a recorded `0` disables its filter, which the
+/// `apply_stored_filters` fast path does not do.
 ///
 /// # Errors
 ///
-/// Returns `Err(())` if any filter write fails.
+/// Returns `Err(())` if any write fails (voltage limit or filter).
 pub async fn apply_pending_config<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
@@ -469,16 +469,23 @@ where
 {
     use core::sync::atomic::Ordering::Relaxed;
 
-    if !tmc_state.config_apply_pending.swap(false, Relaxed) {
+    let pending = tmc_state.config_apply_pending.load(Relaxed);
+    if pending == 0 {
         return Ok(());
     }
 
-    crate::tmc_control::request_writes::apply_set_voltage_limit(
-        tmc,
-        tmc_state,
-        tmc_state.voltage_limit_cfg.load(Relaxed),
-    )
-    .await?;
+    if (pending & crate::state::tmc::PENDING_VOLTAGE_LIMIT) != 0 {
+        crate::tmc_control::request_writes::apply_set_voltage_limit(
+            tmc,
+            tmc_state,
+            tmc_state.voltage_limit_cfg.load(Relaxed),
+        )
+        .await?;
+        tmc_state.config_apply_pending.fetch_and(
+            !crate::state::tmc::PENDING_VOLTAGE_LIMIT,
+            Relaxed,
+        );
+    }
 
     // Outer gains are deliberately NOT applied here. `load_outer_gains` holds
     // gains *confirmed written to hardware*, which is why
@@ -487,25 +494,31 @@ where
     // would publish unconfirmed gains, so moving `tmc_set_position_gains` off
     // the queue needs a separate pending-gain field first.
 
-    for (target, filter_hz) in [
-        (
-            BiquadFilterTarget::Velocity,
-            tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
-        ),
-        (
-            BiquadFilterTarget::Torque,
-            tmc_state.torque_filter_hz.load_or_zero(Relaxed),
-        ),
-        (
-            BiquadFilterTarget::Position,
-            tmc_state.position_filter_hz.load_or_zero(Relaxed),
-        ),
-        (
-            BiquadFilterTarget::Flux,
-            tmc_state.flux_filter_hz.load_or_zero(Relaxed),
-        ),
-    ] {
-        apply_live_filter(tmc, tmc_state, target, filter_hz, pwm_maxcnt).await?;
+    if (pending & crate::state::tmc::PENDING_FILTERS) != 0 {
+        for (target, filter_hz) in [
+            (
+                BiquadFilterTarget::Velocity,
+                tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+            ),
+            (
+                BiquadFilterTarget::Torque,
+                tmc_state.torque_filter_hz.load_or_zero(Relaxed),
+            ),
+            (
+                BiquadFilterTarget::Position,
+                tmc_state.position_filter_hz.load_or_zero(Relaxed),
+            ),
+            (
+                BiquadFilterTarget::Flux,
+                tmc_state.flux_filter_hz.load_or_zero(Relaxed),
+            ),
+        ] {
+            apply_live_filter(tmc, tmc_state, target, filter_hz, pwm_maxcnt).await?;
+        }
+        tmc_state.config_apply_pending.fetch_and(
+            !crate::state::tmc::PENDING_FILTERS,
+            Relaxed,
+        );
     }
     Ok(())
 }
@@ -765,6 +778,62 @@ mod tests {
             .await;
 
             assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_with_only_filters_does_not_write_voltage_limit() {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        pollster::block_on(async {
+            tmc_state()
+                .velocity_filter_hz
+                .store(Some(100), Relaxed);
+            tmc_state()
+                .torque_filter_hz
+                .store(Some(0), Relaxed);
+            tmc_state()
+                .position_filter_hz
+                .store(Some(0), Relaxed);
+            tmc_state()
+                .flux_filter_hz
+                .store(Some(0), Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_FILTERS, Relaxed);
+
+            let raw_spi = MockRawSpi::default();
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+
+            apply_pending_config(&mut tmc, tmc_state(), 4095)
+                .await
+                .expect("apply should succeed");
+
+            let raw_spi = tmc.into_inner();
+            use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+            let has_voltage_limit_write = raw_spi
+                .writes
+                .iter()
+                .any(|w| w.len() >= 1 && w[0] == (PIDOUT_UQ_UD_LIMITS.addr() | 0x80));
+
+            assert!(
+                !has_voltage_limit_write,
+                "apply_pending_config should not write PIDOUT_UQ_UD_LIMITS \
+                 when only PENDING_FILTERS bit is set"
+            );
+
+            tmc_state()
+                .velocity_filter_hz
+                .store(None, Relaxed);
+            tmc_state()
+                .torque_filter_hz
+                .store(None, Relaxed);
+            tmc_state()
+                .position_filter_hz
+                .store(None, Relaxed);
+            tmc_state()
+                .flux_filter_hz
+                .store(None, Relaxed);
         });
     }
 }

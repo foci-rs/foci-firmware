@@ -20,6 +20,19 @@ pub const MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 0;
 /// Highest accepted diagnostic PIDOUT_UQ_UD_LIMITS value.
 pub const MAX_OPERATIONAL_PIDOUT_UQ_UD_LIMIT: u32 = 32_767;
 
+/// Bitmask constant for pending voltage limit configuration.
+pub const PENDING_VOLTAGE_LIMIT: u8 = 1 << 0;
+/// Bitmask constant for pending filter configuration.
+pub const PENDING_FILTERS: u8 = 1 << 1;
+/// Bitmask constant for pending current configuration.
+pub const PENDING_CURRENT: u8 = 1 << 2;
+/// Bitmask constant for pending encoder direction configuration.
+pub const PENDING_ENCODER_DIR: u8 = 1 << 3;
+/// Bitmask constant for pending inner gains configuration.
+pub const PENDING_INNER_GAINS: u8 = 1 << 4;
+/// Bitmask constant for pending outer gains configuration.
+pub const PENDING_OUTER_GAINS: u8 = 1 << 5;
+
 const OPTIONAL_FILTER_HZ_UNSET: u32 = u32::MAX;
 
 /// Atomic storage for an optional biquad filter cutoff in Hz.
@@ -126,18 +139,20 @@ pub struct TmcChannelState {
     tmc_grid: AtomicU32,
     step_width: AtomicU32,
     motion_scale_configured: AtomicBool,
-    /// Set when a config setter has recorded a value the TMC task has not yet
-    /// written to the chip.
+    /// Bitmask indicating which pending configuration items must be applied.
+    ///
+    /// Bits are: voltage limit, filters, current, encoder direction,
+    /// inner gains, outer gains (see `PENDING_*` constants).
     ///
     /// Config-time setters are pure state writes: they do not need to be
     /// ordered SPI transactions, so they record their value here instead of
-    /// enqueueing a request. The TMC task drains this flag on its periodic
+    /// enqueueing a request. The TMC task drains these bits on its periodic
     /// control tick and applies the recorded state.
     ///
     /// This keeps the connect-time configuration burst entirely off the
     /// bounded TMC request channel. That burst can exceed `TMC_CHANNEL_SIZE`,
     /// and a dropped `#[klipper_command]` is an MCU shutdown.
-    pub config_apply_pending: AtomicBool,
+    pub config_apply_pending: AtomicU8,
     /// Polled STATUS pin level, stored by the board loop on every wake.
     pub status_pin_asserted: AtomicBool,
     /// Optional velocity biquad filter cutoff frequency in Hz.
@@ -279,7 +294,7 @@ impl TmcChannelState {
             tmc_grid: AtomicU32::new(0),
             step_width: AtomicU32::new(0),
             motion_scale_configured: AtomicBool::new(false),
-            config_apply_pending: AtomicBool::new(false),
+            config_apply_pending: AtomicU8::new(0),
             status_pin_asserted: AtomicBool::new(false),
             velocity_filter_hz: AtomicOptionalFilterHz::new(None),
             torque_filter_hz: AtomicOptionalFilterHz::new(None),

@@ -351,7 +351,7 @@ impl ChannelDriver {
     {
         let tmc_state = backend.tmc_state();
         let refs = self.refs(tmc_state);
-        if tmc_state.config_apply_pending.load(Relaxed)
+        if tmc_state.config_apply_pending.load(Relaxed) != 0
             && crate::tmc_control::filters::apply_pending_config(
                 backend.tmc_spi(),
                 tmc_state,
@@ -361,7 +361,6 @@ impl ChannelDriver {
             .is_err()
         {
             defmt::error!("pending TMC config apply failed");
-            tmc_state.config_apply_pending.store(true, Relaxed);
         }
         let reset = self.take_reset(tmc_state, true);
         self.last_command_velocity_reference =
@@ -885,7 +884,10 @@ mod tests {
         let tmc_state = crate::state::tmc::tmc_channel0();
         tmc_state
             .config_apply_pending
-            .store(true, core::sync::atomic::Ordering::Relaxed);
+            .store(
+                crate::state::tmc::PENDING_VOLTAGE_LIMIT | crate::state::tmc::PENDING_FILTERS,
+                core::sync::atomic::Ordering::Relaxed,
+            );
         let mut rig = ready_rig(RuntimeMockSpi::default());
 
         let outcome = rig.drive(UnitClass::Fast).await;
@@ -902,10 +904,12 @@ mod tests {
                     crate::state::stepper::stepper_channel0(),
                 ))
         );
-        assert!(
-            !tmc_state
+        assert_eq!(
+            tmc_state
                 .config_apply_pending
-                .load(core::sync::atomic::Ordering::Relaxed)
+                .load(core::sync::atomic::Ordering::Relaxed),
+            0,
+            "all pending config bits should be cleared after successful apply"
         );
         // apply_pending_config's first write is the voltage limit; it must
         // precede any feedforward write in the log.
@@ -923,17 +927,22 @@ mod tests {
         let tmc_state = crate::state::tmc::tmc_channel0();
         tmc_state
             .config_apply_pending
-            .store(true, core::sync::atomic::Ordering::Relaxed);
+            .store(
+                crate::state::tmc::PENDING_VOLTAGE_LIMIT | crate::state::tmc::PENDING_FILTERS,
+                core::sync::atomic::Ordering::Relaxed,
+            );
         let mut rig =
             ready_rig(RuntimeMockSpi::default().fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr()));
 
         let outcome = rig.drive(UnitClass::Fast).await;
 
         assert!(matches!(outcome, UnitOutcome::Reschedule { .. }));
-        assert!(
+        assert_ne!(
             tmc_state
                 .config_apply_pending
-                .load(core::sync::atomic::Ordering::Relaxed)
+                .load(core::sync::atomic::Ordering::Relaxed),
+            0,
+            "at least one pending config bit should remain set for retry after failure"
         );
     }
 
