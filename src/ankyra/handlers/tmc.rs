@@ -145,19 +145,21 @@ pub fn tmc_set_motion_scale(
 /// Set ABN encoder count direction. `invert=1` flips the count direction
 /// so the position PID has correct (negative) feedback. Depends on
 /// motor/encoder wiring — not board-specific.
+///
+/// Recorded in channel state and applied by the TMC task on its control
+/// tick. See [`TmcChannelState::config_apply_pending`] for why this does
+/// not enqueue.
 #[klipper_command]
 pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, invert: u8) {
-    let Some((channel, _state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
+    let Some((_channel, state)) = foci_tmc_state_matching_or_shutdown(ctx, oid, channel) else {
         return;
     };
-    if ctx
-        .enqueue_request(crate::tmc::tmc_set_encoder_dir(channel, invert != 0))
-        .is_err()
-        && ctx.enter_shutdown()
-    {
-        let clock = ctx.now();
-        ctx.send_shutdown(ShutdownReason::TmcSetEncoderDirLostQueueFull, clock);
-    }
+    state
+        .encoder_invert_cfg
+        .store(Some(invert != 0), Ordering::Relaxed);
+    state
+        .config_apply_pending
+        .fetch_or(crate::state::tmc::PENDING_ENCODER_DIR, Ordering::Relaxed);
 }
 
 /// Set inner loop PI gains from host (explicit override or saved values).
@@ -1007,6 +1009,51 @@ mod tests {
         assert_eq!(tmc_state.run_current_ma_cfg.load(Relaxed), 1500);
         assert_ne!(
             tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+            0
+        );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_encoder_dir_records_config_without_queueing() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.encoder_invert_cfg.store(None, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
+
+        tmc_set_encoder_dir(&mut ctx, &mut sender, 10, 1, 1);
+
+        assert_eq!(tmc_state.encoder_invert_cfg.load(Relaxed), Some(true));
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_ENCODER_DIR,
+            0
+        );
+        assert!(ctx.last_request.borrow().is_none());
+        assert_eq!(ctx.last_shutdown, None);
+    }
+
+    #[test]
+    fn tmc_set_encoder_dir_cannot_shut_down_on_a_full_queue() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        let mut ctx = MockCtx::new(2);
+        // A full request channel is exactly the connect-time condition that
+        // shut the MCU down; recording config must be immune to it.
+        ctx.accept_request = false;
+        let mut sender = ();
+        config_stepper_channel(ctx.state(), 10, 1).unwrap();
+        let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
+        tmc_state.encoder_invert_cfg.store(None, Relaxed);
+        tmc_state.config_apply_pending.store(0, Relaxed);
+
+        tmc_set_encoder_dir(&mut ctx, &mut sender, 10, 1, 0);
+
+        assert_eq!(tmc_state.encoder_invert_cfg.load(Relaxed), Some(false));
+        assert_ne!(
+            tmc_state.config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_ENCODER_DIR,
             0
         );
         assert!(ctx.last_request.borrow().is_none());

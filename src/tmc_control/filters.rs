@@ -501,6 +501,18 @@ where
             .fetch_and(!crate::state::tmc::PENDING_CURRENT, Relaxed);
     }
 
+    if (pending & crate::state::tmc::PENDING_ENCODER_DIR) != 0
+        && let Some(invert) = tmc_state.encoder_invert_cfg.load(Relaxed)
+    {
+        crate::tmc_control::request_writes::apply_set_encoder_dir(tmc, tmc_state, invert)
+            .await
+            .map_err(|_| ())?;
+        tmc_state.config_apply_pending.fetch_and(
+            !crate::state::tmc::PENDING_ENCODER_DIR,
+            Relaxed,
+        );
+    }
+
     // Outer gains are deliberately NOT applied here. `load_outer_gains` holds
     // gains *confirmed written to hardware*, which is why
     // `apply_live_outer_gains` reports a per-write status and publishes only
@@ -905,6 +917,54 @@ mod tests {
             );
 
             tmc_state().run_current_ma_cfg.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_with_encoder_dir_bit_writes_abn_decoder_mode() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::ABN_DECODER_MODE;
+
+        pollster::block_on(async {
+            let config = crate::config::TmcConfig::default_for_test();
+
+            tmc_state().encoder_invert_cfg.store(Some(true), Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_ENCODER_DIR, Relaxed);
+
+            let raw_spi = MockRawSpi::default();
+            let mut tmc = Tmc4671Spi::new(raw_spi);
+
+            apply_pending_config(&mut tmc, tmc_state(), config)
+                .await
+                .expect("apply should succeed");
+
+            let mode = 1u32 << 12;
+            let raw_spi = tmc.into_inner();
+            let frame = |value: u32| -> std::vec::Vec<u8> {
+                let bytes = value.to_be_bytes();
+                std::vec![
+                    ABN_DECODER_MODE.addr() | 0x80,
+                    bytes[0],
+                    bytes[1],
+                    bytes[2],
+                    bytes[3]
+                ]
+            };
+            assert!(
+                raw_spi.writes.contains(&frame(mode)),
+                "expected an ABN_DECODER_MODE write of {mode:#x}, got {:?}",
+                raw_spi.writes
+            );
+            assert_eq!(
+                tmc_state().config_apply_pending.load(Relaxed)
+                    & crate::state::tmc::PENDING_ENCODER_DIR,
+                0,
+                "encoder-dir bit should be cleared after a successful apply"
+            );
+
+            tmc_state().encoder_invert_cfg.store(None, Relaxed);
         });
     }
 }

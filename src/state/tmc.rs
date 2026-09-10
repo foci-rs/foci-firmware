@@ -78,6 +78,48 @@ impl AtomicOptionalFilterHz {
     }
 }
 
+const OPTIONAL_INVERT_UNSET: u8 = u8::MAX;
+
+/// Atomic storage for an optional encoder-direction invert flag.
+///
+/// `None` means the host has never configured encoder direction on this
+/// channel — the drain must not write a default to `ABN_DECODER_MODE` in
+/// that case, since there is no safe direction to pick blind. `Some(false)`
+/// and `Some(true)` are both real, host-supplied configurations.
+pub struct AtomicOptionalInvert {
+    raw: AtomicU8,
+}
+
+impl AtomicOptionalInvert {
+    /// Create optional invert storage with the given initial value.
+    pub const fn new(invert: Option<bool>) -> Self {
+        Self {
+            raw: AtomicU8::new(Self::encode(invert)),
+        }
+    }
+
+    /// Load the optional invert flag.
+    pub fn load(&self, ordering: Ordering) -> Option<bool> {
+        match self.raw.load(ordering) {
+            OPTIONAL_INVERT_UNSET => None,
+            raw => Some(raw != 0),
+        }
+    }
+
+    /// Store the optional invert flag.
+    pub fn store(&self, invert: Option<bool>, ordering: Ordering) {
+        self.raw.store(Self::encode(invert), ordering);
+    }
+
+    const fn encode(invert: Option<bool>) -> u8 {
+        match invert {
+            Some(true) => 1,
+            Some(false) => 0,
+            None => OPTIONAL_INVERT_UNSET,
+        }
+    }
+}
+
 /// Runtime state for one board-local TMC4671 channel.
 pub struct TmcChannelState {
     /// Validated current limit for PID_TORQUE_FLUX_LIMITS (0x5E).
@@ -224,6 +266,11 @@ pub struct TmcChannelState {
     /// and applied by the TMC task on its control tick. See
     /// [`TmcChannelState::config_apply_pending`].
     pub run_current_ma_cfg: AtomicU32,
+    /// Requested encoder-direction invert flag, recorded by
+    /// `tmc_set_encoder_dir` and applied by the TMC task on its control
+    /// tick. See [`AtomicOptionalInvert`] and
+    /// [`TmcChannelState::config_apply_pending`].
+    pub encoder_invert_cfg: AtomicOptionalInvert,
     /// Cached ADC_VM mode-5 startup offset.
     adc_vm_offset_raw: AtomicU16,
     /// Number of samples folded into the cached ADC_VM offset.
@@ -333,6 +380,7 @@ impl TmcChannelState {
             velocity_limit_cfg: AtomicU32::new(500_000),
             voltage_limit_cfg: AtomicU32::new(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT),
             run_current_ma_cfg: AtomicU32::new(0),
+            encoder_invert_cfg: AtomicOptionalInvert::new(None),
             adc_vm_offset_raw: AtomicU16::new(0),
             adc_vm_offset_sample_count: AtomicU8::new(0),
             encoder_reversed: AtomicBool::new(false),
@@ -415,6 +463,7 @@ impl TmcChannelState {
         self.voltage_limit_cfg
             .store(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
         self.run_current_ma_cfg.store(0, Relaxed);
+        self.encoder_invert_cfg.store(None, Relaxed);
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.cancel_requested.store(false, Relaxed);
@@ -747,6 +796,22 @@ mod tests {
 
         filter.store(None, Relaxed);
         assert_eq!(filter.load(Relaxed), None);
+    }
+
+    #[test]
+    fn optional_invert_distinguishes_unset_from_both_configured_values() {
+        let invert = AtomicOptionalInvert::new(None);
+
+        assert_eq!(invert.load(Relaxed), None);
+
+        invert.store(Some(false), Relaxed);
+        assert_eq!(invert.load(Relaxed), Some(false));
+
+        invert.store(Some(true), Relaxed);
+        assert_eq!(invert.load(Relaxed), Some(true));
+
+        invert.store(None, Relaxed);
+        assert_eq!(invert.load(Relaxed), None);
     }
 
     #[test]
