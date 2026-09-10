@@ -163,6 +163,153 @@ fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: 
     rounded as u32
 }
 
+/// Non-generic mirror of `RestoreError`'s three variants reachable from
+/// `restore_calibrate_gains`, with the generic `Spi(B::Error)` payload
+/// erased -- every call site already discards it (matches with `_`), so
+/// carrying it would force `CalibrateGainsRestoreStep` (and transitively
+/// `RestoreCursor`) to become generic over the backend's error type, which
+/// would break `RestoreCursor: Copy` across different `B`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GainsRestoreErrorKind {
+    PiRepresentation,
+    Spi,
+    InvalidGains,
+}
+
+/// One step of `restore_calibrate_gains`'s register-restore sequence,
+/// advanced by exactly one backend register operation per `advance()` call.
+/// Mirrors the original function's order and short-circuit-on-error
+/// behavior exactly.
+#[derive(Clone, Copy)]
+pub(crate) enum CalibrateGainsRestoreStep {
+    VerifyPiRepresentation {
+        stored: Option<crate::pid::InnerLoopGains>,
+        step: crate::tmc_control::pi_representation::PiRepresentationVerifyStep,
+    },
+    WriteFlux {
+        gains: crate::pid::InnerLoopGains,
+    },
+    WriteTorque {
+        torque_reg: u32,
+    },
+    WriteVelocity,
+    WritePosition {
+        position_reg: u32,
+    },
+    WriteVelocityLimit,
+    WriteCurrentLimit,
+}
+
+impl CalibrateGainsRestoreStep {
+    pub(crate) fn start(stored: Option<crate::pid::InnerLoopGains>) -> Self {
+        Self::VerifyPiRepresentation {
+            stored,
+            step: crate::tmc_control::pi_representation::PiRepresentationVerifyStep::start(),
+        }
+    }
+
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        tmc_state: &TmcChannelState,
+    ) -> Option<Result<(), GainsRestoreErrorKind>> {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::*;
+
+        match self {
+            Self::VerifyPiRepresentation { stored, step } => {
+                let stored = *stored;
+                match step.advance(backend, tmc_state).await {
+                    None => None,
+                    Some(Err(_)) => Some(Err(GainsRestoreErrorKind::PiRepresentation)),
+                    Some(Ok(())) => {
+                        *self = match stored {
+                            Some(gains) => Self::WriteFlux { gains },
+                            None => Self::WriteVelocity,
+                        };
+                        None
+                    }
+                }
+            }
+            Self::WriteFlux { gains } => {
+                let gains = *gains;
+                let (flux_reg, torque_reg) = gains.to_registers();
+                if backend
+                    .write_register(PID_FLUX_P_FLUX_I, flux_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(GainsRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteTorque { torque_reg };
+                None
+            }
+            Self::WriteTorque { torque_reg } => {
+                let torque_reg = *torque_reg;
+                if backend
+                    .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(GainsRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteVelocity;
+                None
+            }
+            Self::WriteVelocity => {
+                let Ok(gains) = tmc_state.load_outer_gains(Relaxed) else {
+                    return Some(Err(GainsRestoreErrorKind::InvalidGains));
+                };
+                let (velocity_reg, position_reg) = gains.to_registers();
+                if backend
+                    .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(GainsRestoreErrorKind::Spi));
+                }
+                *self = Self::WritePosition { position_reg };
+                None
+            }
+            Self::WritePosition { position_reg } => {
+                let position_reg = *position_reg;
+                if backend
+                    .write_register(PID_POSITION_P_POSITION_I, position_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(GainsRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteVelocityLimit;
+                None
+            }
+            Self::WriteVelocityLimit => {
+                let velocity_limit = tmc_state.velocity_limit_cfg.load(Relaxed);
+                if backend
+                    .write_register(PID_VELOCITY_LIMIT, velocity_limit)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(GainsRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteCurrentLimit;
+                None
+            }
+            Self::WriteCurrentLimit => {
+                let current_limit = tmc_state.load_current_limit(Relaxed);
+                if backend
+                    .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(GainsRestoreErrorKind::Spi));
+                }
+                Some(Ok(()))
+            }
+        }
+    }
+}
+
 /// SPI restore sequence for the CalibrateDone path.
 ///
 /// Reapplies host-stored inner gains (if any) to `PID_FLUX_P_FLUX_I` and
@@ -181,64 +328,19 @@ fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: 
 ///
 /// # Errors
 ///
-/// Returns the backend's SPI error on the first failed write.
+/// Returns [`GainsRestoreErrorKind`] on the first failed write, an SPI read
+/// failure, or invalid stored outer gains.
 pub async fn restore_calibrate_gains<B: CommissioningBackend>(
     backend: &mut B,
     tmc_state: &TmcChannelState,
     stored: Option<crate::pid::InnerLoopGains>,
-) -> Result<(), RestoreError<B::Error>> {
-    use core::sync::atomic::Ordering::Relaxed;
-    use foci_tmc4671::registers::*;
-
-    crate::tmc_control::pi_representation::verify_pi_representation(backend, tmc_state)
-        .await
-        .map_err(|_| RestoreError::PiRepresentation)?;
-
-    // Current-loop gains from prior commissioning.
-    if let Some(gains) = stored {
-        let (flux_reg, torque_reg) = gains.to_registers();
-        backend
-            .write_register(PID_FLUX_P_FLUX_I, flux_reg)
-            .await
-            .map_err(RestoreError::Spi)?;
-        backend
-            .write_register(PID_TORQUE_P_TORQUE_I, torque_reg)
-            .await
-            .map_err(RestoreError::Spi)?;
+) -> Result<(), GainsRestoreErrorKind> {
+    let mut step = CalibrateGainsRestoreStep::start(stored);
+    loop {
+        if let Some(result) = step.advance(backend, tmc_state).await {
+            return result;
+        }
     }
-
-    let gains = tmc_state
-        .load_outer_gains(Relaxed)
-        .map_err(|_| RestoreError::InvalidGains)?;
-    let (velocity_reg, position_reg) = gains.to_registers();
-
-    // Velocity gains.
-    backend
-        .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    // Position gains.
-    backend
-        .write_register(PID_POSITION_P_POSITION_I, position_reg)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    // Velocity limit.
-    let velocity_limit = tmc_state.velocity_limit_cfg.load(Relaxed);
-    backend
-        .write_register(PID_VELOCITY_LIMIT, velocity_limit)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    // Current limit (TMC4671 resets on mode change).
-    let current_limit = tmc_state.load_current_limit(Relaxed);
-    backend
-        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    Ok(())
 }
 
 /// SPI restore sequence for a non-deploying candidate/resume terminal.
@@ -508,7 +610,7 @@ mod tests {
 
         let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
 
-        assert_eq!(result, Err(RestoreError::InvalidGains));
+        assert_eq!(result, Err(GainsRestoreErrorKind::InvalidGains));
         assert!(!backend.spi_log.iter().any(|op| {
             matches!(
                 op,
@@ -538,7 +640,7 @@ mod tests {
 
         let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
 
-        assert_eq!(result, Err(RestoreError::PiRepresentation));
+        assert_eq!(result, Err(GainsRestoreErrorKind::PiRepresentation));
         assert!(!backend.spi_log.iter().any(|op| {
             matches!(
                 op,
@@ -550,6 +652,50 @@ mod tests {
             )
         }));
         tmc_state().clear_pi_representation_established();
+    }
+
+    #[fixture_test]
+    async fn calibrate_gains_restore_step_matches_restore_calibrate_gains_with_stored_gains() {
+        use core::sync::atomic::Ordering::Relaxed;
+        crate::state::tmc::tmc_channel0().reset();
+
+        let mut oracle_backend = MockBackend::new();
+        tmc_state().store_outer_gains(crate::pid::test_outer_gains(333, 44, 111, 22), Relaxed);
+        tmc_state().velocity_limit_cfg.store(555_000, Relaxed);
+        tmc_state().store_current_limit(
+            foci_tmc4671::current_limit::PidTorqueFluxLimit::new(1234).unwrap(),
+            Relaxed,
+        );
+        tmc_state().mark_pi_representation_established();
+        let stored = crate::pid::test_inner_gains(100, 10, 200, 20);
+        let oracle_result =
+            restore_calibrate_gains(&mut oracle_backend, tmc_state(), Some(stored)).await;
+
+        let mut backend = MockBackend::new();
+        let mut step = CalibrateGainsRestoreStep::start(Some(stored));
+        let mut polls = 0u32;
+        let result = loop {
+            assert!(polls < 16, "step sequence did not terminate");
+            let ops_before = backend.spi_log.len();
+            let outcome = step.advance(&mut backend, tmc_state()).await;
+            let raw_ops = backend.spi_log[ops_before..]
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            assert!(
+                raw_ops <= 1,
+                "poll {polls} logged {raw_ops} raw ops, expected at most 1"
+            );
+            polls += 1;
+            if let Some(result) = outcome {
+                break result;
+            }
+        };
+
+        assert_eq!(backend.spi_log, oracle_backend.spi_log);
+        assert_eq!(result.is_ok(), oracle_result.is_ok());
+
+        crate::state::tmc::tmc_channel0().reset();
     }
 
     fn sample_entry_snapshot() -> crate::commissioning::OuterGainRollbackSnapshot {

@@ -438,14 +438,12 @@ impl TerminalRestoreMachine {
                         Err(restore_error) => {
                             defmt::error!("CalibrateDone: saved gain restore SPI failed");
                             let status = match restore_error {
-                                restore::RestoreError::PiRepresentation => {
+                                restore::GainsRestoreErrorKind::PiRepresentation => {
                                     crate::calibration::CalibrationError::ChipResetDetected
                                         .status_code()
                                 }
-                                restore::RestoreError::Spi(_)
-                                | restore::RestoreError::InvalidGains
-                                | restore::RestoreError::VelocityClamp
-                                | restore::RestoreError::Readback => {
+                                restore::GainsRestoreErrorKind::Spi
+                                | restore::GainsRestoreErrorKind::InvalidGains => {
                                     crate::calibration::CalibrationError::SpiError.status_code()
                                 }
                             };

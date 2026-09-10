@@ -94,6 +94,21 @@ pub(crate) const fn test_outer_gains(
     }
 }
 
+#[cfg(test)]
+pub(crate) const fn test_inner_gains(
+    flux_p: u16,
+    flux_i: u16,
+    torque_p: u16,
+    torque_i: u16,
+) -> InnerLoopGains {
+    InnerLoopGains {
+        flux_p: p_gain(flux_p),
+        flux_i: i_gain(flux_i),
+        torque_p: p_gain(torque_p),
+        torque_i: i_gain(torque_i),
+    }
+}
+
 impl InnerLoopGains {
     /// Pack gains into TMC4671 register values.
     ///

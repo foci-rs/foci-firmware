@@ -1,5 +1,6 @@
 use super::pi_representation::{
-    PiRepresentationError, bootstrap_pi_representation, verify_pi_representation,
+    PiRepresentationError, PiRepresentationVerifyStep, bootstrap_pi_representation,
+    verify_pi_representation,
 };
 use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
 use crate::state::tmc::TmcChannelState;
@@ -148,5 +149,52 @@ fn pi_representation_verify_requires_established_state_before_spi() {
             Err(PiRepresentationError::NotEstablished)
         );
         assert!(backend.spi_log.is_empty());
+    });
+}
+
+#[test]
+fn pi_representation_verify_step_advances_one_raw_op_per_call() {
+    pollster::block_on(async {
+        let state = TmcChannelState::new();
+        let mut backend = MockBackend::new();
+        crate::tmc_control::pi_representation::bootstrap_pi_representation(&mut backend, &state)
+            .await
+            .expect("bootstrap should succeed");
+
+        let mut step = PiRepresentationVerifyStep::start();
+        let mut calls = 0u32;
+        let result = loop {
+            assert!(calls < 4, "step sequence did not terminate");
+            let before = backend.spi_log.len();
+            let outcome = step.advance(&mut backend, &state).await;
+            let delta = &backend.spi_log[before..];
+            assert_eq!(
+                delta.len(),
+                1,
+                "call {calls} logged {delta:?}, expected exactly one raw op"
+            );
+            match calls {
+                0 => assert!(
+                    matches!(
+                        delta[0],
+                        SpiOp::Write(addr, value)
+                            if addr == CONFIG_ADVANCED_PI_REPRESENT.addr.addr()
+                                && value == u32::from(CONFIG_ADVANCED_PI_REPRESENT.sub_addr)
+                    ),
+                    "call 0 expected the selector write, got {delta:?}"
+                ),
+                1 => assert!(
+                    matches!(delta[0], SpiOp::Read),
+                    "call 1 expected the read-back, got {delta:?}"
+                ),
+                _ => unreachable!("loop bound above caps calls at 4"),
+            }
+            calls += 1;
+            if let Some(result) = outcome {
+                break result;
+            }
+        };
+        assert_eq!(calls, 2, "expected exactly 2 steps");
+        assert!(result.is_ok());
     });
 }
