@@ -6,13 +6,6 @@ use super::DiagnosticDelay;
 /// checked delay may go longer than this between liveness checks while
 /// waiting. Fixed by design, not a per-call-site choice -- 50x margin under
 /// the 5 s host-liveness lease.
-///
-/// `#[allow(dead_code)]`: unused until Task 3 wires the first runner to
-/// `checked_delay_ms`, matching this file's existing convention for
-/// helpers introduced ahead of their first caller (see
-/// `write_current_step_sub_register`/`clear_current_step_integrators`
-/// above).
-#[allow(dead_code)]
 pub(crate) const HOST_LIVENESS_POLL_SLICE_MS: u64 = 100;
 
 /// Delay `ms` milliseconds, sliced into `HOST_LIVENESS_POLL_SLICE_MS`-sized
@@ -21,7 +14,6 @@ pub(crate) const HOST_LIVENESS_POLL_SLICE_MS: u64 = 100;
 /// check reports expired, having delayed only the slices already completed
 /// -- never the full remaining `ms`. `None` means "no check installed":
 /// behaves exactly like an unconditional `delay.delay_ms(ms)`.
-#[allow(dead_code)]
 pub(crate) async fn checked_delay_ms<D: DiagnosticDelay>(
     delay: &mut D,
     mut host_liveness_expired: Option<&mut dyn FnMut() -> bool>,
@@ -56,7 +48,6 @@ pub(crate) async fn checked_delay_ms<D: DiagnosticDelay>(
 /// (today's behavior already doesn't, and this change does not widen that).
 /// `HostLiveness` is the one genuinely new case: a checked delay reported
 /// the host-liveness lease expired.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunnerFailure {
     Other,
