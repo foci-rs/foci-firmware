@@ -3,11 +3,12 @@
 //! enable-pin tracking.
 
 use crate::commissioning::backend::{
-    CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionRegisterIo,
-    CommissionTiming, CommissionTrace,
+    CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionPendingConfig,
+    CommissionRegisterIo, CommissionTiming, CommissionTrace,
 };
 use crate::config::TmcConfig;
 use crate::tmc_control::lifecycle::LifecycleFlag;
+use crate::tmc_control::pending_config::{PendingConfigItem, PendingConfigSink};
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::registers::Register;
 use heapless::Vec;
@@ -236,6 +237,10 @@ pub enum SpiOp {
         flag: LifecycleFlag,
         value: bool,
     },
+    /// A `CommissionPendingConfig::drain_pending_config` call, recorded in the
+    /// same ordered log so tests can assert the drain runs before the enable
+    /// pin is asserted.
+    DrainPendingConfig,
 }
 
 /// Mock implementation of `CommissioningBackend` for host-side unit tests.
@@ -403,6 +408,11 @@ pub struct MockBackend {
     /// Total number of `record_safe_state_report` calls, whether clean or
     /// not, mirroring `TmcChannelState::safe_state_pass_count`.
     pub safe_state_pass_count: u16,
+    /// Channel state whose pending-config bits the mock drain clears.
+    pub tmc_state: &'static crate::state::tmc::TmcChannelState,
+    /// Result returned by `drain_pending_config`; tests set it to inject a
+    /// failed drain.
+    pub pending_config_result: Result<(), PendingConfigItem>,
 }
 
 impl MockBackend {
@@ -479,6 +489,8 @@ impl MockBackend {
             safe_state_report: None,
             safe_state_report_timestamp_ms: None,
             safe_state_pass_count: 0,
+            tmc_state: crate::state::tmc::tmc_channel0(),
+            pending_config_result: Ok(()),
         }
     }
 
@@ -842,6 +854,22 @@ impl CommissionMotorControl for MockBackend {
         self.safe_state_pass_count = self.safe_state_pass_count.saturating_add(1);
         self.safe_state_report = Some(report);
         self.safe_state_report_timestamp_ms = Some(timestamp_ms);
+    }
+}
+
+impl CommissionPendingConfig for MockBackend {
+    async fn drain_pending_config(
+        &mut self,
+        _sink: PendingConfigSink<'_>,
+    ) -> Result<(), PendingConfigItem> {
+        self.spi_log.push(SpiOp::DrainPendingConfig).ok();
+        self.pending_config_result?;
+        // A successful drain clears every bit, the same contract the real
+        // drain owes `arm_motor_electrical`'s post-drain assert.
+        self.tmc_state
+            .config_apply_pending
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 }
 

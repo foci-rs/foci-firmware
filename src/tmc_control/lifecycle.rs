@@ -126,11 +126,17 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// Mark the motor electrically energized after verified calibration.
 ///
 /// Asserts `state.calibrated`; clears any stale homing latch/clamp flags;
-/// verifies the calibration sentinel register; rewrites
-/// `PID_TORQUE_FLUX_LIMITS` from the stored run-current limit; sets the
-/// enable pin high; updates `state.motor_enabled`. Does NOT touch channel
-/// motor arming — stepper arming is a separate concern (see
-/// [`arm_motor_for_steps`]).
+/// drains any recorded-but-unwritten configuration; verifies the calibration
+/// sentinel register; rewrites `PID_TORQUE_FLUX_LIMITS` from the stored
+/// run-current limit; sets the enable pin high; updates
+/// `state.motor_enabled`. Does NOT touch channel motor arming — stepper
+/// arming is a separate concern (see [`arm_motor_for_steps`]).
+///
+/// The drain runs before anything else touches the chip because config-time
+/// setters only record their values; a host that changes the run current and
+/// enables in the same breath would otherwise energize against a
+/// `PID_TORQUE_FLUX_LIMITS` the chip never received. The sentinel does not
+/// cover this — it detects chip resets, not stale configuration.
 ///
 /// The torque-flux rewrite makes this path truthful even when a homing
 /// clamp narrowed the register on a prior arm: a shutdown or disable
@@ -153,7 +159,8 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// sentinel is inactive or does not match the TMC4671 readback.
 /// Returns [`crate::autotune::CommissionError::InvalidCurrentLimit`] if the
 /// stored run-current limit is zero (unconfigured).
-/// Returns [`crate::autotune::CommissionError::Spi`] if the torque-flux
+/// Returns [`crate::autotune::CommissionError::Spi`] if the pending-config
+/// drain fails (the failed item is named in the log) or if the torque-flux
 /// limit rewrite fails.
 /// Returns [`crate::autotune::CommissionError::FaultInterlock`] if the fault
 /// interlock is tripped when the enable pin would be raised.
@@ -179,6 +186,24 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
         defmt::error!("arm_motor_electrical: safe-state cleanup incomplete, refusing arm");
         return Err(crate::autotune::CommissionError::SafeStateIncomplete);
     }
+
+    if let Err(item) = backend
+        .drain_pending_config(crate::tmc_control::pending_config::PendingConfigSink {
+            stored_inner_gains: state.stored_gains,
+        })
+        .await
+    {
+        defmt::error!(
+            "arm_motor_electrical: pending config apply failed ({}), refusing arm",
+            item
+        );
+        return Err(crate::autotune::CommissionError::Spi);
+    }
+    assert!(
+        state.tmc.config_apply_pending.load(Relaxed) == 0,
+        "FATAL: arm_motor_electrical reached the sentinel check with \
+         configuration still pending"
+    );
 
     verify_motor_sentinel(backend, state.tmc).await?;
     // The compound "safe-state pass AND fresh sentinel pass" latch clears
@@ -340,7 +365,8 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
 mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::breakaway_campaign_engine;
-    use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
+    use crate::commission_dispatch::test_support::{MockBackend, SpiOp, fresh_state_locals};
+    use crate::tmc_control::pending_config::PendingConfigItem;
     use foci_firmware_macros::fixture_test;
 
     fn dispatch_state<'a>(
@@ -413,6 +439,89 @@ mod tests {
         assert!(!*state.motor_enabled);
         assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_drains_pending_config_before_energizing() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        tmc_state()
+            .config_apply_pending
+            .store(crate::state::tmc::PENDING_CURRENT, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+
+        arm_motor_electrical(&mut backend, &mut state)
+            .await
+            .expect("a clean drain and matching sentinel should arm");
+
+        let drained = backend
+            .spi_log
+            .iter()
+            .position(|op| *op == SpiOp::DrainPendingConfig)
+            .expect("arming must drain recorded configuration");
+        let energized = backend
+            .spi_log
+            .iter()
+            .position(|op| *op == SpiOp::EnablePin(true))
+            .expect("a successful arm must assert the enable pin");
+        assert!(
+            drained < energized,
+            "recorded configuration must reach the chip before it is energized"
+        );
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_refuses_when_the_pending_config_drain_fails() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        tmc_state()
+            .config_apply_pending
+            .store(crate::state::tmc::PENDING_CURRENT, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.pending_config_result = Err(PendingConfigItem::Current);
+        backend.spi_log.clear();
+
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(
+            !backend.enable_pin,
+            "must not energize while recorded configuration is unwritten"
+        );
+        assert!(!*state.motor_enabled);
+        assert_eq!(
+            backend.spi_log.as_slice(),
+            &[SpiOp::DrainPendingConfig],
+            "a failed drain must return before the sentinel verify touches the chip"
+        );
     }
 
     #[fixture_test]

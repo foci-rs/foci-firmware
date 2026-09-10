@@ -575,7 +575,10 @@ mod tests {
                 .iter()
                 .filter_map(|op| match op {
                     SpiOp::Write(addr, value) => Some((*addr, *value)),
-                    SpiOp::Read | SpiOp::EnablePin(_) | SpiOp::Lifecycle { .. } => None,
+                    SpiOp::Read
+                    | SpiOp::EnablePin(_)
+                    | SpiOp::Lifecycle { .. }
+                    | SpiOp::DrainPendingConfig => None,
                 })
                 .collect();
             let has_sub_write = |sub: foci_tmc4671::registers::SubRegister, value: u32| {

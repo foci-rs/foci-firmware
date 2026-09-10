@@ -9,6 +9,7 @@ use core::convert::Infallible;
 use core::marker::PhantomData;
 
 use crate::config::TmcConfig;
+use crate::tmc_control::pending_config::{PendingConfigItem, PendingConfigSink};
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::{ErrorType, SpiDevice};
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
@@ -360,6 +361,27 @@ pub trait CommissionTrace {
     }
 }
 
+/// Connect-time configuration drain capability.
+///
+/// Config-time setters record their value in `TmcChannelState` instead of
+/// enqueueing an SPI request, so the recorded value reaches the chip only
+/// when something drains it. Arming needs that drain to have happened before
+/// the motor is energized, which is why the capability sits in the
+/// [`CommissioningBackend`] bundle rather than only on the board control tick.
+#[allow(async_fn_in_trait)]
+pub trait CommissionPendingConfig {
+    /// Push every recorded-but-unapplied configuration item to the TMC4671.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`PendingConfigItem`] whose write failed. That item's
+    /// pending bit stays set so a later drain retries it.
+    async fn drain_pending_config(
+        &mut self,
+        sink: PendingConfigSink<'_>,
+    ) -> Result<(), PendingConfigItem>;
+}
+
 /// Opt-in access to a production TMC4671 SPI driver for shared backend impls.
 ///
 /// Do not implement this helper for `MockBackend`; the mock provides explicit
@@ -548,6 +570,26 @@ where
 
     fn commission_feedback_config(&self) -> crate::config::FeedbackConfig {
         Hooks::commission_feedback_configs()[self.channel as usize]
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionPendingConfig
+    for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+where
+    Spi: SpiDevice<u8>,
+    Hooks: CommissionBackendHooks,
+{
+    async fn drain_pending_config(
+        &mut self,
+        sink: PendingConfigSink<'_>,
+    ) -> Result<(), PendingConfigItem> {
+        crate::tmc_control::pending_config::drain_pending_config(
+            self.tmc,
+            self.tmc_state,
+            *Hooks::commission_tmc_config(),
+            sink,
+        )
+        .await
     }
 }
 
@@ -845,6 +887,7 @@ pub trait CommissioningBackend:
     + CommissionTiming
     + CommissionBoardConfig
     + CommissionTrace
+    + CommissionPendingConfig
 {
 }
 
@@ -855,6 +898,7 @@ impl<T> CommissioningBackend for T where
         + CommissionTiming
         + CommissionBoardConfig
         + CommissionTrace
+        + CommissionPendingConfig
 {
 }
 
@@ -1268,6 +1312,58 @@ mod tests {
         );
 
         assert_eq!(backend.motor_pole_pairs(), 0);
+    }
+
+    #[fixture_test]
+    fn shared_backend_drains_pending_config_through_the_real_drain() {
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+
+        pollster::block_on(async {
+            TEST_TMC_STATE.run_current_ma_cfg.store(1_000, Relaxed);
+            TEST_TMC_STATE
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_CURRENT, Relaxed);
+
+            let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+            let mut enable_pin = RecordingPin::default();
+            {
+                let mut backend = SharedCommissioningBackend::<
+                    RecordingSpi,
+                    RecordingPin,
+                    RecordingHooks,
+                >::new(
+                    0, &mut tmc, &mut enable_pin, &TEST_TMC_STATE
+                );
+                let mut stored_inner_gains = None;
+                backend
+                    .drain_pending_config(PendingConfigSink {
+                        stored_inner_gains: &mut stored_inner_gains,
+                    })
+                    .await
+                    .expect("a recording SPI accepts every drain write");
+            }
+
+            let expected = crate::tmc_control::current_limit::current_limit_from_run_ma(
+                1_000,
+                TEST_CONFIG.current_scale_ma_per_lsb,
+            )
+            .expect("1000 mA at the board scale is representable")
+            .register_value();
+            let spi = tmc.into_inner();
+            assert_eq!(
+                spi.writes,
+                std::vec![(PID_TORQUE_FLUX_LIMITS.addr(), expected)],
+                "the delegation must reach the real drain, not report success without writing"
+            );
+            assert_eq!(TEST_TMC_STATE.config_apply_pending.load(Relaxed), 0);
+
+            TEST_TMC_STATE.run_current_ma_cfg.store(0, Relaxed);
+        });
     }
 
     #[test]

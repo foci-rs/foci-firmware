@@ -427,6 +427,66 @@ async fn calibrate_done_gain_restore_failure_disarms_without_arming() {
     assert!(!backend.enable_pin);
 }
 
+#[fixture_test]
+async fn calibrate_arm_pending_config_drain_failure_takes_the_existing_error_path() {
+    let mut backend = MockBackend::new();
+    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(CommissioningEngine::new_calibrate(0));
+    seed_motor_sentinel(&mut backend).await;
+    tmc_state().config_apply_pending.store(
+        crate::state::tmc::PENDING_CURRENT,
+        core::sync::atomic::Ordering::Relaxed,
+    );
+    backend.pending_config_result =
+        Err(crate::tmc_control::pending_config::PendingConfigItem::Current);
+    let cal_result = crate::commissioning::types::AdcCalResult {
+        adc_i0: 0,
+        adc_i1: 0,
+        encoder_count: 0,
+        encoder_alignment_electrical_residual_counts: 0,
+        encoder_alignment_stability_counts: 0,
+        encoder_alignment_movement_counts: 0,
+        encoder_alignment_min_movement_counts: 0,
+        encoder_alignment_counts_per_electrical_rev: 0,
+        adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+        adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+    };
+
+    let trace = run_variant(
+        StepResult::CalibrateDone(cal_result),
+        &mut engine,
+        &mut backend,
+        &mut state,
+    )
+    .await;
+
+    assert!(trace.engine_consumed);
+    assert_eq!(
+        trace.outcome_tag,
+        OutcomeTag::Terminal {
+            stop_trace: false,
+            stepper: StepperPostAction::Stop,
+            outcome_class: None,
+        },
+        "a refused arm must land in CalibrateDisarm, not panic or arm anyway"
+    );
+    assert_eq!(
+        trace.terminal_cause,
+        Some(u16::from(
+            crate::calibration::CalibrationError::SpiError.status_code()
+        ))
+    );
+    assert!(!contains(
+        &trace.events,
+        SpiOp::Lifecycle {
+            flag: LifecycleFlag::MotorEnabled,
+            value: true,
+        },
+    ));
+    assert!(!backend.enable_pin);
+}
+
 // --- ADC / inner-failed (calibrate) -------------------------------------
 
 #[fixture_test]
