@@ -1677,6 +1677,118 @@ async fn poll_disarm_motor<B: CommissioningBackend>(
     more
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+enum VelocityDisarmStep {
+    Disarm(SafeStateRestoreStep),
+    WriteVelocityTarget {
+        operational_limit: u16,
+    },
+    WriteErrorSumAddr {
+        operational_limit: u16,
+    },
+    WriteErrorSumData {
+        operational_limit: u16,
+    },
+    LimitDisarm {
+        operational_limit: u16,
+        step: SafeStateRestoreStep,
+    },
+    ClampRestore {
+        operational_limit: u16,
+    },
+}
+
+#[allow(dead_code)]
+impl VelocityDisarmStep {
+    fn start(engine: &Option<CommissioningEngine>) -> Self {
+        match engine
+            .as_ref()
+            .and_then(CommissioningEngine::velocity_operational_torque_limit)
+        {
+            Some(operational_limit) => Self::WriteVelocityTarget { operational_limit },
+            None => Self::Disarm(SafeStateRestoreStep::default()),
+        }
+    }
+}
+
+#[allow(dead_code)]
+async fn poll_velocity_disarm<B: CommissioningBackend>(
+    step: &mut VelocityDisarmStep,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+) -> Option<bool> {
+    use foci_tmc4671::registers::{PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_VELOCITY_TARGET};
+
+    match step {
+        VelocityDisarmStep::Disarm(s) => {
+            if poll_disarm_motor(s, backend, state).await {
+                None
+            } else {
+                Some(true)
+            }
+        }
+        VelocityDisarmStep::WriteVelocityTarget { operational_limit } => {
+            let operational_limit = *operational_limit;
+            if backend
+                .write_register(PID_VELOCITY_TARGET, 0)
+                .await
+                .is_err()
+            {
+                return Some(false);
+            }
+            *step = VelocityDisarmStep::WriteErrorSumAddr { operational_limit };
+            None
+        }
+        VelocityDisarmStep::WriteErrorSumAddr { operational_limit } => {
+            let operational_limit = *operational_limit;
+            let sub = PID_ERROR_PID_VELOCITY_ERROR_SUM;
+            if backend
+                .write_register(sub.addr, u32::from(sub.sub_addr))
+                .await
+                .is_err()
+            {
+                return Some(false);
+            }
+            *step = VelocityDisarmStep::WriteErrorSumData { operational_limit };
+            None
+        }
+        VelocityDisarmStep::WriteErrorSumData { operational_limit } => {
+            let operational_limit = *operational_limit;
+            let sub = PID_ERROR_PID_VELOCITY_ERROR_SUM;
+            if backend.write_register(sub.data, 0).await.is_err() {
+                return Some(false);
+            }
+            *step = VelocityDisarmStep::LimitDisarm {
+                operational_limit,
+                step: SafeStateRestoreStep::default(),
+            };
+            None
+        }
+        VelocityDisarmStep::LimitDisarm {
+            operational_limit,
+            step: s,
+        } => {
+            let operational_limit = *operational_limit;
+            if poll_disarm_motor(s, backend, state).await {
+                None
+            } else {
+                *step = VelocityDisarmStep::ClampRestore { operational_limit };
+                None
+            }
+        }
+        VelocityDisarmStep::ClampRestore { operational_limit } => {
+            let mut clamp = match crate::commissioning::outer::velocity::velocity_clamp::VelocityCurrentClampSession::try_new(
+                u32::from(*operational_limit),
+            ) {
+                Ok(clamp) => clamp,
+                Err(_) => return Some(false),
+            };
+            Some(clamp.restore_operational_limit(backend).await.is_ok())
+        }
+    }
+}
+
 #[cfg(test)]
 mod poll_disarm_motor_tests {
     use super::*;
@@ -1715,5 +1827,94 @@ mod poll_disarm_motor_tests {
         assert_eq!(backend.spi_log, oracle_backend.spi_log);
         assert_eq!(calibrated, oracle_calibrated);
         assert_eq!(motor_enabled, oracle_motor_enabled);
+    }
+}
+
+#[cfg(test)]
+mod velocity_disarm_step_tests {
+    use super::*;
+    use crate::autotune::CommissionProfile;
+    use crate::commission_dispatch::test_support::{
+        MockBackend, SpiOp, breakaway_campaign_engine, dispatch_state,
+    };
+    use foci_firmware_macros::fixture_test;
+
+    async fn assert_matches_disarm_velocity_workflow(
+        engine_factory: impl Fn() -> CommissioningEngine,
+    ) {
+        let mut oracle_backend = MockBackend::new();
+        let mut oracle_engine = Some(engine_factory());
+        let mut oracle_calibrated = true;
+        let mut oracle_motor_enabled = true;
+        let mut oracle_gains = None;
+        let mut oracle_state = dispatch_state(
+            &mut oracle_calibrated,
+            &mut oracle_motor_enabled,
+            &mut oracle_gains,
+        );
+        let oracle_restored =
+            disarm_velocity_workflow(&mut oracle_engine, &mut oracle_backend, &mut oracle_state)
+                .await;
+
+        let mut backend = MockBackend::new();
+        let engine = Some(engine_factory());
+        let mut calibrated = true;
+        let mut motor_enabled = true;
+        let mut gains = None;
+        let mut step = VelocityDisarmStep::start(&engine);
+        let mut polls = 0u32;
+        let restored = loop {
+            assert!(polls < 32, "velocity disarm step did not terminate");
+            let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+            let ops_before = backend.spi_log.len();
+            let verified_before = backend.verified_write_calls;
+            let attributed_before = backend.raw_ops_attributed_to_verified_calls;
+            let outcome = poll_velocity_disarm(&mut step, &mut backend, &mut state).await;
+            let verified_delta = backend.verified_write_calls - verified_before;
+            let attributed_delta = backend.raw_ops_attributed_to_verified_calls - attributed_before;
+            let total_raw = backend.spi_log[ops_before..]
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            let outside_delta = total_raw - attributed_delta;
+            let ok = match verified_delta {
+                0 => outside_delta <= 1,
+                1 => outside_delta == 0,
+                _ => false,
+            };
+            assert!(
+                ok,
+                "poll {polls}: {verified_delta} verified call(s), {outside_delta} unattributed raw op(s)"
+            );
+            polls += 1;
+            if let Some(restored) = outcome {
+                break restored;
+            }
+        };
+
+        assert_eq!(backend.spi_log, oracle_backend.spi_log);
+        assert_eq!(restored, oracle_restored);
+    }
+
+    #[fixture_test]
+    async fn velocity_disarm_step_matches_disarm_velocity_workflow_with_operational_limit() {
+        let engine = breakaway_campaign_engine();
+        assert!(
+            engine.velocity_operational_torque_limit().is_some(),
+            "breakaway_campaign_engine fixture must carry an operational torque limit for this test"
+        );
+        assert_matches_disarm_velocity_workflow(breakaway_campaign_engine).await;
+    }
+
+    #[fixture_test]
+    async fn velocity_disarm_step_matches_disarm_velocity_workflow_without_operational_limit() {
+        let engine_factory = || CommissioningEngine::new_commission(0, CommissionProfile::Balanced);
+        assert!(
+            engine_factory()
+                .velocity_operational_torque_limit()
+                .is_none(),
+            "commission engine fixture must not carry an operational torque limit for this test"
+        );
+        assert_matches_disarm_velocity_workflow(engine_factory).await;
     }
 }
