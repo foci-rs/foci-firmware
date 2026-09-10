@@ -1955,9 +1955,9 @@ mod tests {
         // interrupt stack on real hardware before.
         // 4_336 -> 4_400, 4_288 -> 4_352, 4_416 -> 4_480 (all +64): replacing
         // the flat sequential safe-state restore body with
-        // `SafeStateRestoreStep`, which carries its `index`/`report` state
-        // across every `.await` point in the abort/disarm path instead of
-        // letting each write complete before the next one is polled.
+        // `SafeStateRestoreStep` carries its `index`/`report` state across
+        // every `.await` point in the abort/disarm path instead of letting
+        // each write complete before the next one is polled.
         assert_eq!(engine_step, 4_400);
         assert!(engine_step <= 4_400);
         assert_eq!(step_inner, 4_352);

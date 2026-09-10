@@ -533,8 +533,7 @@ mod tests {
             let ops_before = backend.spi_log.len();
             let more = step.advance(&mut backend).await;
             let verified_delta = backend.verified_write_calls - verified_before;
-            let attributed_delta =
-                backend.raw_ops_attributed_to_verified_calls - attributed_before;
+            let attributed_delta = backend.raw_ops_attributed_to_verified_calls - attributed_before;
             let total_raw = backend.spi_log[ops_before..]
                 .iter()
                 .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
