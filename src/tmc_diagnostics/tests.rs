@@ -2121,6 +2121,136 @@ fn voltage_step_exact_half_turn_aborts_via_post_measurement_error() {
 }
 
 #[test]
+fn voltage_step_host_liveness_expiry_reports_dedicated_status_and_restores() {
+    pollster::block_on(async {
+        // `run_voltage_step_request`'s only checked delay before the
+        // post-settle one is the sample delay, reached only after reading
+        // saved mode (must equal the position-mode constant, 0x8000_0003),
+        // encoder-before, encoder PPR (must be non-zero), and torque-before,
+        // in that order.
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
+            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
+            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        // sample_delay_ms=150 makes this delay 2 slices ([100, 50]):
+        // pre-loop (1), post-slice-1/100ms (2), post-slice-2/50ms -- the
+        // final slice -- (3).
+        let mut calls = 0u32;
+        let mut expire_during_main_delay_final_slice = || {
+            calls += 1;
+            calls >= 3
+        };
+        let req = crate::tmc::tmc_voltage_step_test(0, 4, 100, -50, 150);
+
+        let outcome = run_voltage_step_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+                host_liveness_expired: Some(&mut expire_during_main_delay_final_slice),
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VoltageStep(report)) = outcome else {
+            panic!("expected voltage step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
+        assert_eq!(delay.delays_ms, std::vec![100, 50]);
+
+        // Restore tail on any mid-run failure: mode zeroed, external
+        // voltage zeroed, mode restored to the saved value. The setup
+        // writes before the delay (STATUS_FLAGS clear, the requested
+        // UQ_UD_EXT, open-loop mode) succeed for real first, so assert
+        // only the trailing 3-write restore sequence.
+        let raw_spi = tmc.into_inner();
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
+        assert_eq!(
+            restore_tail,
+            [
+                (MODE_RAMP_MODE_MOTION.addr(), 0),
+                (UQ_UD_EXT.addr(), 0),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+    });
+}
+
+#[test]
+fn voltage_step_post_settle_host_liveness_expiry_reports_dedicated_status() {
+    // Second and last call site: the post-settle delay after the main
+    // sample delay already covered above.
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
+            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
+            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        // Checks: main pre-loop/post-slice (1, 2) -- both false, letting
+        // the 20ms sample delay and every intervening read through --
+        // post-settle pre-loop (3) -- true.
+        let mut calls = 0u32;
+        let mut expire_at_post_settle = || {
+            calls += 1;
+            calls >= 3
+        };
+        let req = crate::tmc::tmc_voltage_step_test(0, 4, 100, -50, 20);
+
+        let outcome = run_voltage_step_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+                host_liveness_expired: Some(&mut expire_at_post_settle),
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::VoltageStep(report)) = outcome else {
+            panic!("expected voltage step report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
+        assert_eq!(delay.delays_ms, std::vec![20]);
+
+        let raw_spi = tmc.into_inner();
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
+        assert_eq!(
+            restore_tail,
+            [
+                (MODE_RAMP_MODE_MOTION.addr(), 0),
+                (UQ_UD_EXT.addr(), 0),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+    });
+}
+
+#[test]
 fn dispatcher_returns_not_diagnostic_for_normal_request() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
