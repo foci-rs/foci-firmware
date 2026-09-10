@@ -109,7 +109,7 @@ enum RestoreCursor {
     CalibrateRestoreGains,
     CalibrateApplyFilters,
     CalibrateArm,
-    CalibrateDisarm(u8),
+    CalibrateDisarm(SafeStateRestoreStep, u8),
 
     CommissionClassify,
     CommissionWriteCurrentLimit(OuterLoopGains),
@@ -448,7 +448,10 @@ impl TerminalRestoreMachine {
                                     crate::calibration::CalibrationError::SpiError.status_code()
                                 }
                             };
-                            self.cursor = RestoreCursor::CalibrateDisarm(status);
+                            self.cursor = RestoreCursor::CalibrateDisarm(
+                                SafeStateRestoreStep::default(),
+                                status,
+                            );
                         }
                     }
                     return RestoreStep::Pending;
@@ -464,6 +467,7 @@ impl TerminalRestoreMachine {
                     {
                         defmt::error!("CalibrateDone: stored filter restore SPI failed");
                         self.cursor = RestoreCursor::CalibrateDisarm(
+                            SafeStateRestoreStep::default(),
                             crate::calibration::CalibrationError::SpiError.status_code(),
                         );
                     } else {
@@ -508,13 +512,19 @@ impl TerminalRestoreMachine {
                                 }
                                 _ => crate::calibration::CalibrationError::SpiError.status_code(),
                             };
-                            self.cursor = RestoreCursor::CalibrateDisarm(status);
+                            self.cursor = RestoreCursor::CalibrateDisarm(
+                                SafeStateRestoreStep::default(),
+                                status,
+                            );
                             return RestoreStep::Pending;
                         }
                     }
                 }
-                RestoreCursor::CalibrateDisarm(status) => {
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                RestoreCursor::CalibrateDisarm(mut step, status) => {
+                    if poll_disarm_motor(&mut step, backend, state).await {
+                        self.cursor = RestoreCursor::CalibrateDisarm(step, status);
+                        return RestoreStep::Pending;
+                    }
                     state.tmc.commission_in_flight.store(false, Relaxed);
                     let consumed = self.take_engine(engine);
                     return RestoreStep::Done(CommissionOutcome::Terminal {
@@ -1591,9 +1601,6 @@ fn commission_status_code(status: crate::autotune::CommissionStatus) -> u8 {
 /// on the first poll, before any register write, matching `disarm_motor`'s
 /// own source order; the closing bookkeeping happens once the underlying
 /// `SafeStateRestoreStep` reports completion.
-// Consumed starting with the TerminalRestoreMachine cursor states added
-// in a later task; unused until that caller exists.
-#[allow(dead_code)]
 async fn poll_disarm_motor<B: CommissioningBackend>(
     step: &mut SafeStateRestoreStep,
     backend: &mut B,
