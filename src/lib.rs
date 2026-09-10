@@ -26,6 +26,7 @@ pub mod commission_dispatch;
 pub mod commissioning;
 pub mod config;
 pub mod context;
+pub mod cpu_load;
 pub mod diagnostic;
 pub mod dump;
 pub mod electrical_capture;
