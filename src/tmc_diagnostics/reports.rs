@@ -4,6 +4,10 @@ pub const CURRENT_STEP_STATUS_NOT_READY: u8 = 1;
 /// Diagnostic failed while communicating with or restoring the TMC4671.
 pub const CURRENT_STEP_STATUS_SPI: u8 = 2;
 
+/// The run aborted because the host-liveness lease expired mid-run, not
+/// because of a genuine SPI transaction failure.
+pub const CURRENT_STEP_STATUS_HOST_LIVENESS: u8 = 3;
+
 /// Velocity-limit latch diagnostic could not run because the channel was not ready.
 #[cfg(feature = "trace-velocity-limit-latch-test")]
 pub const VELOCITY_LIMIT_LATCH_STATUS_NOT_READY: u8 = 1;
@@ -79,7 +83,7 @@ pub struct VelocityLimitLatchReport {
 pub struct CurrentStepReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Status code: 0 success, 1 not ready, 2 SPI or restore failure.
+    /// Status code: 0 success, 1 not ready, 2 SPI or restore failure, 3 host-liveness expiry.
     pub status: u8,
     /// Scalar current-step target, or torque target for current-vector-step.
     pub torque_target: i16,
@@ -120,7 +124,7 @@ pub struct CurrentStepReport {
 pub struct CurrentTorqueSampleReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Status code: 0 success, 1 not ready, 2 SPI or restore failure.
+    /// Status code: 0 success, 1 not ready, 2 SPI or restore failure, 3 host-liveness expiry.
     pub status: u8,
     /// Requested signed torque target in TMC4671 current counts.
     pub target: i16,
@@ -193,7 +197,7 @@ pub struct CurrentTorqueSampleReport {
 pub struct VoltageStepReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
-    /// Status code: 0 success, 1 not ready, 2 SPI or restore failure.
+    /// Status code: 0 success, 1 not ready, 2 SPI or restore failure, 3 host-liveness expiry.
     pub status: u8,
     /// Requested signed external UQ voltage.
     pub uq_ext: i16,
