@@ -244,3 +244,55 @@ impl CommissionBackendHooks for TestHooks {
 /// Backend over the mock SPI, the same type the boards build over real hardware.
 pub(crate) type TestBackend<'a> =
     SharedCommissioningBackend<'a, RuntimeMockSpi, TestPin, TestHooks>;
+
+/// Mock SPI recording raw transaction buffers, with failure after N writes.
+///
+/// Complements [`RuntimeMockSpi`], which fails per register address instead.
+#[derive(Default)]
+pub(crate) struct MockRawSpi {
+    pub(crate) writes: std::vec::Vec<std::vec::Vec<u8>>,
+    pub(crate) fail_write_after: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MockRawSpiError;
+
+impl embedded_hal_async::spi::Error for MockRawSpiError {
+    fn kind(&self) -> ErrorKind {
+        ErrorKind::Other
+    }
+}
+
+impl ErrorType for MockRawSpi {
+    type Error = MockRawSpiError;
+}
+
+impl SpiDevice<u8> for MockRawSpi {
+    async fn transaction(
+        &mut self,
+        operations: &mut [Operation<'_, u8>],
+    ) -> Result<(), Self::Error> {
+        for op in operations {
+            match op {
+                Operation::Read(buf) => {
+                    buf.copy_from_slice(&0u32.to_be_bytes());
+                }
+                Operation::Write(buf) => {
+                    if self
+                        .fail_write_after
+                        .is_some_and(|limit| self.writes.len() >= limit)
+                    {
+                        return Err(MockRawSpiError);
+                    }
+                    self.writes.push(buf.to_vec())
+                }
+                Operation::Transfer(read, write) => {
+                    read.copy_from_slice(write);
+                }
+                Operation::TransferInPlace(_) => {}
+                Operation::DelayNs(_) => {}
+            }
+        }
+        Ok(())
+    }
+}

@@ -15,6 +15,7 @@ pub mod filters;
 pub mod helpers;
 pub mod interlock;
 pub mod lifecycle;
+pub mod pending_config;
 pub mod pi_representation;
 pub mod request;
 pub mod request_writes;

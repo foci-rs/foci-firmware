@@ -354,11 +354,11 @@ impl ChannelDriver {
         let tmc_state = backend.tmc_state();
         let refs = self.refs(tmc_state);
         if tmc_state.config_apply_pending.load(Relaxed) != 0
-            && let Err(item) = crate::tmc_control::filters::apply_pending_config(
+            && let Err(item) = crate::tmc_control::pending_config::drain_pending_config(
                 backend.tmc_spi(),
                 tmc_state,
                 ctx.config.tmc,
-                crate::tmc_control::filters::PendingConfigSink {
+                crate::tmc_control::pending_config::PendingConfigSink {
                     stored_inner_gains: self.runtime.stored_gains_mut(),
                 },
             )
@@ -914,7 +914,7 @@ mod tests {
             0,
             "all pending config bits should be cleared after successful apply"
         );
-        // apply_pending_config's first write is the voltage limit; it must
+        // drain_pending_config's first write is the voltage limit; it must
         // precede any feedforward write in the log.
         let writes = &rig.spi().writes;
         assert!(
