@@ -1542,6 +1542,87 @@ async fn run_variant_via_machine(variant: &TerminalVariant) -> TraceSummary {
     trace_of(&outcome, &backend, &engine)
 }
 
+/// Assert that, from the first `EnablePin(false)` event onward (the unique
+/// marker a split safe-state restore sequence emits on its first step),
+/// `variant` never issues more than one logical register operation per
+/// `poll_step` call -- a verified write's own write+read-back pair counts
+/// as that one operation, per the Global Constraints' settled granularity
+/// decision. Also asserts the run actually reaches that point, so the
+/// assertion cannot silently pass on a variant that never disarms.
+async fn assert_disarm_phase_one_op_per_poll(variant: &TerminalVariant) {
+    let mut backend = MockBackend::new();
+    prepare_backend(variant, &mut backend).await;
+    let mut calibrated = variant.entry_calibrated;
+    let mut motor_enabled = variant.entry_motor_enabled;
+    let mut gains = (variant.stored_gains)();
+    let mut engine = Some((variant.engine)());
+    let mut machine = TerminalRestoreMachine::start((variant.result)(), 0, 4095);
+    let mut previous_len = backend.spi_log.len();
+    let mut previous_verified = backend.verified_write_calls;
+    let mut previous_attributed = backend.raw_ops_attributed_to_verified_calls;
+    let mut disarm_phase = false;
+    let mut poll_index = 0usize;
+    loop {
+        poll_index += 1;
+        assert!(
+            poll_index < 128,
+            "{}: machine did not terminate",
+            variant.name
+        );
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        let outcome = machine
+            .poll_step(&mut engine, &mut backend, &mut state, None)
+            .await;
+        let delta = &backend.spi_log[previous_len..];
+        if !disarm_phase && delta.iter().any(|op| matches!(op, SpiOp::EnablePin(false))) {
+            disarm_phase = true;
+        }
+        if disarm_phase {
+            // `verified_write_calls`/`raw_ops_attributed_to_verified_calls`
+            // (Task 1, Step 0) attribute every raw op to whether it belongs
+            // to a completed verified-write call, measured via length diff
+            // rather than a persistent flag (cancellation-safe). Exactly one
+            // verified call: every raw op this poll performed must be
+            // attributed to it, so nothing may be unattributed. Zero
+            // verified calls: at most one plain Write or Read may be
+            // unattributed (the eight unverified sub-register writes; see
+            // Global Constraints' settled granularity decision). More than
+            // one verified call in a single poll is always a violation.
+            let verified_delta = backend.verified_write_calls - previous_verified;
+            let attributed_delta =
+                backend.raw_ops_attributed_to_verified_calls - previous_attributed;
+            let total_raw = delta
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            let outside_delta = total_raw - attributed_delta;
+            let ok = match verified_delta {
+                0 => outside_delta <= 1,
+                1 => outside_delta == 0,
+                _ => false,
+            };
+            assert!(
+                ok,
+                "{}: poll {} in the disarm phase: {} verified-write call(s), {} raw register \
+                 op(s) unattributed to any verified call (of {} total) -- expected at most \
+                 one logical register operation",
+                variant.name, poll_index, verified_delta, outside_delta, total_raw
+            );
+        }
+        previous_verified = backend.verified_write_calls;
+        previous_attributed = backend.raw_ops_attributed_to_verified_calls;
+        previous_len = backend.spi_log.len();
+        if matches!(outcome, RestoreStep::Done(_)) {
+            assert!(
+                disarm_phase,
+                "{}: run finished without ever entering a disarm phase",
+                variant.name
+            );
+            break;
+        }
+    }
+}
+
 #[fixture_test]
 async fn machine_matches_async_trace_for_every_variant() {
     for variant in &all_terminal_variants() {
