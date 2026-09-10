@@ -136,7 +136,7 @@ enum RestoreCursor {
     OuterFailedModeRamp,
     OuterFailedFaultDisarm(SafeStateRestoreStep),
     OuterFailedArm,
-    OuterFailedArmDisarm(u8),
+    OuterFailedArmDisarm(SafeStateRestoreStep, u8),
 
     FixedGainAmplitudeStagedDisarmVelocity,
     FixedGainAmplitudeDisarm,
@@ -993,8 +993,10 @@ impl TerminalRestoreMachine {
                     match crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
                     {
                         Err(arm_error) => {
-                            self.cursor =
-                                RestoreCursor::OuterFailedArmDisarm(arm_error.status_code());
+                            self.cursor = RestoreCursor::OuterFailedArmDisarm(
+                                SafeStateRestoreStep::default(),
+                                arm_error.status_code(),
+                            );
                             defmt::error!(
                                 "OuterFailed: arm sentinel verify failed after soft failure: {}",
                                 arm_error
@@ -1020,8 +1022,11 @@ impl TerminalRestoreMachine {
                         }
                     }
                 }
-                RestoreCursor::OuterFailedArmDisarm(status) => {
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
+                RestoreCursor::OuterFailedArmDisarm(mut step, status) => {
+                    if poll_disarm_motor(&mut step, backend, state).await {
+                        self.cursor = RestoreCursor::OuterFailedArmDisarm(step, status);
+                        return RestoreStep::Pending;
+                    }
                     return RestoreStep::Done(self.finish_outer_failed(
                         engine,
                         backend,

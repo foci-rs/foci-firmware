@@ -1237,7 +1237,7 @@ fn fail_velocity_target_write(backend: &mut MockBackend) {
     backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_TARGET.addr());
 }
 
-fn all_terminal_variants() -> [TerminalVariant; 20] {
+fn all_terminal_variants() -> [TerminalVariant; 21] {
     const BASE: TerminalVariant = TerminalVariant {
         name: "",
         result: || StepResult::SelftestDone,
@@ -1356,6 +1356,14 @@ fn all_terminal_variants() -> [TerminalVariant; 20] {
             result: || StepResult::OuterFailed(crate::autotune::CommissionError::NoCurrent),
             engine: robustness_reversal_engine,
             seed_sentinel: true,
+            entry_calibrated: true,
+            entry_motor_enabled: true,
+            ..BASE
+        },
+        TerminalVariant {
+            name: "outer_failed_soft_failure_arm_failure",
+            result: || StepResult::OuterFailed(crate::autotune::CommissionError::NoCurrent),
+            engine: robustness_reversal_engine,
             entry_calibrated: true,
             entry_motor_enabled: true,
             ..BASE
@@ -1674,5 +1682,14 @@ async fn outer_failed_safety_fault_disarm_phase_is_one_op_per_poll() {
         .into_iter()
         .find(|v| v.name == "outer_failed_safety_fault")
         .expect("outer_failed_safety_fault variant must exist");
+    assert_disarm_phase_one_op_per_poll(&variant).await;
+}
+
+#[fixture_test]
+async fn outer_failed_soft_failure_arm_failure_disarm_phase_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "outer_failed_soft_failure_arm_failure")
+        .expect("outer_failed_soft_failure_arm_failure variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
