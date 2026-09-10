@@ -714,9 +714,9 @@ impl TerminalRestoreMachine {
                         }
                         Err(error) => {
                             let status = match error {
-                                restore::RestoreError::Spi(_)
-                                | restore::RestoreError::VelocityClamp
-                                | restore::RestoreError::Readback => CommissionError::Spi,
+                                restore::RestoreError::Spi(_) | restore::RestoreError::Readback => {
+                                    CommissionError::Spi
+                                }
                                 restore::RestoreError::PiRepresentation => {
                                     CommissionError::ChipResetDetected
                                 }
@@ -1186,7 +1186,6 @@ impl TerminalRestoreMachine {
                                         restore::RestoreError::PiRepresentation => {
                                             "pi_representation"
                                         }
-                                        restore::RestoreError::VelocityClamp => "velocity_clamp",
                                         restore::RestoreError::Readback => "readback",
                                     };
                                     defmt::error!(
