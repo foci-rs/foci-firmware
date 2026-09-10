@@ -1086,6 +1086,23 @@ pub fn fresh_state_locals() -> (bool, bool, Option<crate::pid::InnerLoopGains>) 
     (false, false, None)
 }
 
+/// Build a `DispatchState` for channel 0 from the three locals a test owns.
+pub fn dispatch_state<'a>(
+    calibrated: &'a mut bool,
+    motor_enabled: &'a mut bool,
+    stored_gains: &'a mut Option<crate::pid::InnerLoopGains>,
+) -> crate::commission_dispatch::DispatchState<'a> {
+    crate::state::tmc::tmc_channel0().mark_pi_representation_established();
+    crate::commission_dispatch::DispatchState::new(
+        0,
+        crate::state::tmc::tmc_channel0(),
+        crate::state::stepper::stepper_channel0(),
+        calibrated,
+        motor_enabled,
+        stored_gains,
+    )
+}
+
 /// Build an accepted commissioning result with distinct gains and evidence.
 pub fn accepted_commission_result() -> crate::commissioning::types::CommissionResult {
     use crate::autotune::CommissionStatus;

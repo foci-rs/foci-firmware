@@ -29,6 +29,8 @@ use crate::commissioning::types::{
     VelocityIntegralTerminal,
 };
 use crate::pid::OuterLoopGains;
+use crate::tmc_control::lifecycle::LifecycleFlag;
+use crate::tmc_safe_state::SafeStateRestoreStep;
 
 /// One advance of a terminal restore.
 #[allow(clippy::large_enum_variant)]
@@ -1574,5 +1576,75 @@ fn commission_status_code(status: crate::autotune::CommissionStatus) -> u8 {
         crate::autotune::CommissionStatus::AcceptedWithWarnings => 1,
         crate::autotune::CommissionStatus::InnerOnly => 2,
         crate::autotune::CommissionStatus::Failed(error) => error.status_code(),
+    }
+}
+
+/// Poll-driven equivalent of `tmc_control::lifecycle::disarm_motor`, split
+/// so `TerminalRestoreMachine` cursor states never issue more than one
+/// awaited backend operation per `poll_step`. Reproduces `disarm_motor`'s
+/// bookkeeping order exactly: the atomic/lifecycle-flag writes happen once,
+/// on the first poll, before any register write, matching `disarm_motor`'s
+/// own source order; the closing bookkeeping happens once the underlying
+/// `SafeStateRestoreStep` reports completion.
+// Consumed starting with the TerminalRestoreMachine cursor states added
+// in a later task; unused until that caller exists.
+#[allow(dead_code)]
+async fn poll_disarm_motor<B: CommissioningBackend>(
+    step: &mut SafeStateRestoreStep,
+    backend: &mut B,
+    state: &mut DispatchState<'_>,
+) -> bool {
+    if step.is_start() {
+        state.tmc.motor_armed.store(false, Relaxed);
+        backend.record_lifecycle(LifecycleFlag::MotorArmed, false);
+    }
+    let more = step.advance(backend).await;
+    if !more {
+        state.tmc.clear_velocity_clamp_latch();
+        *state.calibrated = false;
+        *state.motor_enabled = false;
+        backend.record_lifecycle(LifecycleFlag::MotorEnabled, false);
+    }
+    more
+}
+
+#[cfg(test)]
+mod poll_disarm_motor_tests {
+    use super::*;
+    use crate::commission_dispatch::test_support::{MockBackend, dispatch_state};
+    use foci_firmware_macros::fixture_test;
+
+    #[fixture_test]
+    async fn poll_disarm_motor_matches_disarm_motor_when_driven_to_completion() {
+        let mut oracle_backend = MockBackend::new();
+        let mut oracle_calibrated = true;
+        let mut oracle_motor_enabled = true;
+        let mut oracle_gains = None;
+        let mut oracle_state = dispatch_state(
+            &mut oracle_calibrated,
+            &mut oracle_motor_enabled,
+            &mut oracle_gains,
+        );
+        crate::tmc_control::lifecycle::disarm_motor(&mut oracle_backend, &mut oracle_state).await;
+
+        let mut backend = MockBackend::new();
+        let mut calibrated = true;
+        let mut motor_enabled = true;
+        let mut gains = None;
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        let mut step = SafeStateRestoreStep::default();
+        let mut polls = 0u32;
+        loop {
+            assert!(polls < 32, "poll_disarm_motor did not terminate");
+            let more = poll_disarm_motor(&mut step, &mut backend, &mut state).await;
+            polls += 1;
+            if !more {
+                break;
+            }
+        }
+
+        assert_eq!(backend.spi_log, oracle_backend.spi_log);
+        assert_eq!(calibrated, oracle_calibrated);
+        assert_eq!(motor_enabled, oracle_motor_enabled);
     }
 }

@@ -53,8 +53,8 @@
 //! is observable in one trace.
 
 use super::test_support::{
-    MockBackend, SpiOp, accepted_commission_result, breakaway_campaign_engine, fresh_state_locals,
-    robustness_reversal_engine,
+    MockBackend, SpiOp, accepted_commission_result, breakaway_campaign_engine, dispatch_state,
+    fresh_state_locals, robustness_reversal_engine,
 };
 use super::*;
 use crate::autotune::CommissionProfile;
@@ -68,22 +68,6 @@ use foci_firmware_macros::fixture_test;
 
 const TEST_MOTOR_SENTINEL: u32 = 0x0002_0032;
 const TEST_RUN_CURRENT_LIMIT: u16 = 0x1234;
-
-fn dispatch_state<'a>(
-    calibrated: &'a mut bool,
-    motor_enabled: &'a mut bool,
-    stored_gains: &'a mut Option<crate::pid::InnerLoopGains>,
-) -> DispatchState<'a> {
-    crate::state::tmc::tmc_channel0().mark_pi_representation_established();
-    DispatchState::new(
-        0,
-        crate::state::tmc::tmc_channel0(),
-        crate::state::stepper::stepper_channel0(),
-        calibrated,
-        motor_enabled,
-        stored_gains,
-    )
-}
 
 fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
     crate::state::tmc::tmc_channel0()
