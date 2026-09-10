@@ -1897,3 +1897,163 @@ mod poll_disarm_motor_tests {
         assert_eq!(motor_enabled, oracle_motor_enabled);
     }
 }
+
+#[cfg(test)]
+mod velocity_disarm_step_tests {
+    use super::*;
+    use crate::autotune::CommissionProfile;
+    use crate::commission_dispatch::test_support::{
+        MockBackend, SpiOp, breakaway_campaign_engine, dispatch_state,
+    };
+    use foci_firmware_macros::fixture_test;
+
+    fn expected_disarm_motor_ops() -> heapless::Vec<SpiOp, 27> {
+        use foci_tmc4671::registers::*;
+
+        let mut ops: heapless::Vec<SpiOp, 27> = heapless::Vec::new();
+        ops.push(SpiOp::Lifecycle {
+            flag: LifecycleFlag::MotorArmed,
+            value: false,
+        })
+        .ok();
+        ops.push(SpiOp::EnablePin(false)).ok();
+        for (reg, val) in [
+            (MODE_RAMP_MODE_MOTION, 0u32),
+            (PID_TORQUE_FLUX_TARGET, 0),
+            (PID_TORQUE_FLUX_OFFSET, 0),
+            (UQ_UD_EXT, 0),
+            (PHI_E_SELECTION, 0),
+            (PWM_SV_CHOP, 0),
+            (PID_VELOCITY_OFFSET, 0),
+            (PIDOUT_UQ_UD_LIMITS, 1024),
+        ] {
+            ops.push(SpiOp::Write(reg.addr(), val)).ok();
+            ops.push(SpiOp::Read).ok();
+        }
+        for sub in [
+            PID_ERROR_PID_TORQUE_ERROR_SUM,
+            PID_ERROR_PID_FLUX_ERROR_SUM,
+            PID_ERROR_PID_VELOCITY_ERROR_SUM,
+            PID_ERROR_PID_POSITION_ERROR_SUM,
+        ] {
+            ops.push(SpiOp::Write(sub.addr.addr(), u32::from(sub.sub_addr)))
+                .ok();
+            ops.push(SpiOp::Write(sub.data.addr(), 0)).ok();
+        }
+        ops.push(SpiOp::Lifecycle {
+            flag: LifecycleFlag::MotorEnabled,
+            value: false,
+        })
+        .ok();
+        ops
+    }
+
+    async fn drive_to_completion(
+        step: &mut VelocityDisarmStep,
+        backend: &mut MockBackend,
+        calibrated: &mut bool,
+        motor_enabled: &mut bool,
+    ) -> bool {
+        let mut gains = None;
+        let mut polls = 0u32;
+        loop {
+            assert!(polls < 32, "velocity disarm step did not terminate");
+            let mut state = dispatch_state(calibrated, motor_enabled, &mut gains);
+            if let Some(restored) = poll_velocity_disarm(step, backend, &mut state).await {
+                return restored;
+            }
+            polls += 1;
+        }
+    }
+
+    #[fixture_test]
+    async fn poll_velocity_disarm_without_operational_limit_matches_safe_state_sequence() {
+        let engine = Some(CommissioningEngine::new_commission(
+            0,
+            CommissionProfile::Balanced,
+        ));
+        assert!(
+            engine
+                .as_ref()
+                .and_then(CommissioningEngine::velocity_operational_torque_limit)
+                .is_none(),
+            "commission engine fixture must not carry an operational torque limit for this test"
+        );
+
+        let mut backend = MockBackend::new();
+        let mut calibrated = true;
+        let mut motor_enabled = true;
+        let mut step = VelocityDisarmStep::start(&engine);
+        assert!(
+            matches!(step, VelocityDisarmStep::Disarm(_)),
+            "no operational limit must select the bare-disarm branch"
+        );
+
+        let restored =
+            drive_to_completion(&mut step, &mut backend, &mut calibrated, &mut motor_enabled).await;
+
+        assert!(restored, "bare disarm without faults must report restored");
+        assert!(!calibrated);
+        assert!(!motor_enabled);
+        assert_eq!(backend.spi_log.as_slice(), expected_disarm_motor_ops());
+    }
+
+    #[fixture_test]
+    async fn poll_velocity_disarm_with_operational_limit_matches_full_trace() {
+        let engine = Some(breakaway_campaign_engine());
+        let operational_limit = engine
+            .as_ref()
+            .and_then(CommissioningEngine::velocity_operational_torque_limit)
+            .expect("breakaway_campaign_engine fixture must carry an operational torque limit");
+
+        let mut backend = MockBackend::new();
+        let mut calibrated = true;
+        let mut motor_enabled = true;
+        let mut step = VelocityDisarmStep::start(&engine);
+        assert!(
+            matches!(step, VelocityDisarmStep::WriteVelocityTarget { .. }),
+            "an operational limit must select the velocity-limited branch"
+        );
+
+        let restored =
+            drive_to_completion(&mut step, &mut backend, &mut calibrated, &mut motor_enabled).await;
+
+        assert!(
+            restored,
+            "clamp restore without faults must report restored"
+        );
+        assert!(!calibrated);
+        assert!(!motor_enabled);
+
+        use foci_tmc4671::registers::{
+            PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_TORQUE_FLUX_LIMITS, PID_VELOCITY_TARGET,
+        };
+
+        let velocity_specific_prefix = [
+            SpiOp::Write(PID_VELOCITY_TARGET.addr(), 0),
+            SpiOp::Write(
+                PID_ERROR_PID_VELOCITY_ERROR_SUM.addr.addr(),
+                u32::from(PID_ERROR_PID_VELOCITY_ERROR_SUM.sub_addr),
+            ),
+            SpiOp::Write(PID_ERROR_PID_VELOCITY_ERROR_SUM.data.addr(), 0),
+        ];
+        let clamp_restore_suffix = [
+            SpiOp::Write(PID_TORQUE_FLUX_LIMITS.addr(), u32::from(operational_limit)),
+            SpiOp::Read,
+        ];
+
+        let embedded_disarm = expected_disarm_motor_ops();
+        let mut expected: heapless::Vec<SpiOp, 32> = heapless::Vec::new();
+        for op in velocity_specific_prefix {
+            expected.push(op).ok();
+        }
+        for op in embedded_disarm {
+            expected.push(op).ok();
+        }
+        for op in clamp_restore_suffix {
+            expected.push(op).ok();
+        }
+
+        assert_eq!(backend.spi_log.as_slice(), expected.as_slice());
+    }
+}
