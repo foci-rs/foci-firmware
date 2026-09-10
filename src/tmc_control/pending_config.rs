@@ -370,13 +370,21 @@ mod tests {
     }
 
     #[test]
-    fn drain_pending_config_keeps_the_current_bit_when_a_setter_races_the_apply() {
-        use core::sync::atomic::Ordering::Relaxed;
+    fn drain_pending_config_applies_the_newer_current_when_a_setter_races_the_apply() {
+        use core::sync::atomic::Ordering::{Relaxed, Release};
         use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
 
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         pollster::block_on(async {
             let config = crate::config::TmcConfig::default_for_test();
+            let limit_for = |run_ma: u32| {
+                crate::tmc_control::current_limit::current_limit_from_run_ma(
+                    run_ma,
+                    config.current_scale_ma_per_lsb,
+                )
+                .expect("test scale should produce a valid limit")
+                .register_value()
+            };
 
             tmc_state().run_current_ma_cfg.store(1500, Relaxed);
             tmc_state()
@@ -384,13 +392,15 @@ mod tests {
                 .store(crate::state::tmc::PENDING_CURRENT, Relaxed);
 
             // A P2 `tmc_set_current` lands while this drain's own SPI write is
-            // in flight: it records a newer run current and re-raises the bit.
+            // in flight, recording a newer run current and re-raising the bit
+            // in the order the handler itself uses.
             let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
-                .raise_pending_config_on_write(
-                    PID_TORQUE_FLUX_LIMITS.addr(),
-                    crate::state::tmc::PENDING_CURRENT,
-                    tmc_state(),
-                );
+                .race_pending_config_on_write(PID_TORQUE_FLUX_LIMITS.addr(), || {
+                    tmc_state().run_current_ma_cfg.store(900, Relaxed);
+                    tmc_state()
+                        .config_apply_pending
+                        .fetch_or(crate::state::tmc::PENDING_CURRENT, Release);
+                });
             let mut tmc = Tmc4671Spi::new(spi);
 
             let mut stored_inner_gains = None;
@@ -410,6 +420,39 @@ mod tests {
                 0,
                 "a setter racing the apply must keep its bit set so the next \
                  drain applies the newer current instead of losing it"
+            );
+
+            // The second pass is the one that has to land the newer value: the
+            // first was already committed to the limit it read before the race.
+            let mut tmc = Tmc4671Spi::new(crate::tmc_control::test_spi::RuntimeMockSpi::default());
+            drain_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await
+            .expect("the retry pass should succeed");
+
+            let spi = tmc.into_inner();
+            assert!(
+                spi.writes
+                    .contains(&(PID_TORQUE_FLUX_LIMITS.addr(), limit_for(900))),
+                "the next drain must write the run current the racing setter \
+                 recorded, not the one it replaced: {:?}",
+                spi.writes
+            );
+            assert!(
+                !spi.writes
+                    .contains(&(PID_TORQUE_FLUX_LIMITS.addr(), limit_for(1500))),
+                "the replaced run current must not reach the chip again"
+            );
+            assert_eq!(
+                tmc_state().config_apply_pending.load(Relaxed) & crate::state::tmc::PENDING_CURRENT,
+                0,
+                "the retry pass drains the bit once nothing races it"
             );
 
             tmc_state().run_current_ma_cfg.store(0, Relaxed);

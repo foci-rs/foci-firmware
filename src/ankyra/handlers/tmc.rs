@@ -99,7 +99,7 @@ pub fn tmc_set_current(ctx: &mut dyn TmcWriteHost, oid: u8, run_ma: u32) {
     state.run_current_ma_cfg.store(run_ma, Ordering::Relaxed);
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_CURRENT, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_CURRENT, Ordering::Release);
 }
 
 /// Configure independent encoder-feedback and planner-motion scales while idle.
@@ -159,7 +159,7 @@ pub fn tmc_set_encoder_dir(ctx: &mut dyn TmcWriteHost, oid: u8, channel: u8, inv
         .store(Some(invert != 0), Ordering::Relaxed);
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_ENCODER_DIR, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_ENCODER_DIR, Ordering::Release);
 }
 
 /// Set inner loop PI gains from host (explicit override or saved values).
@@ -199,7 +199,7 @@ pub fn tmc_set_pid_gains(
     );
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_INNER_GAINS, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_INNER_GAINS, Ordering::Release);
 }
 
 /// Set velocity biquad filter cutoff frequency from host config.
@@ -216,7 +216,7 @@ pub fn tmc_set_velocity_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
         .store(Some(filter_hz), Ordering::Relaxed);
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
 
 /// Set torque biquad filter cutoff frequency from host config.
@@ -233,7 +233,7 @@ pub fn tmc_set_torque_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16
         .store(Some(filter_hz), Ordering::Relaxed);
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
 
 /// Set position target biquad filter cutoff frequency from host config.
@@ -250,7 +250,7 @@ pub fn tmc_set_position_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u
         .store(Some(filter_hz), Ordering::Relaxed);
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
 
 /// Set flux biquad filter cutoff frequency from host config.
@@ -267,7 +267,7 @@ pub fn tmc_set_flux_filter(ctx: &mut dyn TmcWriteHost, oid: u8, filter_hz: u16) 
         .store(Some(filter_hz), Ordering::Relaxed);
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_FILTERS, Ordering::Release);
 }
 
 /// Set position/velocity PI gains from host config.
@@ -307,7 +307,7 @@ pub fn tmc_set_position_gains(
     );
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_OUTER_GAINS, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_OUTER_GAINS, Ordering::Release);
 }
 
 /// Enable or disable RPM-domain velocity feedforward from host config.
@@ -543,7 +543,7 @@ pub fn tmc_set_voltage_limit(ctx: &mut dyn TmcWriteHost, oid: u8, voltage_limit:
         .store(voltage_limit, Ordering::Relaxed);
     state
         .config_apply_pending
-        .fetch_or(crate::state::tmc::PENDING_VOLTAGE_LIMIT, Ordering::Relaxed);
+        .fetch_or(crate::state::tmc::PENDING_VOLTAGE_LIMIT, Ordering::Release);
 }
 
 /// Run a bounded current-loop step diagnostic.
@@ -1860,5 +1860,49 @@ mod tests {
             "tmc_set_motion_scale is the one connect-time handler that still \
              enqueues and must still shut down on QueueFull"
         );
+    }
+
+    /// Every connect-time handler must raise its pending bit with `Release`.
+    ///
+    /// Raising the bit is what publishes the value stored just above it, and
+    /// the drain claims the bit with `Acquire` before reading that value.
+    /// `Acquire` only orders against a `Release` on the writing side, so a
+    /// relaxed raise leaves the pair unsynchronised: the store and the raise
+    /// may be reordered against each other, and a drain that claims the bit
+    /// in between applies the previous value while clearing the bit that
+    /// pointed at the new one -- the lost update this mechanism exists to
+    /// prevent.
+    ///
+    /// Guarded at the source because the property is invisible to a host
+    /// test: x86 will not reorder these stores, so a handler added with
+    /// relaxed ordering passes every behavioural test and only misbehaves on
+    /// the Cortex-M targets this firmware ships to.
+    #[test]
+    fn connect_time_config_handlers_raise_their_pending_bit_with_release_ordering() {
+        let source = include_str!("tmc.rs");
+        let handlers = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the module has a non-test half");
+
+        let raises: std::vec::Vec<&str> = handlers
+            .split(';')
+            .filter(|statement| statement.contains("config_apply_pending"))
+            .filter(|statement| statement.contains("fetch_or("))
+            .collect();
+
+        assert_eq!(
+            raises.len(),
+            9,
+            "expected one pending-bit raise per connect-time config handler"
+        );
+        for statement in raises {
+            assert!(
+                statement.contains("Ordering::Release"),
+                "a pending bit raised with anything weaker than Release does \
+                 not publish the value it points at: {}",
+                statement.trim()
+            );
+        }
     }
 }
