@@ -486,6 +486,10 @@ impl TmcChannelState {
             .store(DEFAULT_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
         self.run_current_ma_cfg.store(0, Relaxed);
         self.encoder_invert_cfg.store(None, Relaxed);
+        // Must follow the recorded values above: a pending bit outliving the
+        // value it points at would make the next drain push a reset default
+        // to the chip as if the host had asked for it.
+        self.config_apply_pending.store(0, Relaxed);
         self.pending_inner_gain_flux_p.store(0, Relaxed);
         self.pending_inner_gain_flux_i.store(0, Relaxed);
         self.pending_inner_gain_torque_p.store(0, Relaxed);
@@ -1052,6 +1056,26 @@ mod tests {
         assert_eq!(channel.torque_filter_hz.load(Relaxed), None);
         assert_eq!(channel.position_filter_hz.load(Relaxed), None);
         assert_eq!(channel.flux_filter_hz.load(Relaxed), None);
+    }
+
+    #[test]
+    fn reset_clears_pending_config_bits_with_the_values_they_point_at() {
+        let channel = TmcChannelState::new();
+        channel.run_current_ma_cfg.store(1_500, Relaxed);
+        channel.encoder_invert_cfg.store(Some(true), Relaxed);
+        channel.config_apply_pending.store(
+            PENDING_CURRENT | PENDING_ENCODER_DIR | PENDING_FILTERS,
+            Relaxed,
+        );
+
+        channel.reset();
+
+        assert_eq!(
+            channel.config_apply_pending.load(Relaxed),
+            0,
+            "a bit surviving the reset that wiped its recorded value points \
+             the drain at a value the host never sent"
+        );
     }
 
     #[test]

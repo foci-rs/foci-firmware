@@ -409,6 +409,10 @@ pub struct MockBackend {
     /// not, mirroring `TmcChannelState::safe_state_pass_count`.
     pub safe_state_pass_count: u16,
     /// Channel state whose pending-config bits the mock drain clears.
+    ///
+    /// Defaults to channel 0, which every `MockBackend` test uses today. A
+    /// dual-channel arming test must point this at its own channel or the
+    /// mock drain clears the wrong channel's bits.
     pub tmc_state: &'static crate::state::tmc::TmcChannelState,
     /// Result returned by `drain_pending_config`; tests set it to inject a
     /// failed drain.
@@ -862,13 +866,16 @@ impl CommissionPendingConfig for MockBackend {
         &mut self,
         _sink: PendingConfigSink<'_>,
     ) -> Result<(), PendingConfigItem> {
+        use core::sync::atomic::Ordering::Relaxed;
+
         self.spi_log.push(SpiOp::DrainPendingConfig).ok();
+        let observed = self.tmc_state.config_apply_pending.load(Relaxed);
         self.pending_config_result?;
-        // A successful drain clears every bit, the same contract the real
-        // drain owes `arm_motor_electrical`'s post-drain assert.
+        // Mirrors the real drain: a success clears exactly the bits observed
+        // on entry, never bits a concurrent setter raised afterwards.
         self.tmc_state
             .config_apply_pending
-            .store(0, core::sync::atomic::Ordering::Relaxed);
+            .fetch_and(!observed, Relaxed);
         Ok(())
     }
 }

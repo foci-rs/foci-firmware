@@ -52,10 +52,22 @@ pub enum PendingConfigItem {
 /// [`apply_live_filter`] so a recorded `0` disables its filter, which the
 /// `apply_stored_filters` fast path does not do.
 ///
+/// On `Ok`, every bit observed on entry has been applied and cleared. Bits
+/// raised after that first load are deliberately left alone: config handlers
+/// run at a higher priority than the control and arming paths, so a bit can
+/// appear mid-drain, and it belongs to the next drain rather than this one.
+/// An always-on assert enforces the first half of that against a local mask
+/// rather than the live atomic, so a concurrent setter cannot trip it.
+///
 /// # Errors
 ///
 /// Returns the [`PendingConfigItem`] that failed, so the caller can name it
 /// before shutting the MCU down.
+///
+/// # Panics
+///
+/// Panics if a future branch returns success while leaving an observed item
+/// unapplied -- a firmware bug, not a runtime condition.
 pub async fn drain_pending_config<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
@@ -71,6 +83,7 @@ where
     if pending == 0 {
         return Ok(());
     }
+    let mut handled = 0u8;
 
     if (pending & crate::state::tmc::PENDING_VOLTAGE_LIMIT) != 0 {
         crate::tmc_control::request_writes::apply_set_voltage_limit(
@@ -83,6 +96,7 @@ where
         tmc_state
             .config_apply_pending
             .fetch_and(!crate::state::tmc::PENDING_VOLTAGE_LIMIT, Relaxed);
+        handled |= crate::state::tmc::PENDING_VOLTAGE_LIMIT;
     }
 
     if (pending & crate::state::tmc::PENDING_CURRENT) != 0 {
@@ -97,17 +111,23 @@ where
         tmc_state
             .config_apply_pending
             .fetch_and(!crate::state::tmc::PENDING_CURRENT, Relaxed);
+        handled |= crate::state::tmc::PENDING_CURRENT;
     }
 
-    if (pending & crate::state::tmc::PENDING_ENCODER_DIR) != 0
-        && let Some(invert) = tmc_state.encoder_invert_cfg.load(Relaxed)
-    {
-        crate::tmc_control::request_writes::apply_set_encoder_dir(tmc, tmc_state, invert)
-            .await
-            .map_err(|()| PendingConfigItem::EncoderDir)?;
+    if (pending & crate::state::tmc::PENDING_ENCODER_DIR) != 0 {
+        // An unset sentinel means the host has not chosen a direction, so
+        // there is nothing to write -- but the item is still drained. Leaving
+        // the bit set here would strand it forever, since no later drain has
+        // anything more to go on.
+        if let Some(invert) = tmc_state.encoder_invert_cfg.load(Relaxed) {
+            crate::tmc_control::request_writes::apply_set_encoder_dir(tmc, tmc_state, invert)
+                .await
+                .map_err(|()| PendingConfigItem::EncoderDir)?;
+        }
         tmc_state
             .config_apply_pending
             .fetch_and(!crate::state::tmc::PENDING_ENCODER_DIR, Relaxed);
+        handled |= crate::state::tmc::PENDING_ENCODER_DIR;
     }
 
     if (pending & crate::state::tmc::PENDING_INNER_GAINS) != 0 {
@@ -127,6 +147,7 @@ where
         tmc_state
             .config_apply_pending
             .fetch_and(!crate::state::tmc::PENDING_INNER_GAINS, Relaxed);
+        handled |= crate::state::tmc::PENDING_INNER_GAINS;
     }
 
     if (pending & crate::state::tmc::PENDING_OUTER_GAINS) != 0 {
@@ -141,6 +162,7 @@ where
         tmc_state
             .config_apply_pending
             .fetch_and(!crate::state::tmc::PENDING_OUTER_GAINS, Relaxed);
+        handled |= crate::state::tmc::PENDING_OUTER_GAINS;
     }
 
     if (pending & crate::state::tmc::PENDING_FILTERS) != 0 {
@@ -169,7 +191,14 @@ where
         tmc_state
             .config_apply_pending
             .fetch_and(!crate::state::tmc::PENDING_FILTERS, Relaxed);
+        handled |= crate::state::tmc::PENDING_FILTERS;
     }
+
+    assert!(
+        handled == pending,
+        "FATAL: drain_pending_config reported success with items it never \
+         applied; every observed bit must be written or fail"
+    );
     Ok(())
 }
 
@@ -746,6 +775,52 @@ mod tests {
             tmc_state().torque_filter_hz.store(None, Relaxed);
             tmc_state().position_filter_hz.store(None, Relaxed);
             tmc_state().flux_filter_hz.store(None, Relaxed);
+            tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn drain_pending_config_clears_the_encoder_dir_bit_when_no_direction_is_recorded() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::ABN_DECODER_MODE;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            // `TmcChannelState::reset` nulls `encoder_invert_cfg` without
+            // touching `config_apply_pending`, so a deferred queue flush can
+            // leave this pairing behind.
+            tmc_state().encoder_invert_cfg.store(None, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_ENCODER_DIR, Relaxed);
+            let mut tmc = Tmc4671Spi::new(MockRawSpi::default());
+            let mut stored_inner_gains = None;
+
+            let result = drain_pending_config(
+                &mut tmc,
+                tmc_state(),
+                crate::config::TmcConfig::default_for_test(),
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await;
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(
+                tmc_state().config_apply_pending.load(Relaxed),
+                0,
+                "nothing to write is itself a drained item; leaving the bit set \
+                 strands it and misreports the drain as incomplete"
+            );
+            let spi = tmc.into_inner();
+            assert!(
+                !spi.writes
+                    .iter()
+                    .any(|frame| frame[0] & 0x7F == ABN_DECODER_MODE.addr()),
+                "with no recorded direction there is nothing to write"
+            );
+
             tmc_state().config_apply_pending.store(0, Relaxed);
         });
     }
