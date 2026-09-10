@@ -138,6 +138,13 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// `PID_TORQUE_FLUX_LIMITS` the chip never received. The sentinel does not
 /// cover this — it detects chip resets, not stale configuration.
 ///
+/// The drain covers what the host had already sent when this arm began. A
+/// config command dispatched while the arm is in flight leaves its bit set
+/// for the next control tick and does not refuse the arm: the handlers run
+/// at a higher priority than this path, so that interleaving is ordinary
+/// traffic. `drain_pending_config` owns the "nothing observed was skipped"
+/// invariant, where it can be checked without racing those handlers.
+///
 /// The torque-flux rewrite makes this path truthful even when a homing
 /// clamp narrowed the register on a prior arm: a shutdown or disable
 /// landing mid-homing could otherwise leave the clamped value in the chip,
@@ -199,11 +206,6 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
         );
         return Err(crate::autotune::CommissionError::Spi);
     }
-    assert!(
-        state.tmc.config_apply_pending.load(Relaxed) == 0,
-        "FATAL: arm_motor_electrical reached the sentinel check with \
-         configuration still pending"
-    );
 
     verify_motor_sentinel(backend, state.tmc).await?;
     // The compound "safe-state pass AND fresh sentinel pass" latch clears
@@ -481,6 +483,43 @@ mod tests {
         assert!(
             drained < energized,
             "recorded configuration must reach the chip before it is energized"
+        );
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_tolerates_config_recorded_while_it_drains() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        // The config handlers run in the P2 USB dispatch task and preempt this
+        // P1 arming path, so a bit can appear after the drain has already
+        // observed the mask it will clear. That interleaving is ordinary
+        // traffic, not a fault, and must not take the firmware down.
+        backend.pending_config_set_during_drain = crate::state::tmc::PENDING_FILTERS;
+
+        arm_motor_electrical(&mut backend, &mut state)
+            .await
+            .expect("a config command arriving mid-arm must not refuse the arm");
+
+        assert!(backend.enable_pin);
+        assert_eq!(
+            tmc_state().config_apply_pending.load(Ordering::Relaxed),
+            crate::state::tmc::PENDING_FILTERS,
+            "the late bit stays pending for the next control tick to drain"
         );
     }
 

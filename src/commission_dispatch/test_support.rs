@@ -417,6 +417,9 @@ pub struct MockBackend {
     /// Result returned by `drain_pending_config`; tests set it to inject a
     /// failed drain.
     pub pending_config_result: Result<(), PendingConfigItem>,
+    /// Bits to set after the mock drain clears, modelling a config command
+    /// dispatched at P2 while the P1 arming path is mid-drain.
+    pub pending_config_set_during_drain: u8,
 }
 
 impl MockBackend {
@@ -495,6 +498,7 @@ impl MockBackend {
             safe_state_pass_count: 0,
             tmc_state: crate::state::tmc::tmc_channel0(),
             pending_config_result: Ok(()),
+            pending_config_set_during_drain: 0,
         }
     }
 
@@ -876,6 +880,9 @@ impl CommissionPendingConfig for MockBackend {
         self.tmc_state
             .config_apply_pending
             .fetch_and(!observed, Relaxed);
+        self.tmc_state
+            .config_apply_pending
+            .fetch_or(self.pending_config_set_during_drain, Relaxed);
         Ok(())
     }
 }
