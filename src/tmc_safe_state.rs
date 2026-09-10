@@ -49,9 +49,6 @@ impl SafeStateRestoreStep {
     /// True before any step has run. Callers gate one-time setup (like
     /// `disarm_motor`'s lifecycle bookkeeping) on this, so it runs once, on
     /// the first poll of a sequence built around this step.
-    // Consumed starting with the TerminalRestoreMachine cursor states added
-    // in a later task; unused until that caller exists.
-    #[allow(dead_code)]
     pub(crate) const fn is_start(&self) -> bool {
         self.index == 0
     }
