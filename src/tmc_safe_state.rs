@@ -29,14 +29,15 @@ pub struct SafeStateRestoreReport {
 /// One step of the safe-state register-restore sequence, advanced by
 /// exactly one backend register operation per call so a caller (the
 /// `TerminalRestoreMachine` poll loop) never issues more than one awaited
-/// backend operation per tick.
+/// backend operation per tick. This is the canonical definition of the
+/// sequence; [`restore_safe_state_via_backend_report`] just drives it to
+/// completion in a tight loop for non-poll-driven callers.
 ///
-/// Step order mirrors [`restore_safe_state_via_backend_report`] exactly:
-/// the eight [`safe_state_write`] calls (steps 0-7), then the four PID
-/// error-sum-clear register pairs (steps 8-15, addr-select then data per
-/// pair, matching [`clear_pid_error_sums_via_backend`]'s order). The enable
-/// pin is lowered synchronously alongside step 0's write, since it never
-/// yields.
+/// Step order: the eight [`safe_state_write`] calls (steps 0-7), then the
+/// four PID error-sum-clear register pairs (steps 8-15, addr-select then
+/// data per pair, one pair per PID sum: torque, flux, velocity, position).
+/// The enable pin is lowered synchronously alongside step 0's write, since
+/// it never yields.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SafeStateRestoreStep {
     index: u8,
@@ -51,6 +52,14 @@ impl SafeStateRestoreStep {
     /// the first poll of a sequence built around this step.
     pub(crate) const fn is_start(&self) -> bool {
         self.index == 0
+    }
+
+    /// The diagnostic report accumulated so far. Meaningful once `advance`
+    /// has returned `false`; callers polling to completion read this to
+    /// surface the same failure summary `restore_safe_state_via_backend`
+    /// emits internally.
+    pub(crate) const fn report(&self) -> SafeStateRestoreReport {
+        self.report
     }
 
     /// Perform the next backend register operation. Returns `true` while
@@ -535,7 +544,7 @@ mod tests {
                 .iter()
                 .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
                 .count();
-            let outside_delta = total_raw - attributed_delta;
+            let outside_delta = total_raw.saturating_sub(attributed_delta);
             // Exactly one verified-write call: every raw op its retry loop
             // performed is attributed inside it (measured by length diff, Task
             // 1 Step 0), so nothing may land outside. Zero verified calls: at

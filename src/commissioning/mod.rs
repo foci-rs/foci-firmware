@@ -1953,11 +1953,11 @@ mod tests {
         // budget is roughly 4 KB each. Treat a failure here as a design
         // question: a future that grows past its bound has overflowed the
         // interrupt stack on real hardware before.
-        // 4_336 -> 4_400, 4_288 -> 4_352, 4_416 -> 4_480 (all +64): replacing
-        // the flat sequential safe-state restore body with
         // `SafeStateRestoreStep` carries its `index`/`report` state across
-        // every `.await` point in the abort/disarm path instead of letting
-        // each write complete before the next one is polled.
+        // every `.await` point in the abort/disarm path, since a Rust future
+        // must hold all state live across a suspension point; the flat
+        // sequential restore it replaced let each write complete before the
+        // next one was polled, so it never needed to carry that state.
         assert_eq!(engine_step, 4_400);
         assert!(engine_step <= 4_400);
         assert_eq!(step_inner, 4_352);

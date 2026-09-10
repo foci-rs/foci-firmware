@@ -1603,7 +1603,7 @@ async fn assert_disarm_phase_one_op_per_poll(variant: &TerminalVariant) {
                 .iter()
                 .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
                 .count();
-            let outside_delta = total_raw - attributed_delta;
+            let outside_delta = total_raw.saturating_sub(attributed_delta);
             let ok = match verified_delta {
                 0 => outside_delta <= 1,
                 1 => outside_delta == 0,

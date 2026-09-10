@@ -1637,8 +1637,9 @@ fn commission_status_code(status: crate::autotune::CommissionStatus) -> u8 {
 /// awaited backend operation per `poll_step`. Reproduces `disarm_motor`'s
 /// bookkeeping order exactly: the atomic/lifecycle-flag writes happen once,
 /// on the first poll, before any register write, matching `disarm_motor`'s
-/// own source order; the closing bookkeeping happens once the underlying
-/// `SafeStateRestoreStep` reports completion.
+/// own source order; the closing bookkeeping, including the aggregate
+/// safe-state failure log, happens once the underlying `SafeStateRestoreStep`
+/// reports completion.
 async fn poll_disarm_motor<B: CommissioningBackend>(
     step: &mut SafeStateRestoreStep,
     backend: &mut B,
@@ -1650,6 +1651,13 @@ async fn poll_disarm_motor<B: CommissioningBackend>(
     }
     let more = step.advance(backend).await;
     if !more {
+        let failed_writes = step.report().failed_writes;
+        if failed_writes > 0 {
+            defmt::error!(
+                "safe-state restore had {=u8} verified-write failures after retries",
+                failed_writes
+            );
+        }
         state.tmc.clear_velocity_clamp_latch();
         *state.calibrated = false;
         *state.motor_enabled = false;
