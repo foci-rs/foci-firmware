@@ -15,6 +15,23 @@ pub struct PendingConfigSink<'a> {
     pub stored_inner_gains: &'a mut Option<InnerLoopGains>,
 }
 
+/// Which recorded configuration item the pending-config drain failed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum PendingConfigItem {
+    /// `PIDOUT_UQ_UD_LIMITS`.
+    VoltageLimit,
+    /// `PID_TORQUE_FLUX_LIMITS`.
+    Current,
+    /// `ABN_DECODER_MODE`.
+    EncoderDir,
+    /// Flux and torque PI gains.
+    InnerGains,
+    /// Velocity and position PI gains.
+    OuterGains,
+    /// Biquad feedback filters.
+    Filters,
+}
+
 /// TMC4671 biquad feedback filter selected by a live filter request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BiquadFilterTarget {
@@ -466,13 +483,14 @@ async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
 ///
 /// # Errors
 ///
-/// Returns `Err(())` if any write fails (voltage limit, current, or filter).
+/// Returns the [`PendingConfigItem`] that failed, so the caller can name it
+/// before shutting the MCU down.
 pub async fn apply_pending_config<B>(
     tmc: &mut Tmc4671Spi<B>,
     tmc_state: &TmcChannelState,
     tmc_config: crate::config::TmcConfig,
     sink: PendingConfigSink<'_>,
-) -> Result<(), ()>
+) -> Result<(), PendingConfigItem>
 where
     B: SpiDevice<u8>,
 {
@@ -489,7 +507,8 @@ where
             tmc_state,
             tmc_state.voltage_limit_cfg.load(Relaxed),
         )
-        .await?;
+        .await
+        .map_err(|()| PendingConfigItem::VoltageLimit)?;
         tmc_state.config_apply_pending.fetch_and(
             !crate::state::tmc::PENDING_VOLTAGE_LIMIT,
             Relaxed,
@@ -504,7 +523,7 @@ where
             tmc_config.current_scale_ma_per_lsb,
         )
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| PendingConfigItem::Current)?;
         tmc_state
             .config_apply_pending
             .fetch_and(!crate::state::tmc::PENDING_CURRENT, Relaxed);
@@ -515,7 +534,7 @@ where
     {
         crate::tmc_control::request_writes::apply_set_encoder_dir(tmc, tmc_state, invert)
             .await
-            .map_err(|_| ())?;
+            .map_err(|()| PendingConfigItem::EncoderDir)?;
         tmc_state.config_apply_pending.fetch_and(
             !crate::state::tmc::PENDING_ENCODER_DIR,
             Relaxed,
@@ -525,7 +544,7 @@ where
     if (pending & crate::state::tmc::PENDING_INNER_GAINS) != 0 {
         let gains = tmc_state
             .load_pending_inner_gains(Relaxed)
-            .map_err(|_| ())?;
+            .map_err(|_| PendingConfigItem::InnerGains)?;
         let status = crate::tmc_control::helpers::apply_live_inner_gains(
             sink.stored_inner_gains,
             tmc_state,
@@ -534,7 +553,7 @@ where
         )
         .await;
         if !status.all_ok() {
-            return Err(());
+            return Err(PendingConfigItem::InnerGains);
         }
         tmc_state
             .config_apply_pending
@@ -544,11 +563,11 @@ where
     if (pending & crate::state::tmc::PENDING_OUTER_GAINS) != 0 {
         let gains = tmc_state
             .load_pending_outer_gains(Relaxed)
-            .map_err(|_| ())?;
+            .map_err(|_| PendingConfigItem::OuterGains)?;
         let status =
             crate::tmc_control::helpers::apply_live_outer_gains(tmc_state, tmc, gains).await;
         if !status.all_ok() {
-            return Err(());
+            return Err(PendingConfigItem::OuterGains);
         }
         tmc_state
             .config_apply_pending
@@ -574,7 +593,9 @@ where
                 tmc_state.flux_filter_hz.load_or_zero(Relaxed),
             ),
         ] {
-            apply_live_filter(tmc, tmc_state, target, filter_hz, tmc_config.pwm_maxcnt).await?;
+            apply_live_filter(tmc, tmc_state, target, filter_hz, tmc_config.pwm_maxcnt)
+                .await
+                .map_err(|()| PendingConfigItem::Filters)?;
         }
         tmc_state.config_apply_pending.fetch_and(
             !crate::state::tmc::PENDING_FILTERS,
@@ -1126,7 +1147,11 @@ mod tests {
             )
             .await;
 
-            assert!(result.is_err(), "apply should fail when a gain write fails");
+            assert_eq!(
+                result,
+                Err(PendingConfigItem::InnerGains),
+                "a failed inner-gain write must name the inner-gains item"
+            );
             assert_eq!(stored_inner_gains, Some(previous));
             assert_ne!(
                 tmc_state().config_apply_pending.load(Relaxed)
@@ -1239,7 +1264,11 @@ mod tests {
             )
             .await;
 
-            assert!(result.is_err(), "apply should fail when a gain write fails");
+            assert_eq!(
+                result,
+                Err(PendingConfigItem::OuterGains),
+                "a failed outer-gain write must name the outer-gains item"
+            );
             assert_eq!(
                 tmc_state().load_outer_gains(Relaxed),
                 Ok(previous),
@@ -1255,6 +1284,165 @@ mod tests {
             tmc_state().clear_pi_representation_established();
             tmc_state().config_apply_pending.store(0, Relaxed);
             tmc_state().store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_names_the_voltage_limit_item_on_write_failure() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            tmc_state().voltage_limit_cfg.store(8_000, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_VOLTAGE_LIMIT, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .fail_writes_to(PIDOUT_UQ_UD_LIMITS.addr());
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains: Option<InnerLoopGains> = None;
+            let result = apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                crate::config::TmcConfig::default_for_test(),
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await;
+
+            assert_eq!(
+                result,
+                Err(PendingConfigItem::VoltageLimit),
+                "a failed voltage-limit write must name the voltage-limit item"
+            );
+
+            tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_names_the_current_item_on_write_failure() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            tmc_state().run_current_ma_cfg.store(1500, Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_CURRENT, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr());
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains: Option<InnerLoopGains> = None;
+            let result = apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                crate::config::TmcConfig::default_for_test(),
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await;
+
+            assert_eq!(
+                result,
+                Err(PendingConfigItem::Current),
+                "a failed current write must name the current item"
+            );
+
+            tmc_state().run_current_ma_cfg.store(0, Relaxed);
+            tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_names_the_encoder_dir_item_on_write_failure() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::ABN_DECODER_MODE;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            tmc_state().encoder_invert_cfg.store(Some(true), Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_ENCODER_DIR, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .fail_writes_to(ABN_DECODER_MODE.addr());
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut stored_inner_gains: Option<InnerLoopGains> = None;
+            let result = apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                crate::config::TmcConfig::default_for_test(),
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await;
+
+            assert_eq!(
+                result,
+                Err(PendingConfigItem::EncoderDir),
+                "a failed encoder-direction write must name the encoder-direction item"
+            );
+
+            tmc_state().encoder_invert_cfg.store(None, Relaxed);
+            tmc_state().config_apply_pending.store(0, Relaxed);
+        });
+    }
+
+    #[test]
+    fn apply_pending_config_names_the_filters_item_on_write_failure() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::CONFIG_BIQUAD_V_A_1;
+
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        pollster::block_on(async {
+            tmc_state().velocity_filter_hz.store(Some(100), Relaxed);
+            tmc_state().torque_filter_hz.store(Some(0), Relaxed);
+            tmc_state().position_filter_hz.store(Some(0), Relaxed);
+            tmc_state().flux_filter_hz.store(Some(0), Relaxed);
+            tmc_state()
+                .config_apply_pending
+                .store(crate::state::tmc::PENDING_FILTERS, Relaxed);
+
+            let spi = crate::tmc_control::test_spi::RuntimeMockSpi::default()
+                .fail_writes_to(CONFIG_BIQUAD_V_A_1.data.addr());
+            let mut tmc = Tmc4671Spi::new(spi);
+
+            let mut config = crate::config::TmcConfig::default_for_test();
+            config.pwm_maxcnt = 4095;
+            let mut stored_inner_gains: Option<InnerLoopGains> = None;
+            let result = apply_pending_config(
+                &mut tmc,
+                tmc_state(),
+                config,
+                PendingConfigSink {
+                    stored_inner_gains: &mut stored_inner_gains,
+                },
+            )
+            .await;
+
+            assert_eq!(
+                result,
+                Err(PendingConfigItem::Filters),
+                "a failed filter write must name the filters item"
+            );
+
+            tmc_state().velocity_filter_hz.store(None, Relaxed);
+            tmc_state().torque_filter_hz.store(None, Relaxed);
+            tmc_state().position_filter_hz.store(None, Relaxed);
+            tmc_state().flux_filter_hz.store(None, Relaxed);
+            tmc_state().config_apply_pending.store(0, Relaxed);
         });
     }
 }

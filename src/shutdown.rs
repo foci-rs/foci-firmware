@@ -508,6 +508,7 @@ macro_rules! foci_ankyra_config {
                 "TMC request validation failed",
                 "TMC current limit invalid",
                 "Live gain application failed",
+                "TMC pending config apply failed",
                 "TMC4671: PLL not locked (clock lost)",
                 "TMC4671: ADC current clipped (overcurrent)",
                 "TMC4671 fault",

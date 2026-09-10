@@ -19,6 +19,8 @@ pub enum ShutdownReason {
     CurrentLimitInvalid,
     /// Applying a live inner- or outer-loop gain pair failed.
     LiveGainApplyFailed,
+    /// Draining recorded connect-time TMC configuration to the chip failed.
+    PendingConfigApplyFailed,
     /// STATUS_FLAGS reported ADC current clipping.
     AdcCurrentClipped,
     /// STATUS_FLAGS reported a non-clipping TMC fault.

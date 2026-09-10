@@ -9,7 +9,7 @@ use crate::commissioning::backend::{
 use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, CommissionTerminal};
 use crate::commissioning::types::EngineKind;
 use crate::state::tmc::TmcChannelState;
-use crate::tmc_control::actions::ScheduledCommissionTickAction;
+use crate::tmc_control::actions::{ScheduledCommissionTickAction, ShutdownReason};
 use crate::tmc_control::bootstrap::{TmcSafetyBootstrapStage, bootstrap_tmc_safety};
 use crate::tmc_control::commission_poll::{CommissionPollDriver, PollDriverAction};
 use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
@@ -100,6 +100,8 @@ pub enum UnitOutcome {
     Ready,
     /// Bootstrap failed; the channel is parked.
     Parked(ParkReason),
+    /// The unit hit a condition the board must turn into an MCU shutdown.
+    Shutdown(ShutdownReason),
     /// A fast tick ran; re-arm the channel's fast grid with this period.
     Reschedule {
         /// New fast-grid period in microseconds.
@@ -352,7 +354,7 @@ impl ChannelDriver {
         let tmc_state = backend.tmc_state();
         let refs = self.refs(tmc_state);
         if tmc_state.config_apply_pending.load(Relaxed) != 0
-            && crate::tmc_control::filters::apply_pending_config(
+            && let Err(item) = crate::tmc_control::filters::apply_pending_config(
                 backend.tmc_spi(),
                 tmc_state,
                 ctx.config.tmc,
@@ -361,9 +363,9 @@ impl ChannelDriver {
                 },
             )
             .await
-            .is_err()
         {
-            defmt::error!("pending TMC config apply failed");
+            defmt::error!("pending TMC config apply failed: {}", item);
+            return UnitOutcome::Shutdown(ShutdownReason::PendingConfigApplyFailed);
         }
         let reset = self.take_reset(tmc_state, true);
         self.last_command_velocity_reference =
@@ -925,7 +927,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn failed_pending_config_apply_leaves_the_flag_set_for_retry() {
+    async fn failed_pending_config_apply_shuts_down_and_leaves_the_flag_set() {
         use foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS;
         let tmc_state = crate::state::tmc::tmc_channel0();
         tmc_state
@@ -939,7 +941,10 @@ mod tests {
 
         let outcome = rig.drive(UnitClass::Fast).await;
 
-        assert!(matches!(outcome, UnitOutcome::Reschedule { .. }));
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Shutdown(ShutdownReason::PendingConfigApplyFailed)
+        ));
         assert_ne!(
             tmc_state
                 .config_apply_pending
