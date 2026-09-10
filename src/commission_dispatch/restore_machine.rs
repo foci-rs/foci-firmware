@@ -143,7 +143,7 @@ enum RestoreCursor {
 
     RobustnessStagedClassify,
     RobustnessRestoreBaseline,
-    RobustnessDisarm,
+    RobustnessDisarm(SafeStateRestoreStep),
 
     VelocityStagedPrologue,
     VelocityStagedRestoreBaseline,
@@ -1157,7 +1157,8 @@ impl TerminalRestoreMachine {
                         unreachable!("robustness cursor without a robustness payload")
                     };
                     if terminal.outcome == RobustnessOutcome::Complete {
-                        self.cursor = RestoreCursor::RobustnessDisarm;
+                        self.cursor =
+                            RestoreCursor::RobustnessDisarm(SafeStateRestoreStep::default());
                         continue;
                     }
                     let restored = match self.entry_snapshot(engine) {
@@ -1196,16 +1197,19 @@ impl TerminalRestoreMachine {
                         terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
                     }
                     self.terminal.payload = TerminalPayload::RobustnessReversal(terminal);
-                    self.cursor = RestoreCursor::RobustnessDisarm;
+                    self.cursor = RestoreCursor::RobustnessDisarm(SafeStateRestoreStep::default());
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::RobustnessDisarm => {
+                RestoreCursor::RobustnessDisarm(mut step) => {
+                    if poll_disarm_motor(&mut step, backend, state).await {
+                        self.cursor = RestoreCursor::RobustnessDisarm(step);
+                        return RestoreStep::Pending;
+                    }
                     let TerminalPayload::RobustnessReversal(terminal) =
                         self.terminal.payload.clone()
                     else {
                         unreachable!("robustness cursor without a robustness payload")
                     };
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     state.tmc.commission_in_flight.store(false, Relaxed);
                     let consumed = self.take_engine(engine);
                     return RestoreStep::Done(CommissionOutcome::Terminal {

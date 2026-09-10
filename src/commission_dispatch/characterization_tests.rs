@@ -1702,3 +1702,21 @@ async fn fixed_gain_amplitude_terminal_disarm_phase_is_one_op_per_poll() {
         .expect("fixed_gain_amplitude_terminal variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
+
+#[fixture_test]
+async fn robustness_reversal_complete_disarm_phase_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "robustness_reversal_complete")
+        .expect("robustness_reversal_complete variant must exist");
+    assert_disarm_phase_one_op_per_poll(&variant).await;
+}
+
+#[fixture_test]
+async fn robustness_reversal_rejected_disarm_phase_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "robustness_reversal_rejected")
+        .expect("robustness_reversal_rejected variant must exist");
+    assert_disarm_phase_one_op_per_poll(&variant).await;
+}
