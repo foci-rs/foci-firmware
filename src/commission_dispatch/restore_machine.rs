@@ -134,7 +134,7 @@ enum RestoreCursor {
     OuterFailedSafetyRestore,
     OuterFailedStability,
     OuterFailedModeRamp,
-    OuterFailedFaultDisarm,
+    OuterFailedFaultDisarm(SafeStateRestoreStep),
     OuterFailedArm,
     OuterFailedArmDisarm(u8),
 
@@ -963,15 +963,19 @@ impl TerminalRestoreMachine {
                     let _ = backend
                         .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
                         .await;
-                    self.cursor = RestoreCursor::OuterFailedFaultDisarm;
+                    self.cursor =
+                        RestoreCursor::OuterFailedFaultDisarm(SafeStateRestoreStep::default());
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::OuterFailedFaultDisarm => {
+                RestoreCursor::OuterFailedFaultDisarm(mut step) => {
+                    if poll_disarm_motor(&mut step, backend, state).await {
+                        self.cursor = RestoreCursor::OuterFailedFaultDisarm(step);
+                        return RestoreStep::Pending;
+                    }
                     let fault = self
                         .terminal
                         .outer_restore_failure
                         .expect("outer-failed fault disarm without a restore failure");
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     defmt::error!("OuterFailed: safety fault ({}), motor disabled", fault);
                     return RestoreStep::Done(self.finish_outer_failed(
                         engine,
