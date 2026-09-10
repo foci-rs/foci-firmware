@@ -1953,17 +1953,22 @@ mod tests {
         // budget is roughly 4 KB each. Treat a failure here as a design
         // question: a future that grows past its bound has overflowed the
         // interrupt stack on real hardware before.
-        assert_eq!(engine_step, 4_336);
-        assert!(engine_step <= 4_336);
-        assert_eq!(step_inner, 4_288);
-        assert!(step_inner <= 4_288);
+        // 4_336 -> 4_400, 4_288 -> 4_352, 4_416 -> 4_480 (all +64): replacing
+        // the flat sequential safe-state restore body with
+        // `SafeStateRestoreStep`, which carries its `index`/`report` state
+        // across every `.await` point in the abort/disarm path instead of
+        // letting each write complete before the next one is polled.
+        assert_eq!(engine_step, 4_400);
+        assert!(engine_step <= 4_400);
+        assert_eq!(step_inner, 4_352);
+        assert!(step_inner <= 4_352);
         assert_eq!(electrical_id, 656);
         assert!(electrical_id <= 656);
         assert!(electrical_id <= 960);
-        assert_eq!(scheduled_step, 4_416);
+        assert_eq!(scheduled_step, 4_480);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
-        assert!(scheduled_step <= 4_416);
+        assert!(scheduled_step <= 4_480);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {

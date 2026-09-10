@@ -26,6 +26,131 @@ pub struct SafeStateRestoreReport {
     pub first_failed_sub_addr: Option<u8>,
 }
 
+/// One step of the safe-state register-restore sequence, advanced by
+/// exactly one backend register operation per call so a caller (the
+/// `TerminalRestoreMachine` poll loop) never issues more than one awaited
+/// backend operation per tick.
+///
+/// Step order mirrors [`restore_safe_state_via_backend_report`] exactly:
+/// the eight [`safe_state_write`] calls (steps 0-7), then the four PID
+/// error-sum-clear register pairs (steps 8-15, addr-select then data per
+/// pair, matching [`clear_pid_error_sums_via_backend`]'s order). The enable
+/// pin is lowered synchronously alongside step 0's write, since it never
+/// yields.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SafeStateRestoreStep {
+    index: u8,
+    report: SafeStateRestoreReport,
+}
+
+const SAFE_STATE_STEP_COUNT: u8 = 16;
+
+impl SafeStateRestoreStep {
+    /// True before any step has run. Callers gate one-time setup (like
+    /// `disarm_motor`'s lifecycle bookkeeping) on this, so it runs once, on
+    /// the first poll of a sequence built around this step.
+    // Consumed starting with the TerminalRestoreMachine cursor states added
+    // in a later task; unused until that caller exists.
+    #[allow(dead_code)]
+    pub(crate) const fn is_start(&self) -> bool {
+        self.index == 0
+    }
+
+    /// Perform the next backend register operation. Returns `true` while
+    /// steps remain; returns `false` once the sequence is complete, at
+    /// which point the safe-state report has already been recorded via
+    /// `backend.record_safe_state_report`.
+    pub(crate) async fn advance<B: CommissioningBackend>(&mut self, backend: &mut B) -> bool {
+        use foci_tmc4671::registers::*;
+
+        if self.index == 0 {
+            backend.set_enable_pin(false);
+        }
+        match self.index {
+            0 => safe_state_write(backend, MODE_RAMP_MODE_MOTION, 0, &mut self.report).await,
+            1 => safe_state_write(backend, PID_TORQUE_FLUX_TARGET, 0, &mut self.report).await,
+            2 => safe_state_write(backend, PID_TORQUE_FLUX_OFFSET, 0, &mut self.report).await,
+            3 => safe_state_write(backend, UQ_UD_EXT, 0, &mut self.report).await,
+            4 => safe_state_write(backend, PHI_E_SELECTION, 0, &mut self.report).await,
+            5 => safe_state_write(backend, PWM_SV_CHOP, 0, &mut self.report).await,
+            6 => safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut self.report).await,
+            7 => safe_state_write(backend, PIDOUT_UQ_UD_LIMITS, 1024, &mut self.report).await,
+            8 => {
+                let sub = PID_ERROR_PID_TORQUE_ERROR_SUM;
+                record_sub_register_write(
+                    backend,
+                    sub.addr,
+                    u32::from(sub.sub_addr),
+                    sub.sub_addr,
+                    &mut self.report,
+                )
+                .await;
+            }
+            9 => {
+                let sub = PID_ERROR_PID_TORQUE_ERROR_SUM;
+                record_sub_register_write(backend, sub.data, 0, sub.sub_addr, &mut self.report)
+                    .await;
+            }
+            10 => {
+                let sub = PID_ERROR_PID_FLUX_ERROR_SUM;
+                record_sub_register_write(
+                    backend,
+                    sub.addr,
+                    u32::from(sub.sub_addr),
+                    sub.sub_addr,
+                    &mut self.report,
+                )
+                .await;
+            }
+            11 => {
+                let sub = PID_ERROR_PID_FLUX_ERROR_SUM;
+                record_sub_register_write(backend, sub.data, 0, sub.sub_addr, &mut self.report)
+                    .await;
+            }
+            12 => {
+                let sub = PID_ERROR_PID_VELOCITY_ERROR_SUM;
+                record_sub_register_write(
+                    backend,
+                    sub.addr,
+                    u32::from(sub.sub_addr),
+                    sub.sub_addr,
+                    &mut self.report,
+                )
+                .await;
+            }
+            13 => {
+                let sub = PID_ERROR_PID_VELOCITY_ERROR_SUM;
+                record_sub_register_write(backend, sub.data, 0, sub.sub_addr, &mut self.report)
+                    .await;
+            }
+            14 => {
+                let sub = PID_ERROR_PID_POSITION_ERROR_SUM;
+                record_sub_register_write(
+                    backend,
+                    sub.addr,
+                    u32::from(sub.sub_addr),
+                    sub.sub_addr,
+                    &mut self.report,
+                )
+                .await;
+            }
+            15 => {
+                let sub = PID_ERROR_PID_POSITION_ERROR_SUM;
+                record_sub_register_write(backend, sub.data, 0, sub.sub_addr, &mut self.report)
+                    .await;
+            }
+            _ => unreachable!("SafeStateRestoreStep polled after completion"),
+        }
+        self.index += 1;
+        if self.index < SAFE_STATE_STEP_COUNT {
+            return true;
+        }
+        let timestamp_ms = (backend.elapsed_us() / 1000) as u32;
+        backend.record_safe_state_report(self.report, timestamp_ms);
+        false
+    }
+}
+
 /// Restore the TMC4671 to a safe non-energized state via `CommissioningBackend`.
 ///
 /// Sequence (each step best-effort):
@@ -58,46 +183,9 @@ pub(crate) async fn restore_safe_state_via_backend_report<B>(
 where
     B: CommissioningBackend,
 {
-    use foci_tmc4671::registers::*;
-
-    let mut report = SafeStateRestoreReport::default();
-    backend.set_enable_pin(false);
-    safe_state_write(backend, MODE_RAMP_MODE_MOTION, 0, &mut report).await;
-    safe_state_write(backend, PID_TORQUE_FLUX_TARGET, 0, &mut report).await;
-    safe_state_write(backend, PID_TORQUE_FLUX_OFFSET, 0, &mut report).await;
-    safe_state_write(backend, UQ_UD_EXT, 0, &mut report).await;
-    safe_state_write(backend, PHI_E_SELECTION, 0, &mut report).await;
-    safe_state_write(backend, PWM_SV_CHOP, 0, &mut report).await;
-    safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut report).await;
-    safe_state_write(backend, PIDOUT_UQ_UD_LIMITS, 1024, &mut report).await;
-    clear_pid_error_sums_via_backend(backend, &mut report).await;
-    let timestamp_ms = (backend.elapsed_us() / 1000) as u32;
-    backend.record_safe_state_report(report, timestamp_ms);
-    report
-}
-
-/// Backend-trait variant of PID error-sum clearing for safe-state recovery.
-///
-/// Each sub-register write is best-effort and accumulates into the shared
-/// [`SafeStateRestoreReport`] the same way [`safe_state_write`] does, so a
-/// failure here is no longer invisible to the retained safe-state report.
-async fn clear_pid_error_sums_via_backend<B>(backend: &mut B, report: &mut SafeStateRestoreReport)
-where
-    B: CommissioningBackend,
-{
-    use foci_tmc4671::registers::*;
-
-    let pairs = [
-        PID_ERROR_PID_TORQUE_ERROR_SUM,
-        PID_ERROR_PID_FLUX_ERROR_SUM,
-        PID_ERROR_PID_VELOCITY_ERROR_SUM,
-        PID_ERROR_PID_POSITION_ERROR_SUM,
-    ];
-    for sub in pairs {
-        let sub_addr = sub.sub_addr;
-        record_sub_register_write(backend, sub.addr, sub.sub_addr as u32, sub_addr, report).await;
-        record_sub_register_write(backend, sub.data, 0, sub_addr, report).await;
-    }
+    let mut step = SafeStateRestoreStep::default();
+    while step.advance(backend).await {}
+    step.report
 }
 
 async fn record_sub_register_write<B>(
@@ -146,6 +234,7 @@ async fn safe_state_write<B>(
 mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
+    use foci_firmware_macros::fixture_test;
     use foci_tmc4671::registers::*;
 
     #[test]
@@ -429,5 +518,51 @@ mod tests {
                 "expected at least one failed verified write"
             );
         });
+    }
+
+    #[fixture_test]
+    async fn safe_state_restore_step_advances_one_logical_op_per_call() {
+        let mut backend = MockBackend::new();
+        backend.enable_pin = true;
+        let mut step = SafeStateRestoreStep::default();
+        let mut calls = 0u32;
+        loop {
+            assert!(calls < 32, "step sequence did not terminate");
+            let verified_before = backend.verified_write_calls;
+            let attributed_before = backend.raw_ops_attributed_to_verified_calls;
+            let ops_before = backend.spi_log.len();
+            let more = step.advance(&mut backend).await;
+            let verified_delta = backend.verified_write_calls - verified_before;
+            let attributed_delta =
+                backend.raw_ops_attributed_to_verified_calls - attributed_before;
+            let total_raw = backend.spi_log[ops_before..]
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            let outside_delta = total_raw - attributed_delta;
+            // Exactly one verified-write call: every raw op its retry loop
+            // performed is attributed inside it (measured by length diff, Task
+            // 1 Step 0), so nothing may land outside. Zero verified calls: at
+            // most one plain Write or Read (the eight unverified sub-register
+            // writes) counts as "outside". More than one verified call in a
+            // single poll is always a violation.
+            let ok = match verified_delta {
+                0 => outside_delta <= 1,
+                1 => outside_delta == 0,
+                _ => false,
+            };
+            assert!(
+                ok,
+                "call {calls}: {verified_delta} verified-write call(s), {outside_delta} raw \
+                 register op(s) unattributed to any verified call (of {total_raw} total) -- \
+                 expected at most one logical register operation"
+            );
+            calls += 1;
+            if !more {
+                break;
+            }
+        }
+        assert_eq!(calls, 16, "expected exactly 16 steps");
+        assert!(!backend.enable_pin, "enable pin must be lowered");
     }
 }

@@ -424,6 +424,21 @@ pub struct MockBackend {
     /// config command dispatched at P2 after every awaiting step of the arm
     /// has already completed.
     pub pending_config_set_at_interlock_check: u8,
+    /// Count of `write_register_verified` calls, incremented once per call
+    /// regardless of how many attempts its internal retry loop takes.
+    /// Deliberately separate from `spi_log`. Exists solely so other tests
+    /// can tell "one verified-write call, possibly retried" apart from
+    /// "multiple independent register operations" in the same poll.
+    pub verified_write_calls: usize,
+    /// Sum of raw `spi_log` growth attributed to *completed*
+    /// `write_register_verified` calls, measured as a length diff around
+    /// each call rather than a persistent in-progress flag -- this stays
+    /// correct even if a verified-write future is dropped mid-retry (RTIC
+    /// futures are cancellable, and the existing suite intentionally drops
+    /// restore futures mid-poll): a cancelled call simply attributes
+    /// nothing, since the measurement only runs after the inner call
+    /// actually returns.
+    pub raw_ops_attributed_to_verified_calls: usize,
 }
 
 impl MockBackend {
@@ -504,6 +519,8 @@ impl MockBackend {
             pending_config_result: Ok(()),
             pending_config_set_during_drain: 0,
             pending_config_set_at_interlock_check: 0,
+            verified_write_calls: 0,
+            raw_ops_attributed_to_verified_calls: 0,
         }
     }
 
@@ -555,6 +572,40 @@ impl MockBackend {
     /// Write a register through the mock's register-I/O trait implementation.
     pub async fn write_register(&mut self, reg: Register, val: u32) -> Result<(), MockSpiError> {
         <Self as CommissionRegisterIo>::write_register(self, reg, val).await
+    }
+
+    async fn write_register_verified_inner(
+        &mut self,
+        reg: Register,
+        val: u32,
+    ) -> Result<(), MockSpiError> {
+        let max_attempts = foci_tmc4671::spi::RetryPolicy::production()
+            .max_attempts
+            .max(1);
+        for attempt in 0..max_attempts {
+            let result = async {
+                self.write_register(reg, val).await?;
+                // Suspends *between* the register write and its verifying
+                // read-back, so a test that drops here interrupts a
+                // half-completed verified write rather than gating entry to
+                // one. Deliberately not on `write_register`/`read_register`
+                // themselves: the engine-step future contains those, and the
+                // extra suspension state would inflate the F407 stack-budget
+                // gates in `commissioning::tests::size_regression_gates`.
+                if core::mem::take(&mut self.pend_next_op) {
+                    YieldOnce::default().await;
+                }
+                self.read_register(reg).await
+            }
+            .await;
+            match result {
+                Ok(actual) if actual == val => return Ok(()),
+                Ok(_) => {}
+                Err(error) if attempt + 1 == max_attempts => return Err(error),
+                Err(_) => continue,
+            }
+        }
+        Err(MockSpiError)
     }
 
     /// True once the outer-tune deploy path has entered position mode.
@@ -790,33 +841,11 @@ impl CommissionRegisterIo for MockBackend {
         reg: Register,
         val: u32,
     ) -> Result<(), Self::Error> {
-        let max_attempts = foci_tmc4671::spi::RetryPolicy::production()
-            .max_attempts
-            .max(1);
-        for attempt in 0..max_attempts {
-            let result = async {
-                self.write_register(reg, val).await?;
-                // Suspends *between* the register write and its verifying
-                // read-back, so a test that drops here interrupts a
-                // half-completed verified write rather than gating entry to
-                // one. Deliberately not on `write_register`/`read_register`
-                // themselves: the engine-step future contains those, and the
-                // extra suspension state would inflate the F407 stack-budget
-                // gates in `commissioning::tests::size_regression_gates`.
-                if core::mem::take(&mut self.pend_next_op) {
-                    YieldOnce::default().await;
-                }
-                self.read_register(reg).await
-            }
-            .await;
-            match result {
-                Ok(actual) if actual == val => return Ok(()),
-                Ok(_) => {}
-                Err(error) if attempt + 1 == max_attempts => return Err(error),
-                Err(_) => continue,
-            }
-        }
-        Err(MockSpiError)
+        self.verified_write_calls += 1;
+        let before = self.spi_log.len();
+        let result = self.write_register_verified_inner(reg, val).await;
+        self.raw_ops_attributed_to_verified_calls += self.spi_log.len() - before;
+        result
     }
 
     async fn read_register_verified(
