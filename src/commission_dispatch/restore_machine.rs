@@ -139,7 +139,7 @@ enum RestoreCursor {
     OuterFailedArmDisarm(SafeStateRestoreStep, u8),
 
     FixedGainAmplitudeStagedDisarmVelocity,
-    FixedGainAmplitudeDisarm,
+    FixedGainAmplitudeDisarm(SafeStateRestoreStep),
 
     RobustnessStagedClassify,
     RobustnessRestoreBaseline,
@@ -210,7 +210,7 @@ impl TerminalRestoreMachine {
             ),
             StepResult::FixedGainAmplitudeTerminal(terminal) => (
                 TerminalPayload::FixedGainAmplitude(terminal),
-                RestoreCursor::FixedGainAmplitudeDisarm,
+                RestoreCursor::FixedGainAmplitudeDisarm(SafeStateRestoreStep::default()),
             ),
             StepResult::RobustnessReversalTerminal(terminal) => (
                 TerminalPayload::RobustnessReversal(terminal),
@@ -1080,10 +1080,15 @@ impl TerminalRestoreMachine {
                         .as_mut()
                         .expect("engine slot is None on FixedGainAmplitudeTerminal")
                         .emit_fixed_gain_amplitude_terminal_trace(backend, terminal);
-                    self.cursor = RestoreCursor::FixedGainAmplitudeDisarm;
+                    self.cursor =
+                        RestoreCursor::FixedGainAmplitudeDisarm(SafeStateRestoreStep::default());
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::FixedGainAmplitudeDisarm => {
+                RestoreCursor::FixedGainAmplitudeDisarm(mut step) => {
+                    if poll_disarm_motor(&mut step, backend, state).await {
+                        self.cursor = RestoreCursor::FixedGainAmplitudeDisarm(step);
+                        return RestoreStep::Pending;
+                    }
                     let TerminalPayload::FixedGainAmplitude(terminal) =
                         self.terminal.payload.clone()
                     else {
@@ -1091,7 +1096,6 @@ impl TerminalRestoreMachine {
                             "fixed-gain amplitude cursor without a fixed-gain amplitude payload"
                         )
                     };
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     state.tmc.commission_in_flight.store(false, Relaxed);
                     let consumed = self.take_engine(engine);
                     return RestoreStep::Done(CommissionOutcome::Terminal {

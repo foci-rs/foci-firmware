@@ -1693,3 +1693,12 @@ async fn outer_failed_soft_failure_arm_failure_disarm_phase_is_one_op_per_poll()
         .expect("outer_failed_soft_failure_arm_failure variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
+
+#[fixture_test]
+async fn fixed_gain_amplitude_terminal_disarm_phase_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "fixed_gain_amplitude_terminal")
+        .expect("fixed_gain_amplitude_terminal variant must exist");
+    assert_disarm_phase_one_op_per_poll(&variant).await;
+}
