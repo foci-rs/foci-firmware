@@ -138,12 +138,17 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// `PID_TORQUE_FLUX_LIMITS` the chip never received. The sentinel does not
 /// cover this — it detects chip resets, not stale configuration.
 ///
-/// The drain covers what the host had already sent when this arm began. A
-/// config command dispatched while the arm is in flight leaves its bit set
-/// for the next control tick and does not refuse the arm: the handlers run
-/// at a higher priority than this path, so that interleaving is ordinary
-/// traffic. `drain_pending_config` owns the "nothing observed was skipped"
-/// invariant, where it can be checked without racing those handlers.
+/// The drain covers what the host had already sent when this arm began, but
+/// the handlers run at a higher priority than this path and can record more
+/// configuration during any of the awaiting steps that follow. A recorded
+/// value is not necessarily reflected in what this function energizes
+/// against -- `tmc_set_current` updates only the pending run current, leaving
+/// the torque-flux rewrite below to use the limit the host has just replaced
+/// -- so a final `config_apply_pending` check immediately before the enable
+/// pin refuses the arm instead. It returns an error rather than asserting:
+/// this interleaving is ordinary traffic, and the next control tick drains
+/// the bit so the host's retry arms against the value it sent. The residual
+/// window is the few instructions between that load and the GPIO write.
 ///
 /// The torque-flux rewrite makes this path truthful even when a homing
 /// clamp narrowed the register on a prior arm: a shutdown or disable
@@ -167,8 +172,8 @@ async fn verify_motor_sentinel<B: CommissioningBackend>(
 /// Returns [`crate::autotune::CommissionError::InvalidCurrentLimit`] if the
 /// stored run-current limit is zero (unconfigured).
 /// Returns [`crate::autotune::CommissionError::Spi`] if the pending-config
-/// drain fails (the failed item is named in the log) or if the torque-flux
-/// limit rewrite fails.
+/// drain fails (the failed item is named in the log), if the torque-flux
+/// limit rewrite fails, or if configuration was recorded after the drain.
 /// Returns [`crate::autotune::CommissionError::FaultInterlock`] if the fault
 /// interlock is tripped when the enable pin would be raised.
 pub async fn arm_motor_electrical<B: CommissioningBackend>(
@@ -232,6 +237,11 @@ pub async fn arm_motor_electrical<B: CommissioningBackend>(
 
     if backend.interlock_tripped() {
         return Err(crate::autotune::CommissionError::FaultInterlock);
+    }
+
+    if state.tmc.config_apply_pending.load(Relaxed) != 0 {
+        defmt::error!("arm_motor_electrical: configuration recorded after the drain, refusing arm");
+        return Err(crate::autotune::CommissionError::Spi);
     }
     backend.set_enable_pin(true);
     *state.motor_enabled = true;
@@ -487,7 +497,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn arm_motor_electrical_tolerates_config_recorded_while_it_drains() {
+    async fn arm_motor_electrical_refuses_when_config_is_recorded_while_it_drains() {
         use core::sync::atomic::Ordering;
         use foci_tmc4671::current_limit::PidTorqueFluxLimit;
         let mut backend = MockBackend::new();
@@ -508,19 +518,61 @@ mod tests {
         // The config handlers run in the P2 USB dispatch task and preempt this
         // P1 arming path, so a bit can appear after the drain has already
         // observed the mask it will clear. That interleaving is ordinary
-        // traffic, not a fault, and must not take the firmware down.
+        // traffic, not a fault: the arm is refused, not panicked out of.
         backend.pending_config_set_during_drain = crate::state::tmc::PENDING_FILTERS;
 
-        arm_motor_electrical(&mut backend, &mut state)
-            .await
-            .expect("a config command arriving mid-arm must not refuse the arm");
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
 
-        assert!(backend.enable_pin);
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(
+            !backend.enable_pin,
+            "must not energize against configuration recorded after the drain"
+        );
+        assert!(!*state.motor_enabled);
         assert_eq!(
             tmc_state().config_apply_pending.load(Ordering::Relaxed),
             crate::state::tmc::PENDING_FILTERS,
             "the late bit stays pending for the next control tick to drain"
         );
+
+        tmc_state().config_apply_pending.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_refuses_when_config_lands_just_before_the_enable_pin() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        // A `tmc_set_current` landing this late records only the pending run
+        // current, so the torque-flux limit this arm already wrote is the old
+        // one -- energizing now runs the motor at a limit the host has just
+        // replaced, possibly with a lower one.
+        backend.pending_config_set_at_interlock_check = crate::state::tmc::PENDING_CURRENT;
+
+        let result = arm_motor_electrical(&mut backend, &mut state).await;
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(
+            !backend.enable_pin,
+            "the pending check must sit after every awaiting step, not just after the drain"
+        );
+        assert!(!*state.motor_enabled);
+
+        tmc_state().config_apply_pending.store(0, Ordering::Relaxed);
     }
 
     #[fixture_test]

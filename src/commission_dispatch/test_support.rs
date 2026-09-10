@@ -420,6 +420,10 @@ pub struct MockBackend {
     /// Bits to set after the mock drain clears, modelling a config command
     /// dispatched at P2 while the P1 arming path is mid-drain.
     pub pending_config_set_during_drain: u8,
+    /// Bits to set when the arm's pre-enable interlock check runs, modelling a
+    /// config command dispatched at P2 after every awaiting step of the arm
+    /// has already completed.
+    pub pending_config_set_at_interlock_check: u8,
 }
 
 impl MockBackend {
@@ -499,6 +503,7 @@ impl MockBackend {
             tmc_state: crate::state::tmc::tmc_channel0(),
             pending_config_result: Ok(()),
             pending_config_set_during_drain: 0,
+            pending_config_set_at_interlock_check: 0,
         }
     }
 
@@ -845,6 +850,13 @@ impl CommissionMotorControl for MockBackend {
     }
 
     fn interlock_tripped(&self) -> bool {
+        // The arm queries this immediately before raising the enable pin, so
+        // it is where a test plants a config command landing at the very last
+        // moment the P2 dispatch task could preempt the P1 arming path.
+        self.tmc_state.config_apply_pending.fetch_or(
+            self.pending_config_set_at_interlock_check,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         self.interlock_tripped
     }
 
