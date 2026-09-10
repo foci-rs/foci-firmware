@@ -1649,3 +1649,12 @@ async fn calibrate_done_arm_failure_disarm_phase_is_one_op_per_poll() {
         .expect("calibrate_done_arm_failure variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
+
+#[fixture_test]
+async fn commission_done_arm_failure_disarm_phase_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "commission_done_arm_failure")
+        .expect("commission_done_arm_failure variant must exist");
+    assert_disarm_phase_one_op_per_poll(&variant).await;
+}

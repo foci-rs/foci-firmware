@@ -114,7 +114,7 @@ enum RestoreCursor {
     CommissionClassify,
     CommissionWriteCurrentLimit(OuterLoopGains),
     CommissionArm(OuterLoopGains),
-    CommissionDisarm(u8),
+    CommissionDisarm(SafeStateRestoreStep, u8),
 
     OuterDoneRestorePosition,
     OuterDoneApplyFilters(OuterLoopGains),
@@ -583,6 +583,7 @@ impl TerminalRestoreMachine {
                         }
                         Err(_) => {
                             self.cursor = RestoreCursor::CommissionDisarm(
+                                SafeStateRestoreStep::default(),
                                 CommissionError::CurrentValidationFailed.status_code(),
                             );
                         }
@@ -599,8 +600,10 @@ impl TerminalRestoreMachine {
                         .is_err()
                     {
                         defmt::error!("CommissionDone: current-limit restore SPI failed");
-                        self.cursor =
-                            RestoreCursor::CommissionDisarm(CommissionError::Spi.status_code());
+                        self.cursor = RestoreCursor::CommissionDisarm(
+                            SafeStateRestoreStep::default(),
+                            CommissionError::Spi.status_code(),
+                        );
                     } else {
                         self.cursor = RestoreCursor::CommissionArm(gains);
                     }
@@ -612,7 +615,10 @@ impl TerminalRestoreMachine {
                     {
                         Err(error) => {
                             defmt::error!("CommissionDone: arm sentinel verify failed: {}", error);
-                            self.cursor = RestoreCursor::CommissionDisarm(error.status_code());
+                            self.cursor = RestoreCursor::CommissionDisarm(
+                                SafeStateRestoreStep::default(),
+                                error.status_code(),
+                            );
                             return RestoreStep::Pending;
                         }
                         Ok(()) => {
@@ -657,13 +663,16 @@ impl TerminalRestoreMachine {
                         }
                     }
                 }
-                RestoreCursor::CommissionDisarm(status) => {
+                RestoreCursor::CommissionDisarm(mut step, status) => {
+                    if poll_disarm_motor(&mut step, backend, state).await {
+                        self.cursor = RestoreCursor::CommissionDisarm(step, status);
+                        return RestoreStep::Pending;
+                    }
                     let TerminalPayload::CommissionDone(commission_result) =
                         self.terminal.payload.clone()
                     else {
                         unreachable!("commission cursor without a commission payload")
                     };
-                    crate::tmc_control::lifecycle::disarm_motor(backend, state).await;
                     state.tmc.commission_in_flight.store(false, Relaxed);
                     let consumed = self.take_engine(engine);
                     return RestoreStep::Done(CommissionOutcome::Terminal {
