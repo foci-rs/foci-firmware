@@ -1619,6 +1619,323 @@ fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_err
 }
 
 #[test]
+fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_restores() {
+    pollster::block_on(async {
+        // Same shape as current-step: after the pre-settle delay succeeds,
+        // encoder-before, encoder PPR (non-zero), and torque-before are
+        // read before the main delay this test targets.
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(555) // saved position actual
+            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
+            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
+            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        // sample_delay_ms=150 makes the main delay 2 slices ([100, 50]);
+        // the pre-settle delay (20ms, 1 slice) is let through so this test
+        // reaches the SECOND checked-delay call site and its final slice,
+        // same reasoning as the current-step test in Task 3.
+        let mut calls = 0u32;
+        let mut expire_during_main_delay_final_slice = || {
+            calls += 1;
+            calls >= 5
+        };
+        let req = tmc_current_torque_sample_test(0, 7, 100, 50, 150, 500);
+
+        let outcome = run_current_torque_sample_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+                host_liveness_expired: Some(&mut expire_during_main_delay_final_slice),
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
+        assert_eq!(delay.delays_ms, std::vec![20, 100, 50]);
+
+        // Same restore tail as current-step: target zeroed, voltage limit
+        // and position target restored, mode restored.
+        let raw_spi = tmc.into_inner();
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
+        assert_eq!(
+            restore_tail,
+            [
+                (PID_TORQUE_FLUX_TARGET.addr(), 0),
+                (PIDOUT_UQ_UD_LIMITS.addr(), 777),
+                (PID_POSITION_TARGET.addr(), 555),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+    });
+}
+
+#[test]
+fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() {
+    pollster::block_on(async {
+        // `run_position_torque_offset_sample_request` has no pre-settle
+        // delay -- its first (and only, before the post-settle) checked
+        // delay is the sample delay, reached only after reading saved
+        // mode, saved offset, encoder-before, encoder PPR (must be
+        // non-zero or EncoderDomain::new rejects it before the delay is
+        // ever reached), and torque-before, in that order. All five reads
+        // must be queued for the mock to get there.
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(0x1234_5678) // saved offset
+            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
+            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
+            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        // sample_delay_ms=150 is this function's FIRST checked delay (no
+        // pre-settle here), so 2 slices ([100, 50]): main pre-loop (1),
+        // post-slice-1/100ms (2), post-slice-2/50ms -- the final slice -- (3).
+        let mut calls = 0u32;
+        let mut expire_during_main_delay_final_slice = || {
+            calls += 1;
+            calls >= 3
+        };
+
+        let outcome = run_position_torque_offset_sample_request(
+            tmc_position_torque_offset_sample_test(0, 4, 33, 150, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+                host_liveness_expired: Some(&mut expire_during_main_delay_final_slice),
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected position offset report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
+        assert_eq!(delay.delays_ms, std::vec![100, 50]);
+
+        // The unconditional restore tail is 3 writes (verified against
+        // the current source): saved offset restored, saved voltage
+        // limit restored, saved mode restored -- in that order. The
+        // 150ms retarget means, unlike the existing
+        // position_offset_spi_failure_attempts_offset_restore test (whose
+        // injected failure is the very FIRST write, so its expected
+        // vector has no preceding setup writes to skip), this run's
+        // setup writes (voltage limit, STATUS_FLAGS clear, the requested
+        // offset) succeed for real before the delay fails -- assert only
+        // the trailing 3-write restore sequence, not the whole vector.
+        let raw_spi = tmc.into_inner();
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
+        assert_eq!(
+            restore_tail,
+            [
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (PIDOUT_UQ_UD_LIMITS.addr(), 777),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+    });
+}
+
+#[test]
+fn current_torque_sample_pre_settle_host_liveness_expiry_reports_dedicated_status() {
+    // Same reasoning as current_step_pre_settle_host_liveness_expiry_reports_dedicated_status
+    // in Task 3: an independent call site (this function's own pre-settle
+    // delay) needs its own regression coverage, since a mistake converting
+    // only the main delay would not be caught by the test above.
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(555); // saved position actual
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let mut expire_immediately = || true;
+        let req = tmc_current_torque_sample_test(0, 7, 100, 50, 150, 500);
+
+        let outcome = run_current_torque_sample_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+                host_liveness_expired: Some(&mut expire_immediately),
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
+        assert!(delay.delays_ms.is_empty());
+    });
+}
+
+#[test]
+fn current_torque_sample_post_settle_host_liveness_expiry_reports_dedicated_status() {
+    // Third call site, same reasoning and mock-exhaustion-defaults-to-0
+    // argument as current_step_post_settle_host_liveness_expiry_reports_dedicated_status.
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(555) // saved position actual
+            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
+            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
+            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        let mut calls = 0u32;
+        let mut expire_at_post_settle = || {
+            calls += 1;
+            calls >= 5
+        };
+        let req = tmc_current_torque_sample_test(0, 7, 100, 50, 20, 500);
+
+        let outcome = run_current_torque_sample_request(
+            req,
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+                host_liveness_expired: Some(&mut expire_at_post_settle),
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
+        assert_eq!(delay.delays_ms, std::vec![20, 20]);
+
+        let raw_spi = tmc.into_inner();
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 4..];
+        assert_eq!(
+            restore_tail,
+            [
+                (PID_TORQUE_FLUX_TARGET.addr(), 0),
+                (PIDOUT_UQ_UD_LIMITS.addr(), 777),
+                (PID_POSITION_TARGET.addr(), 555),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+    });
+}
+
+#[test]
+fn position_offset_post_settle_host_liveness_expiry_reports_dedicated_status() {
+    // No pre-settle delay in this function, so this is its second and
+    // last call site.
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved mode
+            .with_read(0x1234_5678) // saved offset
+            .with_read(100) // encoder_before (ABN_DECODER_COUNT)
+            .with_read(1000) // encoder PPR (ABN_DECODER_PPR) -- must be non-zero
+            .with_read(0); // torque_before (PID_TORQUE_FLUX_ACTUAL)
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+        // Checks: main pre-loop/post-slice (1, 2) -- both false, letting
+        // the 20ms sample delay and every intervening read through --
+        // post-settle pre-loop (3) -- true.
+        let mut calls = 0u32;
+        let mut expire_at_post_settle = || {
+            calls += 1;
+            calls >= 3
+        };
+
+        let outcome = run_position_torque_offset_sample_request(
+            tmc_position_torque_offset_sample_test(0, 4, 33, 20, 444),
+            DiagnosticContext {
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+                host_liveness_expired: Some(&mut expire_at_post_settle),
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
+            outcome
+        else {
+            panic!("expected position offset report");
+        };
+        assert_eq!(report.status, CURRENT_STEP_STATUS_HOST_LIVENESS);
+        assert_eq!(delay.delays_ms, std::vec![20]);
+
+        let raw_spi = tmc.into_inner();
+        let restore_tail = &raw_spi.write_attempts[raw_spi.write_attempts.len() - 3..];
+        assert_eq!(
+            restore_tail,
+            [
+                (PID_TORQUE_FLUX_OFFSET.addr(), 0x1234_5678),
+                (PIDOUT_UQ_UD_LIMITS.addr(), 777),
+                (MODE_RAMP_MODE_MOTION.addr(), 0x8000_0003),
+            ]
+        );
+    });
+}
+
+#[test]
 fn voltage_step_rejects_non_position_mode() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default().with_read(0x8000_0001);
