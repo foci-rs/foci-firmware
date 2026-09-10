@@ -1720,3 +1720,98 @@ async fn robustness_reversal_rejected_disarm_phase_is_one_op_per_poll() {
         .expect("robustness_reversal_rejected variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
+
+/// Assert that, from the first `CONFIG_ADVANCED_PI_REPRESENT` write onward
+/// (`CalibrateGainsRestoreStep`'s own first-operation marker), `variant`
+/// never issues more than one raw register operation per `poll_step` call --
+/// until a disarm phase (marked by `SpiOp::EnablePin(false)`) starts, whose
+/// own budget, if any, is a different phase's concern.
+async fn assert_gain_restore_phase_one_op_per_poll(variant: &TerminalVariant) {
+    let mut backend = MockBackend::new();
+    prepare_backend(variant, &mut backend).await;
+    let mut calibrated = variant.entry_calibrated;
+    let mut motor_enabled = variant.entry_motor_enabled;
+    let mut gains = (variant.stored_gains)();
+    let mut engine = Some((variant.engine)());
+    let mut machine = TerminalRestoreMachine::start((variant.result)(), 0, 4095);
+    let mut previous_len = backend.spi_log.len();
+    let mut gain_phase = false;
+    let mut gain_phase_ended = false;
+    let pi_addr = foci_tmc4671::registers::CONFIG_ADVANCED_PI_REPRESENT
+        .addr
+        .addr();
+    let mut poll_index = 0usize;
+    loop {
+        poll_index += 1;
+        assert!(
+            poll_index < 128,
+            "{}: machine did not terminate",
+            variant.name
+        );
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        let outcome = machine
+            .poll_step(&mut engine, &mut backend, &mut state, None)
+            .await;
+        let delta = &backend.spi_log[previous_len..];
+        if !gain_phase
+            && delta
+                .iter()
+                .any(|op| matches!(op, SpiOp::Write(addr, _) if *addr == pi_addr))
+        {
+            gain_phase = true;
+        }
+        if gain_phase && !gain_phase_ended {
+            if delta.iter().any(|op| matches!(op, SpiOp::EnablePin(false))) {
+                gain_phase_ended = true;
+            } else {
+                let raw_ops = delta
+                    .iter()
+                    .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                    .count();
+                assert!(
+                    raw_ops <= 1,
+                    "{}: poll {} in the gain-restore phase logged {} raw ops, expected at most 1",
+                    variant.name,
+                    poll_index,
+                    raw_ops
+                );
+            }
+        }
+        previous_len = backend.spi_log.len();
+        if matches!(outcome, RestoreStep::Done(_)) {
+            break;
+        }
+    }
+    assert!(
+        gain_phase,
+        "{}: run finished without ever entering the gain-restore phase",
+        variant.name
+    );
+}
+
+#[fixture_test]
+async fn selftest_done_gain_restore_polls_are_one_op_each() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "selftest_done_gain_restore_failure")
+        .expect("selftest_done_gain_restore_failure variant must exist");
+    assert_gain_restore_phase_one_op_per_poll(&variant).await;
+}
+
+#[fixture_test]
+async fn inner_failed_calibrate_gain_restore_polls_are_one_op_each() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "inner_failed_calibrate")
+        .expect("inner_failed_calibrate variant must exist");
+    assert_gain_restore_phase_one_op_per_poll(&variant).await;
+}
+
+#[fixture_test]
+async fn calibrate_done_gain_restore_failure_polls_are_one_op_each() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "calibrate_done_gain_restore_failure")
+        .expect("calibrate_done_gain_restore_failure variant must exist");
+    assert_gain_restore_phase_one_op_per_poll(&variant).await;
+}

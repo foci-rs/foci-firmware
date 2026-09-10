@@ -101,12 +101,12 @@ impl OwnedTerminalData {
 /// Which awaited step runs next.
 #[derive(Clone, Copy)]
 enum RestoreCursor {
-    SelftestRestoreGains,
+    SelftestRestoreGains(Option<restore::CalibrateGainsRestoreStep>),
 
     InnerFailedSafeState(SafeStateRestoreStep),
-    InnerFailedRestoreGains,
+    InnerFailedRestoreGains(Option<restore::CalibrateGainsRestoreStep>),
 
-    CalibrateRestoreGains,
+    CalibrateRestoreGains(Option<restore::CalibrateGainsRestoreStep>),
     CalibrateApplyFilters,
     CalibrateArm,
     CalibrateDisarm(SafeStateRestoreStep, u8),
@@ -175,7 +175,7 @@ impl TerminalRestoreMachine {
         let (payload, cursor) = match result {
             StepResult::SelftestDone => (
                 TerminalPayload::Selftest,
-                RestoreCursor::SelftestRestoreGains,
+                RestoreCursor::SelftestRestoreGains(None),
             ),
             StepResult::InnerFailed(error) => (
                 TerminalPayload::InnerFailed(error),
@@ -183,7 +183,7 @@ impl TerminalRestoreMachine {
             ),
             StepResult::CalibrateDone(result) => (
                 TerminalPayload::CalibrateDone(result),
-                RestoreCursor::CalibrateRestoreGains,
+                RestoreCursor::CalibrateRestoreGains(None),
             ),
             StepResult::CommissionDone(result) => (
                 TerminalPayload::CommissionDone(result),
@@ -344,27 +344,31 @@ impl TerminalRestoreMachine {
                 }
 
                 // --- selftest ------------------------------------------------
-                RestoreCursor::SelftestRestoreGains => {
-                    state.tmc.commission_in_flight.store(false, Relaxed);
-                    if restore::restore_calibrate_gains(backend, state.tmc, *state.stored_gains)
-                        .await
-                        .is_err()
-                    {
-                        defmt::error!("SelftestDone: saved gain restore SPI failed");
-                    }
-                    let mut consumed = self.take_engine(engine);
-                    let oid = consumed.oid();
-                    let results = consumed.take_selftest_results();
-                    let diagnostics = consumed.take_diagnostics();
-                    return RestoreStep::Done(CommissionOutcome::Terminal {
-                        reply: ReplyPayload::Selftest {
-                            oid,
-                            results,
-                            diagnostics,
-                            done_status: 0,
-                        },
-                        actions: PostActions::NONE,
+                RestoreCursor::SelftestRestoreGains(step) => {
+                    let mut step = step.unwrap_or_else(|| {
+                        state.tmc.commission_in_flight.store(false, Relaxed);
+                        restore::CalibrateGainsRestoreStep::start(*state.stored_gains)
                     });
+                    if let Some(result) = step.advance(backend, state.tmc).await {
+                        if result.is_err() {
+                            defmt::error!("SelftestDone: saved gain restore SPI failed");
+                        }
+                        let mut consumed = self.take_engine(engine);
+                        let oid = consumed.oid();
+                        let results = consumed.take_selftest_results();
+                        let diagnostics = consumed.take_diagnostics();
+                        return RestoreStep::Done(CommissionOutcome::Terminal {
+                            reply: ReplyPayload::Selftest {
+                                oid,
+                                results,
+                                diagnostics,
+                                done_status: 0,
+                            },
+                            actions: PostActions::NONE,
+                        });
+                    }
+                    self.cursor = RestoreCursor::SelftestRestoreGains(Some(step));
+                    return RestoreStep::Pending;
                 }
 
                 // --- inner-failed --------------------------------------------
@@ -375,18 +379,24 @@ impl TerminalRestoreMachine {
                     if step.advance(backend).await {
                         self.cursor = RestoreCursor::InnerFailedSafeState(step);
                     } else {
-                        self.cursor = RestoreCursor::InnerFailedRestoreGains;
+                        self.cursor = RestoreCursor::InnerFailedRestoreGains(None);
                     }
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::InnerFailedRestoreGains => {
+                RestoreCursor::InnerFailedRestoreGains(step) => {
                     let kind = self.engine_kind(engine);
-                    if matches!(kind, EngineKind::Selftest | EngineKind::Calibrate)
-                        && restore::restore_calibrate_gains(backend, state.tmc, *state.stored_gains)
-                            .await
-                            .is_err()
-                    {
-                        defmt::error!("InnerFailed: saved gain restore SPI failed");
+                    if matches!(kind, EngineKind::Selftest | EngineKind::Calibrate) {
+                        let mut s = step.unwrap_or_else(|| {
+                            restore::CalibrateGainsRestoreStep::start(*state.stored_gains)
+                        });
+                        if let Some(result) = s.advance(backend, state.tmc).await {
+                            if result.is_err() {
+                                defmt::error!("InnerFailed: saved gain restore SPI failed");
+                            }
+                        } else {
+                            self.cursor = RestoreCursor::InnerFailedRestoreGains(Some(s));
+                            return RestoreStep::Pending;
+                        }
                     }
                     let TerminalPayload::InnerFailed(error) = self.terminal.payload.clone() else {
                         unreachable!("inner-failed cursor without an inner-failed payload")
@@ -427,17 +437,21 @@ impl TerminalRestoreMachine {
                 }
 
                 // --- calibrate -----------------------------------------------
-                RestoreCursor::CalibrateRestoreGains => {
-                    state.tmc.motor_armed.store(false, Relaxed);
-                    match restore::restore_calibrate_gains(backend, state.tmc, *state.stored_gains)
-                        .await
-                    {
-                        Ok(()) => {
+                RestoreCursor::CalibrateRestoreGains(step) => {
+                    let mut step = step.unwrap_or_else(|| {
+                        state.tmc.motor_armed.store(false, Relaxed);
+                        restore::CalibrateGainsRestoreStep::start(*state.stored_gains)
+                    });
+                    match step.advance(backend, state.tmc).await {
+                        None => {
+                            self.cursor = RestoreCursor::CalibrateRestoreGains(Some(step));
+                        }
+                        Some(Ok(())) => {
                             self.cursor = RestoreCursor::CalibrateApplyFilters;
                         }
-                        Err(restore_error) => {
+                        Some(Err(kind)) => {
                             defmt::error!("CalibrateDone: saved gain restore SPI failed");
-                            let status = match restore_error {
+                            let status = match kind {
                                 restore::GainsRestoreErrorKind::PiRepresentation => {
                                     crate::calibration::CalibrationError::ChipResetDetected
                                         .status_code()

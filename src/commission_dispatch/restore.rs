@@ -330,6 +330,7 @@ impl CalibrateGainsRestoreStep {
 ///
 /// Returns [`GainsRestoreErrorKind`] on the first failed write, an SPI read
 /// failure, or invalid stored outer gains.
+#[cfg(test)]
 pub async fn restore_calibrate_gains<B: CommissioningBackend>(
     backend: &mut B,
     tmc_state: &TmcChannelState,

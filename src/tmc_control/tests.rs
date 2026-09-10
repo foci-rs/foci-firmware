@@ -124,15 +124,19 @@ fn channel_runtime_size_stays_bounded() {
     // `commissioning::tests::size_regression_gates`).
     // 7_568 -> 7_584 / 7_536 -> 7_552: the runtime now owns the homing
     // `Option<StallDetector>` and its clamp-write retry counter.
+    // 7_584 -> 7_600 / 7_552 -> 7_568: the three gain-restore cursor states
+    // (`SelftestRestoreGains`, `InnerFailedRestoreGains`,
+    // `CalibrateRestoreGains`) now carry an `Option<CalibrateGainsRestoreStep>`
+    // so each polls one register operation at a time instead of one shot.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_584);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_600);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_552);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_568);
 }
 
 #[test]
