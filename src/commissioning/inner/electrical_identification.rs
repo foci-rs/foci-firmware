@@ -98,6 +98,7 @@ const DIAG_ELECTRICAL_ID_REJECT_MODEL_SCALE_ZERO: u8 = 22;
 const DIAG_ELECTRICAL_ID_REJECT_THETA_TOO_LARGE: u8 = 29;
 const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_FREQUENCY: u8 = 32;
 const DIAG_ELECTRICAL_ID_REJECT_INDUCTANCE_CAPTURE: u8 = 33;
+const DIAG_ELECTRICAL_ID_INDUCTANCE_STATUS_REJECT: u8 = 41;
 
 // ---------------------------------------------------------------------------
 // Phase 1 model-assembly gates and warning bits.
@@ -668,13 +669,6 @@ async fn poll_delay_sample<B: CommissioningBackend>(
         }));
     }
     Ok(DelaySamplePoll::At)
-}
-
-fn inductance_status_is_critical(
-    flags: u32,
-    feedback_config: crate::config::FeedbackConfig,
-) -> bool {
-    flags & crate::autotune::current_loop_actionable_status_mask(feedback_config) != 0
 }
 
 fn pack_ud_drive(ud_ext: i16) -> u32 {
@@ -1859,7 +1853,23 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     );
                 }
             };
-            if inductance_status_is_critical(status_flags_or, backend.feedback_config()) {
+            let entry_mask = crate::autotune::current_loop_entry_actionable_status_mask(
+                backend.feedback_config(),
+            );
+            if crate::autotune::is_actionable_status(status_flags_or, entry_mask) {
+                defmt::warn!(
+                    "Inductance pre-status rejected: status_flags_or=0x{:08x} entry_mask=0x{:08x}",
+                    status_flags_or,
+                    entry_mask,
+                );
+                diagnostics.push(crate::selftest::CommissionDiagnostic {
+                    phase: CommissionPhase::ElectricalIdentification.to_u8(),
+                    code: DIAG_ELECTRICAL_ID_INDUCTANCE_STATUS_REJECT,
+                    status: 1,
+                    value0: status_flags_or,
+                    value1: entry_mask,
+                    value2: 0,
+                });
                 return begin_inductance_restore(
                     electrical_identification_state,
                     backend,
@@ -1989,7 +1999,28 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 }
             };
             next_capture.status_flags_or |= status;
-            if inductance_status_is_critical(status, backend.feedback_config()) {
+            // The AC excitation drive keeps the ipark circular-limit bits
+            // (16-18) set for its whole duration, not just at entry -- the
+            // same transitional condition the entry mask exists to demote,
+            // so the per-sample check uses it too rather than the strict
+            // finish-phase mask.
+            let entry_mask = crate::autotune::current_loop_entry_actionable_status_mask(
+                backend.feedback_config(),
+            );
+            if crate::autotune::is_actionable_status(status, entry_mask) {
+                defmt::warn!(
+                    "Inductance capture status rejected: status=0x{:08x} entry_mask=0x{:08x}",
+                    status,
+                    entry_mask,
+                );
+                diagnostics.push(crate::selftest::CommissionDiagnostic {
+                    phase: CommissionPhase::ElectricalIdentification.to_u8(),
+                    code: DIAG_ELECTRICAL_ID_INDUCTANCE_STATUS_REJECT,
+                    status: 1,
+                    value0: status,
+                    value1: entry_mask,
+                    value2: u32::from(capture.sample_count),
+                });
                 return begin_inductance_restore(
                     electrical_identification_state,
                     backend,
@@ -2163,9 +2194,18 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 );
             }
             if let Some(error) = *primary_error {
+                defmt::warn!(
+                    "Inductance identification failed: primary_error={} timing_accepted={}",
+                    error,
+                    *timing_accepted
+                );
                 return fail_electrical_id(phase, diagnostics, error);
             }
             let Some(evidence) = *evidence else {
+                defmt::warn!(
+                    "Inductance identification rejected: no evidence assembled, timing_accepted={}",
+                    *timing_accepted
+                );
                 data.inductance_timing = *timing;
                 return fail_electrical_id(
                     phase,
@@ -2568,6 +2608,7 @@ mod tests {
     const TEST_THETA_E_US: u32 = 160;
     const NOMINAL_INDUCTANCE_CAPTURE_US: u32 =
         INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS / 65_536 * 1_000;
+    const IPARK_CIRCULAR_LIMIT_BIT: u32 = 1 << 17;
 
     #[test]
     fn electrical_capture_periods_preserve_required_windows() {
@@ -4428,6 +4469,125 @@ mod tests {
             InductanceReject::EncoderMotion.commission_error(),
             CommissionError::InductanceEncoderMotion
         );
+    }
+
+    #[test]
+    fn inductance_pre_status_tolerates_entry_demoted_limiter_bit() {
+        pollster::block_on(async {
+            let domain = EncoderDomain::new(4000).unwrap();
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceReadPreStatus {
+                    encoder_start: 0,
+                    encoder_domain: domain,
+                },
+                data: ElectricalIdentificationData::new(
+                    1024,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let _ = backend.registers.insert(
+                foci_tmc4671::registers::STATUS_FLAGS.addr(),
+                IPARK_CIRCULAR_LIMIT_BIT,
+            );
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(
+                matches!(
+                    phase,
+                    InnerPhase::ElectricalIdentification {
+                        state: ElectricalIdentificationState::InductanceReadStartPhi { .. },
+                        ..
+                    }
+                ),
+                "entry-demoted limiter bit must not reject the inductance pre-status check: {phase:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn inductance_capture_status_tolerates_entry_demoted_limiter_bit() {
+        pollster::block_on(async {
+            let domain = EncoderDomain::new(4000).unwrap();
+            let capture = InductanceCaptureState {
+                encoder_domain: domain,
+                encoder_start: 0,
+                start_us: 0,
+                previous_elapsed_us: 0,
+                previous_phi: 0,
+                accumulated_phi_delta_counts: 0,
+                accumulator: crate::electrical_capture::AcFrameAccumulator::new(),
+                first_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                second_half: crate::electrical_capture::AcFrameAccumulator::new(),
+                saliency: crate::electrical_capture::AcSaliencyAccumulator::new(),
+                sample_count: 100,
+                status_flags_or: 0,
+                next_sample_us: 0,
+                timing: CaptureTiming::new(
+                    INDUCTANCE_AC_SAMPLE_PERIOD_US,
+                    TimingEnvelope::INDUCTANCE,
+                ),
+                current_envelope: crate::tmc_control::current_limit::diagnostic_current_envelope(
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                    INDUCTANCE_DIAGNOSTIC_CURRENT_FRACTION,
+                ),
+            };
+            let (timing_evidence, _overflowed) = capture.timing.snapshot();
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceReadStatus {
+                    capture,
+                    completed_elapsed_us: 0,
+                    timing: timing_evidence,
+                },
+                data: ElectricalIdentificationData::new(
+                    1024,
+                    crate::commission_dispatch::test_support::current_limit(2816),
+                ),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let _ = backend.registers.insert(
+                foci_tmc4671::registers::STATUS_FLAGS.addr(),
+                IPARK_CIRCULAR_LIMIT_BIT,
+            );
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(
+                matches!(
+                    phase,
+                    InnerPhase::ElectricalIdentification {
+                        state: ElectricalIdentificationState::InductanceReadEncoder { .. },
+                        ..
+                    }
+                ),
+                "entry-demoted limiter bit must not reject the inductance mid-capture check: {phase:?}"
+            );
+        });
     }
 
     #[test]
