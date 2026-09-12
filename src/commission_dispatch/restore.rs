@@ -1784,4 +1784,119 @@ mod tests {
         }
         crate::state::tmc::tmc_channel0().reset();
     }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_fail_fast_phase_aborts_on_first_error() {
+        use foci_tmc4671::registers::*;
+        let snap = sample_entry_snapshot();
+        let mut backend = MockBackend::new();
+        // PID_VELOCITY_LIMIT write is fail-fast (op #10, before any filter
+        // write) -- injecting a failure there must abort immediately and
+        // never reach the filter phase.
+        backend.fail_on_write = Some(PID_VELOCITY_LIMIT.addr());
+
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert_eq!(result, Err(RestoreEntryGainsErrorKind::Spi));
+        assert!(
+            !write_log(&backend)
+                .iter()
+                .any(|(addr, _)| *addr == PIDOUT_UQ_UD_LIMITS.addr()),
+            "a fail-fast abort before the filter phase must never reach the voltage-limit \
+             write that follows the filter phase"
+        );
+        crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_best_effort_filter_failure_does_not_abort() {
+        use foci_tmc4671::registers::*;
+        let mut snap = sample_entry_snapshot();
+        snap.velocity_filter_hz = 200;
+        let mut backend = MockBackend::new();
+        // A write inside the velocity filter's enable sequence fails; the
+        // best-effort policy must swallow it and continue on to the
+        // fail-fast tail (voltage limit, zero position, position mode).
+        backend.fail_on_write = Some(CONFIG_BIQUAD_V_A_1.data.addr());
+
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert_eq!(
+            result,
+            Ok(()),
+            "a filter write failure must not abort the restore"
+        );
+        assert!(
+            write_log(&backend)
+                .iter()
+                .any(|(addr, _)| *addr == PIDOUT_UQ_UD_LIMITS.addr()),
+            "the restore must still reach the voltage-limit write after a swallowed filter error"
+        );
+        assert!(
+            write_log(&backend)
+                .iter()
+                .any(|(addr, val)| *addr == MODE_RAMP_MODE_MOTION.addr() && *val == 0x8000_0003),
+            "the restore must still re-enter position mode after a swallowed filter error"
+        );
+        crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_interlock_tripped_maps_to_fault_interlock_kind() {
+        use foci_tmc4671::registers::*;
+        let snap = sample_entry_snapshot();
+        let mut backend = MockBackend::new();
+        backend.interlock_tripped = true;
+
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert_eq!(result, Err(RestoreEntryGainsErrorKind::FaultInterlock));
+        assert!(
+            !write_log(&backend)
+                .iter()
+                .any(|(addr, _)| *addr == STATUS_FLAGS.addr()),
+            "an interlock-tripped clear-status-flags step must not write STATUS_FLAGS"
+        );
+        crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_pi_representation_failure_maps_to_pi_representation_kind() {
+        let snap = sample_entry_snapshot();
+        let mut backend = MockBackend::new();
+        // Do NOT use the tmc_state() helper -- it unconditionally calls
+        // mark_pi_representation_established() on every call, so it can
+        // never exercise this path. Go through tmc_channel0() directly:
+        // reset() already clears pi_representation_established, and this
+        // bypasses tmc_state()'s auto-establish side effect.
+        crate::state::tmc::tmc_channel0().reset();
+
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step
+                .advance(&mut backend, crate::state::tmc::tmc_channel0())
+                .await
+            {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert_eq!(result, Err(RestoreEntryGainsErrorKind::PiRepresentation));
+        crate::state::tmc::tmc_channel0().reset();
+    }
 }
