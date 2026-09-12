@@ -1362,6 +1362,7 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             engine: robustness_reversal_engine,
             entry_calibrated: true,
             entry_motor_enabled: true,
+            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
@@ -1879,6 +1880,15 @@ async fn outer_failed_soft_failure_arm_failure_stability_arm_is_one_op_per_poll(
         .into_iter()
         .find(|v| v.name == "outer_failed_soft_failure_arm_failure")
         .expect("outer_failed_soft_failure_arm_failure variant must exist");
+    assert_single_op_arm_budget(&variant).await;
+}
+
+#[fixture_test]
+async fn outer_failed_safety_fault_restore_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "outer_failed_safety_fault")
+        .expect("outer_failed_safety_fault variant must exist");
     assert_single_op_arm_budget(&variant).await;
 }
 

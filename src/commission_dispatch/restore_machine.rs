@@ -132,8 +132,8 @@ enum RestoreCursor {
     OuterFailedStagedTiming,
     OuterFailedDisarmVelocity(Option<VelocityDisarmStep>),
     OuterFailedClassify,
-    OuterFailedRestoreEntryGains,
-    OuterFailedSafetyRestore,
+    OuterFailedRestoreEntryGains(Option<restore::RestoreEntryGainsStep>),
+    OuterFailedSafetyRestore(Option<restore::RestoreEntryGainsStep>),
     OuterFailedStability(Option<restore::PositionStabilityStep>),
     OuterFailedModeRamp,
     OuterFailedFaultDisarm(SafeStateRestoreStep),
@@ -969,30 +969,44 @@ impl TerminalRestoreMachine {
                         if matches!(error, CommissionError::SafetyEnvelopeViolation)
                             && self.entry_snapshot(engine).is_some()
                         {
-                            self.cursor = RestoreCursor::OuterFailedSafetyRestore;
+                            self.cursor = RestoreCursor::OuterFailedSafetyRestore(None);
                         } else {
                             self.cursor = RestoreCursor::OuterFailedModeRamp;
                         }
                     } else if self.entry_snapshot(engine).is_some() {
-                        self.cursor = RestoreCursor::OuterFailedRestoreEntryGains;
+                        self.cursor = RestoreCursor::OuterFailedRestoreEntryGains(None);
                     } else {
                         self.terminal.outer_restore_failure = Some(CommissionError::Spi);
                         self.cursor = RestoreCursor::OuterFailedModeRamp;
                     }
                 }
-                RestoreCursor::OuterFailedRestoreEntryGains => {
+                RestoreCursor::OuterFailedRestoreEntryGains(step) => {
+                    #[cfg(test)]
+                    {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
                     let snapshot = self
                         .entry_snapshot(engine)
                         .expect("entry snapshot disappeared during outer-failed restore");
-                    match crate::commissioning::inner::restore_entry_gains(
-                        &snapshot, backend, state.tmc,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
+                    let mut step =
+                        step.unwrap_or_else(|| restore::RestoreEntryGainsStep::start(&snapshot));
+                    match step.advance(backend, state.tmc).await {
+                        None => {
+                            self.cursor = RestoreCursor::OuterFailedRestoreEntryGains(Some(step));
+                        }
+                        Some(Ok(())) => {
                             self.cursor = RestoreCursor::OuterFailedStability(None);
                         }
-                        Err(restore_err) => {
+                        Some(Err(kind)) => {
+                            let restore_err = match kind {
+                                restore::RestoreEntryGainsErrorKind::Spi => CommissionError::Spi,
+                                restore::RestoreEntryGainsErrorKind::PiRepresentation => {
+                                    CommissionError::ChipResetDetected
+                                }
+                                restore::RestoreEntryGainsErrorKind::FaultInterlock => {
+                                    CommissionError::FaultInterlock
+                                }
+                            };
                             defmt::error!(
                                 "OuterFailed: installed-tuning restore failed: {}",
                                 restore_err
@@ -1003,21 +1017,40 @@ impl TerminalRestoreMachine {
                     }
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::OuterFailedSafetyRestore => {
+                RestoreCursor::OuterFailedSafetyRestore(step) => {
+                    #[cfg(test)]
+                    {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
                     let snapshot = self
                         .entry_snapshot(engine)
                         .expect("entry snapshot disappeared during safety-fault restore");
-                    if let Err(restore_err) = crate::commissioning::inner::restore_entry_gains(
-                        &snapshot, backend, state.tmc,
-                    )
-                    .await
-                    {
-                        defmt::error!(
-                            "OuterFailed: safety-fault gain restore failed: {}",
-                            restore_err
-                        );
+                    let mut step =
+                        step.unwrap_or_else(|| restore::RestoreEntryGainsStep::start(&snapshot));
+                    match step.advance(backend, state.tmc).await {
+                        None => {
+                            self.cursor = RestoreCursor::OuterFailedSafetyRestore(Some(step));
+                        }
+                        Some(Ok(())) => {
+                            self.cursor = RestoreCursor::OuterFailedModeRamp;
+                        }
+                        Some(Err(kind)) => {
+                            let restore_err = match kind {
+                                restore::RestoreEntryGainsErrorKind::Spi => CommissionError::Spi,
+                                restore::RestoreEntryGainsErrorKind::PiRepresentation => {
+                                    CommissionError::ChipResetDetected
+                                }
+                                restore::RestoreEntryGainsErrorKind::FaultInterlock => {
+                                    CommissionError::FaultInterlock
+                                }
+                            };
+                            defmt::error!(
+                                "OuterFailed: safety-fault gain restore failed: {}",
+                                restore_err
+                            );
+                            self.cursor = RestoreCursor::OuterFailedModeRamp;
+                        }
                     }
-                    self.cursor = RestoreCursor::OuterFailedModeRamp;
                     return RestoreStep::Pending;
                 }
                 RestoreCursor::OuterFailedStability(step) => {

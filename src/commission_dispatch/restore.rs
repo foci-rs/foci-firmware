@@ -683,16 +683,12 @@ impl EntrySnapshotRestoreStep {
 /// `restore_entry_gains`'s own disable-write `else` branch never reaches
 /// because that branch is gated on `filter_hz == 0`, not on cutoff validity.
 #[derive(Clone, Copy)]
-// Only exercised by this module's tests until Task 2 wires `RestoreEntryGainsStep`
-// into `RestoreCursor`.
-#[allow(dead_code)]
 pub(crate) struct EntryGainFiltersStep {
     ops: [(foci_tmc4671::registers::Register, u32); 48],
     len: u8,
     next: u8,
 }
 
-#[allow(dead_code)]
 impl EntryGainFiltersStep {
     fn start(snapshot: &crate::commissioning::OuterGainRollbackSnapshot, pwm_maxcnt: u16) -> Self {
         use foci_tmc4671::registers::*;
@@ -796,9 +792,6 @@ impl EntryGainFiltersStep {
 /// `restore_machine.rs` cursor arm, matching how `PositionModeRestoreStep`'s
 /// error kind is mapped at its own call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-// Only exercised by this module's tests until Task 2 wires `RestoreEntryGainsStep`
-// into `RestoreCursor`.
-#[allow(dead_code)]
 pub(crate) enum RestoreEntryGainsErrorKind {
     Spi,
     PiRepresentation,
@@ -822,8 +815,6 @@ pub(crate) enum RestoreEntryGainsErrorKind {
 /// characterization tests.
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
-// Only exercised by this module's tests until Task 2 wires this into `RestoreCursor`.
-#[allow(dead_code)]
 pub(crate) enum RestoreEntryGainsStep {
     ZeroTorqueFluxTarget {
         snapshot: crate::commissioning::OuterGainRollbackSnapshot,
@@ -869,7 +860,6 @@ pub(crate) enum RestoreEntryGainsStep {
     EnterPositionMode,
 }
 
-#[allow(dead_code)]
 impl RestoreEntryGainsStep {
     pub(crate) fn start(snapshot: &crate::commissioning::OuterGainRollbackSnapshot) -> Self {
         Self::ZeroTorqueFluxTarget {

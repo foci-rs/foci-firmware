@@ -12,13 +12,16 @@ use crate::autotune::{
     ClosedLoopActivationState, CommissionError, CommissionProfile, ElectricalModel, InnerSequence,
     TransientBuffer,
 };
+#[cfg(test)]
 use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::encoder_domain::EncoderCount;
 use crate::commissioning::inner::current_loop::{CurrentValidateData, CurrentValidateState};
 use crate::commissioning::types::{
     AdcCalResult, CommissioningBackend, InductanceEvidence, InnerResult, StepResult,
 };
-use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
+#[cfg(test)]
+use foci_tmc4671::pid::PidGainPair;
+use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 pub mod adc;
 pub mod closed_loop_activation;
@@ -690,7 +693,12 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
 /// gains, velocity limit, and biquad filters, then re-enters position
 /// mode. The caller owns the post-restore stability policy so this helper
 /// remains limited to the register restore sequence.
-pub async fn restore_entry_gains<B: CommissioningBackend>(
+///
+/// Retained only as the characterization-test oracle for
+/// `restore::RestoreEntryGainsStep` (`commission_dispatch::restore`), which
+/// replaced it in production; not reachable outside `#[cfg(test)]` builds.
+#[cfg(test)]
+pub(crate) async fn restore_entry_gains<B: CommissioningBackend>(
     snapshot: &OuterGainRollbackSnapshot,
     backend: &mut B,
     tmc_state: &crate::state::tmc::TmcChannelState,
