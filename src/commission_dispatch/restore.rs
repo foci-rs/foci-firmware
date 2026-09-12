@@ -666,22 +666,6 @@ impl EntrySnapshotRestoreStep {
 
 /// Reloads the four per-axis biquad filters from an `OuterGainRollbackSnapshot`,
 /// one raw backend write per `advance()` call.
-///
-/// Deliberately best-effort: unlike `EntrySnapshotRestoreStep::Filters`'s
-/// `FilterCutoffsStep` (which aborts on the first write failure), a failed
-/// write here is silently skipped and the walk continues to the next op,
-/// matching `restore_entry_gains`'s original `let _ = write_biquad_*(...)`
-/// error policy exactly. `advance()` therefore never returns `Err` -- it
-/// returns `bool` (`true` once every op has been attempted), not
-/// `Option<Result<..>>`.
-///
-/// Per-filter op count has three cases, not two: `filter_hz == 0` writes only
-/// the 2-op disable pair; `filter_hz > 0` with a valid cutoff writes the full
-/// 12-op enable sequence; `filter_hz > 0` with an invalid cutoff (outside
-/// `[10, 6000]` Hz, or `pwm_maxcnt == 0`) writes nothing at all -- matching
-/// `write_biquad_*_checked`'s silent `if let Some(coeffs) = ...` skip, which
-/// `restore_entry_gains`'s own disable-write `else` branch never reaches
-/// because that branch is gated on `filter_hz == 0`, not on cutoff validity.
 #[derive(Clone, Copy)]
 pub(crate) struct EntryGainFiltersStep {
     ops: [(foci_tmc4671::registers::Register, u32); 48],
@@ -785,34 +769,27 @@ impl EntryGainFiltersStep {
     }
 }
 
-/// Failure reason for [`RestoreEntryGainsStep`]. Maps 1:1 onto the
-/// `CommissionError` values `restore_entry_gains` itself would have
-/// returned (`Spi` -> `CommissionError::Spi`, `PiRepresentation` ->
-/// `CommissionError::ChipResetDetected`) -- the mapping lives in the
-/// `restore_machine.rs` cursor arm, matching how `PositionModeRestoreStep`'s
-/// error kind is mapped at its own call site.
+/// Failure reason for [`RestoreEntryGainsStep`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RestoreEntryGainsErrorKind {
     Spi,
     PiRepresentation,
-    /// `clear_status_flags_via_backend` refused because the interlock is
-    /// tripped -- no write was attempted. Kept distinct from `Spi` because
-    /// the flat function propagated `CommissionError::FaultInterlock`
-    /// unchanged; collapsing it into `Spi` would misreport the outer-failed
-    /// terminal's `outer_restore_failure` and trace status.
     FaultInterlock,
+}
+
+impl From<RestoreEntryGainsErrorKind> for crate::autotune::CommissionError {
+    fn from(kind: RestoreEntryGainsErrorKind) -> Self {
+        match kind {
+            RestoreEntryGainsErrorKind::Spi => Self::Spi,
+            RestoreEntryGainsErrorKind::PiRepresentation => Self::ChipResetDetected,
+            RestoreEntryGainsErrorKind::FaultInterlock => Self::FaultInterlock,
+        }
+    }
 }
 
 /// Restores outer gains from an entry snapshot after a Stage 2 soft failure
 /// or a safety-fault gain restore, one raw backend operation per
 /// `advance()` call.
-///
-/// Mirrors `commissioning::inner::restore_entry_gains` exactly, including its
-/// split fail-fast/best-effort error policy: every phase except `Filters`
-/// aborts on the first SPI error; `Filters` (delegating to
-/// [`EntryGainFiltersStep`]) never aborts. The flat `restore_entry_gains`
-/// function is left in place, unmodified, for parity testing -- see Task 1's
-/// characterization tests.
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum RestoreEntryGainsStep {
@@ -1713,11 +1690,6 @@ mod tests {
 
     #[fixture_test]
     async fn restore_entry_gains_step_matches_flat_function_filter_hz_below_cutoff_range() {
-        // filter_hz = 5 is > 0 but below biquad::CUTOFF_MIN_HZ (10), so
-        // butterworth_lowpass returns None and both the flat function and
-        // the step must write *nothing* for this filter -- not the enable
-        // sequence, and not a disable write either (see Global Constraints
-        // case 3).
         let mut snap = sample_entry_snapshot();
         snap.velocity_filter_hz = 5;
 
@@ -1790,9 +1762,6 @@ mod tests {
         use foci_tmc4671::registers::*;
         let snap = sample_entry_snapshot();
         let mut backend = MockBackend::new();
-        // PID_VELOCITY_LIMIT write is fail-fast (op #10, before any filter
-        // write) -- injecting a failure there must abort immediately and
-        // never reach the filter phase.
         backend.fail_on_write = Some(PID_VELOCITY_LIMIT.addr());
 
         let mut step = RestoreEntryGainsStep::start(&snap);
@@ -1819,9 +1788,6 @@ mod tests {
         let mut snap = sample_entry_snapshot();
         snap.velocity_filter_hz = 200;
         let mut backend = MockBackend::new();
-        // A write inside the velocity filter's enable sequence fails; the
-        // best-effort policy must swallow it and continue on to the
-        // fail-fast tail (voltage limit, zero position, position mode).
         backend.fail_on_write = Some(CONFIG_BIQUAD_V_A_1.data.addr());
 
         let mut step = RestoreEntryGainsStep::start(&snap);
@@ -1879,11 +1845,9 @@ mod tests {
     async fn restore_entry_gains_step_pi_representation_failure_maps_to_pi_representation_kind() {
         let snap = sample_entry_snapshot();
         let mut backend = MockBackend::new();
-        // Do NOT use the tmc_state() helper -- it unconditionally calls
-        // mark_pi_representation_established() on every call, so it can
-        // never exercise this path. Go through tmc_channel0() directly:
-        // reset() already clears pi_representation_established, and this
-        // bypasses tmc_state()'s auto-establish side effect.
+        // tmc_state() unconditionally establishes PI representation on every
+        // call, so it can never exercise this path -- use tmc_channel0()
+        // directly instead, after reset() clears the flag.
         crate::state::tmc::tmc_channel0().reset();
 
         let mut step = RestoreEntryGainsStep::start(&snap);

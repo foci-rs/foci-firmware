@@ -998,15 +998,7 @@ impl TerminalRestoreMachine {
                             self.cursor = RestoreCursor::OuterFailedStability(None);
                         }
                         Some(Err(kind)) => {
-                            let restore_err = match kind {
-                                restore::RestoreEntryGainsErrorKind::Spi => CommissionError::Spi,
-                                restore::RestoreEntryGainsErrorKind::PiRepresentation => {
-                                    CommissionError::ChipResetDetected
-                                }
-                                restore::RestoreEntryGainsErrorKind::FaultInterlock => {
-                                    CommissionError::FaultInterlock
-                                }
-                            };
+                            let restore_err = CommissionError::from(kind);
                             defmt::error!(
                                 "OuterFailed: installed-tuning restore failed: {}",
                                 restore_err
@@ -1035,15 +1027,7 @@ impl TerminalRestoreMachine {
                             self.cursor = RestoreCursor::OuterFailedModeRamp;
                         }
                         Some(Err(kind)) => {
-                            let restore_err = match kind {
-                                restore::RestoreEntryGainsErrorKind::Spi => CommissionError::Spi,
-                                restore::RestoreEntryGainsErrorKind::PiRepresentation => {
-                                    CommissionError::ChipResetDetected
-                                }
-                                restore::RestoreEntryGainsErrorKind::FaultInterlock => {
-                                    CommissionError::FaultInterlock
-                                }
-                            };
+                            let restore_err = CommissionError::from(kind);
                             defmt::error!(
                                 "OuterFailed: safety-fault gain restore failed: {}",
                                 restore_err

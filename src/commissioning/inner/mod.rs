@@ -5,7 +5,9 @@
 //! tune state. `step_inner` dispatches a single cooperative tick to the
 //! handler in the matching submodule. `fail_inner` is the shared
 //! short-circuit transition into `InnerPhase::Failed`. [`restore_entry_gains`]
-//! is the soft-failure recovery routine called by the board after an outer
+//! is retained only as the `#[cfg(test)]` characterization-test oracle for
+//! `restore::RestoreEntryGainsStep` (`commission_dispatch::restore`), which
+//! replaced it as the board's soft-failure recovery routine after an outer
 //! commissioning fault.
 
 use crate::autotune::{
