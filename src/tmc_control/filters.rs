@@ -443,12 +443,6 @@ async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
     .await
 }
 
-/// Flattened queue of raw register writes needed to apply up to four biquad
-/// filter cutoffs, computed once in a `from_*` constructor and advanced one
-/// `write_register` call per `advance()` call. Mirrors
-/// `apply_backend_filter_cutoffs`'s write order and both no-op conditions
-/// (`filter_hz == 0`, and `butterworth_lowpass` returning `None` for an
-/// out-of-range cutoff or `pwm_maxcnt == 0`) exactly.
 #[derive(Clone, Copy)]
 pub(crate) struct FilterCutoffsStep {
     ops: [(foci_tmc4671::registers::Register, u32); 48],
@@ -495,8 +489,6 @@ impl FilterCutoffsStep {
         }
     }
 
-    /// Build the step for the currently-stored (published) filter cutoffs --
-    /// the path `apply_stored_filters_via_backend` takes.
     pub(crate) fn from_stored(tmc_state: &TmcChannelState, pwm_maxcnt: u16) -> Self {
         use core::sync::atomic::Ordering::Relaxed;
 
@@ -511,8 +503,6 @@ impl FilterCutoffsStep {
         )
     }
 
-    /// Build the step for an unpublished outer-tune result's filters -- the
-    /// path `apply_outer_result_filters_via_backend` takes.
     pub(crate) fn from_outer_result(
         outer: &crate::commissioning::types::OuterResult,
         pwm_maxcnt: u16,
@@ -528,8 +518,6 @@ impl FilterCutoffsStep {
         )
     }
 
-    /// Build the step for an entry-snapshot's baseline filters -- the path
-    /// `apply_entry_snapshot_filters_via_backend` takes.
     pub(crate) fn from_entry_snapshot(
         snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
         pwm_maxcnt: u16,
@@ -545,10 +533,6 @@ impl FilterCutoffsStep {
         )
     }
 
-    /// Issue the next raw register write, if any remain. `None` while ops
-    /// remain; `Some(Ok(()))` once every queued write has succeeded
-    /// (including the zero-op case, where the very first call completes
-    /// immediately); `Some(Err(()))` on the first write failure.
     pub(crate) async fn advance<B: CommissioningBackend>(
         &mut self,
         backend: &mut B,
@@ -846,7 +830,6 @@ mod tests {
                 break;
             }
         }
-        // One filter enabled (velocity, 100 Hz): 6 sub-registers x 2 writes = 12.
         assert_eq!(ticks, 12, "expected exactly 12 poll ticks for one enabled filter");
     }
 

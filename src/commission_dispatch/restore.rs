@@ -4,9 +4,6 @@ use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-/// Error kind for `PositionModeRestoreStep`, for the same reason
-/// `GainsRestoreErrorKind` erases `Spi(B::Error)` -- keeps `RestoreCursor:
-/// Copy` independent of the backend's error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum PositionModeRestoreErrorKind {
     PiRepresentation,
@@ -14,16 +11,6 @@ pub(crate) enum PositionModeRestoreErrorKind {
     Spi,
 }
 
-/// The OuterDone success-path register-restore sequence, advanced by exactly
-/// one backend register operation per `advance()` call. Writes tuned velocity
-/// and position gains, the operational velocity limit, current limit from
-/// channel state, the safety-net `PIDOUT_UQ_UD_LIMITS` cap (1024 counts),
-/// clears the position-actual integrator, snaps the position target to the
-/// current encoder count scaled by the encoder resolution, and enters
-/// position mode via `MODE_RAMP_MODE_MOTION = 0x8000_0003`. Every variant
-/// carries the already-validated `gains` rather than individually-derived
-/// register values, since re-deriving `gains.to_registers()` is pure/non-IO
-/// and cheaper than threading extra fields through every variant.
 #[derive(Clone, Copy)]
 pub(crate) enum PositionModeRestoreStep {
     VerifyPiRepresentation {
@@ -239,11 +226,6 @@ fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: 
     rounded as u32
 }
 
-/// Error kind for `CalibrateGainsRestoreStep`, with the generic
-/// `Spi(B::Error)` payload erased -- every call site already discards it
-/// (matches with `_`), so carrying it would force `CalibrateGainsRestoreStep`
-/// (and transitively `RestoreCursor`) to become generic over the backend's
-/// error type, which would break `RestoreCursor: Copy` across different `B`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum GainsRestoreErrorKind {
     PiRepresentation,
@@ -251,13 +233,6 @@ pub(crate) enum GainsRestoreErrorKind {
     InvalidGains,
 }
 
-/// The CalibrateDone gain-restore sequence, advanced by exactly one backend
-/// register operation per `advance()` call. Reapplies host-stored inner gains
-/// (if any) to `PID_FLUX_P_FLUX_I` and `PID_TORQUE_P_TORQUE_I`, then reads
-/// outer gain values from the [`crate::state::tmc`] atomics and writes
-/// velocity gains, position gains, velocity limit, and current limit back to
-/// the TMC4671. SPI failures abort immediately; reporting success with wrong
-/// gains active is worse than failing.
 #[derive(Clone, Copy)]
 pub(crate) enum CalibrateGainsRestoreStep {
     VerifyPiRepresentation {
@@ -388,26 +363,16 @@ impl CalibrateGainsRestoreStep {
     }
 }
 
-/// Error kind for `EntrySnapshotRestoreStep` (it never validates gains, so no
-/// `InvalidGains`, and never verifies PI representation, so no
-/// `PiRepresentation`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum EntrySnapshotRestoreErrorKind {
     Spi,
     Readback,
 }
 
-/// The non-deploying candidate/resume-terminal restore sequence, advanced by
-/// exactly one backend register operation per `advance()` call: writes back
-/// only the Stage 2 entry snapshot's own registers -- outer velocity and
-/// position gains, the velocity limit, the voltage limit
-/// (`PIDOUT_UQ_UD_LIMITS`), and the four biquad filters (`FilterCutoffsStep`)
-/// -- then reads the gain and limit registers back to confirm the writes
-/// landed. Does **not** touch `PID_TORQUE_FLUX_LIMITS`: the operational
-/// current limit lives in `tmc_state`, not the snapshot, and is restored
-/// separately by the velocity-disarm step's `ClampRestore` phase, which must
-/// run after this one. 4 direct writes, then the filter-cutoffs
-/// sub-sequence, then 4 readback reads.
+/// Does **not** touch `PID_TORQUE_FLUX_LIMITS`: the operational current
+/// limit lives in `tmc_state`, not the snapshot, and is restored separately
+/// by the velocity-disarm step's `ClampRestore` phase, which must run after
+/// this one.
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum EntrySnapshotRestoreStep {
@@ -735,7 +700,6 @@ mod tests {
                 break;
             }
         }
-        // 2 PI-representation ops + 9 direct register ops == 11.
         assert_eq!(ticks, 11);
     }
 
@@ -1060,9 +1024,6 @@ mod tests {
         use foci_tmc4671::registers::*;
         let snap = sample_entry_snapshot();
         let mut backend = MockBackend::new();
-        // Corrupt the velocity-limit readback so the snapshot's written value
-        // and the value read back disagree -- exercises
-        // EntrySnapshotRestoreErrorKind::Readback.
         backend.read_override = Some((PID_VELOCITY_LIMIT.addr(), 0xDEAD_BEEF));
         let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
         let result = loop {

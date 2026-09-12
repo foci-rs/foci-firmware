@@ -1165,10 +1165,6 @@ struct TerminalVariant {
     entry_calibrated: bool,
     entry_motor_enabled: bool,
     stored_gains: fn() -> Option<crate::pid::InnerLoopGains>,
-    /// True when this variant's non-staged `poll_step` run reaches one of
-    /// the single-op-per-poll target arms (`OuterDoneApplyFilters`,
-    /// `RobustnessRestoreBaseline`, `CalibrateApplyFilters`). Consumed by
-    /// `assert_single_op_arm_budget`'s "did it ever reach the arm" check.
     reaches_single_op_arm: bool,
 }
 
@@ -1721,13 +1717,6 @@ async fn assert_staged_disarm_phase_one_op_per_poll(
     }
 }
 
-/// Assert that, on every `poll_step` call where `machine` reports it entered
-/// one of this plan's target arms, that call issued at most one plain
-/// register `Write`/`Read`. None of this plan's three helpers use a
-/// verified-write call internally, so the simpler single-op check applies
-/// directly (see this plan's Global Constraints). Non-staged only --
-/// `retention` is always `None`, matching every existing
-/// `TerminalVariant`-based helper in this file.
 async fn assert_single_op_arm_budget(variant: &TerminalVariant) {
     let mut backend = MockBackend::new();
     prepare_backend(variant, &mut backend).await;
@@ -1779,11 +1768,6 @@ async fn assert_single_op_arm_budget(variant: &TerminalVariant) {
     }
 }
 
-/// Staged equivalent of `assert_single_op_arm_budget`, for
-/// `VelocityStagedRestoreBaseline` -- the one Plan A target arm only
-/// reachable via `TerminalRestoreMachine::start_staged`, never `::start`.
-/// Parameter shape matches `assert_staged_disarm_phase_one_op_per_poll`
-/// exactly so both helpers can share fixture arguments.
 async fn assert_staged_single_op_arm_budget(
     name: &str,
     terminal: CommissionTerminal,

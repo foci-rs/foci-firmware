@@ -333,12 +333,10 @@ impl TerminalRestoreMachine {
     }
 
     /// True if any poll of the most recent `poll_step` call executed one of
-    /// the five target arms (`OuterDoneRestorePosition`,
-    /// `OuterDoneApplyFilters`, `RobustnessRestoreBaseline`,
-    /// `VelocityStagedRestoreBaseline`, `CalibrateApplyFilters`), including
-    /// arms reached by same-call fall-through from a non-yielding
-    /// transition arm. Set from inside each target arm's own body; reset at
-    /// the top of every `poll_step` call.
+    /// the single-op-per-poll target arms, including arms reached by
+    /// same-call fall-through from a non-yielding transition arm. Set from
+    /// inside each target arm's own body; reset at the top of every
+    /// `poll_step` call.
     #[cfg(test)]
     pub(crate) fn entered_single_op_arm_this_poll(&self) -> bool {
         self.entered_single_op_arm_this_poll
