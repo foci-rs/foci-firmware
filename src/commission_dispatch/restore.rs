@@ -7,11 +7,7 @@
 //! step type held inside `RestoreCursor` must stay `Copy` and
 //! backend-independent for `RestoreCursor` itself to derive `Copy`.
 
-// `PositionStabilityStep::advance`'s own `backend.elapsed_us()` call resolves
-// through the `B: CommissioningBackend` supertrait bound without this import,
-// but the `#[cfg(test)]` module below calls `elapsed_us()` on the concrete
-// `MockBackend`, which needs the trait in scope directly.
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::commissioning::backend::CommissionTiming;
 use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
