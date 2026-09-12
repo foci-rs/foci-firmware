@@ -1296,13 +1296,15 @@ async fn restored_position_target(
         .configure_motion_scale(stepper_state(), encoder_ppr, planner_steps_per_rev)
         .expect("valid test motion scale");
 
-    restore::restore_position_mode_after_outer(
-        &mut backend,
-        tmc_state(),
-        &sample_outer_result_for_dispatch(),
-    )
-    .await
-    .expect("restore succeeds");
+    let outer = sample_outer_result_for_dispatch();
+    let mut step = restore::PositionModeRestoreStep::start();
+    loop {
+        match step.advance(&mut backend, tmc_state(), &outer).await {
+            None => continue,
+            Some(Ok(_)) => break,
+            Some(Err(kind)) => panic!("restore failed: {:?}", kind),
+        }
+    }
 
     backend
         .spi_log

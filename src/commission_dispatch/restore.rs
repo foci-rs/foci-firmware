@@ -4,112 +4,7 @@ use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum RestoreError<E> {
-    Spi(E),
-    InvalidGains,
-    PiRepresentation,
-    /// A restored register did not read back the value that was written.
-    Readback,
-}
-
-/// SPI restore sequence for the OuterDone success path.
-///
-/// Writes tuned velocity and position gains, the operational velocity limit,
-/// current limit from channel state, the safety-net `PIDOUT_UQ_UD_LIMITS` cap
-/// (1024 counts), clears the position-actual integrator, snaps the position
-/// target to the current encoder count scaled by the encoder resolution, and
-/// enters position mode via `MODE_RAMP_MODE_MOTION = 0x8000_0003`.
-///
-/// The write order matches the OuterDone restore block in `main.rs` exactly.
-/// Motor safety depends on setting limits (`PID_TORQUE_FLUX_LIMITS`,
-/// `PIDOUT_UQ_UD_LIMITS`) before entering motion mode.
-///
-/// # Parameters
-///
-/// - `backend` - mutable reference to a `CommissioningBackend` implementation.
-/// - `outer` - outer commissioning result containing tuned gain values.
-///
-/// # Errors
-///
-/// Returns the backend's SPI error on the first failed write.
-pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
-    backend: &mut B,
-    tmc_state: &TmcChannelState,
-    outer: &crate::commissioning::types::OuterResult,
-) -> Result<crate::pid::OuterLoopGains, RestoreError<B::Error>> {
-    use core::sync::atomic::Ordering::Relaxed;
-    use foci_tmc4671::registers::*;
-
-    crate::tmc_control::pi_representation::verify_pi_representation(backend, tmc_state)
-        .await
-        .map_err(|_| RestoreError::PiRepresentation)?;
-
-    // Tuned velocity + position gains.
-    let gains = crate::pid::OuterLoopGains {
-        position_p: PidPGain::new(outer.position_p).map_err(|_| RestoreError::InvalidGains)?,
-        position_i: PidIGain::new(outer.position_i).map_err(|_| RestoreError::InvalidGains)?,
-        velocity_p: PidPGain::new(outer.velocity_p).map_err(|_| RestoreError::InvalidGains)?,
-        velocity_i: PidIGain::new(outer.velocity_i).map_err(|_| RestoreError::InvalidGains)?,
-    };
-    let (velocity_reg, position_reg) = gains.to_registers();
-    backend
-        .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
-        .await
-        .map_err(RestoreError::Spi)?;
-    backend
-        .write_register(PID_POSITION_P_POSITION_I, position_reg)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    // Operational limits (not safety caps).
-    backend
-        .write_register(PID_VELOCITY_LIMIT, outer.velocity_limit)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    let current_limit = tmc_state.load_current_limit(Relaxed);
-    backend
-        .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    // Safety-net voltage cap - must be written before entering motion mode.
-    backend
-        .write_register(PIDOUT_UQ_UD_LIMITS, 1024)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    // Clear PID error sums before mode switch.
-    backend
-        .write_register(PID_POSITION_ACTUAL, 0)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    let encoder_count = backend
-        .read_register(ABN_DECODER_COUNT)
-        .await
-        .map_err(RestoreError::Spi)?;
-    let target_scaled = encoder_count_to_position_target(
-        encoder_count,
-        backend.mechanical_encoder_quadrature_counts_per_rev(),
-    );
-    backend
-        .write_register(PID_POSITION_TARGET, target_scaled)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    // Enter position mode (advanced PID cascade).
-    backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    Ok(gains)
-}
-
-/// Non-generic mirror of `RestoreError`'s three variants reachable from
-/// `restore_position_mode_after_outer`, for the same reason
+/// Error kind for `PositionModeRestoreStep`, for the same reason
 /// `GainsRestoreErrorKind` erases `Spi(B::Error)` -- keeps `RestoreCursor:
 /// Copy` independent of the backend's error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -119,13 +14,16 @@ pub(crate) enum PositionModeRestoreErrorKind {
     Spi,
 }
 
-/// One step of `restore_position_mode_after_outer`'s register-restore
-/// sequence, advanced by exactly one backend register operation per
-/// `advance()` call. Mirrors the original function's order and
-/// short-circuit-on-error behavior exactly. Every variant carries the
-/// already-validated `gains` rather than individually-derived register
-/// values, since re-deriving `gains.to_registers()` is pure/non-IO and
-/// cheaper than threading extra fields through every variant.
+/// The OuterDone success-path register-restore sequence, advanced by exactly
+/// one backend register operation per `advance()` call. Writes tuned velocity
+/// and position gains, the operational velocity limit, current limit from
+/// channel state, the safety-net `PIDOUT_UQ_UD_LIMITS` cap (1024 counts),
+/// clears the position-actual integrator, snaps the position target to the
+/// current encoder count scaled by the encoder resolution, and enters
+/// position mode via `MODE_RAMP_MODE_MOTION = 0x8000_0003`. Every variant
+/// carries the already-validated `gains` rather than individually-derived
+/// register values, since re-deriving `gains.to_registers()` is pure/non-IO
+/// and cheaper than threading extra fields through every variant.
 #[derive(Clone, Copy)]
 pub(crate) enum PositionModeRestoreStep {
     VerifyPiRepresentation {
@@ -341,12 +239,11 @@ fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: 
     rounded as u32
 }
 
-/// Non-generic mirror of `RestoreError`'s three variants reachable from
-/// `restore_calibrate_gains`, with the generic `Spi(B::Error)` payload
-/// erased -- every call site already discards it (matches with `_`), so
-/// carrying it would force `CalibrateGainsRestoreStep` (and transitively
-/// `RestoreCursor`) to become generic over the backend's error type, which
-/// would break `RestoreCursor: Copy` across different `B`.
+/// Error kind for `CalibrateGainsRestoreStep`, with the generic
+/// `Spi(B::Error)` payload erased -- every call site already discards it
+/// (matches with `_`), so carrying it would force `CalibrateGainsRestoreStep`
+/// (and transitively `RestoreCursor`) to become generic over the backend's
+/// error type, which would break `RestoreCursor: Copy` across different `B`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum GainsRestoreErrorKind {
     PiRepresentation,
@@ -354,10 +251,13 @@ pub(crate) enum GainsRestoreErrorKind {
     InvalidGains,
 }
 
-/// One step of `restore_calibrate_gains`'s register-restore sequence,
-/// advanced by exactly one backend register operation per `advance()` call.
-/// Mirrors the original function's order and short-circuit-on-error
-/// behavior exactly.
+/// The CalibrateDone gain-restore sequence, advanced by exactly one backend
+/// register operation per `advance()` call. Reapplies host-stored inner gains
+/// (if any) to `PID_FLUX_P_FLUX_I` and `PID_TORQUE_P_TORQUE_I`, then reads
+/// outer gain values from the [`crate::state::tmc`] atomics and writes
+/// velocity gains, position gains, velocity limit, and current limit back to
+/// the TMC4671. SPI failures abort immediately; reporting success with wrong
+/// gains active is worse than failing.
 #[derive(Clone, Copy)]
 pub(crate) enum CalibrateGainsRestoreStep {
     VerifyPiRepresentation {
@@ -488,115 +388,7 @@ impl CalibrateGainsRestoreStep {
     }
 }
 
-/// SPI restore sequence for the CalibrateDone path.
-///
-/// Reapplies host-stored inner gains (if any) to `PID_FLUX_P_FLUX_I` and
-/// `PID_TORQUE_P_TORQUE_I`, then reads outer gain values from the
-/// [`crate::state::tmc`] atomics and writes velocity gains, position gains,
-/// velocity limit, and current limit back to the TMC4671.
-///
-/// The write order matches the CalibrateDone gain-restore block in `main.rs`
-/// exactly. SPI failures abort immediately; reporting success with wrong gains
-/// active is worse than failing.
-///
-/// # Parameters
-///
-/// - `backend` - mutable reference to a `CommissioningBackend` implementation.
-/// - `stored` - optional host-stored inner loop gains; skipped when `None`.
-///
-/// # Errors
-///
-/// Returns [`GainsRestoreErrorKind`] on the first failed write, an SPI read
-/// failure, or invalid stored outer gains.
-#[allow(dead_code)]
-pub async fn restore_calibrate_gains<B: CommissioningBackend>(
-    backend: &mut B,
-    tmc_state: &TmcChannelState,
-    stored: Option<crate::pid::InnerLoopGains>,
-) -> Result<(), GainsRestoreErrorKind> {
-    let mut step = CalibrateGainsRestoreStep::start(stored);
-    loop {
-        if let Some(result) = step.advance(backend, tmc_state).await {
-            return result;
-        }
-    }
-}
-
-/// SPI restore sequence for a non-deploying candidate/resume terminal.
-///
-/// Writes back only the Stage 2 entry snapshot's own registers: outer
-/// velocity and position gains, the velocity limit, the voltage limit
-/// (`PIDOUT_UQ_UD_LIMITS`), and the four biquad filters. Reads the gain and
-/// limit registers back afterward to confirm the writes landed.
-///
-/// Does **not** touch `PID_TORQUE_FLUX_LIMITS`: the operational current limit
-/// lives in `tmc_state`, not the snapshot, and is restored separately by the
-/// velocity-disarm step's `ClampRestore` phase, which must run after this
-/// helper.
-///
-/// # Errors
-///
-/// Returns `RestoreError::Spi` on the first failed write or read, or
-/// `RestoreError::Readback` if a written register does not read back the
-/// value just written.
-pub async fn restore_entry_snapshot_to_registers<B: CommissioningBackend>(
-    backend: &mut B,
-    snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
-) -> Result<(), RestoreError<B::Error>> {
-    use foci_tmc4671::registers::*;
-
-    let gains = crate::pid::OuterLoopGains {
-        position_p: snapshot.position_p,
-        position_i: snapshot.position_i,
-        velocity_p: snapshot.velocity_p,
-        velocity_i: snapshot.velocity_i,
-    };
-    let (velocity_reg, position_reg) = gains.to_registers();
-
-    backend
-        .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
-        .await
-        .map_err(RestoreError::Spi)?;
-    backend
-        .write_register(PID_POSITION_P_POSITION_I, position_reg)
-        .await
-        .map_err(RestoreError::Spi)?;
-    backend
-        .write_register(PID_VELOCITY_LIMIT, snapshot.velocity_limit)
-        .await
-        .map_err(RestoreError::Spi)?;
-    backend
-        .write_register(PIDOUT_UQ_UD_LIMITS, snapshot.voltage_limit)
-        .await
-        .map_err(RestoreError::Spi)?;
-
-    let pwm_maxcnt = backend.pwm_maxcnt();
-    crate::tmc_control::filters::apply_entry_snapshot_filters_via_backend(
-        backend, snapshot, pwm_maxcnt,
-    )
-    .await
-    .map_err(RestoreError::Spi)?;
-
-    for (reg, expected) in [
-        (PID_VELOCITY_P_VELOCITY_I, velocity_reg),
-        (PID_POSITION_P_POSITION_I, position_reg),
-        (PID_VELOCITY_LIMIT, snapshot.velocity_limit),
-        (PIDOUT_UQ_UD_LIMITS, snapshot.voltage_limit),
-    ] {
-        let readback = backend
-            .read_register(reg)
-            .await
-            .map_err(RestoreError::Spi)?;
-        if readback != expected {
-            return Err(RestoreError::Readback);
-        }
-    }
-
-    Ok(())
-}
-
-/// Non-generic mirror of `RestoreError`'s two variants reachable from
-/// `restore_entry_snapshot_to_registers` (it never validates gains, so no
+/// Error kind for `EntrySnapshotRestoreStep` (it never validates gains, so no
 /// `InvalidGains`, and never verifies PI representation, so no
 /// `PiRepresentation`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -605,11 +397,17 @@ pub(crate) enum EntrySnapshotRestoreErrorKind {
     Readback,
 }
 
-/// One step of `restore_entry_snapshot_to_registers`'s register-restore
-/// sequence, advanced by exactly one backend register operation per
-/// `advance()` call. Mirrors the original function's order exactly: 4
-/// direct writes, then the filter-cutoffs sub-sequence
-/// (`FilterCutoffsStep`), then 4 readback reads.
+/// The non-deploying candidate/resume-terminal restore sequence, advanced by
+/// exactly one backend register operation per `advance()` call: writes back
+/// only the Stage 2 entry snapshot's own registers -- outer velocity and
+/// position gains, the velocity limit, the voltage limit
+/// (`PIDOUT_UQ_UD_LIMITS`), and the four biquad filters (`FilterCutoffsStep`)
+/// -- then reads the gain and limit registers back to confirm the writes
+/// landed. Does **not** touch `PID_TORQUE_FLUX_LIMITS`: the operational
+/// current limit lives in `tmc_state`, not the snapshot, and is restored
+/// separately by the velocity-disarm step's `ClampRestore` phase, which must
+/// run after this one. 4 direct writes, then the filter-cutoffs
+/// sub-sequence, then 4 readback reads.
 #[derive(Clone, Copy)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum EntrySnapshotRestoreStep {
@@ -853,7 +651,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_position_mode_after_outer_writes_exact_sequence() {
+    async fn position_mode_restore_step_writes_exact_sequence() {
         use foci_tmc4671::registers::*;
         let mut backend = MockBackend::new();
         tmc_state().store_current_limit(
@@ -865,9 +663,14 @@ mod tests {
         backend.spi_log.clear();
 
         let outer = sample_outer_result();
-        let restored = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer)
-            .await
-            .unwrap();
+        let mut step = PositionModeRestoreStep::start();
+        let restored = loop {
+            match step.advance(&mut backend, tmc_state(), &outer).await {
+                None => continue,
+                Some(Ok(gains)) => break gains,
+                Some(Err(kind)) => panic!("stepped restore failed: {:?}", kind),
+            }
+        };
 
         let (velocity_reg, position_reg) = restored.to_registers();
         assert_eq!(
@@ -896,44 +699,19 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_position_mode_after_outer_propagates_spi_failure() {
+    async fn position_mode_restore_step_propagates_spi_failure() {
         use foci_tmc4671::registers::*;
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(MODE_RAMP_MODE_MOTION.addr());
         let outer = sample_outer_result();
-        let result = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer).await;
-        assert!(result.is_err());
-    }
-
-    #[fixture_test]
-    async fn position_mode_restore_step_matches_flat_function() {
-        let outer = sample_outer_result();
-        let mut flat_backend = MockBackend::new();
-        let flat_gains = restore_position_mode_after_outer(&mut flat_backend, tmc_state(), &outer)
-            .await
-            .expect("flat restore must succeed");
-        let flat_log = flat_backend.spi_log.clone();
-
-        let mut stepped_backend = MockBackend::new();
         let mut step = PositionModeRestoreStep::start();
-        let stepped_gains = loop {
-            match step
-                .advance(&mut stepped_backend, tmc_state(), &outer)
-                .await
-            {
+        let result = loop {
+            match step.advance(&mut backend, tmc_state(), &outer).await {
                 None => continue,
-                Some(Ok(gains)) => break gains,
-                Some(Err(kind)) => panic!("stepped restore failed: {:?}", kind),
+                Some(result) => break result,
             }
         };
-        let stepped_log = stepped_backend.spi_log.clone();
-
-        assert_eq!(flat_gains, stepped_gains);
-        assert_eq!(
-            flat_log, stepped_log,
-            "stepped PositionModeRestoreStep must write the identical register \
-             sequence as restore_position_mode_after_outer"
-        );
+        assert!(result.is_err());
     }
 
     #[fixture_test]
@@ -979,7 +757,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_calibrate_gains_writes_all_gains_when_stored_present() {
+    async fn calibrate_gains_restore_step_writes_all_gains_when_stored_present() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::*;
         let mut backend = MockBackend::new();
@@ -997,7 +775,13 @@ mod tests {
             torque_i: crate::pid::i_gain(20),
         };
         let (flux_reg, torque_reg) = stored_gains.to_registers();
-        let result = restore_calibrate_gains(&mut backend, tmc_state(), Some(stored_gains)).await;
+        let mut step = CalibrateGainsRestoreStep::start(Some(stored_gains));
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
         assert!(result.is_ok());
         let (velocity_reg, position_reg) = outer_gains.to_registers();
         assert_eq!(
@@ -1024,7 +808,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_calibrate_gains_skips_inner_when_stored_none() {
+    async fn calibrate_gains_restore_step_skips_inner_when_stored_none() {
         use core::sync::atomic::Ordering::Relaxed;
         use foci_tmc4671::registers::*;
         let mut backend = MockBackend::new();
@@ -1035,7 +819,13 @@ mod tests {
             crate::commission_dispatch::test_support::current_limit(0x50),
             Relaxed,
         );
-        let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
+        let mut step = CalibrateGainsRestoreStep::start(None);
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
         assert!(result.is_ok());
         let (velocity_reg, position_reg) = outer_gains.to_registers();
         assert_eq!(
@@ -1060,11 +850,17 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_calibrate_gains_rejects_corrupt_outer_storage_before_pid_write() {
+    async fn calibrate_gains_restore_step_rejects_corrupt_outer_storage_before_pid_write() {
         let mut backend = MockBackend::new();
         tmc_state().corrupt_outer_gain_for_test(0x8000);
 
-        let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
+        let mut step = CalibrateGainsRestoreStep::start(None);
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
 
         assert_eq!(result, Err(GainsRestoreErrorKind::InvalidGains));
         assert!(!backend.spi_log.iter().any(|op| {
@@ -1084,7 +880,7 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_calibrate_gains_rejects_pi_representation_mismatch_before_pid_write() {
+    async fn calibrate_gains_restore_step_rejects_pi_representation_mismatch_before_pid_write() {
         let mut backend = MockBackend::new();
         tmc_state().mark_pi_representation_established();
         backend.read_override = Some((
@@ -1094,7 +890,13 @@ mod tests {
             0,
         ));
 
-        let result = restore_calibrate_gains(&mut backend, tmc_state(), None).await;
+        let mut step = CalibrateGainsRestoreStep::start(None);
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
 
         assert_eq!(result, Err(GainsRestoreErrorKind::PiRepresentation));
         assert!(!backend.spi_log.iter().any(|op| {
@@ -1111,11 +913,9 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn calibrate_gains_restore_step_matches_restore_calibrate_gains_with_stored_gains() {
+    async fn calibrate_gains_restore_step_advances_one_op_per_call() {
         use core::sync::atomic::Ordering::Relaxed;
         crate::state::tmc::tmc_channel0().reset();
-
-        let mut oracle_backend = MockBackend::new();
         tmc_state().store_outer_gains(crate::pid::test_outer_gains(333, 44, 111, 22), Relaxed);
         tmc_state().velocity_limit_cfg.store(555_000, Relaxed);
         tmc_state().store_current_limit(
@@ -1124,32 +924,25 @@ mod tests {
         );
         tmc_state().mark_pi_representation_established();
         let stored = crate::pid::test_inner_gains(100, 10, 200, 20);
-        let oracle_result =
-            restore_calibrate_gains(&mut oracle_backend, tmc_state(), Some(stored)).await;
 
         let mut backend = MockBackend::new();
         let mut step = CalibrateGainsRestoreStep::start(Some(stored));
-        let mut polls = 0u32;
-        let result = loop {
-            assert!(polls < 16, "step sequence did not terminate");
-            let ops_before = backend.spi_log.len();
-            let outcome = step.advance(&mut backend, tmc_state()).await;
-            let raw_ops = backend.spi_log[ops_before..]
-                .iter()
-                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
-                .count();
+        let mut ticks = 0usize;
+        loop {
+            let before = backend.spi_log.len();
+            let result = step.advance(&mut backend, tmc_state()).await;
+            let after = backend.spi_log.len();
             assert!(
-                raw_ops <= 1,
-                "poll {polls} logged {raw_ops} raw ops, expected at most 1"
+                after - before <= 1,
+                "tick {}: advance() issued {} ops, expected at most 1",
+                ticks,
+                after - before
             );
-            polls += 1;
-            if let Some(result) = outcome {
-                break result;
+            ticks += 1;
+            if !matches!(result, None) {
+                break;
             }
-        };
-
-        assert_eq!(backend.spi_log, oracle_backend.spi_log);
-        assert_eq!(result.is_ok(), oracle_result.is_ok());
+        }
 
         crate::state::tmc::tmc_channel0().reset();
     }
@@ -1170,12 +963,18 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_entry_snapshot_writes_gains_limits_and_validates_readback() {
+    async fn entry_snapshot_restore_step_writes_gains_limits_and_validates_readback() {
         use foci_tmc4671::registers::*;
         let mut backend = MockBackend::new();
         let snap = sample_entry_snapshot();
 
-        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
+        let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
+        let result = loop {
+            match step.advance(&mut backend).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
         assert!(result.is_ok());
 
         let (velocity_reg, position_reg) = snapshot_outer_gains(&snap).to_registers();
@@ -1192,13 +991,19 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_entry_snapshot_writes_filters_when_present() {
+    async fn entry_snapshot_restore_step_writes_filters_when_present() {
         use foci_tmc4671::registers::*;
         let mut backend = MockBackend::new();
         let mut snap = sample_entry_snapshot();
         snap.velocity_filter_hz = 200;
 
-        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
+        let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
+        let result = loop {
+            match step.advance(&mut backend).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
         assert!(result.is_ok());
         assert!(
             backend
@@ -1210,56 +1015,21 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn restore_entry_snapshot_returns_readback_error_on_mismatch() {
-        use foci_tmc4671::registers::*;
-        let mut backend = MockBackend::new();
-        let snap = sample_entry_snapshot();
-        backend.read_override = Some((PID_VELOCITY_LIMIT.addr(), snap.velocity_limit + 1));
-
-        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
-
-        assert_eq!(result, Err(RestoreError::Readback));
-    }
-
-    #[fixture_test]
-    async fn restore_entry_snapshot_propagates_spi_write_failure() {
+    async fn entry_snapshot_restore_step_propagates_spi_write_failure() {
         use foci_tmc4671::registers::*;
         let mut backend = MockBackend::new();
         backend.fail_on_write = Some(PIDOUT_UQ_UD_LIMITS.addr());
         let snap = sample_entry_snapshot();
 
-        let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
-
-        assert!(matches!(result, Err(RestoreError::Spi(_))));
-    }
-
-    #[fixture_test]
-    async fn entry_snapshot_restore_step_matches_flat_function() {
-        let snap = sample_entry_snapshot();
-        let mut flat_backend = MockBackend::new();
-        restore_entry_snapshot_to_registers(&mut flat_backend, &snap)
-            .await
-            .expect("flat restore must succeed");
-        let flat_log = flat_backend.spi_log.clone();
-
-        let mut stepped_backend = MockBackend::new();
         let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
-        loop {
-            match step.advance(&mut stepped_backend).await {
+        let result = loop {
+            match step.advance(&mut backend).await {
                 None => continue,
-                Some(Ok(())) => break,
-                Some(Err(kind)) => panic!("stepped restore failed: {:?}", kind),
+                Some(result) => break result,
             }
-        }
-        let stepped_log = stepped_backend.spi_log.clone();
+        };
 
-        assert_eq!(
-            flat_log, stepped_log,
-            "stepped EntrySnapshotRestoreStep must write the identical register \
-             sequence as restore_entry_snapshot_to_registers, including its \
-             apply_entry_snapshot_filters_via_backend sub-call and its 4 \
-             readback reads"
-        );
+        assert_eq!(result, Err(EntrySnapshotRestoreErrorKind::Spi));
     }
 
     #[fixture_test]
