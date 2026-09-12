@@ -93,7 +93,6 @@ impl IntegralAcquisitionAuthority {
     /// call to [`bind_breakaway_integral_authority`], so this constructor makes
     /// "Integral authorized by anything other than an accepted confirmation"
     /// unrepresentable for every breakaway authority built this way.
-    #[allow(dead_code)]
     pub(crate) const fn new_breakaway(
         channel: u8,
         confirmed_digest: ConfirmedAcquisitionDigest,
@@ -1116,7 +1115,6 @@ pub fn breakaway_workflow_envelope_ms(
 /// [`super::band_confirmation::evaluate_band_confirmation`] as
 /// `confirmation_outcome`; there is no way to synthesize acceptance from a
 /// bare digest.
-#[allow(dead_code)]
 pub(crate) fn bind_breakaway_integral_authority(
     candidate_acquisition_digest: u64,
     confirmation_plan: BandConfirmationPlan,
@@ -1253,7 +1251,6 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
 /// `confidence_q`/`band_position_q` are carried-through diagnostics only:
 /// unlike `held_out_response_intervals_q`, they are excluded from
 /// `plan.digest()` and so never affect resume matching.
-#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,
@@ -1357,7 +1354,6 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
 /// `confidence_q`/`band_position_q` are carried-through diagnostics only:
 /// unlike `held_out_response_intervals_q` above, they are excluded from
 /// `plan.digest()` and so never affect resume matching.
-#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_retained_breakaway_velocity_integral_response(
     token: ConfirmedAcquisitionDigest,

@@ -146,7 +146,6 @@ fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, val
 }
 
 /// Encode the complete immutable amplitude plan as bounded canonical fragments.
-#[allow(dead_code)]
 pub(crate) fn encode_fixed_gain_amplitude_plan(
     run_sequence: u32,
     plan: FixedGainAmplitudePlan,
@@ -372,7 +371,6 @@ fn push_u64(record: &mut VelocitySweepCanonicalRecord, value: u64) {
     record.push_u32((value >> 32) as u32);
 }
 
-#[allow(dead_code)]
 fn amplitude_record_header(
     kind: u8,
     run_sequence: u32,

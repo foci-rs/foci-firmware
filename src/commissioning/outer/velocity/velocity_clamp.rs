@@ -1,5 +1,4 @@
 //! Shared velocity-current prevention and evidence classification.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use foci_tmc4671::registers::{
     INTERIM_PIDIN_TARGET_TORQUE, INTERIM_PIDOUT_TARGET_TORQUE, PID_TORQUE_FLUX_LIMITS, STATUS_FLAGS,
@@ -63,6 +62,7 @@ pub(crate) struct VelocityCurrentPhaseEvidence {
 
 impl VelocityCurrentPhaseEvidence {
     /// Return whether the moving phase is proven free of clamp contact.
+    #[cfg(test)]
     pub(crate) fn moving_clip_absence_proven(self) -> bool {
         self.capability == VelocityLimitEvidenceCapability::LatchedFlag
             && self.contact != VelocityCurrentContact::Moving
@@ -70,6 +70,7 @@ impl VelocityCurrentPhaseEvidence {
     }
 
     /// Return whether an unobserved moving-phase contact remains possible.
+    #[cfg(test)]
     pub(crate) fn moving_clip_uncertain(self) -> bool {
         self.capability == VelocityLimitEvidenceCapability::BestEffortPolling
             && self.contact != VelocityCurrentContact::Moving
@@ -265,6 +266,7 @@ impl VelocityCurrentClampSession {
     }
 
     /// Return the limit that normal controller operation must regain on exit.
+    #[cfg(test)]
     pub(crate) const fn operational_limit(self) -> PidTorqueFluxLimit {
         self.operational_limit
     }
@@ -275,6 +277,7 @@ impl VelocityCurrentClampSession {
     }
 
     /// Return whether the latest verified session write installed the probe clamp.
+    #[cfg(test)]
     pub(crate) const fn probe_is_installed(self) -> bool {
         self.probe_installed
     }

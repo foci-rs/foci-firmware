@@ -16,7 +16,6 @@ use crate::autotune::{
 use super::sweep_evidence::VelocityObservationInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(super) struct SettleConfirmation {
     pub(super) selected: Option<StationarySuffix>,
     pub(super) confirmed_rest: bool,
@@ -28,7 +27,6 @@ pub(super) struct SettleConfirmation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(super) enum ScoredRestPoll {
     Pending,
     Diagnostic(RestSelectionDecision),
@@ -332,7 +330,6 @@ pub(super) fn poll_stationarity<const LEVELS: usize>(
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
     analysis: &mut StationarityWork,
     observations: &impl VelocityObservationSource,

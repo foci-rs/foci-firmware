@@ -29,7 +29,6 @@ pub(crate) const VELOCITY_SWEEP_BLOCK_LEVELS: usize = 5;
 
 /// Fixed-memory tail ring with split arrays to avoid tuple padding.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct VelocityObservationRing {
     delta_counts: [i32; VELOCITY_OBSERVATION_CAPACITY],
     elapsed_us: [u16; VELOCITY_OBSERVATION_CAPACITY],
@@ -37,7 +36,6 @@ pub(crate) struct VelocityObservationRing {
     len: u16,
 }
 
-#[allow(dead_code)]
 impl VelocityObservationRing {
     pub(crate) const fn new() -> Self {
         Self {
@@ -75,12 +73,12 @@ impl VelocityObservationRing {
         self.len as usize
     }
 
-    #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.next = 0;
         self.len = 0;
     }
 
+    #[cfg(test)]
     pub(crate) fn iter(&self) -> VelocityObservationIter<'_> {
         let start = if self.len() == VELOCITY_OBSERVATION_CAPACITY {
             usize::from(self.next)
@@ -96,13 +94,14 @@ impl VelocityObservationRing {
 }
 
 /// Chronological iterator over the retained tail, including after wraparound.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) struct VelocityObservationIter<'a> {
     ring: &'a VelocityObservationRing,
     start: usize,
     offset: usize,
 }
 
+#[cfg(test)]
 impl Iterator for VelocityObservationIter<'_> {
     type Item = RawVelocityObservation;
 
@@ -124,6 +123,7 @@ impl Iterator for VelocityObservationIter<'_> {
     }
 }
 
+#[cfg(test)]
 impl ExactSizeIterator for VelocityObservationIter<'_> {}
 
 impl crate::autotune::velocity_measurement::VelocityObservationSource for VelocityObservationRing {

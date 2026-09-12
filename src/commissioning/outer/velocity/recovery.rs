@@ -27,7 +27,6 @@ pub(crate) const STABILIZED_RECOVERY_SCHEDULE_CODE: u8 = 1;
 /// Commissioning stage that owns one recovery record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
-#[allow(dead_code)]
 pub(crate) enum RecoveryStage {
     /// Proportional-gain identification.
     Proportional = 0,
@@ -613,7 +612,6 @@ pub(crate) const RECOVERY_BAND_MARGIN_DIVISOR: u32 = 8;
 /// The band is unchanged. It is the settle travel reserve expressed in counts
 /// and remains the acceptance test, the return-distance basis, and the
 /// already-centered short-circuit; only the stopping point moves.
-#[allow(dead_code)]
 pub(crate) const fn recovery_moving_target_counts(origin_band_counts: u32) -> u32 {
     origin_band_counts - origin_band_counts / RECOVERY_BAND_MARGIN_DIVISOR
 }
@@ -636,7 +634,6 @@ pub(crate) const fn recovery_recenter_target_counts(origin_band_counts: u32) -> 
 }
 
 /// Return the distance that must be traversed before entering the inclusive band.
-#[allow(dead_code)]
 pub(crate) const fn recovery_return_distance_counts(
     start_offset_counts: i32,
     origin_band_counts: u32,

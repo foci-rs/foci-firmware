@@ -408,7 +408,6 @@ impl OuterSafetyLimits {
     ///
     /// Returns [`CommissionError::InvalidSchedule`] when the amplitude is zero
     /// or the envelope arithmetic overflows.
-    #[allow(dead_code)]
     pub(crate) fn configure_velocity_envelope(
         &mut self,
         planned_velocity_mrev_s: u32,
@@ -447,7 +446,6 @@ impl OuterSafetyLimits {
     /// Returns [`CommissionError::InvalidSchedule`] when either input is zero,
     /// when the envelope arithmetic overflows, or when the envelope exceeds the
     /// effective ceiling.
-    #[allow(dead_code)]
     pub(crate) fn configure_velocity_envelope_with_settle_ceiling(
         &mut self,
         planned_velocity_mrev_s: u32,
@@ -470,7 +468,6 @@ impl OuterSafetyLimits {
     /// braking bound covers exactly the interval where the axis is decelerating
     /// under no commanded amplitude. Cleared by [`Self::begin_primitive`] and
     /// [`Self::end_primitive`], so it can never outlive its primitive.
-    #[allow(dead_code)]
     pub(crate) const fn enter_settle_phase(&mut self) {
         self.in_settle_phase = true;
     }
@@ -625,7 +622,6 @@ impl OuterSafetyLimits {
     }
 
     /// Construct the dedicated fail-closed fault for recovery motion away from origin.
-    #[allow(dead_code)]
     pub(crate) fn recovery_wrong_way_fault(
         &self,
         start_offset_counts: i32,
