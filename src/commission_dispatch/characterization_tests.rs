@@ -1165,6 +1165,11 @@ struct TerminalVariant {
     entry_calibrated: bool,
     entry_motor_enabled: bool,
     stored_gains: fn() -> Option<crate::pid::InnerLoopGains>,
+    /// True when this variant's non-staged `poll_step` run reaches one of
+    /// the single-op-per-poll target arms (`OuterDoneApplyFilters`,
+    /// `RobustnessRestoreBaseline`, `CalibrateApplyFilters`). Consumed by
+    /// `assert_single_op_arm_budget`'s "did it ever reach the arm" check.
+    reaches_single_op_arm: bool,
 }
 
 fn no_gains() -> Option<crate::pid::InnerLoopGains> {
@@ -1248,6 +1253,7 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
         entry_calibrated: false,
         entry_motor_enabled: false,
         stored_gains: no_gains,
+        reaches_single_op_arm: false,
     };
     [
         TerminalVariant {
@@ -1255,6 +1261,7 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             result: || StepResult::CalibrateDone(sample_adc_cal_result()),
             engine: calibrate_engine,
             seed_sentinel: true,
+            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
@@ -1332,6 +1339,7 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             result: || StepResult::OuterDone(sample_outer_result()),
             engine: commission_engine,
             seed_sentinel: true,
+            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
@@ -1392,6 +1400,7 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             engine: robustness_reversal_engine,
             entry_calibrated: true,
             entry_motor_enabled: true,
+            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
@@ -1709,6 +1718,143 @@ async fn assert_staged_disarm_phase_one_op_per_poll(
             );
             break;
         }
+    }
+}
+
+/// Assert that, on every `poll_step` call where `machine` reports it entered
+/// one of this plan's target arms, that call issued at most one plain
+/// register `Write`/`Read`. None of this plan's three helpers use a
+/// verified-write call internally, so the simpler single-op check applies
+/// directly (see this plan's Global Constraints). Non-staged only --
+/// `retention` is always `None`, matching every existing
+/// `TerminalVariant`-based helper in this file.
+async fn assert_single_op_arm_budget(variant: &TerminalVariant) {
+    let mut backend = MockBackend::new();
+    prepare_backend(variant, &mut backend).await;
+    let mut calibrated = variant.entry_calibrated;
+    let mut motor_enabled = variant.entry_motor_enabled;
+    let mut gains = (variant.stored_gains)();
+    let mut engine = Some((variant.engine)());
+    let mut machine = TerminalRestoreMachine::start((variant.result)(), 0, 4095);
+    let mut previous_len = backend.spi_log.len();
+    let mut poll_index = 0usize;
+    let mut saw_target_arm = false;
+    loop {
+        poll_index += 1;
+        assert!(
+            poll_index < 256,
+            "{}: machine did not terminate",
+            variant.name
+        );
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        let outcome = machine
+            .poll_step(&mut engine, &mut backend, &mut state, None)
+            .await;
+        if machine.entered_single_op_arm_this_poll() {
+            saw_target_arm = true;
+            let raw = backend.spi_log[previous_len..]
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            assert!(
+                raw <= 1,
+                "{}: poll {} entered a Plan A target arm and issued {} plain \
+                 register op(s), expected at most 1",
+                variant.name,
+                poll_index,
+                raw
+            );
+        }
+        previous_len = backend.spi_log.len();
+        if matches!(outcome, RestoreStep::Done(_)) {
+            break;
+        }
+    }
+    if variant.reaches_single_op_arm {
+        assert!(
+            saw_target_arm,
+            "{}: expected to reach a Plan A target arm but never did",
+            variant.name
+        );
+    }
+}
+
+/// Staged equivalent of `assert_single_op_arm_budget`, for
+/// `VelocityStagedRestoreBaseline` -- the one Plan A target arm only
+/// reachable via `TerminalRestoreMachine::start_staged`, never `::start`.
+/// Parameter shape matches `assert_staged_disarm_phase_one_op_per_poll`
+/// exactly so both helpers can share fixture arguments.
+async fn assert_staged_single_op_arm_budget(
+    name: &str,
+    terminal: CommissionTerminal,
+    engine_factory: fn() -> CommissioningEngine,
+    prepare: fn(&mut MockBackend),
+    entry_calibrated: bool,
+    entry_motor_enabled: bool,
+    stored_gains: fn() -> Option<crate::pid::InnerLoopGains>,
+) {
+    use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
+
+    let mut backend = MockBackend::new();
+    reset_channel0();
+    prepare(&mut backend);
+    let mut calibrated = entry_calibrated;
+    let mut motor_enabled = entry_motor_enabled;
+    let mut gains = stored_gains();
+    let mut engine = Some(engine_factory());
+    let mut slot = IntegralRetentionSlot::new();
+    let mut machine = TerminalRestoreMachine::start_staged(terminal, 0, 4095);
+    let mut previous_len = backend.spi_log.len();
+    let mut poll_index = 0usize;
+    let mut saw_target_arm = false;
+    loop {
+        poll_index += 1;
+        assert!(poll_index < 256, "{name}: machine did not terminate");
+        let mut state = dispatch_state(&mut calibrated, &mut motor_enabled, &mut gains);
+        let mut retention = CommissionRetention::new(&mut slot);
+        let outcome = machine
+            .poll_step(&mut engine, &mut backend, &mut state, Some(&mut retention))
+            .await;
+        if machine.entered_single_op_arm_this_poll() {
+            saw_target_arm = true;
+            let raw = backend.spi_log[previous_len..]
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            assert!(
+                raw <= 1,
+                "{name}: poll {poll_index} entered a Plan A target arm and issued \
+                 {raw} plain register op(s), expected at most 1"
+            );
+        }
+        previous_len = backend.spi_log.len();
+        if matches!(outcome, RestoreStep::Done(_)) {
+            break;
+        }
+    }
+    assert!(
+        saw_target_arm,
+        "{name}: expected to reach a Plan A target arm but never did"
+    );
+}
+
+#[fixture_test]
+async fn outer_done_reaches_apply_filters_one_op_per_poll() {
+    for variant in all_terminal_variants()
+        .iter()
+        .filter(|v| v.name.starts_with("outer_done"))
+    {
+        assert_single_op_arm_budget(variant).await;
+    }
+}
+
+#[fixture_test]
+async fn calibrate_done_reaches_apply_filters_one_op_per_poll() {
+    for variant in all_terminal_variants()
+        .iter()
+        .filter(|v| v.name.starts_with("calibrate_done") && v.reaches_single_op_arm)
+    {
+        assert_single_op_arm_budget(variant).await;
     }
 }
 

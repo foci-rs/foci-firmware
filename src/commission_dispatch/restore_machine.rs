@@ -107,7 +107,7 @@ enum RestoreCursor {
     InnerFailedRestoreGains(Option<restore::CalibrateGainsRestoreStep>),
 
     CalibrateRestoreGains(Option<restore::CalibrateGainsRestoreStep>),
-    CalibrateApplyFilters,
+    CalibrateApplyFilters(Option<crate::tmc_control::filters::FilterCutoffsStep>),
     CalibrateArm,
     CalibrateDisarm(SafeStateRestoreStep, u8),
 
@@ -117,7 +117,10 @@ enum RestoreCursor {
     CommissionDisarm(SafeStateRestoreStep, u8),
 
     OuterDoneRestorePosition,
-    OuterDoneApplyFilters(OuterLoopGains),
+    OuterDoneApplyFilters {
+        gains: OuterLoopGains,
+        step: Option<crate::tmc_control::filters::FilterCutoffsStep>,
+    },
     OuterDoneArm(OuterLoopGains),
     /// `keep_result` reproduces the arm-failure reply, which reports the tuned
     /// result rather than the zero-filled one every earlier failure uses.
@@ -162,6 +165,8 @@ pub struct TerminalRestoreMachine {
     cursor: RestoreCursor,
     terminal: OwnedTerminalData,
     engine_consumed: bool,
+    #[cfg(test)]
+    entered_single_op_arm_this_poll: bool,
 }
 
 impl TerminalRestoreMachine {
@@ -202,6 +207,8 @@ impl TerminalRestoreMachine {
                     cursor: RestoreCursor::OuterFailedDisarmVelocity(None),
                     terminal: data,
                     engine_consumed: false,
+                    #[cfg(test)]
+                    entered_single_op_arm_this_poll: false,
                 };
             }
             StepResult::VelocityIntegralTerminal(terminal) => (
@@ -232,6 +239,8 @@ impl TerminalRestoreMachine {
             cursor,
             terminal: OwnedTerminalData::new(payload),
             engine_consumed: false,
+            #[cfg(test)]
+            entered_single_op_arm_this_poll: false,
         }
     }
 
@@ -245,6 +254,8 @@ impl TerminalRestoreMachine {
                 cursor: RestoreCursor::VelocityStagedPrologue,
                 terminal: OwnedTerminalData::new(TerminalPayload::VelocityIntegral(terminal)),
                 engine_consumed: false,
+                #[cfg(test)]
+                entered_single_op_arm_this_poll: false,
             },
             CommissionTerminal::FixedGainAmplitude(terminal) => Self {
                 channel,
@@ -252,6 +263,8 @@ impl TerminalRestoreMachine {
                 cursor: RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(None),
                 terminal: OwnedTerminalData::new(TerminalPayload::FixedGainAmplitude(terminal)),
                 engine_consumed: false,
+                #[cfg(test)]
+                entered_single_op_arm_this_poll: false,
             },
             CommissionTerminal::RobustnessReversal(terminal) => Self {
                 channel,
@@ -259,6 +272,8 @@ impl TerminalRestoreMachine {
                 cursor: RestoreCursor::RobustnessStagedClassify,
                 terminal: OwnedTerminalData::new(TerminalPayload::RobustnessReversal(terminal)),
                 engine_consumed: false,
+                #[cfg(test)]
+                entered_single_op_arm_this_poll: false,
             },
             other => {
                 let mut machine = Self::start(other.into_step_result(), channel, pwm_maxcnt);
@@ -294,6 +309,8 @@ impl TerminalRestoreMachine {
             cursor: RestoreCursor::ForceSafeDisarm,
             terminal,
             engine_consumed: false,
+            #[cfg(test)]
+            entered_single_op_arm_this_poll: false,
         }
     }
 
@@ -313,6 +330,18 @@ impl TerminalRestoreMachine {
     /// Return whether the restore still has work left.
     pub const fn is_pending(&self) -> bool {
         !matches!(self.cursor, RestoreCursor::Finished)
+    }
+
+    /// True if any poll of the most recent `poll_step` call executed one of
+    /// the five target arms (`OuterDoneRestorePosition`,
+    /// `OuterDoneApplyFilters`, `RobustnessRestoreBaseline`,
+    /// `VelocityStagedRestoreBaseline`, `CalibrateApplyFilters`), including
+    /// arms reached by same-call fall-through from a non-yielding
+    /// transition arm. Set from inside each target arm's own body; reset at
+    /// the top of every `poll_step` call.
+    #[cfg(test)]
+    pub(crate) fn entered_single_op_arm_this_poll(&self) -> bool {
+        self.entered_single_op_arm_this_poll
     }
 
     /// Advance the restore by at most one awaited backend operation.
@@ -336,6 +365,10 @@ impl TerminalRestoreMachine {
             self.channel, state.channel,
             "FATAL: terminal restore polled with another channel's dispatch state"
         );
+        #[cfg(test)]
+        {
+            self.entered_single_op_arm_this_poll = false;
+        }
         let mut retention = retention;
         loop {
             match self.cursor {
@@ -447,7 +480,7 @@ impl TerminalRestoreMachine {
                             self.cursor = RestoreCursor::CalibrateRestoreGains(Some(step));
                         }
                         Some(Ok(())) => {
-                            self.cursor = RestoreCursor::CalibrateApplyFilters;
+                            self.cursor = RestoreCursor::CalibrateApplyFilters(None);
                         }
                         Some(Err(kind)) => {
                             defmt::error!("CalibrateDone: saved gain restore SPI failed");
@@ -469,22 +502,31 @@ impl TerminalRestoreMachine {
                     }
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::CalibrateApplyFilters => {
-                    if crate::tmc_control::filters::apply_stored_filters_via_backend(
-                        backend,
-                        state.tmc,
-                        self.pwm_maxcnt,
-                    )
-                    .await
-                    .is_err()
+                RestoreCursor::CalibrateApplyFilters(step) => {
+                    #[cfg(test)]
                     {
-                        defmt::error!("CalibrateDone: stored filter restore SPI failed");
-                        self.cursor = RestoreCursor::CalibrateDisarm(
-                            SafeStateRestoreStep::default(),
-                            crate::calibration::CalibrationError::SpiError.status_code(),
-                        );
-                    } else {
-                        self.cursor = RestoreCursor::CalibrateArm;
+                        self.entered_single_op_arm_this_poll = true;
+                    }
+                    let mut step = step.unwrap_or_else(|| {
+                        crate::tmc_control::filters::FilterCutoffsStep::from_stored(
+                            state.tmc,
+                            self.pwm_maxcnt,
+                        )
+                    });
+                    match step.advance(backend).await {
+                        None => {
+                            self.cursor = RestoreCursor::CalibrateApplyFilters(Some(step));
+                        }
+                        Some(Ok(())) => {
+                            self.cursor = RestoreCursor::CalibrateArm;
+                        }
+                        Some(Err(())) => {
+                            defmt::error!("CalibrateDone: stored filter restore SPI failed");
+                            self.cursor = RestoreCursor::CalibrateDisarm(
+                                SafeStateRestoreStep::default(),
+                                crate::calibration::CalibrationError::SpiError.status_code(),
+                            );
+                        }
                     }
                     return RestoreStep::Pending;
                 }
@@ -710,7 +752,8 @@ impl TerminalRestoreMachine {
                         .await
                     {
                         Ok(gains) => {
-                            self.cursor = RestoreCursor::OuterDoneApplyFilters(gains);
+                            self.cursor =
+                                RestoreCursor::OuterDoneApplyFilters { gains, step: None };
                         }
                         Err(error) => {
                             let status = match error {
@@ -734,26 +777,38 @@ impl TerminalRestoreMachine {
                     }
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::OuterDoneApplyFilters(gains) => {
+                RestoreCursor::OuterDoneApplyFilters { gains, step } => {
+                    #[cfg(test)]
+                    {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
                     let TerminalPayload::OuterDone(outer) = self.terminal.payload.clone() else {
                         unreachable!("outer-done cursor without an outer-done payload")
                     };
-                    if crate::tmc_control::filters::apply_outer_result_filters_via_backend(
-                        backend,
-                        &outer,
-                        self.pwm_maxcnt,
-                    )
-                    .await
-                    .is_err()
-                    {
-                        defmt::error!("OuterDone: candidate filter apply SPI failed");
-                        self.cursor = RestoreCursor::OuterDoneDisarm {
-                            step: SafeStateRestoreStep::default(),
-                            status: CommissionError::Spi.status_code(),
-                            keep_result: false,
-                        };
-                    } else {
-                        self.cursor = RestoreCursor::OuterDoneArm(gains);
+                    let mut step = step.unwrap_or_else(|| {
+                        crate::tmc_control::filters::FilterCutoffsStep::from_outer_result(
+                            &outer,
+                            self.pwm_maxcnt,
+                        )
+                    });
+                    match step.advance(backend).await {
+                        None => {
+                            self.cursor = RestoreCursor::OuterDoneApplyFilters {
+                                gains,
+                                step: Some(step),
+                            };
+                        }
+                        Some(Ok(())) => {
+                            self.cursor = RestoreCursor::OuterDoneArm(gains);
+                        }
+                        Some(Err(())) => {
+                            defmt::error!("OuterDone: candidate filter apply SPI failed");
+                            self.cursor = RestoreCursor::OuterDoneDisarm {
+                                step: SafeStateRestoreStep::default(),
+                                status: CommissionError::Spi.status_code(),
+                                keep_result: false,
+                            };
+                        }
                     }
                     return RestoreStep::Pending;
                 }
