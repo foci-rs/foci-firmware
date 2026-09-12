@@ -772,7 +772,9 @@ mod tests {
         tmc_state()
             .velocity_filter_hz
             .store(Some(100), Ordering::Relaxed);
-        tmc_state().torque_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .torque_filter_hz
+            .store(Some(0), Ordering::Relaxed);
         tmc_state()
             .position_filter_hz
             .store(Some(250), Ordering::Relaxed);
@@ -808,8 +810,12 @@ mod tests {
         tmc_state()
             .velocity_filter_hz
             .store(Some(100), Ordering::Relaxed);
-        tmc_state().torque_filter_hz.store(Some(0), Ordering::Relaxed);
-        tmc_state().position_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .torque_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .position_filter_hz
+            .store(Some(0), Ordering::Relaxed);
         tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
 
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
@@ -830,7 +836,10 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(ticks, 12, "expected exactly 12 poll ticks for one enabled filter");
+        assert_eq!(
+            ticks, 12,
+            "expected exactly 12 poll ticks for one enabled filter"
+        );
     }
 
     #[fixture_test]
@@ -841,8 +850,12 @@ mod tests {
         tmc_state()
             .velocity_filter_hz
             .store(Some(100), Ordering::Relaxed);
-        tmc_state().torque_filter_hz.store(Some(0), Ordering::Relaxed);
-        tmc_state().position_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .torque_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .position_filter_hz
+            .store(Some(0), Ordering::Relaxed);
         tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
 
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();

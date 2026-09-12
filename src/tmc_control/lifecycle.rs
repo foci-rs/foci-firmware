@@ -432,8 +432,8 @@ impl ArmMotorElectricalStep {
         backend: &mut B,
         state: &mut DispatchState<'_>,
     ) -> Option<Result<(), crate::autotune::CommissionError>> {
-        use core::sync::atomic::Ordering::Relaxed;
         use crate::autotune::CommissionError;
+        use core::sync::atomic::Ordering::Relaxed;
 
         match self {
             Self::Drain => {
@@ -583,8 +583,7 @@ impl ArmMotorElectricalStep {
                 None
             }
             Self::SettleClearStatusFlags => {
-                match crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await
-                {
+                match crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await {
                     Ok(()) => {
                         *self = Self::FinalizeEnable;
                         None
@@ -1683,8 +1682,16 @@ mod tests {
         assert!(result.is_ok());
 
         assert_eq!(
-            flat_backend.spi_log.iter().filter(|op| **op != SpiOp::Read).count(),
-            stepped_backend.spi_log.iter().filter(|op| **op != SpiOp::Read).count(),
+            flat_backend
+                .spi_log
+                .iter()
+                .filter(|op| **op != SpiOp::Read)
+                .count(),
+            stepped_backend
+                .spi_log
+                .iter()
+                .filter(|op| **op != SpiOp::Read)
+                .count(),
             "stepped arm must write the identical non-read register sequence as the flat function"
         );
         assert_eq!(
@@ -1838,8 +1845,8 @@ mod tests {
 
     #[fixture_test]
     async fn arm_motor_electrical_step_refuses_when_the_pending_config_drain_fails() {
-        use core::sync::atomic::Ordering;
         use crate::tmc_control::pending_config::PendingConfigItem;
+        use core::sync::atomic::Ordering;
         let mut backend = MockBackend::new();
         let (_, mut en, mut gains) = fresh_state_locals();
         let mut cal = true;
@@ -2104,8 +2111,11 @@ mod tests {
                 CLOSED_LOOP_POSITION_MODE,
             )
             .await;
-        backend.fail_on_write =
-            Some(foci_tmc4671::registers::PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr());
+        backend.fail_on_write = Some(
+            foci_tmc4671::registers::PID_ERROR_PID_TORQUE_ERROR_SUM
+                .data
+                .addr(),
+        );
 
         let mut step = ArmMotorElectricalStep::start();
         let result = loop {
@@ -2195,7 +2205,10 @@ mod tests {
             }
         };
 
-        assert_eq!(result, Err(crate::autotune::CommissionError::FaultInterlock));
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::FaultInterlock)
+        );
         assert!(
             !backend
                 .spi_log
@@ -2250,7 +2263,10 @@ mod tests {
             }
         };
 
-        assert_eq!(result, Err(crate::autotune::CommissionError::FaultInterlock));
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::FaultInterlock)
+        );
         assert!(!backend.enable_pin);
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
     }
@@ -2291,9 +2307,7 @@ mod tests {
         );
         assert!(!*state.motor_enabled);
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
-        tmc_state()
-            .config_apply_pending
-            .store(0, Ordering::Relaxed);
+        tmc_state().config_apply_pending.store(0, Ordering::Relaxed);
     }
 
     #[fixture_test]
@@ -2350,9 +2364,7 @@ mod tests {
         );
 
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
-        tmc_state()
-            .config_apply_pending
-            .store(0, Ordering::Relaxed);
+        tmc_state().config_apply_pending.store(0, Ordering::Relaxed);
     }
 
     #[fixture_test]
@@ -2375,9 +2387,10 @@ mod tests {
                 | crate::state::tmc::PENDING_FILTERS,
             Relaxed,
         );
-        tmc_state
-            .voltage_limit_cfg
-            .store(crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
+        tmc_state.voltage_limit_cfg.store(
+            crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT,
+            Relaxed,
+        );
         tmc_state.run_current_ma_cfg.store(1500, Relaxed);
         tmc_state.encoder_invert_cfg.store(Some(false), Relaxed);
         tmc_state.store_pending_inner_gains(
@@ -2439,8 +2452,7 @@ mod tests {
         let raw_spi = tmc.into_inner();
         let op_count = raw_spi.writes.len() + raw_spi.read_requests.len();
         assert_eq!(
-            op_count,
-            WORST_CASE_OP_COUNT,
+            op_count, WORST_CASE_OP_COUNT,
             "drain_pending_config's worst-case op count changed -- if this is \
              an intentional new pending-config item or a wider filter set, \
              update WORST_CASE_OP_COUNT deliberately; if not, this is new, \
