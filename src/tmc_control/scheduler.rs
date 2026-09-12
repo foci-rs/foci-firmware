@@ -651,6 +651,75 @@ mod tests {
     }
 
     #[test]
+    fn enable_transition_bound_is_one_idle_period() {
+        let idle_period_us = u64::from(crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US);
+        let fast_period_us: u32 = 1_000;
+
+        // Channel starts Ready-but-disabled at the new idle period.
+        let mut s = ready(0, [crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US]);
+        let mut now = 0u64;
+        let mut fast_deadlines = std::vec::Vec::new();
+        let mut enable_time = None;
+
+        // Collect two Fast-class deadlines, draining every other due unit
+        // (maintenance/audit/finalize, the same pattern
+        // unit_duration_does_not_stretch_cadence above uses) transparently
+        // in between. The motor enables immediately after the first Fast
+        // pick -- the earliest the scheduler could possibly notice is its
+        // next already-armed due time, which is the second Fast pick,
+        // still governed by the stale idle period.
+        while fast_deadlines.len() < 2 {
+            match s.pick(now, 0) {
+                Some(unit) => {
+                    if unit.class == UnitClass::Fast {
+                        fast_deadlines.push(unit.deadline_us);
+                        if fast_deadlines.len() == 1 {
+                            enable_time = Some(unit.deadline_us);
+                        }
+                    }
+                    s.record(now, 0);
+                }
+                None => now = s.earliest_due_us().unwrap(),
+            }
+        }
+        let enable_time = enable_time.unwrap();
+
+        // Bound: the first pick after enable (the second Fast pick, still
+        // governed by the stale idle-rate due time) occurs no more than
+        // one idle period after the enable event.
+        assert!(fast_deadlines[1] - enable_time <= idle_period_us);
+
+        // At this pick, drive_fast now observes motor_enabled == true and
+        // returns the fast period via Reschedule; the board applies it via
+        // set_fast_period afterward, exactly as it does today for any
+        // other Reschedule outcome (main.rs:983-985). record() for this
+        // pick already ran above, using the still-idle period, mirroring
+        // main.rs calling scheduler.record() before handling the outcome
+        // (main.rs:975-976).
+        s.set_fast_period(0, fast_period_us, fast_deadlines[1]);
+
+        // The *next* Fast pick reflects the fast period, not another idle
+        // wait -- confirming the transition actually took effect.
+        let next_fast_deadline = loop {
+            match s.pick(now, 0) {
+                Some(unit) => {
+                    let was_fast = unit.class == UnitClass::Fast;
+                    let deadline = unit.deadline_us;
+                    s.record(now, 0);
+                    if was_fast {
+                        break deadline;
+                    }
+                }
+                None => now = s.earliest_due_us().unwrap(),
+            }
+        };
+        assert_eq!(
+            next_fast_deadline,
+            fast_deadlines[1] + u64::from(fast_period_us)
+        );
+    }
+
+    #[test]
     fn equal_deadlines_alternate_by_round_robin() {
         let mut s = ready(0, [100, 100]);
         let first = s.pick(0, 0).unwrap();
