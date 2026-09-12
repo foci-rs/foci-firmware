@@ -59,13 +59,6 @@ impl DiagnosticMockSpi {
         self
     }
 
-    #[allow(dead_code)]
-    fn fail_reads_from(mut self, addr: u8) -> Self {
-        self.fail_reads_from = Some(addr);
-        self
-    }
-
-    #[allow(dead_code)]
     fn fail_writes_to(mut self, addr: u8) -> Self {
         self.fail_writes_to = Some(addr);
         self
