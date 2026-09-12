@@ -2331,11 +2331,6 @@ mod tests {
             .await;
 
         let mut step = ArmMotorElectricalStep::start();
-        // Advance exactly one tick (the Drain phase) so the machine has
-        // yielded once, modelling `poll_step` returning `Pending` and giving
-        // up its priority. A higher-priority config handler runs in that
-        // real gap; simulate it directly on the shared atomic, exactly as
-        // `tmc_control::pending_config`'s own setters do.
         assert!(
             step.advance(&mut backend, &mut state).await.is_none(),
             "the Drain phase must not complete the arm in a single tick"
