@@ -494,6 +494,44 @@ impl Default for IntegralRetentionSlot {
     }
 }
 
+/// Channel-indexed RAM-only integral retention slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct IntegralRetentionSlots<const CHANNELS: usize> {
+    slots: [IntegralRetentionSlot; CHANNELS],
+}
+
+impl<const CHANNELS: usize> IntegralRetentionSlots<CHANNELS> {
+    /// Construct an empty slot for every board-local TMC4671 channel.
+    pub const fn new() -> Self {
+        Self {
+            slots: [IntegralRetentionSlot::new(); CHANNELS],
+        }
+    }
+
+    /// Return the retention slot for `channel`, or `None` when it is invalid.
+    pub fn slot(&self, channel: u8) -> Option<&IntegralRetentionSlot> {
+        self.slots.get(usize::from(channel))
+    }
+
+    /// Return the mutable retention slot for `channel`, or `None` when it is invalid.
+    pub fn slot_mut(&mut self, channel: u8) -> Option<&mut IntegralRetentionSlot> {
+        self.slots.get_mut(usize::from(channel))
+    }
+
+    /// Clear retention for every channel after a board-wide fault or reset.
+    pub fn invalidate_all(&mut self) {
+        self.slots
+            .iter_mut()
+            .for_each(IntegralRetentionSlot::observe_fault);
+    }
+}
+
+impl<const CHANNELS: usize> Default for IntegralRetentionSlots<CHANNELS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // The retained slot is fixed inline storage on a target with no heap, so its
 // ceiling is enforced rather than assumed.
 const _: () = assert!(core::mem::size_of::<IntegralRetentionSlot>() <= 656);

@@ -5,8 +5,8 @@ use super::integral_plan::{
 use super::integral_reproduction::{
     AcceptancePoint, FixedGainAmplitudeProgress, IntegralAuthoritySummary, IntegralPlanIdentity,
     IntegralReproductionDecision, IntegralRestBoundaryReference, IntegralRetentionSlot,
-    IntegralRetentionSlotState, RetainedIntegralEvidence, closed_intersection,
-    compare_integral_runs, delta_e, signed_divergence_gap,
+    IntegralRetentionSlotState, IntegralRetentionSlots, RetainedIntegralEvidence,
+    closed_intersection, compare_integral_runs, delta_e, signed_divergence_gap,
 };
 use super::reproduction::{BUILD_FEATURES, ProportionalDirectionalValidity};
 use crate::commission_dispatch::test_support::breakaway_acquisition_for_test;
@@ -116,6 +116,48 @@ fn acceptance_point_uses_the_existing_slot_without_reinterpreting_legacy_authori
     assert_eq!(slot.authority(), None);
     assert_eq!(slot.candidate(), None);
     assert_eq!(core::mem::size_of::<IntegralRetentionSlot>(), 648);
+}
+
+#[test]
+fn channel_slots_isolate_calibration_retention() {
+    let retained = authority(0, 7);
+    let mut slots = IntegralRetentionSlots::<2>::new();
+    slots
+        .slot_mut(0)
+        .expect("channel 0 exists")
+        .install_authority(retained);
+
+    slots
+        .slot_mut(1)
+        .expect("channel 1 exists")
+        .preserve_for_same_channel_calibration(1);
+
+    assert_eq!(
+        slots.slot(0).and_then(IntegralRetentionSlot::authority),
+        Some(retained)
+    );
+}
+
+#[test]
+fn channel_slots_invalidate_all_retention_on_board_fault() {
+    let mut slots = IntegralRetentionSlots::<2>::new();
+    for channel in 0..2 {
+        slots
+            .slot_mut(channel)
+            .expect("channel exists")
+            .install_authority(authority(channel, u64::from(channel) + 7));
+    }
+
+    slots.invalidate_all();
+
+    assert_eq!(
+        slots.slot(0).map(IntegralRetentionSlot::state),
+        Some(IntegralRetentionSlotState::Empty)
+    );
+    assert_eq!(
+        slots.slot(1).map(IntegralRetentionSlot::state),
+        Some(IntegralRetentionSlotState::Empty)
+    );
 }
 
 #[test]
