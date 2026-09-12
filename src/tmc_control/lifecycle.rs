@@ -526,7 +526,7 @@ impl ArmMotorElectricalStep {
                 *self = if mode == CLOSED_LOOP_POSITION_MODE {
                     Self::SettleReadPositionActual
                 } else {
-                    Self::SettleClearStatusFlags
+                    Self::FinalizeEnable
                 };
                 None
             }
@@ -2139,6 +2139,12 @@ mod tests {
                 0x0002_0032,
             )
             .await;
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                CLOSED_LOOP_POSITION_MODE,
+            )
+            .await;
         backend.fail_on_write = Some(foci_tmc4671::registers::STATUS_FLAGS.addr());
 
         let mut step = ArmMotorElectricalStep::start();
@@ -2171,6 +2177,12 @@ mod tests {
             .write_register(
                 foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
                 0x0002_0032,
+            )
+            .await;
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                CLOSED_LOOP_POSITION_MODE,
             )
             .await;
         backend.interlock_tripped = true;
@@ -2212,6 +2224,12 @@ mod tests {
             .write_register(
                 foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
                 0x0002_0032,
+            )
+            .await;
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                CLOSED_LOOP_POSITION_MODE,
             )
             .await;
 
