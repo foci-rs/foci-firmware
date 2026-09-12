@@ -24,9 +24,6 @@ use super::{mechanical_id_velocity_cap_counts_per_ms, position_window_counts, st
 const MIN_USEFUL_DURATION_MS: u16 = 4;
 /// Fixed observation period for the independent outer safety envelope.
 pub(super) const OUTER_SAFETY_SAMPLE_PERIOD_US: u64 = 1_000;
-/// Maximum register operations performed by one due safety observation.
-#[allow(dead_code)]
-pub(super) const OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS: usize = 1;
 
 const INTEGRAL_POSITION_RESERVE_COUNTS: Option<u32> = None;
 
@@ -1040,9 +1037,12 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
 mod tests {
     use super::check_outer_safety_with_timing;
     use super::{
-        MAX_SAFETY_OBSERVATION_GAP_US, OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS, OuterMotionBudget,
-        OuterSafetyLimits, OuterSafetyTimestamp, check_outer_safety,
+        MAX_SAFETY_OBSERVATION_GAP_US, OuterMotionBudget, OuterSafetyLimits, OuterSafetyTimestamp,
+        check_outer_safety,
     };
+
+    /// Maximum register operations performed by one due safety observation.
+    const OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS: usize = 1;
     use crate::autotune::CommissionError;
     use crate::commission_dispatch::test_support::MockBackend;
     use crate::commissioning::outer::{

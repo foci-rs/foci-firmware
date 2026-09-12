@@ -29,9 +29,6 @@ use foci_tmc4671::registers::Register;
 /// Validated delay-transient sampling interval in microseconds.
 pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 200;
 
-/// Maximum register operations issued by one non-capture electrical-ID arm.
-#[allow(dead_code)]
-pub(super) const ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM: usize = 2;
 
 /// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
@@ -2604,6 +2601,9 @@ mod tests {
         PID_TORQUE_FLUX_TARGET, PID_VELOCITY_OFFSET, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP,
         STATUS_FLAGS, UQ_UD_EXT,
     };
+
+    /// Maximum register operations issued by one non-capture electrical-ID arm.
+    const ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM: usize = 2;
 
     const TEST_THETA_E_US: u32 = 160;
     const NOMINAL_INDUCTANCE_CAPTURE_US: u32 =

@@ -184,9 +184,6 @@ const VALIDATION_MIN_STEP_AMPLITUDE: u16 = 128;
 /// Settling time after removing validation current targets (microseconds).
 const VALIDATION_SETTLE_US: u64 = 50_000;
 
-/// Maximum backend register operations issued by one current-validation arm.
-#[allow(dead_code)]
-pub(super) const CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM: usize = 37;
 
 const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_SAMPLE_COUNT] =
     [1, 2, 5, 100];
@@ -2173,6 +2170,9 @@ mod tests {
     };
 
     use super::*;
+
+    /// Maximum backend register operations issued by one current-validation arm.
+    const CURRENT_VALIDATE_MAX_REGISTER_OPS_PER_ARM: usize = 37;
 
     fn p_gain(raw: u16) -> PidPGain {
         PidPGain::new(raw).expect("test PID gain must be valid")

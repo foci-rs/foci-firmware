@@ -57,8 +57,6 @@ const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 const CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD: u32 = 2;
 const CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
 const CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
-#[allow(dead_code)]
-pub(super) const CLOSED_LOOP_ACTIVATION_MAX_REGISTER_OPS_PER_ARM: usize = 48;
 
 /// Number of attempts allowed for a bounded-drift `ClosedLoopActivationUnstable`
 /// failure before surfacing a hard failure. Runaway failures (position error
@@ -1050,6 +1048,8 @@ mod tests {
         PID_VELOCITY_LIMIT, PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION, PWM_SV_CHOP, STATUS_FLAGS,
         STEP_WIDTH, VELOCITY_SELECTION,
     };
+
+    const CLOSED_LOOP_ACTIVATION_MAX_REGISTER_OPS_PER_ARM: usize = 48;
 
     #[test]
     fn closed_loop_velocity_selection_uses_the_standard_meter_on_the_mechanical_angle() {

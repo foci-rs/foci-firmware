@@ -21,10 +21,6 @@ const COIL_SETTLE_US: u64 = 100_000;
 /// Settling time after disabling coil test (microseconds).
 const COIL_COOLDOWN_US: u64 = 50_000;
 
-/// Maximum backend register operations issued by one coil-check state arm.
-#[allow(dead_code)]
-pub(super) const COIL_CHECK_MAX_REGISTER_OPS_PER_ARM: usize = 4;
-
 /// Advance coil check sub-state.
 ///
 /// Tests coil A then coil B via `UQ_UD_EXT` (MODE=8). Validates
@@ -215,6 +211,9 @@ mod tests {
     use crate::commissioning::types::StepResult;
     use crate::selftest::CommissionDiagnostics;
     use foci_tmc4671::registers::ADC_IWY_IUX;
+
+    /// Maximum backend register operations issued by one coil-check state arm.
+    const COIL_CHECK_MAX_REGISTER_OPS_PER_ARM: usize = 4;
 
     fn register_op_count(backend: &MockBackend) -> usize {
         backend

@@ -70,10 +70,6 @@ const ENCODER_READ_SAMPLES: usize = 3;
 const ENCODER_READ_MAX_JITTER: u32 = 2;
 const ENCODER_READ_ATTEMPTS: usize = 3;
 
-/// Maximum backend register operations issued by one encoder state arm.
-#[allow(dead_code)]
-pub(super) const ENCODER_MAX_REGISTER_OPS_PER_ARM: usize = 14;
-
 const DIAG_ENCODER_READ_UNSTABLE: u8 = 1;
 const DIAG_ENCODER_DIRECTION_RESULT: u8 = 2;
 const DIAG_ENCODER_ALIGN_RESULT: u8 = 1;
@@ -991,6 +987,9 @@ mod tests {
     use crate::commission_dispatch::test_support::{
         MockBackend, SHARED_STATE_MUTEX, SpiOp, current_limit,
     };
+
+    /// Maximum backend register operations issued by one encoder state arm.
+    const ENCODER_MAX_REGISTER_OPS_PER_ARM: usize = 14;
 
     fn register_op_count(backend: &MockBackend) -> usize {
         backend

@@ -22,13 +22,6 @@ const ADC_CALIBRATION_SETTLE_US: u64 = 250_000;
 /// Fixed cadence for ADC offset and residual samples (microseconds).
 const ADC_CALIBRATION_SAMPLE_PERIOD_US: u64 = 1_000;
 
-/// Maximum backend register operations issued by one ADC state arm.
-///
-/// 26, not 17: nine pre-enable writes in `AdcCalState::Setup` now go through
-/// `write_register_verified` (write + readback) instead of a bare write, so
-/// each of those nine costs two ops instead of one.
-#[allow(dead_code)]
-pub(super) const ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM: usize = 26;
 
 /// Valid ADC offset range (centered around ~33000).
 const ADC_OFFSET_MIN: u16 = 30_000;
@@ -532,6 +525,13 @@ mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp};
     use crate::commissioning::types::StepResult;
+
+    /// Maximum backend register operations issued by one ADC state arm.
+    ///
+    /// 26, not 17: nine pre-enable writes in `AdcCalState::Setup` now go
+    /// through `write_register_verified` (write + readback) instead of a
+    /// bare write, so each of those nine costs two ops instead of one.
+    const ADC_CALIBRATION_MAX_REGISTER_OPS_PER_ARM: usize = 26;
 
     fn offset_sum(offset: u16) -> i32 {
         i32::from(offset as i16) * i32::from(ADC_CALIBRATION_SAMPLES)
