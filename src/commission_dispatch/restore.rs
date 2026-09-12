@@ -668,7 +668,13 @@ impl EntrySnapshotRestoreStep {
 /// one raw backend write per `advance()` call.
 #[derive(Clone, Copy)]
 pub(crate) struct EntryGainFiltersStep {
-    ops: [(foci_tmc4671::registers::Register, u32); 48],
+    // (register, value, index to jump to if this write fails). The disable
+    // pair's on_fail_next is always the next index (both writes always run,
+    // matching write_sub_register's unconditional double-write); an enable
+    // sequence's on_fail_next is that filter's end boundary for every op
+    // (matching write_biquad_*_checked's `?`-chained abort-the-rest-of-this-
+    // filter behavior, which the original outer wrapper then swallowed).
+    ops: [(foci_tmc4671::registers::Register, u32, u8); 48],
     len: u8,
     next: u8,
 }
@@ -677,16 +683,20 @@ impl EntryGainFiltersStep {
     fn start(snapshot: &crate::commissioning::OuterGainRollbackSnapshot, pwm_maxcnt: u16) -> Self {
         use foci_tmc4671::registers::*;
 
-        let placeholder = Register::new(0);
-        let mut ops = [(placeholder, 0u32); 48];
-        let mut len = 0usize;
+        fn push_disable_pair(
+            ops: &mut [(Register, u32, u8); 48],
+            sub: SubRegister,
+            len: &mut usize,
+        ) {
+            ops[*len] = (sub.addr, u32::from(sub.sub_addr), (*len + 1) as u8);
+            *len += 1;
+            ops[*len] = (sub.data, 0, (*len + 1) as u8);
+            *len += 1;
+        }
 
-        let mut push_pair = |sub: SubRegister, value: u32, len: &mut usize| {
-            ops[*len] = (sub.addr, u32::from(sub.sub_addr));
-            *len += 1;
-            ops[*len] = (sub.data, value);
-            *len += 1;
-        };
+        let placeholder = Register::new(0);
+        let mut ops = [(placeholder, 0u32, 0u8); 48];
+        let mut len = 0usize;
 
         for (filter_hz, coeff_regs, enable_reg) in [
             (
@@ -735,18 +745,34 @@ impl EntryGainFiltersStep {
             ),
         ] {
             if filter_hz == 0 {
-                push_pair(enable_reg, 0, &mut len);
+                push_disable_pair(&mut ops, enable_reg, &mut len);
                 continue;
             }
             let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
                 continue;
             };
-            push_pair(coeff_regs[0], coeffs.a_1 as u32, &mut len);
-            push_pair(coeff_regs[1], coeffs.a_2 as u32, &mut len);
-            push_pair(coeff_regs[2], coeffs.b_0 as u32, &mut len);
-            push_pair(coeff_regs[3], coeffs.b_1 as u32, &mut len);
-            push_pair(coeff_regs[4], coeffs.b_2 as u32, &mut len);
-            push_pair(enable_reg, 1, &mut len);
+            let start = len;
+            for (sub, value) in [
+                (coeff_regs[0], coeffs.a_1 as u32),
+                (coeff_regs[1], coeffs.a_2 as u32),
+                (coeff_regs[2], coeffs.b_0 as u32),
+                (coeff_regs[3], coeffs.b_1 as u32),
+                (coeff_regs[4], coeffs.b_2 as u32),
+                (enable_reg, 1),
+            ] {
+                ops[len] = (sub.addr, u32::from(sub.sub_addr), 0);
+                len += 1;
+                ops[len] = (sub.data, value, 0);
+                len += 1;
+            }
+            // Every op in this filter's enable sequence jumps straight to
+            // the filter's end on failure, whether it fails at a selector
+            // or a data write -- matching write_biquad_*_checked's `?`
+            // chain, which aborts every remaining sub-register pair in the
+            // same filter (not just the one in progress).
+            for op in &mut ops[start..len] {
+                op.2 = len as u8;
+            }
         }
 
         Self {
@@ -762,9 +788,12 @@ impl EntryGainFiltersStep {
         if self.next >= self.len {
             return true;
         }
-        let (reg, value) = self.ops[self.next as usize];
-        let _ = backend.write_register(reg, value).await;
-        self.next += 1;
+        let (reg, value, on_fail_next) = self.ops[self.next as usize];
+        self.next = if backend.write_register(reg, value).await.is_ok() {
+            self.next + 1
+        } else {
+            on_fail_next
+        };
         self.next >= self.len
     }
 }
@@ -1813,6 +1842,55 @@ mod tests {
                 .iter()
                 .any(|(addr, val)| *addr == MODE_RAMP_MODE_MOTION.addr() && *val == 0x8000_0003),
             "the restore must still re-enter position mode after a swallowed filter error"
+        );
+        crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_filter_failure_aborts_only_that_filters_remaining_writes() {
+        use foci_tmc4671::registers::*;
+        let mut snap = sample_entry_snapshot();
+        snap.velocity_filter_hz = 200;
+        let mut backend = MockBackend::new();
+        // Fail only the first write to the shared biquad data register
+        // (velocity's A_1) -- every later write to that same address must
+        // succeed, isolating whether the abort is scoped to one filter.
+        backend.fail_on_write_occurrence = Some((CONFIG_BIQUAD_V_A_1.data.addr(), 0));
+
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step.advance(&mut backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert_eq!(result, Ok(()));
+
+        let log = write_log(&backend);
+        for reg in [
+            CONFIG_BIQUAD_V_A_2,
+            CONFIG_BIQUAD_V_B_0,
+            CONFIG_BIQUAD_V_B_1,
+            CONFIG_BIQUAD_V_B_2,
+            CONFIG_BIQUAD_V_ENABLE,
+        ] {
+            assert!(
+                !log.contains(&(reg.addr.addr(), u32::from(reg.sub_addr))),
+                "velocity's A_1 write failed, so the rest of velocity's enable \
+                 sequence must be skipped -- found a selector write for sub_addr {}",
+                reg.sub_addr
+            );
+        }
+        assert!(
+            log.contains(&(
+                CONFIG_BIQUAD_X_ENABLE.addr.addr(),
+                u32::from(CONFIG_BIQUAD_X_ENABLE.sub_addr)
+            )),
+            "position's disable write (an unrelated, unaffected filter) must still happen"
+        );
+        assert!(
+            log.iter().any(|(addr, _)| *addr == PIDOUT_UQ_UD_LIMITS.addr()),
+            "the restore must still reach the voltage-limit write"
         );
         crate::state::tmc::tmc_channel0().reset();
     }
