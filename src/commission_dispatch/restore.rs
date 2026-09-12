@@ -1,4 +1,11 @@
 //! Commissioning restore sequences used by terminal dispatch outcomes.
+//!
+//! Every error kind in this module (`PositionModeRestoreErrorKind`,
+//! `GainsRestoreErrorKind`, `EntrySnapshotRestoreErrorKind`) erases its
+//! backend's `B::Error` payload rather than carrying it generically: a
+//! generic error would make the owning step type generic over `B`, and a
+//! step type held inside `RestoreCursor` must stay `Copy` and
+//! backend-independent for `RestoreCursor` itself to derive `Copy`.
 
 use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
