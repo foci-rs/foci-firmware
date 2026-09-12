@@ -2079,4 +2079,297 @@ mod tests {
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
     }
 
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_an_integrator_write_fails() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                CLOSED_LOOP_POSITION_MODE,
+            )
+            .await;
+        backend.fail_on_write =
+            Some(foci_tmc4671::registers::PID_ERROR_PID_TORQUE_ERROR_SUM.data.addr());
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_status_flags_write_fails() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.fail_on_write = Some(foci_tmc4671::registers::STATUS_FLAGS.addr());
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_interlock_tripped_during_status_clear() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.interlock_tripped = true;
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::FaultInterlock));
+        assert!(
+            !backend
+                .spi_log
+                .iter()
+                .any(|op| *op == SpiOp::Write(foci_tmc4671::registers::STATUS_FLAGS.addr(), 0)),
+            "an interlock-tripped status-clear must not write STATUS_FLAGS"
+        );
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_interlock_trips_only_after_status_clear() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+
+        let mut step = ArmMotorElectricalStep::start();
+        loop {
+            match step.advance(&mut backend, &mut state).await {
+                None if matches!(step, ArmMotorElectricalStep::FinalizeEnable) => break,
+                None => continue,
+                Some(_) => unreachable!("must not complete before FinalizeEnable"),
+            }
+        }
+        backend.interlock_tripped = true;
+
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::FaultInterlock));
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_config_lands_just_before_the_enable_pin() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.pending_config_set_at_interlock_check = crate::state::tmc::PENDING_CURRENT;
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(
+            !backend.enable_pin,
+            "the pending check must sit after every awaiting step, not just after the drain"
+        );
+        assert!(!*state.motor_enabled);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+        tmc_state()
+            .config_apply_pending
+            .store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn drain_pending_config_worst_case_op_count_is_bounded() {
+        use crate::tmc_control::pending_config::{PendingConfigSink, drain_pending_config};
+        use crate::tmc_control::test_spi::RuntimeMockSpi;
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12;
+        use foci_tmc4671::spi::Tmc4671Spi;
+
+        const WORST_CASE_OP_COUNT: usize = 59;
+
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state.config_apply_pending.store(
+            crate::state::tmc::PENDING_VOLTAGE_LIMIT
+                | crate::state::tmc::PENDING_CURRENT
+                | crate::state::tmc::PENDING_ENCODER_DIR
+                | crate::state::tmc::PENDING_INNER_GAINS
+                | crate::state::tmc::PENDING_OUTER_GAINS
+                | crate::state::tmc::PENDING_FILTERS,
+            Relaxed,
+        );
+        tmc_state
+            .voltage_limit_cfg
+            .store(crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT, Relaxed);
+        tmc_state.run_current_ma_cfg.store(1500, Relaxed);
+        tmc_state.encoder_invert_cfg.store(Some(false), Relaxed);
+        tmc_state.store_pending_inner_gains(
+            crate::pid::InnerLoopGains {
+                flux_p: foci_tmc4671::pid::PidPGain::new(100).unwrap(),
+                flux_i: foci_tmc4671::pid::PidIGain::new(100).unwrap(),
+                torque_p: foci_tmc4671::pid::PidPGain::new(100).unwrap(),
+                torque_i: foci_tmc4671::pid::PidIGain::new(100).unwrap(),
+            },
+            Relaxed,
+        );
+        tmc_state.store_pending_outer_gains(
+            crate::pid::OuterLoopGains {
+                velocity_p: foci_tmc4671::pid::PidPGain::new(100).unwrap(),
+                velocity_i: foci_tmc4671::pid::PidIGain::new(100).unwrap(),
+                position_p: foci_tmc4671::pid::PidPGain::new(100).unwrap(),
+                position_i: foci_tmc4671::pid::PidIGain::new(100).unwrap(),
+            },
+            Relaxed,
+        );
+        tmc_state.velocity_filter_hz.store(Some(200), Relaxed);
+        tmc_state.torque_filter_hz.store(Some(300), Relaxed);
+        tmc_state.position_filter_hz.store(Some(400), Relaxed);
+        tmc_state.flux_filter_hz.store(Some(500), Relaxed);
+        tmc_state.mark_pi_representation_established();
+
+        let mut stored_inner_gains = None;
+        let raw_spi = RuntimeMockSpi::default()
+            .with_read(ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12)
+            .with_read(ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12);
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        drain_pending_config(
+            &mut tmc,
+            tmc_state,
+            crate::config::TmcConfig {
+                pwm_maxcnt: 3999,
+                tmc_clock_hz: 25_000_000,
+                bbm_h: 10,
+                bbm_l: 10,
+                dsadc_mdec_a: 331,
+                dsadc_mdec_b: 331,
+                adc_i_select: 0x1800_0100,
+                excitation_voltage: 512,
+                bandwidth_hz: 50.0,
+                electrical_model_theta_e_us: 160,
+                current_validation_flux_max_encoder_delta_counts: 4,
+                current_validation_torque_max_encoder_delta_counts: 16,
+                resistance_max_expected_current_count: 2000,
+                resistance_scale_metadata_validated: true,
+                current_scale_ma_per_lsb: 1.155,
+            },
+            PendingConfigSink {
+                stored_inner_gains: &mut stored_inner_gains,
+            },
+        )
+        .await
+        .expect("a fully-populated, valid pending config must drain cleanly");
+
+        let raw_spi = tmc.into_inner();
+        let op_count = raw_spi.writes.len() + raw_spi.read_requests.len();
+        assert_eq!(
+            op_count,
+            WORST_CASE_OP_COUNT,
+            "drain_pending_config's worst-case op count changed -- if this is \
+             an intentional new pending-config item or a wider filter set, \
+             update WORST_CASE_OP_COUNT deliberately; if not, this is new, \
+             uncapped growth in arm_motor_electrical's single Drain tick"
+        );
+
+        tmc_state.config_apply_pending.store(0, Relaxed);
+    }
 }
