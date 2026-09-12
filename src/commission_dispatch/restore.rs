@@ -33,6 +33,7 @@ pub enum RestoreError<E> {
 /// # Errors
 ///
 /// Returns the backend's SPI error on the first failed write.
+#[allow(dead_code)]
 pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     backend: &mut B,
     tmc_state: &TmcChannelState,
@@ -539,6 +540,7 @@ pub async fn restore_calibrate_gains<B: CommissioningBackend>(
 /// Returns `RestoreError::Spi` on the first failed write or read, or
 /// `RestoreError::Readback` if a written register does not read back the
 /// value just written.
+#[allow(dead_code)]
 pub async fn restore_entry_snapshot_to_registers<B: CommissioningBackend>(
     backend: &mut B,
     snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
