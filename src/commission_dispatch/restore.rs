@@ -108,6 +108,222 @@ pub async fn restore_position_mode_after_outer<B: CommissioningBackend>(
     Ok(gains)
 }
 
+/// Non-generic mirror of `RestoreError`'s three variants reachable from
+/// `restore_position_mode_after_outer`, for the same reason
+/// `GainsRestoreErrorKind` erases `Spi(B::Error)` -- keeps `RestoreCursor:
+/// Copy` independent of the backend's error type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum PositionModeRestoreErrorKind {
+    PiRepresentation,
+    InvalidGains,
+    Spi,
+}
+
+/// One step of `restore_position_mode_after_outer`'s register-restore
+/// sequence, advanced by exactly one backend register operation per
+/// `advance()` call. Mirrors the original function's order and
+/// short-circuit-on-error behavior exactly. Every variant carries the
+/// already-validated `gains` rather than individually-derived register
+/// values, since re-deriving `gains.to_registers()` is pure/non-IO and
+/// cheaper than threading extra fields through every variant.
+#[derive(Clone, Copy)]
+pub(crate) enum PositionModeRestoreStep {
+    VerifyPiRepresentation {
+        step: crate::tmc_control::pi_representation::PiRepresentationVerifyStep,
+    },
+    WriteVelocityGains {
+        gains: crate::pid::OuterLoopGains,
+    },
+    WritePositionGains {
+        gains: crate::pid::OuterLoopGains,
+    },
+    WriteVelocityLimit {
+        gains: crate::pid::OuterLoopGains,
+    },
+    WriteCurrentLimit {
+        gains: crate::pid::OuterLoopGains,
+    },
+    WriteVoltageCap {
+        gains: crate::pid::OuterLoopGains,
+    },
+    ClearPositionActual {
+        gains: crate::pid::OuterLoopGains,
+    },
+    ReadEncoderCount {
+        gains: crate::pid::OuterLoopGains,
+    },
+    WritePositionTarget {
+        gains: crate::pid::OuterLoopGains,
+        target: u32,
+    },
+    EnterPositionMode {
+        gains: crate::pid::OuterLoopGains,
+    },
+}
+
+impl PositionModeRestoreStep {
+    pub(crate) fn start() -> Self {
+        Self::VerifyPiRepresentation {
+            step: crate::tmc_control::pi_representation::PiRepresentationVerifyStep::start(),
+        }
+    }
+
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        tmc_state: &TmcChannelState,
+        outer: &crate::commissioning::types::OuterResult,
+    ) -> Option<Result<crate::pid::OuterLoopGains, PositionModeRestoreErrorKind>> {
+        use core::sync::atomic::Ordering::Relaxed;
+        use foci_tmc4671::registers::*;
+
+        match self {
+            Self::VerifyPiRepresentation { step } => match step.advance(backend, tmc_state).await {
+                None => None,
+                Some(Err(_)) => Some(Err(PositionModeRestoreErrorKind::PiRepresentation)),
+                Some(Ok(())) => {
+                    let position_p = match PidPGain::new(outer.position_p) {
+                        Ok(v) => v,
+                        Err(_) => return Some(Err(PositionModeRestoreErrorKind::InvalidGains)),
+                    };
+                    let position_i = match PidIGain::new(outer.position_i) {
+                        Ok(v) => v,
+                        Err(_) => return Some(Err(PositionModeRestoreErrorKind::InvalidGains)),
+                    };
+                    let velocity_p = match PidPGain::new(outer.velocity_p) {
+                        Ok(v) => v,
+                        Err(_) => return Some(Err(PositionModeRestoreErrorKind::InvalidGains)),
+                    };
+                    let velocity_i = match PidIGain::new(outer.velocity_i) {
+                        Ok(v) => v,
+                        Err(_) => return Some(Err(PositionModeRestoreErrorKind::InvalidGains)),
+                    };
+                    let gains = crate::pid::OuterLoopGains {
+                        position_p,
+                        position_i,
+                        velocity_p,
+                        velocity_i,
+                    };
+                    *self = Self::WriteVelocityGains { gains };
+                    None
+                }
+            },
+            Self::WriteVelocityGains { gains } => {
+                let gains = *gains;
+                let (velocity_reg, _) = gains.to_registers();
+                if backend
+                    .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                *self = Self::WritePositionGains { gains };
+                None
+            }
+            Self::WritePositionGains { gains } => {
+                let gains = *gains;
+                let (_, position_reg) = gains.to_registers();
+                if backend
+                    .write_register(PID_POSITION_P_POSITION_I, position_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteVelocityLimit { gains };
+                None
+            }
+            Self::WriteVelocityLimit { gains } => {
+                let gains = *gains;
+                if backend
+                    .write_register(PID_VELOCITY_LIMIT, outer.velocity_limit)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteCurrentLimit { gains };
+                None
+            }
+            Self::WriteCurrentLimit { gains } => {
+                let gains = *gains;
+                let current_limit = tmc_state.load_current_limit(Relaxed);
+                if backend
+                    .write_register(PID_TORQUE_FLUX_LIMITS, current_limit.register_value())
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteVoltageCap { gains };
+                None
+            }
+            Self::WriteVoltageCap { gains } => {
+                let gains = *gains;
+                if backend
+                    .write_register(PIDOUT_UQ_UD_LIMITS, 1024)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                *self = Self::ClearPositionActual { gains };
+                None
+            }
+            Self::ClearPositionActual { gains } => {
+                let gains = *gains;
+                if backend
+                    .write_register(PID_POSITION_ACTUAL, 0)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                *self = Self::ReadEncoderCount { gains };
+                None
+            }
+            Self::ReadEncoderCount { gains } => {
+                let gains = *gains;
+                let encoder_count = match backend.read_register(ABN_DECODER_COUNT).await {
+                    Ok(v) => v,
+                    Err(_) => return Some(Err(PositionModeRestoreErrorKind::Spi)),
+                };
+                let target = encoder_count_to_position_target(
+                    encoder_count,
+                    backend.mechanical_encoder_quadrature_counts_per_rev(),
+                );
+                *self = Self::WritePositionTarget { gains, target };
+                None
+            }
+            Self::WritePositionTarget { gains, target } => {
+                let gains = *gains;
+                let target = *target;
+                if backend
+                    .write_register(PID_POSITION_TARGET, target)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                *self = Self::EnterPositionMode { gains };
+                None
+            }
+            Self::EnterPositionMode { gains } => {
+                let gains = *gains;
+                if backend
+                    .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(PositionModeRestoreErrorKind::Spi));
+                }
+                Some(Ok(gains))
+            }
+        }
+    }
+}
+
 fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: u32) -> u32 {
     assert!(
         encoder_counts_per_rev != 0,
@@ -467,6 +683,62 @@ mod tests {
         let outer = sample_outer_result();
         let result = restore_position_mode_after_outer(&mut backend, tmc_state(), &outer).await;
         assert!(result.is_err());
+    }
+
+    #[fixture_test]
+    async fn position_mode_restore_step_matches_flat_function() {
+        let outer = sample_outer_result();
+        let mut flat_backend = MockBackend::new();
+        let flat_gains = restore_position_mode_after_outer(&mut flat_backend, tmc_state(), &outer)
+            .await
+            .expect("flat restore must succeed");
+        let flat_log = flat_backend.spi_log.clone();
+
+        let mut stepped_backend = MockBackend::new();
+        let mut step = PositionModeRestoreStep::start();
+        let stepped_gains = loop {
+            match step
+                .advance(&mut stepped_backend, tmc_state(), &outer)
+                .await
+            {
+                None => continue,
+                Some(Ok(gains)) => break gains,
+                Some(Err(kind)) => panic!("stepped restore failed: {:?}", kind),
+            }
+        };
+        let stepped_log = stepped_backend.spi_log.clone();
+
+        assert_eq!(flat_gains, stepped_gains);
+        assert_eq!(
+            flat_log, stepped_log,
+            "stepped PositionModeRestoreStep must write the identical register \
+             sequence as restore_position_mode_after_outer"
+        );
+    }
+
+    #[fixture_test]
+    async fn position_mode_restore_step_advances_one_op_per_call() {
+        let outer = sample_outer_result();
+        let mut backend = MockBackend::new();
+        let mut step = PositionModeRestoreStep::start();
+        let mut ticks = 0usize;
+        loop {
+            let before = backend.spi_log.len();
+            let result = step.advance(&mut backend, tmc_state(), &outer).await;
+            let after = backend.spi_log.len();
+            assert!(
+                after - before <= 1,
+                "tick {}: advance() issued {} ops, expected at most 1",
+                ticks,
+                after - before
+            );
+            ticks += 1;
+            if !matches!(result, None) {
+                break;
+            }
+        }
+        // 2 PI-representation ops + 9 direct register ops == 11.
+        assert_eq!(ticks, 11);
     }
 
     fn sample_outer_result() -> crate::commissioning::types::OuterResult {

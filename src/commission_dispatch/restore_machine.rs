@@ -116,7 +116,7 @@ enum RestoreCursor {
     CommissionArm(OuterLoopGains),
     CommissionDisarm(SafeStateRestoreStep, u8),
 
-    OuterDoneRestorePosition,
+    OuterDoneRestorePosition(Option<restore::PositionModeRestoreStep>),
     OuterDoneApplyFilters {
         gains: OuterLoopGains,
         step: Option<crate::tmc_control::filters::FilterCutoffsStep>,
@@ -196,7 +196,7 @@ impl TerminalRestoreMachine {
             ),
             StepResult::OuterDone(result) => (
                 TerminalPayload::OuterDone(result),
-                RestoreCursor::OuterDoneRestorePosition,
+                RestoreCursor::OuterDoneRestorePosition(None),
             ),
             StepResult::OuterFailed(error) => {
                 let mut data = OwnedTerminalData::new(TerminalPayload::OuterFailed);
@@ -743,27 +743,33 @@ impl TerminalRestoreMachine {
                     });
                 }
 
-                RestoreCursor::OuterDoneRestorePosition => {
+                RestoreCursor::OuterDoneRestorePosition(step) => {
+                    #[cfg(test)]
+                    {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
                     let TerminalPayload::OuterDone(outer) = self.terminal.payload.clone() else {
                         unreachable!("outer-done cursor without an outer-done payload")
                     };
-                    state.tmc.motor_armed.store(false, Relaxed);
-                    match restore::restore_position_mode_after_outer(backend, state.tmc, &outer)
-                        .await
-                    {
-                        Ok(gains) => {
+                    let mut step = step.unwrap_or_else(|| {
+                        state.tmc.motor_armed.store(false, Relaxed);
+                        restore::PositionModeRestoreStep::start()
+                    });
+                    match step.advance(backend, state.tmc, &outer).await {
+                        None => {
+                            self.cursor = RestoreCursor::OuterDoneRestorePosition(Some(step));
+                        }
+                        Some(Ok(gains)) => {
                             self.cursor =
                                 RestoreCursor::OuterDoneApplyFilters { gains, step: None };
                         }
-                        Err(error) => {
+                        Some(Err(error)) => {
                             let status = match error {
-                                restore::RestoreError::Spi(_) | restore::RestoreError::Readback => {
-                                    CommissionError::Spi
-                                }
-                                restore::RestoreError::PiRepresentation => {
+                                restore::PositionModeRestoreErrorKind::Spi => CommissionError::Spi,
+                                restore::PositionModeRestoreErrorKind::PiRepresentation => {
                                     CommissionError::ChipResetDetected
                                 }
-                                restore::RestoreError::InvalidGains => {
+                                restore::PositionModeRestoreErrorKind::InvalidGains => {
                                     CommissionError::VelocityValidationFailed
                                 }
                             };
@@ -1236,7 +1242,7 @@ impl TerminalRestoreMachine {
                                 &point,
                             );
                             self.terminal.payload = TerminalPayload::OuterDone(result);
-                            self.cursor = RestoreCursor::OuterDoneRestorePosition;
+                            self.cursor = RestoreCursor::OuterDoneRestorePosition(None);
                         }
                         None => {
                             if terminal.outcome == RobustnessOutcome::Complete {
