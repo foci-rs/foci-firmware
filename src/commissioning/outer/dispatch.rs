@@ -120,7 +120,6 @@ fn velocity_timing_context(
     }
 }
 
-
 // `profile`/`mode`/`inner_lambda_us`/`theta_e_us`/`current_ringing`/
 // `current_bandwidth_hz`/`inner_warning_flags` were consumed by the dead
 // VelocityTune/VelocityValidate arms this task removed; the parameters stay

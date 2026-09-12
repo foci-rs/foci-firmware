@@ -184,7 +184,6 @@ const VALIDATION_MIN_STEP_AMPLITUDE: u16 = 128;
 /// Settling time after removing validation current targets (microseconds).
 const VALIDATION_SETTLE_US: u64 = 50_000;
 
-
 const FLUX_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_FLUX_VALIDATION_SAMPLE_COUNT] =
     [1, 2, 5, 100];
 const TORQUE_VALIDATION_DELAYS_MS: [u16; crate::autotune::CURRENT_TORQUE_VALIDATION_SAMPLE_COUNT] =

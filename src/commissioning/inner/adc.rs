@@ -22,7 +22,6 @@ const ADC_CALIBRATION_SETTLE_US: u64 = 250_000;
 /// Fixed cadence for ADC offset and residual samples (microseconds).
 const ADC_CALIBRATION_SAMPLE_PERIOD_US: u64 = 1_000;
 
-
 /// Valid ADC offset range (centered around ~33000).
 const ADC_OFFSET_MIN: u16 = 30_000;
 const ADC_OFFSET_MAX: u16 = 36_000;

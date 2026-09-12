@@ -29,7 +29,6 @@ use foci_tmc4671::registers::Register;
 /// Validated delay-transient sampling interval in microseconds.
 pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 200;
 
-
 /// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
 

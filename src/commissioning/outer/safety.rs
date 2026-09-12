@@ -1048,8 +1048,8 @@ mod tests {
         RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
     };
     use crate::commissioning::outer::{
-        OuterPhase, OuterSafetyTimingAccumulator, OuterSafetyTimingContext,
-        OuterSafetyTimingPhase, OuterSafetyTimingStage, TraceSummarySeqs, step_outer_with_trace,
+        OuterPhase, OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
+        OuterSafetyTimingStage, TraceSummarySeqs, step_outer_with_trace,
     };
     use crate::commissioning::types::{
         OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
