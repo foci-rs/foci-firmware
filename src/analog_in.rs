@@ -9,8 +9,13 @@
 //! resetting on any in-range report -- see
 //! `docs/specs/2026-09-09-foci-367-thermistor-mcu-temp-support.md`.
 
-use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering::Relaxed};
+use core::sync::atomic::{
+    AtomicU8, AtomicU16, AtomicU32,
+    Ordering::{Acquire, Relaxed, Release},
+};
 
+/// Configuration for generic ADC burst sampling: sample spacing, count, rest
+/// interval, and value-range check parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct AnalogInConfig {
     pub sample_ticks: u32,
@@ -21,6 +26,11 @@ pub struct AnalogInConfig {
     pub range_check_count: u8,
 }
 
+/// Accumulating progress state during an active ADC burst: raw sum of
+/// samples, count taken so far, and consecutive out-of-range report counter.
+/// The accumulator is a running `u32` sum of raw ADC reads (before saturation
+/// to `u16` and range checking), which avoids overflow while accumulating up
+/// to `sample_count` reads even when each is near `u16::MAX`.
 #[derive(Debug, Clone, Copy)]
 pub struct BurstProgress {
     pub accumulator: u32,
@@ -28,12 +38,19 @@ pub struct BurstProgress {
     pub invalid_count: u8,
 }
 
+/// Outcome of one ADC sampling step: either advance within a burst, or deliver
+/// a complete report.
 #[derive(Debug, Clone, Copy)]
 pub enum SampleStep {
+    /// Burst is still accumulating. The caller should schedule the next sample
+    /// at `next_due_clock`.
     Pending {
         progress: BurstProgress,
         next_due_clock: u32,
     },
+    /// Burst is complete; the sum has been range-checked. The caller should
+    /// report the value and may trigger shutdown if the shutdown flag is set.
+    /// The sampling task resets and schedules the next burst at `next_due_clock`.
     Report {
         value: u16,
         next_due_clock: u32,
@@ -42,6 +59,12 @@ pub enum SampleStep {
     },
 }
 
+/// Execute one ADC sampling step on pure state: accumulate a raw read and
+/// either return Pending (within-burst) or Report (burst complete). Mirrors
+/// Klipper's `analog_in_event` exactly: samples are summed (not averaged),
+/// bursts are spaced `rest_ticks` apart, individual samples within a burst
+/// are spaced `sample_ticks` apart, and consecutive out-of-range reports
+/// trigger shutdown at `range_check_count`, resetting immediately after.
 pub fn record_sample_step(
     config: &AnalogInConfig,
     progress: BurstProgress,
@@ -143,9 +166,16 @@ impl AnalogChannelState {
     /// Called by `query_analog_in` once its owning slot is found by oid.
     /// Resets all sampling progress and schedules the first sample at
     /// `start_clock`.
+    ///
+    /// Uses a release/acquire gate (sample_count) to prevent concurrent
+    /// `is_due`/`record_sample` calls from observing a torn read of the
+    /// configuration group. This follows `state/tmc.rs`'s own
+    /// `configure_motion_scale` idiom: sample_count=0 invalidates before the
+    /// write group, then the real value validates after. Readers check
+    /// sample_count with Acquire to synchronize the entire group.
     pub fn configure_sampling(&self, config: &AnalogInConfig, start_clock: u32) {
+        self.sample_count.store(0, Release);
         self.sample_ticks.store(config.sample_ticks, Relaxed);
-        self.sample_count.store(config.sample_count, Relaxed);
         self.rest_ticks.store(config.rest_ticks, Relaxed);
         self.min_value.store(config.min_value, Relaxed);
         self.max_value.store(config.max_value, Relaxed);
@@ -155,21 +185,27 @@ impl AnalogChannelState {
         self.samples_taken.store(0, Relaxed);
         self.invalid_count.store(0, Relaxed);
         self.next_due_clock.store(start_clock, Relaxed);
+        self.sample_count.store(config.sample_count, Release);
     }
 
     /// Whether this slot is configured (`query_analog_in` has run) and its
-    /// next scheduled sample or report is due at `now`.
+    /// next scheduled sample or report is due at `now`. The Acquire load on
+    /// `sample_count` ensures a concurrent `configure_sampling` write is
+    /// never observed partially.
     pub fn is_due(&self, now: u32) -> bool {
-        self.sample_count.load(Relaxed) != 0
+        self.sample_count.load(Acquire) != 0
             && now.wrapping_sub(self.next_due_clock.load(Relaxed)) < (u32::MAX / 2)
     }
 
     /// Record one raw ADC read for this slot via the pure
-    /// `record_sample_step`, persisting the resulting state.
+    /// `record_sample_step`, persisting the resulting state. The Acquire load
+    /// on `sample_count` ensures the configuration snapshot is not torn by a
+    /// concurrent `configure_sampling` call.
     pub fn record_sample(&self, raw: u16, now: u32) -> SampleStep {
+        let sample_count = self.sample_count.load(Acquire);
         let config = AnalogInConfig {
             sample_ticks: self.sample_ticks.load(Relaxed),
-            sample_count: self.sample_count.load(Relaxed),
+            sample_count,
             rest_ticks: self.rest_ticks.load(Relaxed),
             min_value: self.min_value.load(Relaxed),
             max_value: self.max_value.load(Relaxed),
