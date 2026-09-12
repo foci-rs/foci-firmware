@@ -3152,3 +3152,25 @@ async fn robustness_missing_entry_snapshot_maps_to_safety_fault() {
 
     clear_motor_sentinel();
 }
+
+#[fixture_test]
+async fn stability_from_span_matches_flat_helper_at_threshold_boundary() {
+    // 4000 counts/rev: threshold is 2 encoder counts converted to raw
+    // position units, i.e. ((2 * 65_536 + 2000) / 4000).max(1) = 33.
+    let at_threshold = super::stability_from_span(0, 33, 4000);
+    assert!(
+        at_threshold.stable,
+        "span == threshold must still be stable"
+    );
+    assert_eq!(at_threshold.span_counts, 33);
+
+    let over_threshold = super::stability_from_span(0, 34, 4000);
+    assert!(!over_threshold.stable, "span > threshold must be unstable");
+    assert_eq!(over_threshold.span_counts, 34);
+
+    // encoder_counts_per_rev == 0 falls back to a threshold of 1.
+    let no_encoder = super::stability_from_span(0, 1, 0);
+    assert!(no_encoder.stable);
+    let no_encoder_over = super::stability_from_span(0, 2, 0);
+    assert!(!no_encoder_over.stable);
+}

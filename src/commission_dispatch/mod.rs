@@ -189,6 +189,39 @@ struct RestoreStability {
     span_counts: u32,
 }
 
+fn stability_from_span(
+    min_delta: i32,
+    max_delta: i32,
+    encoder_counts_per_rev: u32,
+) -> RestoreStability {
+    let span = (max_delta as i64 - min_delta as i64).unsigned_abs();
+    let threshold = if encoder_counts_per_rev == 0 {
+        1
+    } else {
+        ((u64::from(OUTER_RESTORE_STABILITY_ENCODER_COUNTS) * 65_536
+            + u64::from(encoder_counts_per_rev) / 2)
+            / u64::from(encoder_counts_per_rev))
+        .max(1)
+    };
+    let span_counts = span.min(u32::MAX as u64) as u32;
+    if span > threshold {
+        defmt::error!(
+            "OuterFailed restore: unstable span={} threshold={}",
+            span,
+            threshold,
+        );
+        RestoreStability {
+            stable: false,
+            span_counts,
+        }
+    } else {
+        RestoreStability {
+            stable: true,
+            span_counts,
+        }
+    }
+}
+
 async fn outer_restore_position_stable<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<RestoreStability, B::Error> {
@@ -210,33 +243,11 @@ async fn outer_restore_position_stable<B: CommissioningBackend>(
         max_delta = max_delta.max(delta);
     }
 
-    let span = (max_delta as i64 - min_delta as i64).unsigned_abs();
-    let encoder_counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
-    let threshold = if encoder_counts_per_rev == 0 {
-        1
-    } else {
-        ((u64::from(OUTER_RESTORE_STABILITY_ENCODER_COUNTS) * 65_536
-            + u64::from(encoder_counts_per_rev) / 2)
-            / u64::from(encoder_counts_per_rev))
-        .max(1)
-    };
-    let span_counts = span.min(u32::MAX as u64) as u32;
-    if span > threshold {
-        defmt::error!(
-            "OuterFailed restore: unstable span={} threshold={}",
-            span,
-            threshold,
-        );
-        Ok(RestoreStability {
-            stable: false,
-            span_counts,
-        })
-    } else {
-        Ok(RestoreStability {
-            stable: true,
-            span_counts,
-        })
-    }
+    Ok(stability_from_span(
+        min_delta,
+        max_delta,
+        backend.mechanical_encoder_quadrature_counts_per_rev(),
+    ))
 }
 
 fn record_restore_summary<B: CommissioningBackend>(
