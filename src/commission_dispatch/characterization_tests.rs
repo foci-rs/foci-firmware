@@ -820,11 +820,7 @@ async fn outer_failed_soft_failure_arms_electrical_and_holds_position() {
     let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::NoCurrent;
     seed_motor_sentinel(&mut backend).await;
-
-    backend.set_elapsed_us_sequence(&[
-        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
-    ]);
-    backend.elapsed_us_value = 25_000;
+    advance_clock_for_stability_check(&mut backend);
 
     let trace = run_variant(
         StepResult::OuterFailed(err),

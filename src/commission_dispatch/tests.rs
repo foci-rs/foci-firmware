@@ -697,6 +697,16 @@ fn clear_motor_sentinel() {
         .store(0, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Seeds a mock clock schedule that crosses each of the five stability
+/// samples' `OUTER_RESTORE_STABILITY_INTERVAL_US`-spaced deadlines, so a
+/// `PositionStabilityStep`-driven restore converges instead of hanging.
+fn seed_stability_clock(backend: &mut MockBackend) {
+    backend.set_elapsed_us_sequence(&[
+        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+    ]);
+    backend.elapsed_us_value = 25_000;
+}
+
 #[test]
 fn ready_now_returns_minimal_outcome() {
     pollster::block_on(async {
@@ -2183,10 +2193,7 @@ async fn outer_failed_soft_failure_holds_motor() {
     let err = crate::autotune::CommissionError::NoCurrent;
     seed_motor_sentinel(&mut backend).await;
 
-    backend.set_elapsed_us_sequence(&[
-        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
-    ]);
-    backend.elapsed_us_value = 25_000;
+    seed_stability_clock(&mut backend);
 
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
@@ -2234,10 +2241,7 @@ async fn outer_failed_unstable_drift_preserves_upstream_error() {
     let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::NoCurrent;
 
-    backend.set_elapsed_us_sequence(&[
-        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
-    ]);
-    backend.elapsed_us_value = 25_000;
+    seed_stability_clock(&mut backend);
 
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
@@ -2287,10 +2291,7 @@ async fn outer_failed_restore_uses_encoder_scale_for_position_jitter() {
     let err = crate::autotune::CommissionError::VelocityValidationFailed;
     seed_motor_sentinel(&mut backend).await;
 
-    backend.set_elapsed_us_sequence(&[
-        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
-    ]);
-    backend.elapsed_us_value = 25_000;
+    seed_stability_clock(&mut backend);
 
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
@@ -2340,10 +2341,7 @@ async fn outer_failed_restore_accepts_scaled_encoder_jitter() {
     let err = crate::autotune::CommissionError::VelocityValidationFailed;
     seed_motor_sentinel(&mut backend).await;
 
-    backend.set_elapsed_us_sequence(&[
-        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
-    ]);
-    backend.elapsed_us_value = 25_000;
+    seed_stability_clock(&mut backend);
 
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
@@ -2392,10 +2390,7 @@ fn outer_failed_restore_rejects_monotonic_creep() {
         let mut engine = Some(robustness_reversal_engine());
         let err = crate::autotune::CommissionError::VelocityValidationFailed;
 
-        backend.set_elapsed_us_sequence(&[
-            0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
-        ]);
-        backend.elapsed_us_value = 25_000;
+        seed_stability_clock(&mut backend);
 
         let outcome = drive_commission_result(
             StepResult::OuterFailed(err),
