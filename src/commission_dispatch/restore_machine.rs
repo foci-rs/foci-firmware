@@ -28,7 +28,7 @@ use crate::commissioning::types::{
     VelocityIntegralTerminal,
 };
 use crate::pid::OuterLoopGains;
-use crate::tmc_control::lifecycle::LifecycleFlag;
+use crate::tmc_control::lifecycle::{ArmMotorElectricalStep, LifecycleFlag};
 use crate::tmc_safe_state::SafeStateRestoreStep;
 
 /// One advance of a terminal restore.
@@ -107,12 +107,12 @@ enum RestoreCursor {
 
     CalibrateRestoreGains(Option<restore::CalibrateGainsRestoreStep>),
     CalibrateApplyFilters(Option<crate::tmc_control::filters::FilterCutoffsStep>),
-    CalibrateArm,
+    CalibrateArm(Option<ArmMotorElectricalStep>),
     CalibrateDisarm(SafeStateRestoreStep, u8),
 
     CommissionClassify,
     CommissionWriteCurrentLimit(OuterLoopGains),
-    CommissionArm(OuterLoopGains),
+    CommissionArm(OuterLoopGains, Option<ArmMotorElectricalStep>),
     CommissionDisarm(SafeStateRestoreStep, u8),
 
     OuterDoneRestorePosition(Option<restore::PositionModeRestoreStep>),
@@ -120,7 +120,7 @@ enum RestoreCursor {
         gains: OuterLoopGains,
         step: Option<crate::tmc_control::filters::FilterCutoffsStep>,
     },
-    OuterDoneArm(OuterLoopGains),
+    OuterDoneArm(OuterLoopGains, Option<ArmMotorElectricalStep>),
     /// `keep_result` reproduces the arm-failure reply, which reports the tuned
     /// result rather than the zero-filled one every earlier failure uses.
     OuterDoneDisarm {
@@ -137,7 +137,7 @@ enum RestoreCursor {
     OuterFailedStability(Option<restore::PositionStabilityStep>),
     OuterFailedModeRamp,
     OuterFailedFaultDisarm(SafeStateRestoreStep),
-    OuterFailedArm,
+    OuterFailedArm(Option<ArmMotorElectricalStep>),
     OuterFailedArmDisarm(SafeStateRestoreStep, u8),
 
     FixedGainAmplitudeStagedDisarmVelocity(Option<VelocityDisarmStep>),
@@ -515,7 +515,7 @@ impl TerminalRestoreMachine {
                             self.cursor = RestoreCursor::CalibrateApplyFilters(Some(step));
                         }
                         Some(Ok(())) => {
-                            self.cursor = RestoreCursor::CalibrateArm;
+                            self.cursor = RestoreCursor::CalibrateArm(None);
                         }
                         Some(Err(())) => {
                             defmt::error!("CalibrateDone: stored filter restore SPI failed");
@@ -527,11 +527,18 @@ impl TerminalRestoreMachine {
                     }
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::CalibrateArm => {
-                    *state.calibrated = true;
-                    match crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+                RestoreCursor::CalibrateArm(step) => {
+                    #[cfg(test)]
                     {
-                        Ok(()) => {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
+                    *state.calibrated = true;
+                    let mut step = step.unwrap_or_else(ArmMotorElectricalStep::start);
+                    match step.advance(backend, state).await {
+                        None => {
+                            self.cursor = RestoreCursor::CalibrateArm(Some(step));
+                        }
+                        Some(Ok(())) => {
                             let TerminalPayload::CalibrateDone(cal_result) =
                                 self.terminal.payload.clone()
                             else {
@@ -552,7 +559,7 @@ impl TerminalRestoreMachine {
                                 },
                             });
                         }
-                        Err(error) => {
+                        Some(Err(error)) => {
                             defmt::error!("CalibrateDone: arm sentinel verify failed: {}", error);
                             let status = match error {
                                 CommissionError::ChipResetDetected => {
@@ -568,9 +575,9 @@ impl TerminalRestoreMachine {
                                 SafeStateRestoreStep::default(),
                                 status,
                             );
-                            return RestoreStep::Pending;
                         }
                     }
+                    return RestoreStep::Pending;
                 }
                 RestoreCursor::CalibrateDisarm(mut step, status) => {
                     if poll_disarm_motor(&mut step, backend, state).await {
@@ -657,23 +664,30 @@ impl TerminalRestoreMachine {
                             CommissionError::Spi.status_code(),
                         );
                     } else {
-                        self.cursor = RestoreCursor::CommissionArm(gains);
+                        self.cursor = RestoreCursor::CommissionArm(gains, None);
                     }
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::CommissionArm(fallback_outer_gains) => {
-                    *state.calibrated = true;
-                    match crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+                RestoreCursor::CommissionArm(fallback_outer_gains, step) => {
+                    #[cfg(test)]
                     {
-                        Err(error) => {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
+                    *state.calibrated = true;
+                    let mut step = step.unwrap_or_else(ArmMotorElectricalStep::start);
+                    match step.advance(backend, state).await {
+                        None => {
+                            self.cursor =
+                                RestoreCursor::CommissionArm(fallback_outer_gains, Some(step));
+                        }
+                        Some(Err(error)) => {
                             defmt::error!("CommissionDone: arm sentinel verify failed: {}", error);
                             self.cursor = RestoreCursor::CommissionDisarm(
                                 SafeStateRestoreStep::default(),
                                 error.status_code(),
                             );
-                            return RestoreStep::Pending;
                         }
-                        Ok(()) => {
+                        Some(Ok(())) => {
                             let TerminalPayload::CommissionDone(commission_result) =
                                 self.terminal.payload.clone()
                             else {
@@ -714,6 +728,7 @@ impl TerminalRestoreMachine {
                             });
                         }
                     }
+                    return RestoreStep::Pending;
                 }
                 RestoreCursor::CommissionDisarm(mut step, status) => {
                     if poll_disarm_motor(&mut step, backend, state).await {
@@ -802,7 +817,7 @@ impl TerminalRestoreMachine {
                             };
                         }
                         Some(Ok(())) => {
-                            self.cursor = RestoreCursor::OuterDoneArm(gains);
+                            self.cursor = RestoreCursor::OuterDoneArm(gains, None);
                         }
                         Some(Err(())) => {
                             defmt::error!("OuterDone: candidate filter apply SPI failed");
@@ -815,20 +830,26 @@ impl TerminalRestoreMachine {
                     }
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::OuterDoneArm(restored_gains) => {
-                    *state.calibrated = true;
-                    match crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+                RestoreCursor::OuterDoneArm(restored_gains, step) => {
+                    #[cfg(test)]
                     {
-                        Err(error) => {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
+                    *state.calibrated = true;
+                    let mut step = step.unwrap_or_else(ArmMotorElectricalStep::start);
+                    match step.advance(backend, state).await {
+                        None => {
+                            self.cursor = RestoreCursor::OuterDoneArm(restored_gains, Some(step));
+                        }
+                        Some(Err(error)) => {
                             defmt::error!("OuterDone: arm sentinel verify failed: {}", error);
                             self.cursor = RestoreCursor::OuterDoneDisarm {
                                 step: SafeStateRestoreStep::default(),
                                 status: error.status_code(),
                                 keep_result: true,
                             };
-                            return RestoreStep::Pending;
                         }
-                        Ok(()) => {
+                        Some(Ok(())) => {
                             let TerminalPayload::OuterDone(outer) = self.terminal.payload.clone()
                             else {
                                 unreachable!("outer-done cursor without an outer-done payload")
@@ -871,6 +892,7 @@ impl TerminalRestoreMachine {
                             });
                         }
                     }
+                    return RestoreStep::Pending;
                 }
                 RestoreCursor::OuterDoneDisarm {
                     mut step,
@@ -1053,7 +1075,7 @@ impl TerminalRestoreMachine {
                             self.terminal.restore_drift_counts = stability.span_counts;
                             if stability.stable {
                                 self.terminal.outer_restore_failure = None;
-                                self.cursor = RestoreCursor::OuterFailedArm;
+                                self.cursor = RestoreCursor::OuterFailedArm(None);
                             } else {
                                 self.terminal.outer_restore_failure =
                                     Some(self.terminal.outer_error);
@@ -1100,11 +1122,18 @@ impl TerminalRestoreMachine {
                         },
                     ));
                 }
-                RestoreCursor::OuterFailedArm => {
-                    *state.calibrated = true;
-                    match crate::tmc_control::lifecycle::arm_motor_electrical(backend, state).await
+                RestoreCursor::OuterFailedArm(step) => {
+                    #[cfg(test)]
                     {
-                        Err(arm_error) => {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
+                    *state.calibrated = true;
+                    let mut step = step.unwrap_or_else(ArmMotorElectricalStep::start);
+                    match step.advance(backend, state).await {
+                        None => {
+                            self.cursor = RestoreCursor::OuterFailedArm(Some(step));
+                        }
+                        Some(Err(arm_error)) => {
                             self.cursor = RestoreCursor::OuterFailedArmDisarm(
                                 SafeStateRestoreStep::default(),
                                 arm_error.status_code(),
@@ -1113,9 +1142,8 @@ impl TerminalRestoreMachine {
                                 "OuterFailed: arm sentinel verify failed after soft failure: {}",
                                 arm_error
                             );
-                            return RestoreStep::Pending;
                         }
-                        Ok(()) => {
+                        Some(Ok(())) => {
                             let error = self.terminal.outer_error;
                             defmt::warn!(
                                 "OuterFailed: soft failure ({}), entry gains restored",
@@ -1133,6 +1161,7 @@ impl TerminalRestoreMachine {
                             ));
                         }
                     }
+                    return RestoreStep::Pending;
                 }
                 RestoreCursor::OuterFailedArmDisarm(mut step, status) => {
                     if poll_disarm_motor(&mut step, backend, state).await {

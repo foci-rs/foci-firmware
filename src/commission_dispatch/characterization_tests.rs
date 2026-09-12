@@ -1324,6 +1324,7 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             result: || StepResult::CommissionDone(accepted_commission_result()),
             engine: commission_engine,
             seed_sentinel: true,
+            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
@@ -1850,6 +1851,16 @@ async fn calibrate_done_reaches_apply_filters_one_op_per_poll() {
     for variant in all_terminal_variants()
         .iter()
         .filter(|v| v.name.starts_with("calibrate_done") && v.reaches_single_op_arm)
+    {
+        assert_single_op_arm_budget(variant).await;
+    }
+}
+
+#[fixture_test]
+async fn commission_done_reaches_arm_one_op_per_poll() {
+    for variant in all_terminal_variants()
+        .iter()
+        .filter(|v| v.name.starts_with("commission_done") && v.reaches_single_op_arm)
     {
         assert_single_op_arm_budget(variant).await;
     }
