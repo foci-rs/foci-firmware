@@ -1,6 +1,6 @@
 //! Stage 2 (velocity-integral, breakaway, and robustness-reversal) commissioning.
 //!
-//! `OuterPhase` is the cooperative state-machine type. `step_outer`
+//! `OuterPhase` is the cooperative state-machine type. `step_outer_with_trace`
 //! dispatches one tick to the per-phase submodule, prefixed by a
 //! safety-envelope check that aborts on velocity- or position-window
 //! violations. The phase variants and their sub-state types live here
@@ -16,8 +16,6 @@ mod state;
 mod trace;
 pub mod velocity;
 
-#[allow(unused_imports)]
-pub(crate) use dispatch::step_outer;
 pub(crate) use dispatch::{fail_outer, fail_outer_with_safety, step_outer_with_trace};
 #[allow(unused_imports)]
 pub(crate) use limits::MECHANICAL_ID_VELOCITY_CAP_COUNTS_PER_MS;

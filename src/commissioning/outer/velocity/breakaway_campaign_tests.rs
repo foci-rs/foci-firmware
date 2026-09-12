@@ -4165,12 +4165,13 @@ fn safety_with_invalid_budget() -> OuterSafetyLimits {
     safety
 }
 
-/// Drive one real dispatcher tick through [`step_outer`], the same entry the
-/// firmware runtime calls, with a fresh transient buffer each tick (mirroring
-/// the sweep dispatcher tests).
+/// Drive one real dispatcher tick through [`step_outer_with_trace`], the
+/// same entry the firmware runtime calls, with a fresh transient buffer
+/// each tick (mirroring the sweep dispatcher tests).
 fn dispatch_campaign_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> StepResult {
     let mut buffer = crate::autotune::TransientBuffer::new();
-    pollster::block_on(crate::commissioning::outer::step_outer(
+    let mut trace_summary_seqs = crate::commissioning::outer::TraceSummarySeqs::new();
+    pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
         phase,
         &mut buffer,
         crate::autotune::CommissionProfile::Balanced,
@@ -4180,6 +4181,7 @@ fn dispatch_campaign_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> 
         false,
         0,
         0,
+        &mut trace_summary_seqs,
         backend,
     ))
 }

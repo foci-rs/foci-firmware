@@ -120,42 +120,6 @@ fn velocity_timing_context(
     }
 }
 
-/// Step outer phase state machine by one cooperative tick.
-///
-/// Dispatches to the per-phase handler in the matching submodule. Every
-/// tick runs the safety envelope check before the phase-specific logic;
-/// a violation aborts to `Failed(SafetyEnvelopeViolation)` after zeroing
-/// excitation.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
-pub(crate) async fn step_outer<B: CommissioningBackend>(
-    phase: &mut OuterPhase,
-    buf: &mut TransientBuffer,
-    profile: CommissionProfile,
-    mode: OperatingMode,
-    inner_lambda_us: u32,
-    theta_e_us: u32,
-    current_ringing: bool,
-    current_bandwidth_hz: u32,
-    inner_warning_flags: u8,
-    backend: &mut B,
-) -> StepResult {
-    let mut trace_summary_seqs = TraceSummarySeqs::new();
-    step_outer_with_trace(
-        phase,
-        buf,
-        profile,
-        mode,
-        inner_lambda_us,
-        theta_e_us,
-        current_ringing,
-        current_bandwidth_hz,
-        inner_warning_flags,
-        &mut trace_summary_seqs,
-        backend,
-    )
-    .await
-}
 
 // `profile`/`mode`/`inner_lambda_us`/`theta_e_us`/`current_ringing`/
 // `current_bandwidth_hz`/`inner_warning_flags` were consumed by the dead

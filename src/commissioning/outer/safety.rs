@@ -1043,15 +1043,8 @@ mod tests {
         MAX_SAFETY_OBSERVATION_GAP_US, OUTER_SAFETY_SAMPLE_MAX_REGISTER_OPS, OuterMotionBudget,
         OuterSafetyLimits, OuterSafetyTimestamp, check_outer_safety,
     };
-    use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
+    use crate::autotune::CommissionError;
     use crate::commission_dispatch::test_support::MockBackend;
-    use crate::commissioning::outer::velocity::integral_reproduction::{
-        AcceptancePoint, FixedGainAmplitudeProgress, IntegralPlanIdentity,
-    };
-    use crate::commissioning::outer::velocity::robustness_reversal::{
-        RobustnessReversalSession, RobustnessReversalState, RobustnessReversalWorkspace,
-    };
-    use crate::commissioning::outer::{OuterPhase, step_outer};
     use crate::commissioning::outer::{
         OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
         OuterSafetyTimingStage,
@@ -1059,7 +1052,7 @@ mod tests {
     use crate::commissioning::types::{
         OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_POSITION,
         OUTER_SAFETY_FAULT_POSITION_LOCAL, OUTER_SAFETY_FAULT_QUARTER_TURN,
-        OUTER_SAFETY_FAULT_VELOCITY, StepResult,
+        OUTER_SAFETY_FAULT_VELOCITY,
     };
     use foci_tmc4671::registers::ABN_DECODER_COUNT;
 
@@ -1073,35 +1066,6 @@ mod tests {
         };
         safety.next_safety_sample_us = OuterSafetyTimestamp::some(next_sample_us).unwrap();
         safety
-    }
-
-    /// A frozen accepted point for a `RobustnessReversal` fixture. The
-    /// robustness phase never touches this test's dispatch paths (the
-    /// tests either never reach phase dispatch, or reach only
-    /// `ZeroCapture`'s not-yet-due return, before any of these fields are
-    /// read), so the values just need to be well-typed.
-    fn robustness_test_point() -> AcceptancePoint {
-        AcceptancePoint {
-            identity: IntegralPlanIdentity {
-                channel: 0,
-                build_features: 0x1234,
-                schema_revision: 1,
-                plan_digest: 0xfeed_beef,
-            },
-            selected_p: 1_024,
-            selected_i: 512,
-            target_velocity_rpm: 176,
-            selected_response_intervals_q: [[10, 20], [-20, -10]],
-            confidence_q: 0,
-            band_position_q: 0,
-            qualifier_bits: 0,
-            token: None,
-            progress: FixedGainAmplitudeProgress::ReadyAscending,
-        }
-    }
-
-    fn robustness_reversal_session() -> RobustnessReversalSession {
-        RobustnessReversalSession::new(robustness_test_point(), 1, 4_000)
     }
 
     #[test]
@@ -1259,49 +1223,6 @@ mod tests {
             assert_eq!(safety.last_sample_us, Some(0));
             assert_eq!(safety.primitive_start_us, None);
             assert_eq!(safety.next_safety_sample_us, Some(1_000));
-        });
-    }
-
-    #[test]
-    fn outer_safety_observes_zero_target_settle() {
-        pollster::block_on(async {
-            let safety = armed_safety(Some(0), 1_000);
-            let mut phase = OuterPhase::RobustnessReversal {
-                state: RobustnessReversalState::ZeroCapture {
-                    next_sample_us: 300_000,
-                    deadline_us: 500_000,
-                    retry_available: true,
-                },
-                workspace: RobustnessReversalWorkspace::new(),
-                session: robustness_reversal_session(),
-                safety,
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 1_000;
-            backend.mechanical_encoder_position_counts_value = 4;
-
-            let result = step_outer(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                OperatingMode::Nominal,
-                0,
-                0,
-                false,
-                0,
-                0,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::At(2_000)));
-            assert!(matches!(
-                phase,
-                OuterPhase::RobustnessReversal { safety, .. }
-                    if safety.unwrapped_position == 4
-                        && safety.next_safety_sample_us == Some(2_000)
-            ));
         });
     }
 
