@@ -15,8 +15,8 @@
 //! | `FixedGainAmplitudeTerminal`                         | `disarm_motor` unconditionally, before any terminal post-processing                       | terminal passed through unmodified                       | `FixedGainAmplitudeTerminal`   | always           | never |
 //! | `RobustnessReversalTerminal` (outcome != `Complete`) | restore `entry_snapshot()` to registers if present; `disarm_motor` always runs afterward   | restore failure or missing snapshot -> `Failed`/`ROBUSTNESS_CAUSE_SAFETY_FAULT` | `RobustnessReversalTerminal` | always           | never |
 //! | `RobustnessReversalTerminal` (outcome == `Complete`) | **no** baseline restore attempted; `disarm_motor` still runs unconditionally              | terminal passed through unmodified                       | `RobustnessReversalTerminal` | always           | never (deploy/arm happens only in `drive_commission_result_with_stages`, out of this function's scope) |
-//! | `SelftestDone`                                     | `restore_calibrate_gains`; failure is logged only, no disarm/arm, no lifecycle events      | none (`done_status=0` always)                             | `Selftest`                   | always           | never |
-//! | `InnerFailed` (any `EngineKind`)                    | `restore_safe_state_via_backend` directly -- **not** `lifecycle::disarm_motor`, so `state.calibrated`/`state.motor_enabled` are left untouched even though the enable pin is lowered; `Calibrate`/`Selftest` kinds also attempt `restore_calibrate_gains` (log-only on failure) | `error.status_code()` mapped per `EngineKind`             | `CalibrateResult`/`Selftest`/`CommissionPhase` | always | never |
+//! | `SelftestDone`                                     | `CalibrateGainsRestoreStep`; failure is logged only, no disarm/arm, no lifecycle events    | none (`done_status=0` always)                             | `Selftest`                   | always           | never |
+//! | `InnerFailed` (any `EngineKind`)                    | `restore_safe_state_via_backend` directly -- **not** `lifecycle::disarm_motor`, so `state.calibrated`/`state.motor_enabled` are left untouched even though the enable pin is lowered; `Calibrate`/`Selftest` kinds also attempt `CalibrateGainsRestoreStep` (log-only on failure) | `error.status_code()` mapped per `EngineKind`             | `CalibrateResult`/`Selftest`/`CommissionPhase` | always | never |
 //! | `CalibrateDone` (gain-restore SPI failure)          | `disarm_motor`                                                                             | `PiRepresentation` -> `ChipResetDetected`, else `SpiError` | `CalibrateResult`            | always           | never |
 //! | `CalibrateDone` (filter-apply SPI failure)          | `disarm_motor`                                                                             | `SpiError`                                                | `CalibrateResult`            | always           | never |
 //! | `CalibrateDone` (`arm_motor_electrical` failure)    | `disarm_motor`                                                                             | `ChipResetDetected`, `FaultInterlock`, else `SpiError`     | `CalibrateResult`            | always           | never |
@@ -26,7 +26,7 @@
 //! | `CommissionDone` (current-limit restore SPI failure) | `disarm_motor`                                                                            | `Spi`                                                      | `CommissionResult`           | always           | never |
 //! | `CommissionDone` (`arm_motor_electrical` failure)   | `disarm_motor`                                                                             | error's status code                                        | `CommissionResult`           | always           | never |
 //! | `CommissionDone` (success)                          | none                                                                                       | `inner.status`'s code (0/1/2)                              | `CommissionResult`           | always           | **yes** (`ArmZeroPosition`) |
-//! | `OuterDone` (position-mode restore failure)         | `disarm_motor`                                                                             | mapped from `RestoreError`                                  | `TuneResult`                 | always           | never |
+//! | `OuterDone` (position-mode restore failure)         | `disarm_motor`                                                                             | mapped from `PositionModeRestoreErrorKind`                  | `TuneResult`                 | always           | never |
 //! | `OuterDone` (filter-apply SPI failure)              | `disarm_motor`                                                                             | `Spi`                                                       | `TuneResult`                 | always           | never |
 //! | `OuterDone` (`arm_motor_electrical` failure)        | `disarm_motor`                                                                             | error's status code                                          | `TuneResult`                 | always           | never |
 //! | `OuterDone` (success)                                | none                                                                                       | `outer.status`'s code                                        | `TuneResult`                 | always           | **yes** (`ArmPreservePosition`) |
@@ -349,7 +349,7 @@ async fn calibrate_done_success_arms_electrical_before_steps() {
 #[fixture_test]
 async fn calibrate_done_gain_restore_failure_disarms_without_arming() {
     // Forced-fail-mid-restore: a transient write failure inside
-    // `restore_calibrate_gains` must divert straight to `disarm_motor`
+    // `CalibrateGainsRestoreStep` must divert straight to `disarm_motor`
     // without ever reaching `arm_motor_electrical`.
     let mut backend = MockBackend::new();
     backend.fail_writes_remaining = Some((foci_tmc4671::registers::PID_FLUX_P_FLUX_I.addr(), 1));
@@ -565,7 +565,7 @@ async fn selftest_done_restores_gains_without_lifecycle_events() {
         } => assert_eq!(oid, 3),
         _ => panic!("expected Selftest"),
     }
-    // restore_calibrate_gains writes the stored current-loop gains -- the
+    // CalibrateGainsRestoreStep writes the stored current-loop gains -- the
     // "restore, log-only on failure, no disarm/arm" row of the table.
     assert!(trace.events.iter().any(|op| matches!(
         op,
