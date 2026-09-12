@@ -1136,11 +1136,9 @@ mod tests {
         backend.elapsed_us_value = 0;
         let mut step = PositionStabilityStep::start(backend.elapsed_us());
 
-        // Deadline not yet reached: no backend operation, still pending.
         assert!(step.advance(&mut backend).await.is_none());
         assert!(backend.spi_log.is_empty());
 
-        // Deadline reached: exactly one read.
         backend.elapsed_us_value = TEST_INTERVAL_US;
         backend.read_position_actual_sequence.push(100).unwrap();
         assert!(step.advance(&mut backend).await.is_none());
@@ -1171,8 +1169,6 @@ mod tests {
                 break result.expect("no SPI failure injected");
             }
         };
-        // 31 raw units at the default 4000 counts/rev is within the
-        // 2-encoder-count threshold (33 raw units).
         assert!(stability.stable);
     }
 
@@ -1211,8 +1207,6 @@ mod tests {
 
     #[fixture_test]
     async fn position_stability_step_tolerates_a_gap_within_the_max_slack() {
-        // Timing-contract regression guard: a gap right at the edge of the
-        // allowed slack (interval + max_gap) still samples normally.
         let mut backend = MockBackend::new();
         backend.elapsed_us_value = 0;
         backend.read_position_actual_sequence.push(1000).unwrap();
@@ -1238,7 +1232,6 @@ mod tests {
         let mut backend = MockBackend::new();
         backend.elapsed_us_value = 0;
         let mut step = PositionStabilityStep::start(backend.elapsed_us());
-        // One microsecond past the allowed slack.
         backend.elapsed_us_value = TEST_INTERVAL_US + TEST_MAX_GAP_US + 1;
         let outcome = step.advance(&mut backend).await;
         assert!(matches!(
