@@ -386,6 +386,237 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     phase_advance_restored
 }
 
+/// One phase of [`arm_motor_electrical`], advanced one backend operation (or
+/// one `drain_pending_config` call, kept atomic — see the module-level
+/// Scope Note) per `advance()` tick.
+///
+/// Mirrors `arm_motor_electrical` exactly, including its fail-fast error
+/// policy at every phase. The flat `arm_motor_electrical` function is left in
+/// place, unmodified, for `arm_motor_for_voltage_vectors` and for this type's
+/// own characterization tests.
+///
+/// The final tick (`FinalizeEnable`) intentionally performs the interlock
+/// check, the `config_apply_pending` recheck, and the enable-pin assertion
+/// together, inside one `critical_section::with` closure, exactly like the
+/// flat function -- splitting any of the three apart from the others would
+/// reopen the fail-closed race `arm_motor_electrical`'s own doc comment
+/// describes (config recorded by a preempting handler between the recheck
+/// and the enable-pin write).
+#[derive(Clone, Copy)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum ArmMotorElectricalStep {
+    Drain,
+    VerifySentinelReadback,
+    VerifyPiRepresentation(crate::tmc_control::pi_representation::PiRepresentationVerifyStep),
+    WriteCurrentLimit,
+    SettleCheckMode,
+    SettleReadPositionActual,
+    SettleWritePositionActual {
+        actual: u32,
+    },
+    SettleClearIntegrators {
+        ops: [(foci_tmc4671::registers::Register, u32); 8],
+        next: u8,
+    },
+    SettleClearStatusFlags,
+    FinalizeEnable,
+}
+
+impl ArmMotorElectricalStep {
+    pub(crate) const fn start() -> Self {
+        Self::Drain
+    }
+
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        state: &mut DispatchState<'_>,
+    ) -> Option<Result<(), crate::autotune::CommissionError>> {
+        use core::sync::atomic::Ordering::Relaxed;
+        use crate::autotune::CommissionError;
+
+        match self {
+            Self::Drain => {
+                assert!(
+                    *state.calibrated,
+                    "FATAL: arm_motor_electrical called with calibrated=false; \
+                     SPI restore must precede arm"
+                );
+                state.tmc.stall_latched.store(false, Relaxed);
+                state.tmc.homing_clamp_active.store(false, Relaxed);
+                if state.tmc.safe_state_last_pass_failed.load(Relaxed) {
+                    defmt::error!(
+                        "arm_motor_electrical: safe-state cleanup incomplete, refusing arm"
+                    );
+                    return Some(Err(CommissionError::SafeStateIncomplete));
+                }
+                if let Err(item) = backend
+                    .drain_pending_config(crate::tmc_control::pending_config::PendingConfigSink {
+                        stored_inner_gains: state.stored_gains,
+                    })
+                    .await
+                {
+                    defmt::error!(
+                        "arm_motor_electrical: pending config apply failed ({}), refusing arm",
+                        item
+                    );
+                    return Some(Err(CommissionError::Spi));
+                }
+                *self = Self::VerifySentinelReadback;
+                None
+            }
+            Self::VerifySentinelReadback => {
+                use foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS;
+                let expected = state.tmc.motor_sentinel.load(Relaxed);
+                if expected == 0 {
+                    defmt::error!("arm_motor_electrical: missing MOTOR_TYPE sentinel");
+                    return Some(Err(CommissionError::ChipResetDetected));
+                }
+                if backend
+                    .read_register_verified(MOTOR_TYPE_N_POLE_PAIRS, expected)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(CommissionError::ChipResetDetected));
+                }
+                *self = Self::VerifyPiRepresentation(
+                    crate::tmc_control::pi_representation::PiRepresentationVerifyStep::start(),
+                );
+                None
+            }
+            Self::VerifyPiRepresentation(step) => match step.advance(backend, state.tmc).await {
+                None => None,
+                Some(Ok(())) => {
+                    // The compound "safe-state pass AND fresh sentinel pass"
+                    // latch clears only here, once both halves have actually
+                    // succeeded -- matching `arm_motor_electrical` exactly.
+                    state.tmc.safe_state_incomplete.store(false, Relaxed);
+                    *self = Self::WriteCurrentLimit;
+                    None
+                }
+                Some(Err(_)) => Some(Err(CommissionError::ChipResetDetected)),
+            },
+            Self::WriteCurrentLimit => {
+                let run_limit = state.tmc.load_current_limit(Relaxed);
+                if run_limit.raw() == 0 {
+                    defmt::error!("arm_motor_electrical: no run current configured");
+                    return Some(Err(CommissionError::InvalidCurrentLimit));
+                }
+                if backend
+                    .write_register(
+                        foci_tmc4671::registers::PID_TORQUE_FLUX_LIMITS,
+                        run_limit.register_value(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(CommissionError::Spi));
+                }
+                *self = Self::SettleCheckMode;
+                None
+            }
+            Self::SettleCheckMode => {
+                let mode = match backend
+                    .read_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION)
+                    .await
+                {
+                    Ok(mode) => mode,
+                    Err(_) => return Some(Err(CommissionError::Spi)),
+                };
+                *self = if mode == CLOSED_LOOP_POSITION_MODE {
+                    Self::SettleReadPositionActual
+                } else {
+                    Self::SettleClearStatusFlags
+                };
+                None
+            }
+            Self::SettleReadPositionActual => {
+                match backend
+                    .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
+                    .await
+                {
+                    Ok(actual) => {
+                        *self = Self::SettleWritePositionActual { actual };
+                        None
+                    }
+                    Err(_) => Some(Err(CommissionError::Spi)),
+                }
+            }
+            Self::SettleWritePositionActual { actual } => {
+                let actual = *actual;
+                if backend
+                    .write_register(foci_tmc4671::registers::PID_POSITION_ACTUAL, actual)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(CommissionError::Spi));
+                }
+                use foci_tmc4671::registers::{
+                    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
+                    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, Register,
+                };
+                let mut ops = [(Register::new(0), 0u32); 8];
+                for (i, sub) in [
+                    PID_ERROR_PID_TORQUE_ERROR_SUM,
+                    PID_ERROR_PID_FLUX_ERROR_SUM,
+                    PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                    PID_ERROR_PID_POSITION_ERROR_SUM,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    ops[i * 2] = (sub.addr, u32::from(sub.sub_addr));
+                    ops[i * 2 + 1] = (sub.data, 0);
+                }
+                *self = Self::SettleClearIntegrators { ops, next: 0 };
+                None
+            }
+            Self::SettleClearIntegrators { ops, next } => {
+                let (reg, value) = ops[*next as usize];
+                if backend.write_register(reg, value).await.is_err() {
+                    return Some(Err(CommissionError::Spi));
+                }
+                *next += 1;
+                if *next >= 8 {
+                    *self = Self::SettleClearStatusFlags;
+                }
+                None
+            }
+            Self::SettleClearStatusFlags => {
+                match crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await
+                {
+                    Ok(()) => {
+                        *self = Self::FinalizeEnable;
+                        None
+                    }
+                    Err(error) => Some(Err(error)),
+                }
+            }
+            Self::FinalizeEnable => {
+                if backend.interlock_tripped() {
+                    return Some(Err(CommissionError::FaultInterlock));
+                }
+                let armed = critical_section::with(|_| {
+                    if state.tmc.config_apply_pending.load(Relaxed) != 0 {
+                        return false;
+                    }
+                    backend.set_enable_pin(true);
+                    true
+                });
+                if !armed {
+                    defmt::error!(
+                        "arm_motor_electrical: configuration recorded after the drain, refusing arm"
+                    );
+                    return Some(Err(CommissionError::Spi));
+                }
+                *state.motor_enabled = true;
+                backend.record_lifecycle(LifecycleFlag::MotorEnabled, true);
+                Some(Ok(()))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
