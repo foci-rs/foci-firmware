@@ -1889,7 +1889,8 @@ mod tests {
             "position's disable write (an unrelated, unaffected filter) must still happen"
         );
         assert!(
-            log.iter().any(|(addr, _)| *addr == PIDOUT_UQ_UD_LIMITS.addr()),
+            log.iter()
+                .any(|(addr, _)| *addr == PIDOUT_UQ_UD_LIMITS.addr()),
             "the restore must still reach the voltage-limit write"
         );
         crate::state::tmc::tmc_channel0().reset();
