@@ -18,6 +18,7 @@ extern crate std;
 extern crate self as foci_firmware;
 
 pub mod adc_vm;
+pub mod analog_in;
 pub mod ankyra;
 pub mod autotune;
 pub mod biquad;
