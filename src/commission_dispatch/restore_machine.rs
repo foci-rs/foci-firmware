@@ -16,9 +16,8 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::autotune::CommissionError;
 use crate::commission_dispatch::{
     CommissionOutcome, CommissionRetention, DispatchState, PostActions, ReplyPayload,
-    StepperPostAction, fixed_gain_amplitude, integral, outer_restore_position_stable,
-    record_restore_summary, restore, robustness, validate_outer_gains, zero_adc_cal_result,
-    zero_commission_result, zero_outer_result,
+    StepperPostAction, fixed_gain_amplitude, integral, record_restore_summary, restore, robustness,
+    validate_outer_gains, zero_adc_cal_result, zero_commission_result, zero_outer_result,
 };
 use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionTerminal;
@@ -135,7 +134,7 @@ enum RestoreCursor {
     OuterFailedClassify,
     OuterFailedRestoreEntryGains,
     OuterFailedSafetyRestore,
-    OuterFailedStability,
+    OuterFailedStability(Option<restore::PositionStabilityStep>),
     OuterFailedModeRamp,
     OuterFailedFaultDisarm(SafeStateRestoreStep),
     OuterFailedArm,
@@ -991,7 +990,7 @@ impl TerminalRestoreMachine {
                     .await
                     {
                         Ok(()) => {
-                            self.cursor = RestoreCursor::OuterFailedStability;
+                            self.cursor = RestoreCursor::OuterFailedStability(None);
                         }
                         Err(restore_err) => {
                             defmt::error!(
@@ -1021,9 +1020,19 @@ impl TerminalRestoreMachine {
                     self.cursor = RestoreCursor::OuterFailedModeRamp;
                     return RestoreStep::Pending;
                 }
-                RestoreCursor::OuterFailedStability => {
-                    match outer_restore_position_stable(backend).await {
-                        Ok(stability) => {
+                RestoreCursor::OuterFailedStability(step) => {
+                    #[cfg(test)]
+                    {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
+                    let mut step = step.unwrap_or_else(|| {
+                        restore::PositionStabilityStep::start(backend.elapsed_us())
+                    });
+                    match step.advance(backend).await {
+                        None => {
+                            self.cursor = RestoreCursor::OuterFailedStability(Some(step));
+                        }
+                        Some(Ok(stability)) => {
                             self.terminal.restore_drift_counts = stability.span_counts;
                             if stability.stable {
                                 self.terminal.outer_restore_failure = None;
@@ -1034,8 +1043,11 @@ impl TerminalRestoreMachine {
                                 self.cursor = RestoreCursor::OuterFailedModeRamp;
                             }
                         }
-                        Err(_) => {
-                            defmt::error!("OuterFailed restore: stability read SPI failed");
+                        Some(Err(
+                            restore::PositionStabilityErrorKind::Spi
+                            | restore::PositionStabilityErrorKind::Stale,
+                        )) => {
+                            defmt::error!("OuterFailed restore: stability sampling failed");
                             self.terminal.outer_restore_failure = Some(CommissionError::Spi);
                             self.cursor = RestoreCursor::OuterFailedModeRamp;
                         }

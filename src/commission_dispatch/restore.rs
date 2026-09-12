@@ -7,9 +7,10 @@
 //! step type held inside `RestoreCursor` must stay `Copy` and
 //! backend-independent for `RestoreCursor` itself to derive `Copy`.
 
-// Only reachable through `PositionStabilityStep::advance`, which the next
-// task in this series wires into `RestoreCursor` -- until then this import
-// is unused outside `#[cfg(test)]`.
+// `PositionStabilityStep::advance`'s own `backend.elapsed_us()` call resolves
+// through the `B: CommissioningBackend` supertrait bound without this import,
+// but the `#[cfg(test)]` module below calls `elapsed_us()` on the concrete
+// `MockBackend`, which needs the trait in scope directly.
 #[allow(unused_imports)]
 use crate::commissioning::backend::CommissionTiming;
 use crate::commissioning::types::CommissioningBackend;
@@ -238,10 +239,6 @@ fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: 
     rounded as u32
 }
 
-// Not yet wired into `RestoreCursor` -- the next task in this series makes
-// `RestoreCursor::OuterFailedStability` drive this type, at which point it
-// stops being dead code outside `#[cfg(test)]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum PositionStabilityErrorKind {
     Spi,
@@ -256,7 +253,6 @@ pub(crate) enum PositionStabilityErrorKind {
 /// sample), and reports `Stale` if more than
 /// `OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US` elapses past that deadline
 /// before the sample can be taken.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) struct PositionStabilityStep {
     index: u8,
@@ -266,7 +262,6 @@ pub(crate) struct PositionStabilityStep {
     max_delta: i32,
 }
 
-#[allow(dead_code)]
 impl PositionStabilityStep {
     pub(crate) fn start(now_us: u64) -> Self {
         Self {

@@ -2183,6 +2183,11 @@ async fn outer_failed_soft_failure_holds_motor() {
     let err = crate::autotune::CommissionError::NoCurrent;
     seed_motor_sentinel(&mut backend).await;
 
+    backend.set_elapsed_us_sequence(&[
+        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+    ]);
+    backend.elapsed_us_value = 25_000;
+
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
         &mut engine,
@@ -2191,10 +2196,6 @@ async fn outer_failed_soft_failure_holds_motor() {
         4095,
     )
     .await;
-
-    // Five-sample restore stability window.
-    assert_eq!(backend.delay_us_log.len(), 5);
-    assert!(backend.delay_us_log.iter().all(|d| *d == 5_000));
 
     // Motor still armed (soft failure, stable).
     assert!(*state.calibrated);
@@ -2233,6 +2234,11 @@ async fn outer_failed_unstable_drift_preserves_upstream_error() {
     let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::NoCurrent;
 
+    backend.set_elapsed_us_sequence(&[
+        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+    ]);
+    backend.elapsed_us_value = 25_000;
+
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
         &mut engine,
@@ -2258,8 +2264,6 @@ async fn outer_failed_unstable_drift_preserves_upstream_error() {
         }
         _ => panic!("expected TuneResult error"),
     }
-    assert_eq!(backend.delay_us_log.len(), 5);
-    assert!(backend.delay_us_log.iter().all(|d| *d == 5_000));
 
     tmc_state().motor_armed.store(false, Ordering::Relaxed);
 }
@@ -2282,6 +2286,11 @@ async fn outer_failed_restore_uses_encoder_scale_for_position_jitter() {
     let mut engine = Some(robustness_reversal_engine());
     let err = crate::autotune::CommissionError::VelocityValidationFailed;
     seed_motor_sentinel(&mut backend).await;
+
+    backend.set_elapsed_us_sequence(&[
+        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+    ]);
+    backend.elapsed_us_value = 25_000;
 
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
@@ -2331,6 +2340,11 @@ async fn outer_failed_restore_accepts_scaled_encoder_jitter() {
     let err = crate::autotune::CommissionError::VelocityValidationFailed;
     seed_motor_sentinel(&mut backend).await;
 
+    backend.set_elapsed_us_sequence(&[
+        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+    ]);
+    backend.elapsed_us_value = 25_000;
+
     let outcome = drive_commission_result(
         StepResult::OuterFailed(err),
         &mut engine,
@@ -2377,6 +2391,11 @@ fn outer_failed_restore_rejects_monotonic_creep() {
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
         let mut engine = Some(robustness_reversal_engine());
         let err = crate::autotune::CommissionError::VelocityValidationFailed;
+
+        backend.set_elapsed_us_sequence(&[
+            0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+        ]);
+        backend.elapsed_us_value = 25_000;
 
         let outcome = drive_commission_result(
             StepResult::OuterFailed(err),

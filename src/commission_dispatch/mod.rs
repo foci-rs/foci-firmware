@@ -184,10 +184,6 @@ const OUTER_RESTORE_STABILITY_INTERVAL_US: u32 = 5_000;
 /// Most a sample may run late past its `OUTER_RESTORE_STABILITY_INTERVAL_US`
 /// deadline before `PositionStabilityStep` gives up on the whole check as
 /// stale rather than risk a verdict computed over an unbounded window.
-// Only read by `PositionStabilityStep::advance` (restore.rs), which the
-// next task in this series wires into `RestoreCursor`; until then this is
-// unused outside `#[cfg(test)]`.
-#[allow(dead_code)]
 const OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US: u32 = 5_000;
 const OUTER_RESTORE_STABILITY_ENCODER_COUNTS: u32 = 2;
 
@@ -228,34 +224,6 @@ fn stability_from_span(
             span_counts,
         }
     }
-}
-
-async fn outer_restore_position_stable<B: CommissioningBackend>(
-    backend: &mut B,
-) -> Result<RestoreStability, B::Error> {
-    let mut first = 0i32;
-    let mut min_delta = 0i32;
-    let mut max_delta = 0i32;
-
-    for index in 0..OUTER_RESTORE_STABILITY_SAMPLES {
-        backend.delay_us(OUTER_RESTORE_STABILITY_INTERVAL_US).await;
-        let position = backend
-            .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
-            .await? as i32;
-
-        if index == 0 {
-            first = position;
-        }
-        let delta = position.wrapping_sub(first);
-        min_delta = min_delta.min(delta);
-        max_delta = max_delta.max(delta);
-    }
-
-    Ok(stability_from_span(
-        min_delta,
-        max_delta,
-        backend.mechanical_encoder_quadrature_counts_per_rev(),
-    ))
 }
 
 fn record_restore_summary<B: CommissioningBackend>(

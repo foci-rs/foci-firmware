@@ -821,6 +821,11 @@ async fn outer_failed_soft_failure_arms_electrical_and_holds_position() {
     let err = crate::autotune::CommissionError::NoCurrent;
     seed_motor_sentinel(&mut backend).await;
 
+    backend.set_elapsed_us_sequence(&[
+        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+    ]);
+    backend.elapsed_us_value = 25_000;
+
     let trace = run_variant(
         StepResult::OuterFailed(err),
         &mut engine,
@@ -1239,6 +1244,13 @@ fn fail_velocity_target_write(backend: &mut MockBackend) {
     backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_TARGET.addr());
 }
 
+fn advance_clock_for_stability_check(backend: &mut MockBackend) {
+    backend.set_elapsed_us_sequence(&[
+        0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
+    ]);
+    backend.elapsed_us_value = 25_000;
+}
+
 fn all_terminal_variants() -> [TerminalVariant; 22] {
     const BASE: TerminalVariant = TerminalVariant {
         name: "",
@@ -1360,9 +1372,11 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             name: "outer_failed_soft_failure",
             result: || StepResult::OuterFailed(crate::autotune::CommissionError::NoCurrent),
             engine: robustness_reversal_engine,
+            prepare: advance_clock_for_stability_check,
             seed_sentinel: true,
             entry_calibrated: true,
             entry_motor_enabled: true,
+            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
@@ -1378,8 +1392,10 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             name: "outer_failed_soft_failure_arm_failure",
             result: || StepResult::OuterFailed(crate::autotune::CommissionError::NoCurrent),
             engine: robustness_reversal_engine,
+            prepare: advance_clock_for_stability_check,
             entry_calibrated: true,
             entry_motor_enabled: true,
+            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
@@ -1853,6 +1869,24 @@ async fn robustness_restore_baseline_one_op_per_poll() {
 }
 
 #[fixture_test]
+async fn outer_failed_soft_failure_stability_arm_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "outer_failed_soft_failure")
+        .expect("outer_failed_soft_failure variant must exist");
+    assert_single_op_arm_budget(&variant).await;
+}
+
+#[fixture_test]
+async fn outer_failed_soft_failure_arm_failure_stability_arm_is_one_op_per_poll() {
+    let variant = all_terminal_variants()
+        .into_iter()
+        .find(|v| v.name == "outer_failed_soft_failure_arm_failure")
+        .expect("outer_failed_soft_failure_arm_failure variant must exist");
+    assert_single_op_arm_budget(&variant).await;
+}
+
+#[fixture_test]
 async fn fixed_gain_amplitude_staged_disarm_velocity_phase_is_one_op_per_poll() {
     assert_staged_disarm_phase_one_op_per_poll(
         "fixed_gain_amplitude_staged_disarm_velocity",
@@ -2123,4 +2157,62 @@ async fn calibrate_done_gain_restore_failure_polls_are_one_op_each() {
         .find(|v| v.name == "calibrate_done_gain_restore_failure")
         .expect("calibrate_done_gain_restore_failure variant must exist");
     assert_gain_restore_phase_one_op_per_poll(&variant).await;
+}
+
+#[fixture_test]
+async fn outer_failed_stability_stale_gap_falls_back_to_spi_disarm() {
+    let mut backend = MockBackend::new();
+    seed_motor_sentinel(&mut backend).await;
+    // A few leading zeros absorb any elapsed_us() calls made by earlier
+    // cursor arms (classify, restore-entry-gains) before this arm's own
+    // PositionStabilityStep::start snapshots a small "now"; once the
+    // sequence is exhausted, elapsed_us() falls back to a value already
+    // past the first sample's interval-plus-slack deadline, so the very
+    // first advance() call must report Stale rather than wait or sample.
+    backend.set_elapsed_us_sequence(&[0, 0, 0]);
+    backend.elapsed_us_value = u64::from(super::OUTER_RESTORE_STABILITY_INTERVAL_US)
+        + u64::from(super::OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US)
+        + 1;
+    // Seeded so `read_position_actual_pos` actually increments on a real
+    // PID_POSITION_ACTUAL read -- with an empty sequence the counter would
+    // stay 0 regardless of whether a read happened, making the assertion
+    // below vacuous.
+    backend.read_position_actual_sequence.push(1000).unwrap();
+
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut cal = true;
+    let mut en = true;
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(robustness_reversal_engine());
+    let err = crate::autotune::CommissionError::NoCurrent;
+
+    let mut machine = TerminalRestoreMachine::start(StepResult::OuterFailed(err), 0, 4095);
+    let mut polls = 0usize;
+    let outcome = loop {
+        polls += 1;
+        assert!(polls < 64, "machine did not terminate");
+        match machine
+            .poll_step(&mut engine, &mut backend, &mut state, None)
+            .await
+        {
+            RestoreStep::Pending => {}
+            RestoreStep::Done(outcome) => break outcome,
+        }
+    };
+
+    assert_eq!(
+        backend.read_position_actual_pos, 0,
+        "a stale gap must not attempt a PID_POSITION_ACTUAL read -- `spi_log`'s \
+         plain SpiOp::Read count is not usable here, since OuterFailedRestoreEntryGains' \
+         own PI-representation verification issues unrelated reads earlier in the same run"
+    );
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult { status, .. },
+            ..
+        } => {
+            assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
+        }
+        _ => panic!("expected TuneResult"),
+    }
 }
