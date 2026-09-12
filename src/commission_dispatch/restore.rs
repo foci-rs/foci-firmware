@@ -1061,8 +1061,8 @@ mod tests {
         let snap = sample_entry_snapshot();
         let mut backend = MockBackend::new();
         // Corrupt the velocity-limit readback so the snapshot's written value
-        // and the value read back disagree -- exercises RestoreError::Readback's
-        // stepped equivalent.
+        // and the value read back disagree -- exercises
+        // EntrySnapshotRestoreErrorKind::Readback.
         backend.read_override = Some((PID_VELOCITY_LIMIT.addr(), 0xDEAD_BEEF));
         let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
         let result = loop {
