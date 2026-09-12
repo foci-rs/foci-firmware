@@ -443,6 +443,132 @@ async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
     .await
 }
 
+/// Flattened queue of raw register writes needed to apply up to four biquad
+/// filter cutoffs, computed once in a `from_*` constructor and advanced one
+/// `write_register` call per `advance()` call. Mirrors
+/// `apply_backend_filter_cutoffs`'s write order and both no-op conditions
+/// (`filter_hz == 0`, and `butterworth_lowpass` returning `None` for an
+/// out-of-range cutoff or `pwm_maxcnt == 0`) exactly.
+#[derive(Clone, Copy)]
+pub(crate) struct FilterCutoffsStep {
+    ops: [(foci_tmc4671::registers::Register, u32); 48],
+    len: u8,
+    next: u8,
+}
+
+impl FilterCutoffsStep {
+    fn start(cutoffs: BackendFilterCutoffs, pwm_maxcnt: u16) -> Self {
+        let placeholder = foci_tmc4671::registers::Register::new(0);
+        let mut ops = [(placeholder, 0u32); 48];
+        let mut len = 0usize;
+        for (target, filter_hz) in [
+            (BiquadFilterTarget::Velocity, cutoffs.velocity_hz),
+            (BiquadFilterTarget::Torque, cutoffs.torque_hz),
+            (BiquadFilterTarget::Position, cutoffs.position_hz),
+            (BiquadFilterTarget::Flux, cutoffs.flux_hz),
+        ] {
+            if filter_hz == 0 {
+                continue;
+            }
+            let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+                continue;
+            };
+            let regs = biquad_filter_regs(target);
+            for (sub, value) in [
+                (regs.a_1, coeffs.a_1 as u32),
+                (regs.a_2, coeffs.a_2 as u32),
+                (regs.b_0, coeffs.b_0 as u32),
+                (regs.b_1, coeffs.b_1 as u32),
+                (regs.b_2, coeffs.b_2 as u32),
+                (regs.enable, 1u32),
+            ] {
+                ops[len] = (sub.addr, u32::from(sub.sub_addr));
+                len += 1;
+                ops[len] = (sub.data, value);
+                len += 1;
+            }
+        }
+        Self {
+            ops,
+            len: len as u8,
+            next: 0,
+        }
+    }
+
+    /// Build the step for the currently-stored (published) filter cutoffs --
+    /// the path `apply_stored_filters_via_backend` takes.
+    pub(crate) fn from_stored(tmc_state: &TmcChannelState, pwm_maxcnt: u16) -> Self {
+        use core::sync::atomic::Ordering::Relaxed;
+
+        Self::start(
+            BackendFilterCutoffs {
+                velocity_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+                torque_hz: tmc_state.torque_filter_hz.load_or_zero(Relaxed),
+                position_hz: tmc_state.position_filter_hz.load_or_zero(Relaxed),
+                flux_hz: tmc_state.flux_filter_hz.load_or_zero(Relaxed),
+            },
+            pwm_maxcnt,
+        )
+    }
+
+    /// Build the step for an unpublished outer-tune result's filters -- the
+    /// path `apply_outer_result_filters_via_backend` takes.
+    pub(crate) fn from_outer_result(
+        outer: &crate::commissioning::types::OuterResult,
+        pwm_maxcnt: u16,
+    ) -> Self {
+        Self::start(
+            BackendFilterCutoffs {
+                velocity_hz: outer.velocity_filter_hz,
+                torque_hz: outer.torque_filter_hz,
+                position_hz: outer.position_filter_hz,
+                flux_hz: outer.flux_filter_hz,
+            },
+            pwm_maxcnt,
+        )
+    }
+
+    /// Build the step for an entry-snapshot's baseline filters -- the path
+    /// `apply_entry_snapshot_filters_via_backend` takes.
+    pub(crate) fn from_entry_snapshot(
+        snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
+        pwm_maxcnt: u16,
+    ) -> Self {
+        Self::start(
+            BackendFilterCutoffs {
+                velocity_hz: snapshot.velocity_filter_hz,
+                torque_hz: snapshot.torque_filter_hz,
+                position_hz: snapshot.position_filter_hz,
+                flux_hz: snapshot.flux_filter_hz,
+            },
+            pwm_maxcnt,
+        )
+    }
+
+    /// Issue the next raw register write, if any remain. `None` while ops
+    /// remain; `Some(Ok(()))` once every queued write has succeeded
+    /// (including the zero-op case, where the very first call completes
+    /// immediately); `Some(Err(()))` on the first write failure.
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+    ) -> Option<Result<(), ()>> {
+        if self.next >= self.len {
+            return Some(Ok(()));
+        }
+        let (reg, value) = self.ops[self.next as usize];
+        if backend.write_register(reg, value).await.is_err() {
+            return Some(Err(()));
+        }
+        self.next += 1;
+        if self.next >= self.len {
+            Some(Ok(()))
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,5 +780,101 @@ mod tests {
 
             assert!(result.is_err());
         });
+    }
+
+    #[fixture_test]
+    async fn filter_cutoffs_step_matches_flat_apply_stored_filters() {
+        use core::sync::atomic::Ordering;
+        tmc_state()
+            .velocity_filter_hz
+            .store(Some(100), Ordering::Relaxed);
+        tmc_state().torque_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .position_filter_hz
+            .store(Some(250), Ordering::Relaxed);
+        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
+
+        let mut flat_backend = crate::commission_dispatch::test_support::MockBackend::new();
+        apply_stored_filters_via_backend(&mut flat_backend, tmc_state(), 4095)
+            .await
+            .expect("flat apply must succeed");
+        let flat_log = flat_backend.spi_log.clone();
+
+        let mut stepped_backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let mut step = FilterCutoffsStep::from_stored(tmc_state(), 4095);
+        loop {
+            match step.advance(&mut stepped_backend).await {
+                None => continue,
+                Some(Ok(())) => break,
+                Some(Err(())) => panic!("stepped apply failed"),
+            }
+        }
+        let stepped_log = stepped_backend.spi_log.clone();
+
+        assert_eq!(
+            flat_log, stepped_log,
+            "stepped FilterCutoffsStep must write the identical register sequence \
+             as apply_stored_filters_via_backend"
+        );
+    }
+
+    #[fixture_test]
+    async fn filter_cutoffs_step_advances_one_write_per_call() {
+        use core::sync::atomic::Ordering;
+        tmc_state()
+            .velocity_filter_hz
+            .store(Some(100), Ordering::Relaxed);
+        tmc_state().torque_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state().position_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
+
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let mut step = FilterCutoffsStep::from_stored(tmc_state(), 4095);
+        let mut ticks = 0usize;
+        loop {
+            let before = backend.spi_log.len();
+            let result = step.advance(&mut backend).await;
+            let after = backend.spi_log.len();
+            assert!(
+                after - before <= 1,
+                "tick {}: advance() issued {} writes, expected at most 1",
+                ticks,
+                after - before
+            );
+            ticks += 1;
+            if !matches!(result, None) {
+                break;
+            }
+        }
+        // One filter enabled (velocity, 100 Hz): 6 sub-registers x 2 writes = 12.
+        assert_eq!(ticks, 12, "expected exactly 12 poll ticks for one enabled filter");
+    }
+
+    #[fixture_test]
+    async fn filter_cutoffs_step_skips_filter_with_no_valid_coefficients() {
+        use core::sync::atomic::Ordering;
+        // pwm_maxcnt = 0 makes butterworth_lowpass return None for every
+        // nonzero cutoff -- the second no-op path, distinct from filter_hz == 0.
+        tmc_state()
+            .velocity_filter_hz
+            .store(Some(100), Ordering::Relaxed);
+        tmc_state().torque_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state().position_filter_hz.store(Some(0), Ordering::Relaxed);
+        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
+
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let mut step = FilterCutoffsStep::from_stored(tmc_state(), 0);
+        loop {
+            match step.advance(&mut backend).await {
+                None => continue,
+                Some(Ok(())) => break,
+                Some(Err(())) => panic!("stepped apply failed"),
+            }
+        }
+        assert!(
+            backend.spi_log.is_empty(),
+            "pwm_maxcnt == 0 must produce zero writes, matching \
+             apply_one_backend_filter's butterworth_lowpass(..) == None no-op path"
+        );
     }
 }
