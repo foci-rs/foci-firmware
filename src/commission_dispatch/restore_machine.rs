@@ -145,11 +145,11 @@ enum RestoreCursor {
     FixedGainAmplitudeDisarm(SafeStateRestoreStep),
 
     RobustnessStagedClassify,
-    RobustnessRestoreBaseline,
+    RobustnessRestoreBaseline(Option<restore::EntrySnapshotRestoreStep>),
     RobustnessDisarm(SafeStateRestoreStep),
 
     VelocityStagedPrologue,
-    VelocityStagedRestoreBaseline,
+    VelocityStagedRestoreBaseline(Option<restore::EntrySnapshotRestoreStep>),
     VelocityStagedDisarmVelocity(Option<VelocityDisarmStep>),
     VelocityDisarmVelocity(Option<VelocityDisarmStep>),
 
@@ -221,7 +221,7 @@ impl TerminalRestoreMachine {
             ),
             StepResult::RobustnessReversalTerminal(terminal) => (
                 TerminalPayload::RobustnessReversal(terminal),
-                RestoreCursor::RobustnessRestoreBaseline,
+                RestoreCursor::RobustnessRestoreBaseline(None),
             ),
             StepResult::ReadyNow
             | StepResult::At(_)
@@ -1250,57 +1250,57 @@ impl TerminalRestoreMachine {
                                 terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
                             }
                             self.terminal.payload = TerminalPayload::RobustnessReversal(terminal);
-                            self.cursor = RestoreCursor::RobustnessRestoreBaseline;
+                            self.cursor = RestoreCursor::RobustnessRestoreBaseline(None);
                         }
                     }
                 }
-                RestoreCursor::RobustnessRestoreBaseline => {
+                RestoreCursor::RobustnessRestoreBaseline(step) => {
+                    #[cfg(test)]
+                    {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
                     let TerminalPayload::RobustnessReversal(mut terminal) =
                         self.terminal.payload.clone()
                     else {
                         unreachable!("robustness cursor without a robustness payload")
                     };
-                    if terminal.outcome == RobustnessOutcome::Complete {
+                    if step.is_none() && terminal.outcome == RobustnessOutcome::Complete {
                         self.cursor =
                             RestoreCursor::RobustnessDisarm(SafeStateRestoreStep::default());
                         continue;
                     }
-                    let restored = match self.entry_snapshot(engine) {
-                        Some(snapshot) => {
-                            match restore::restore_entry_snapshot_to_registers(backend, &snapshot)
-                                .await
-                            {
-                                Ok(()) => true,
-                                Err(err) => {
-                                    let variant = match err {
-                                        restore::RestoreError::Spi(_) => "spi",
-                                        restore::RestoreError::InvalidGains => "invalid_gains",
-                                        restore::RestoreError::PiRepresentation => {
-                                            "pi_representation"
-                                        }
-                                        restore::RestoreError::Readback => "readback",
-                                    };
-                                    defmt::error!(
-                                        "robustness terminal: baseline restore failed: {}",
-                                        variant
-                                    );
-                                    false
-                                }
-                            }
-                        }
-                        None => {
-                            defmt::error!(
-                                "robustness terminal: no entry snapshot to restore baseline from"
-                            );
-                            false
-                        }
-                    };
-                    if !restored {
+                    let Some(snapshot) = self.entry_snapshot(engine) else {
+                        defmt::error!(
+                            "robustness terminal: no entry snapshot to restore baseline from"
+                        );
                         terminal.outcome = RobustnessOutcome::Failed;
                         terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
+                        self.terminal.payload = TerminalPayload::RobustnessReversal(terminal);
+                        self.cursor =
+                            RestoreCursor::RobustnessDisarm(SafeStateRestoreStep::default());
+                        return RestoreStep::Pending;
+                    };
+                    let pwm_maxcnt = self.pwm_maxcnt;
+                    let mut step = step.unwrap_or_else(|| {
+                        restore::EntrySnapshotRestoreStep::start(&snapshot, pwm_maxcnt)
+                    });
+                    match step.advance(backend).await {
+                        None => {
+                            self.cursor = RestoreCursor::RobustnessRestoreBaseline(Some(step));
+                        }
+                        Some(Ok(())) => {
+                            self.cursor =
+                                RestoreCursor::RobustnessDisarm(SafeStateRestoreStep::default());
+                        }
+                        Some(Err(err)) => {
+                            defmt::error!("robustness terminal: baseline restore failed: {}", err);
+                            terminal.outcome = RobustnessOutcome::Failed;
+                            terminal.cause = robustness::ROBUSTNESS_CAUSE_SAFETY_FAULT;
+                            self.terminal.payload = TerminalPayload::RobustnessReversal(terminal);
+                            self.cursor =
+                                RestoreCursor::RobustnessDisarm(SafeStateRestoreStep::default());
+                        }
                     }
-                    self.terminal.payload = TerminalPayload::RobustnessReversal(terminal);
-                    self.cursor = RestoreCursor::RobustnessDisarm(SafeStateRestoreStep::default());
                     return RestoreStep::Pending;
                 }
                 RestoreCursor::RobustnessDisarm(mut step) => {
@@ -1333,21 +1333,33 @@ impl TerminalRestoreMachine {
                         .expect("staged terminal restore requires Stage-C retention");
                     self.velocity_staged_prologue(engine, backend, retention);
                     if self.entry_snapshot(engine).is_some() {
-                        self.cursor = RestoreCursor::VelocityStagedRestoreBaseline;
+                        self.cursor = RestoreCursor::VelocityStagedRestoreBaseline(None);
                     } else {
                         self.terminal.baseline_restored = false;
                         self.cursor = RestoreCursor::VelocityStagedDisarmVelocity(None);
                     }
                 }
-                RestoreCursor::VelocityStagedRestoreBaseline => {
+                RestoreCursor::VelocityStagedRestoreBaseline(step) => {
+                    #[cfg(test)]
+                    {
+                        self.entered_single_op_arm_this_poll = true;
+                    }
                     let snapshot = self
                         .entry_snapshot(engine)
                         .expect("entry snapshot disappeared during Stage-C restore");
-                    self.terminal.baseline_restored =
-                        restore::restore_entry_snapshot_to_registers(backend, &snapshot)
-                            .await
-                            .is_ok();
-                    self.cursor = RestoreCursor::VelocityStagedDisarmVelocity(None);
+                    let pwm_maxcnt = self.pwm_maxcnt;
+                    let mut step = step.unwrap_or_else(|| {
+                        restore::EntrySnapshotRestoreStep::start(&snapshot, pwm_maxcnt)
+                    });
+                    match step.advance(backend).await {
+                        None => {
+                            self.cursor = RestoreCursor::VelocityStagedRestoreBaseline(Some(step));
+                        }
+                        Some(result) => {
+                            self.terminal.baseline_restored = result.is_ok();
+                            self.cursor = RestoreCursor::VelocityStagedDisarmVelocity(None);
+                        }
+                    }
                     return RestoreStep::Pending;
                 }
                 RestoreCursor::VelocityStagedDisarmVelocity(step) => {

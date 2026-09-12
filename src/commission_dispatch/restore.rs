@@ -595,6 +595,226 @@ pub async fn restore_entry_snapshot_to_registers<B: CommissioningBackend>(
     Ok(())
 }
 
+/// Non-generic mirror of `RestoreError`'s two variants reachable from
+/// `restore_entry_snapshot_to_registers` (it never validates gains, so no
+/// `InvalidGains`, and never verifies PI representation, so no
+/// `PiRepresentation`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum EntrySnapshotRestoreErrorKind {
+    Spi,
+    Readback,
+}
+
+/// One step of `restore_entry_snapshot_to_registers`'s register-restore
+/// sequence, advanced by exactly one backend register operation per
+/// `advance()` call. Mirrors the original function's order exactly: 4
+/// direct writes, then the filter-cutoffs sub-sequence
+/// (`FilterCutoffsStep`), then 4 readback reads.
+#[derive(Clone, Copy)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum EntrySnapshotRestoreStep {
+    WriteVelocityGains {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        pwm_maxcnt: u16,
+    },
+    WritePositionGains {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        pwm_maxcnt: u16,
+    },
+    WriteVelocityLimit {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        pwm_maxcnt: u16,
+    },
+    WriteVoltageCap {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        pwm_maxcnt: u16,
+    },
+    Filters {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        step: crate::tmc_control::filters::FilterCutoffsStep,
+    },
+    ReadbackVelocityGains {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    ReadbackPositionGains {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    ReadbackVelocityLimit {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    ReadbackVoltageCap {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+}
+
+impl EntrySnapshotRestoreStep {
+    pub(crate) fn start(
+        snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
+        pwm_maxcnt: u16,
+    ) -> Self {
+        Self::WriteVelocityGains {
+            snapshot: *snapshot,
+            pwm_maxcnt,
+        }
+    }
+
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+    ) -> Option<Result<(), EntrySnapshotRestoreErrorKind>> {
+        use foci_tmc4671::registers::*;
+
+        fn gains(
+            snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
+        ) -> crate::pid::OuterLoopGains {
+            crate::pid::OuterLoopGains {
+                position_p: snapshot.position_p,
+                position_i: snapshot.position_i,
+                velocity_p: snapshot.velocity_p,
+                velocity_i: snapshot.velocity_i,
+            }
+        }
+
+        match self {
+            Self::WriteVelocityGains {
+                snapshot,
+                pwm_maxcnt,
+            } => {
+                let (snapshot, pwm_maxcnt) = (*snapshot, *pwm_maxcnt);
+                let (velocity_reg, _) = gains(&snapshot).to_registers();
+                if backend
+                    .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Spi));
+                }
+                *self = Self::WritePositionGains {
+                    snapshot,
+                    pwm_maxcnt,
+                };
+                None
+            }
+            Self::WritePositionGains {
+                snapshot,
+                pwm_maxcnt,
+            } => {
+                let (snapshot, pwm_maxcnt) = (*snapshot, *pwm_maxcnt);
+                let (_, position_reg) = gains(&snapshot).to_registers();
+                if backend
+                    .write_register(PID_POSITION_P_POSITION_I, position_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteVelocityLimit {
+                    snapshot,
+                    pwm_maxcnt,
+                };
+                None
+            }
+            Self::WriteVelocityLimit {
+                snapshot,
+                pwm_maxcnt,
+            } => {
+                let (snapshot, pwm_maxcnt) = (*snapshot, *pwm_maxcnt);
+                if backend
+                    .write_register(PID_VELOCITY_LIMIT, snapshot.velocity_limit)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Spi));
+                }
+                *self = Self::WriteVoltageCap {
+                    snapshot,
+                    pwm_maxcnt,
+                };
+                None
+            }
+            Self::WriteVoltageCap {
+                snapshot,
+                pwm_maxcnt,
+            } => {
+                let (snapshot, pwm_maxcnt) = (*snapshot, *pwm_maxcnt);
+                if backend
+                    .write_register(PIDOUT_UQ_UD_LIMITS, snapshot.voltage_limit)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Spi));
+                }
+                *self = Self::Filters {
+                    snapshot,
+                    step: crate::tmc_control::filters::FilterCutoffsStep::from_entry_snapshot(
+                        &snapshot, pwm_maxcnt,
+                    ),
+                };
+                None
+            }
+            Self::Filters { snapshot, step } => {
+                let snapshot = *snapshot;
+                match step.advance(backend).await {
+                    None => None,
+                    Some(Ok(())) => {
+                        *self = Self::ReadbackVelocityGains { snapshot };
+                        None
+                    }
+                    Some(Err(())) => Some(Err(EntrySnapshotRestoreErrorKind::Spi)),
+                }
+            }
+            Self::ReadbackVelocityGains { snapshot } => {
+                let snapshot = *snapshot;
+                let (velocity_reg, _) = gains(&snapshot).to_registers();
+                let readback = match backend.read_register(PID_VELOCITY_P_VELOCITY_I).await {
+                    Ok(v) => v,
+                    Err(_) => return Some(Err(EntrySnapshotRestoreErrorKind::Spi)),
+                };
+                if readback != velocity_reg {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Readback));
+                }
+                *self = Self::ReadbackPositionGains { snapshot };
+                None
+            }
+            Self::ReadbackPositionGains { snapshot } => {
+                let snapshot = *snapshot;
+                let (_, position_reg) = gains(&snapshot).to_registers();
+                let readback = match backend.read_register(PID_POSITION_P_POSITION_I).await {
+                    Ok(v) => v,
+                    Err(_) => return Some(Err(EntrySnapshotRestoreErrorKind::Spi)),
+                };
+                if readback != position_reg {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Readback));
+                }
+                *self = Self::ReadbackVelocityLimit { snapshot };
+                None
+            }
+            Self::ReadbackVelocityLimit { snapshot } => {
+                let snapshot = *snapshot;
+                let readback = match backend.read_register(PID_VELOCITY_LIMIT).await {
+                    Ok(v) => v,
+                    Err(_) => return Some(Err(EntrySnapshotRestoreErrorKind::Spi)),
+                };
+                if readback != snapshot.velocity_limit {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Readback));
+                }
+                *self = Self::ReadbackVoltageCap { snapshot };
+                None
+            }
+            Self::ReadbackVoltageCap { snapshot } => {
+                let readback = match backend.read_register(PIDOUT_UQ_UD_LIMITS).await {
+                    Ok(v) => v,
+                    Err(_) => return Some(Err(EntrySnapshotRestoreErrorKind::Spi)),
+                };
+                if readback != snapshot.voltage_limit {
+                    return Some(Err(EntrySnapshotRestoreErrorKind::Readback));
+                }
+                Some(Ok(()))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1011,5 +1231,76 @@ mod tests {
         let result = restore_entry_snapshot_to_registers(&mut backend, &snap).await;
 
         assert!(matches!(result, Err(RestoreError::Spi(_))));
+    }
+
+    #[fixture_test]
+    async fn entry_snapshot_restore_step_matches_flat_function() {
+        let snap = sample_entry_snapshot();
+        let mut flat_backend = MockBackend::new();
+        restore_entry_snapshot_to_registers(&mut flat_backend, &snap)
+            .await
+            .expect("flat restore must succeed");
+        let flat_log = flat_backend.spi_log.clone();
+
+        let mut stepped_backend = MockBackend::new();
+        let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
+        loop {
+            match step.advance(&mut stepped_backend).await {
+                None => continue,
+                Some(Ok(())) => break,
+                Some(Err(kind)) => panic!("stepped restore failed: {:?}", kind),
+            }
+        }
+        let stepped_log = stepped_backend.spi_log.clone();
+
+        assert_eq!(
+            flat_log, stepped_log,
+            "stepped EntrySnapshotRestoreStep must write the identical register \
+             sequence as restore_entry_snapshot_to_registers, including its \
+             apply_entry_snapshot_filters_via_backend sub-call and its 4 \
+             readback reads"
+        );
+    }
+
+    #[fixture_test]
+    async fn entry_snapshot_restore_step_advances_one_op_per_call() {
+        let snap = sample_entry_snapshot();
+        let mut backend = MockBackend::new();
+        let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
+        let mut ticks = 0usize;
+        loop {
+            let before = backend.spi_log.len();
+            let result = step.advance(&mut backend).await;
+            let after = backend.spi_log.len();
+            assert!(
+                after - before <= 1,
+                "tick {}: advance() issued {} ops, expected at most 1",
+                ticks,
+                after - before
+            );
+            ticks += 1;
+            if !matches!(result, None) {
+                break;
+            }
+        }
+    }
+
+    #[fixture_test]
+    async fn entry_snapshot_restore_step_readback_mismatch_is_an_error() {
+        use foci_tmc4671::registers::*;
+        let snap = sample_entry_snapshot();
+        let mut backend = MockBackend::new();
+        // Corrupt the velocity-limit readback so the snapshot's written value
+        // and the value read back disagree -- exercises RestoreError::Readback's
+        // stepped equivalent.
+        backend.read_override = Some((PID_VELOCITY_LIMIT.addr(), 0xDEAD_BEEF));
+        let mut step = EntrySnapshotRestoreStep::start(&snap, 4095);
+        let result = loop {
+            match step.advance(&mut backend).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert_eq!(result, Err(EntrySnapshotRestoreErrorKind::Readback));
     }
 }

@@ -1859,6 +1859,16 @@ async fn calibrate_done_reaches_apply_filters_one_op_per_poll() {
 }
 
 #[fixture_test]
+async fn robustness_restore_baseline_one_op_per_poll() {
+    for variant in all_terminal_variants()
+        .iter()
+        .filter(|v| v.name.starts_with("robustness_reversal") && v.reaches_single_op_arm)
+    {
+        assert_single_op_arm_budget(variant).await;
+    }
+}
+
+#[fixture_test]
 async fn fixed_gain_amplitude_staged_disarm_velocity_phase_is_one_op_per_poll() {
     assert_staged_disarm_phase_one_op_per_poll(
         "fixed_gain_amplitude_staged_disarm_velocity",
@@ -1904,6 +1914,25 @@ async fn velocity_staged_disarm_velocity_with_operational_limit_phase_is_one_op_
         "velocity_staged_disarm_velocity_with_operational_limit",
         CommissionTerminal::VelocityIntegral(sample_velocity_integral_terminal()),
         breakaway_campaign_engine,
+        no_prepare,
+        true,
+        true,
+        no_gains,
+    )
+    .await;
+}
+
+#[fixture_test]
+async fn velocity_staged_restore_baseline_one_op_per_poll() {
+    assert!(
+        robustness_reversal_engine().entry_snapshot().is_some(),
+        "robustness_reversal_engine fixture must carry an entry snapshot for this test \
+         to reach VelocityStagedRestoreBaseline"
+    );
+    assert_staged_single_op_arm_budget(
+        "velocity_staged_restore_baseline",
+        CommissionTerminal::VelocityIntegral(sample_velocity_integral_terminal()),
+        robustness_reversal_engine,
         no_prepare,
         true,
         true,
