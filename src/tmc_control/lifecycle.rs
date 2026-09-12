@@ -1633,4 +1633,450 @@ mod tests {
              window back to the higher-priority config handlers"
         );
     }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_matches_flat_function_not_in_position_mode() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
+        let mut flat_backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = flat_backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        arm_motor_electrical(&mut flat_backend, &mut state)
+            .await
+            .expect("flat arm_motor_electrical must succeed against a healthy mock backend");
+
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+        *state.motor_enabled = false;
+        *state.calibrated = true;
+
+        let mut stepped_backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = stepped_backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut stepped_backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert!(result.is_ok());
+
+        assert_eq!(
+            flat_backend.spi_log.iter().filter(|op| **op != SpiOp::Read).count(),
+            stepped_backend.spi_log.iter().filter(|op| **op != SpiOp::Read).count(),
+            "stepped arm must write the identical non-read register sequence as the flat function"
+        );
+        assert_eq!(
+            flat_backend.spi_log, stepped_backend.spi_log,
+            "stepped arm must issue the identical ordered op log as the flat function"
+        );
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_matches_flat_function_in_position_mode() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
+        async fn seed(backend: &mut MockBackend) {
+            let _ = backend
+                .write_register(
+                    foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                    0x0002_0032,
+                )
+                .await;
+            let _ = backend
+                .write_register(
+                    foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                    CLOSED_LOOP_POSITION_MODE,
+                )
+                .await;
+        }
+
+        let mut flat_backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        seed(&mut flat_backend).await;
+        arm_motor_electrical(&mut flat_backend, &mut state)
+            .await
+            .expect("flat arm_motor_electrical must succeed in closed-loop position mode");
+
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+        *state.motor_enabled = false;
+        *state.calibrated = true;
+
+        let mut stepped_backend = MockBackend::new();
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        seed(&mut stepped_backend).await;
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut stepped_backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert!(result.is_ok());
+        assert_eq!(flat_backend.spi_log, stepped_backend.spi_log);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_advances_one_op_per_call_in_position_mode() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                CLOSED_LOOP_POSITION_MODE,
+            )
+            .await;
+        backend.spi_log.clear();
+
+        let mut step = ArmMotorElectricalStep::start();
+        let mut ticks = 0usize;
+        loop {
+            let before = backend.spi_log.len();
+            let result = step.advance(&mut backend, &mut state).await;
+            let raw_after = backend.spi_log[before..]
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Write(_, _) | SpiOp::Read))
+                .count();
+            assert!(
+                raw_after <= 1,
+                "tick {}: advance() issued {} raw register op(s), expected at most 1",
+                ticks,
+                raw_after
+            );
+            ticks += 1;
+            if result.is_some() {
+                break;
+            }
+        }
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_last_safe_state_pass_failed() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .safe_state_last_pass_failed
+            .store(true, Ordering::Relaxed);
+        let spi_log_len_before = backend.spi_log.len();
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::SafeStateIncomplete)
+        );
+        assert_eq!(
+            backend.spi_log.len(),
+            spi_log_len_before,
+            "must not touch the chip at all while the last restore pass failed"
+        );
+        assert!(!backend.enable_pin);
+        tmc_state()
+            .safe_state_last_pass_failed
+            .store(false, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_the_pending_config_drain_fails() {
+        use core::sync::atomic::Ordering;
+        use crate::tmc_control::pending_config::PendingConfigItem;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        backend.pending_config_result = Err(PendingConfigItem::Current);
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(!backend.enable_pin);
+        assert_eq!(
+            backend.spi_log.as_slice(),
+            &[SpiOp::DrainPendingConfig],
+            "a failed drain must return before the sentinel verify touches the chip"
+        );
+        let _ = Ordering::Relaxed;
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_sentinel_mismatches() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032 ^ 1,
+            )
+            .await;
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::ChipResetDetected)
+        );
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_without_run_current() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::InvalidCurrentLimit)
+        );
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_pi_representation_not_established() {
+        use core::sync::atomic::Ordering;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        tmc_state().clear_pi_representation_established();
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(
+            result,
+            Err(crate::autotune::CommissionError::ChipResetDetected)
+        );
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+        tmc_state().mark_pi_representation_established();
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_settle_mode_read_fails() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        backend.fail_on_read = Some(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr());
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_settle_position_read_fails() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                CLOSED_LOOP_POSITION_MODE,
+            )
+            .await;
+        backend.fail_on_read = Some(foci_tmc4671::registers::PID_POSITION_ACTUAL.addr());
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_settle_position_write_fails() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                CLOSED_LOOP_POSITION_MODE,
+            )
+            .await;
+        backend.fail_on_write = Some(foci_tmc4671::registers::PID_POSITION_ACTUAL.addr());
+
+        let mut step = ArmMotorElectricalStep::start();
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(!backend.enable_pin);
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+    }
+
 }
