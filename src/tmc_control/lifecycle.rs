@@ -2297,6 +2297,65 @@ mod tests {
     }
 
     #[fixture_test]
+    async fn arm_motor_electrical_step_refuses_when_config_recorded_between_polls() {
+        use core::sync::atomic::Ordering;
+        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
+        let mut backend = MockBackend::new();
+        let (_, mut en, mut gains) = fresh_state_locals();
+        let mut cal = true;
+        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+        tmc_state()
+            .motor_sentinel
+            .store(0x0002_0032, Ordering::Relaxed);
+        tmc_state()
+            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
+        let _ = backend
+            .write_register(
+                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
+                0x0002_0032,
+            )
+            .await;
+
+        let mut step = ArmMotorElectricalStep::start();
+        // Advance exactly one tick (the Drain phase) so the machine has
+        // yielded once, modelling `poll_step` returning `Pending` and giving
+        // up its priority. A higher-priority config handler runs in that
+        // real gap; simulate it directly on the shared atomic, exactly as
+        // `tmc_control::pending_config`'s own setters do.
+        assert!(
+            step.advance(&mut backend, &mut state).await.is_none(),
+            "the Drain phase must not complete the arm in a single tick"
+        );
+        tmc_state()
+            .config_apply_pending
+            .store(crate::state::tmc::PENDING_FILTERS, Ordering::Relaxed);
+
+        let result = loop {
+            match step.advance(&mut backend, &mut state).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+
+        assert_eq!(result, Err(crate::autotune::CommissionError::Spi));
+        assert!(
+            !backend.enable_pin,
+            "configuration recorded between two poll_step calls must still refuse the arm"
+        );
+        assert!(!*state.motor_enabled);
+        assert_eq!(
+            tmc_state().config_apply_pending.load(Ordering::Relaxed),
+            crate::state::tmc::PENDING_FILTERS,
+            "the bit recorded between polls stays pending for the next control tick to drain"
+        );
+
+        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
+        tmc_state()
+            .config_apply_pending
+            .store(0, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
     async fn drain_pending_config_worst_case_op_count_is_bounded() {
         use crate::tmc_control::pending_config::{PendingConfigSink, drain_pending_config};
         use crate::tmc_control::test_spi::RuntimeMockSpi;
