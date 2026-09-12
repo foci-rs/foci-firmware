@@ -181,6 +181,14 @@ impl PostActions {
 
 const OUTER_RESTORE_STABILITY_SAMPLES: usize = 5;
 const OUTER_RESTORE_STABILITY_INTERVAL_US: u32 = 5_000;
+/// Most a sample may run late past its `OUTER_RESTORE_STABILITY_INTERVAL_US`
+/// deadline before `PositionStabilityStep` gives up on the whole check as
+/// stale rather than risk a verdict computed over an unbounded window.
+// Only read by `PositionStabilityStep::advance` (restore.rs), which the
+// next task in this series wires into `RestoreCursor`; until then this is
+// unused outside `#[cfg(test)]`.
+#[allow(dead_code)]
+const OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US: u32 = 5_000;
 const OUTER_RESTORE_STABILITY_ENCODER_COUNTS: u32 = 2;
 
 #[derive(Debug, Clone, Copy, defmt::Format)]

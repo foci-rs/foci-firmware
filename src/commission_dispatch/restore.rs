@@ -7,6 +7,11 @@
 //! step type held inside `RestoreCursor` must stay `Copy` and
 //! backend-independent for `RestoreCursor` itself to derive `Copy`.
 
+// Only reachable through `PositionStabilityStep::advance`, which the next
+// task in this series wires into `RestoreCursor` -- until then this import
+// is unused outside `#[cfg(test)]`.
+#[allow(unused_imports)]
+use crate::commissioning::backend::CommissionTiming;
 use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
@@ -231,6 +236,89 @@ fn encoder_count_to_position_target(encoder_count: u32, encoder_counts_per_rev: 
         (scaled + rounding) / denominator
     };
     rounded as u32
+}
+
+// Not yet wired into `RestoreCursor` -- the next task in this series makes
+// `RestoreCursor::OuterFailedStability` drive this type, at which point it
+// stops being dead code outside `#[cfg(test)]`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum PositionStabilityErrorKind {
+    Spi,
+    Stale,
+}
+
+/// Poll-driven replacement for `outer_restore_position_stable`, used only by
+/// `RestoreCursor::OuterFailedStability`. Each `advance` call performs at
+/// most one backend register read; between reads it returns `None` without
+/// touching the backend until at least `OUTER_RESTORE_STABILITY_INTERVAL_US`
+/// has elapsed since the previous sample (or since `start`, for the first
+/// sample), and reports `Stale` if more than
+/// `OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US` elapses past that deadline
+/// before the sample can be taken.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) struct PositionStabilityStep {
+    index: u8,
+    next_sample_due_us: u64,
+    first: i32,
+    min_delta: i32,
+    max_delta: i32,
+}
+
+#[allow(dead_code)]
+impl PositionStabilityStep {
+    pub(crate) fn start(now_us: u64) -> Self {
+        Self {
+            index: 0,
+            next_sample_due_us: now_us
+                .saturating_add(u64::from(super::OUTER_RESTORE_STABILITY_INTERVAL_US)),
+            first: 0,
+            min_delta: 0,
+            max_delta: 0,
+        }
+    }
+
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+    ) -> Option<Result<super::RestoreStability, PositionStabilityErrorKind>> {
+        let now = backend.elapsed_us();
+        if now < self.next_sample_due_us {
+            return None;
+        }
+        let stale_at = self
+            .next_sample_due_us
+            .saturating_add(u64::from(super::OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US));
+        if now > stale_at {
+            return Some(Err(PositionStabilityErrorKind::Stale));
+        }
+        let position = match backend
+            .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
+            .await
+        {
+            Ok(v) => v as i32,
+            Err(_) => return Some(Err(PositionStabilityErrorKind::Spi)),
+        };
+        if self.index == 0 {
+            self.first = position;
+        }
+        let delta = position.wrapping_sub(self.first);
+        self.min_delta = self.min_delta.min(delta);
+        self.max_delta = self.max_delta.max(delta);
+        self.index += 1;
+        if self.index < super::OUTER_RESTORE_STABILITY_SAMPLES as u8 {
+            self.next_sample_due_us = backend
+                .elapsed_us()
+                .saturating_add(u64::from(super::OUTER_RESTORE_STABILITY_INTERVAL_US));
+            return None;
+        }
+        Some(Ok(super::stability_from_span(
+            self.min_delta,
+            self.max_delta,
+            backend.mechanical_encoder_quadrature_counts_per_rev(),
+        )))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -1040,5 +1128,131 @@ mod tests {
             }
         };
         assert_eq!(result, Err(EntrySnapshotRestoreErrorKind::Readback));
+    }
+
+    const TEST_INTERVAL_US: u64 =
+        crate::commission_dispatch::OUTER_RESTORE_STABILITY_INTERVAL_US as u64;
+    const TEST_MAX_GAP_US: u64 =
+        crate::commission_dispatch::OUTER_RESTORE_STABILITY_MAX_SAMPLE_GAP_US as u64;
+
+    #[fixture_test]
+    async fn position_stability_step_waits_for_deadline_before_sampling() {
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 0;
+        let mut step = PositionStabilityStep::start(backend.elapsed_us());
+
+        // Deadline not yet reached: no backend operation, still pending.
+        assert!(step.advance(&mut backend).await.is_none());
+        assert!(backend.spi_log.is_empty());
+
+        // Deadline reached: exactly one read.
+        backend.elapsed_us_value = TEST_INTERVAL_US;
+        backend.read_position_actual_sequence.push(100).unwrap();
+        assert!(step.advance(&mut backend).await.is_none());
+        assert_eq!(
+            backend
+                .spi_log
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Read))
+                .count(),
+            1
+        );
+    }
+
+    #[fixture_test]
+    async fn position_stability_step_reports_stable_within_threshold() {
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 0;
+        for position in [1000u32, 1000, 1031, 1001, 1000] {
+            backend
+                .read_position_actual_sequence
+                .push(position)
+                .unwrap();
+        }
+        let mut step = PositionStabilityStep::start(backend.elapsed_us());
+        let stability = loop {
+            backend.elapsed_us_value += TEST_INTERVAL_US;
+            if let Some(result) = step.advance(&mut backend).await {
+                break result.expect("no SPI failure injected");
+            }
+        };
+        // 31 raw units at the default 4000 counts/rev is within the
+        // 2-encoder-count threshold (33 raw units).
+        assert!(stability.stable);
+    }
+
+    #[fixture_test]
+    async fn position_stability_step_reports_unstable_over_threshold() {
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 0;
+        for position in [1000u32, 1000, 1200, 1001, 1000] {
+            backend
+                .read_position_actual_sequence
+                .push(position)
+                .unwrap();
+        }
+        let mut step = PositionStabilityStep::start(backend.elapsed_us());
+        let stability = loop {
+            backend.elapsed_us_value += TEST_INTERVAL_US;
+            if let Some(result) = step.advance(&mut backend).await {
+                break result.expect("no SPI failure injected");
+            }
+        };
+        assert!(!stability.stable);
+    }
+
+    #[fixture_test]
+    async fn position_stability_step_propagates_spi_error() {
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = TEST_INTERVAL_US;
+        backend.fail_on_read = Some(foci_tmc4671::registers::PID_POSITION_ACTUAL.addr());
+        let mut step = PositionStabilityStep::start(0);
+        let outcome = step.advance(&mut backend).await;
+        assert!(matches!(
+            outcome,
+            Some(Err(PositionStabilityErrorKind::Spi))
+        ));
+    }
+
+    #[fixture_test]
+    async fn position_stability_step_tolerates_a_gap_within_the_max_slack() {
+        // Timing-contract regression guard: a gap right at the edge of the
+        // allowed slack (interval + max_gap) still samples normally.
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 0;
+        backend.read_position_actual_sequence.push(1000).unwrap();
+        let mut step = PositionStabilityStep::start(backend.elapsed_us());
+        backend.elapsed_us_value = TEST_INTERVAL_US + TEST_MAX_GAP_US;
+        let outcome = step.advance(&mut backend).await;
+        assert!(
+            outcome.is_none(),
+            "a sample exactly at the slack boundary must still be taken"
+        );
+        assert_eq!(
+            backend
+                .spi_log
+                .iter()
+                .filter(|op| matches!(op, SpiOp::Read))
+                .count(),
+            1
+        );
+    }
+
+    #[fixture_test]
+    async fn position_stability_step_reports_stale_past_the_max_slack() {
+        let mut backend = MockBackend::new();
+        backend.elapsed_us_value = 0;
+        let mut step = PositionStabilityStep::start(backend.elapsed_us());
+        // One microsecond past the allowed slack.
+        backend.elapsed_us_value = TEST_INTERVAL_US + TEST_MAX_GAP_US + 1;
+        let outcome = step.advance(&mut backend).await;
+        assert!(matches!(
+            outcome,
+            Some(Err(PositionStabilityErrorKind::Stale))
+        ));
+        assert!(
+            backend.spi_log.is_empty(),
+            "a stale gap must not attempt a register read"
+        );
     }
 }
