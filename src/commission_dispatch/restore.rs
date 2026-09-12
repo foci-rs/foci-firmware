@@ -664,6 +664,424 @@ impl EntrySnapshotRestoreStep {
     }
 }
 
+/// Reloads the four per-axis biquad filters from an `OuterGainRollbackSnapshot`,
+/// one raw backend write per `advance()` call.
+///
+/// Deliberately best-effort: unlike `EntrySnapshotRestoreStep::Filters`'s
+/// `FilterCutoffsStep` (which aborts on the first write failure), a failed
+/// write here is silently skipped and the walk continues to the next op,
+/// matching `restore_entry_gains`'s original `let _ = write_biquad_*(...)`
+/// error policy exactly. `advance()` therefore never returns `Err` -- it
+/// returns `bool` (`true` once every op has been attempted), not
+/// `Option<Result<..>>`.
+///
+/// Per-filter op count has three cases, not two: `filter_hz == 0` writes only
+/// the 2-op disable pair; `filter_hz > 0` with a valid cutoff writes the full
+/// 12-op enable sequence; `filter_hz > 0` with an invalid cutoff (outside
+/// `[10, 6000]` Hz, or `pwm_maxcnt == 0`) writes nothing at all -- matching
+/// `write_biquad_*_checked`'s silent `if let Some(coeffs) = ...` skip, which
+/// `restore_entry_gains`'s own disable-write `else` branch never reaches
+/// because that branch is gated on `filter_hz == 0`, not on cutoff validity.
+#[derive(Clone, Copy)]
+// Only exercised by this module's tests until Task 2 wires `RestoreEntryGainsStep`
+// into `RestoreCursor`.
+#[allow(dead_code)]
+pub(crate) struct EntryGainFiltersStep {
+    ops: [(foci_tmc4671::registers::Register, u32); 48],
+    len: u8,
+    next: u8,
+}
+
+#[allow(dead_code)]
+impl EntryGainFiltersStep {
+    fn start(snapshot: &crate::commissioning::OuterGainRollbackSnapshot, pwm_maxcnt: u16) -> Self {
+        use foci_tmc4671::registers::*;
+
+        let placeholder = Register::new(0);
+        let mut ops = [(placeholder, 0u32); 48];
+        let mut len = 0usize;
+
+        let mut push_pair = |sub: SubRegister, value: u32, len: &mut usize| {
+            ops[*len] = (sub.addr, u32::from(sub.sub_addr));
+            *len += 1;
+            ops[*len] = (sub.data, value);
+            *len += 1;
+        };
+
+        for (filter_hz, coeff_regs, enable_reg) in [
+            (
+                snapshot.velocity_filter_hz,
+                [
+                    CONFIG_BIQUAD_V_A_1,
+                    CONFIG_BIQUAD_V_A_2,
+                    CONFIG_BIQUAD_V_B_0,
+                    CONFIG_BIQUAD_V_B_1,
+                    CONFIG_BIQUAD_V_B_2,
+                ],
+                CONFIG_BIQUAD_V_ENABLE,
+            ),
+            (
+                snapshot.torque_filter_hz,
+                [
+                    CONFIG_BIQUAD_T_A_1,
+                    CONFIG_BIQUAD_T_A_2,
+                    CONFIG_BIQUAD_T_B_0,
+                    CONFIG_BIQUAD_T_B_1,
+                    CONFIG_BIQUAD_T_B_2,
+                ],
+                CONFIG_BIQUAD_T_ENABLE,
+            ),
+            (
+                snapshot.position_filter_hz,
+                [
+                    CONFIG_BIQUAD_X_A_1,
+                    CONFIG_BIQUAD_X_A_2,
+                    CONFIG_BIQUAD_X_B_0,
+                    CONFIG_BIQUAD_X_B_1,
+                    CONFIG_BIQUAD_X_B_2,
+                ],
+                CONFIG_BIQUAD_X_ENABLE,
+            ),
+            (
+                snapshot.flux_filter_hz,
+                [
+                    CONFIG_BIQUAD_F_A_1,
+                    CONFIG_BIQUAD_F_A_2,
+                    CONFIG_BIQUAD_F_B_0,
+                    CONFIG_BIQUAD_F_B_1,
+                    CONFIG_BIQUAD_F_B_2,
+                ],
+                CONFIG_BIQUAD_F_ENABLE,
+            ),
+        ] {
+            if filter_hz == 0 {
+                push_pair(enable_reg, 0, &mut len);
+                continue;
+            }
+            let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+                continue;
+            };
+            push_pair(coeff_regs[0], coeffs.a_1 as u32, &mut len);
+            push_pair(coeff_regs[1], coeffs.a_2 as u32, &mut len);
+            push_pair(coeff_regs[2], coeffs.b_0 as u32, &mut len);
+            push_pair(coeff_regs[3], coeffs.b_1 as u32, &mut len);
+            push_pair(coeff_regs[4], coeffs.b_2 as u32, &mut len);
+            push_pair(enable_reg, 1, &mut len);
+        }
+
+        Self {
+            ops,
+            len: len as u8,
+            next: 0,
+        }
+    }
+
+    /// Returns `true` once every queued op has been attempted (successfully
+    /// or not -- failures are swallowed, never reported).
+    async fn advance<B: CommissioningBackend>(&mut self, backend: &mut B) -> bool {
+        if self.next >= self.len {
+            return true;
+        }
+        let (reg, value) = self.ops[self.next as usize];
+        let _ = backend.write_register(reg, value).await;
+        self.next += 1;
+        self.next >= self.len
+    }
+}
+
+/// Failure reason for [`RestoreEntryGainsStep`]. Maps 1:1 onto the
+/// `CommissionError` values `restore_entry_gains` itself would have
+/// returned (`Spi` -> `CommissionError::Spi`, `PiRepresentation` ->
+/// `CommissionError::ChipResetDetected`) -- the mapping lives in the
+/// `restore_machine.rs` cursor arm, matching how `PositionModeRestoreStep`'s
+/// error kind is mapped at its own call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+// Only exercised by this module's tests until Task 2 wires `RestoreEntryGainsStep`
+// into `RestoreCursor`.
+#[allow(dead_code)]
+pub(crate) enum RestoreEntryGainsErrorKind {
+    Spi,
+    PiRepresentation,
+    /// `clear_status_flags_via_backend` refused because the interlock is
+    /// tripped -- no write was attempted. Kept distinct from `Spi` because
+    /// the flat function propagated `CommissionError::FaultInterlock`
+    /// unchanged; collapsing it into `Spi` would misreport the outer-failed
+    /// terminal's `outer_restore_failure` and trace status.
+    FaultInterlock,
+}
+
+/// Restores outer gains from an entry snapshot after a Stage 2 soft failure
+/// or a safety-fault gain restore, one raw backend operation per
+/// `advance()` call.
+///
+/// Mirrors `commissioning::inner::restore_entry_gains` exactly, including its
+/// split fail-fast/best-effort error policy: every phase except `Filters`
+/// aborts on the first SPI error; `Filters` (delegating to
+/// [`EntryGainFiltersStep`]) never aborts. The flat `restore_entry_gains`
+/// function is left in place, unmodified, for parity testing -- see Task 1's
+/// characterization tests.
+#[derive(Clone, Copy)]
+#[allow(clippy::large_enum_variant)]
+// Only exercised by this module's tests until Task 2 wires this into `RestoreCursor`.
+#[allow(dead_code)]
+pub(crate) enum RestoreEntryGainsStep {
+    ZeroTorqueFluxTarget {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    ZeroVelocityTarget {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    ZeroVelocityOffset {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    DisableMotionMode {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    ClearIntegrators {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        ops: [(foci_tmc4671::registers::Register, u32); 8],
+        next: u8,
+    },
+    ClearStatusFlags {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    VerifyPiRepresentation {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        step: crate::tmc_control::pi_representation::PiRepresentationVerifyStep,
+    },
+    WriteVelocityGains {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    WritePositionGains {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    WriteVelocityLimit {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    Filters {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+        step: EntryGainFiltersStep,
+    },
+    WriteVoltageLimit {
+        snapshot: crate::commissioning::OuterGainRollbackSnapshot,
+    },
+    ZeroPosition,
+    EnterPositionMode,
+}
+
+#[allow(dead_code)]
+impl RestoreEntryGainsStep {
+    pub(crate) fn start(snapshot: &crate::commissioning::OuterGainRollbackSnapshot) -> Self {
+        Self::ZeroTorqueFluxTarget {
+            snapshot: *snapshot,
+        }
+    }
+
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+        tmc_state: &crate::state::tmc::TmcChannelState,
+    ) -> Option<Result<(), RestoreEntryGainsErrorKind>> {
+        use foci_tmc4671::pid::PidGainPair;
+        use foci_tmc4671::registers::*;
+
+        match self {
+            Self::ZeroTorqueFluxTarget { snapshot } => {
+                let snapshot = *snapshot;
+                if backend
+                    .write_register(PID_TORQUE_FLUX_TARGET, 0)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::ZeroVelocityTarget { snapshot };
+                None
+            }
+            Self::ZeroVelocityTarget { snapshot } => {
+                let snapshot = *snapshot;
+                if backend
+                    .write_register(PID_VELOCITY_TARGET, 0)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::ZeroVelocityOffset { snapshot };
+                None
+            }
+            Self::ZeroVelocityOffset { snapshot } => {
+                let snapshot = *snapshot;
+                if backend
+                    .write_register(PID_VELOCITY_OFFSET, 0)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::DisableMotionMode { snapshot };
+                None
+            }
+            Self::DisableMotionMode { snapshot } => {
+                let snapshot = *snapshot;
+                if backend
+                    .write_register(MODE_RAMP_MODE_MOTION, 0)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                let mut ops = [(Register::new(0), 0u32); 8];
+                for (i, sub) in [
+                    PID_ERROR_PID_TORQUE_ERROR_SUM,
+                    PID_ERROR_PID_FLUX_ERROR_SUM,
+                    PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                    PID_ERROR_PID_POSITION_ERROR_SUM,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    ops[i * 2] = (sub.addr, u32::from(sub.sub_addr));
+                    ops[i * 2 + 1] = (sub.data, 0);
+                }
+                *self = Self::ClearIntegrators {
+                    snapshot,
+                    ops,
+                    next: 0,
+                };
+                None
+            }
+            Self::ClearIntegrators {
+                snapshot,
+                ops,
+                next,
+            } => {
+                let snapshot = *snapshot;
+                let (reg, value) = ops[*next as usize];
+                if backend.write_register(reg, value).await.is_err() {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *next += 1;
+                if *next >= 8 {
+                    *self = Self::ClearStatusFlags { snapshot };
+                }
+                None
+            }
+            Self::ClearStatusFlags { snapshot } => {
+                let snapshot = *snapshot;
+                match crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await {
+                    Ok(()) => {
+                        *self = Self::VerifyPiRepresentation {
+                            snapshot,
+                            step:
+                                crate::tmc_control::pi_representation::PiRepresentationVerifyStep::start(),
+                        };
+                        None
+                    }
+                    Err(crate::autotune::CommissionError::FaultInterlock) => {
+                        Some(Err(RestoreEntryGainsErrorKind::FaultInterlock))
+                    }
+                    Err(_) => Some(Err(RestoreEntryGainsErrorKind::Spi)),
+                }
+            }
+            Self::VerifyPiRepresentation { snapshot, step } => {
+                let snapshot = *snapshot;
+                match step.advance(backend, tmc_state).await {
+                    None => None,
+                    Some(Ok(())) => {
+                        *self = Self::WriteVelocityGains { snapshot };
+                        None
+                    }
+                    Some(Err(_)) => Some(Err(RestoreEntryGainsErrorKind::PiRepresentation)),
+                }
+            }
+            Self::WriteVelocityGains { snapshot } => {
+                let snapshot = *snapshot;
+                let velocity_reg =
+                    PidGainPair::new(snapshot.velocity_p, snapshot.velocity_i).register_value();
+                if backend
+                    .write_register(PID_VELOCITY_P_VELOCITY_I, velocity_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::WritePositionGains { snapshot };
+                None
+            }
+            Self::WritePositionGains { snapshot } => {
+                let snapshot = *snapshot;
+                let position_reg =
+                    PidGainPair::new(snapshot.position_p, snapshot.position_i).register_value();
+                if backend
+                    .write_register(PID_POSITION_P_POSITION_I, position_reg)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::WriteVelocityLimit { snapshot };
+                None
+            }
+            Self::WriteVelocityLimit { snapshot } => {
+                let snapshot = *snapshot;
+                if backend
+                    .write_register(PID_VELOCITY_LIMIT, snapshot.velocity_limit)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::Filters {
+                    snapshot,
+                    step: EntryGainFiltersStep::start(&snapshot, backend.pwm_maxcnt()),
+                };
+                None
+            }
+            Self::Filters { snapshot, step } => {
+                let snapshot = *snapshot;
+                if step.advance(backend).await {
+                    *self = Self::WriteVoltageLimit { snapshot };
+                }
+                None
+            }
+            Self::WriteVoltageLimit { snapshot } => {
+                let snapshot = *snapshot;
+                if backend
+                    .write_register(PIDOUT_UQ_UD_LIMITS, snapshot.voltage_limit)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::ZeroPosition;
+                None
+            }
+            Self::ZeroPosition => {
+                if backend
+                    .write_register(PID_POSITION_ACTUAL, 0)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                *self = Self::EnterPositionMode;
+                None
+            }
+            Self::EnterPositionMode => {
+                if backend
+                    .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(RestoreEntryGainsErrorKind::Spi));
+                }
+                Some(Ok(()))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1238,5 +1656,142 @@ mod tests {
             backend.spi_log.is_empty(),
             "a stale gap must not attempt a register read"
         );
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_matches_flat_function_all_filters_zero() {
+        let snap = sample_entry_snapshot();
+        assert_eq!(snap.velocity_filter_hz, 0);
+        assert_eq!(snap.torque_filter_hz, 0);
+        assert_eq!(snap.position_filter_hz, 0);
+        assert_eq!(snap.flux_filter_hz, 0);
+
+        let mut flat_backend = MockBackend::new();
+        crate::commissioning::inner::restore_entry_gains(&snap, &mut flat_backend, tmc_state())
+            .await
+            .expect("flat restore_entry_gains must succeed against a healthy mock backend");
+
+        crate::state::tmc::tmc_channel0().reset();
+        tmc_state().mark_pi_representation_established();
+
+        let mut stepped_backend = MockBackend::new();
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step.advance(&mut stepped_backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert!(result.is_ok());
+
+        assert_eq!(
+            write_log(&flat_backend),
+            write_log(&stepped_backend),
+            "stepped restore must write the identical register sequence as the flat function"
+        );
+        crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_matches_flat_function_all_filters_enabled() {
+        let mut snap = sample_entry_snapshot();
+        snap.velocity_filter_hz = 200;
+        snap.torque_filter_hz = 300;
+        snap.position_filter_hz = 400;
+        snap.flux_filter_hz = 500;
+
+        let mut flat_backend = MockBackend::new();
+        crate::commissioning::inner::restore_entry_gains(&snap, &mut flat_backend, tmc_state())
+            .await
+            .expect("flat restore_entry_gains must succeed with all filters enabled");
+
+        crate::state::tmc::tmc_channel0().reset();
+        tmc_state().mark_pi_representation_established();
+
+        let mut stepped_backend = MockBackend::new();
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step.advance(&mut stepped_backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert!(result.is_ok());
+        assert_eq!(write_log(&flat_backend), write_log(&stepped_backend));
+        crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_matches_flat_function_filter_hz_below_cutoff_range() {
+        // filter_hz = 5 is > 0 but below biquad::CUTOFF_MIN_HZ (10), so
+        // butterworth_lowpass returns None and both the flat function and
+        // the step must write *nothing* for this filter -- not the enable
+        // sequence, and not a disable write either (see Global Constraints
+        // case 3).
+        let mut snap = sample_entry_snapshot();
+        snap.velocity_filter_hz = 5;
+
+        let mut flat_backend = MockBackend::new();
+        crate::commissioning::inner::restore_entry_gains(&snap, &mut flat_backend, tmc_state())
+            .await
+            .expect("flat restore_entry_gains must succeed with an out-of-range filter cutoff");
+
+        crate::state::tmc::tmc_channel0().reset();
+        tmc_state().mark_pi_representation_established();
+
+        let mut stepped_backend = MockBackend::new();
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let result = loop {
+            match step.advance(&mut stepped_backend, tmc_state()).await {
+                None => continue,
+                Some(result) => break result,
+            }
+        };
+        assert!(result.is_ok());
+        assert_eq!(write_log(&flat_backend), write_log(&stepped_backend));
+
+        use foci_tmc4671::registers::*;
+        // `.data.addr()` (0x4D) is shared by every biquad sub-register, so it
+        // cannot identify velocity specifically -- torque/position/flux are
+        // hz=0 here and legitimately write 0 to that same shared address via
+        // their own disable sequences. The ADDR-selector write
+        // (addr.addr()=0x4E, value=sub_addr=15) is what uniquely identifies
+        // an access to CONFIG_BIQUAD_V_ENABLE.
+        assert!(
+            !write_log(&stepped_backend).iter().any(|(addr, val)| {
+                *addr == CONFIG_BIQUAD_V_ENABLE.addr.addr()
+                    && *val == u32::from(CONFIG_BIQUAD_V_ENABLE.sub_addr)
+            }),
+            "an out-of-range cutoff must write neither the enable nor the disable sequence"
+        );
+        crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn restore_entry_gains_step_advances_one_op_per_call() {
+        let mut snap = sample_entry_snapshot();
+        snap.velocity_filter_hz = 200;
+        snap.torque_filter_hz = 300;
+        snap.position_filter_hz = 400;
+        snap.flux_filter_hz = 500;
+        let mut backend = MockBackend::new();
+        let mut step = RestoreEntryGainsStep::start(&snap);
+        let mut ticks = 0usize;
+        loop {
+            let before = backend.spi_log.len();
+            let result = step.advance(&mut backend, tmc_state()).await;
+            let after = backend.spi_log.len();
+            assert!(
+                after - before <= 1,
+                "tick {}: advance() issued {} ops, expected at most 1",
+                ticks,
+                after - before
+            );
+            ticks += 1;
+            if !matches!(result, None) {
+                break;
+            }
+        }
+        crate::state::tmc::tmc_channel0().reset();
     }
 }
