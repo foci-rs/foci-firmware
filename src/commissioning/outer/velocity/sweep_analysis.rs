@@ -17,14 +17,6 @@ use super::sweep_evidence::VelocityObservationInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(super) struct LegacySettleConfirmation {
-    pub(super) stationarity: StationarityResult,
-    pub(super) confirmed_rest: bool,
-    pub(super) exact_velocity_interval_q: Option<[i64; 2]>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(super) struct SettleConfirmation {
     pub(super) selected: Option<StationarySuffix>,
     pub(super) confirmed_rest: bool,
@@ -373,59 +365,6 @@ pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
     }
 }
 
-#[allow(dead_code)]
-pub(super) fn poll_settle_confirmation_parts<const LEVELS: usize>(
-    analysis: &mut StationarityWork,
-    observations: &impl VelocityObservationSource,
-    blocker: &mut DyadicBlocker<LEVELS>,
-    settle_min_displacement_counts: i8,
-    settle_max_displacement_counts: i8,
-) -> Result<Option<LegacySettleConfirmation>, CommissionError> {
-    let Some((stationarity, _rejection, _drift_ratio_ppm)) =
-        poll_stationarity(analysis, observations, blocker)?
-    else {
-        return Ok(None);
-    };
-    let (confirmed_rest, exact_velocity_interval_q) = match stationarity {
-        StationarityResult::Usable(suffix) => {
-            let confidence = estimate_confidence(suffix.selection, 3)
-                .map_err(|_| CommissionError::VelocityValidationFailed)?;
-            let mean = suffix
-                .selection
-                .exact_totals
-                .rate_q()
-                .map_err(|_| CommissionError::VelocityValidationFailed)?;
-            let half_width = i64::try_from(confidence.half_width_rate_q)
-                .map_err(|_| CommissionError::VelocityValidationFailed)?;
-            let stationary =
-                mean.saturating_sub(half_width) <= 0 && mean.saturating_add(half_width) >= 0;
-            (
-                stationary
-                    || bounded_rest_displacement(
-                        settle_min_displacement_counts,
-                        settle_max_displacement_counts,
-                    ),
-                Some([
-                    mean.saturating_sub(half_width),
-                    mean.saturating_add(half_width),
-                ]),
-            )
-        }
-        StationarityResult::Excluded(_) => (
-            bounded_rest_displacement(
-                settle_min_displacement_counts,
-                settle_max_displacement_counts,
-            ),
-            None,
-        ),
-    };
-    Ok(Some(LegacySettleConfirmation {
-        stationarity,
-        confirmed_rest,
-        exact_velocity_interval_q,
-    }))
-}
-
 /// Accept a zero-target settle that never leaves one encoder-count band.
 ///
 /// This covers the observed boundary-toggle dither while rejecting the
@@ -441,16 +380,16 @@ mod tests {
 
     use crate::autotune::TmcMechanicalRpm;
     use crate::autotune::velocity_measurement::{
-        DyadicBlocker, PlateauSelection, RateBlock, RawVelocityObservation,
-        RestSelectionDisposition, StationarityExclusion, StationarityResult, StationarityWork,
-        SuffixDiagnostic, VelocityDirection, select_stationary_suffix,
+        DyadicBlocker, PlateauSelection, RateBlock, RestSelectionDisposition,
+        StationarityExclusion, StationarityResult, StationarityWork, SuffixDiagnostic,
+        VelocityDirection,
     };
     use crate::commissioning::outer::state::VelocityObservationRing;
 
     use super::{
         ScoredRestPoll, VelocityObservationInputRequest, assemble_probe_observation_input,
         assemble_velocity_observation_input, bounded_rest_displacement, deficit_interval_q,
-        poll_scored_rest_confirmation, poll_settle_confirmation_parts,
+        poll_scored_rest_confirmation,
     };
 
     #[test]
@@ -539,33 +478,6 @@ mod tests {
         assert_eq!(probe_input.settled_rate_high_q, 0);
         assert_eq!(probe_input.predicted_torque_target_abs, 100);
         assert_eq!(probe_input.drift_ratio_ppm, 300_000);
-    }
-
-    #[test]
-    fn settle_analysis_retains_the_exact_stationarity_result() {
-        let observations: [RawVelocityObservation; 256] = core::array::from_fn(|index| {
-            RawVelocityObservation::new(if index.is_multiple_of(5) { 0 } else { 1 }, 1_000).unwrap()
-        });
-        let mut expected_blocker = DyadicBlocker::<5>::new();
-        let expected = select_stationary_suffix(&observations, &mut expected_blocker).unwrap();
-        let mut ring = VelocityObservationRing::new();
-        for observation in observations {
-            ring.push(observation.delta_counts, observation.elapsed_us as u16)
-                .unwrap();
-        }
-        let mut analysis = StationarityWork::new();
-        let mut blocker = DyadicBlocker::<5>::new();
-
-        let result = loop {
-            if let Some(result) =
-                poll_settle_confirmation_parts(&mut analysis, &ring, &mut blocker, 0, 1).unwrap()
-            {
-                break result;
-            }
-        };
-
-        assert_eq!(result.stationarity, expected);
-        assert!(result.confirmed_rest);
     }
 
     #[test]
