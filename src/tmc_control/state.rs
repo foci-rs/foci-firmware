@@ -2046,19 +2046,24 @@ impl TmcControlRuntime {
 
     /// Compute the requested control period in microseconds from current state.
     ///
-    /// Returns the fast transient period when all of the following hold:
-    /// - the motor is electrically enabled,
+    /// Returns [`crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US`] whenever the
+    /// motor is not electrically enabled — a `Ready`-but-disabled channel
+    /// does not need fast-loop servicing. Otherwise, returns the fast
+    /// transient period when all of the following hold:
     /// - the planner velocity scale is configured,
     /// - no commissioning engine is active, and
     /// - the `velocity_transient_feedforward` atomic in channel state is `true`.
     ///
-    /// Otherwise returns `velocity_transient_period_us(VELOCITY_TRANSIENT_DEFAULT_RATE_HZ)`.
+    /// Otherwise (enabled but not transient-feedforward-active) returns
+    /// `velocity_transient_period_us(VELOCITY_TRANSIENT_DEFAULT_RATE_HZ)`.
     ///
     /// # Parameters
     /// - `refs`: Borrowed channel atomics for this motor.
     pub fn control_period_us(&self, refs: TmcControlStateRefs<'_>) -> u32 {
-        let fast_active = self.motor_enabled
-            && self.planner_velocity_scale.is_some()
+        if !self.motor_enabled {
+            return crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US;
+        }
+        let fast_active = self.planner_velocity_scale.is_some()
             && self.commission_engine.is_none()
             && refs
                 .tmc
@@ -2251,5 +2256,32 @@ mod tests {
             panic!("expected delegated diagnostic action");
         };
         assert_eq!(diagnostic.request, request);
+    }
+
+    #[test]
+    fn control_period_us_returns_idle_period_when_disabled() {
+        let runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc = crate::state::tmc::TmcChannelState::new();
+        let stepper = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc, &stepper);
+
+        // Default-constructed runtime has motor_enabled = false.
+        assert_eq!(
+            runtime.control_period_us(refs),
+            crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US
+        );
+    }
+
+    #[test]
+    fn control_period_us_idle_period_bypasses_rate_normalization() {
+        // Regression guard: routing the idle period through velocity_transient_period_us
+        // would silently clamp 100 Hz up to the 1000 Hz floor, defeating
+        // the fix. This asserts the idle period independently of whatever
+        // normalize_velocity_transient_rate_hz's clamp range is today.
+        assert_eq!(crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US, 10_000);
+        assert_ne!(
+            crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US,
+            crate::tmc::velocity_transient_period_us(100)
+        );
     }
 }

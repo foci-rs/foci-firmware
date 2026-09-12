@@ -180,6 +180,12 @@ pub struct DecouplingFeedforwardConfig {
 pub const VELOCITY_TRANSIENT_DEFAULT_RATE_HZ: u16 = 1_000;
 /// Highest supported velocity-transient update rate in Hz.
 pub const VELOCITY_TRANSIENT_MAX_RATE_HZ: u16 = 10_000;
+/// Fast-control period while a channel is `Ready` but not `motor_enabled`,
+/// in microseconds (100 Hz). Returned directly by `control_period_us` —
+/// deliberately not routed through `velocity_transient_period_us`, whose
+/// `normalize_velocity_transient_rate_hz` clamp floor (1000 Hz / 1000 us)
+/// would otherwise silently override any period below it.
+pub const VELOCITY_TRANSIENT_IDLE_PERIOD_US: u32 = 10_000;
 
 /// Normalize a requested velocity-transient update rate.
 pub fn normalize_velocity_transient_rate_hz(rate_hz: u16) -> u16 {
