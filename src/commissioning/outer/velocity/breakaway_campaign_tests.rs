@@ -4189,7 +4189,7 @@ fn dispatch_campaign_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> 
 /// Dispatcher-level companion to
 /// [`breakaway_campaign_fault_terminal_defers_a_campaign_closure_before_outer_failed`],
 /// which drives the fault builder directly. This drives the REAL dispatcher
-/// entry ([`step_outer`]) against a *persistent* outer-safety fault (an invalid
+/// entry ([`step_outer_with_trace`]) against a *persistent* outer-safety fault (an invalid
 /// motion budget, rejected on every tick) and proves the deferred campaign
 /// closure actually drains through to `FailedWithSafety`.
 ///
