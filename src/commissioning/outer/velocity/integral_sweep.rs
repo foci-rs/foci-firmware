@@ -3305,23 +3305,31 @@ mod tests {
         assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
     }
 
-    /// Pins the three plan shapes Step 7's restructured precondition must
-    /// tell apart: a campaign-plan fault alone, a campaign-plan fault
-    /// combined with a torque mismatch, and a torque mismatch alone.
+    /// Pins the two sub-conditions of Setup's campaign-plan-cause predicate
+    /// (`plan.plan_digest == 0 || integral_rung_count(plan).is_none_or(|count|
+    /// count < 3)`) in isolation from each other: a zero digest with an
+    /// otherwise-valid rung count, and a short rung count with an otherwise-
+    /// valid digest. It does not construct or exercise the separate
+    /// torque-limit-mismatch `if` that follows the campaign-plan check in the
+    /// real Setup code.
     #[test]
     fn setup_precondition_fixture_shapes_are_distinguishable() {
         let mut zero_digest_plan = plan();
         zero_digest_plan.plan_digest = 0;
-        assert!(integral_rung_count(zero_digest_plan).is_some()); // campaign-plan cause is plan_digest alone here
+        // campaign-plan cause is plan_digest alone here
+        assert!(integral_rung_count(zero_digest_plan).is_some());
 
         let mut short_plan = plan();
-        short_plan.positive_rung_count = 0; // integral_rung_count = positive_rung_count + 2 for ResponseLadder, so this yields 2 (< 3)
-        assert!(integral_rung_count(short_plan).is_none_or(|count| count < 3)); // campaign-plan cause is rung count alone here
+        // integral_rung_count = positive_rung_count + 2 for ResponseLadder, so this yields 2 (< 3)
+        short_plan.positive_rung_count = 0;
+        // campaign-plan cause is rung count alone here
+        assert!(integral_rung_count(short_plan).is_none_or(|count| count < 3));
 
         let matched_plan = plan();
+        // neither sub-condition fires for this plan
         assert!(
             matched_plan.plan_digest != 0
                 && integral_rung_count(matched_plan).is_none_or(|count| count >= 3)
-        ); // no campaign-plan cause; only torque mismatch can fire here
+        );
     }
 }
