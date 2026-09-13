@@ -1,6 +1,6 @@
 //! Cooperative state machine for rung-origin recovery.
 
-use crate::autotune::{CommissionError, VelocityUnitError};
+use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::types::{OUTER_SAFETY_FAULT_CURRENT, OuterSafetyFault};
@@ -206,20 +206,18 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             } else {
                 1
             };
-            // `ArithmeticOverflow` and `ZeroTarget` cannot fire here:
-            // `RungOriginRecoveryRuntime::new` rejects `target_velocity_rpm.raw() <= 0`
-            // at construction, and `direction` above is always +-1, so `with_direction`
-            // cannot fail for this caller. Classified defensively to match the
-            // equivalent call in `sweep_analysis`.
+            // `ArithmeticOverflow`, `ZeroTarget`, and `InvalidDirection` cannot
+            // fire here: `RungOriginRecoveryRuntime::new` rejects
+            // `target_velocity_rpm.raw() <= 0` at construction (excluding
+            // ZeroTarget), the stored value is bounded well within i32 range
+            // by the same constructor path (excluding ArithmeticOverflow),
+            // and `direction` above is always +-1 (excluding InvalidDirection).
+            // All three arms below are defensive and provably unreachable.
             let target = match runtime
                 .target_velocity_rpm
                 .with_direction(direction)
-                .map_err(|error| match error {
-                    VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
-                    VelocityUnitError::ZeroTarget | VelocityUnitError::InvalidDirection => {
-                        CommissionError::InvalidSchedule
-                    }
-                }) {
+                .map_err(|_| CommissionError::TargetRateInvalid)
+            {
                 Ok(target) => target.raw(),
                 Err(error) => return recovery_fault(error, None),
             };
