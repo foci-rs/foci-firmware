@@ -1074,10 +1074,7 @@ pub(super) fn analyze_rung(
 fn map_integral_evidence_error(error: IntegralEvidenceError) -> CommissionError {
     match error {
         IntegralEvidenceError::MismatchedObservation => CommissionError::MismatchedObservation,
-        // Reusing the pre-existing TargetRateInvalid for this cause would need
-        // hardware validation this change does not perform; left as
-        // InvalidSchedule pending that validation.
-        IntegralEvidenceError::Conversion => CommissionError::InvalidSchedule,
+        IntegralEvidenceError::Conversion => CommissionError::TargetRateInvalid,
         // Unreachable from either ExactRateInterval::new call site inside
         // analyze_integral_direction. The per-observation narrowing loop's
         // precondition check already requires deficit_interval_q[0] <=
@@ -3134,6 +3131,14 @@ mod tests {
         assert_eq!(error, IntegralEvidenceError::MismatchedObservation);
     }
 
+    /// A rate-conversion overflow inside integral-direction analysis is an
+    /// arithmetic fault, not the generic schedule fault.
+    #[test]
+    fn map_integral_evidence_error_reports_conversion_as_target_rate_invalid() {
+        let error = map_integral_evidence_error(IntegralEvidenceError::Conversion);
+        assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
     #[test]
     fn analyze_rung_call_site_routes_each_evidence_error_distinctly() {
         assert_eq!(
@@ -3142,7 +3147,7 @@ mod tests {
         );
         assert_eq!(
             map_integral_evidence_error(IntegralEvidenceError::Conversion),
-            CommissionError::InvalidSchedule
+            CommissionError::TargetRateInvalid
         );
         assert_eq!(
             map_integral_evidence_error(IntegralEvidenceError::InvalidInterval),
