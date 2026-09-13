@@ -1133,17 +1133,34 @@ fn retain_rung(
             let positive_rung = usize::from(data.rung_index - 1);
             for (direction, evidence) in directions.iter().enumerate() {
                 if let Some(interval) = evidence.interval {
+                    // The following checks are provably unreachable:
+                    // - `u32::try_from(positive_rung)` can never fail: this
+                    //   firmware's only compiled targets are
+                    //   thumbv7em-none-eabi(hf) (32-bit), where usize == u32.
+                    // - The checked_shl bit-position overflow below can never
+                    //   trip: positive_rung is bounded by
+                    //   INTEGRAL_MAX_POSITIVE_RUNGS = 30
+                    //   (integral_plan.rs), never reaching the 32 needed to
+                    //   overflow a 32-bit shift.
+                    // Both are kept as defensive checks.
                     let bit = 1_u32
-                        .checked_shl(
-                            u32::try_from(positive_rung)
-                                .map_err(|_| CommissionError::InvalidSchedule)?,
-                        )
-                        .ok_or(CommissionError::InvalidSchedule)?;
+                        .checked_shl(u32::try_from(positive_rung).unwrap_or(u32::MAX))
+                        .unwrap_or(0);
+                    // Unreachable: data.rung_index only ever advances via
+                    // saturating_add(1) (this file's advance_integral_cursor,
+                    // apply_integral_current_headroom), never decrements or
+                    // resets mid-run, so the same positive_rung bit can never
+                    // already be set here. Defensive check retained.
                     if data.eligible_masks[direction] & bit != 0 {
-                        return Err(CommissionError::InvalidSchedule);
+                        return Err(CommissionError::RungIndexOutOfRange);
                     }
+                    // Unreachable: interval_word_index only rejects
+                    // direction >= 2 or rung >= INTEGRAL_MAX_POSITIVE_RUNGS
+                    // (30); direction here is always 0 or 1 (a 2-element
+                    // enumerate()) and positive_rung is bounded below 30 by
+                    // the same construction invariant as the checks above.
                     let word_index = interval_word_index(direction, positive_rung)
-                        .ok_or(CommissionError::InvalidSchedule)?;
+                        .expect("direction < 2 and positive_rung < INTEGRAL_MAX_POSITIVE_RUNGS by construction");
                     store_interval(workspace, word_index, interval)?;
                     data.eligible_masks[direction] |= bit;
                 }
