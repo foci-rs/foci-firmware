@@ -22,7 +22,7 @@ use super::recovery::{
     RungOriginRecoveryOutcome, RungOriginRecoveryReport, RungOriginRecoveryRuntime,
     plan_rung_origin_recovery,
 };
-use super::sweep_plan::RequestedVelocitySource;
+use super::sweep_plan::{RequestedVelocitySource, VELOCITY_SWEEP_SAMPLE_PERIOD_US};
 use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use crate::autotune::CommissionError;
 use crate::autotune::TmcMechanicalRpm;
@@ -1787,6 +1787,86 @@ fn seed_boundary(data: &mut VelocityIntegralRuntime, rung_index: u8, slot: u8) {
         cleanup_confirmed: false,
     });
     data.current_observer = observer;
+}
+
+/// Entering positive-I rest cleanup without a recorded boundary has nothing
+/// to clean up from; that is missing capture state, not the generic
+/// schedule fault.
+#[test]
+fn begin_positive_i_rest_cleanup_reports_missing_capture_state_without_a_boundary() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    assert!(data.positive_i_rest_boundary.is_none());
+    *state = VelocityIntegralState::BeginPositiveIRestCleanup;
+    let mut backend = MockBackend::new();
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("a missing boundary must emit the Stage-C integrity terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::MissingCaptureState.status_code())
+    );
+}
+
+/// An elapsed-microsecond clock pinned at `u64::MAX` cannot admit the first
+/// sample grid point; that is an unrepresentable deadline, not the generic
+/// schedule fault.
+#[test]
+fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_sample_grid() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    seed_boundary(data, 1, 3);
+    *state = VelocityIntegralState::BeginPositiveIRestCleanup;
+    let mut backend = MockBackend::new();
+    backend.elapsed_us_value = u64::MAX;
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("sample-grid overflow must emit the Stage-C integrity terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::ScheduleDeadlineOverflow.status_code())
+    );
+}
+
+/// The first sample grid point can fit before the clock wraps, but the
+/// zero-settle window on top of it cannot; that is still an unrepresentable
+/// deadline, not the generic schedule fault.
+#[test]
+fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_settle_window() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    seed_boundary(data, 1, 3);
+    *state = VelocityIntegralState::BeginPositiveIRestCleanup;
+    let mut backend = MockBackend::new();
+    backend.elapsed_us_value = u64::MAX - u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US);
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("settle-window overflow must emit the Stage-C integrity terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::ScheduleDeadlineOverflow.status_code())
+    );
 }
 
 #[test]

@@ -2159,7 +2159,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
         }
         VelocityIntegralState::BeginPositiveIRestCleanup => {
             if data.positive_i_rest_boundary.is_none() {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::MissingCaptureState).await;
             }
             let p = match PidPGain::new(data.plan.fixed_p) {
                 Ok(value) => value,
@@ -2190,11 +2190,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let Some(next_sample_us) =
                 started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
             else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
+                    .await;
             };
             let Some(deadline_us) = started_us.checked_add(u64::from(data.plan.zero_settle_us))
             else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
+                    .await;
             };
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = started_us;
