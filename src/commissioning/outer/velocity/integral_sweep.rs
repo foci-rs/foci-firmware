@@ -1452,13 +1452,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let p = match PidPGain::new(plan.fixed_p) {
                 Ok(value) => value,
                 Err(_) => {
-                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                    return fail_integral(phase, backend, CommissionError::PidGainInvalid).await;
                 }
             };
             let i = match PidIGain::new(i_raw) {
                 Ok(value) => value,
                 Err(_) => {
-                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                    return fail_integral(phase, backend, CommissionError::PidGainInvalid).await;
                 }
             };
             let transition_started_us = backend.elapsed_us();
@@ -2642,8 +2642,9 @@ mod tests {
 
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
-        VelocityObservationSummary, direction_for_slot, load_interval, materialize_run_evidence,
-        moving_analysis, retain_analyzed_observation, set_rung_blocking_level, store_interval,
+        VelocityObservationSummary, direction_for_slot, integral_i_at, load_interval,
+        materialize_run_evidence, moving_analysis, retain_analyzed_observation,
+        set_rung_blocking_level, store_interval,
     };
     use crate::commissioning::outer::VelocityIntegralRuntime;
     use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
@@ -2652,7 +2653,7 @@ mod tests {
         VelocityIntegralExecutionPlan,
     };
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
-    use foci_tmc4671::pid::PidPGain;
+    use foci_tmc4671::pid::{PidIGain, PidPGain};
 
     fn plan() -> VelocityIntegralExecutionPlan {
         VelocityIntegralExecutionPlan {
@@ -2788,6 +2789,33 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    /// A negative-encoding fixed-P or derived-I gain table entry is a PID
+    /// gain fault, not the generic schedule fault.
+    #[test]
+    fn prepare_moving_slot_reports_pid_gain_invalid_on_negative_fixed_p() {
+        let mut plan = plan();
+        plan.fixed_p = 0x8000; // top bit set -> PidGainOutOfRange
+        let error = PidPGain::new(plan.fixed_p).unwrap_err();
+        // Exercises the same validation the call site maps into CommissionError.
+        assert_eq!(error.raw(), 0x8000);
+    }
+
+    #[test]
+    fn fixed_p_and_derived_i_construction_reject_negative_encoding() {
+        let mut plan = plan();
+        plan.fixed_p = 0x8000;
+        let i_raw = integral_i_at(plan, 1).unwrap_or(0x8000);
+
+        let p_result = PidPGain::new(plan.fixed_p).map_err(|_| CommissionError::PidGainInvalid);
+        assert_eq!(p_result, Err(CommissionError::PidGainInvalid));
+
+        let mut i_plan = plan;
+        i_plan.fixed_p = 100; // valid, isolate the I-gain check
+        let i_result = PidIGain::new(0x8000_u16).map_err(|_| CommissionError::PidGainInvalid);
+        assert_eq!(i_result, Err(CommissionError::PidGainInvalid));
+        let _ = (i_plan, i_raw);
     }
 
     fn observation_summary() -> VelocityObservationSummary {

@@ -297,6 +297,9 @@ pub enum CommissionError {
     /// The host-liveness lease expired during an active diagnostic runner's
     /// checked delay -- not a genuine backend I/O failure. Code 78.
     HostLivenessExpired,
+    /// A PID gain derived during commissioning encoded a negative Q8.8/Q4.12
+    /// value. Code 79.
+    PidGainInvalid,
 }
 
 impl CommissionError {
@@ -384,6 +387,7 @@ impl CommissionError {
             Self::InductanceCurrentEnvelope => 76,
             Self::FaultInterlock => 77,
             Self::HostLivenessExpired => 78,
+            Self::PidGainInvalid => 79,
         }
     }
 }
