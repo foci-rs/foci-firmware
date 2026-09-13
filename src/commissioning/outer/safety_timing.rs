@@ -188,7 +188,7 @@ impl OuterSafetyTimingAccumulator {
                 count
                     .checked_add(1)
                     .filter(|value| *value <= BIN_COUNT_MASK)
-                    .ok_or(CommissionError::InvalidSchedule)?,
+                    .ok_or(CommissionError::EvidenceBufferFull)?,
             );
         }
 
@@ -281,5 +281,37 @@ impl OuterSafetyTimingAccumulator {
         }
         self.set_bin_count(index, value);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
+        OuterSafetyTimingStage,
+    };
+    use crate::autotune::CommissionError;
+
+    fn context() -> OuterSafetyTimingContext {
+        OuterSafetyTimingContext::new(
+            OuterSafetyTimingStage::Integral,
+            OuterSafetyTimingPhase::MovingCapture,
+            0,
+            0,
+            false,
+        )
+        .expect("in-range stage/phase/rung/slot")
+    }
+
+    /// A per-bin observation count already at its packed-field maximum is
+    /// an evidence-capacity fault, not the generic schedule fault.
+    #[test]
+    fn observe_rejects_bin_count_overflow() {
+        let mut accumulator = OuterSafetyTimingAccumulator::new();
+        accumulator
+            .set_bin_count_for_test(0, super::BIN_COUNT_MASK)
+            .expect("in-range preset");
+        let error = accumulator.observe(1_000, context()).unwrap_err();
+        assert_eq!(error, CommissionError::EvidenceBufferFull);
     }
 }
