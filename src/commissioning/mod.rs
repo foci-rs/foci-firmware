@@ -719,9 +719,11 @@ impl CommissioningEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`CommissionError::EncoderFault`] for an invalid encoder domain
-    /// and [`CommissionError::InvalidSchedule`] when the probe velocity is zero
-    /// or its envelope arithmetic overflows.
+    /// Returns [`CommissionError::EncoderFault`] for an invalid encoder domain,
+    /// [`CommissionError::InvalidSchedule`] when the probe velocity is zero or
+    /// its rpm-to-mrev/s conversion overflows, and
+    /// [`CommissionError::TargetRateInvalid`] when the envelope's
+    /// proportional-margin arithmetic overflows.
     pub(crate) fn new_outer_for_tmc_with_robustness(
         oid: u8,
         tmc_state: &'static TmcChannelState,
