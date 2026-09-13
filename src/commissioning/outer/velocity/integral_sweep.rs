@@ -1648,7 +1648,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
             let Some(_stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange).await;
             };
             #[cfg(feature = "trace")]
             backend.record_velocity_trace_observation(
