@@ -306,6 +306,15 @@ pub enum CommissionError {
     /// A derived rate table had no configured entry for the requested rung,
     /// direction, or acquisition kind. Code 81.
     MissingRateTableEntry,
+    /// A direction, gain, or interval was inconsistent across an integral
+    /// rung's four observations. Code 82.
+    ///
+    /// Not reachable via analyze_rung, this variant's only production
+    /// caller, as of this writing -- allocated because the underlying check
+    /// is a real code path, triggerable directly against
+    /// analyze_integral_direction, not because current production input
+    /// construction can reach it.
+    MismatchedObservation,
 }
 
 impl CommissionError {
@@ -396,6 +405,7 @@ impl CommissionError {
             Self::PidGainInvalid => 79,
             Self::MalformedInterval => 80,
             Self::MissingRateTableEntry => 81,
+            Self::MismatchedObservation => 82,
         }
     }
 }

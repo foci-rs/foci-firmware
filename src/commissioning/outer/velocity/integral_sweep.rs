@@ -37,8 +37,8 @@ use super::fixed_gain_amplitude_evidence::{
     classify_fixed_gain_amplitude, fixed_gain_amplitude_run_sufficient,
 };
 use super::integral_evidence::{
-    ExactRateInterval, IntegralInconclusiveKind, IntegralRunSufficiency, IntegralRungClass,
-    IntegralRungEvidence, IntegralRungKind, analyze_integral_direction,
+    ExactRateInterval, IntegralEvidenceError, IntegralInconclusiveKind, IntegralRunSufficiency,
+    IntegralRungClass, IntegralRungEvidence, IntegralRungKind, analyze_integral_direction,
     classify_integral_observation,
 };
 use super::integral_plan::{
@@ -1065,7 +1065,31 @@ pub(super) fn analyze_rung(
         integral_rung_kind(data.plan, data.rung_index),
         observations,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)
+    .map_err(map_integral_evidence_error)
+}
+
+fn map_integral_evidence_error(error: IntegralEvidenceError) -> CommissionError {
+    match error {
+        IntegralEvidenceError::MismatchedObservation => CommissionError::MismatchedObservation,
+        // Reusing the pre-existing TargetRateInvalid here would require an
+        // n=3 hardware-validation gate for inline reuse of an already-allocated
+        // variant this call site has never emitted before; left as InvalidSchedule
+        // pending a future hardware-validated pass (see "Explicitly deferred").
+        IntegralEvidenceError::Conversion => CommissionError::InvalidSchedule,
+        // Unreachable: the precondition check above this loop already requires
+        // deficit_interval_q[0] <= deficit_interval_q[1] for every observation
+        // before this arm's caller can run, and i32::try_from on an in-range
+        // i64 preserves ordering exactly -- ExactRateInterval::new can never
+        // see an inverted pair here. Left as InvalidSchedule; no code
+        // allocated since no input, real or artificial, can reach this arm.
+        IntegralEvidenceError::InvalidInterval => CommissionError::InvalidSchedule,
+        IntegralEvidenceError::MaskOutOfRange | IntegralEvidenceError::DuplicateRung => {
+            // Not returned by analyze_integral_direction (verified by reading its
+            // full body); kept exhaustive because IntegralEvidenceError is also
+            // returned by retain_rung/materialize_run_evidence call paths.
+            CommissionError::RungIndexOutOfRange
+        }
+    }
 }
 
 fn retain_rung(
@@ -2650,13 +2674,16 @@ mod tests {
 
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
-        VelocityObservationSummary, direction_for_slot, fixed_gain_amplitude_report, load_interval,
+        VelocityObservationSummary, analyze_integral_direction, direction_for_slot,
+        fixed_gain_amplitude_report, load_interval, map_integral_evidence_error,
         materialize_run_evidence, moving_analysis, plan_integral_recovery,
         record_integral_target_if_reached, retain_analyzed_observation, set_rung_blocking_level,
         store_amplitude_rung_mean, store_interval,
     };
     use crate::commission_dispatch::test_support::current_limit;
-    use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
+    use crate::commissioning::outer::velocity::integral_evidence::{
+        ExactRateInterval, IntegralEvidenceError, IntegralRungKind,
+    };
     use crate::commissioning::outer::velocity::integral_plan::{
         AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
         VelocityIntegralExecutionPlan,
@@ -3026,5 +3053,53 @@ mod tests {
         let error = plan_integral_recovery(&mut data, &workspace, &safety).unwrap_err();
 
         assert_eq!(error, CommissionError::MissingRateTableEntry);
+    }
+
+    #[test]
+    fn analyze_integral_direction_reports_mismatched_observation_on_direction_disagreement() {
+        let p = PidPGain::new(1_448).unwrap();
+        let mut observations = [VelocityObservationSummary {
+            direction: VelocityDirection::Forward,
+            p,
+            classification: VelocityObservationClass::Eligible,
+            settled_rate_interval_q: [1, 1],
+            settled_rate_mean_q: 1,
+            deficit_interval_q: [0, 0],
+            disturbance: None,
+            disturbance_interval: None,
+            disturbance_variance_q2: 0,
+            predicted_torque_target_abs: 0,
+            drift_ratio_ppm: 0,
+            initial_lead_in: false,
+        }; 4];
+        // Artificial input, per operator direction: compact_summary (analyze_rung's
+        // only caller) always passes the same direction to every observation in one
+        // call, so this disagreement cannot arise through the real production path.
+        observations[1].direction = VelocityDirection::Reverse;
+
+        let error = analyze_integral_direction(
+            VelocityDirection::Forward,
+            IntegralRungKind::Positive,
+            observations,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, IntegralEvidenceError::MismatchedObservation);
+    }
+
+    #[test]
+    fn analyze_rung_call_site_routes_each_evidence_error_distinctly() {
+        assert_eq!(
+            map_integral_evidence_error(IntegralEvidenceError::MismatchedObservation),
+            CommissionError::MismatchedObservation
+        );
+        assert_eq!(
+            map_integral_evidence_error(IntegralEvidenceError::Conversion),
+            CommissionError::InvalidSchedule
+        );
+        assert_eq!(
+            map_integral_evidence_error(IntegralEvidenceError::InvalidInterval),
+            CommissionError::InvalidSchedule
+        );
     }
 }
