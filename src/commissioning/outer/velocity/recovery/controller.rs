@@ -401,16 +401,15 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                     .recovery_wrong_way_fault(runtime.start_offset_counts, elapsed_us);
                 return recovery_fault(CommissionError::SafetyEnvelopeViolation, Some(fault));
             }
-            let Some((delta, elapsed_us)) =
-                resources
-                    .safety
-                    .last_accepted_observation()
-                    .and_then(|(delta, elapsed_us)| {
-                        u16::try_from(elapsed_us)
-                            .ok()
-                            .map(|elapsed_us| (delta, elapsed_us))
-                    })
-            else {
+            // Every accepted safety sample sets `previous_velocity_observation`, and
+            // this arm's own elapsed gate above only lets a tick through once a
+            // sample is due -- the identical condition `check_outer_safety` uses to
+            // accept one -- so the `None` case is currently unreachable. Classified
+            // for the retained-state contract it protects.
+            let Some((delta, elapsed_us)) = resources.safety.last_accepted_observation() else {
+                return recovery_fault(CommissionError::MissingCaptureState, None);
+            };
+            let Some(elapsed_us) = u16::try_from(elapsed_us).ok() else {
                 return recovery_fault(CommissionError::InvalidSchedule, None);
             };
             if lead_in {
