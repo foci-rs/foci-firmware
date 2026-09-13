@@ -2473,6 +2473,15 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 &mut data.slot,
                 integral_rung_count(data.plan).unwrap_or(0),
             );
+            // Unreachable: this state is entered only when
+            // `data.slot + 1 < INTEGRAL_SLOT_COUNT` already held at the prior
+            // step, and nothing mutates `data.slot` before this call.
+            // advance_integral_cursor's own identical precondition (this
+            // file, `advance_integral_cursor`) therefore always takes its
+            // early-return branch here: `finished` is always false and
+            // `data.slot` after increment is always in
+            // `1..INTEGRAL_SLOT_COUNT`, never 0. Both operands of the guard
+            // below are provably always false. Defensive check retained.
             if finished || data.slot == 0 {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
