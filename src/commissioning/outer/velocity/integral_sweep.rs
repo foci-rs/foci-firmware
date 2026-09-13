@@ -630,6 +630,13 @@ fn load_interval(
     workspace: &TransientBuffer,
     word_index: usize,
 ) -> Result<ExactRateInterval, CommissionError> {
+    // Every writer of these words (`store_interval`, the only caller found in
+    // this file) is passed an `ExactRateInterval` that already passed
+    // `ExactRateInterval::new`'s own inversion check at construction time, and
+    // `TransientBuffer` exposes no other write path to these words -- an
+    // inverted pair read back here would require the underlying u32 words to
+    // be corrupted independently of any typed write, which cannot happen
+    // through this API. Unreachable in practice; kept as a defensive check.
     ExactRateInterval::new(
         workspace
             .workspace_word(word_index)
