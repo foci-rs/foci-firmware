@@ -1005,6 +1005,35 @@ fn integral_recovery_rejects_absent_or_zero_straddling_opening_authority() {
     );
 }
 
+/// An extreme target/encoder-resolution pair drives the settled forward rate
+/// past `u64::MAX`; the direction-0 branch's `i128`-to-`u64` conversion fails
+/// even though the surrounding arithmetic stayed well inside `i128` range.
+#[test]
+fn opening_recovery_forward_settled_rate_overflowing_u64_reports_target_rate_invalid() {
+    let mut workspace = TransientBuffer::new();
+    for index in 0..4 {
+        assert!(workspace.write_workspace_word(index, 0));
+    }
+
+    let error = opening_recovery_lower_rate_q(&workspace, 3, i32::MAX, u32::MAX, 0).unwrap_err();
+
+    assert_eq!(error, CommissionError::TargetRateInvalid);
+}
+
+/// Mirror of the forward case for the direction-1 (reverse) branch: the
+/// settled reverse rate's magnitude overflows `u64` after negation.
+#[test]
+fn opening_recovery_reverse_settled_rate_overflowing_u64_reports_target_rate_invalid() {
+    let mut workspace = TransientBuffer::new();
+    for index in 0..4 {
+        assert!(workspace.write_workspace_word(index, 0));
+    }
+
+    let error = opening_recovery_lower_rate_q(&workspace, 3, i32::MAX, u32::MAX, 1).unwrap_err();
+
+    assert_eq!(error, CommissionError::TargetRateInvalid);
+}
+
 #[test]
 fn integral_recovery_follows_the_emitted_opening_anchor_and_restores_i_ladder_order() {
     let mut phase = phase();

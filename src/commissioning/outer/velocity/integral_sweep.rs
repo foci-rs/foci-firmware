@@ -667,24 +667,24 @@ pub(super) fn opening_recovery_lower_rate_q(
                 crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE,
             ))
         })
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::TargetRateInvalid)?;
     let settled_low = super::sweep_analysis::floor_div_60(
         target_numerator
             .checked_sub(i128::from(deficit.high_q) * 60)
-            .ok_or(CommissionError::InvalidSchedule)?,
+            .ok_or(CommissionError::TargetRateInvalid)?,
     )?;
     let settled_high = super::sweep_analysis::ceil_div_60(
         target_numerator
             .checked_sub(i128::from(deficit.low_q) * 60)
-            .ok_or(CommissionError::InvalidSchedule)?,
+            .ok_or(CommissionError::TargetRateInvalid)?,
     )?;
     match direction {
         0 if settled_low > 0 => u64::try_from(settled_low)
             .map(Some)
-            .map_err(|_| CommissionError::InvalidSchedule),
+            .map_err(|_| CommissionError::TargetRateInvalid),
         1 if settled_high < 0 => u64::try_from(-settled_high)
             .map(Some)
-            .map_err(|_| CommissionError::InvalidSchedule),
+            .map_err(|_| CommissionError::TargetRateInvalid),
         0 | 1 => Ok(None),
         _ => unreachable!("direction bounds are validated above"),
     }
