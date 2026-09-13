@@ -316,7 +316,7 @@ fn reset_rung(
     if is_fixed_gain_amplitude(data.plan) {
         for slot in 0..usize::from(INTEGRAL_SLOT_COUNT) {
             if !workspace.write_workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot, 0) {
-                return Err(CommissionError::InvalidSchedule);
+                return Err(CommissionError::EvidenceBufferFull);
             }
         }
     }
@@ -332,7 +332,7 @@ pub(super) fn store_amplitude_rung_mean(
     if slot >= usize::from(INTEGRAL_SLOT_COUNT)
         || !workspace.write_workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot, value as u32)
     {
-        Err(CommissionError::InvalidSchedule)
+        Err(CommissionError::RungIndexOutOfRange)
     } else {
         Ok(())
     }
@@ -343,12 +343,12 @@ pub(super) fn amplitude_rung_mean(
     slot: usize,
 ) -> Result<i32, CommissionError> {
     if slot >= usize::from(INTEGRAL_SLOT_COUNT) {
-        return Err(CommissionError::InvalidSchedule);
+        return Err(CommissionError::RungIndexOutOfRange);
     }
     workspace
         .workspace_word(AMPLITUDE_MEAN_WORD_BASE + slot)
         .map(|value| value as i32)
-        .ok_or(CommissionError::InvalidSchedule)
+        .ok_or(CommissionError::MissingCaptureState)
 }
 
 fn set_rung_blocking_level(
@@ -357,7 +357,7 @@ fn set_rung_blocking_level(
     level: u8,
 ) -> Result<(), CommissionError> {
     if slot >= INTEGRAL_SLOT_COUNT || level > 0x0f {
-        return Err(CommissionError::InvalidSchedule);
+        return Err(CommissionError::RungIndexOutOfRange);
     }
     let shift = u32::from(slot) * 4;
     data.rung_blocking_levels =
@@ -621,7 +621,7 @@ fn store_interval(
     {
         Ok(())
     } else {
-        Err(CommissionError::InvalidSchedule)
+        Err(CommissionError::EvidenceBufferFull)
     }
 }
 
@@ -632,10 +632,10 @@ fn load_interval(
     ExactRateInterval::new(
         workspace
             .workspace_word(word_index)
-            .ok_or(CommissionError::InvalidSchedule)? as i32,
+            .ok_or(CommissionError::MissingCaptureState)? as i32,
         workspace
             .workspace_word(word_index + 1)
-            .ok_or(CommissionError::InvalidSchedule)? as i32,
+            .ok_or(CommissionError::MissingCaptureState)? as i32,
     )
     .map_err(|_| CommissionError::InvalidSchedule)
 }
@@ -2619,5 +2619,95 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             StepResult::FixedGainAmplitudeTerminal(fixed_gain_amplitude_terminal(data, false, None))
         }
         VelocityIntegralState::Terminal => evidence_terminal(data, workspace),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::autotune::{CommissionError, TRANSIENT_LEN, TransientBuffer};
+
+    use super::{INTEGRAL_SLOT_COUNT, load_interval, set_rung_blocking_level, store_interval};
+    use crate::commissioning::outer::VelocityIntegralRuntime;
+    use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
+    use crate::commissioning::outer::velocity::integral_plan::{
+        AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
+        VelocityIntegralExecutionPlan,
+    };
+    use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
+
+    fn plan() -> VelocityIntegralExecutionPlan {
+        VelocityIntegralExecutionPlan {
+            slot_order: IntegralSlotOrder::ForwardFirst,
+            plan_digest: 7,
+            acceptance_plan_digest: 0,
+            qualifier_bits: 0,
+            fixed_p: 1_448,
+            planned_velocity_mrev_s: 2_929,
+            target_velocity_rpm: 176,
+            pwm_hz: 25_000,
+            encoder_counts_per_rev: 4_000,
+            i_start: 1,
+            positive_rung_count: 5,
+            i_top_cap: 0,
+            family_size: 28,
+            moving_stroke_us: 512_000,
+            zero_settle_us: 500_000,
+            analysis_budget_us: 236_000,
+            maximum_workflow_ms: 69_888,
+            recovery_origin_band_counts: 1_000,
+            recovery_nominal_slot_us: 1_816_958,
+            recovery_maximum_slot_us: 3_000_000,
+            recovery_slot_count: 7,
+            hard_torque_limit: 2_816,
+            usable_torque_limit: 2_534,
+            limit_evidence_capability: VelocityLimitEvidenceCapability::BestEffortPolling,
+            acquisition_kind: VelocityIntegralAcquisitionKind::ResponseLadder,
+            acceptance_source: AcceptanceSource::NonBreakaway,
+            amplitude_targets_rpm: [0; 5],
+            selected_response_intervals_q: [[0; 2]; 2],
+            recovery_lower_rate_q: [13_217_792, 12_827_648],
+            recovery_quantization_exposed: true,
+            probe_constrained_test_point: false,
+        }
+    }
+
+    /// A slot or level outside its declared range is a caller bug, not a
+    /// missing or exhausted workspace write -- must be reported as an
+    /// out-of-range rung index.
+    #[test]
+    fn set_rung_blocking_level_rejects_out_of_range_slot_or_level() {
+        let mut data = VelocityIntegralRuntime::new(1, plan());
+
+        let slot_error = set_rung_blocking_level(&mut data, INTEGRAL_SLOT_COUNT, 0).unwrap_err();
+        assert_eq!(slot_error, CommissionError::RungIndexOutOfRange);
+
+        let level_error = set_rung_blocking_level(&mut data, 0, 0x10).unwrap_err();
+        assert_eq!(level_error, CommissionError::RungIndexOutOfRange);
+    }
+
+    /// The second workspace word of an interval write lands one past the
+    /// fixed `TransientBuffer` capacity: the write cannot be accepted, which
+    /// is a distinct fault from a caller-supplied out-of-range index.
+    #[test]
+    fn store_interval_reports_evidence_buffer_full_at_the_workspace_boundary() {
+        let mut workspace = TransientBuffer::new();
+        let interval = ExactRateInterval::new(1, 2).unwrap();
+
+        let error = store_interval(&mut workspace, TRANSIENT_LEN - 1, interval).unwrap_err();
+
+        assert_eq!(error, CommissionError::EvidenceBufferFull);
+    }
+
+    /// Reading either half of an interval past the fixed `TransientBuffer`
+    /// capacity finds no retained state there.
+    #[test]
+    fn load_interval_reports_missing_capture_state_past_the_workspace_boundary() {
+        let workspace = TransientBuffer::new();
+
+        let first_word_error = load_interval(&workspace, TRANSIENT_LEN).unwrap_err();
+        assert_eq!(first_word_error, CommissionError::MissingCaptureState);
+
+        let second_word_error = load_interval(&workspace, TRANSIENT_LEN - 1).unwrap_err();
+        assert_eq!(second_word_error, CommissionError::MissingCaptureState);
     }
 }

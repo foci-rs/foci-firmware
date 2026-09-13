@@ -2729,6 +2729,21 @@ fn rung_reset_clears_only_per_rung_observation_state() {
     assert_eq!(data.eligible_masks, [0b101; 2]);
 }
 
+/// A slot at or beyond `INTEGRAL_SLOT_COUNT` is a caller bug, not a workspace
+/// I/O failure -- both accessors must report it as an out-of-range rung
+/// index rather than the generic schedule fault.
+#[test]
+fn amplitude_rung_mean_accessors_report_out_of_range_slot() {
+    let mut workspace = TransientBuffer::new();
+
+    let store_error =
+        store_amplitude_rung_mean(&mut workspace, usize::from(INTEGRAL_SLOT_COUNT), 0).unwrap_err();
+    assert_eq!(store_error, CommissionError::RungIndexOutOfRange);
+
+    let read_error = amplitude_rung_mean(&workspace, usize::from(INTEGRAL_SLOT_COUNT)).unwrap_err();
+    assert_eq!(read_error, CommissionError::RungIndexOutOfRange);
+}
+
 #[test]
 fn entry_and_exit_transaction_failures_fault_before_motion_or_evidence() {
     let entry_failures = [
