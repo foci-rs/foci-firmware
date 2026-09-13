@@ -2168,7 +2168,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let p = match PidPGain::new(data.plan.fixed_p) {
                 Ok(value) => value,
                 Err(_) => {
-                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                    return fail_integral(phase, backend, CommissionError::PidGainInvalid).await;
                 }
             };
             if backend
@@ -2876,5 +2876,11 @@ mod tests {
         let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
 
         assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    #[test]
+    fn begin_positive_i_rest_cleanup_rejects_negative_fixed_p() {
+        let error = PidPGain::new(0x8000_u16).map_err(|_| CommissionError::PidGainInvalid);
+        assert_eq!(error, Err(CommissionError::PidGainInvalid));
     }
 }
