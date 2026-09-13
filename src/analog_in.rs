@@ -203,21 +203,43 @@ impl AnalogChannelState {
     /// concurrent `configure_sampling` call. If the channel is unconfigured
     /// (sample_count == 0, the invalidation sentinel), returns the current
     /// progress unchanged to signal "try again shortly" without recording.
+    ///
+    /// Guards against a second race beyond the torn-read one above: this
+    /// call's initial `sample_count` load can still be stale by the time it
+    /// is ready to write its computed progress back, if a `configure_sampling`
+    /// call is interleaved (RTIC priority preemption) between the read and
+    /// the write. `sample_count` is re-checked immediately before writing;
+    /// if it changed, a fresh configuration was published mid-computation, so
+    /// this call's result is abandoned entirely and the current (freshly
+    /// configured) progress is returned instead, reusing the same
+    /// "unconfigured/reconfigured" `Pending` shape as the sample_count == 0
+    /// case above.
     pub fn record_sample(&self, raw: u16, now: u32) -> SampleStep {
-        let sample_count = self.sample_count.load(Acquire);
-        if sample_count == 0 {
-            return SampleStep::Pending {
-                progress: BurstProgress {
-                    accumulator: self.accumulator.load(Relaxed),
-                    samples_taken: self.samples_taken.load(Relaxed),
-                    invalid_count: self.invalid_count.load(Relaxed),
-                },
-                next_due_clock: self.next_due_clock.load(Relaxed),
-            };
+        self.record_sample_inner(raw, now, || {})
+    }
+
+    /// Test-only hook: identical to `record_sample`, but runs `interleave`
+    /// between computing the step and the re-check that guards the
+    /// write-back, so a concurrent `configure_sampling` call can be
+    /// deterministically simulated landing in that window.
+    #[cfg(test)]
+    fn record_sample_with_interleave(
+        &self,
+        raw: u16,
+        now: u32,
+        interleave: impl FnOnce(),
+    ) -> SampleStep {
+        self.record_sample_inner(raw, now, interleave)
+    }
+
+    fn record_sample_inner(&self, raw: u16, now: u32, interleave: impl FnOnce()) -> SampleStep {
+        let observed_count = self.sample_count.load(Acquire);
+        if observed_count == 0 {
+            return self.pending_from_current_state();
         }
         let config = AnalogInConfig {
             sample_ticks: self.sample_ticks.load(Relaxed),
-            sample_count,
+            sample_count: observed_count,
             rest_ticks: self.rest_ticks.load(Relaxed),
             min_value: self.min_value.load(Relaxed),
             max_value: self.max_value.load(Relaxed),
@@ -229,6 +251,10 @@ impl AnalogChannelState {
             invalid_count: self.invalid_count.load(Relaxed),
         };
         let step = record_sample_step(&config, progress, raw, now);
+        interleave();
+        if self.sample_count.load(Acquire) != observed_count {
+            return self.pending_from_current_state();
+        }
         match step {
             SampleStep::Pending {
                 progress,
@@ -250,6 +276,17 @@ impl AnalogChannelState {
             }
         }
         step
+    }
+
+    fn pending_from_current_state(&self) -> SampleStep {
+        SampleStep::Pending {
+            progress: BurstProgress {
+                accumulator: self.accumulator.load(Relaxed),
+                samples_taken: self.samples_taken.load(Relaxed),
+                invalid_count: self.invalid_count.load(Relaxed),
+            },
+            next_due_clock: self.next_due_clock.load(Relaxed),
+        }
     }
 }
 
@@ -519,6 +556,52 @@ mod tests {
         assert!(!slot.is_due(500));
         assert!(slot.is_due(1000));
         assert!(slot.is_due(1500));
+    }
+
+    #[test]
+    fn reconfigure_landing_mid_record_sample_is_not_clobbered() {
+        let slot = AnalogChannelState::new();
+        slot.configure_sampling(&config(), 0);
+        match slot.record_sample(500, 10) {
+            SampleStep::Pending { progress, .. } => assert_eq!(progress.samples_taken, 1),
+            SampleStep::Report { .. } => panic!("burst is not complete yet"),
+        }
+
+        let new_config = AnalogInConfig {
+            sample_ticks: 5,
+            sample_count: 2,
+            rest_ticks: 200,
+            min_value: 0,
+            max_value: u16::MAX,
+            range_check_count: 3,
+        };
+        let step = slot.record_sample_with_interleave(500, 20, || {
+            slot.configure_sampling(&new_config, 999);
+        });
+
+        match step {
+            SampleStep::Pending {
+                progress,
+                next_due_clock,
+            } => {
+                assert_eq!(
+                    progress.accumulator, 0,
+                    "must reflect the new config's freshly reset state, not a stale mix"
+                );
+                assert_eq!(progress.samples_taken, 0);
+                assert_eq!(next_due_clock, 999);
+            }
+            SampleStep::Report { .. } => {
+                panic!("must not fabricate a report from an abandoned computation")
+            }
+        }
+        assert_eq!(
+            slot.accumulator.load(Relaxed),
+            0,
+            "the abandoned write must not clobber the freshly published config"
+        );
+        assert_eq!(slot.samples_taken.load(Relaxed), 0);
+        assert_eq!(slot.sample_count.load(Relaxed), new_config.sample_count);
     }
 
     #[test]
