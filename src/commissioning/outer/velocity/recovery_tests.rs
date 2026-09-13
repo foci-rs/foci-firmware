@@ -966,6 +966,34 @@ fn recovery_controller_confirms_fixed_settle_and_reports_complete_geometry() {
 }
 
 #[test]
+fn capture_settle_rejects_elapsed_delta_overflowing_u16() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    fixture.command_motion();
+    let handover_us = fixture.arrive_at_moving_target(1_040);
+    let first = handover_us / 1_000 + 1;
+    let first_us = first * 1_000;
+    assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first_us));
+
+    // Defer the independent safety grid past this tick so `check_outer_safety`
+    // is not due and cannot overwrite the forced observation below before
+    // `CaptureSettle` reads it.
+    fixture
+        .safety
+        .defer_safety_deadline_for_test(first_us + 50_000);
+    fixture
+        .safety
+        .force_accepted_observation_for_test(0, u64::from(u16::MAX) + 1);
+
+    assert_eq!(
+        fixture.sample(first_us, moving_arrival_counts()),
+        RungOriginRecoveryStep::Fault {
+            error: CommissionError::ElapsedTimeConversionInvalid,
+            safety: None,
+        }
+    );
+}
+
+#[test]
 fn recovery_current_observer_covers_motion_and_zero_target_settle() {
     let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
     fixture.command_motion();

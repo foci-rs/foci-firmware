@@ -408,7 +408,7 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 return recovery_fault(CommissionError::MissingCaptureState, None);
             };
             let Some(elapsed_us) = u16::try_from(elapsed_us).ok() else {
-                return recovery_fault(CommissionError::InvalidSchedule, None);
+                return recovery_fault(CommissionError::ElapsedTimeConversionInvalid, None);
             };
             if lead_in {
                 runtime.lead_in_first_or_net_counts =

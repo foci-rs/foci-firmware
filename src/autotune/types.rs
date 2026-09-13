@@ -315,6 +315,9 @@ pub enum CommissionError {
     /// analyze_integral_direction, not because current production input
     /// construction can reach it.
     MismatchedObservation,
+    /// A narrowing conversion on an elapsed-time delta during recovery
+    /// capture could not be represented. Code 83.
+    ElapsedTimeConversionInvalid,
 }
 
 impl CommissionError {
@@ -406,6 +409,7 @@ impl CommissionError {
             Self::MalformedInterval => 80,
             Self::MissingRateTableEntry => 81,
             Self::MismatchedObservation => 82,
+            Self::ElapsedTimeConversionInvalid => 83,
         }
     }
 }
