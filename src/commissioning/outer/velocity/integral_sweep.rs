@@ -1860,12 +1860,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     Err(error) => return fail_integral(phase, backend, error).await,
                 };
             if let StationarityResult::Usable(suffix) = stationarity
-                && set_rung_blocking_level(data, data.slot, suffix.selection.level).is_err()
+                && let Err(error) = set_rung_blocking_level(data, data.slot, suffix.selection.level)
             {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, error).await;
             }
-            if retain_analyzed_observation(data, workspace, summary).is_err() {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            if let Err(error) = retain_analyzed_observation(data, workspace, summary) {
+                return fail_integral(phase, backend, error).await;
             }
             data.emitted_observations = data.emitted_observations.saturating_add(1);
             data.observation_current_headroom =
