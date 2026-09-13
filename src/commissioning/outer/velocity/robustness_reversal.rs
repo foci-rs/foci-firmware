@@ -1155,7 +1155,7 @@ fn build_origin_recovery(
     let lower_rate_q = return_lower_rate_q(&session.point, return_direction)
         .ok_or(CommissionError::InvalidSchedule)?;
     let p =
-        PidPGain::new(session.point.selected_p).map_err(|_| CommissionError::InvalidSchedule)?;
+        PidPGain::new(session.point.selected_p).map_err(|_| CommissionError::PidGainInvalid)?;
     RungOriginRecoveryRuntime::new(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Robustness,
@@ -3656,6 +3656,16 @@ mod tests {
         let mut point = test_point();
         point.selected_i = 0x8000;
         let error = accepted_gains(&point).unwrap_err();
+        assert_eq!(error, CommissionError::PidGainInvalid);
+    }
+
+    #[test]
+    fn build_origin_recovery_rejects_negative_selected_p() {
+        let mut session = RobustnessReversalSession::new(test_point(), 0, COUNTS_PER_REV);
+        session.recovery_plan = Some(plan_rung_origin_recovery(test_safety().budget, test_safety().counts_per_rev(), 1_000).unwrap());
+        session.point.selected_p = 0x8000;
+        let safety = test_safety();
+        let error = build_origin_recovery(&session, &safety).unwrap_err();
         assert_eq!(error, CommissionError::PidGainInvalid);
     }
 }
