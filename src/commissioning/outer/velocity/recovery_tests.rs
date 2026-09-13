@@ -2046,3 +2046,22 @@ fn zone_two_slow_rate_falls_back_to_contained_deadline_not_a_fault() {
         }));
     }
 }
+
+#[test]
+fn moving_deadline_overflow_is_a_schedule_deadline_fault() {
+    let mut fixture = RecoveryFixture::new(1_040, Some(14_000_000));
+    // Push the primitive-start clock to the very edge of the representable
+    // range so `started_us + moving_budget_us` overflows `u64`. The moving
+    // budget itself (checked_sub) stays comfortably positive at this offset,
+    // isolating the checked_add failure this test targets.
+    fixture.backend.elapsed_us_value = u64::MAX - 1_000;
+    assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
+    assert_eq!(fixture.step(), RungOriginRecoveryStep::ReadyNow);
+    assert!(matches!(
+        fixture.step(),
+        RungOriginRecoveryStep::Fault {
+            error: CommissionError::ScheduleDeadlineOverflow,
+            safety: None,
+        }
+    ));
+}

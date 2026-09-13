@@ -243,12 +243,16 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 resources.safety.end_primitive();
                 return recovery_fault(CommissionError::Spi, None);
             }
-            let moving_budget_us = runtime.runtime_us.checked_sub(runtime.rest_allowance_us());
-            let Some(moving_deadline_us) =
-                moving_budget_us.and_then(|value| started_us.checked_add(u64::from(value)))
+            let Some(moving_budget_us) =
+                runtime.runtime_us.checked_sub(runtime.rest_allowance_us())
             else {
                 resources.safety.end_primitive();
                 return recovery_fault(CommissionError::InvalidSchedule, None);
+            };
+            let Some(moving_deadline_us) = started_us.checked_add(u64::from(moving_budget_us))
+            else {
+                resources.safety.end_primitive();
+                return recovery_fault(CommissionError::ScheduleDeadlineOverflow, None);
             };
             runtime.recovery_started_us = ExactU64Parts::from_u64(started_us);
             runtime.mark_motion_started();
