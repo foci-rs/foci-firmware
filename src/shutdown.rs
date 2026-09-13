@@ -80,6 +80,7 @@ pub enum ShutdownReason {
     Tmc4671PllNotLocked,
     Tmc4671AdcCurrentClipped,
     Tmc4671Fault,
+    AdcOutOfRange,
 }
 
 impl ShutdownReason {
@@ -147,6 +148,7 @@ impl ShutdownReason {
             Self::Tmc4671PllNotLocked => "TMC4671: PLL not locked (clock lost)",
             Self::Tmc4671AdcCurrentClipped => "TMC4671: ADC current clipped (overcurrent)",
             Self::Tmc4671Fault => "TMC4671 fault",
+            Self::AdcOutOfRange => "ADC out of range",
         }
     }
 }
@@ -364,6 +366,9 @@ macro_rules! dispatch_shutdown {
             $crate::shutdown::ShutdownReason::Tmc4671Fault => {
                 ::ankyra::klipper_shutdown_from!($sender, "TMC4671 fault", $clock);
             }
+            $crate::shutdown::ShutdownReason::AdcOutOfRange => {
+                ::ankyra::klipper_shutdown_from!($sender, "ADC out of range", $clock);
+            }
         }
     };
 }
@@ -452,6 +457,7 @@ macro_rules! foci_ankyra_config {
                 "TMC4671: PLL not locked (clock lost)",
                 "TMC4671: ADC current clipped (overcurrent)",
                 "TMC4671 fault",
+                "ADC out of range",
                 "Host clock-sync expired",
             ],
             app = $app,
@@ -472,5 +478,10 @@ mod tests {
             ShutdownReason::HostClockSyncExpired.message(),
             "Host clock-sync expired"
         );
+    }
+
+    #[test]
+    fn adc_out_of_range_has_a_message() {
+        assert_eq!(ShutdownReason::AdcOutOfRange.message(), "ADC out of range");
     }
 }

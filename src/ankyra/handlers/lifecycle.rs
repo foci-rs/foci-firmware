@@ -15,6 +15,7 @@
 
 use ankyra::prelude::klipper_command;
 
+use crate::analog_in::reset_all_analog_channels;
 use crate::ankyra::replies::{Clock, Config, Uptime};
 use crate::context::{ClockSource, LifecycleReset, ShutdownRecovery, StateAccess};
 use crate::shutdown::ShutdownReason;
@@ -111,6 +112,7 @@ pub fn config_reset(ctx: &mut dyn LifecycleReset) {
     // Reset board-local control and protocol state
     reset_all_tmc_channels();
     reset_all_stepper_channels();
+    reset_all_analog_channels();
     STATS_SEND_TIME.store(0, Relaxed);
     STATS_SEND_TIME_HIGH.store(0, Relaxed);
     // Signal tmc_control to drain stale requests from the pre-reset epoch
@@ -208,6 +210,51 @@ mod tests {
         }
     }
 
+    impl crate::context::TrsyncHost for MockCtx {
+        fn reset_all(&mut self) {}
+        fn register_trsync(&mut self, _oid: u8) -> Result<(), ()> {
+            panic!("register_trsync not used in this test")
+        }
+        fn trsync_arm(
+            &mut self,
+            _oid: u8,
+            _report_clock: u32,
+            _report_ticks: u32,
+            _expire_reason: u8,
+        ) -> Result<(), ()> {
+            panic!("trsync_arm not used in this test")
+        }
+        fn trsync_set_timeout(&mut self, _oid: u8, _clock: u32) -> Result<(), ()> {
+            panic!("trsync_set_timeout not used in this test")
+        }
+        fn trsync_trigger(&mut self, _oid: u8, _reason: u8) -> Result<u8, ()> {
+            panic!("trsync_trigger not used in this test")
+        }
+        fn register_endstop(&mut self, _oid: u8) -> Result<usize, ()> {
+            panic!("register_endstop not used in this test")
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn endstop_start_homing(
+            &mut self,
+            _oid: u8,
+            _clock: u32,
+            _sample_ticks: u32,
+            _sample_count: u8,
+            _rest_ticks: u32,
+            _pin_value_expected: bool,
+            _trsync_oid: u8,
+            _trigger_reason: u8,
+        ) -> Result<(), ()> {
+            panic!("endstop_start_homing not used in this test")
+        }
+        fn endstop_query(&mut self, _oid: u8) -> Result<(bool, u32, u8), ()> {
+            panic!("endstop_query not used in this test")
+        }
+        fn link_stepper_stop(&mut self, _stepper_idx: usize, _trsync_oid: u8) -> Result<(), ()> {
+            panic!("link_stepper_stop not used in this test")
+        }
+    }
+
     #[test]
     fn invalid_clear_shutdown_leaves_shutdown_active_set() {
         let _guard = TEST_LOCK.lock().unwrap();
@@ -258,5 +305,42 @@ mod tests {
 
         assert_eq!(LAST_HOST_LIVENESS_TICKS.load(Relaxed), 123);
         assert!(HAS_RECEIVED_VALID_CLOCK.load(Relaxed));
+    }
+
+    #[test]
+    fn config_reset_clears_a_previously_configured_analog_channel() {
+        use crate::analog_in::{AnalogInConfig, analog_channel};
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        let channel = analog_channel(0).unwrap();
+        channel.configure_oid(5);
+        channel.configure_sampling(
+            &AnalogInConfig {
+                sample_ticks: 10,
+                sample_count: 4,
+                rest_ticks: 1000,
+                min_value: 100,
+                max_value: 10_000,
+                range_check_count: 2,
+            },
+            50,
+        );
+        assert_eq!(channel.oid(), Some(5), "sanity: channel is configured");
+        assert!(channel.is_due(50), "sanity: sampling is scheduled");
+
+        let mut ctx = MockCtx::new();
+        ctx.state.mcu_state = McuState::Shutdown { reason: 0 };
+        let mut sender = ();
+        config_reset(&mut ctx, &mut sender);
+
+        assert_eq!(
+            channel.oid(),
+            None,
+            "config_reset must clear a stale analog OID"
+        );
+        assert!(
+            !channel.is_due(50),
+            "config_reset must not leave a stale sampling schedule active"
+        );
     }
 }

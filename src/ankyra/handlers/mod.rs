@@ -1,5 +1,6 @@
 //! Per-subsystem ankyra `#[klipper_command]` handlers.
 
+pub mod analog_in;
 pub mod digital_out;
 pub mod endstop;
 pub mod foci;
