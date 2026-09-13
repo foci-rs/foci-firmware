@@ -303,6 +303,9 @@ pub enum CommissionError {
     /// A stored or computed closed interval had an inverted or otherwise
     /// invalid bound pair. Code 80.
     MalformedInterval,
+    /// A derived rate table had no configured entry for the requested rung,
+    /// direction, or acquisition kind. Code 81.
+    MissingRateTableEntry,
 }
 
 impl CommissionError {
@@ -392,6 +395,7 @@ impl CommissionError {
             Self::HostLivenessExpired => 78,
             Self::PidGainInvalid => 79,
             Self::MalformedInterval => 80,
+            Self::MissingRateTableEntry => 81,
         }
     }
 }

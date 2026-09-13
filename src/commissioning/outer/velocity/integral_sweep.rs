@@ -725,7 +725,7 @@ pub(super) fn plan_integral_recovery(
                 .recovery_lower_rate_q
                 .get(direction)
                 .filter(|value| **value != 0)
-                .ok_or(CommissionError::InvalidSchedule)?,
+                .ok_or(CommissionError::MissingRateTableEntry)?,
         ),
     };
     let planned_velocity_mrev_s = if is_fixed_gain_amplitude(data.plan) {
@@ -2651,17 +2651,21 @@ mod tests {
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
         VelocityObservationSummary, direction_for_slot, fixed_gain_amplitude_report, load_interval,
-        materialize_run_evidence, moving_analysis, record_integral_target_if_reached,
-        retain_analyzed_observation, set_rung_blocking_level, store_amplitude_rung_mean,
-        store_interval,
+        materialize_run_evidence, moving_analysis, plan_integral_recovery,
+        record_integral_target_if_reached, retain_analyzed_observation, set_rung_blocking_level,
+        store_amplitude_rung_mean, store_interval,
     };
-    use crate::commissioning::outer::VelocityIntegralRuntime;
+    use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
     use crate::commissioning::outer::velocity::integral_plan::{
         AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
         VelocityIntegralExecutionPlan,
     };
+    use crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource;
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
+    use crate::commissioning::outer::{
+        OuterMotionBudget, OuterSafetyLimits, VelocityIntegralRuntime,
+    };
     use foci_tmc4671::pid::{PidIGain, PidPGain};
 
     fn plan() -> VelocityIntegralExecutionPlan {
@@ -2957,5 +2961,39 @@ mod tests {
     fn begin_positive_i_rest_cleanup_rejects_negative_fixed_p() {
         let error = PidPGain::new(0x8000_u16).map_err(|_| CommissionError::PidGainInvalid);
         assert_eq!(error, Err(CommissionError::PidGainInvalid));
+    }
+
+    fn test_safety() -> OuterSafetyLimits {
+        OuterSafetyLimits::new(
+            current_limit(2_448).raw(),
+            OuterMotionBudget {
+                requested_velocity_mrev_s: 6_000,
+                machine_velocity_ceiling_mrev_s: 10_000,
+                requested_velocity_source: RequestedVelocitySource::Defaulted,
+                max_stroke_travel_mrev: 2_000,
+                settle_travel_reserve_mrev: 100,
+                negative_position_headroom_mrev: 5_000,
+                positive_position_headroom_mrev: 5_000,
+                max_duration_ms: 60_000,
+            },
+        )
+    }
+
+    /// A fixed-gain-amplitude recovery plan with a zeroed lower-rate table
+    /// entry for the current direction has no settled rate to recover
+    /// toward; that is a missing rate-table entry, not the generic schedule
+    /// fault.
+    #[test]
+    fn plan_integral_recovery_rejects_missing_lower_rate_entry() {
+        let mut plan = plan();
+        plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
+        plan.recovery_lower_rate_q = [0, 0]; // zero -> filtered out -> None
+        let mut data = VelocityIntegralRuntime::new(1, plan);
+        let workspace = TransientBuffer::new();
+        let safety = test_safety();
+
+        let error = plan_integral_recovery(&mut data, &workspace, &safety).unwrap_err();
+
+        assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 }
