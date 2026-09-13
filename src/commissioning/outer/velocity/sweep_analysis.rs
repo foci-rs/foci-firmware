@@ -9,7 +9,7 @@ use crate::autotune::velocity_measurement::{
     VelocityObservationSource, estimate_confidence, lag_one_passes_family,
 };
 use crate::autotune::{
-    CommissionError, TmcMechanicalRpm, equivalent_disturbance_from_rate,
+    CommissionError, TmcMechanicalRpm, VelocityUnitError, equivalent_disturbance_from_rate,
     equivalent_disturbance_variance_from_rate,
 };
 
@@ -174,7 +174,12 @@ fn populate_derived_observation_fields(
         let signed_target = request
             .target_velocity_rpm
             .with_direction(direction_sign(request.direction))
-            .map_err(|_| CommissionError::InvalidSchedule)?;
+            .map_err(|error| match error {
+                VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
+                VelocityUnitError::ZeroTarget | VelocityUnitError::InvalidDirection => {
+                    CommissionError::InvalidSchedule
+                }
+            })?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
             signed_target.raw(),
             request.counts_per_rev,
@@ -244,7 +249,12 @@ fn populate_derived_observation_fields(
         let signed_target = request
             .target_velocity_rpm
             .with_direction(direction_sign(request.direction))
-            .map_err(|_| CommissionError::InvalidSchedule)?;
+            .map_err(|error| match error {
+                VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
+                VelocityUnitError::ZeroTarget | VelocityUnitError::InvalidDirection => {
+                    CommissionError::InvalidSchedule
+                }
+            })?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
             signed_target.raw(),
             request.counts_per_rev,
@@ -377,8 +387,8 @@ mod tests {
 
     use crate::autotune::velocity_measurement::{
         DyadicBlocker, PlateauSelection, RateBlock, RestSelectionDisposition,
-        StationarityExclusion, StationarityResult, StationarityWork, SuffixDiagnostic,
-        VelocityDirection,
+        StationarityExclusion, StationarityResult, StationarityWork, StationarySuffix,
+        SuffixDiagnostic, VelocityDirection,
     };
     use crate::autotune::{CommissionError, TmcMechanicalRpm};
     use crate::commissioning::outer::state::VelocityObservationRing;
@@ -388,6 +398,153 @@ mod tests {
         assemble_velocity_observation_input, bounded_rest_displacement, deficit_interval_q,
         poll_scored_rest_confirmation,
     };
+
+    fn usable_suffix() -> StationarySuffix {
+        StationarySuffix {
+            selection: PlateauSelection {
+                level: 1,
+                block_count: 16,
+                variance_of_mean_q2: 4,
+                exact_totals: RateBlock {
+                    delta_counts: 1,
+                    elapsed_us: 1_000,
+                    observation_count: 64,
+                },
+            },
+            suffix_len: 64,
+            slope_q: 0,
+            slope_half_width_q: 1,
+            lag_one_q: 0,
+            lag_one_half_width_q: 1,
+            residual_magnitude_q2: 1,
+            span_x2_us: 0,
+            drift_ratio_ppm: u32::MAX,
+            tested_suffixes: 1,
+        }
+    }
+
+    fn excessive_drift_rejection() -> SuffixDiagnostic {
+        let selection = PlateauSelection {
+            level: 2,
+            block_count: 16,
+            variance_of_mean_q2: 1_024,
+            exact_totals: RateBlock {
+                delta_counts: 32,
+                elapsed_us: 64_000,
+                observation_count: 64,
+            },
+        };
+        SuffixDiagnostic {
+            suffix_len: 64,
+            selection: Some(selection),
+            usable_plateau: true,
+            slope_passed: true,
+            lag_one_passed: false,
+            lag_one_q: 750_000,
+            settled_rate_interval_q: [1, 2],
+            slope_rejection_margin_q: 0,
+            lag_one_rejection_margin_q: 1,
+            slope_q: 1,
+            slope_half_width_q: 1,
+        }
+    }
+
+    fn request_with_target(
+        stationarity: StationarityResult,
+        rejected_post_fit: Option<SuffixDiagnostic>,
+        target_velocity_rpm: TmcMechanicalRpm,
+    ) -> VelocityObservationInputRequest {
+        request_with_target_and_p_gain(
+            stationarity,
+            rejected_post_fit,
+            target_velocity_rpm,
+            PidPGain::new(256).unwrap(),
+        )
+    }
+
+    fn request_with_target_and_p_gain(
+        stationarity: StationarityResult,
+        rejected_post_fit: Option<SuffixDiagnostic>,
+        target_velocity_rpm: TmcMechanicalRpm,
+        p: PidPGain,
+    ) -> VelocityObservationInputRequest {
+        VelocityObservationInputRequest {
+            direction: VelocityDirection::Forward,
+            p,
+            stationarity,
+            rejected_post_fit,
+            drift_ratio_ppm: 300_000,
+            moving_pid_output_peak: 1,
+            target_velocity_rpm,
+            usable_torque_limit: 2_000,
+            hard_torque_limit: 3_000,
+            initial_lead_in: false,
+            confidence_family_size: 16,
+            counts_per_rev: 4_000,
+        }
+    }
+
+    #[test]
+    fn signed_target_overflow_is_a_target_rate_fault_when_usable() {
+        // p = ZERO keeps `predicted_torque_target_abs` from overflowing first
+        // on this same i32::MIN magnitude, isolating with_direction's own
+        // ArithmeticOverflow (checked_abs on i32::MIN has no representable
+        // positive counterpart).
+        let request = request_with_target_and_p_gain(
+            StationarityResult::Usable(usable_suffix()),
+            None,
+            TmcMechanicalRpm::from_register(i32::MIN),
+            PidPGain::ZERO,
+        );
+
+        assert_eq!(
+            assemble_velocity_observation_input(request),
+            Err(CommissionError::TargetRateInvalid)
+        );
+    }
+
+    #[test]
+    fn signed_target_overflow_is_a_target_rate_fault_when_drift_excluded() {
+        let request = request_with_target_and_p_gain(
+            StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift),
+            Some(excessive_drift_rejection()),
+            TmcMechanicalRpm::from_register(i32::MIN),
+            PidPGain::ZERO,
+        );
+
+        assert_eq!(
+            assemble_velocity_observation_input(request),
+            Err(CommissionError::TargetRateInvalid)
+        );
+    }
+
+    #[test]
+    fn signed_target_zero_target_stays_invalid_schedule_when_usable() {
+        let request = request_with_target(
+            StationarityResult::Usable(usable_suffix()),
+            None,
+            TmcMechanicalRpm::from_register(0),
+        );
+
+        assert_eq!(
+            assemble_velocity_observation_input(request),
+            Err(CommissionError::InvalidSchedule)
+        );
+    }
+
+    #[test]
+    fn signed_target_zero_target_stays_invalid_schedule_when_drift_excluded() {
+        let request = request_with_target(
+            StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift),
+            Some(excessive_drift_rejection()),
+            TmcMechanicalRpm::from_register(0),
+        );
+
+        assert_eq!(
+            assemble_velocity_observation_input(request),
+            Err(CommissionError::InvalidSchedule)
+        );
+    }
 
     #[test]
     fn excessive_drift_uses_rejected_selection_at_the_requested_family() {
