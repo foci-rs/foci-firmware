@@ -267,18 +267,18 @@ pub(super) fn deficit_interval_q(
     let target_numerator = i128::from(target_velocity_rpm)
         .checked_mul(i128::from(counts_per_rev))
         .and_then(|value| value.checked_mul(i128::from(VELOCITY_RATE_Q_SCALE)))
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::TargetRateInvalid)?;
     let low_numerator = target_numerator
         .checked_sub(i128::from(settled_rate_high_q) * 60)
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::TargetRateInvalid)?;
     let high_numerator = target_numerator
         .checked_sub(i128::from(settled_rate_low_q) * 60)
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::TargetRateInvalid)?;
     let low = floor_div_60(low_numerator)?;
     let high = ceil_div_60(high_numerator)?;
     Ok((
-        i64::try_from(low).map_err(|_| CommissionError::InvalidSchedule)?,
-        i64::try_from(high).map_err(|_| CommissionError::InvalidSchedule)?,
+        i64::try_from(low).map_err(|_| CommissionError::TargetRateInvalid)?,
+        i64::try_from(high).map_err(|_| CommissionError::TargetRateInvalid)?,
     ))
 }
 
@@ -375,12 +375,12 @@ pub(super) fn bounded_rest_displacement(minimum: i8, maximum: i8) -> bool {
 mod tests {
     use foci_tmc4671::pid::PidPGain;
 
-    use crate::autotune::TmcMechanicalRpm;
     use crate::autotune::velocity_measurement::{
         DyadicBlocker, PlateauSelection, RateBlock, RestSelectionDisposition,
         StationarityExclusion, StationarityResult, StationarityWork, SuffixDiagnostic,
         VelocityDirection,
     };
+    use crate::autotune::{CommissionError, TmcMechanicalRpm};
     use crate::commissioning::outer::state::VelocityObservationRing;
 
     use super::{
@@ -540,6 +540,29 @@ mod tests {
         assert_ne!(
             deficit_interval_q(8, 4_000, 11_733_333, 11_733_334),
             Ok((-1, 1))
+        );
+    }
+
+    #[test]
+    fn low_bound_narrowing_overflow_is_a_target_rate_fault() {
+        // target_numerator = i32::MAX * u32::MAX * 1_000 (~9.2e21); floor_div_60
+        // of that magnitude (~1.5e20) exceeds i64::MAX, so the final narrowing
+        // conversion of the low bound overflows before any i128 step does.
+        assert_eq!(
+            deficit_interval_q(i32::MAX, u32::MAX, 0, 0),
+            Err(CommissionError::TargetRateInvalid)
+        );
+    }
+
+    #[test]
+    fn high_bound_narrowing_overflow_is_a_target_rate_fault() {
+        // Chosen so target_numerator (6e20) minus settled_rate_high_q * 60
+        // (~5.53e20, using i64::MAX) brings the low bound back under i64::MAX
+        // while the high bound (target_numerator / 60 = 1e19) still exceeds it,
+        // isolating the second narrowing conversion from the first.
+        assert_eq!(
+            deficit_interval_q(2_000_000_000, 300_000_000, 0, i64::MAX),
+            Err(CommissionError::TargetRateInvalid)
         );
     }
 }
