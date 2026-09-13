@@ -10,10 +10,11 @@ use super::integral_sweep::{
     combined_slot_transition_us, fixed_gain_amplitude_report, fixed_gain_amplitude_terminal,
     integral_fault_terminal, integral_i_at, integral_recovery_current_contact_policy,
     integral_rung_count, integral_rung_kind, integral_slot_direction, integral_target_rpm_at,
-    is_fixed_gain_amplitude, opening_recovery_lower_rate_q, positive_directional_floors_exist,
-    record_integral_observation_rest_selection, record_integral_recovery_rest,
-    record_integral_recovery_rest_selection, record_integral_target_if_reached,
-    step_velocity_integral_with_trace, store_amplitude_rung_mean,
+    is_fixed_gain_amplitude, opening_recovery_lower_rate_q, plan_integral_recovery,
+    positive_directional_floors_exist, record_integral_observation_rest_selection,
+    record_integral_recovery_rest, record_integral_recovery_rest_selection,
+    record_integral_target_if_reached, step_velocity_integral_with_trace,
+    store_amplitude_rung_mean,
 };
 use super::recovery::{
     ExactU64Parts, RecoveryBindingSource, RecoveryCurrentContactPolicy, RecoveryRestAnalysis,
@@ -251,6 +252,44 @@ fn target_terminus_recorder_reports_target_rate_invalid_for_a_non_positive_targe
         ],
     )
     .unwrap_err();
+
+    assert_eq!(error, CommissionError::TargetRateInvalid);
+}
+
+/// A rung past the declared schedule makes `integral_target_rpm_at` return
+/// `None`; the recovery planner must surface that as an out-of-range rung,
+/// not the generic schedule fault.
+#[test]
+fn plan_integral_recovery_reports_rung_index_out_of_range_for_a_rung_past_the_schedule() {
+    let mut phase = phase();
+    let workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { data, safety, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.rung_index = integral_rung_count(data.plan).expect("declared plan has a rung count");
+
+    let error = plan_integral_recovery(data, &workspace, safety).unwrap_err();
+
+    assert_eq!(error, CommissionError::RungIndexOutOfRange);
+}
+
+/// A negative target velocity cannot convert to the unsigned millirev/s the
+/// recovery planner works in; that is a target-rate fault, not the generic
+/// schedule fault.
+#[test]
+fn plan_integral_recovery_reports_target_rate_invalid_for_a_negative_target() {
+    let mut phase = phase();
+    let workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { data, safety, .. } = &mut phase else {
+        unreachable!()
+    };
+    safety
+        .configure_integral_encoder_resolution(4_000)
+        .unwrap();
+    data.plan.target_velocity_rpm = -1;
+    data.rung_index = 0;
+
+    let error = plan_integral_recovery(data, &workspace, safety).unwrap_err();
 
     assert_eq!(error, CommissionError::TargetRateInvalid);
 }

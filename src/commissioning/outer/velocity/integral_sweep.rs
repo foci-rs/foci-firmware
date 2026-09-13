@@ -700,7 +700,7 @@ pub(super) fn plan_integral_recovery(
         data.plan.target_velocity_rpm
     } else {
         integral_target_rpm_at(data.plan, data.rung_index)
-            .ok_or(CommissionError::InvalidSchedule)?
+            .ok_or(CommissionError::RungIndexOutOfRange)?
     };
     let lower_rate_q = match data.plan.acquisition_kind {
         VelocityIntegralAcquisitionKind::ResponseLadder => opening_recovery_lower_rate_q(
@@ -727,7 +727,7 @@ pub(super) fn plan_integral_recovery(
             .ok()
             .and_then(|target| target.checked_mul(1_000))
             .map(|target| target / 60)
-            .ok_or(CommissionError::InvalidSchedule)?
+            .ok_or(CommissionError::TargetRateInvalid)?
     };
     let recovery_plan = plan_rung_origin_recovery(
         safety.budget,
