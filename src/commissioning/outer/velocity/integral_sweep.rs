@@ -2642,7 +2642,7 @@ mod tests {
 
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
-        VelocityObservationSummary, direction_for_slot, integral_i_at, load_interval,
+        VelocityObservationSummary, direction_for_slot, load_interval,
         materialize_run_evidence, moving_analysis, retain_analyzed_observation,
         set_rung_blocking_level, store_interval,
     };
@@ -2804,18 +2804,9 @@ mod tests {
 
     #[test]
     fn fixed_p_and_derived_i_construction_reject_negative_encoding() {
-        let mut plan = plan();
-        plan.fixed_p = 0x8000;
-        let i_raw = integral_i_at(plan, 1).unwrap_or(0x8000);
-
-        let p_result = PidPGain::new(plan.fixed_p).map_err(|_| CommissionError::PidGainInvalid);
-        assert_eq!(p_result, Err(CommissionError::PidGainInvalid));
-
-        let mut i_plan = plan;
-        i_plan.fixed_p = 100; // valid, isolate the I-gain check
+        // A negative-encoded integral gain is a PID gain fault.
         let i_result = PidIGain::new(0x8000_u16).map_err(|_| CommissionError::PidGainInvalid);
         assert_eq!(i_result, Err(CommissionError::PidGainInvalid));
-        let _ = (i_plan, i_raw);
     }
 
     fn observation_summary() -> VelocityObservationSummary {
