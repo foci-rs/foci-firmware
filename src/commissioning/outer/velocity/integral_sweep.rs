@@ -1071,17 +1071,23 @@ pub(super) fn analyze_rung(
 fn map_integral_evidence_error(error: IntegralEvidenceError) -> CommissionError {
     match error {
         IntegralEvidenceError::MismatchedObservation => CommissionError::MismatchedObservation,
-        // Reusing the pre-existing TargetRateInvalid here would require an
-        // n=3 hardware-validation gate for inline reuse of an already-allocated
-        // variant this call site has never emitted before; left as InvalidSchedule
-        // pending a future hardware-validated pass (see "Explicitly deferred").
+        // Reusing the pre-existing TargetRateInvalid for this cause would need
+        // hardware validation this change does not perform; left as
+        // InvalidSchedule pending that validation.
         IntegralEvidenceError::Conversion => CommissionError::InvalidSchedule,
-        // Unreachable: the precondition check above this loop already requires
-        // deficit_interval_q[0] <= deficit_interval_q[1] for every observation
-        // before this arm's caller can run, and i32::try_from on an in-range
-        // i64 preserves ordering exactly -- ExactRateInterval::new can never
-        // see an inverted pair here. Left as InvalidSchedule; no code
-        // allocated since no input, real or artificial, can reach this arm.
+        // Unreachable from either ExactRateInterval::new call site inside
+        // analyze_integral_direction. The per-observation narrowing loop's
+        // precondition check already requires deficit_interval_q[0] <=
+        // deficit_interval_q[1] for every observation before that loop can
+        // run, and i32::try_from on an in-range i64 preserves ordering
+        // exactly, so that call site can never see an inverted pair. The
+        // second call site, in the consensus-components loop, narrows
+        // depth_three_consensus's output: intersect_triple only returns
+        // Some([low, high]) when low <= high, merge_intersections only ever
+        // widens a component's upper bound (never touches the lower bound),
+        // and unpopulated slots stay [0, 0] -- so that call site can not see
+        // an inverted pair either. Left as InvalidSchedule; no code allocated
+        // since no input, real or artificial, can reach either arm.
         IntegralEvidenceError::InvalidInterval => CommissionError::InvalidSchedule,
         IntegralEvidenceError::MaskOutOfRange | IntegralEvidenceError::DuplicateRung => {
             // Not returned by analyze_integral_direction (verified by reading its
