@@ -2822,7 +2822,6 @@ mod tests {
         assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 
-    /// Same fault, the interval's high bound.
     #[test]
     fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_high_bound() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
