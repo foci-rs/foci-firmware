@@ -1702,7 +1702,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let p = match PidPGain::new(data.plan.fixed_p) {
                 Ok(value) => value,
                 Err(_) => {
-                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                    return fail_integral(phase, backend, CommissionError::PidGainInvalid).await;
                 }
             };
             let transition_started_us = backend.elapsed_us();
@@ -2800,6 +2800,12 @@ mod tests {
         let error = PidPGain::new(plan.fixed_p).unwrap_err();
         // Exercises the same validation the call site maps into CommissionError.
         assert_eq!(error.raw(), 0x8000);
+    }
+
+    #[test]
+    fn prepare_zero_settle_rejects_negative_fixed_p() {
+        let error = PidPGain::new(0x8000_u16).map_err(|_| CommissionError::PidGainInvalid);
+        assert_eq!(error, Err(CommissionError::PidGainInvalid));
     }
 
     #[test]
