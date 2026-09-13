@@ -1869,6 +1869,46 @@ fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_settle_window
     );
 }
 
+/// The positive-I rest cleanup capture's own analysis-budget deadline can
+/// also overflow the elapsed-microsecond clock on exit; that is an
+/// unrepresentable deadline, not the generic schedule fault.
+#[test]
+fn positive_i_rest_cleanup_capture_reports_deadline_overflow_for_the_analysis_budget() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    seed_boundary(data, 1, 3);
+    data.previous_encoder_raw = 0;
+    data.previous_read_us = u64::MAX - 1_000;
+    *state = VelocityIntegralState::PositiveIRestCleanupCapture {
+        next_sample_us: 0,
+        deadline_us: 0,
+    };
+    let mut backend = MockBackend::new();
+    backend.elapsed_us_value = u64::MAX;
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("analysis-budget overflow must emit the Stage-C integrity terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::ScheduleDeadlineOverflow.status_code())
+    );
+}
+
 #[test]
 fn successful_cleanup_before_directional_floors_is_cause_nine() {
     let mut phase = phase();
