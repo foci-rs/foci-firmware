@@ -897,11 +897,11 @@ fn materialize_run_evidence(
     for direction in 0..2 {
         for rung in 0..usize::from(data.plan.positive_rung_count) {
             if data.eligible_masks[direction] & (1_u32 << rung) != 0 {
-                let word_index =
-                    interval_word_index(direction, rung).ok_or(CommissionError::InvalidSchedule)?;
+                let word_index = interval_word_index(direction, rung)
+                    .ok_or(CommissionError::RungIndexOutOfRange)?;
                 evidence
                     .retain_positive(direction, rung, load_interval(workspace, word_index)?)
-                    .map_err(|_| CommissionError::InvalidSchedule)?;
+                    .map_err(|_| CommissionError::RungIndexOutOfRange)?;
             }
         }
         if data.bookend_available_mask & (1 << direction) != 0 {
@@ -920,7 +920,7 @@ fn direction_for_slot(
     match integral_slot_direction(order, slot) {
         Some(1) => Ok(VelocityDirection::Forward),
         Some(-1) => Ok(VelocityDirection::Reverse),
-        _ => Err(CommissionError::InvalidSchedule),
+        _ => Err(CommissionError::RungIndexOutOfRange),
     }
 }
 
@@ -2626,7 +2626,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
 mod tests {
     use crate::autotune::{CommissionError, TRANSIENT_LEN, TransientBuffer};
 
-    use super::{INTEGRAL_SLOT_COUNT, load_interval, set_rung_blocking_level, store_interval};
+    use super::{
+        INTEGRAL_SLOT_COUNT, direction_for_slot, load_interval, materialize_run_evidence,
+        set_rung_blocking_level, store_interval,
+    };
     use crate::commissioning::outer::VelocityIntegralRuntime;
     use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
     use crate::commissioning::outer::velocity::integral_plan::{
@@ -2709,5 +2712,32 @@ mod tests {
 
         let second_word_error = load_interval(&workspace, TRANSIENT_LEN - 1).unwrap_err();
         assert_eq!(second_word_error, CommissionError::MissingCaptureState);
+    }
+
+    /// A positive rung at or past `INTEGRAL_MAX_POSITIVE_RUNGS` has no
+    /// workspace word reserved for it; retaining its evidence is an
+    /// out-of-range rung index, not the generic schedule fault.
+    #[test]
+    fn materialize_run_evidence_reports_rung_index_out_of_range_past_the_positive_ladder() {
+        let mut plan = plan();
+        plan.positive_rung_count = 31;
+        let mut data = VelocityIntegralRuntime::new(1, plan);
+        data.eligible_masks[0] = 1_u32 << 30;
+        let workspace = TransientBuffer::new();
+
+        let error = materialize_run_evidence(&data, &workspace).unwrap_err();
+
+        assert_eq!(error, CommissionError::RungIndexOutOfRange);
+    }
+
+    /// A slot at or past `INTEGRAL_SLOT_COUNT` has no direction, forward or
+    /// reverse, defined for it -- an out-of-range rung index, not the
+    /// generic schedule fault.
+    #[test]
+    fn direction_for_slot_reports_rung_index_out_of_range_past_the_slot_count() {
+        let error = direction_for_slot(IntegralSlotOrder::ForwardFirst, INTEGRAL_SLOT_COUNT)
+            .unwrap_err();
+
+        assert_eq!(error, CommissionError::RungIndexOutOfRange);
     }
 }
