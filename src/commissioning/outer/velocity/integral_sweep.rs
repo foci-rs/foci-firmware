@@ -1353,7 +1353,7 @@ fn retain_analyzed_observation(
         i32::try_from(source_interval[0]).map_err(|_| CommissionError::TargetRateInvalid)?,
         i32::try_from(source_interval[1]).map_err(|_| CommissionError::TargetRateInvalid)?,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)?;
+    .map_err(|_| CommissionError::MalformedInterval)?;
     data.rung_classes[usize::from(data.slot)] = summary.classification;
     data.rung_intervals[usize::from(data.slot)] = interval;
     if is_fixed_gain_amplitude(data.plan)
@@ -2910,6 +2910,21 @@ mod tests {
         let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
 
         assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    /// An inverted deficit interval (low bound above high bound, both
+    /// representable) is a malformed-interval fault, not the generic
+    /// schedule fault.
+    #[test]
+    fn retain_analyzed_observation_rejects_inverted_interval() {
+        let mut data = VelocityIntegralRuntime::new(1, plan());
+        let mut workspace = TransientBuffer::new();
+        let mut summary = observation_summary();
+        summary.deficit_interval_q = [10, 5]; // inverted: low above high
+
+        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
+
+        assert_eq!(error, CommissionError::MalformedInterval);
     }
 
     /// An eligible amplitude rung's settled-rate mean past `i32` cannot be
