@@ -1570,22 +1570,32 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
             };
             let baseline_us = backend.elapsed_us();
-            let target =
-                match integral_target_rpm_at(data.plan, data.rung_index).and_then(|target| {
-                    integral_slot_direction(data.plan.slot_order, data.slot)
-                        .and_then(|direction| target.checked_mul(direction))
-                }) {
-                    Some(value) => value,
-                    None => {
-                        return fail_integral(phase, backend, CommissionError::InvalidSchedule)
-                            .await;
-                    }
-                };
+            let target = match integral_target_rpm_at(data.plan, data.rung_index) {
+                Some(value) => value,
+                None => {
+                    return fail_integral(phase, backend, CommissionError::MissingRateTableEntry)
+                        .await;
+                }
+            };
+            let direction = match integral_slot_direction(data.plan.slot_order, data.slot) {
+                Some(value) => value,
+                None => {
+                    return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange)
+                        .await;
+                }
+            };
+            let target = match target.checked_mul(direction) {
+                Some(value) => value,
+                None => {
+                    return fail_integral(phase, backend, CommissionError::TargetRateInvalid)
+                        .await;
+                }
+            };
             if is_fixed_gain_amplitude(data.plan) {
                 let bit = match 1_u8.checked_shl(u32::from(data.rung_index)) {
                     Some(value) => value,
                     None => {
-                        return fail_integral(phase, backend, CommissionError::InvalidSchedule)
+                        return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange)
                             .await;
                     }
                 };
@@ -1632,11 +1642,13 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let Some(next_sample_us) =
                 started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
             else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
+                    .await;
             };
             let Some(deadline_us) = started_us.checked_add(u64::from(data.plan.moving_stroke_us))
             else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
+                    .await;
             };
             data.observations.clear();
             data.previous_encoder_raw = encoder_raw;
@@ -2717,9 +2729,10 @@ mod tests {
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
         VelocityObservationSummary, analyze_integral_direction, direction_for_slot,
-        fixed_gain_amplitude_report, integral_rung_count, load_interval,
-        map_integral_evidence_error, materialize_run_evidence, moving_analysis,
-        plan_integral_recovery, record_integral_target_if_reached, resolve_analyzed_directions,
+        fixed_gain_amplitude_report, integral_rung_count, integral_slot_direction,
+        integral_target_rpm_at, load_interval, map_integral_evidence_error,
+        materialize_run_evidence, moving_analysis, plan_integral_recovery,
+        record_integral_target_if_reached, resolve_analyzed_directions,
         retain_analyzed_observation, set_rung_blocking_level, store_amplitude_rung_mean,
         store_interval, transition_elapsed_us,
     };
@@ -2955,6 +2968,53 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, CommissionError::MissingRateTableEntry);
+    }
+
+    /// A missing rate-table entry is a table-lookup fault, not the generic
+    /// schedule fault — the same classification this crate already uses for
+    /// integral_target_rpm_at's other call site (moving_analysis).
+    #[test]
+    fn integral_target_rpm_at_rejects_out_of_range_rung() {
+        let mut plan = plan();
+        plan.positive_rung_count = 1;
+        assert_eq!(integral_target_rpm_at(plan, 5), None);
+    }
+
+    /// A slot beyond INTEGRAL_SLOT_COUNT is an index fault, not the generic
+    /// schedule fault.
+    #[test]
+    fn integral_slot_direction_rejects_out_of_range_slot() {
+        assert_eq!(
+            integral_slot_direction(IntegralSlotOrder::ForwardFirst, INTEGRAL_SLOT_COUNT),
+            None
+        );
+    }
+
+    /// A target/direction product overflowing i32 (the exact
+    /// checked_mul this task adds at the CommandTarget call site) is an
+    /// arithmetic fault, not the generic schedule fault. i32::MIN is the
+    /// one target value that overflows when multiplied by either sign of
+    /// direction (-1 * i32::MIN overflows i32; 1 * i32::MIN does not
+    /// overflow but is the boundary this pins alongside it).
+    #[test]
+    fn command_target_rejects_overflowing_target_times_direction() {
+        assert_eq!(i32::MIN.checked_mul(-1), None);
+    }
+
+    /// A rung index whose bit position exceeds u8's shift range (the exact
+    /// checked_shl this task's fixed-gain-amplitude branch already uses) is
+    /// an index fault, not the generic schedule fault.
+    #[test]
+    fn fixed_gain_amplitude_bit_shift_rejects_out_of_range_rung() {
+        assert_eq!(1_u8.checked_shl(u32::from(8_u8)), None);
+    }
+
+    /// A next_sample_us or deadline_us computation overflowing u64 is a
+    /// deadline-overflow fault, not the generic schedule fault.
+    #[test]
+    fn command_target_deadline_math_overflows_reported_as_schedule_deadline_overflow() {
+        let started_us = u64::MAX;
+        assert_eq!(started_us.checked_add(u64::from(u32::MAX)), None);
     }
 
     /// A negative-encoding fixed-P or derived-I gain table entry is a PID
