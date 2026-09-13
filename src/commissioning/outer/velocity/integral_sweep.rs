@@ -145,6 +145,45 @@ pub(super) const fn integral_slot_direction(order: IntegralSlotOrder, slot: u8) 
     }
 }
 
+/// Signed target rate for one rung/slot pair, classifying each failure the way
+/// `CommandTarget` needs: a missing rate-table entry, an out-of-range slot, or
+/// a target/direction product overflowing `i32`.
+pub(super) fn command_target_signed_target(
+    plan: VelocityIntegralExecutionPlan,
+    rung_index: u8,
+    slot: u8,
+) -> Result<i32, CommissionError> {
+    let target =
+        integral_target_rpm_at(plan, rung_index).ok_or(CommissionError::MissingRateTableEntry)?;
+    let direction = integral_slot_direction(plan.slot_order, slot)
+        .ok_or(CommissionError::RungIndexOutOfRange)?;
+    target
+        .checked_mul(direction)
+        .ok_or(CommissionError::TargetRateInvalid)
+}
+
+/// Fixed-gain amplitude bit for one rung index, rejecting a rung index whose
+/// bit position exceeds `u8`'s shift range.
+pub(super) fn fixed_gain_amplitude_bit(rung_index: u8) -> Result<u8, CommissionError> {
+    1_u8.checked_shl(u32::from(rung_index))
+        .ok_or(CommissionError::RungIndexOutOfRange)
+}
+
+/// Next-sample and stroke-end deadlines measured from `started_us`, reporting
+/// a `u64` overflow as a schedule-deadline overflow.
+pub(super) fn command_target_deadlines(
+    started_us: u64,
+    moving_stroke_us: u32,
+) -> Result<(u64, u64), CommissionError> {
+    let next_sample_us = started_us
+        .checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
+        .ok_or(CommissionError::ScheduleDeadlineOverflow)?;
+    let deadline_us = started_us
+        .checked_add(u64::from(moving_stroke_us))
+        .ok_or(CommissionError::ScheduleDeadlineOverflow)?;
+    Ok((next_sample_us, deadline_us))
+}
+
 pub(super) fn advance_integral_cursor(rung_index: &mut u8, slot: &mut u8, total_rungs: u8) -> bool {
     if *slot + 1 < INTEGRAL_SLOT_COUNT {
         *slot += 1;
@@ -1570,33 +1609,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Err(_) => return fail_integral(phase, backend, CommissionError::Spi).await,
             };
             let baseline_us = backend.elapsed_us();
-            let target = match integral_target_rpm_at(data.plan, data.rung_index) {
-                Some(value) => value,
-                None => {
-                    return fail_integral(phase, backend, CommissionError::MissingRateTableEntry)
-                        .await;
-                }
-            };
-            let direction = match integral_slot_direction(data.plan.slot_order, data.slot) {
-                Some(value) => value,
-                None => {
-                    return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange)
-                        .await;
-                }
-            };
-            let target = match target.checked_mul(direction) {
-                Some(value) => value,
-                None => {
-                    return fail_integral(phase, backend, CommissionError::TargetRateInvalid).await;
-                }
+            let target = match command_target_signed_target(data.plan, data.rung_index, data.slot) {
+                Ok(value) => value,
+                Err(error) => return fail_integral(phase, backend, error).await,
             };
             if is_fixed_gain_amplitude(data.plan) {
-                let bit = match 1_u8.checked_shl(u32::from(data.rung_index)) {
-                    Some(value) => value,
-                    None => {
-                        return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange)
-                            .await;
-                    }
+                let bit = match fixed_gain_amplitude_bit(data.rung_index) {
+                    Ok(value) => value,
+                    Err(error) => return fail_integral(phase, backend, error).await,
                 };
                 let direction = data.plan.slot_order.direction_index(data.slot);
                 set_fixed_gain_amplitude_attempted(data, direction, bit);
@@ -1638,17 +1658,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 return fail_integral(phase, backend, CommissionError::Spi).await;
             }
             let started_us = backend.elapsed_us();
-            let Some(next_sample_us) =
-                started_us.checked_add(u64::from(VELOCITY_SWEEP_SAMPLE_PERIOD_US))
-            else {
-                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
-                    .await;
-            };
-            let Some(deadline_us) = started_us.checked_add(u64::from(data.plan.moving_stroke_us))
-            else {
-                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
-                    .await;
-            };
+            let (next_sample_us, deadline_us) =
+                match command_target_deadlines(started_us, data.plan.moving_stroke_us) {
+                    Ok(value) => value,
+                    Err(error) => return fail_integral(phase, backend, error).await,
+                };
             data.observations.clear();
             data.previous_encoder_raw = encoder_raw;
             data.previous_read_us = baseline_us;
@@ -2742,7 +2756,8 @@ mod tests {
 
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
-        VelocityObservationSummary, analyze_integral_direction, direction_for_slot,
+        VelocityObservationSummary, analyze_integral_direction, command_target_deadlines,
+        command_target_signed_target, direction_for_slot, fixed_gain_amplitude_bit,
         fixed_gain_amplitude_report, integral_rung_count, integral_slot_direction,
         integral_target_rpm_at, load_interval, map_integral_evidence_error,
         materialize_run_evidence, moving_analysis, plan_integral_recovery,
@@ -3004,31 +3019,54 @@ mod tests {
         );
     }
 
-    /// A target/direction product overflowing i32 (the exact
-    /// checked_mul this task adds at the CommandTarget call site) is an
-    /// arithmetic fault, not the generic schedule fault. i32::MIN is the
-    /// one target value that overflows when multiplied by either sign of
-    /// direction (-1 * i32::MIN overflows i32; 1 * i32::MIN does not
-    /// overflow but is the boundary this pins alongside it).
+    /// A missing rate-table entry through the real CommandTarget call path is
+    /// classified as MissingRateTableEntry, not the generic schedule fault.
     #[test]
-    fn command_target_rejects_overflowing_target_times_direction() {
-        assert_eq!(i32::MIN.checked_mul(-1), None);
+    fn command_target_signed_target_rejects_missing_rate_table_entry() {
+        let mut plan = plan();
+        plan.positive_rung_count = 1;
+        let error = command_target_signed_target(plan, 5, 0).unwrap_err();
+        assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
-    /// A rung index whose bit position exceeds u8's shift range (the exact
-    /// checked_shl this task's fixed-gain-amplitude branch already uses) is
-    /// an index fault, not the generic schedule fault.
+    /// A slot beyond INTEGRAL_SLOT_COUNT through the real CommandTarget call
+    /// path is classified as RungIndexOutOfRange, not the generic schedule
+    /// fault.
     #[test]
-    fn fixed_gain_amplitude_bit_shift_rejects_out_of_range_rung() {
-        assert_eq!(1_u8.checked_shl(u32::from(8_u8)), None);
+    fn command_target_signed_target_rejects_out_of_range_slot() {
+        let error = command_target_signed_target(plan(), 0, INTEGRAL_SLOT_COUNT).unwrap_err();
+        assert_eq!(error, CommissionError::RungIndexOutOfRange);
     }
 
-    /// A next_sample_us or deadline_us computation overflowing u64 is a
-    /// deadline-overflow fault, not the generic schedule fault.
+    /// A target/direction product overflowing i32 through the real
+    /// CommandTarget call path is classified as TargetRateInvalid, not the
+    /// generic schedule fault. Slot 1 under ForwardFirst has signed_direction
+    /// -1 (direction_index(1) == 1 ^ parity_twist(0) == 1), so
+    /// i32::MIN * -1 overflows i32.
     #[test]
-    fn command_target_deadline_math_overflows_reported_as_schedule_deadline_overflow() {
-        let started_us = u64::MAX;
-        assert_eq!(started_us.checked_add(u64::from(u32::MAX)), None);
+    fn command_target_signed_target_rejects_overflowing_product() {
+        let mut target_plan = plan();
+        target_plan.target_velocity_rpm = i32::MIN;
+        let error = command_target_signed_target(target_plan, 0, 1).unwrap_err();
+        assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    /// A rung index whose bit position exceeds u8's shift range, through the
+    /// real fixed-gain-amplitude call path, is classified as
+    /// RungIndexOutOfRange, not the generic schedule fault.
+    #[test]
+    fn fixed_gain_amplitude_bit_rejects_out_of_range_rung() {
+        let error = fixed_gain_amplitude_bit(8).unwrap_err();
+        assert_eq!(error, CommissionError::RungIndexOutOfRange);
+    }
+
+    /// A next_sample_us computation overflowing u64 through the real
+    /// CommandTarget deadline call path is classified as
+    /// ScheduleDeadlineOverflow, not the generic schedule fault.
+    #[test]
+    fn command_target_deadlines_rejects_overflowing_next_sample() {
+        let error = command_target_deadlines(u64::MAX, 0).unwrap_err();
+        assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
     }
 
     /// A negative-encoding fixed-P or derived-I gain table entry is a PID
