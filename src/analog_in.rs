@@ -288,6 +288,30 @@ impl AnalogChannelState {
             next_due_clock: self.next_due_clock.load(Relaxed),
         }
     }
+
+    /// Reset this channel's oid, sampling schedule, and burst progress to
+    /// firmware defaults. Called by `config_reset` (Klipper's fallback
+    /// restart path) so a channel configured before the reset cannot keep
+    /// reporting under a stale oid, or trip a stale range check before the
+    /// host reconfigures it.
+    ///
+    /// Uses the same invalidate-first Release/Acquire discipline as
+    /// `configure_sampling`: `sample_count` is zeroed before any other field
+    /// changes, so a concurrent `is_due`/`record_sample` call observes an
+    /// unconfigured slot rather than a torn mix of old and reset state.
+    pub fn reset(&self) {
+        self.sample_count.store(0, Release);
+        self.oid.store(UNCONFIGURED_OID, Relaxed);
+        self.sample_ticks.store(0, Relaxed);
+        self.rest_ticks.store(0, Relaxed);
+        self.min_value.store(0, Relaxed);
+        self.max_value.store(u16::MAX, Relaxed);
+        self.range_check_count.store(0, Relaxed);
+        self.accumulator.store(0, Relaxed);
+        self.samples_taken.store(0, Relaxed);
+        self.invalid_count.store(0, Relaxed);
+        self.next_due_clock.store(0, Relaxed);
+    }
 }
 
 impl Default for AnalogChannelState {
@@ -303,6 +327,13 @@ pub static ANALOG_CHANNELS: [AnalogChannelState; MAX_ANALOG_CHANNELS] =
 
 pub fn analog_channel(index: u8) -> Option<&'static AnalogChannelState> {
     ANALOG_CHANNELS.get(index as usize)
+}
+
+/// Reset all analog-in channel states to firmware defaults.
+pub fn reset_all_analog_channels() {
+    for channel in &ANALOG_CHANNELS {
+        channel.reset();
+    }
 }
 
 /// Find the channel `config_analog_in` previously assigned this `oid` to.
@@ -524,6 +555,36 @@ mod tests {
                 assert_eq!(invalid_count, 0);
             }
             SampleStep::Pending { .. } => panic!("single-sample burst must complete immediately"),
+        }
+    }
+
+    #[test]
+    fn reset_clears_oid_and_sampling_state() {
+        let slot = AnalogChannelState::new();
+        slot.configure_oid(9);
+        slot.configure_sampling(&config(), 1000);
+        slot.record_sample(500, 1000);
+
+        slot.reset();
+
+        assert_eq!(slot.oid(), None, "oid must not survive a reset");
+        assert!(
+            !slot.is_due(1000),
+            "a reset slot must not be due -- sample_count must be invalidated"
+        );
+        match slot.record_sample(0, 1000) {
+            SampleStep::Pending {
+                progress,
+                next_due_clock,
+            } => {
+                assert_eq!(progress.accumulator, 0);
+                assert_eq!(progress.samples_taken, 0);
+                assert_eq!(progress.invalid_count, 0);
+                assert_eq!(next_due_clock, 0);
+            }
+            SampleStep::Report { .. } => {
+                panic!("a reset (unconfigured) channel must not produce a report")
+            }
         }
     }
 
