@@ -303,6 +303,10 @@ pub(super) fn floor_div_60(numerator: i128) -> Result<i128, CommissionError> {
     let quotient = numerator / 60;
     if numerator < 0 && numerator % 60 != 0 {
         quotient
+            // Unreachable: quotient = numerator / 60 for a valid i128
+            // numerator, so |quotient| <= |i128::MIN| / 60 -- roughly 60x
+            // closer to zero than i128::MIN itself. quotient can therefore
+            // never equal i128::MIN, so checked_sub(1) can never overflow.
             .checked_sub(1)
             .ok_or(CommissionError::InvalidSchedule)
     } else {
@@ -314,6 +318,10 @@ pub(super) fn ceil_div_60(numerator: i128) -> Result<i128, CommissionError> {
     let quotient = numerator / 60;
     if numerator > 0 && numerator % 60 != 0 {
         quotient
+            // Unreachable: the same bound as floor_div_60's comment,
+            // mirrored at the top of the range -- quotient can never reach
+            // i128::MAX for the same reason, so checked_add(1) can never
+            // overflow.
             .checked_add(1)
             .ok_or(CommissionError::InvalidSchedule)
     } else {
