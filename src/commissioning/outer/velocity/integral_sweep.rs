@@ -1321,7 +1321,7 @@ fn moving_analysis(
         let signed_target = integral_target_rpm_at(data.plan, data.rung_index)
             .ok_or(CommissionError::InvalidSchedule)?
             .checked_mul(integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0))
-            .ok_or(CommissionError::InvalidSchedule)?;
+            .ok_or(CommissionError::TargetRateInvalid)?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
             signed_target,
             counts_per_rev,
@@ -2628,7 +2628,7 @@ mod tests {
 
     use super::{
         INTEGRAL_SLOT_COUNT, direction_for_slot, load_interval, materialize_run_evidence,
-        set_rung_blocking_level, store_interval,
+        moving_analysis, set_rung_blocking_level, store_interval,
     };
     use crate::commissioning::outer::VelocityIntegralRuntime;
     use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
@@ -2739,5 +2739,38 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, CommissionError::RungIndexOutOfRange);
+    }
+
+    /// A frozen target at `i32::MIN` cannot be negated by a reverse-slot
+    /// direction sign; that is a target-rate fault, not the generic
+    /// schedule fault.
+    #[test]
+    fn moving_analysis_reports_target_rate_invalid_on_signed_target_overflow() {
+        let mut plan = plan();
+        plan.target_velocity_rpm = i32::MIN;
+        let mut data = VelocityIntegralRuntime::new(1, plan);
+        // ForwardFirst slot 1 is the first reverse slot (signed direction -1),
+        // the sign that overflows an `i32::MIN` magnitude.
+        data.slot = 1;
+        data.analysis.reset_with_structured_diagnostics();
+        for _ in 0..256 {
+            data.observations.push(1, 1_000).unwrap();
+        }
+
+        let mut outcome = None;
+        for _ in 0..4_096 {
+            match moving_analysis(&mut data, plan.encoder_counts_per_rev) {
+                Ok(None) => continue,
+                other => {
+                    outcome = Some(other);
+                    break;
+                }
+            }
+        }
+        let error = outcome
+            .expect("a flat observation tail resolves within a bounded number of polls")
+            .unwrap_err();
+
+        assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 }
