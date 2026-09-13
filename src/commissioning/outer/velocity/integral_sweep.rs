@@ -1098,6 +1098,16 @@ fn map_integral_evidence_error(error: IntegralEvidenceError) -> CommissionError 
     }
 }
 
+fn resolve_analyzed_directions(
+    forward: Result<IntegralRungEvidence, CommissionError>,
+    reverse: Result<IntegralRungEvidence, CommissionError>,
+) -> Result<[IntegralRungEvidence; 2], CommissionError> {
+    match (forward, reverse) {
+        (Ok(forward), Ok(reverse)) => Ok([forward, reverse]),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
 fn retain_rung(
     data: &mut VelocityIntegralRuntime,
     workspace: &mut TransientBuffer,
@@ -2475,12 +2485,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     .record_fixed_gain_amplitude(FixedGainAmplitudeEvent::Amplitude(evidence));
                 return StepResult::FixedGainAmplitudeEvent(event);
             }
-            let directions = match (
+            let directions = match resolve_analyzed_directions(
                 analyze_rung(data, VelocityDirection::Forward),
                 analyze_rung(data, VelocityDirection::Reverse),
             ) {
-                (Ok(forward), Ok(reverse)) => [forward, reverse],
-                _ => return fail_integral(phase, backend, CommissionError::InvalidSchedule).await,
+                Ok(directions) => directions,
+                Err(error) => return fail_integral(phase, backend, error).await,
             };
             if retain_rung(data, workspace, directions).is_err() {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
@@ -2683,12 +2693,14 @@ mod tests {
         VelocityObservationSummary, analyze_integral_direction, direction_for_slot,
         fixed_gain_amplitude_report, load_interval, map_integral_evidence_error,
         materialize_run_evidence, moving_analysis, plan_integral_recovery,
-        record_integral_target_if_reached, retain_analyzed_observation, set_rung_blocking_level,
-        store_amplitude_rung_mean, store_interval,
+        record_integral_target_if_reached, resolve_analyzed_directions,
+        retain_analyzed_observation, set_rung_blocking_level, store_amplitude_rung_mean,
+        store_interval,
     };
     use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::outer::velocity::integral_evidence::{
-        ExactRateInterval, IntegralEvidenceError, IntegralRungKind,
+        ExactRateInterval, IntegralEvidenceError, IntegralObservationClass, IntegralRungClass,
+        IntegralRungEvidence, IntegralRungKind,
     };
     use crate::commissioning::outer::velocity::integral_plan::{
         AcceptanceSource, IntegralSlotOrder, VelocityIntegralAcquisitionKind,
@@ -3107,5 +3119,26 @@ mod tests {
             map_integral_evidence_error(IntegralEvidenceError::InvalidInterval),
             CommissionError::InvalidSchedule
         );
+    }
+
+    #[test]
+    fn resolve_analyzed_directions_propagates_the_real_error_instead_of_discarding_it() {
+        let evidence = IntegralRungEvidence {
+            direction: VelocityDirection::Forward,
+            kind: IntegralRungKind::Positive,
+            classification: IntegralRungClass::InsufficientConsensus,
+            interval: None,
+            components: [ExactRateInterval::EMPTY; 2],
+            component_count: 0,
+            observation_classes: [IntegralObservationClass::Fault; 4],
+            observation_intervals: [None; 4],
+            usable_mask: 0,
+            included_mask: 0,
+        };
+
+        let result =
+            resolve_analyzed_directions(Ok(evidence), Err(CommissionError::MismatchedObservation));
+
+        assert_eq!(result, Err(CommissionError::MismatchedObservation));
     }
 }
