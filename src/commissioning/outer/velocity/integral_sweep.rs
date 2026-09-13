@@ -591,8 +591,8 @@ pub(super) fn fixed_gain_amplitude_terminal(
 fn transition_elapsed_us(started_us: u64, finished_us: u64) -> Result<u32, CommissionError> {
     let elapsed = finished_us
         .checked_sub(started_us)
-        .ok_or(CommissionError::InvalidSchedule)?;
-    u32::try_from(elapsed).map_err(|_| CommissionError::InvalidSchedule)
+        .ok_or(CommissionError::ScheduleEarlyInvocation)?;
+    u32::try_from(elapsed).map_err(|_| CommissionError::ScheduleDeadlineOverflow)
 }
 
 pub(super) fn combined_slot_transition_us(
@@ -2724,7 +2724,7 @@ mod tests {
         materialize_run_evidence, moving_analysis, plan_integral_recovery,
         record_integral_target_if_reached, resolve_analyzed_directions,
         retain_analyzed_observation, set_rung_blocking_level, store_amplitude_rung_mean,
-        store_interval,
+        store_interval, transition_elapsed_us,
     };
     use crate::commission_dispatch::test_support::current_limit;
     use crate::commissioning::outer::velocity::integral_evidence::{
@@ -3169,5 +3169,22 @@ mod tests {
             resolve_analyzed_directions(Ok(evidence), Err(CommissionError::MismatchedObservation));
 
         assert_eq!(result, Err(CommissionError::MismatchedObservation));
+    }
+
+    /// A finish timestamp before the start timestamp means the clock ran
+    /// backward relative to this transition — an early-invocation fault,
+    /// not the generic schedule fault.
+    #[test]
+    fn transition_elapsed_us_rejects_backward_clock() {
+        let error = transition_elapsed_us(1_000, 500).unwrap_err();
+        assert_eq!(error, CommissionError::ScheduleEarlyInvocation);
+    }
+
+    /// An elapsed duration too large for u32 microseconds is a deadline
+    /// overflow fault, not the generic schedule fault.
+    #[test]
+    fn transition_elapsed_us_rejects_overflowing_duration() {
+        let error = transition_elapsed_us(0, u64::from(u32::MAX) + 1).unwrap_err();
+        assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
     }
 }
