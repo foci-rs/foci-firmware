@@ -33,8 +33,8 @@ use foci_tmc4671::registers::{
 use super::combined_plan::{CombinedRateInterval, integral_deficit_reaches_target};
 use super::fixed_gain_amplitude_evidence::{
     FIXED_GAIN_AMPLITUDE_COUNT, FixedGainAmplitudeAvailability, FixedGainAmplitudeDirectionInput,
-    FixedGainAmplitudeReport, FixedGainAmplitudeRunMasks, classify_fixed_gain_amplitude,
-    fixed_gain_amplitude_run_sufficient,
+    FixedGainAmplitudeEvidenceError, FixedGainAmplitudeReport, FixedGainAmplitudeRunMasks,
+    classify_fixed_gain_amplitude, fixed_gain_amplitude_run_sufficient,
 };
 use super::integral_evidence::{
     ExactRateInterval, IntegralInconclusiveKind, IntegralRunSufficiency, IntegralRungClass,
@@ -481,12 +481,13 @@ pub(super) fn fixed_gain_amplitude_report(
             blocking_levels,
             precision_floor_candidate,
         })
-        .map_err(|_| CommissionError::InvalidSchedule)
+        .map_err(|error| match error {
+            FixedGainAmplitudeEvidenceError::InvalidInterval => CommissionError::MalformedInterval,
+            FixedGainAmplitudeEvidenceError::Arithmetic
+            | FixedGainAmplitudeEvidenceError::InvalidMasks => CommissionError::InvalidSchedule,
+        })
     });
-    let directions = [
-        directions[0].map_err(|_| CommissionError::InvalidSchedule)?,
-        directions[1].map_err(|_| CommissionError::InvalidSchedule)?,
-    ];
+    let directions = [directions[0]?, directions[1]?];
     for (direction, evidence) in directions.iter().enumerate() {
         set_fixed_gain_amplitude_attempted(data, direction, bit);
         if evidence.availability == FixedGainAmplitudeAvailability::Eligible {
@@ -2642,9 +2643,10 @@ mod tests {
 
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
-        VelocityObservationSummary, direction_for_slot, load_interval, materialize_run_evidence,
-        moving_analysis, record_integral_target_if_reached, retain_analyzed_observation,
-        set_rung_blocking_level, store_interval,
+        VelocityObservationSummary, direction_for_slot, fixed_gain_amplitude_report, load_interval,
+        materialize_run_evidence, moving_analysis, record_integral_target_if_reached,
+        retain_analyzed_observation, set_rung_blocking_level, store_amplitude_rung_mean,
+        store_interval,
     };
     use crate::commissioning::outer::VelocityIntegralRuntime;
     use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
@@ -2714,6 +2716,32 @@ mod tests {
         let result = record_integral_target_if_reached(&mut data, intervals);
 
         assert_eq!(result, Err(CommissionError::MalformedInterval));
+    }
+
+    /// An inverted settled-rate interval on one eligible observation is a
+    /// malformed-interval fault, not the generic schedule fault -- the
+    /// arithmetic and mask-contradiction causes at the same call site remain
+    /// under the generic code.
+    #[test]
+    fn fixed_gain_amplitude_report_rejects_inverted_interval_distinctly() {
+        let mut data = VelocityIntegralRuntime::new(1, plan());
+        let mut workspace = TransientBuffer::new();
+        for slot in 0..usize::from(INTEGRAL_SLOT_COUNT) {
+            data.rung_classes[slot] = VelocityObservationClass::Eligible;
+            data.rung_intervals[slot] = ExactRateInterval {
+                low_q: 0,
+                high_q: 0,
+            };
+            store_amplitude_rung_mean(&mut workspace, slot, 0).unwrap();
+        }
+        data.rung_intervals[0] = ExactRateInterval {
+            low_q: 10,
+            high_q: 5,
+        }; // inverted: low above high
+
+        let error = fixed_gain_amplitude_report(&mut data, &workspace).unwrap_err();
+
+        assert_eq!(error, CommissionError::MalformedInterval);
     }
 
     /// A slot or level outside its declared range is a caller bug, not a
