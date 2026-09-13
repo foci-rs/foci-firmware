@@ -2545,8 +2545,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 Ok(directions) => directions,
                 Err(error) => return fail_integral(phase, backend, error).await,
             };
-            if retain_rung(data, workspace, directions).is_err() {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+            if let Err(error) = retain_rung(data, workspace, directions) {
+                return fail_integral(phase, backend, error).await;
             }
             data.emitted_rungs = data.emitted_rungs.saturating_add(1);
             let i_raw = integral_i_at(data.plan, data.rung_index).unwrap_or(0);
