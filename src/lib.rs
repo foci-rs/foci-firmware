@@ -32,6 +32,7 @@ pub mod diagnostic;
 pub mod dump;
 pub mod electrical_capture;
 pub mod helpers;
+pub mod mcu_temp;
 pub mod motion_scale;
 pub mod pid;
 pub mod resistance_identification;
