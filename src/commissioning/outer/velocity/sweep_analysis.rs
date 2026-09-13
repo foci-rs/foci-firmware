@@ -176,9 +176,12 @@ fn populate_derived_observation_fields(
             .with_direction(direction_sign(request.direction))
             .map_err(|error| match error {
                 VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
-                VelocityUnitError::ZeroTarget | VelocityUnitError::InvalidDirection => {
-                    CommissionError::InvalidSchedule
-                }
+                VelocityUnitError::ZeroTarget => CommissionError::InvalidSchedule,
+                // Unreachable: direction_sign(request.direction) only ever
+                // returns 1 or -1 for the two VelocityDirection variants, so
+                // InvalidDirection can never be constructed by this crate's
+                // own callers.
+                VelocityUnitError::InvalidDirection => CommissionError::InvalidSchedule,
             })?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
             signed_target.raw(),
@@ -251,9 +254,12 @@ fn populate_derived_observation_fields(
             .with_direction(direction_sign(request.direction))
             .map_err(|error| match error {
                 VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
-                VelocityUnitError::ZeroTarget | VelocityUnitError::InvalidDirection => {
-                    CommissionError::InvalidSchedule
-                }
+                VelocityUnitError::ZeroTarget => CommissionError::InvalidSchedule,
+                // Unreachable: direction_sign(request.direction) only ever
+                // returns 1 or -1 for the two VelocityDirection variants, so
+                // InvalidDirection can never be constructed by this crate's
+                // own callers.
+                VelocityUnitError::InvalidDirection => CommissionError::InvalidSchedule,
             })?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
             signed_target.raw(),
