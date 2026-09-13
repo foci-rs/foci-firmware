@@ -1327,7 +1327,7 @@ fn moving_analysis(
         input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
         input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
         let signed_target = integral_target_rpm_at(data.plan, data.rung_index)
-            .ok_or(CommissionError::InvalidSchedule)?
+            .ok_or(CommissionError::MissingRateTableEntry)?
             .checked_mul(integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0))
             .ok_or(CommissionError::TargetRateInvalid)?;
         (input.deficit_low_q, input.deficit_high_q) = deficit_interval_q(
@@ -2853,6 +2853,37 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    /// A rung index past the response-ladder's rung count has no target-rate
+    /// table entry -- a missing table entry, not the generic schedule fault.
+    /// The sibling arithmetic-overflow cause at the same call site remains
+    /// under `TargetRateInvalid`.
+    #[test]
+    fn moving_analysis_rejects_missing_target_rate_table_entry() {
+        let plan = plan();
+        let mut data = VelocityIntegralRuntime::new(1, plan);
+        data.rung_index = u8::MAX; // past the response-ladder rung count
+        data.analysis.reset_with_structured_diagnostics();
+        for _ in 0..256 {
+            data.observations.push(1, 1_000).unwrap();
+        }
+
+        let mut outcome = None;
+        for _ in 0..4_096 {
+            match moving_analysis(&mut data, plan.encoder_counts_per_rev) {
+                Ok(None) => continue,
+                other => {
+                    outcome = Some(other);
+                    break;
+                }
+            }
+        }
+        let error = outcome
+            .expect("a flat observation tail resolves within a bounded number of polls")
+            .unwrap_err();
+
+        assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
     /// A negative-encoding fixed-P or derived-I gain table entry is a PID
