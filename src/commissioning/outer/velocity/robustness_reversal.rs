@@ -1098,12 +1098,20 @@ fn accepted_gains(point: &AcceptancePoint) -> Result<(PidPGain, PidIGain), Commi
 }
 
 fn planned_velocity_mrev_s(point: &AcceptancePoint) -> Result<u32, CommissionError> {
-    u32::try_from(amplitude_rpm(point))
-        .ok()
-        .and_then(|target| target.checked_mul(1_000))
-        .map(|target| target / 60)
-        .filter(|velocity| *velocity != 0)
-        .ok_or(CommissionError::InvalidSchedule)
+    // Unreachable: amplitude_rpm is target_velocity_rpm.saturating_abs(),
+    // which is always non-negative and, since i32::MIN.saturating_abs()
+    // saturates to i32::MAX rather than staying negative, never exceeds
+    // i32::MAX either. u32::try_from on a value already in [0, i32::MAX]
+    // can never fail.
+    let target = u32::try_from(amplitude_rpm(point)).map_err(|_| CommissionError::InvalidSchedule)?;
+    let velocity = target
+        .checked_mul(1_000)
+        .map(|value| value / 60)
+        .ok_or(CommissionError::TargetRateInvalid)?;
+    if velocity == 0 {
+        return Err(CommissionError::InvalidSchedule);
+    }
+    Ok(velocity)
 }
 
 fn return_lower_rate_q(point: &AcceptancePoint, direction: VelocityDirection) -> Option<u64> {
@@ -3702,5 +3710,15 @@ mod tests {
         let safety = test_safety();
         let error = build_origin_recovery(&session, &safety).unwrap_err();
         assert_eq!(error, CommissionError::PidGainInvalid);
+    }
+
+    /// A target whose *1000 conversion overflows u32 is an arithmetic
+    /// fault, not the generic schedule fault.
+    #[test]
+    fn planned_velocity_mrev_s_rejects_overflowing_conversion() {
+        let mut point = test_point();
+        point.target_velocity_rpm = i32::MAX;
+        let error = planned_velocity_mrev_s(&point).unwrap_err();
+        assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 }
