@@ -191,6 +191,50 @@ fn invalid_geometry_rejects_without_saturation() {
     assert!(plan_rung_origin_recovery(too_short, 4_000, 4_394).is_err());
 }
 
+fn recovery_plan_failure_config(start_offset_counts: i32) -> RungOriginRecoveryConfig {
+    RungOriginRecoveryConfig {
+        stage: RecoveryStage::Proportional,
+        rung_index: 17,
+        p: PidPGain::new(1_448).unwrap(),
+        target_velocity_rpm: TmcMechanicalRpm::from_register(264),
+        planned_velocity_mrev_s: 4_394,
+        start_offset_counts,
+        lower_rate_q: Some(14_000_000),
+        authority_source: RecoveryBindingSource::SettledRate,
+        current_contact_policy: RecoveryCurrentContactPolicy::StopImmediately,
+    }
+}
+
+#[test]
+fn zone_two_runtime_failure_reports_recovery_plan_failed() {
+    let mut plan = plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap();
+    // Zero cap forces `recovery_runtime_us`'s `InvalidRequest`, not the
+    // `ExceedsPrimitiveCap` arm already handled as `ContainedDeadline`.
+    plan.maximum_slot_us = 0;
+    // Offset strictly between the recenter target (166) and the origin band
+    // (1_000) selects the dormant-but-drifted Zone 2 branch.
+    let config = recovery_plan_failure_config(500);
+
+    assert!(matches!(
+        RungOriginRecoveryRuntime::new(config, plan),
+        Err(CommissionError::RecoveryPlanFailed)
+    ));
+}
+
+#[test]
+fn zone_three_runtime_failure_reports_recovery_plan_failed() {
+    let mut plan = plan_rung_origin_recovery(live_budget(), 4_000, 4_394).unwrap();
+    plan.maximum_slot_us = 0;
+    // Offset beyond the origin band (1_000) selects the moving-recovery
+    // Zone 3 branch.
+    let config = recovery_plan_failure_config(2_000);
+
+    assert!(matches!(
+        RungOriginRecoveryRuntime::new(config, plan),
+        Err(CommissionError::RecoveryPlanFailed)
+    ));
+}
+
 fn configured_safety(start_offset_counts: i32) -> OuterSafetyLimits {
     let mut safety = OuterSafetyLimits::new(2_816, live_budget());
     safety

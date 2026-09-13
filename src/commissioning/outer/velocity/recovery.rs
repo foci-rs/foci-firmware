@@ -353,7 +353,7 @@ impl RungOriginRecoveryRuntime {
                                 rate,
                                 recenter_target,
                             ),
-                            Err(_) => return Err(CommissionError::InvalidSchedule),
+                            Err(_) => return Err(CommissionError::RecoveryPlanFailed),
                         }
                     }
                     None => (
@@ -389,7 +389,7 @@ impl RungOriginRecoveryRuntime {
                                 rate,
                                 moving_target,
                             ),
-                            Err(_) => return Err(CommissionError::InvalidSchedule),
+                            Err(_) => return Err(CommissionError::RecoveryPlanFailed),
                         }
                     }
                     None => (
