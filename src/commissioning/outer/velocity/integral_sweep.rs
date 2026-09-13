@@ -239,7 +239,7 @@ pub(super) fn record_integral_target_if_reached(
         data.plan.encoder_counts_per_rev,
         deficits,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)?
+    .map_err(|_| CommissionError::TargetRateInvalid)?
     {
         data.target_terminus = data.rung_index.checked_sub(1);
         Ok(true)

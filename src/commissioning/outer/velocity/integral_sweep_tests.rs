@@ -230,6 +230,31 @@ fn non_breakaway_ladder_does_not_record_a_terminus() {
     assert_eq!(data.target_terminus, None);
 }
 
+/// A non-positive target velocity makes `integral_deficit_reaches_target`
+/// reject the plan before any deficit comparison runs; the recorder must
+/// surface that as a target-rate fault, not the generic schedule fault.
+#[test]
+fn target_terminus_recorder_reports_target_rate_invalid_for_a_non_positive_target() {
+    let mut plan = plan();
+    plan.acceptance_source = AcceptanceSource::Breakaway;
+    plan.target_velocity_rpm = 0;
+    plan.encoder_counts_per_rev = 4_000;
+    plan.positive_rung_count = 13;
+    let mut data = VelocityIntegralRuntime::new(1, plan);
+    data.rung_index = 4;
+
+    let error = record_integral_target_if_reached(
+        &mut data,
+        [
+            ExactRateInterval::new(-100_000, 340_000).unwrap(),
+            ExactRateInterval::new(-340_000, 100_000).unwrap(),
+        ],
+    )
+    .unwrap_err();
+
+    assert_eq!(error, CommissionError::TargetRateInvalid);
+}
+
 #[test]
 fn schedule_has_two_anchors_and_the_exact_positive_i_ladder() {
     let mut plan = plan();
