@@ -1103,7 +1103,8 @@ fn planned_velocity_mrev_s(point: &AcceptancePoint) -> Result<u32, CommissionErr
     // saturates to i32::MAX rather than staying negative, never exceeds
     // i32::MAX either. u32::try_from on a value already in [0, i32::MAX]
     // can never fail.
-    let target = u32::try_from(amplitude_rpm(point)).map_err(|_| CommissionError::InvalidSchedule)?;
+    let target =
+        u32::try_from(amplitude_rpm(point)).map_err(|_| CommissionError::InvalidSchedule)?;
     let velocity = target
         .checked_mul(1_000)
         .map(|value| value / 60)

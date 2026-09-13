@@ -1587,8 +1587,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let target = match target.checked_mul(direction) {
                 Some(value) => value,
                 None => {
-                    return fail_integral(phase, backend, CommissionError::TargetRateInvalid)
-                        .await;
+                    return fail_integral(phase, backend, CommissionError::TargetRateInvalid).await;
                 }
             };
             if is_fixed_gain_amplitude(data.plan) {
