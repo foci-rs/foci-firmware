@@ -1092,8 +1092,8 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
 
 /// Validated accepted proportional/integral gain pair for the point.
 fn accepted_gains(point: &AcceptancePoint) -> Result<(PidPGain, PidIGain), CommissionError> {
-    let p = PidPGain::new(point.selected_p).map_err(|_| CommissionError::InvalidSchedule)?;
-    let i = PidIGain::new(point.selected_i).map_err(|_| CommissionError::InvalidSchedule)?;
+    let p = PidPGain::new(point.selected_p).map_err(|_| CommissionError::PidGainInvalid)?;
+    let i = PidIGain::new(point.selected_i).map_err(|_| CommissionError::PidGainInvalid)?;
     Ok((p, i))
 }
 
@@ -3644,5 +3644,18 @@ mod tests {
             Some(OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY)
         );
         assert_eq!(parts.recoveries, 1);
+    }
+
+    #[test]
+    fn accepted_gains_rejects_negative_selected_p_or_i() {
+        let mut point = test_point();
+        point.selected_p = 0x8000;
+        let error = accepted_gains(&point).unwrap_err();
+        assert_eq!(error, CommissionError::PidGainInvalid);
+
+        let mut point = test_point();
+        point.selected_i = 0x8000;
+        let error = accepted_gains(&point).unwrap_err();
+        assert_eq!(error, CommissionError::PidGainInvalid);
     }
 }
