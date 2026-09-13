@@ -444,10 +444,11 @@ impl OuterSafetyLimits {
     /// # Errors
     ///
     /// Returns [`CommissionError::VelocityEnvelopeCeilingZero`] when
-    /// `effective_ceiling_mrev_s` is zero, and
-    /// [`CommissionError::InvalidSchedule`] when `planned_velocity_mrev_s` is
-    /// zero, when the envelope arithmetic overflows, or when the envelope
-    /// exceeds the effective ceiling.
+    /// `effective_ceiling_mrev_s` is zero,
+    /// [`CommissionError::VelocityEnvelopeExceedsCeiling`] when the derived
+    /// envelope exceeds that ceiling, and [`CommissionError::InvalidSchedule`]
+    /// when `planned_velocity_mrev_s` is zero or the envelope arithmetic
+    /// overflows.
     pub(crate) fn configure_velocity_envelope_with_settle_ceiling(
         &mut self,
         planned_velocity_mrev_s: u32,
@@ -458,7 +459,7 @@ impl OuterSafetyLimits {
         }
         let envelope_mrev_s = Self::envelope_mrev_s(planned_velocity_mrev_s)?;
         if envelope_mrev_s > effective_ceiling_mrev_s {
-            return Err(CommissionError::InvalidSchedule);
+            return Err(CommissionError::VelocityEnvelopeExceedsCeiling);
         }
         self.apply_velocity_envelope(effective_ceiling_mrev_s, effective_ceiling_mrev_s);
         Ok(())
@@ -1767,7 +1768,7 @@ mod tests {
         // runtime allowance.
         assert_eq!(
             safety.configure_velocity_envelope_with_settle_ceiling(1_450, 3_000),
-            Err(CommissionError::InvalidSchedule)
+            Err(CommissionError::VelocityEnvelopeExceedsCeiling)
         );
     }
 
@@ -1778,6 +1779,16 @@ mod tests {
             .configure_velocity_envelope_with_settle_ceiling(1_000, 0)
             .unwrap_err();
         assert_eq!(error, CommissionError::VelocityEnvelopeCeilingZero);
+    }
+
+    #[test]
+    fn configure_velocity_envelope_with_settle_ceiling_rejects_envelope_above_ceiling() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+        // A planned velocity whose derived envelope exceeds a small ceiling.
+        let error = safety
+            .configure_velocity_envelope_with_settle_ceiling(1_000_000, 1)
+            .unwrap_err();
+        assert_eq!(error, CommissionError::VelocityEnvelopeExceedsCeiling);
     }
 
     #[test]

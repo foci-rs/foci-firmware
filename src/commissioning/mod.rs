@@ -580,8 +580,10 @@ impl CommissioningEngine {
     /// # Errors
     ///
     /// Returns [`CommissionError::EncoderFault`] when the campaign's frozen encoder
-    /// domain is invalid, or [`CommissionError::InvalidSchedule`] when its planned
-    /// velocity cannot configure the independent safety envelope.
+    /// domain is invalid, [`CommissionError::VelocityEnvelopeCeilingZero`] when
+    /// the independent safety envelope's effective ceiling is zero, and
+    /// [`CommissionError::VelocityEnvelopeExceedsCeiling`] when its planned
+    /// velocity's derived envelope exceeds that ceiling.
     pub(crate) fn new_outer_for_tmc_with_breakaway_campaign(
         oid: u8,
         tmc_state: &'static TmcChannelState,

@@ -331,6 +331,10 @@ pub enum CommissionError {
     /// rejection during phase setup, not a runtime hard-disable trip during
     /// motion.
     VelocityEnvelopeCeilingZero,
+    /// The velocity envelope derived from the commissioning amplitude
+    /// exceeded the outer safety envelope's effective ceiling -- a planning
+    /// fault, not a runtime trip. Code 85.
+    VelocityEnvelopeExceedsCeiling,
 }
 
 impl CommissionError {
@@ -424,6 +428,7 @@ impl CommissionError {
             Self::MismatchedObservation => 82,
             Self::ElapsedTimeConversionInvalid => 83,
             Self::VelocityEnvelopeCeilingZero => 84,
+            Self::VelocityEnvelopeExceedsCeiling => 85,
         }
     }
 }
