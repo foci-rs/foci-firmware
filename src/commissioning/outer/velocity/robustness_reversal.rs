@@ -1128,7 +1128,7 @@ fn robustness_recovery_plan(
         safety.counts_per_rev(),
         planned_velocity_mrev_s(point)?,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)
+    .map_err(|_| CommissionError::RecoveryPlanFailed)
 }
 
 /// The return direction after an inconclusive or refused leg: back toward
@@ -1149,7 +1149,7 @@ fn build_origin_recovery(
 ) -> Result<RungOriginRecoveryRuntime, CommissionError> {
     let plan = session
         .recovery_plan
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::MissingCaptureState)?;
     let start_offset_counts = safety.unwrapped_position;
     let return_direction = return_direction_from_offset(start_offset_counts);
     let lower_rate_q = return_lower_rate_q(&session.point, return_direction)
@@ -2037,6 +2037,30 @@ mod tests {
             selected_response_intervals_q: [[12_000_000, 13_000_000], [-13_000_000, -12_000_000]],
             ..test_point()
         }
+    }
+
+    #[test]
+    fn robustness_recovery_plan_reports_recovery_plan_failed_on_planner_rejection() {
+        let mut safety = test_safety();
+        // Force `plan_rung_origin_recovery`'s own `InvalidRequest` rejection
+        // (reserve must be strictly less than the stroke budget) while both
+        // directions still resolve a settled-rate lower bound, so the error
+        // observed here is only the discarded planner failure at this site.
+        safety.budget.settle_travel_reserve_mrev = safety.budget.max_stroke_travel_mrev;
+
+        let result = robustness_recovery_plan(&test_point(), &safety);
+
+        assert_eq!(result, Err(CommissionError::RecoveryPlanFailed));
+    }
+
+    #[test]
+    fn build_origin_recovery_reports_missing_capture_state_without_recovery_plan() {
+        let session = RobustnessReversalSession::new(test_point(), 0, COUNTS_PER_REV);
+        let safety = test_safety();
+
+        let result = build_origin_recovery(&session, &safety);
+
+        assert_eq!(result, Err(CommissionError::MissingCaptureState));
     }
 
     /// Drive a run where establish and zero legs behave, and the measured
