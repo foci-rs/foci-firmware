@@ -483,6 +483,9 @@ pub(super) fn fixed_gain_amplitude_report(
         })
         .map_err(|error| match error {
             FixedGainAmplitudeEvidenceError::InvalidInterval => CommissionError::MalformedInterval,
+            // Arithmetic is unreachable (see robust_rate_location's own
+            // comment); InvalidMasks has no existing-variant candidate and
+            // stays InvalidSchedule pending a real disposition decision.
             FixedGainAmplitudeEvidenceError::Arithmetic
             | FixedGainAmplitudeEvidenceError::InvalidMasks => CommissionError::InvalidSchedule,
         })

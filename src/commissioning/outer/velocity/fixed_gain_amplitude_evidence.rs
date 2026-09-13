@@ -127,6 +127,13 @@ pub fn robust_rate_location(
         4 => {
             let difference = i64::from(values[2]) - i64::from(values[1]);
             let midpoint = i64::from(values[1]) + difference / 2;
+            // Unreachable: values is sorted ascending, so
+            // values[1] <= midpoint <= values[2] always holds (midpoint is
+            // an average of the two, floored toward values[1]), and both
+            // bounds are themselves valid i32 values. i32::try_from(midpoint)
+            // can therefore never fail; FixedGainAmplitudeEvidenceError::
+            // Arithmetic is unreachable from this, its only construction
+            // site.
             i32::try_from(midpoint)
                 .map(Some)
                 .map_err(|_| FixedGainAmplitudeEvidenceError::Arithmetic)
