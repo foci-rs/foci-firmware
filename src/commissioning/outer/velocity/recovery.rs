@@ -368,6 +368,12 @@ impl RungOriginRecoveryRuntime {
                 }
             } else {
                 // Zone 3: existing absolute-band moving recovery -- unchanged.
+                // Unreachable: recovery_return_distance_counts's only two
+                // `None` conditions (start_offset_counts == i32::MIN,
+                // origin_band_counts == 0) are both already excluded by this
+                // function's own upfront five-way precondition guard
+                // (RungOriginRecoveryRuntime::new, above) before Zone 3 can
+                // ever run. Defensive check retained.
                 let return_distance = recovery_return_distance_counts(
                     config.start_offset_counts,
                     plan.origin_band_counts,
