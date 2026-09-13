@@ -1121,7 +1121,7 @@ fn robustness_recovery_plan(
     if return_lower_rate_q(point, VelocityDirection::Forward).is_none()
         || return_lower_rate_q(point, VelocityDirection::Reverse).is_none()
     {
-        return Err(CommissionError::InvalidSchedule);
+        return Err(CommissionError::MissingRateTableEntry);
     }
     plan_rung_origin_recovery(
         safety.budget,
@@ -2036,6 +2036,17 @@ mod tests {
             selected_response_intervals_q: [[12_000_000, 13_000_000], [-13_000_000, -12_000_000]],
             ..test_point()
         }
+    }
+
+    #[test]
+    fn robustness_recovery_plan_rejects_missing_return_lower_rate() {
+        let mut point = test_point();
+        point.selected_response_intervals_q = [[0, 0], [0, 0]]; // both directions None
+        let safety = test_safety();
+
+        let error = robustness_recovery_plan(&point, &safety).unwrap_err();
+
+        assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
     #[test]
