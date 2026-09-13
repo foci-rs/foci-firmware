@@ -231,7 +231,7 @@ pub(super) fn record_integral_target_if_reached(
     }
     let deficits = intervals.map(|interval| {
         CombinedRateInterval::new(i64::from(interval.low_q), i64::from(interval.high_q))
-            .map_err(|_| CommissionError::InvalidSchedule)
+            .map_err(|_| CommissionError::MalformedInterval)
     });
     let deficits = [deficits[0]?, deficits[1]?];
     if integral_deficit_reaches_target(
@@ -2642,8 +2642,8 @@ mod tests {
 
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
-        VelocityObservationSummary, direction_for_slot, load_interval,
-        materialize_run_evidence, moving_analysis, retain_analyzed_observation,
+        VelocityObservationSummary, direction_for_slot, load_interval, materialize_run_evidence,
+        moving_analysis, record_integral_target_if_reached, retain_analyzed_observation,
         set_rung_blocking_level, store_interval,
     };
     use crate::commissioning::outer::VelocityIntegralRuntime;
@@ -2689,6 +2689,31 @@ mod tests {
             recovery_quantization_exposed: true,
             probe_constrained_test_point: false,
         }
+    }
+
+    /// An inverted deficit interval (low bound above high bound) is a
+    /// malformed-interval fault, not the generic schedule fault.
+    #[test]
+    fn record_integral_target_if_reached_rejects_inverted_deficit_interval() {
+        let mut plan = plan();
+        plan.positive_rung_count = 5;
+        plan.acceptance_source = AcceptanceSource::Breakaway;
+        let mut data = VelocityIntegralRuntime::new(1, plan);
+        data.rung_index = 1; // Positive rung kind
+        let intervals = [
+            ExactRateInterval {
+                low_q: 10,
+                high_q: 5,
+            }, // inverted: low above high
+            ExactRateInterval {
+                low_q: 0,
+                high_q: 100,
+            },
+        ];
+
+        let result = record_integral_target_if_reached(&mut data, intervals);
+
+        assert_eq!(result, Err(CommissionError::MalformedInterval));
     }
 
     /// A slot or level outside its declared range is a caller bug, not a

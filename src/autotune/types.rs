@@ -300,6 +300,9 @@ pub enum CommissionError {
     /// A PID gain derived during commissioning encoded a negative Q8.8/Q4.12
     /// value. Code 79.
     PidGainInvalid,
+    /// A stored or computed closed interval had an inverted or otherwise
+    /// invalid bound pair. Code 80.
+    MalformedInterval,
 }
 
 impl CommissionError {
@@ -388,6 +391,7 @@ impl CommissionError {
             Self::FaultInterlock => 77,
             Self::HostLivenessExpired => 78,
             Self::PidGainInvalid => 79,
+            Self::MalformedInterval => 80,
         }
     }
 }
