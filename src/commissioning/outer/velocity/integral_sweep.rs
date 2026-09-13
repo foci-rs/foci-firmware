@@ -1349,8 +1349,8 @@ fn retain_analyzed_observation(
         }
     };
     let interval = ExactRateInterval::new(
-        i32::try_from(source_interval[0]).map_err(|_| CommissionError::InvalidSchedule)?,
-        i32::try_from(source_interval[1]).map_err(|_| CommissionError::InvalidSchedule)?,
+        i32::try_from(source_interval[0]).map_err(|_| CommissionError::TargetRateInvalid)?,
+        i32::try_from(source_interval[1]).map_err(|_| CommissionError::TargetRateInvalid)?,
     )
     .map_err(|_| CommissionError::InvalidSchedule)?;
     data.rung_classes[usize::from(data.slot)] = summary.classification;
@@ -1362,7 +1362,7 @@ fn retain_analyzed_observation(
             workspace,
             usize::from(data.slot),
             i32::try_from(summary.settled_rate_mean_q)
-                .map_err(|_| CommissionError::InvalidSchedule)?,
+                .map_err(|_| CommissionError::TargetRateInvalid)?,
         )?;
     }
     Ok(())
@@ -2627,9 +2627,11 @@ mod tests {
     use crate::autotune::{CommissionError, TRANSIENT_LEN, TransientBuffer};
 
     use super::{
-        INTEGRAL_SLOT_COUNT, direction_for_slot, load_interval, materialize_run_evidence,
-        moving_analysis, set_rung_blocking_level, store_interval,
+        INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
+        VelocityObservationSummary, direction_for_slot, load_interval, materialize_run_evidence,
+        moving_analysis, retain_analyzed_observation, set_rung_blocking_level, store_interval,
     };
+    use foci_tmc4671::pid::PidPGain;
     use crate::commissioning::outer::VelocityIntegralRuntime;
     use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
     use crate::commissioning::outer::velocity::integral_plan::{
@@ -2770,6 +2772,71 @@ mod tests {
         let error = outcome
             .expect("a flat observation tail resolves within a bounded number of polls")
             .unwrap_err();
+
+        assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    fn observation_summary() -> VelocityObservationSummary {
+        VelocityObservationSummary {
+            direction: VelocityDirection::Forward,
+            p: PidPGain::new(1_448).unwrap(),
+            classification: VelocityObservationClass::Eligible,
+            settled_rate_interval_q: [0, 0],
+            settled_rate_mean_q: 0,
+            deficit_interval_q: [0, 0],
+            disturbance: None,
+            disturbance_interval: None,
+            disturbance_variance_q2: 0,
+            predicted_torque_target_abs: 0,
+            drift_ratio_ppm: 0,
+            initial_lead_in: false,
+        }
+    }
+
+    /// A deficit-interval bound past `i32` cannot be retained in the exact
+    /// rate interval that backs a response-ladder rung; that is a
+    /// target-rate fault, not the generic schedule fault.
+    #[test]
+    fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_low_bound() {
+        let mut data = VelocityIntegralRuntime::new(1, plan());
+        let mut workspace = TransientBuffer::new();
+        let mut summary = observation_summary();
+        summary.deficit_interval_q = [i64::from(i32::MAX) + 1, 0];
+
+        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
+
+        assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    /// Same fault, the interval's high bound.
+    #[test]
+    fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_high_bound()
+    {
+        let mut data = VelocityIntegralRuntime::new(1, plan());
+        let mut workspace = TransientBuffer::new();
+        let mut summary = observation_summary();
+        summary.deficit_interval_q = [0, i64::from(i32::MAX) + 1];
+
+        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
+
+        assert_eq!(error, CommissionError::TargetRateInvalid);
+    }
+
+    /// An eligible amplitude rung's settled-rate mean past `i32` cannot be
+    /// stored in the amplitude workspace word; that is a target-rate fault,
+    /// not the generic schedule fault.
+    #[test]
+    fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_mean() {
+        let mut amplitude_plan = plan();
+        amplitude_plan.acquisition_kind =
+            VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
+        let mut data = VelocityIntegralRuntime::new(1, amplitude_plan);
+        let mut workspace = TransientBuffer::new();
+        let mut summary = observation_summary();
+        summary.settled_rate_interval_q = [0, 0];
+        summary.settled_rate_mean_q = i64::from(i32::MAX) + 1;
+
+        let error = retain_analyzed_observation(&mut data, &mut workspace, summary).unwrap_err();
 
         assert_eq!(error, CommissionError::TargetRateInvalid);
     }
