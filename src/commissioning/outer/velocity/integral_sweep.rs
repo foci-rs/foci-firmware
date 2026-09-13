@@ -1160,7 +1160,7 @@ fn retain_rung(
                     // enumerate()) and positive_rung is bounded below 30 by
                     // the same construction invariant as the checks above.
                     let word_index = interval_word_index(direction, positive_rung)
-                        .expect("direction < 2 and positive_rung < INTEGRAL_MAX_POSITIVE_RUNGS by construction");
+                        .expect("direction and positive_rung are in range");
                     store_interval(workspace, word_index, interval)?;
                     data.eligible_masks[direction] |= bit;
                 }
