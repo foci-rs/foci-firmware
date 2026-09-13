@@ -26,6 +26,9 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::lifecycle::emergency_stop,
         crate::ankyra::handlers::lifecycle::reset,
         crate::ankyra::handlers::lifecycle::debug_nop,
+        // Analog in (2)
+        crate::ankyra::handlers::analog_in::config_analog_in,
+        crate::ankyra::handlers::analog_in::query_analog_in,
         // Digital out (3)
         crate::ankyra::handlers::digital_out::config_digital_out,
         crate::ankyra::handlers::digital_out::queue_digital_out,
@@ -96,6 +99,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::foci::foci_stall_query,
     ],
     replies: [
+        crate::ankyra::replies::AnalogInState,
         crate::ankyra::replies::Clock,
         crate::ankyra::replies::Config,
         crate::ankyra::replies::EndstopState,
@@ -202,6 +206,9 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::lifecycle::emergency_stop,
         crate::ankyra::handlers::lifecycle::reset,
         crate::ankyra::handlers::lifecycle::debug_nop,
+        // Analog in (2)
+        crate::ankyra::handlers::analog_in::config_analog_in,
+        crate::ankyra::handlers::analog_in::query_analog_in,
         // Digital out (3)
         crate::ankyra::handlers::digital_out::config_digital_out,
         crate::ankyra::handlers::digital_out::queue_digital_out,
@@ -267,6 +274,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::foci::foci_stall_query,
     ],
     replies: [
+        crate::ankyra::replies::AnalogInState,
         crate::ankyra::replies::Clock,
         crate::ankyra::replies::Config,
         crate::ankyra::replies::EndstopState,

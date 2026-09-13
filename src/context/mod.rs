@@ -152,6 +152,22 @@ impl<T: ?Sized + EndstopHost> EndstopHost for &mut T {
     }
 }
 
+/// Board-specific analog-in pin resolution. Stateless by design -- the
+/// implementing board's context type just forwards to its own
+/// `board_config::analog_pin_channel`. All *stateful* sampling data lives
+/// in `analog_in::ANALOG_CHANNELS`, a process-wide static reachable
+/// without going through this trait at all (see analog_in_state's own
+/// RTIC task in Task 8, which never implements or needs this trait).
+pub trait AnalogInHost {
+    fn resolve_analog_pin(&self, pin: u8) -> Option<u8>;
+}
+
+impl<T: ?Sized + AnalogInHost> AnalogInHost for &mut T {
+    fn resolve_analog_pin(&self, pin: u8) -> Option<u8> {
+        (**self).resolve_analog_pin(pin)
+    }
+}
+
 /// Composite bound for the `config_reset` handler: needs shutdown
 /// recovery (to enter shutdown on error), clock reporting (for the
 /// `klipper_shutdown!` clock arg), and full trigger-domain reset.

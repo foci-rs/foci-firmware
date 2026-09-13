@@ -73,6 +73,19 @@ pub struct EndstopState {
     pub pin_value: u8,
 }
 
+/// `analog_in_state` reply — emitted by `query_analog_in`.
+///
+/// Wire name: `analog_in_state`.
+#[klipper_reply]
+pub struct AnalogInState {
+    /// Object id of the analog-in channel reporting a sample.
+    pub oid: u8,
+    /// Next clock at which the channel will report again.
+    pub next_clock: u32,
+    /// Summed raw ADC value for the completed burst.
+    pub value: u16,
+}
+
 /// `foci_calibrate_result` reply — emitted by the ADC-calibration flow.
 ///
 /// Wire name: `foci_calibrate_result`.
