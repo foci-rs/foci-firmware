@@ -1939,7 +1939,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
             let Some(_stroke_index) = integral_stroke_index(data.rung_index, data.slot) else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::RungIndexOutOfRange).await;
             };
             #[cfg(feature = "trace")]
             backend.record_velocity_trace_observation(
@@ -1960,7 +1960,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 let Some(analysis_deadline_us) =
                     read_us.checked_add(u64::from(data.plan.analysis_budget_us))
                 else {
-                    return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                    return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
+                        .await;
                 };
                 data.analysis
                     .reset_for_scored_rest(bounded_rest_displacement(

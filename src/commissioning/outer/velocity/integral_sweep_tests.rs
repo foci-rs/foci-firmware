@@ -2982,6 +2982,49 @@ fn prepare_zero_settle_reports_deadline_overflow_for_the_analysis_budget() {
     );
 }
 
+/// The zero-settle capture's own analysis-budget deadline can also
+/// overflow the elapsed-microsecond clock; that is an unrepresentable
+/// deadline, not the generic schedule fault.
+#[test]
+fn settle_capture_reports_deadline_overflow_for_the_analysis_budget() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral {
+        state,
+        data,
+        safety,
+    } = &mut phase
+    else {
+        unreachable!()
+    };
+    safety
+        .configure_velocity_sweep_encoder_resolution(4_000)
+        .unwrap();
+    data.current_observer = VelocityCurrentObserver::new(
+        current_limit(u32::from(data.plan.usable_torque_limit)),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    );
+    data.previous_encoder_raw = 0;
+    data.previous_read_us = u64::MAX - 1_000;
+    *state = VelocityIntegralState::SettleCapture {
+        next_sample_us: 0,
+        deadline_us: 0,
+    };
+    let mut backend = MockBackend::new();
+    backend.elapsed_us_value = u64::MAX;
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("analysis-budget overflow must emit the Stage-C integrity terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::ScheduleDeadlineOverflow.status_code())
+    );
+}
+
 #[test]
 fn excessive_slot_transition_time_emits_an_observation_gap_fault() {
     let mut phase = phase();
