@@ -443,16 +443,18 @@ impl OuterSafetyLimits {
     ///
     /// # Errors
     ///
-    /// Returns [`CommissionError::InvalidSchedule`] when either input is zero,
-    /// when the envelope arithmetic overflows, or when the envelope exceeds the
-    /// effective ceiling.
+    /// Returns [`CommissionError::VelocityEnvelopeCeilingZero`] when
+    /// `effective_ceiling_mrev_s` is zero, and
+    /// [`CommissionError::InvalidSchedule`] when `planned_velocity_mrev_s` is
+    /// zero, when the envelope arithmetic overflows, or when the envelope
+    /// exceeds the effective ceiling.
     pub(crate) fn configure_velocity_envelope_with_settle_ceiling(
         &mut self,
         planned_velocity_mrev_s: u32,
         effective_ceiling_mrev_s: u32,
     ) -> Result<(), CommissionError> {
         if effective_ceiling_mrev_s == 0 {
-            return Err(CommissionError::InvalidSchedule);
+            return Err(CommissionError::VelocityEnvelopeCeilingZero);
         }
         let envelope_mrev_s = Self::envelope_mrev_s(planned_velocity_mrev_s)?;
         if envelope_mrev_s > effective_ceiling_mrev_s {
@@ -1767,6 +1769,15 @@ mod tests {
             safety.configure_velocity_envelope_with_settle_ceiling(1_450, 3_000),
             Err(CommissionError::InvalidSchedule)
         );
+    }
+
+    #[test]
+    fn configure_velocity_envelope_with_settle_ceiling_rejects_zero_ceiling() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+        let error = safety
+            .configure_velocity_envelope_with_settle_ceiling(1_000, 0)
+            .unwrap_err();
+        assert_eq!(error, CommissionError::VelocityEnvelopeCeilingZero);
     }
 
     #[test]

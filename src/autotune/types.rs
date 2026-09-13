@@ -324,6 +324,13 @@ pub enum CommissionError {
     /// allocated because the underlying `u16` conversion is a real code path,
     /// not because current production input can reach it.
     ElapsedTimeConversionInvalid,
+    /// The outer velocity envelope's effective ceiling was configured as
+    /// zero. Code 84.
+    ///
+    /// Distinct from `SafetyEnvelopeViolation`: this is a configuration-time
+    /// rejection during phase setup, not a runtime hard-disable trip during
+    /// motion.
+    VelocityEnvelopeCeilingZero,
 }
 
 impl CommissionError {
@@ -416,6 +423,7 @@ impl CommissionError {
             Self::MissingRateTableEntry => 81,
             Self::MismatchedObservation => 82,
             Self::ElapsedTimeConversionInvalid => 83,
+            Self::VelocityEnvelopeCeilingZero => 84,
         }
     }
 }
