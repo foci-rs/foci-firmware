@@ -335,6 +335,9 @@ pub enum CommissionError {
     /// exceeded the outer safety envelope's effective ceiling -- a planning
     /// fault, not a runtime trip. Code 85.
     VelocityEnvelopeExceedsCeiling,
+    /// A realized encoder-read gap exceeded what a 32-bit microsecond count
+    /// can represent (~71.6 minutes). Code 86.
+    SafetyTimingGapInvalid,
 }
 
 impl CommissionError {
@@ -429,6 +432,7 @@ impl CommissionError {
             Self::ElapsedTimeConversionInvalid => 83,
             Self::VelocityEnvelopeCeilingZero => 84,
             Self::VelocityEnvelopeExceedsCeiling => 85,
+            Self::SafetyTimingGapInvalid => 86,
         }
     }
 }

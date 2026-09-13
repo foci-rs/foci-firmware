@@ -1,5 +1,7 @@
 use core::mem::size_of;
 
+use crate::autotune::CommissionError;
+
 use super::{
     OuterSafetyTimingAccumulator, OuterSafetyTimingContext, OuterSafetyTimingPhase,
     OuterSafetyTimingStage, TraceSummarySeqs,
@@ -110,6 +112,27 @@ fn outer_safety_timing_counts_faulting_gaps_before_abort() {
         summary.sample_count,
         summary.bin_counts.iter().sum::<u32>() + summary.zero_count + summary.over_bound_count
     );
+}
+
+#[test]
+fn outer_safety_timing_rejects_gap_exceeding_u32_representable_microseconds() {
+    let mut timing = OuterSafetyTimingAccumulator::new();
+    let gap_us = u64::from(u32::MAX) + 1;
+
+    let error = timing
+        .observe(
+            gap_us,
+            context(
+                OuterSafetyTimingStage::Integral,
+                OuterSafetyTimingPhase::MovingCapture,
+                0,
+                0,
+                false,
+            ),
+        )
+        .unwrap_err();
+
+    assert_eq!(error, CommissionError::SafetyTimingGapInvalid);
 }
 
 #[test]

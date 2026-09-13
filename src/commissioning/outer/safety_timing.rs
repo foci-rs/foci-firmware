@@ -166,7 +166,7 @@ impl OuterSafetyTimingAccumulator {
         gap_us: u64,
         context: OuterSafetyTimingContext,
     ) -> Result<(), CommissionError> {
-        let gap_us = u32::try_from(gap_us).map_err(|_| CommissionError::InvalidSchedule)?;
+        let gap_us = u32::try_from(gap_us).map_err(|_| CommissionError::SafetyTimingGapInvalid)?;
 
         if gap_us == 0 {
             self.words[3] |= ZERO_GAP_BIT;
