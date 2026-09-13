@@ -1743,12 +1743,14 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             let Some(settle_deadline_us) =
                 settle_started_us.checked_add(u64::from(data.plan.zero_settle_us))
             else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
+                    .await;
             };
             let Some(analysis_deadline_us) =
                 now_us.checked_add(u64::from(data.plan.analysis_budget_us))
             else {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
+                    .await;
             };
             data.analysis.reset_with_structured_diagnostics();
             *state = VelocityIntegralState::AnalyzeMoving {

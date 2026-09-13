@@ -2916,6 +2916,72 @@ fn slot_transition_timing_starts_scored_rest_after_the_exit_clear() {
     ));
 }
 
+/// An elapsed-microsecond clock pinned at `u64::MAX` cannot admit the
+/// zero-settle window; that is an unrepresentable deadline, not the generic
+/// schedule fault.
+#[test]
+fn prepare_zero_settle_reports_deadline_overflow_for_the_settle_window() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.current_observer = VelocityCurrentObserver::new(
+        current_limit(u32::from(data.plan.usable_torque_limit)),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    );
+    *state = VelocityIntegralState::PrepareZeroSettle {
+        entry_transition_us: 0,
+    };
+    let mut backend = MockBackend::new();
+    backend.elapsed_us_value = u64::MAX;
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("settle-deadline overflow must emit the Stage-C integrity terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::ScheduleDeadlineOverflow.status_code())
+    );
+}
+
+/// The zero-settle window itself can fit before the clock wraps, but the
+/// wider analysis budget on top of it cannot; that is still an
+/// unrepresentable deadline, not the generic schedule fault.
+#[test]
+fn prepare_zero_settle_reports_deadline_overflow_for_the_analysis_budget() {
+    let mut phase = phase();
+    let mut workspace = TransientBuffer::new();
+    let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
+        unreachable!()
+    };
+    data.plan.zero_settle_us = 100;
+    data.plan.analysis_budget_us = 500_000_000;
+    data.current_observer = VelocityCurrentObserver::new(
+        current_limit(u32::from(data.plan.usable_torque_limit)),
+        VelocityLimitEvidenceCapability::BestEffortPolling,
+    );
+    *state = VelocityIntegralState::PrepareZeroSettle {
+        entry_transition_us: 0,
+    };
+    let mut backend = MockBackend::new();
+    backend.elapsed_us_value = u64::MAX - 100;
+
+    let StepResult::VelocityIntegralTerminal(terminal) =
+        step(&mut phase, &mut workspace, &mut backend)
+    else {
+        panic!("analysis-budget overflow must emit the Stage-C integrity terminal");
+    };
+    assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
+    assert_eq!(
+        terminal.cause,
+        IntegralOutcomeCause::Error(CommissionError::ScheduleDeadlineOverflow.status_code())
+    );
+}
+
 #[test]
 fn excessive_slot_transition_time_emits_an_observation_gap_fault() {
     let mut phase = phase();
