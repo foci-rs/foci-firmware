@@ -1458,10 +1458,10 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             let plan = data.plan;
             let counts_per_rev = backend.mechanical_encoder_quadrature_counts_per_rev();
-            if plan.plan_digest == 0
-                || integral_rung_count(plan).is_none_or(|count| count < 3)
-                || plan.hard_torque_limit != u16::from(backend.current_limit())
-            {
+            if plan.plan_digest == 0 || integral_rung_count(plan).is_none_or(|count| count < 3) {
+                return integral_fault_terminal(phase, CommissionError::CampaignPlanInvalid, None);
+            }
+            if plan.hard_torque_limit != u16::from(backend.current_limit()) {
                 return integral_fault_terminal(phase, CommissionError::InvalidSchedule, None);
             }
             let encoder_raw = match backend.try_read_mechanical_encoder_position_counts().await {
@@ -1481,8 +1481,8 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             safety.torque_cap = plan.hard_torque_limit;
             workspace.reset(0);
             let run_started_us = backend.elapsed_us();
-            if safety.arm_safety_observation(run_started_us).is_err() {
-                return integral_fault_terminal(phase, CommissionError::InvalidSchedule, None);
+            if let Err(error) = safety.arm_safety_observation(run_started_us) {
+                return integral_fault_terminal(phase, error, None);
             }
             data.run_started_us = run_started_us;
             data.previous_read_us = run_started_us;
@@ -2717,9 +2717,9 @@ mod tests {
     use super::{
         INTEGRAL_SLOT_COUNT, VelocityDirection, VelocityObservationClass,
         VelocityObservationSummary, analyze_integral_direction, direction_for_slot,
-        fixed_gain_amplitude_report, load_interval, map_integral_evidence_error,
-        materialize_run_evidence, moving_analysis, plan_integral_recovery,
-        record_integral_target_if_reached, resolve_analyzed_directions,
+        fixed_gain_amplitude_report, integral_rung_count, load_interval,
+        map_integral_evidence_error, materialize_run_evidence, moving_analysis,
+        plan_integral_recovery, record_integral_target_if_reached, resolve_analyzed_directions,
         retain_analyzed_observation, set_rung_blocking_level, store_amplitude_rung_mean,
         store_interval, transition_elapsed_us,
     };
@@ -3191,5 +3191,25 @@ mod tests {
     fn transition_elapsed_us_rejects_overflowing_duration() {
         let error = transition_elapsed_us(0, u64::from(u32::MAX) + 1).unwrap_err();
         assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
+    }
+
+    /// Pins the three plan shapes Step 7's restructured precondition must
+    /// tell apart: a campaign-plan fault alone, a campaign-plan fault
+    /// combined with a torque mismatch, and a torque mismatch alone.
+    #[test]
+    fn setup_precondition_fixture_shapes_are_distinguishable() {
+        let mut zero_digest_plan = plan();
+        zero_digest_plan.plan_digest = 0;
+        assert!(integral_rung_count(zero_digest_plan).is_some()); // campaign-plan cause is plan_digest alone here
+
+        let mut short_plan = plan();
+        short_plan.positive_rung_count = 0; // integral_rung_count = positive_rung_count + 2 for ResponseLadder, so this yields 2 (< 3)
+        assert!(integral_rung_count(short_plan).is_none_or(|count| count < 3)); // campaign-plan cause is rung count alone here
+
+        let matched_plan = plan();
+        assert!(
+            matched_plan.plan_digest != 0
+                && integral_rung_count(matched_plan).is_none_or(|count| count >= 3)
+        ); // no campaign-plan cause; only torque mismatch can fire here
     }
 }

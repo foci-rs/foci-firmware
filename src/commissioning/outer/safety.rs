@@ -510,7 +510,7 @@ impl OuterSafetyLimits {
     pub(crate) fn arm_safety_observation(&mut self, now_us: u64) -> Result<(), CommissionError> {
         let next_safety_sample_us = now_us
             .checked_add(OUTER_SAFETY_SAMPLE_PERIOD_US)
-            .ok_or(CommissionError::InvalidSchedule)?;
+            .ok_or(CommissionError::ScheduleDeadlineOverflow)?;
         self.last_sample_us = OuterSafetyTimestamp::some(now_us)?;
         self.next_safety_sample_us = OuterSafetyTimestamp::some(next_safety_sample_us)?;
         self.previous_velocity_observation = None;
@@ -2518,5 +2518,15 @@ mod tests {
 
             assert!(matches!(result, Err(CommissionError::Spi)));
         });
+    }
+
+    /// A now_us close enough to u64::MAX that adding the sample period
+    /// overflows is a deadline-overflow fault, not the generic schedule
+    /// fault.
+    #[test]
+    fn arm_safety_observation_rejects_overflowing_deadline() {
+        let mut safety = OuterSafetyLimits::new(100, OuterMotionBudget::firmware_caps());
+        let error = safety.arm_safety_observation(u64::MAX).unwrap_err();
+        assert_eq!(error, CommissionError::ScheduleDeadlineOverflow);
     }
 }
