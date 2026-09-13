@@ -2517,7 +2517,7 @@ mod tests {
             campaign,
         );
 
-        assert!(matches!(result, Err(CommissionError::InvalidSchedule)));
+        assert!(matches!(result, Err(CommissionError::TargetRateInvalid)));
     }
 
     #[test]

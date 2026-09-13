@@ -384,7 +384,13 @@ impl OuterSafetyLimits {
             .checked_mul(ENVELOPE_PROPORTIONAL_NUM)
             .and_then(|value| value.checked_add(ENVELOPE_PROPORTIONAL_DEN - 1))
             .map(|value| value / ENVELOPE_PROPORTIONAL_DEN)
-            .ok_or(CommissionError::InvalidSchedule)?;
+            .ok_or(CommissionError::TargetRateInvalid)?;
+        // Unreachable: with ENVELOPE_PROPORTIONAL_NUM=3, the checked_mul
+        // above already fails and returns early for any
+        // planned_velocity_mrev_s > u32::MAX / 3 (~1.43e9). This checked_add
+        // can only overflow for planned_velocity_mrev_s > u32::MAX - 2_000
+        // (~4.29e9, ENVELOPE_ABSOLUTE_MARGIN_MREV_S=2_000), which always
+        // fails the proportional check first.
         let absolute = planned_velocity_mrev_s
             .checked_add(ENVELOPE_ABSOLUTE_MARGIN_MREV_S)
             .ok_or(CommissionError::InvalidSchedule)?;
@@ -406,8 +412,9 @@ impl OuterSafetyLimits {
     ///
     /// # Errors
     ///
-    /// Returns [`CommissionError::InvalidSchedule`] when the amplitude is zero
-    /// or the envelope arithmetic overflows.
+    /// Returns [`CommissionError::InvalidSchedule`] when the amplitude is
+    /// zero, and [`CommissionError::TargetRateInvalid`] when the envelope's
+    /// proportional-margin arithmetic overflows.
     pub(crate) fn configure_velocity_envelope(
         &mut self,
         planned_velocity_mrev_s: u32,
@@ -446,9 +453,10 @@ impl OuterSafetyLimits {
     /// Returns [`CommissionError::VelocityEnvelopeCeilingZero`] when
     /// `effective_ceiling_mrev_s` is zero,
     /// [`CommissionError::VelocityEnvelopeExceedsCeiling`] when the derived
-    /// envelope exceeds that ceiling, and [`CommissionError::InvalidSchedule`]
-    /// when `planned_velocity_mrev_s` is zero or the envelope arithmetic
-    /// overflows.
+    /// envelope exceeds that ceiling, [`CommissionError::InvalidSchedule`]
+    /// when `planned_velocity_mrev_s` is zero, and
+    /// [`CommissionError::TargetRateInvalid`] when the envelope's
+    /// proportional-margin arithmetic overflows.
     pub(crate) fn configure_velocity_envelope_with_settle_ceiling(
         &mut self,
         planned_velocity_mrev_s: u32,
@@ -1789,6 +1797,14 @@ mod tests {
             .configure_velocity_envelope_with_settle_ceiling(1_000_000, 1)
             .unwrap_err();
         assert_eq!(error, CommissionError::VelocityEnvelopeExceedsCeiling);
+    }
+
+    /// A planned velocity whose proportional-margin computation overflows
+    /// u32 is an arithmetic fault, not the generic schedule fault.
+    #[test]
+    fn envelope_mrev_s_rejects_overflowing_proportional_margin() {
+        let error = OuterSafetyLimits::envelope_mrev_s(u32::MAX).unwrap_err();
+        assert_eq!(error, CommissionError::TargetRateInvalid);
     }
 
     #[test]
