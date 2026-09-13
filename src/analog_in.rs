@@ -200,9 +200,21 @@ impl AnalogChannelState {
     /// Record one raw ADC read for this slot via the pure
     /// `record_sample_step`, persisting the resulting state. The Acquire load
     /// on `sample_count` ensures the configuration snapshot is not torn by a
-    /// concurrent `configure_sampling` call.
+    /// concurrent `configure_sampling` call. If the channel is unconfigured
+    /// (sample_count == 0, the invalidation sentinel), returns the current
+    /// progress unchanged to signal "try again shortly" without recording.
     pub fn record_sample(&self, raw: u16, now: u32) -> SampleStep {
         let sample_count = self.sample_count.load(Acquire);
+        if sample_count == 0 {
+            return SampleStep::Pending {
+                progress: BurstProgress {
+                    accumulator: self.accumulator.load(Relaxed),
+                    samples_taken: self.samples_taken.load(Relaxed),
+                    invalid_count: self.invalid_count.load(Relaxed),
+                },
+                next_due_clock: self.next_due_clock.load(Relaxed),
+            };
+        }
         let config = AnalogInConfig {
             sample_ticks: self.sample_ticks.load(Relaxed),
             sample_count,
@@ -507,5 +519,25 @@ mod tests {
         assert!(!slot.is_due(500));
         assert!(slot.is_due(1000));
         assert!(slot.is_due(1500));
+    }
+
+    #[test]
+    fn record_sample_on_unconfigured_channel_returns_unchanged_pending() {
+        let slot = AnalogChannelState::new();
+        let step = slot.record_sample(1000, 0);
+        match step {
+            SampleStep::Pending {
+                progress,
+                next_due_clock,
+            } => {
+                assert_eq!(progress.accumulator, 0);
+                assert_eq!(progress.samples_taken, 0);
+                assert_eq!(progress.invalid_count, 0);
+                assert_eq!(next_due_clock, 0);
+            }
+            SampleStep::Report { .. } => {
+                panic!("unconfigured channel must not produce a spurious report")
+            }
+        }
     }
 }
