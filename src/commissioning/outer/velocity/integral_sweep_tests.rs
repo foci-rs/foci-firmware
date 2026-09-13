@@ -283,9 +283,7 @@ fn plan_integral_recovery_reports_target_rate_invalid_for_a_negative_target() {
     let OuterPhase::VelocityIntegral { data, safety, .. } = &mut phase else {
         unreachable!()
     };
-    safety
-        .configure_integral_encoder_resolution(4_000)
-        .unwrap();
+    safety.configure_integral_encoder_resolution(4_000).unwrap();
     data.plan.target_velocity_rpm = -1;
     data.rung_index = 0;
 

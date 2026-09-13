@@ -1960,8 +1960,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 let Some(analysis_deadline_us) =
                     read_us.checked_add(u64::from(data.plan.analysis_budget_us))
                 else {
-                    return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
-                        .await;
+                    return fail_integral(
+                        phase,
+                        backend,
+                        CommissionError::ScheduleDeadlineOverflow,
+                    )
+                    .await;
                 };
                 data.analysis
                     .reset_for_scored_rest(bounded_rest_displacement(
@@ -2295,8 +2299,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 let Some(analysis_deadline_us) =
                     read_us.checked_add(u64::from(data.plan.analysis_budget_us))
                 else {
-                    return fail_integral(phase, backend, CommissionError::ScheduleDeadlineOverflow)
-                        .await;
+                    return fail_integral(
+                        phase,
+                        backend,
+                        CommissionError::ScheduleDeadlineOverflow,
+                    )
+                    .await;
                 };
                 data.analysis
                     .reset_for_scored_rest(bounded_rest_displacement(
@@ -2637,7 +2645,6 @@ mod tests {
         VelocityObservationSummary, direction_for_slot, load_interval, materialize_run_evidence,
         moving_analysis, retain_analyzed_observation, set_rung_blocking_level, store_interval,
     };
-    use foci_tmc4671::pid::PidPGain;
     use crate::commissioning::outer::VelocityIntegralRuntime;
     use crate::commissioning::outer::velocity::integral_evidence::ExactRateInterval;
     use crate::commissioning::outer::velocity::integral_plan::{
@@ -2645,6 +2652,7 @@ mod tests {
         VelocityIntegralExecutionPlan,
     };
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
+    use foci_tmc4671::pid::PidPGain;
 
     fn plan() -> VelocityIntegralExecutionPlan {
         VelocityIntegralExecutionPlan {
@@ -2743,8 +2751,8 @@ mod tests {
     /// generic schedule fault.
     #[test]
     fn direction_for_slot_reports_rung_index_out_of_range_past_the_slot_count() {
-        let error = direction_for_slot(IntegralSlotOrder::ForwardFirst, INTEGRAL_SLOT_COUNT)
-            .unwrap_err();
+        let error =
+            direction_for_slot(IntegralSlotOrder::ForwardFirst, INTEGRAL_SLOT_COUNT).unwrap_err();
 
         assert_eq!(error, CommissionError::RungIndexOutOfRange);
     }
@@ -2816,8 +2824,7 @@ mod tests {
 
     /// Same fault, the interval's high bound.
     #[test]
-    fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_high_bound()
-    {
+    fn retain_analyzed_observation_reports_target_rate_invalid_for_an_unrepresentable_high_bound() {
         let mut data = VelocityIntegralRuntime::new(1, plan());
         let mut workspace = TransientBuffer::new();
         let mut summary = observation_summary();
