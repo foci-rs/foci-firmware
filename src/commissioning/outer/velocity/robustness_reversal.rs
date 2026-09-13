@@ -1153,7 +1153,7 @@ fn build_origin_recovery(
     let start_offset_counts = safety.unwrapped_position;
     let return_direction = return_direction_from_offset(start_offset_counts);
     let lower_rate_q = return_lower_rate_q(&session.point, return_direction)
-        .ok_or(CommissionError::InvalidSchedule)?;
+        .ok_or(CommissionError::MissingRateTableEntry)?;
     let p = PidPGain::new(session.point.selected_p).map_err(|_| CommissionError::PidGainInvalid)?;
     RungOriginRecoveryRuntime::new(
         RungOriginRecoveryConfig {
@@ -2071,6 +2071,28 @@ mod tests {
         let result = build_origin_recovery(&session, &safety);
 
         assert_eq!(result, Err(CommissionError::MissingCaptureState));
+    }
+
+    /// A session past the missing-capture-state gate, with a recovery plan
+    /// already computed from a point whose return-rate table resolves.
+    fn test_session_with_recovery_plan() -> RobustnessReversalSession {
+        let point = recovery_point();
+        let safety = test_safety();
+        let plan = robustness_recovery_plan(&point, &safety).expect("recovery plan resolves");
+        let mut session = RobustnessReversalSession::new(point, 0, COUNTS_PER_REV);
+        session.recovery_plan = Some(plan);
+        session
+    }
+
+    #[test]
+    fn build_origin_recovery_rejects_missing_return_lower_rate() {
+        let mut session = test_session_with_recovery_plan();
+        session.point.selected_response_intervals_q = [[0, 0], [0, 0]];
+        let safety = test_safety();
+
+        let error = build_origin_recovery(&session, &safety).unwrap_err();
+
+        assert_eq!(error, CommissionError::MissingRateTableEntry);
     }
 
     /// Drive a run where establish and zero legs behave, and the measured
