@@ -317,6 +317,12 @@ pub enum CommissionError {
     MismatchedObservation,
     /// A narrowing conversion on an elapsed-time delta during recovery
     /// capture could not be represented. Code 83.
+    ///
+    /// Not reachable via `check_outer_safety`, whose own
+    /// `MAX_SAFETY_OBSERVATION_GAP_US` (20,000) gate rejects any observation
+    /// before it stores an elapsed time this conversion could reject --
+    /// allocated because the underlying `u16` conversion is a real code path,
+    /// not because current production input can reach it.
     ElapsedTimeConversionInvalid,
 }
 

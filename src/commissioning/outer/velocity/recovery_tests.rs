@@ -974,12 +974,11 @@ fn capture_settle_rejects_elapsed_delta_overflowing_u16() {
     let first_us = first * 1_000;
     assert!(matches!(fixture.step(), RungOriginRecoveryStep::At(next) if next == first_us));
 
-    // Defer the independent safety grid past this tick so `check_outer_safety`
-    // is not due and cannot overwrite the forced observation below before
-    // `CaptureSettle` reads it.
-    fixture
-        .safety
-        .defer_safety_deadline_for_test(first_us + 50_000);
+    // Re-arm the independent safety grid at this tick so its next deadline
+    // (one `OUTER_SAFETY_SAMPLE_PERIOD_US` later) is past this sample:
+    // `check_outer_safety` then takes its not-due early-out and cannot
+    // overwrite the forced observation below before `CaptureSettle` reads it.
+    fixture.safety.arm_safety_observation(first_us).unwrap();
     fixture
         .safety
         .force_accepted_observation_for_test(0, u64::from(u16::MAX) + 1);

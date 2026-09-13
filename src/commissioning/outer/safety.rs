@@ -583,17 +583,6 @@ impl OuterSafetyLimits {
         });
     }
 
-    /// Push the independent safety-sample grid deadline past a given tick.
-    ///
-    /// Lets a test drive one `CaptureSettle` tick while `check_outer_safety`
-    /// is not yet due, so it cannot overwrite a forced accepted observation
-    /// before the conversion under test reads it. Test-only.
-    #[cfg(test)]
-    pub(crate) fn defer_safety_deadline_for_test(&mut self, deadline_us: u64) {
-        self.next_safety_sample_us =
-            OuterSafetyTimestamp::some(deadline_us).expect("deadline is a valid timestamp");
-    }
-
     /// Return the next observation deadline while the safety envelope is armed.
     pub(crate) fn next_safety_deadline(&self) -> Option<u64> {
         if self.torque_cap == 0 {
