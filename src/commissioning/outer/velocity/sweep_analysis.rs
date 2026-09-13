@@ -271,6 +271,13 @@ pub(super) fn deficit_interval_q(
     settled_rate_low_q: i64,
     settled_rate_high_q: i64,
 ) -> Result<(i64, i64), CommissionError> {
+    // Unreachable: this function's only caller path feeds it
+    // `safety.counts_per_rev()`, which delegates to
+    // `EncoderDomain::counts_per_rev()` (commissioning/encoder_domain.rs).
+    // `EncoderDomain::new` rejects `counts_per_rev == 0` at construction and
+    // the field is private with no other setter, so a live
+    // `OuterSafetyLimits`/domain can never carry a zero value here.
+    // Defensive check retained.
     if counts_per_rev == 0 {
         return Err(CommissionError::InvalidSchedule);
     }
