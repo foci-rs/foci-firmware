@@ -1,6 +1,6 @@
 //! Cooperative state machine for rung-origin recovery.
 
-use crate::autotune::CommissionError;
+use crate::autotune::{CommissionError, VelocityUnitError};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::check_outer_safety;
 use crate::commissioning::types::{OUTER_SAFETY_FAULT_CURRENT, OuterSafetyFault};
@@ -206,9 +206,22 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             } else {
                 1
             };
-            let target = match runtime.target_velocity_rpm.with_direction(direction) {
+            // `ArithmeticOverflow` and `ZeroTarget` cannot fire here:
+            // `RungOriginRecoveryRuntime::new` rejects `target_velocity_rpm.raw() <= 0`
+            // at construction, and `direction` above is always +-1, so `with_direction`
+            // cannot fail for this caller. Classified defensively to match the
+            // equivalent call in `sweep_analysis`.
+            let target = match runtime
+                .target_velocity_rpm
+                .with_direction(direction)
+                .map_err(|error| match error {
+                    VelocityUnitError::ArithmeticOverflow => CommissionError::TargetRateInvalid,
+                    VelocityUnitError::ZeroTarget | VelocityUnitError::InvalidDirection => {
+                        CommissionError::InvalidSchedule
+                    }
+                }) {
                 Ok(target) => target.raw(),
-                Err(_) => return recovery_fault(CommissionError::InvalidSchedule, None),
+                Err(error) => return recovery_fault(error, None),
             };
             let started_us = backend.elapsed_us();
             if resources.safety.begin_primitive(started_us).is_err() {
