@@ -1717,6 +1717,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             };
             data.current_observer.observe_moving_output(torque_target);
             let _moving_peak = data.current_observer.moving_pid_output_peak();
+            // Unreachable: elapsed_us was already narrowed to
+            // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
+            // above (this state's read_us.checked_sub(data.previous_read_us)
+            // match), so push's only failure arm (elapsed_us == 0) can never
+            // fire here.
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
@@ -2008,6 +2013,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
+            // Unreachable: elapsed_us was already narrowed to
+            // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
+            // above (this state's read_us.checked_sub(data.previous_read_us)
+            // match), so push's only failure arm (elapsed_us == 0) can never
+            // fire here.
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
@@ -2363,6 +2373,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             {
                 return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
             }
+            // Unreachable: elapsed_us was already narrowed to
+            // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
+            // above (this state's read_us.checked_sub(data.previous_read_us)
+            // match), so push's only failure arm (elapsed_us == 0) can never
+            // fire here.
             if data
                 .observations
                 .push(delta.signed_counts(), elapsed_us as u16)
