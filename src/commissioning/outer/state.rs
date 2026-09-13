@@ -191,15 +191,38 @@ impl VelocitySettleMetrics {
         last_transition: VelocitySettleTransition::EMPTY,
     };
 
+    /// # Errors
+    ///
+    /// Returns [`CommissionError::InvalidSchedule`] if any counter overflows
+    /// its representation.
+    ///
+    /// The `sample_count`, `duration_us`, and `transition_count` overflow
+    /// guards are unreachable in practice: this struct is phase-local state
+    /// reset to `EMPTY` per zero-target settle capture (a single bounded
+    /// window no longer than `ZERO_SETTLE_US` = 500ms), and each of these
+    /// three counters has 100x+ headroom against that window even at an
+    /// aggressive 1kHz sample rate (`sample_count: u16` allows ~500 samples
+    /// in 500ms; `duration_us: u32` allows ~4.29e9us against a 500,000us
+    /// window; `transition_count` is bounded in turn by `sample_count`, at
+    /// most one transition per sample). This reasoning depends on no future
+    /// plan running a single settle window materially longer than 500ms.
+    ///
+    /// The `net_displacement_counts` overflow guard is NOT covered by this
+    /// argument: it accumulates an arbitrary `i32` delta per sample rather
+    /// than a fixed increment, so it is not bounded by sample count alone.
+    /// Left live and unresolved -- see the plan's "Needs more investigation"
+    /// list.
     pub(crate) fn observe(
         &mut self,
         delta_counts: i32,
         elapsed_us: u32,
     ) -> Result<(), CommissionError> {
+        // Unreachable: see this function's doc comment.
         self.sample_count = self
             .sample_count
             .checked_add(1)
             .ok_or(CommissionError::InvalidSchedule)?;
+        // Unreachable: see this function's doc comment.
         self.duration_us = self
             .duration_us
             .checked_add(elapsed_us)
@@ -215,6 +238,7 @@ impl VelocitySettleMetrics {
             .maximum_displacement_counts
             .max(self.net_displacement_counts);
         if delta_counts != 0 {
+            // Unreachable: see this function's doc comment.
             self.transition_count = self
                 .transition_count
                 .checked_add(1)
