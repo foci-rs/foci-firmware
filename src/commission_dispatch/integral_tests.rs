@@ -2,8 +2,9 @@ use super::integral::{
     INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY, INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY,
     INTEGRAL_DISPATCH_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT,
     INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH, INTEGRAL_DISPATCH_CAUSE_REPRODUCTION_MISMATCH,
-    IntegralPreflight, IntegralPreflightConfig, IntegralPreflightRejection,
-    apply_integral_terminal, missing_authority_integral_terminal, preflight_integral_request,
+    INTEGRAL_DISPATCH_CAUSE_UNEXPECTED_TERMINAL_OUTCOME, IntegralPreflight,
+    IntegralPreflightConfig, IntegralPreflightRejection, apply_integral_terminal,
+    missing_authority_integral_terminal, preflight_integral_request,
 };
 use super::{CommissionOutcome, ReplyPayload};
 use crate::commissioning::outer::OuterMotionBudget;
@@ -591,7 +592,7 @@ fn unexpected_complete_terminal_fails_closed_in_retained_integral_dispatch() {
     assert_eq!(dispatch.terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
         dispatch.terminal.cause,
-        IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY)
+        IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_UNEXPECTED_TERMINAL_OUTCOME)
     );
     assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
 }
@@ -607,7 +608,7 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
         (
             VelocityIntegralOutcome::RepeatabilityConfirmed,
             VelocityIntegralOutcome::Fault,
-            IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY),
+            IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_UNEXPECTED_TERMINAL_OUTCOME),
         ),
         (
             VelocityIntegralOutcome::FirstRunRetained,
@@ -632,7 +633,7 @@ fn every_engine_outcome_has_a_declared_dispatch_verdict() {
         (
             VelocityIntegralOutcome::RejectedPlanMismatch,
             VelocityIntegralOutcome::Fault,
-            IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY),
+            IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_UNEXPECTED_TERMINAL_OUTCOME),
         ),
     ];
 

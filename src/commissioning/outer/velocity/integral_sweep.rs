@@ -76,11 +76,29 @@ const INTEGRAL_CAUSE_NONE: u8 = 0;
 const INTEGRAL_CAUSE_TOO_FEW_RUNGS: u8 = 1;
 const INTEGRAL_CAUSE_CURRENT_BEFORE_SUFFICIENCY: u8 = 2;
 const INTEGRAL_CAUSE_CURRENT_AFTER_SUFFICIENCY: u8 = 3;
-pub(super) const INTEGRAL_CAUSE_INTEGRITY: u8 = 4;
+// Code 4 was the generic INTEGRAL_CAUSE_INTEGRITY bucket, split into
+// dedicated causes below; not reused for a new meaning.
 const INTEGRAL_CAUSE_RECOVERY: u8 = 5;
 pub(super) const INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE: u8 = 8;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY: u8 = 9;
 pub(super) const INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY: u8 = 10;
+/// A sufficient run was rejected by rest confirmation while a fixed-gain
+/// amplitude observation or recovery already owned the rest selection.
+pub(super) const INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP: u8 = 6;
+/// A raw interval had reversed bounds during run-evidence assessment.
+const INTEGRAL_CAUSE_EVIDENCE_INVALID_INTERVAL: u8 = 7;
+/// An observation's direction, gain, or interval was inconsistent during
+/// run-evidence assessment.
+const INTEGRAL_CAUSE_EVIDENCE_MISMATCHED_OBSERVATION: u8 = 11;
+/// An exact i64 rate bound did not fit Stage-C's retained i32 domain during
+/// run-evidence assessment.
+const INTEGRAL_CAUSE_EVIDENCE_CONVERSION: u8 = 14;
+/// A direction, rung, mask bit, or terminus exceeded the declared ladder
+/// during run-evidence assessment.
+const INTEGRAL_CAUSE_EVIDENCE_MASK_OUT_OF_RANGE: u8 = 15;
+/// The same direction/rung cell was retained twice during run-evidence
+/// assessment.
+const INTEGRAL_CAUSE_EVIDENCE_DUPLICATE_RUNG: u8 = 16;
 const OPENING_WORD_BASE: usize = 0;
 const AMPLITUDE_MEAN_WORD_BASE: usize = 0;
 const POSITIVE_WORD_BASE: usize = 4;
@@ -1233,12 +1251,12 @@ fn retain_rung(
 fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer) -> StepResult {
     let evidence = match materialize_run_evidence(data, workspace) {
         Ok(evidence) => evidence,
-        Err(_) => {
+        Err(error) => {
             return terminal_from_data(
                 data,
                 super::integral_evidence::IntegralRunEvidence::new([ExactRateInterval::EMPTY; 2]),
                 VelocityIntegralOutcome::Fault,
-                IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
+                IntegralOutcomeCause::Error(error.status_code()),
                 None,
                 false,
                 None,
@@ -1259,7 +1277,7 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
                     data,
                     evidence,
                     VelocityIntegralOutcome::Fault,
-                    IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
+                    IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP),
                     None,
                     false,
                     None,
@@ -1345,11 +1363,27 @@ fn evidence_terminal(data: &VelocityIntegralRuntime, workspace: &TransientBuffer
             false,
             None,
         ),
-        Err(_) => terminal_from_data(
+        Err(error) => terminal_from_data(
             data,
             evidence,
             VelocityIntegralOutcome::Fault,
-            IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY),
+            IntegralOutcomeCause::Engine(match error {
+                super::integral_evidence::IntegralEvidenceError::InvalidInterval => {
+                    INTEGRAL_CAUSE_EVIDENCE_INVALID_INTERVAL
+                }
+                super::integral_evidence::IntegralEvidenceError::MismatchedObservation => {
+                    INTEGRAL_CAUSE_EVIDENCE_MISMATCHED_OBSERVATION
+                }
+                super::integral_evidence::IntegralEvidenceError::Conversion => {
+                    INTEGRAL_CAUSE_EVIDENCE_CONVERSION
+                }
+                super::integral_evidence::IntegralEvidenceError::MaskOutOfRange => {
+                    INTEGRAL_CAUSE_EVIDENCE_MASK_OUT_OF_RANGE
+                }
+                super::integral_evidence::IntegralEvidenceError::DuplicateRung => {
+                    INTEGRAL_CAUSE_EVIDENCE_DUPLICATE_RUNG
+                }
+            }),
             None,
             false,
             None,

@@ -38,6 +38,23 @@ pub const INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY: u8 = 12;
 /// a cause with a fault would tell the operator to inspect an integrity breach
 /// that did not occur.
 pub const INTEGRAL_DISPATCH_CAUSE_NO_ACCEPTANCE_TERMINUS: u8 = 13;
+/// A Stage-C terminal arrived with no retained authority to dispatch against.
+///
+/// Distinct from [`INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY`]: a
+/// terminal only exists because a run was dispatched, which requires
+/// authority to have been present at start, so its absence here means
+/// authority was lost mid-run, not the ordinary empty-slot state.
+pub const INTEGRAL_DISPATCH_CAUSE_AUTHORITY_LOST_MID_RUN: u8 = 14;
+/// A Stage-C terminal arrived already carrying an outcome only this
+/// dispatch is meant to assign. Code 15.
+///
+/// Not reachable via `apply_integral_terminal`, its only production caller
+/// as of this writing: no production path constructs a
+/// `VelocityIntegralTerminal` with `RepeatabilityConfirmed` or
+/// `RejectedPlanMismatch` before it reaches this function -- allocated
+/// because the underlying check is a real code path, not because current
+/// production input can reach it.
+pub const INTEGRAL_DISPATCH_CAUSE_UNEXPECTED_TERMINAL_OUTCOME: u8 = 15;
 
 const ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED: u16 = 1 << 7;
 const ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT: u16 = 1 << 8;
@@ -356,7 +373,8 @@ pub fn apply_integral_terminal(
 ) -> IntegralTerminalDispatch {
     let Some(authority) = integral_candidate.authority() else {
         terminal.outcome = VelocityIntegralOutcome::Fault;
-        terminal.cause = IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY);
+        terminal.cause =
+            IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_AUTHORITY_LOST_MID_RUN);
         return IntegralTerminalDispatch {
             terminal,
             reproduction: None,
@@ -366,7 +384,7 @@ pub fn apply_integral_terminal(
     if terminal.plan_digest != authority.identity.plan_digest {
         integral_candidate.observe_fault();
         terminal.outcome = VelocityIntegralOutcome::Fault;
-        terminal.cause = IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY);
+        terminal.cause = IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH);
         return IntegralTerminalDispatch {
             terminal,
             reproduction: None,
@@ -483,7 +501,7 @@ pub fn apply_integral_terminal(
             integral_candidate.observe_fault();
             terminal.outcome = VelocityIntegralOutcome::Fault;
             terminal.cause =
-                IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY);
+                IntegralOutcomeCause::Dispatch(INTEGRAL_DISPATCH_CAUSE_UNEXPECTED_TERMINAL_OUTCOME);
             None
         }
     };

@@ -3,7 +3,7 @@ use super::integral_plan::{
     AcceptanceSource, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralExecutionPlan,
 };
 use super::integral_sweep::{
-    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_INTEGRITY,
+    INTEGRAL_CAUSE_BOOKEND_UNAVAILABLE, INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY,
     INTEGRAL_CAUSE_POSITIVE_I_REST_BOUNDARY_AFTER_SUFFICIENCY, INTEGRAL_SLOT_COUNT,
     advance_integral_cursor, amplitude_rung_mean, analyze_rung, apply_integral_current_headroom,
@@ -2549,9 +2549,8 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
 fn amplitude_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
     // Defensive: evidence_terminal only runs on the non-amplitude path, so
     // data.rest_unconfirmed_owner should never hold an Amplitude value here.
-    // If it somehow does, this must surface as the same integrity fault
-    // shape evidence_terminal already uses elsewhere, not a silently
-    // wrong case-(b) terminal.
+    // If it somehow does, this must surface as its own dedicated cause, not
+    // a silently wrong case-(b) terminal.
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {
@@ -2575,7 +2574,7 @@ fn amplitude_owner_reaching_evidence_terminal_is_reported_as_integrity_fault() {
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
         terminal.cause,
-        IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_INTEGRITY)
+        IntegralOutcomeCause::Engine(INTEGRAL_CAUSE_FIXED_GAIN_REST_OWNERSHIP)
     );
     assert!(!terminal.rest_rejection_after_sufficiency);
     assert_eq!(terminal.rest_rejection_owner, None);
