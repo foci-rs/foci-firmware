@@ -603,14 +603,14 @@ async fn poll_delay_sample<B: CommissioningBackend>(
         ELECTRICAL_SAMPLE_PERIOD_US as u16,
         now_us,
     )
-    .map_err(|_| {
+    .map_err(|reject| {
         capture.timing.mark_source_overflow(u32::MAX);
-        CommissionError::DelayTimingRejected
+        CommissionError::from(reject)
     });
     let slot = slot?;
     if slot.missed != 0 {
         capture.timing.record_rejected_slot(slot, now_us);
-        return Err(CommissionError::DelayTimingRejected);
+        return Err(CommissionError::TimingMissedSamples);
     }
 
     let current_io = timed_read_capture_register(backend, PID_TORQUE_FLUX_ACTUAL).await;
@@ -618,19 +618,22 @@ async fn poll_delay_sample<B: CommissioningBackend>(
     let observation_us = backend.elapsed_us();
     if current_io.overflowed {
         capture.timing.mark_source_overflow(current_io.wall_us);
-        return Err(CommissionError::DelayTimingRejected);
+        return Err(CommissionError::TimingTelemetryOverflow);
     }
-    if buf.len() != capture.offsets.len() || buf.is_full() {
-        return Err(CommissionError::DelayTimingRejected);
+    if buf.is_full() {
+        return Err(CommissionError::EvidenceBufferFull);
+    }
+    if buf.len() != capture.offsets.len() {
+        return Err(CommissionError::CaptureBufferDesync);
     }
     let offset_us = observation_us
         .checked_sub(capture.origin_us)
         .and_then(|offset| u32::try_from(offset).ok())
-        .ok_or(CommissionError::DelayTimingRejected)?;
+        .ok_or(CommissionError::ElapsedTimeConversionInvalid)?;
     let mut offsets = capture.offsets.clone();
     offsets
         .push(offset_us)
-        .map_err(|_| CommissionError::DelayTimingRejected)?;
+        .map_err(|_| CommissionError::EvidenceBufferFull)?;
     let current = (actual & 0xffff) as i16;
     let relative = (i32::from(current) - i32::from(capture.baseline)).unsigned_abs();
     let poll_completion_us = backend.elapsed_us();
@@ -643,22 +646,16 @@ async fn poll_delay_sample<B: CommissioningBackend>(
             poll_completion_us,
             current_io.wall_us,
         )
-        .map_err(|_| CommissionError::DelayTimingRejected)?;
-    capture
-        .timing
-        .finish()
-        .map_err(|_| CommissionError::DelayTimingRejected)?;
+        .map_err(CommissionError::from)?;
+    capture.timing.finish().map_err(CommissionError::from)?;
     if !buf.push(relative) {
-        return Err(CommissionError::DelayTimingRejected);
+        return Err(CommissionError::EvidenceBufferFull);
     }
     capture.offsets = offsets;
     capture.next_sample_us = accepted_slot.next_deadline_us;
 
     if buf.len() >= DELAY_SAMPLE_COUNT || buf.is_full() {
-        let timing = capture
-            .timing
-            .finish()
-            .map_err(|_| CommissionError::DelayTimingRejected)?;
+        let timing = capture.timing.finish().map_err(CommissionError::from)?;
         return Ok(DelaySamplePoll::Complete(DelayCompletedCapture {
             offsets: capture.offsets.clone(),
             timing,
@@ -2345,7 +2342,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 return begin_delay_restore(
                     electrical_identification_state,
                     backend,
-                    Some(CommissionError::DelayTimingRejected),
+                    Some(CommissionError::TimingArithmeticOverflow),
                     None,
                 );
             };
@@ -5385,7 +5382,7 @@ mod tests {
                 phase,
                 InnerPhase::ElectricalIdentification {
                     state: ElectricalIdentificationState::DelayRestore {
-                        primary_error: Some(CommissionError::DelayTimingRejected),
+                        primary_error: Some(CommissionError::TimingMissedSamples),
                         ..
                     },
                     ..
@@ -5493,7 +5490,7 @@ mod tests {
             assert!(matches!(
                 state,
                 ElectricalIdentificationState::DelayRestore {
-                    primary_error: Some(CommissionError::DelayTimingRejected),
+                    primary_error: Some(CommissionError::TimingServiceOverrun),
                     ..
                 }
             ));

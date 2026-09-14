@@ -346,6 +346,70 @@ pub enum CommissionError {
     /// this accumulator; this variant reports the accumulator itself
     /// overflowing across many accepted samples.
     NetDisplacementOverflow,
+    /// A capture's sample-slot selection saw time move backwards, or violated
+    /// poll ordering. From `capture_timing::TimingReject::NonMonotonicTime`,
+    /// shared across the resistance, inductance, and delay captures. Code 88.
+    TimingNonMonotonic,
+    /// A capture's checked deadline or interval arithmetic overflowed. From
+    /// `capture_timing::TimingReject::ArithmeticOverflow`, shared across the
+    /// resistance, inductance, and delay captures. Code 89.
+    TimingArithmeticOverflow,
+    /// A capture's sample-start lateness exceeded one quarter of its
+    /// requested period. From
+    /// `capture_timing::TimingReject::ExcessiveLateness`, shared across the
+    /// resistance, inductance, and delay captures. Code 90.
+    TimingExcessiveLateness,
+    /// A capture's complete sample service took longer than one requested
+    /// period. From `capture_timing::TimingReject::ServiceOverrun`, shared
+    /// across the resistance, inductance, and delay captures. Code 91.
+    TimingServiceOverrun,
+    /// A capture missed more sample slots than its method permits. From
+    /// `capture_timing::TimingReject::MissedSamples`, shared across the
+    /// resistance, inductance, and delay captures. Code 92.
+    TimingMissedSamples,
+    /// A capture's observation gap skipped more consecutive logical sample
+    /// slots than permitted. From
+    /// `capture_timing::TimingReject::ConsecutiveMisses`, shared across the
+    /// resistance, inductance, and delay captures. Code 93.
+    TimingConsecutiveMisses,
+    /// A capture's time attributed to SPI exceeded its complete poll wall
+    /// time. From `capture_timing::TimingReject::SpiWallExceedsPoll`, shared
+    /// across the resistance, inductance, and delay captures. Code 94.
+    TimingSpiWallExceedsPoll,
+    /// A capture's telemetry counter or duration saturated its storage type.
+    /// From `capture_timing::TimingReject::TelemetryOverflow`, shared across
+    /// the resistance, inductance, and delay captures. Code 95.
+    TimingTelemetryOverflow,
+    /// A capture timestamp offset could not be represented by its capture
+    /// container. From `capture_timing::TimingReject::TimestampRange`,
+    /// shared across the resistance, inductance, and delay captures. Code 96.
+    TimingTimestampRange,
+    /// A capture's two parallel evidence buffers diverged in length -- an
+    /// internal invariant violation. Code 97.
+    ///
+    /// Not reachable via the electrical-delay capture, its only production
+    /// caller as of this writing: both buffers are pushed to in lockstep
+    /// within the same poll iteration -- allocated because the underlying
+    /// check is a real code path, not because current production input can
+    /// reach it.
+    CaptureBufferDesync,
+}
+
+impl From<crate::commissioning::capture_timing::TimingReject> for CommissionError {
+    fn from(reject: crate::commissioning::capture_timing::TimingReject) -> Self {
+        use crate::commissioning::capture_timing::TimingReject;
+        match reject {
+            TimingReject::NonMonotonicTime => Self::TimingNonMonotonic,
+            TimingReject::ArithmeticOverflow => Self::TimingArithmeticOverflow,
+            TimingReject::ExcessiveLateness => Self::TimingExcessiveLateness,
+            TimingReject::ServiceOverrun => Self::TimingServiceOverrun,
+            TimingReject::MissedSamples => Self::TimingMissedSamples,
+            TimingReject::ConsecutiveMisses => Self::TimingConsecutiveMisses,
+            TimingReject::SpiWallExceedsPoll => Self::TimingSpiWallExceedsPoll,
+            TimingReject::TelemetryOverflow => Self::TimingTelemetryOverflow,
+            TimingReject::TimestampRange => Self::TimingTimestampRange,
+        }
+    }
 }
 
 impl CommissionError {
@@ -442,6 +506,16 @@ impl CommissionError {
             Self::VelocityEnvelopeExceedsCeiling => 85,
             Self::SafetyTimingGapInvalid => 86,
             Self::NetDisplacementOverflow => 87,
+            Self::TimingNonMonotonic => 88,
+            Self::TimingArithmeticOverflow => 89,
+            Self::TimingExcessiveLateness => 90,
+            Self::TimingServiceOverrun => 91,
+            Self::TimingMissedSamples => 92,
+            Self::TimingConsecutiveMisses => 93,
+            Self::TimingSpiWallExceedsPoll => 94,
+            Self::TimingTelemetryOverflow => 95,
+            Self::TimingTimestampRange => 96,
+            Self::CaptureBufferDesync => 97,
         }
     }
 }
