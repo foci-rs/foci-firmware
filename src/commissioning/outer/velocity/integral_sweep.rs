@@ -2019,12 +2019,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.settle_max_displacement_counts = data
                 .settle_max_displacement_counts
                 .max(data.settle_displacement_counts);
-            if data
+            if let Err(error) = data
                 .settle_metrics
                 .observe(delta.signed_counts(), elapsed_us as u32)
-                .is_err()
             {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, error).await;
             }
             // Unreachable: elapsed_us was already narrowed to
             // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
@@ -2379,12 +2378,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             data.settle_max_displacement_counts = data
                 .settle_max_displacement_counts
                 .max(data.settle_displacement_counts);
-            if data
+            if let Err(error) = data
                 .settle_metrics
                 .observe(delta.signed_counts(), elapsed_us as u32)
-                .is_err()
             {
-                return fail_integral(phase, backend, CommissionError::InvalidSchedule).await;
+                return fail_integral(phase, backend, error).await;
             }
             // Unreachable: elapsed_us was already narrowed to
             // 1..=MAX_SAFETY_OBSERVATION_GAP_US by the checked_sub guard
