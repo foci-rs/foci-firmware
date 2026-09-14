@@ -858,7 +858,7 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     let sample_start = capture
         .timing
         .classify_sample_start(capture.next_sample_us, now_us)
-        .map_err(|_| CommissionError::InductanceTimingRejected);
+        .map_err(CommissionError::from);
     match sample_start? {
         SampleStart::Sample => {}
         SampleStart::Skip { next_deadline_us } => {
@@ -874,7 +874,7 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
     let current_elapsed_us = observation_us
         .checked_sub(capture.start_us)
         .and_then(|elapsed| u32::try_from(elapsed).ok())
-        .ok_or(CommissionError::InductanceTimingRejected)?;
+        .ok_or(CommissionError::ElapsedTimeConversionInvalid)?;
     let expected_phi_delta_counts = match current_elapsed_us
         .checked_sub(capture.previous_elapsed_us)
     {
@@ -882,14 +882,14 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
             INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ,
             elapsed_since_previous_us,
         )
-        .ok_or(CommissionError::InductanceTimingRejected)?,
+        .ok_or(CommissionError::TimingArithmeticOverflow)?,
         None => {
             crate::electrical_capture::phi_delta_counts_forward(capture.previous_phi, current_phi)
         }
     };
     if sample_io.overflowed {
         capture.timing.mark_source_overflow(sample_io.wall_us);
-        return Err(CommissionError::InductanceTimingRejected);
+        return Err(CommissionError::TimingTelemetryOverflow);
     }
     let spi_wall_us = sample_io.wall_us;
     let interval = crate::electrical_capture::phi_locked_ac_interval(
@@ -1039,18 +1039,12 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
             poll_completion_us,
             spi_wall_us,
         )
-        .map_err(|_| CommissionError::InductanceTimingRejected)?;
-    capture
-        .timing
-        .finish()
-        .map_err(|_| CommissionError::InductanceTimingRejected)?;
+        .map_err(CommissionError::from)?;
+    capture.timing.finish().map_err(CommissionError::from)?;
     capture.next_sample_us = slot.next_deadline_us;
     if let Some(completed_elapsed_us) = completed_elapsed_us {
         capture.accumulated_phi_delta_counts = interval.accumulated_phi_delta_counts;
-        let timing = capture
-            .timing
-            .finish()
-            .map_err(|_| CommissionError::InductanceTimingRejected)?;
+        let timing = capture.timing.finish().map_err(CommissionError::from)?;
         return Ok(InductanceSamplePoll::Complete {
             elapsed_us: completed_elapsed_us,
             timing,

@@ -350,9 +350,11 @@ pub enum CommissionError {
     /// poll ordering. From `capture_timing::TimingReject::NonMonotonicTime`,
     /// shared across the resistance, inductance, and delay captures. Code 88.
     TimingNonMonotonic,
-    /// A capture's checked deadline or interval arithmetic overflowed. From
-    /// `capture_timing::TimingReject::ArithmeticOverflow`, shared across the
-    /// resistance, inductance, and delay captures. Code 89.
+    /// A capture's checked deadline, interval, or derived-angle arithmetic
+    /// overflowed. Covers `capture_timing::TimingReject::ArithmeticOverflow`
+    /// and equivalent checked-arithmetic failures in the capture-math
+    /// helpers (e.g. `electrical_capture::estimate::expected_phi_delta_counts`),
+    /// shared across the resistance, inductance, and delay captures. Code 89.
     TimingArithmeticOverflow,
     /// A capture's sample-start lateness exceeded one quarter of its
     /// requested period. From
