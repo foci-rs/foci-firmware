@@ -193,8 +193,10 @@ impl VelocitySettleMetrics {
 
     /// # Errors
     ///
-    /// Returns [`CommissionError::InvalidSchedule`] if any counter overflows
-    /// its representation.
+    /// Returns [`CommissionError::InvalidSchedule`] if the `sample_count`,
+    /// `duration_us`, or `transition_count` counters overflow their
+    /// representation, and [`CommissionError::NetDisplacementOverflow`] if
+    /// the `net_displacement_counts` accumulator does.
     ///
     /// The `sample_count`, `duration_us`, and `transition_count` overflow
     /// guards are unreachable in practice: this struct is phase-local state
@@ -207,11 +209,16 @@ impl VelocitySettleMetrics {
     /// most one transition per sample). This reasoning depends on no future
     /// plan running a single settle window materially longer than 500ms.
     ///
-    /// The `net_displacement_counts` overflow guard is NOT covered by this
-    /// argument: it accumulates an arbitrary `i32` delta per sample rather
-    /// than a fixed increment, so it is not bounded by sample count alone.
-    /// Left live and unresolved -- see the plan's "Needs more investigation"
-    /// list.
+    /// The `net_displacement_counts` overflow guard is reachable: it
+    /// accumulates an arbitrary `i32` delta per sample
+    /// (`delta.signed_counts()`) rather than a fixed increment, and the
+    /// bound on that delta is `counts_per_rev.div_ceil(4)` (the per-sample
+    /// quarter-turn-fault gate) -- a function of the host-supplied
+    /// `encoder_ppr` wire value, which the firmware validates only for
+    /// `i32` representability, not physical plausibility. At the largest
+    /// `counts_per_rev` the firmware still accepts, as few as 5
+    /// same-direction max-magnitude samples overflow this accumulator,
+    /// trivially inside the ~500-sample window.
     pub(crate) fn observe(
         &mut self,
         delta_counts: i32,
@@ -230,7 +237,7 @@ impl VelocitySettleMetrics {
         self.net_displacement_counts = self
             .net_displacement_counts
             .checked_add(delta_counts)
-            .ok_or(CommissionError::InvalidSchedule)?;
+            .ok_or(CommissionError::NetDisplacementOverflow)?;
         self.minimum_displacement_counts = self
             .minimum_displacement_counts
             .min(self.net_displacement_counts);
@@ -486,7 +493,9 @@ impl OuterPhase {
 mod tests {
     use core::mem::size_of;
 
-    use super::{OuterPhase, VelocityIntegralRuntime, VelocityIntegralState};
+    use super::{
+        OuterPhase, VelocityIntegralRuntime, VelocityIntegralState, VelocitySettleMetrics,
+    };
     use crate::autotune::{CommissionError, CommissionPhase};
 
     use crate::commissioning::outer::OuterSafetyLimits;
@@ -495,6 +504,14 @@ mod tests {
         VelocityIntegralExecutionPlan,
     };
     use crate::commissioning::outer::velocity::velocity_clamp::VelocityLimitEvidenceCapability;
+
+    #[test]
+    fn observe_reports_net_displacement_overflow_not_generic_schedule_fault() {
+        let mut metrics = VelocitySettleMetrics::EMPTY;
+        metrics.net_displacement_counts = i32::MAX - 1;
+        let error = metrics.observe(2, 1_000).unwrap_err();
+        assert_eq!(error, CommissionError::NetDisplacementOverflow);
+    }
 
     fn minimal_velocity_integral_plan() -> VelocityIntegralExecutionPlan {
         VelocityIntegralExecutionPlan {
