@@ -338,6 +338,14 @@ pub enum CommissionError {
     /// A realized encoder-read gap exceeded what a 32-bit microsecond count
     /// can represent (~71.6 minutes). Code 86.
     SafetyTimingGapInvalid,
+    /// The accumulated net displacement over one zero-target settle-capture
+    /// window exceeded what an `i32` can represent. Code 87.
+    ///
+    /// Distinct from the per-sample quarter-turn-fault safety check: that
+    /// check rejects a single out-of-range sample before it ever reaches
+    /// this accumulator; this variant reports the accumulator itself
+    /// overflowing across many accepted samples.
+    NetDisplacementOverflow,
 }
 
 impl CommissionError {
@@ -433,6 +441,7 @@ impl CommissionError {
             Self::VelocityEnvelopeCeilingZero => 84,
             Self::VelocityEnvelopeExceedsCeiling => 85,
             Self::SafetyTimingGapInvalid => 86,
+            Self::NetDisplacementOverflow => 87,
         }
     }
 }
@@ -719,6 +728,7 @@ mod tests {
             CommissionError::InductanceCurrentEnvelope,
             CommissionError::FaultInterlock,
             CommissionError::HostLivenessExpired,
+            CommissionError::NetDisplacementOverflow,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -765,6 +775,10 @@ mod tests {
         assert_eq!(CommissionError::PrimitiveStartInFuture.status_code(), 71);
         assert_eq!(CommissionError::RecoveryOriginMismatch.status_code(), 72);
         assert_eq!(CommissionError::HostLivenessExpired.status_code(), 78);
+        assert_eq!(
+            CommissionError::NetDisplacementOverflow.status_code(),
+            87
+        );
     }
 
     #[test]
