@@ -16,6 +16,10 @@ pub enum TmcSafetyBootstrapStage {
     StatusFlagsRead,
     /// Clearing pending `STATUS_FLAGS` failed.
     StatusFlagsClear,
+    /// `STATUS_FLAGS` still has a bit set that the corrected `status_mask`
+    /// considers critical: a genuinely live fault, not a masked-out stale
+    /// bit. Carries the observed flags for diagnostics.
+    RetainedCriticalFault { flags: u32 },
 }
 
 /// Retained failure from one TMC4671 safety bootstrap.
@@ -52,6 +56,12 @@ impl TmcSafetyBootstrapFailure {
             }
             (1, TmcSafetyBootstrapStage::StatusFlagsClear) => {
                 ShutdownReason::TmcBootstrapCh1StatusFlagsClearFailed
+            }
+            (0, TmcSafetyBootstrapStage::RetainedCriticalFault { .. }) => {
+                ShutdownReason::TmcBootstrapCh0RetainedCriticalFault
+            }
+            (1, TmcSafetyBootstrapStage::RetainedCriticalFault { .. }) => {
+                ShutdownReason::TmcBootstrapCh1RetainedCriticalFault
             }
             _ => ShutdownReason::InvalidTmcChannel,
         }
@@ -90,8 +100,32 @@ async fn retry_plain_write<B: CommissionRegisterIo>(
 }
 
 /// Configure the safety registers required before normal TMC operation.
+///
+/// Writes `ADC_VM_LIMITS` to its maximum-safe value, writes `status_mask`
+/// to `STATUS_MASK`, then reads back `STATUS_FLAGS`. If any bit the
+/// corrected `status_mask` still considers critical is set in that
+/// readback, this is a genuine live fault (not a stale bit the mask now
+/// excludes): the flags are logged via `defmt::error!` and returned as
+/// `Err(TmcSafetyBootstrapFailure { stage: RetainedCriticalFault { flags } })`
+/// without clearing `STATUS_FLAGS`, so the evidence survives. Otherwise
+/// `STATUS_FLAGS` is cleared (best-effort; the TMC4671 does not support
+/// clearing individual bits) and the bootstrap succeeds.
+///
+/// `channel` identifies the TMC4671 channel purely for diagnostics (the
+/// `defmt::error!` line above); it does not affect which registers are
+/// written. Callers separately pass `channel` to
+/// `TmcSafetyBootstrapFailure::shutdown_reason` to map a failure to the
+/// channel-specific `ShutdownReason`.
+///
+/// # Errors
+///
+/// Returns `Err` if any SPI write-verify or read exhausts its retry
+/// budget (`AdcVmLimitsWrite`, `StatusMaskWrite`, `StatusFlagsRead`,
+/// `StatusFlagsClear`), or if a retained critical fault is detected
+/// (`RetainedCriticalFault`).
 pub async fn bootstrap_tmc_safety<B: CommissionRegisterIo>(
     backend: &mut B,
+    channel: u8,
     status_mask: u32,
 ) -> Result<(), TmcSafetyBootstrapFailure> {
     backend
@@ -106,11 +140,22 @@ pub async fn bootstrap_tmc_safety<B: CommissionRegisterIo>(
         .map_err(|_| TmcSafetyBootstrapFailure {
             stage: TmcSafetyBootstrapStage::StatusMaskWrite,
         })?;
-    retry_plain_read(backend, STATUS_FLAGS)
-        .await
-        .map_err(|_| TmcSafetyBootstrapFailure {
-            stage: TmcSafetyBootstrapStage::StatusFlagsRead,
-        })?;
+    let flags =
+        retry_plain_read(backend, STATUS_FLAGS)
+            .await
+            .map_err(|_| TmcSafetyBootstrapFailure {
+                stage: TmcSafetyBootstrapStage::StatusFlagsRead,
+            })?;
+    if flags & status_mask != 0 {
+        defmt::error!(
+            "TMC4671 channel {} safety bootstrap: retained critical fault, STATUS_FLAGS={:#010x}",
+            channel,
+            flags
+        );
+        return Err(TmcSafetyBootstrapFailure {
+            stage: TmcSafetyBootstrapStage::RetainedCriticalFault { flags },
+        });
+    }
     retry_plain_write(backend, STATUS_FLAGS, 0)
         .await
         .map_err(|_| TmcSafetyBootstrapFailure {
@@ -153,7 +198,7 @@ mod tests {
         pollster::block_on(async {
             for mask in MASKS {
                 let mut backend = MockBackend::new();
-                let result = bootstrap_tmc_safety(&mut backend, mask).await;
+                let result = bootstrap_tmc_safety(&mut backend, 0, mask).await;
 
                 assert_eq!(result, Ok(()));
                 assert_eq!(backend.spi_log.len(), 6);
@@ -191,7 +236,7 @@ mod tests {
                     backend.fail_reads_remaining = Some((address, 1));
                 }
 
-                let result = bootstrap_tmc_safety(&mut backend, MASKS[0]).await;
+                let result = bootstrap_tmc_safety(&mut backend, 0, MASKS[0]).await;
 
                 assert_eq!(result, Ok(()), "transient stage {index}");
                 assert_eq!(backend.spi_log.len(), 7, "transient stage {index}");
@@ -237,11 +282,69 @@ mod tests {
                     backend.fail_on_read = Some(address);
                 }
 
-                let result = bootstrap_tmc_safety(&mut backend, MASKS[0]).await;
+                let result = bootstrap_tmc_safety(&mut backend, 0, MASKS[0]).await;
 
                 assert_eq!(result, Err(failure(stage)));
                 assert_eq!(backend.spi_log.len(), expected_ops, "stage {stage:?}");
             }
+        });
+    }
+
+    #[test]
+    fn tmc_safety_bootstrap_detects_retained_critical_fault_and_skips_clear() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            backend.read_override = Some((STATUS_FLAGS.addr(), MASKS[0]));
+
+            let result = bootstrap_tmc_safety(&mut backend, 0, MASKS[0]).await;
+
+            assert_eq!(
+                result,
+                Err(TmcSafetyBootstrapFailure {
+                    stage: TmcSafetyBootstrapStage::RetainedCriticalFault { flags: MASKS[0] },
+                })
+            );
+            // Write(ADC_VM_LIMITS), Read(verify), Write(STATUS_MASK), Read(verify),
+            // Read(STATUS_FLAGS) -- five ops, no trailing Write(STATUS_FLAGS, 0).
+            assert_eq!(backend.spi_log.len(), 5);
+            assert!(matches!(backend.spi_log[4], SpiOp::Read));
+        });
+    }
+
+    #[test]
+    fn tmc_safety_bootstrap_clears_a_stale_masked_out_bit_normally() {
+        pollster::block_on(async {
+            let mut backend = MockBackend::new();
+            // enc_n (bit 28) is not part of MASKS[0] (bit 26 only): a stale
+            // unmasked bit from a prior session, not a live critical fault.
+            backend.read_override = Some((STATUS_FLAGS.addr(), 1 << 28));
+
+            let result = bootstrap_tmc_safety(&mut backend, 0, MASKS[0]).await;
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(backend.spi_log.len(), 6);
+            assert!(
+                matches!(backend.spi_log[5], SpiOp::Write(addr, 0) if addr == STATUS_FLAGS.addr())
+            );
+        });
+    }
+
+    #[test]
+    fn tmc_safety_bootstrap_retained_fault_check_uses_each_board_critical_mask() {
+        pollster::block_on(async {
+            // STATUS_CRITICAL_MASK on both boards today (adc_i_clipped only).
+            const BOARD_MASK: u32 = 1 << 26;
+            let mut backend = MockBackend::new();
+            backend.read_override = Some((STATUS_FLAGS.addr(), BOARD_MASK));
+
+            let result = bootstrap_tmc_safety(&mut backend, 1, BOARD_MASK).await;
+
+            assert_eq!(
+                result,
+                Err(TmcSafetyBootstrapFailure {
+                    stage: TmcSafetyBootstrapStage::RetainedCriticalFault { flags: BOARD_MASK },
+                })
+            );
         });
     }
 
@@ -308,6 +411,18 @@ mod tests {
                 TmcSafetyBootstrapStage::StatusFlagsClear,
                 ShutdownReason::TmcBootstrapCh1StatusFlagsClearFailed,
                 "TMC4671 ch1 bootstrap: STATUS_FLAGS clear failed",
+            ),
+            (
+                0,
+                TmcSafetyBootstrapStage::RetainedCriticalFault { flags: 0 },
+                ShutdownReason::TmcBootstrapCh0RetainedCriticalFault,
+                "TMC4671 ch0 bootstrap: retained critical fault",
+            ),
+            (
+                1,
+                TmcSafetyBootstrapStage::RetainedCriticalFault { flags: 0 },
+                ShutdownReason::TmcBootstrapCh1RetainedCriticalFault,
+                "TMC4671 ch1 bootstrap: retained critical fault",
             ),
         ];
 

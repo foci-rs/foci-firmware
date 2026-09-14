@@ -304,7 +304,7 @@ impl ChannelDriver {
                 BootstrapStep::SafetyBootstrap
             }
             BootstrapStep::SafetyBootstrap => {
-                match bootstrap_tmc_safety(backend, ctx.status_mask).await {
+                match bootstrap_tmc_safety(backend, self.channel(), ctx.status_mask).await {
                     Ok(()) => {
                         self.phase = DriverPhase::Ready;
                         return UnitOutcome::Ready;

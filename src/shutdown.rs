@@ -76,6 +76,8 @@ pub enum ShutdownReason {
     TmcBootstrapCh1StatusMaskWriteFailed,
     TmcBootstrapCh1StatusFlagsReadFailed,
     TmcBootstrapCh1StatusFlagsClearFailed,
+    TmcBootstrapCh0RetainedCriticalFault,
+    TmcBootstrapCh1RetainedCriticalFault,
     TmcRequestValidationFailed,
     Tmc4671PllNotLocked,
     Tmc4671AdcCurrentClipped,
@@ -143,6 +145,12 @@ impl ShutdownReason {
             }
             Self::TmcBootstrapCh1StatusFlagsClearFailed => {
                 "TMC4671 ch1 bootstrap: STATUS_FLAGS clear failed"
+            }
+            Self::TmcBootstrapCh0RetainedCriticalFault => {
+                "TMC4671 ch0 bootstrap: retained critical fault"
+            }
+            Self::TmcBootstrapCh1RetainedCriticalFault => {
+                "TMC4671 ch1 bootstrap: retained critical fault"
             }
             Self::TmcRequestValidationFailed => "TMC request validation failed",
             Self::Tmc4671PllNotLocked => "TMC4671: PLL not locked (clock lost)",
@@ -346,6 +354,20 @@ macro_rules! dispatch_shutdown {
                     $clock
                 );
             }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh0RetainedCriticalFault => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch0 bootstrap: retained critical fault",
+                    $clock
+                );
+            }
+            $crate::shutdown::ShutdownReason::TmcBootstrapCh1RetainedCriticalFault => {
+                ::ankyra::klipper_shutdown_from!(
+                    $sender,
+                    "TMC4671 ch1 bootstrap: retained critical fault",
+                    $clock
+                );
+            }
             $crate::shutdown::ShutdownReason::TmcRequestValidationFailed => {
                 ::ankyra::klipper_shutdown_from!($sender, "TMC request validation failed", $clock);
             }
@@ -450,6 +472,8 @@ macro_rules! foci_ankyra_config {
                 "TMC4671 ch1 bootstrap: STATUS_MASK write failed",
                 "TMC4671 ch1 bootstrap: STATUS_FLAGS read failed",
                 "TMC4671 ch1 bootstrap: STATUS_FLAGS clear failed",
+                "TMC4671 ch0 bootstrap: retained critical fault",
+                "TMC4671 ch1 bootstrap: retained critical fault",
                 "TMC request validation failed",
                 "TMC current limit invalid",
                 "Live gain application failed",
