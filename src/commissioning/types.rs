@@ -829,6 +829,31 @@ pub enum FixedGainAmplitudeCause {
     EvidenceCapacity = 6,
     /// Canonical counts, masks, or identities violated their contract.
     EvidenceIntegrity = 7,
+    /// The active-terminal matrix-progress transition (advance or close) was
+    /// refused. Code 8.
+    ///
+    /// Not reachable via `apply_fixed_gain_amplitude_terminal`, its only
+    /// production caller as of this writing: the preceding identity/progress
+    /// check already guarantees the precondition
+    /// `advance_matrix_progress`/`close_matrix_progress` require -- allocated
+    /// because the underlying check is a real code path, not because current
+    /// production input can reach it.
+    ProgressTransitionRejected = 8,
+    /// The disarm workflow did not complete during a staged terminal
+    /// restore. Code 9.
+    DisarmIncomplete = 9,
+    /// The engine's amplitude order or plan digest was unavailable when an
+    /// active terminal needed it. Code 10.
+    MissingAmplitudeContext = 10,
+    /// Operator-requested cancel reached GPIO-first safe-state gracefully
+    /// during a torn-down restore. Code 11.
+    Cancelled = 11,
+    /// Hardware shutdown was requested (M112 / e-stop) during a torn-down
+    /// restore. Code 12.
+    Shutdown = 12,
+    /// A completed run's attempted/eligible/current-terminus/unattempted
+    /// masks failed bit-range validation. Code 13.
+    InvalidRunMasks = 13,
     /// Rest analysis completed but did not confirm a stationary zero-target window.
     VelocityRestNotConfirmed = 53,
 }

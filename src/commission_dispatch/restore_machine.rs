@@ -1223,7 +1223,7 @@ impl TerminalRestoreMachine {
                             if !restored {
                                 retention.integral.observe_fault();
                                 terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                                terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+                                terminal.cause = FixedGainAmplitudeCause::DisarmIncomplete;
                                 terminal.safety_fault = None;
                             } else if let Some((order, plan_digest)) = amplitude_context {
                                 terminal =
@@ -1236,7 +1236,7 @@ impl TerminalRestoreMachine {
                             } else {
                                 retention.integral.observe_fault();
                                 terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                                terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+                                terminal.cause = FixedGainAmplitudeCause::MissingAmplitudeContext;
                                 terminal.safety_fault = None;
                             }
                             self.terminal.payload = TerminalPayload::FixedGainAmplitude(terminal);
@@ -1829,7 +1829,11 @@ impl TerminalRestoreMachine {
             }
             TerminalPayload::FixedGainAmplitude(mut terminal) => {
                 terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-                terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+                terminal.cause = match status_error {
+                    CommissionError::Cancelled => FixedGainAmplitudeCause::Cancelled,
+                    CommissionError::Shutdown => FixedGainAmplitudeCause::Shutdown,
+                    _ => FixedGainAmplitudeCause::EvidenceIntegrity,
+                };
                 terminal.safety_fault = None;
                 ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal }
             }

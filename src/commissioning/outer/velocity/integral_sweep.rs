@@ -586,7 +586,7 @@ pub(super) fn fixed_gain_amplitude_terminal(
         match fixed_gain_amplitude_run_sufficient(masks) {
             Err(_) => (
                 FixedGainAmplitudeOutcome::Fault,
-                FixedGainAmplitudeCause::EvidenceIntegrity,
+                FixedGainAmplitudeCause::InvalidRunMasks,
             ),
             Ok(_) if data.rest_unconfirmed => (
                 FixedGainAmplitudeOutcome::Inconclusive,

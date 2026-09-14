@@ -240,7 +240,7 @@ pub fn apply_fixed_gain_amplitude_terminal(
 ) -> FixedGainAmplitudeTerminal {
     let Some(point) = integral_candidate.acceptance_point() else {
         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+        terminal.cause = FixedGainAmplitudeCause::MissingAcceptancePoint;
         return terminal;
     };
     let expected_progress = match order {
@@ -249,11 +249,16 @@ pub fn apply_fixed_gain_amplitude_terminal(
     };
     if point.identity.plan_digest != terminal.acceptance_plan_digest
         || terminal.plan_digest != expected_plan_digest
-        || point.progress != expected_progress
     {
         integral_candidate.observe_fault();
         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+        terminal.cause = FixedGainAmplitudeCause::AcceptancePointIdentityMismatch;
+        return terminal;
+    }
+    if point.progress != expected_progress {
+        integral_candidate.observe_fault();
+        terminal.outcome = FixedGainAmplitudeOutcome::Fault;
+        terminal.cause = FixedGainAmplitudeCause::AmplitudeOrderMismatch;
         return terminal;
     }
 
@@ -277,7 +282,7 @@ pub fn apply_fixed_gain_amplitude_terminal(
     if !transition_ok {
         integral_candidate.observe_fault();
         terminal.outcome = FixedGainAmplitudeOutcome::Fault;
-        terminal.cause = FixedGainAmplitudeCause::EvidenceIntegrity;
+        terminal.cause = FixedGainAmplitudeCause::ProgressTransitionRejected;
     }
     terminal
 }
