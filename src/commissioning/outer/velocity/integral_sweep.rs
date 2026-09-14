@@ -523,8 +523,16 @@ pub(super) fn fixed_gain_amplitude_report(
         .map_err(|error| match error {
             FixedGainAmplitudeEvidenceError::InvalidInterval => CommissionError::MalformedInterval,
             // Arithmetic is unreachable (see robust_rate_location's own
-            // comment); InvalidMasks has no existing-variant candidate and
-            // stays InvalidSchedule pending a real disposition decision.
+            // comment). InvalidMasks cannot be constructed by this call
+            // path either -- it is only ever returned by
+            // fixed_gain_amplitude_run_sufficient (see that function's own
+            // comment on why it stays a live check against its direct
+            // callers), a separate function this classify_fixed_gain_amplitude
+            // call never invokes. fixed_gain_amplitude_run_sufficient's
+            // actual production caller, fixed_gain_amplitude_terminal, maps
+            // an InvalidMasks failure to FixedGainAmplitudeCause::EvidenceIntegrity,
+            // not CommissionError, so this arm was never reachable from that
+            // path either.
             FixedGainAmplitudeEvidenceError::Arithmetic
             | FixedGainAmplitudeEvidenceError::InvalidMasks => CommissionError::InvalidSchedule,
         })
