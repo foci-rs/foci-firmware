@@ -241,18 +241,18 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
                 resources.safety.end_primitive();
                 return recovery_fault(CommissionError::Spi, None);
             }
-                // Unreachable: runtime.runtime_us is set exactly once, in
-                // RungOriginRecoveryRuntime::new, as
-                // recovery_allowance_us(measured_return_us) + RECOVERY_STABILIZATION_US,
-                // which itself decomposes to
-                // measured_return_us + MOVING_STROKE_US + rest_allowance_us().
-                // Since measured_return_us >= 0 and MOVING_STROKE_US > 0,
-                // runtime.runtime_us always exceeds rest_allowance_us() by
-                // at least MOVING_STROKE_US (512,000us) whenever this state
-                // is reached, regardless of any caller-supplied budget --
-                // that budget only ever acts as an upper-bound ceiling
-                // check elsewhere in construction, never as a lower bound
-                // feeding this subtraction.
+            // Unreachable: runtime.runtime_us is set exactly once, in
+            // RungOriginRecoveryRuntime::new, as
+            // recovery_allowance_us(measured_return_us) + RECOVERY_STABILIZATION_US,
+            // which itself decomposes to
+            // measured_return_us + MOVING_STROKE_US + rest_allowance_us().
+            // Since measured_return_us >= 0 and MOVING_STROKE_US > 0,
+            // runtime.runtime_us always exceeds rest_allowance_us() by
+            // at least MOVING_STROKE_US (512,000us) whenever this state
+            // is reached, regardless of any caller-supplied budget --
+            // that budget only ever acts as an upper-bound ceiling
+            // check elsewhere in construction, never as a lower bound
+            // feeding this subtraction.
             let Some(moving_budget_us) =
                 runtime.runtime_us.checked_sub(runtime.rest_allowance_us())
             else {

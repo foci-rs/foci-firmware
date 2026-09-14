@@ -775,10 +775,7 @@ mod tests {
         assert_eq!(CommissionError::PrimitiveStartInFuture.status_code(), 71);
         assert_eq!(CommissionError::RecoveryOriginMismatch.status_code(), 72);
         assert_eq!(CommissionError::HostLivenessExpired.status_code(), 78);
-        assert_eq!(
-            CommissionError::NetDisplacementOverflow.status_code(),
-            87
-        );
+        assert_eq!(CommissionError::NetDisplacementOverflow.status_code(), 87);
     }
 
     #[test]
