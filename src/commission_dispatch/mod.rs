@@ -560,6 +560,15 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
             CalibrationError::ClosedLoopActivationUnstable
         }
         CommissionError::Cancelled => CalibrationError::Cancelled,
+        CommissionError::AdcFault => CalibrationError::AdcFault,
+        CommissionError::CoilFault => CalibrationError::CoilFault,
+        CommissionError::PhaseFault => CalibrationError::PhaseFault,
+        CommissionError::NoCurrent => CalibrationError::NoCurrent,
+        CommissionError::CurrentValidationFailed => CalibrationError::CurrentValidationFailed,
+        CommissionError::InvalidSchedule => CalibrationError::InvalidSchedule,
+        CommissionError::CurrentHoldFailed => CalibrationError::CurrentHoldFailed,
+        CommissionError::FaultInterlock => CalibrationError::FaultInterlock,
+        CommissionError::Shutdown => CalibrationError::Shutdown,
         _ => CalibrationError::InternalError,
     };
     calibration_error.status_code()

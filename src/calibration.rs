@@ -28,6 +28,28 @@ pub enum CalibrationError {
     /// Operator-requested cancel reached GPIO-first safe-state gracefully
     /// during calibration; the MCU stays running. Code 10.
     Cancelled,
+    /// ADC calibration produced offsets outside the expected range. Code 11.
+    AdcFault,
+    /// Coil connectivity check failed (open circuit or short). Code 12.
+    CoilFault,
+    /// Phase wiring check: current appeared on the wrong ADC channel. Code 13.
+    PhaseFault,
+    /// No current was detected in the motor windings during the coil check. Code 14.
+    NoCurrent,
+    /// Closed-loop entry gains were unavailable because retained gain storage
+    /// was corrupt. Code 15.
+    CurrentValidationFailed,
+    /// A calibration state returned an invalid or unrepresentable deadline. Code 16.
+    InvalidSchedule,
+    /// Sustained current-loop hold validation failed during closed-loop
+    /// activation. Code 17.
+    CurrentHoldFailed,
+    /// A fault was latched or the STATUS pin was asserted at an interlock
+    /// check, so a `STATUS_FLAGS` clear or an enable-pin assertion was
+    /// refused. Code 18.
+    FaultInterlock,
+    /// Hardware shutdown was requested (M112 / e-stop) while calibrating. Code 19.
+    Shutdown,
 }
 
 impl CalibrationError {
@@ -43,6 +65,15 @@ impl CalibrationError {
             Self::EncoderFault => 8,
             Self::ClosedLoopActivationUnstable => 9,
             Self::Cancelled => 10,
+            Self::AdcFault => 11,
+            Self::CoilFault => 12,
+            Self::PhaseFault => 13,
+            Self::NoCurrent => 14,
+            Self::CurrentValidationFailed => 15,
+            Self::InvalidSchedule => 16,
+            Self::CurrentHoldFailed => 17,
+            Self::FaultInterlock => 18,
+            Self::Shutdown => 19,
         }
     }
 }
