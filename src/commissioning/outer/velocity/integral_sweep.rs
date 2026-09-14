@@ -784,7 +784,7 @@ pub(super) fn plan_integral_recovery(
         safety.counts_per_rev(),
         planned_velocity_mrev_s,
     )
-    .map_err(|_| CommissionError::InvalidSchedule)?;
+    .map_err(|_| CommissionError::RecoveryPlanFailed)?;
     let clamp_limit = PidTorqueFluxLimit::new(u32::from(data.plan.usable_torque_limit))
         .map_err(|_| CommissionError::InvalidSchedule)?;
     data.current_observer
@@ -3207,6 +3207,25 @@ mod tests {
         let error = plan_integral_recovery(&mut data, &workspace, &safety).unwrap_err();
 
         assert_eq!(error, CommissionError::MissingRateTableEntry);
+    }
+
+    /// A zeroed settle-travel reserve makes `plan_rung_origin_recovery`
+    /// reject the recovery geometry; that is a recovery-plan failure, not
+    /// the generic schedule fault.
+    #[test]
+    fn plan_integral_recovery_rejects_a_failed_recovery_plan() {
+        let mut plan = plan();
+        plan.acquisition_kind = VelocityIntegralAcquisitionKind::FixedGainAmplitudeAscending;
+        plan.recovery_lower_rate_q = [1, 1];
+        let mut data = VelocityIntegralRuntime::new(1, plan);
+        let workspace = TransientBuffer::new();
+        let mut safety = test_safety();
+        safety.budget.settle_travel_reserve_mrev = 0;
+        safety.configure_integral_encoder_resolution(4_000).unwrap();
+
+        let error = plan_integral_recovery(&mut data, &workspace, &safety).unwrap_err();
+
+        assert_eq!(error, CommissionError::RecoveryPlanFailed);
     }
 
     #[test]
