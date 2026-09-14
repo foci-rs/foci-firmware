@@ -299,6 +299,36 @@ impl RungOriginRecoveryRuntime {
     const SETTLE_INTEGRATOR_CLEARED: u8 = 1 << 3;
 
     /// Construct one checked recovery attempt without touching hardware.
+    ///
+    /// # Unreachable preconditions
+    ///
+    /// Every branch of the five-way precondition `if` below, and the
+    /// `lower_rate_q`/`authority_source` mismatch arm that follows it, is
+    /// unreachable from every real call site (`robustness_reversal.rs`,
+    /// `breakaway_campaign.rs`'s three `AnalyzeSettle` sites, and
+    /// `integral_sweep.rs`'s `plan_integral_recovery`):
+    ///
+    /// - `p == PidPGain::ZERO`: every call site's `p` traces back to either
+    ///   `plan_band_confirmation`'s nonzero-`nominated_p` guard or
+    ///   `build_gain_ladder_generic`/`plan_additive_discovery_ladder`'s own
+    ///   nonzero-floor guards.
+    /// - `target_velocity_rpm.raw() <= 0` and `planned_velocity_mrev_s == 0`
+    ///   share one root (a zero commissioning amplitude) already excluded,
+    ///   earlier in the same call chain, by an existing `?`-propagated zero
+    ///   check before `RungOriginRecoveryRuntime::new` is ever reached.
+    /// - `plan.origin_band_counts == 0`: `plan_rung_origin_recovery` derives
+    ///   this as a product/`div_ceil` of two values already guarded nonzero,
+    ///   which can never round down to zero.
+    /// - `start_offset_counts == i32::MIN`: `start_offset_counts` is
+    ///   `safety.unwrapped_position`, which the outer dispatch loop's
+    ///   `check_outer_safety` already faults on (via a distinct
+    ///   `OuterSafetyFault` path) well before it could approach `i32::MIN` --
+    ///   this one depends on that check continuing to run ahead of recovery
+    ///   construction, not on arithmetic alone.
+    /// - The rate/authority mismatch: every call site constructs the pair
+    ///   consistently (`Some`+`SettledRate` only when the rate is proven
+    ///   nonzero, `None`+`MissingRate` otherwise); no call site can produce
+    ///   the mismatched combination.
     pub(crate) fn new(
         config: RungOriginRecoveryConfig,
         plan: RungOriginRecoveryPlan,
