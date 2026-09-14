@@ -24,9 +24,13 @@ use crate::autotune::velocity_measurement::{
     StationarityResult, VELOCITY_RATE_Q_SCALE, estimate_confidence,
 };
 use crate::commission_dispatch::robustness::{
-    ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
-    ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_SAFETY_FAULT,
-    ROBUSTNESS_CAUSE_TAIL_REPEATED,
+    ROBUSTNESS_CAUSE_ANALYSIS_POLL_FAILED, ROBUSTNESS_CAUSE_ANALYSIS_TIMEOUT,
+    ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW, ROBUSTNESS_CAUSE_DISPATCH_ABORT,
+    ROBUSTNESS_CAUSE_INVALID_GAINS, ROBUSTNESS_CAUSE_IO, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
+    ROBUSTNESS_CAUSE_ORIGIN_RECOVERY_FAULT, ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID,
+    ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED, ROBUSTNESS_CAUSE_SAFETY_ARM_FAILED,
+    ROBUSTNESS_CAUSE_SAFETY_FAULT, ROBUSTNESS_CAUSE_SCORING_FAILED, ROBUSTNESS_CAUSE_TAIL_REPEATED,
+    ROBUSTNESS_CAUSE_UNEXPECTED_STATE,
 };
 use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::backend::CommissioningBackend;
@@ -513,10 +517,24 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         RobustnessReversalState::Setup => {
             let baseline = match backend.try_read_mechanical_encoder_position_counts().await {
                 Ok(value) => value,
-                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
+                Err(_) => {
+                    return fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_IO,
+                        counts_per_rev,
+                    );
+                }
             };
             if safety.set_encoder_baseline(baseline).is_err() {
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(
+                    session,
+                    backend,
+                    None,
+                    ROBUSTNESS_CAUSE_SAFETY_ARM_FAILED,
+                    counts_per_rev,
+                );
             }
             // Arm the shared outer-safety envelope check for the ticks that
             // follow: `check_outer_safety` returns early while `torque_cap == 0`,
@@ -525,7 +543,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             safety.torque_cap = u16::from(backend.current_limit());
             let now_us = backend.elapsed_us();
             if safety.arm_safety_observation(now_us).is_err() {
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(
+                    session,
+                    backend,
+                    None,
+                    ROBUSTNESS_CAUSE_SAFETY_ARM_FAILED,
+                    counts_per_rev,
+                );
             }
             session.run_started_us = now_us;
             workspace.previous_encoder_raw = baseline;
@@ -534,7 +558,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 Ok(plan) => plan,
                 Err(error) => {
                     defmt::warn!("robustness recovery cannot be planned: {}", error);
-                    return fault_terminal(session, backend, None, counts_per_rev);
+                    return fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID,
+                        counts_per_rev,
+                    );
                 }
             };
             let leg_travel = establish_leg_travel_counts(establish_rate_counts_per_ms(
@@ -554,7 +584,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     safety.positive_position_window,
                     plan.origin_band_counts
                 );
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(
+                    session,
+                    backend,
+                    None,
+                    ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID,
+                    counts_per_rev,
+                );
             }
             workspace.reset_current_observer_from_operational_limit(backend);
             session.recovery_plan = Some(plan);
@@ -595,7 +631,15 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             }
             let (p, i) = match accepted_gains(&session.point) {
                 Ok(pair) => pair,
-                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
+                Err(_) => {
+                    return fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_INVALID_GAINS,
+                        counts_per_rev,
+                    );
+                }
             };
             if clear_velocity_offset(backend).await.is_err()
                 || backend
@@ -611,7 +655,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     .is_err()
                 || clear_velocity_error_sum(backend).await.is_err()
             {
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(session, backend, None, ROBUSTNESS_CAUSE_IO, counts_per_rev);
             }
             *state = RobustnessReversalState::EstablishCommandTarget;
             StepResult::ReadyNow
@@ -673,7 +717,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 CaptureAdvance::Converged => {
                     workspace.analysis.reset();
                     let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                        return fault_terminal(session, backend, None, counts_per_rev);
+                        return fault_terminal(
+                            session,
+                            backend,
+                            None,
+                            ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW,
+                            counts_per_rev,
+                        );
                     };
                     *state = RobustnessReversalState::EstablishAnalyze {
                         analysis_deadline_us,
@@ -715,7 +765,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             analysis_deadline_us,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(
+                    session,
+                    backend,
+                    None,
+                    ROBUSTNESS_CAUSE_ANALYSIS_TIMEOUT,
+                    counts_per_rev,
+                );
             }
             let poll = poll_stationarity(
                 &mut workspace.analysis,
@@ -725,7 +781,15 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let stationarity = match poll {
                 Ok(None) => return StepResult::ReadyNow,
                 Ok(Some((result, _, _))) => result,
-                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
+                Err(_) => {
+                    return fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_ANALYSIS_POLL_FAILED,
+                        counts_per_rev,
+                    );
+                }
             };
             match stationarity {
                 // I3: the establish leg must confirm a Usable settle before the
@@ -792,7 +856,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 CaptureAdvance::Converged => {
                     workspace.analysis.reset();
                     let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                        return fault_terminal(session, backend, None, counts_per_rev);
+                        return fault_terminal(
+                            session,
+                            backend,
+                            None,
+                            ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW,
+                            counts_per_rev,
+                        );
                     };
                     *state = RobustnessReversalState::ReverseAnalyze {
                         analysis_deadline_us,
@@ -820,7 +890,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             analysis_deadline_us,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(
+                    session,
+                    backend,
+                    None,
+                    ROBUSTNESS_CAUSE_ANALYSIS_TIMEOUT,
+                    counts_per_rev,
+                );
             }
             let poll = poll_stationarity(
                 &mut workspace.analysis,
@@ -830,7 +906,15 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let stationarity = match poll {
                 Ok(None) => return StepResult::ReadyNow,
                 Ok(Some((result, _, _))) => result,
-                Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
+                Err(_) => {
+                    return fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_ANALYSIS_POLL_FAILED,
+                        counts_per_rev,
+                    );
+                }
             };
             let direction = session.direction;
             match stationarity {
@@ -849,7 +933,15 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         suffix: &suffix,
                     }) {
                         Ok(metrics) => metrics,
-                        Err(_) => return fault_terminal(session, backend, None, counts_per_rev),
+                        Err(_) => {
+                            return fault_terminal(
+                                session,
+                                backend,
+                                None,
+                                ROBUSTNESS_CAUSE_SCORING_FAILED,
+                                counts_per_rev,
+                            );
+                        }
                     };
                     let overshoot = workspace.capture.reversal_overshoot_counts();
                     session.peak_overshoot_counts[direction] =
@@ -881,7 +973,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 .await
                 .is_err()
             {
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(session, backend, None, ROBUSTNESS_CAUSE_IO, counts_per_rev);
             }
             safety.enter_settle_phase();
             match open_zero_window(session, workspace, backend, counts_per_rev).await {
@@ -910,7 +1002,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             };
             if read_us >= deadline_us {
                 let Some(analysis_deadline_us) = analysis_deadline(read_us) else {
-                    return fault_terminal(session, backend, None, counts_per_rev);
+                    return fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW,
+                        counts_per_rev,
+                    );
                 };
                 *state = RobustnessReversalState::ZeroAnalyze {
                     analysis_deadline_us,
@@ -932,7 +1030,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             retry_available,
         } => {
             if backend.elapsed_us() >= analysis_deadline_us {
-                return fault_terminal(session, backend, None, counts_per_rev);
+                return fault_terminal(
+                    session,
+                    backend,
+                    None,
+                    ROBUSTNESS_CAUSE_ANALYSIS_TIMEOUT,
+                    counts_per_rev,
+                );
             }
             match poll_scored_rest_confirmation(
                 &mut workspace.analysis,
@@ -954,7 +1058,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         } else if session.held_route.is_some() {
                             enter_origin_recovery(state, session, safety, backend, counts_per_rev)
                         } else {
-                            fault_terminal(session, backend, None, counts_per_rev)
+                            fault_terminal(
+                                session,
+                                backend,
+                                None,
+                                ROBUSTNESS_CAUSE_UNEXPECTED_STATE,
+                                counts_per_rev,
+                            )
                         }
                     } else if retry_available {
                         match open_zero_window(session, workspace, backend, counts_per_rev).await {
@@ -992,7 +1102,13 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         rest_not_confirmed_terminal(session, backend, counts_per_rev)
                     }
                 }
-                Err(_) => fault_terminal(session, backend, None, counts_per_rev),
+                Err(_) => fault_terminal(
+                    session,
+                    backend,
+                    None,
+                    ROBUSTNESS_CAUSE_ANALYSIS_POLL_FAILED,
+                    counts_per_rev,
+                ),
             }
         }
         RobustnessReversalState::RecoverOrigin(runtime) => {
@@ -1071,14 +1187,26 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     ..
                 } => {
                     defmt::warn!("robustness safety fault (recovery): {}", report);
-                    fault_terminal(session, backend, Some(report), counts_per_rev)
+                    fault_terminal(
+                        session,
+                        backend,
+                        Some(report),
+                        ROBUSTNESS_CAUSE_ORIGIN_RECOVERY_FAULT,
+                        counts_per_rev,
+                    )
                 }
                 RungOriginRecoveryStep::Fault {
                     error,
                     safety: None,
                 } => {
                     defmt::warn!("robustness origin recovery fault: {}", error);
-                    fault_terminal(session, backend, None, counts_per_rev)
+                    fault_terminal(
+                        session,
+                        backend,
+                        None,
+                        ROBUSTNESS_CAUSE_ORIGIN_RECOVERY_FAULT,
+                        counts_per_rev,
+                    )
                 }
             }
         }
@@ -1201,7 +1329,13 @@ fn enter_origin_recovery<B: CommissioningBackend>(
         }
         Err(error) => {
             defmt::warn!("robustness origin recovery cannot be built: {}", error);
-            fault_terminal(session, backend, None, counts_per_rev)
+            fault_terminal(
+                session,
+                backend,
+                None,
+                ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID,
+                counts_per_rev,
+            )
         }
     }
 }
@@ -1218,7 +1352,15 @@ async fn begin_capture<B: CommissioningBackend>(
     let counts_per_rev = safety.counts_per_rev();
     let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
         Ok(value) => value,
-        Err(_) => return Err(fault_terminal(session, backend, None, counts_per_rev)),
+        Err(_) => {
+            return Err(fault_terminal(
+                session,
+                backend,
+                None,
+                ROBUSTNESS_CAUSE_IO,
+                counts_per_rev,
+            ));
+        }
     };
     let baseline_us = backend.elapsed_us();
     if backend
@@ -1226,7 +1368,13 @@ async fn begin_capture<B: CommissioningBackend>(
         .await
         .is_err()
     {
-        return Err(fault_terminal(session, backend, None, counts_per_rev));
+        return Err(fault_terminal(
+            session,
+            backend,
+            None,
+            ROBUSTNESS_CAUSE_IO,
+            counts_per_rev,
+        ));
     }
     if open_primitive {
         // The establish entry opens the bounded primitive; a retry re-opens after
@@ -1234,7 +1382,13 @@ async fn begin_capture<B: CommissioningBackend>(
         // never re-opens it.
         safety.end_primitive();
         if safety.begin_primitive(baseline_us).is_err() {
-            return Err(fault_terminal(session, backend, None, counts_per_rev));
+            return Err(fault_terminal(
+                session,
+                backend,
+                None,
+                ROBUSTNESS_CAUSE_SAFETY_ARM_FAILED,
+                counts_per_rev,
+            ));
         }
     }
     workspace.observations.clear();
@@ -1247,12 +1401,24 @@ async fn begin_capture<B: CommissioningBackend>(
     workspace.previous_encoder_raw = baseline;
     workspace.previous_read_us = baseline_us;
     let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
-        return Err(fault_terminal(session, backend, None, counts_per_rev));
+        return Err(fault_terminal(
+            session,
+            backend,
+            None,
+            ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW,
+            counts_per_rev,
+        ));
     };
     let Some(budget_deadline_us) =
         baseline_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
     else {
-        return Err(fault_terminal(session, backend, None, counts_per_rev));
+        return Err(fault_terminal(
+            session,
+            backend,
+            None,
+            ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW,
+            counts_per_rev,
+        ));
     };
     Ok((next_sample_us, budget_deadline_us))
 }
@@ -1421,7 +1587,15 @@ async fn open_zero_window<B: CommissioningBackend>(
 ) -> Result<(u64, u64), StepResult> {
     let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
         Ok(value) => value,
-        Err(_) => return Err(fault_terminal(session, backend, None, counts_per_rev)),
+        Err(_) => {
+            return Err(fault_terminal(
+                session,
+                backend,
+                None,
+                ROBUSTNESS_CAUSE_IO,
+                counts_per_rev,
+            ));
+        }
     };
     let baseline_us = backend.elapsed_us();
     workspace.observations.clear();
@@ -1429,11 +1603,23 @@ async fn open_zero_window<B: CommissioningBackend>(
     workspace.previous_encoder_raw = baseline;
     workspace.previous_read_us = baseline_us;
     let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
-        return Err(fault_terminal(session, backend, None, counts_per_rev));
+        return Err(fault_terminal(
+            session,
+            backend,
+            None,
+            ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW,
+            counts_per_rev,
+        ));
     };
     let Some(deadline_us) = baseline_us.checked_add(u64::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
     else {
-        return Err(fault_terminal(session, backend, None, counts_per_rev));
+        return Err(fault_terminal(
+            session,
+            backend,
+            None,
+            ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW,
+            counts_per_rev,
+        ));
     };
     Ok((next_sample_us, deadline_us))
 }
@@ -1638,25 +1824,28 @@ fn failed_terminal<B: CommissioningBackend>(
 }
 
 /// Build a `Failed` terminal. A populated `safety_fault` is a real envelope
-/// trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`); `None` is an internal, non-envelope
-/// fault (`ROBUSTNESS_CAUSE_INTERNAL_FAULT`) so the host can disambiguate them.
+/// trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`, and `internal_cause` is ignored);
+/// `None` reports `internal_cause`, the caller's specific non-envelope fault
+/// classification, so the host can disambiguate internal faults instead of
+/// seeing one generic bucket.
 fn fault_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
     backend: &B,
     safety_fault: Option<OuterSafetyFault>,
+    internal_cause: u8,
     counts_per_rev: u32,
 ) -> StepResult {
     let cause = if safety_fault.is_some() {
         ROBUSTNESS_CAUSE_SAFETY_FAULT
     } else {
-        ROBUSTNESS_CAUSE_INTERNAL_FAULT
+        internal_cause
     };
     failed_terminal(session, backend, cause, safety_fault, counts_per_rev)
 }
 
 /// Build a `Failed` terminal for the between-legs rest that was never confirmed,
-/// even after the one bounded re-opened rest window. Distinct from the generic
-/// `ROBUSTNESS_CAUSE_INTERNAL_FAULT` so the host can surface this specific,
+/// even after the one bounded re-opened rest window. Distinct from the
+/// dedicated internal-fault causes so the host can surface this specific,
 /// operator-actionable condition.
 fn rest_not_confirmed_terminal<B: CommissioningBackend>(
     session: &RobustnessReversalSession,
@@ -1694,10 +1883,18 @@ fn tick_fault_terminal<B: CommissioningBackend>(
     counts_per_rev: u32,
 ) -> StepResult {
     match fault {
-        TickFault::Io => fault_terminal(session, backend, None, counts_per_rev),
+        TickFault::Io => {
+            fault_terminal(session, backend, None, ROBUSTNESS_CAUSE_IO, counts_per_rev)
+        }
         TickFault::Safety(report) => {
             defmt::warn!("robustness safety fault (tick): {}", report);
-            fault_terminal(session, backend, Some(report), counts_per_rev)
+            fault_terminal(
+                session,
+                backend,
+                Some(report),
+                ROBUSTNESS_CAUSE_IO,
+                counts_per_rev,
+            )
         }
     }
 }
@@ -1727,7 +1924,7 @@ pub(crate) fn robustness_reversal_fault_terminal(
     let cause = if safety_fault.is_some() {
         ROBUSTNESS_CAUSE_SAFETY_FAULT
     } else {
-        ROBUSTNESS_CAUSE_INTERNAL_FAULT
+        ROBUSTNESS_CAUSE_DISPATCH_ABORT
     };
     let (plant_rate_q, thresholds) =
         constructed_thresholds(&session.point, safety.counts_per_rev());
@@ -1796,9 +1993,9 @@ pub(crate) fn robustness_pass_outer_result(
 mod tests {
     use super::*;
     use crate::commission_dispatch::robustness::{
-        ROBUSTNESS_CAUSE_INTERNAL_FAULT, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED,
-        ROBUSTNESS_CAUSE_PASS, ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE,
-        ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
+        ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED, ROBUSTNESS_CAUSE_PASS,
+        ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE, ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED,
+        ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID, ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED,
         ROBUSTNESS_CAUSE_TAIL_REPEATED,
     };
     use crate::commission_dispatch::test_support::{
@@ -2008,6 +2205,7 @@ mod tests {
                                         &parts.session,
                                         &parts.backend,
                                         Some(fault),
+                                        ROBUSTNESS_CAUSE_SAFETY_FAULT,
                                         COUNTS_PER_REV,
                                     )
                                 else {
@@ -3291,7 +3489,7 @@ mod tests {
         };
 
         assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
-        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_INTERNAL_FAULT);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID);
         assert!(terminal.safety_fault.is_none());
         let target_addr = PID_VELOCITY_TARGET.addr();
         assert!(
@@ -3453,7 +3651,7 @@ mod tests {
                 }
             });
         assert_eq!(terminal.outcome, RobustnessOutcome::Failed);
-        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_INTERNAL_FAULT);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID);
         assert!(terminal.safety_fault.is_none());
         assert_eq!(parts.recoveries, 0);
         assert_eq!(parts.targets.as_slice(), &[176, 0]);

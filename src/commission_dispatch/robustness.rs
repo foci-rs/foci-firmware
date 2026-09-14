@@ -52,25 +52,27 @@ pub const ROBUSTNESS_CAUSE_RECONVERGENCE_INCONCLUSIVE: u8 = 4;
 /// No candidate survived acceptance to be probed for robustness.
 pub const ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE: u8 = 5;
 /// Envelope/velocity-limit safety fault passthrough only. Carries a populated
-/// `safety_fault` field; internal (non-envelope) faults use
-/// `ROBUSTNESS_CAUSE_INTERNAL_FAULT` so the host can tell them apart.
+/// `safety_fault` field; internal (non-envelope) faults use one of the
+/// dedicated internal-fault causes below so the host can tell them apart.
 pub const ROBUSTNESS_CAUSE_SAFETY_FAULT: u8 = 6;
 /// Accepted-point identity mismatch, set at terminal application (Task 6).
 /// Never returned by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY: u8 = 7;
-/// Internal (non-envelope) fault: SPI/encoder I/O, analysis deadline, invalid
-/// gains, or ring overflow. Distinct from `ROBUSTNESS_CAUSE_SAFETY_FAULT`,
+/// Retired: was the single generic internal (non-envelope) fault bucket for
+/// SPI/encoder I/O, analysis deadline, invalid gains, and ring overflow.
+/// Split into the dedicated internal-fault causes below (codes 12-22); not
+/// reused for a new meaning. Distinct from `ROBUSTNESS_CAUSE_SAFETY_FAULT`,
 /// which is reserved for a real envelope/velocity-limit trip carrying an
-/// `OuterSafetyFault`. Set at the fault terminal, never by `summary_cause`.
-pub const ROBUSTNESS_CAUSE_INTERNAL_FAULT: u8 = 8;
+/// `OuterSafetyFault`.
+#[allow(dead_code)]
+const ROBUSTNESS_CAUSE_INTERNAL_FAULT: u8 = 8;
 /// The rest after a conclusive cycle was never confirmed, even after the one
 /// bounded re-opened rest window. A rejected rest after an inconclusive leg
 /// proceeds to origin recovery instead and fails there, if at all, with
 /// `ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED`. An operator-actionable subset of
 /// the internal-fault space (outcome stays `Failed`); every other internal
-/// fault -- SPI/encoder I/O, analysis deadline, invalid gains, ring overflow --
-/// stays on `ROBUSTNESS_CAUSE_INTERNAL_FAULT`. Set at the fault terminal,
-/// never by `summary_cause`.
+/// fault has its own dedicated cause (codes 12-22). Set at the fault
+/// terminal, never by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_REST_NOT_CONFIRMED: u8 = 9;
 /// Two conclusive tail cycles occurred in one reversal direction, latching a
 /// tail rejection. Distinct from `ROBUSTNESS_CAUSE_RECONVERGENCE_TIME_EXCEEDED`
@@ -84,6 +86,50 @@ pub const ROBUSTNESS_CAUSE_TAIL_REPEATED: u8 = 10;
 /// `ROBUSTNESS_CAUSE_SAFETY_FAULT`. Set at the fault terminal, never by
 /// `summary_cause`.
 pub const ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED: u8 = 11;
+/// A register write or read (including an encoder or capture-register read)
+/// failed. Set at the fault terminal, never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_IO: u8 = 12;
+/// A safety-envelope precondition failed to arm (encoder baseline, safety
+/// observation, or a bounded primitive open) -- an arming failure, distinct
+/// from a real envelope trip (`ROBUSTNESS_CAUSE_SAFETY_FAULT`). Set at the
+/// fault terminal, never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_SAFETY_ARM_FAILED: u8 = 13;
+/// A recovery plan or schedule could not be constructed, or the reversal
+/// schedule does not fit the available position window. Set at the fault
+/// terminal, never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID: u8 = 14;
+/// The retained P/I gain pair was invalid. Set at the fault terminal, never
+/// by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_INVALID_GAINS: u8 = 15;
+/// A checked deadline computation overflowed. Set at the fault terminal,
+/// never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_DEADLINE_OVERFLOW: u8 = 16;
+/// A stationarity analysis deadline was exceeded before it concluded. Set at
+/// the fault terminal, never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_ANALYSIS_TIMEOUT: u8 = 17;
+/// A stationarity or scored-rest-confirmation poll returned an internal
+/// error. Set at the fault terminal, never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_ANALYSIS_POLL_FAILED: u8 = 18;
+/// Reversal-leg scoring failed. Set at the fault terminal, never by
+/// `summary_cause`.
+pub const ROBUSTNESS_CAUSE_SCORING_FAILED: u8 = 19;
+/// A confirmed rest arrived with neither a pending cycle nor a held route to
+/// recover from.
+///
+/// Not reachable via `step_robustness_reversal`, its only production caller
+/// as of this writing: every path that confirms rest either has a pending
+/// cycle or a held route already set -- allocated because the underlying
+/// check is a real code path, not because current production input can
+/// reach it.
+pub const ROBUSTNESS_CAUSE_UNEXPECTED_STATE: u8 = 20;
+/// The origin-recovery worker reported an internal fault. Set at the fault
+/// terminal, never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_ORIGIN_RECOVERY_FAULT: u8 = 21;
+/// The outer dispatch aborted the run for a reason outside this phase's own
+/// step loop (a pre-tick envelope trip's non-safety companion, or another
+/// dispatch-level failure). Set at `robustness_reversal_fault_terminal`,
+/// never by `summary_cause`.
+pub const ROBUSTNESS_CAUSE_DISPATCH_ABORT: u8 = 22;
 
 /// Definitive rejection of a robustness-reversal preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -159,11 +205,14 @@ pub fn apply_robustness_terminal(
     mut terminal: RobustnessReversalTerminal,
     integral_candidate: &IntegralRetentionSlot,
 ) -> RobustnessReversalTerminal {
-    let identity_ok = integral_candidate.acceptance_point().is_some_and(|point| {
-        point.selected_p == terminal.selected_p
-            && point.selected_i == terminal.selected_i
-            && point.target_velocity_rpm == terminal.target_velocity_rpm
-    });
+    let Some(point) = integral_candidate.acceptance_point() else {
+        terminal.outcome = RobustnessOutcome::Failed;
+        terminal.cause = ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE;
+        return terminal;
+    };
+    let identity_ok = point.selected_p == terminal.selected_p
+        && point.selected_i == terminal.selected_i
+        && point.target_velocity_rpm == terminal.target_velocity_rpm;
     if !identity_ok {
         terminal.outcome = RobustnessOutcome::Failed;
         terminal.cause = ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY;
@@ -348,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_terminal_flags_evidence_integrity_when_slot_empty() {
+    fn apply_terminal_flags_no_accepted_candidate_when_slot_empty() {
         let point = sample_acceptance_point();
         let slot = IntegralRetentionSlot::new(); // Empty
         let terminal = sample_terminal(point);
@@ -356,7 +405,7 @@ mod tests {
         let applied = apply_robustness_terminal(terminal, &slot);
 
         assert_eq!(applied.outcome, RobustnessOutcome::Failed);
-        assert_eq!(applied.cause, ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY);
+        assert_eq!(applied.cause, ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE);
     }
 
     #[test]

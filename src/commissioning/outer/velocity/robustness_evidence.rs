@@ -86,9 +86,9 @@ pub struct RobustnessEvidence {
 /// summary fields, which no longer carry a per-direction tripped bitmask
 /// (only the derived [`RobustnessDirectionSummary::trip_count`]).
 ///
-/// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` or
-/// `ROBUSTNESS_CAUSE_INTERNAL_FAULT` -- those causes are set only at
-/// terminal application and the fault path, not by this summary derivation.
+/// Never returns `ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY` or any of the
+/// dedicated internal-fault causes -- those are set only at terminal
+/// application and the fault path, not by this summary derivation.
 pub(crate) fn summary_cause(
     tripped_a: u8,
     tripped_b: u8,
