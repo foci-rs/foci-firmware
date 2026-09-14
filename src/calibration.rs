@@ -50,6 +50,10 @@ pub enum CalibrationError {
     FaultInterlock,
     /// Hardware shutdown was requested (M112 / e-stop) while calibrating. Code 19.
     Shutdown,
+    /// The most recent safe-state restore pass had one or more write
+    /// failures; arming refuses until a subsequent restore pass completes
+    /// with zero failures. Code 20.
+    SafeStateIncomplete,
 }
 
 impl CalibrationError {
@@ -74,6 +78,7 @@ impl CalibrationError {
             Self::CurrentHoldFailed => 17,
             Self::FaultInterlock => 18,
             Self::Shutdown => 19,
+            Self::SafeStateIncomplete => 20,
         }
     }
 }

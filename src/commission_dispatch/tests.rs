@@ -1264,7 +1264,7 @@ async fn calibrate_arm_reports_a_tripped_interlock_as_fault_interlock() {
             ..
         } => assert_eq!(
             status,
-            crate::autotune::CommissionError::FaultInterlock.status_code(),
+            crate::calibration::CalibrationError::FaultInterlock.status_code(),
             "a refused arm must not read as a generic SPI failure"
         ),
         _ => panic!("expected a CalibrateResult terminal"),

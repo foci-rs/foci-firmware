@@ -567,7 +567,15 @@ impl TerminalRestoreMachine {
                                         .status_code()
                                 }
                                 CommissionError::FaultInterlock => {
-                                    CommissionError::FaultInterlock.status_code()
+                                    crate::calibration::CalibrationError::FaultInterlock
+                                        .status_code()
+                                }
+                                CommissionError::InvalidCurrentLimit => {
+                                    crate::calibration::CalibrationError::ConfigFault.status_code()
+                                }
+                                CommissionError::SafeStateIncomplete => {
+                                    crate::calibration::CalibrationError::SafeStateIncomplete
+                                        .status_code()
                                 }
                                 _ => crate::calibration::CalibrationError::SpiError.status_code(),
                             };
