@@ -790,7 +790,7 @@ impl TerminalRestoreMachine {
                                     CommissionError::ChipResetDetected
                                 }
                                 restore::PositionModeRestoreErrorKind::InvalidGains => {
-                                    CommissionError::VelocityValidationFailed
+                                    CommissionError::CurrentValidationFailed
                                 }
                             };
                             defmt::error!("OuterDone: position-mode restore failed");

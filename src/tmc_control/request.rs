@@ -1072,7 +1072,7 @@ where
                         emit_commission_phase_failure::<Board, Spi>(
                             board,
                             oid,
-                            CommissionError::VelocityValidationFailed.status_code(),
+                            CommissionError::CurrentValidationFailed.status_code(),
                         );
                         return TmcControlRequestOutcome::skip_tick_tail();
                     }

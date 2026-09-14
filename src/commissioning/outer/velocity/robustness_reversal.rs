@@ -390,9 +390,9 @@ fn settled_rate_interval_q(
         .selection
         .exact_totals
         .rate_q()
-        .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        .map_err(|_| CommissionError::VelocityRateCalculationFailed)?;
     let confidence = estimate_confidence(suffix.selection, ROBUSTNESS_CONFIDENCE_FAMILY_SIZE)
-        .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        .map_err(|_| CommissionError::VelocityConfidenceEstimationFailed)?;
     let half_width = i64::try_from(confidence.half_width_rate_q)
         .map_err(|_| CommissionError::InvalidSchedule)?;
     Ok((

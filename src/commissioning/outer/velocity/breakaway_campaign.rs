@@ -732,7 +732,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                             motion: ProbeMotionClass::WrongDirection,
                             ..
                         }) => Err(BreakawayProbeOutcome::SafetyFault {
-                            error: CommissionError::VelocityValidationFailed,
+                            error: CommissionError::VelocityWrongDirection,
                             safety: None,
                         }),
                         Ok(evidence)
@@ -903,7 +903,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             workspace.observations.clear();
             safety.end_primitive();
             if !confirmation.confirmed_rest {
-                return fault(CommissionError::VelocityValidationFailed);
+                return fault(CommissionError::VelocityRestNotConfirmed);
             }
             let recovery_plan = match plan_rung_origin_recovery(
                 safety.budget,
@@ -1000,7 +1000,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
                     BreakawayProbeStep::ReadyNow
                 }
                 RungOriginRecoveryStep::RestUnconfirmed => {
-                    fault(CommissionError::VelocityValidationFailed)
+                    fault(CommissionError::VelocityRestNotConfirmed)
                 }
                 RungOriginRecoveryStep::Fault {
                     error,
@@ -2153,7 +2153,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
             let classification = classify_velocity_observation(input).classification;
             match classification {
                 VelocityObservationClass::WrongDirectionFault => {
-                    return discovery_fault(CommissionError::VelocityValidationFailed);
+                    return discovery_fault(CommissionError::VelocityWrongDirection);
                 }
                 VelocityObservationClass::HardClipFault => {
                     return discovery_fault(CommissionError::SafetyEnvelopeViolation);
@@ -2161,7 +2161,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 VelocityObservationClass::InvalidEvidenceFault => {
                     return AdditiveDiscoveryStep::Done(
                         AdditiveDiscoveryOutcome::DiscoveryEvidenceExcluded {
-                            error: CommissionError::VelocityValidationFailed,
+                            error: CommissionError::VelocityInvalidEvidence,
                         },
                     );
                 }
@@ -3274,7 +3274,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
             let classification = classify_velocity_observation(input).classification;
             match classification {
                 VelocityObservationClass::WrongDirectionFault => {
-                    return confirmation_fault(CommissionError::VelocityValidationFailed);
+                    return confirmation_fault(CommissionError::VelocityWrongDirection);
                 }
                 VelocityObservationClass::HardClipFault => {
                     return confirmation_fault(CommissionError::SafetyEnvelopeViolation);
@@ -4013,6 +4013,13 @@ enum EmitContinuation {
 }
 
 /// Map a non-`BreakawayFound` probe outcome to its campaign terminal.
+///
+/// The three-way fold into `VelocityValidationFailed` below is not a real
+/// collapse: each of these outcomes already gets its own dedicated
+/// `BreakawayTerminalCause` (`ProbeNoRepeatableMotionAtAuthority`,
+/// `ProbeExcursionEvidenceInvalid`, `ProbeAuthorityFailure`) on a separate
+/// wire field, so the shared generic value here loses no information the
+/// host doesn't already have from that field.
 fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
     match outcome {
         BreakawayProbeOutcome::BreakawayFound(_) => {
@@ -4031,6 +4038,10 @@ fn probe_terminal(outcome: BreakawayProbeOutcome) -> BreakawayCampaignOutcome {
 }
 
 /// Map a non-`Accepted` confirmation outcome to its campaign terminal.
+///
+/// The five-way fold into `VelocityValidationFailed` below is not a real
+/// collapse, for the same reason as `probe_terminal`'s: each outcome already
+/// gets its own dedicated `BreakawayTerminalCause` on a separate wire field.
 fn confirmation_terminal(outcome: BandConfirmationOutcome) -> BreakawayCampaignOutcome {
     match outcome {
         BandConfirmationOutcome::Accepted { .. } => {
@@ -4584,7 +4595,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
     ) {
         Ok(integral_plan) => BreakawayCampaignOutcome::IntegralPlanReady(integral_plan),
         Err(_) => BreakawayCampaignOutcome::Terminal {
-            error: CommissionError::VelocityValidationFailed,
+            error: CommissionError::VelocityIntegralPlanInvalid,
             safety: None,
         },
     }

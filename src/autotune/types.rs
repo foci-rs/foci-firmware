@@ -395,6 +395,41 @@ pub enum CommissionError {
     /// check is a real code path, not because current production input can
     /// reach it.
     CaptureBufferDesync,
+    /// A velocity-observation confidence estimate could not be computed.
+    /// Code 98.
+    VelocityConfidenceEstimationFailed,
+    /// A velocity-observation settled-rate calculation could not be
+    /// computed. Code 99.
+    VelocityRateCalculationFailed,
+    /// A velocity-observation narrowing numeric conversion could not be
+    /// represented. Code 100.
+    VelocityConversionInvalid,
+    /// A velocity-observation equivalent-disturbance calculation could not
+    /// be computed. Code 101.
+    VelocityDisturbanceCalculationFailed,
+    /// A velocity-observation's post-fit block geometry (shift count,
+    /// suffix-length divisibility, or block count) was invalid. Code 102.
+    VelocityBlockGeometryInvalid,
+    /// A velocity-observation's settled-rate confidence interval was
+    /// unrepresentable or inverted. Code 103.
+    VelocityIntervalInvalid,
+    /// A velocity-observation's lag-one family evaluation could not be
+    /// computed. Code 104.
+    VelocityLagOneEvaluationFailed,
+    /// A stationarity or scored-rest-confirmation poll returned an internal
+    /// error. Code 105.
+    VelocityAnalysisPollFailed,
+    /// A stationarity or rest-structural poll returned a result variant the
+    /// caller does not handle in its current context. Code 106.
+    VelocityUnexpectedPollVariant,
+    /// A velocity or breakaway observation showed motion in the wrong
+    /// direction. Code 107.
+    VelocityWrongDirection,
+    /// A velocity or breakaway observation's controller-domain evidence was
+    /// invalid. Code 108.
+    VelocityInvalidEvidence,
+    /// A breakaway-to-integral plan could not be constructed. Code 109.
+    VelocityIntegralPlanInvalid,
 }
 
 impl From<crate::commissioning::capture_timing::TimingReject> for CommissionError {
@@ -518,6 +553,18 @@ impl CommissionError {
             Self::TimingTelemetryOverflow => 95,
             Self::TimingTimestampRange => 96,
             Self::CaptureBufferDesync => 97,
+            Self::VelocityConfidenceEstimationFailed => 98,
+            Self::VelocityRateCalculationFailed => 99,
+            Self::VelocityConversionInvalid => 100,
+            Self::VelocityDisturbanceCalculationFailed => 101,
+            Self::VelocityBlockGeometryInvalid => 102,
+            Self::VelocityIntervalInvalid => 103,
+            Self::VelocityLagOneEvaluationFailed => 104,
+            Self::VelocityAnalysisPollFailed => 105,
+            Self::VelocityUnexpectedPollVariant => 106,
+            Self::VelocityWrongDirection => 107,
+            Self::VelocityInvalidEvidence => 108,
+            Self::VelocityIntegralPlanInvalid => 109,
         }
     }
 }

@@ -158,17 +158,17 @@ fn populate_derived_observation_fields(
     if let StationarityResult::Usable(suffix) = request.stationarity {
         input.drift_ratio_ppm = suffix.drift_ratio_ppm;
         let confidence = estimate_confidence(suffix.selection, request.confidence_family_size)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityConfidenceEstimationFailed)?;
         let mean_rate_q = suffix
             .selection
             .exact_totals
             .rate_q()
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityRateCalculationFailed)?;
         input.settled_rate_mean_q = mean_rate_q;
         input.variance_of_mean_q2 = confidence.variance_of_mean_q2;
         input.post_fit_lag_one_state = 2;
         let half_width = i64::try_from(confidence.half_width_rate_q)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityConversionInvalid)?;
         input.settled_rate_low_q = mean_rate_q.saturating_sub(half_width);
         input.settled_rate_high_q = mean_rate_q.saturating_add(half_width);
         let signed_target = request
@@ -197,14 +197,14 @@ fn populate_derived_observation_fields(
                 confidence.half_width_rate_q,
                 request.counts_per_rev,
             )
-            .map_err(|_| CommissionError::VelocityValidationFailed)?,
+            .map_err(|_| CommissionError::VelocityDisturbanceCalculationFailed)?,
         );
         input.disturbance_variance_q2 = equivalent_disturbance_variance_from_rate(
             request.p.raw(),
             confidence.variance_of_mean_q2,
             request.counts_per_rev,
         )
-        .map_err(|_| CommissionError::VelocityValidationFailed)?;
+        .map_err(|_| CommissionError::VelocityDisturbanceCalculationFailed)?;
     } else if matches!(
         request.stationarity,
         StationarityResult::Excluded(StationarityExclusion::ExcessiveDrift)
@@ -213,28 +213,28 @@ fn populate_derived_observation_fields(
     {
         let block_observations = 1u32
             .checked_shl(u32::from(selection.level))
-            .ok_or(CommissionError::VelocityValidationFailed)?;
+            .ok_or(CommissionError::VelocityBlockGeometryInvalid)?;
         if u32::from(diagnostic.suffix_len) % block_observations != 0
             || selection.block_count != u32::from(diagnostic.suffix_len) / block_observations
         {
-            return Err(CommissionError::VelocityValidationFailed);
+            return Err(CommissionError::VelocityBlockGeometryInvalid);
         }
         let confidence = estimate_confidence(selection, request.confidence_family_size)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityConfidenceEstimationFailed)?;
         let mean_rate_q = selection
             .exact_totals
             .rate_q()
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityRateCalculationFailed)?;
         let half_width = i64::try_from(confidence.half_width_rate_q)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityConversionInvalid)?;
         input.settled_rate_low_q = mean_rate_q
             .checked_sub(half_width)
-            .ok_or(CommissionError::VelocityValidationFailed)?;
+            .ok_or(CommissionError::VelocityIntervalInvalid)?;
         input.settled_rate_high_q = mean_rate_q
             .checked_add(half_width)
-            .ok_or(CommissionError::VelocityValidationFailed)?;
+            .ok_or(CommissionError::VelocityIntervalInvalid)?;
         if input.settled_rate_low_q > input.settled_rate_high_q {
-            return Err(CommissionError::VelocityValidationFailed);
+            return Err(CommissionError::VelocityIntervalInvalid);
         }
         input.settled_rate_mean_q = mean_rate_q;
         input.variance_of_mean_q2 = confidence.variance_of_mean_q2;
@@ -243,7 +243,7 @@ fn populate_derived_observation_fields(
             selection.block_count,
             request.confidence_family_size,
         )
-        .map_err(|_| CommissionError::VelocityValidationFailed)?
+        .map_err(|_| CommissionError::VelocityLagOneEvaluationFailed)?
         {
             2
         } else {
@@ -347,7 +347,7 @@ pub(super) fn poll_stationarity<const LEVELS: usize>(
 ) -> Result<Option<(StationarityResult, Option<SuffixDiagnostic>, u32)>, CommissionError> {
     match analysis
         .poll(observations, blocker)
-        .map_err(|_| CommissionError::VelocityValidationFailed)?
+        .map_err(|_| CommissionError::VelocityAnalysisPollFailed)?
     {
         StationarityWorkPoll::Pending => Ok(None),
         StationarityWorkPoll::Complete {
@@ -356,7 +356,7 @@ pub(super) fn poll_stationarity<const LEVELS: usize>(
             drift_ratio_ppm,
         } => Ok(Some((result, rejection, drift_ratio_ppm))),
         StationarityWorkPoll::RestDiagnostic(_) | StationarityWorkPoll::RestComplete(_) => {
-            Err(CommissionError::VelocityValidationFailed)
+            Err(CommissionError::VelocityUnexpectedPollVariant)
         }
     }
 }
@@ -368,7 +368,7 @@ pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
 ) -> Result<ScoredRestPoll, CommissionError> {
     match analysis
         .poll(observations, blocker)
-        .map_err(|_| CommissionError::VelocityValidationFailed)?
+        .map_err(|_| CommissionError::VelocityAnalysisPollFailed)?
     {
         StationarityWorkPoll::Pending => Ok(ScoredRestPoll::Pending),
         StationarityWorkPoll::RestDiagnostic(decision) => Ok(ScoredRestPoll::Diagnostic(decision)),
@@ -389,7 +389,9 @@ pub(super) fn poll_scored_rest_confirmation<const LEVELS: usize>(
                 recent_structural_code: result.recent_structural_code,
             }))
         }
-        StationarityWorkPoll::Complete { .. } => Err(CommissionError::VelocityValidationFailed),
+        StationarityWorkPoll::Complete { .. } => {
+            Err(CommissionError::VelocityUnexpectedPollVariant)
+        }
     }
 }
 

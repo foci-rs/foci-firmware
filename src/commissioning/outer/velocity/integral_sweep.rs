@@ -1451,14 +1451,14 @@ fn moving_analysis(
     if let StationarityResult::Usable(suffix) = stationarity {
         input.drift_ratio_ppm = suffix.drift_ratio_ppm;
         let confidence = estimate_confidence(suffix.selection, data.plan.family_size)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityConfidenceEstimationFailed)?;
         let mean_rate_q = suffix
             .selection
             .exact_totals
             .rate_q()
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityRateCalculationFailed)?;
         let half_width = i64::try_from(confidence.half_width_rate_q)
-            .map_err(|_| CommissionError::VelocityValidationFailed)?;
+            .map_err(|_| CommissionError::VelocityConversionInvalid)?;
         input.settled_rate_mean_q = mean_rate_q;
         input.variance_of_mean_q2 = confidence.variance_of_mean_q2;
         input.post_fit_lag_one_state = 2;
@@ -1927,7 +1927,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 summary.classification == VelocityObservationClass::CurrentHeadroom;
             let terminal_error = match summary.classification {
                 VelocityObservationClass::WrongDirectionFault => {
-                    Some(CommissionError::VelocityValidationFailed)
+                    Some(CommissionError::VelocityWrongDirection)
                 }
                 VelocityObservationClass::HardClipFault => {
                     Some(CommissionError::SafetyEnvelopeViolation)
@@ -2208,7 +2208,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                                 return fail_integral(
                                     phase,
                                     backend,
-                                    CommissionError::VelocityValidationFailed,
+                                    CommissionError::VelocityUnexpectedPollVariant,
                                 )
                                 .await;
                             }

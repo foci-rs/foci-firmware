@@ -565,7 +565,7 @@ fn wrong_direction_short_circuits_without_recovering() {
                 let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
                 };
-                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert_eq!(error, CommissionError::VelocityWrongDirection);
                 assert!(safety.is_none());
                 break;
             }
@@ -725,7 +725,7 @@ fn an_unconfirmed_settle_reports_validation_failure() {
                 let BreakawayProbeOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected validation failure, got {outcome:?}");
                 };
-                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert_eq!(error, CommissionError::VelocityRestNotConfirmed);
                 assert!(safety.is_none());
                 break;
             }
@@ -1666,7 +1666,7 @@ fn wrong_direction_short_circuits_discovery_without_recovering() {
                 let AdditiveDiscoveryOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
                 };
-                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert_eq!(error, CommissionError::VelocityWrongDirection);
                 assert!(safety.is_none());
                 break;
             }
@@ -2525,7 +2525,7 @@ fn wrong_direction_short_circuits_confirmation_without_recovering() {
                 let BandConfirmationOutcome::SafetyFault { error, safety } = outcome else {
                     panic!("expected a safety fault, got {outcome:?}");
                 };
-                assert_eq!(error, CommissionError::VelocityValidationFailed);
+                assert_eq!(error, CommissionError::VelocityWrongDirection);
                 assert!(safety.is_none());
                 break;
             }
@@ -3286,7 +3286,7 @@ fn a_confirmed_accept_whose_integral_plan_build_is_refused_reports_a_distinct_ca
     assert_eq!(campaign_terminal.integral_plan_digest, 0);
     assert_eq!(
         campaign_terminal.error_code,
-        CommissionError::VelocityValidationFailed.status_code()
+        CommissionError::VelocityIntegralPlanInvalid.status_code()
     );
     assert!(matches!(done, BreakawayCampaignOutcome::Terminal { .. }));
 }
