@@ -73,6 +73,11 @@ pub trait TrsyncHost: crate::context::StateAccess {
 
     /// Link a physical stepper to a trsync stop signal.
     fn link_stepper_stop(&mut self, stepper_idx: usize, trsync_oid: u8) -> Result<(), ()>;
+
+    /// Notify the board that homing has transitioned from idle to active.
+    ///
+    /// Returns `Err` when the board cannot accept or coalesce the notification.
+    fn notify_homing_start(&mut self) -> Result<(), ()>;
 }
 
 #[allow(clippy::result_unit_err)]
@@ -136,6 +141,10 @@ impl<T: ?Sized + TrsyncHost> TrsyncHost for &mut T {
 
     fn link_stepper_stop(&mut self, stepper_idx: usize, trsync_oid: u8) -> Result<(), ()> {
         (**self).link_stepper_stop(stepper_idx, trsync_oid)
+    }
+
+    fn notify_homing_start(&mut self) -> Result<(), ()> {
+        (**self).notify_homing_start()
     }
 }
 

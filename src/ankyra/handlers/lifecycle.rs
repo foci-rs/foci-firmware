@@ -253,6 +253,9 @@ mod tests {
         fn link_stepper_stop(&mut self, _stepper_idx: usize, _trsync_oid: u8) -> Result<(), ()> {
             panic!("link_stepper_stop not used in this test")
         }
+        fn notify_homing_start(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
     }
 
     #[test]
