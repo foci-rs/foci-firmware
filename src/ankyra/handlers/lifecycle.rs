@@ -315,6 +315,8 @@ mod tests {
         use crate::analog_in::{AnalogInConfig, analog_channel};
 
         let _guard = TEST_LOCK.lock().unwrap();
+        let _shared_guard =
+            crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
         let channel = analog_channel(0).unwrap();
         channel.configure_oid(5);
         channel.configure_sampling(

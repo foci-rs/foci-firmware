@@ -701,6 +701,7 @@ mod tests {
         assert_eq!(ctx.homing_state_at_notification, Some(1));
         assert_eq!(ctx.notification_calls, 1);
         assert_eq!(ctx.last_shutdown, None);
+        HOMING_STATE.store(0, Relaxed);
     }
 
     #[test]
@@ -720,6 +721,7 @@ mod tests {
             ctx.last_shutdown,
             Some(ShutdownReason::StepperStopOnTriggerFailed)
         );
+        HOMING_STATE.store(0, Relaxed);
     }
 
     #[test]
@@ -739,6 +741,7 @@ mod tests {
             ctx.last_shutdown,
             Some(ShutdownReason::StepperStopOnTriggerFailed)
         );
+        HOMING_STATE.store(0, Relaxed);
     }
 
     #[test]
@@ -756,5 +759,6 @@ mod tests {
         assert_eq!(ctx.link_calls, 2);
         assert_eq!(ctx.notification_calls, 1);
         assert_eq!(ctx.last_shutdown, None);
+        HOMING_STATE.store(0, Relaxed);
     }
 }
