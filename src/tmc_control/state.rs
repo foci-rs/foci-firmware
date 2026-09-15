@@ -196,7 +196,6 @@ impl TmcControlRuntime {
             && !self.torque_flux_offset_was_active
             && self.position_lead_applied_units == 0
             && !self.phase_advance_was_active
-            && self.pid_error_clear_countdown_ms == 0
             && self.stall_detector.is_none()
             && self.homing_state_1_retries == 0
             && self.homing_state_3_retries == 0

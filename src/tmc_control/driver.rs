@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn maintenance_obligations_are_invalidated_by_each_audited_field() {
-        let cases: [(&str, fn(&mut ChannelDriver)); 12] = [
+        let cases: [(&str, fn(&mut ChannelDriver)); 11] = [
             ("driver.reset_for_maintenance", |driver| {
                 driver.reset_for_maintenance = true;
             }),
@@ -905,9 +905,6 @@ mod tests {
             ("runtime.phase_advance_was_active", |driver| {
                 driver.runtime.set_phase_advance_for_test(true, 0, 0);
             }),
-            ("runtime.pid_error_clear_countdown_ms", |driver| {
-                driver.runtime.set_pid_error_clear_countdown_ms(1);
-            }),
             ("runtime.stall_detector", |driver| {
                 driver.runtime.arm_stall_detector_for_test(1, 1);
             }),
@@ -933,7 +930,7 @@ mod tests {
 
     #[test]
     fn maintenance_obligations_ignore_passive_caches_and_configuration() {
-        let cases: [(&str, fn(&mut ChannelDriver)); 6] = [
+        let cases: [(&str, fn(&mut ChannelDriver)); 7] = [
             ("runtime.applied_velocity_offset", |driver| {
                 driver.runtime.set_applied_velocity_offset_for_test(Some(1));
             }),
@@ -954,6 +951,9 @@ mod tests {
             }),
             ("runtime.calibrated", |driver| {
                 driver.runtime.set_calibrated_for_test(true);
+            }),
+            ("runtime.pid_error_clear_countdown_ms", |driver| {
+                driver.runtime.set_pid_error_clear_countdown_ms(1);
             }),
             ("runtime.planner scales", |driver| {
                 driver.runtime.set_planner_velocity_scale_for_test(1);
