@@ -1029,11 +1029,13 @@ mod tests {
     fn maintenance_arm_stats_count_only_effective_transitions_and_wrap() {
         let mut s = ChannelScheduler::<1>::new(0, [10_000]);
         s.set_maintenance_arm(MaintenanceArm::Armed, 100);
+        assert_eq!(s.maintenance_due_us(), MAINTENANCE_PERIOD_US);
         assert_eq!(s.maintenance_arm_stats().armed_to_disarmed, 0);
         assert_eq!(s.maintenance_arm_stats().disarmed_to_armed, 0);
 
         s.set_maintenance_arm(MaintenanceArm::Disarmed, 100);
         s.set_maintenance_arm(MaintenanceArm::Disarmed, 200);
+        assert_eq!(s.maintenance_due_us(), MAINTENANCE_PERIOD_US);
         assert_eq!(s.maintenance_arm_stats().armed_to_disarmed, 1);
 
         s.set_maintenance_arm(MaintenanceArm::Armed, 300);
