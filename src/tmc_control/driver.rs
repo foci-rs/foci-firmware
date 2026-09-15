@@ -217,6 +217,12 @@ impl ChannelDriver {
         }
     }
 
+    /// Return whether this driver has no work for a disabled, homing-idle
+    /// maintenance unit.
+    pub const fn maintenance_obligations_clear(&self) -> bool {
+        !self.reset_for_maintenance && self.runtime.maintenance_obligations_clear()
+    }
+
     /// Run one bounded unit of work.
     pub async fn drive<B>(&mut self, unit: Unit, backend: &mut B, ctx: DriveCtx<'_>) -> UnitOutcome
     where
@@ -856,6 +862,149 @@ mod tests {
         let mut rig = Rig::new(spi);
         rig.driver.phase = DriverPhase::Ready;
         rig
+    }
+
+    #[test]
+    fn maintenance_obligations_are_clear_for_an_all_clear_driver() {
+        let driver = ChannelDriver::new(0);
+
+        assert!(driver.maintenance_obligations_clear());
+    }
+
+    #[test]
+    fn maintenance_obligations_are_invalidated_by_each_audited_field() {
+        let cases: [(&str, fn(&mut ChannelDriver)); 12] = [
+            ("driver.reset_for_maintenance", |driver| {
+                driver.reset_for_maintenance = true;
+            }),
+            ("runtime.motor_enabled", |driver| {
+                driver.runtime.set_motor_enabled_for_test(true);
+            }),
+            ("runtime.commission_engine", |driver| {
+                driver.runtime.set_commission_engine(
+                    crate::commission_dispatch::test_support::breakaway_campaign_engine(),
+                );
+            }),
+            ("runtime.restore_machine", |driver| {
+                driver.runtime.begin_commissioning_terminal(
+                    CommissionTerminal::InnerFailed(crate::autotune::CommissionError::Spi),
+                    &config(),
+                );
+            }),
+            ("runtime.feedforward_was_active", |driver| {
+                driver.runtime.set_feedforward_was_active(true);
+            }),
+            ("runtime.torque_flux_offset_was_active", |driver| {
+                driver
+                    .runtime
+                    .set_torque_flux_offset_was_active_for_test(true);
+            }),
+            ("runtime.position_lead_applied_units", |driver| {
+                driver.runtime.set_position_lead_applied_units_for_test(1);
+            }),
+            ("runtime.phase_advance_was_active", |driver| {
+                driver.runtime.set_phase_advance_for_test(true, 0, 0);
+            }),
+            ("runtime.pid_error_clear_countdown_ms", |driver| {
+                driver.runtime.set_pid_error_clear_countdown_ms(1);
+            }),
+            ("runtime.stall_detector", |driver| {
+                driver.runtime.arm_stall_detector_for_test(1, 1);
+            }),
+            ("runtime.homing_state_1_retries", |driver| {
+                driver.runtime.set_homing_state_1_retries_for_test(1);
+            }),
+            ("runtime.homing_state_3_retries", |driver| {
+                driver.runtime.set_homing_state_3_retries_for_test(1);
+            }),
+        ];
+
+        for (name, mutate) in cases {
+            let mut driver = ChannelDriver::new(0);
+            mutate(&mut driver);
+
+            assert!(
+                !driver.maintenance_obligations_clear(),
+                "{} must invalidate maintenance quiescence",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn maintenance_obligations_ignore_passive_caches_and_configuration() {
+        let cases: [(&str, fn(&mut ChannelDriver)); 6] = [
+            ("runtime.applied_velocity_offset", |driver| {
+                driver.runtime.set_applied_velocity_offset_for_test(Some(1));
+            }),
+            ("runtime.applied_torque_flux_offset", |driver| {
+                driver
+                    .runtime
+                    .set_applied_torque_flux_offset_for_test(Some(1));
+            }),
+            ("runtime.phase_advance register caches", |driver| {
+                driver
+                    .runtime
+                    .set_phase_advance_for_test(false, 0x1111_2222, 0x3333_4444);
+            }),
+            ("runtime.stored_gains", |driver| {
+                driver
+                    .runtime
+                    .set_stored_gains(crate::pid::test_inner_gains(1, 2, 3, 4));
+            }),
+            ("runtime.calibrated", |driver| {
+                driver.runtime.set_calibrated_for_test(true);
+            }),
+            ("runtime.planner scales", |driver| {
+                driver.runtime.set_planner_velocity_scale_for_test(1);
+            }),
+        ];
+
+        for (name, mutate) in cases {
+            let mut driver = ChannelDriver::new(0);
+            mutate(&mut driver);
+
+            assert!(
+                driver.maintenance_obligations_clear(),
+                "{} must not create maintenance work by itself",
+                name
+            );
+        }
+    }
+
+    #[fixture_test]
+    async fn maintenance_obligations_clear_after_state_1_retry_is_forced_idle() {
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state.corrupt_outer_gain_for_test(0x8000);
+        let mut rig = ready_rig(RuntimeMockSpi::default());
+
+        let retry = rig
+            .drive_with_homing(UnitClass::Maintenance, false, 1)
+            .await;
+
+        tmc_state.store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
+        rig.driver.runtime.set_homing_state_3_retries_for_test(1);
+        assert!(matches!(
+            retry,
+            UnitOutcome::Maintenance {
+                homing: HomingMaintenanceResult::RetryCurrentState
+            }
+        ));
+        assert_eq!(rig.driver.runtime.homing_retry_counts_for_test(), (1, 1));
+        assert!(!rig.driver.maintenance_obligations_clear());
+
+        let forced_idle = rig
+            .drive_with_homing(UnitClass::Maintenance, false, 0)
+            .await;
+
+        assert!(matches!(
+            forced_idle,
+            UnitOutcome::Maintenance {
+                homing: HomingMaintenanceResult::ReadyToAdvance
+            }
+        ));
+        assert_eq!(rig.driver.runtime.homing_retry_counts_for_test(), (0, 0));
+        assert!(rig.driver.maintenance_obligations_clear());
     }
 
     #[fixture_test]
