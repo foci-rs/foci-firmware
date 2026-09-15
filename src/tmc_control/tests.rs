@@ -123,7 +123,7 @@ fn channel_runtime_size_stays_bounded() {
     // a `u32` peak local-window excursion field (see
     // `commissioning::tests::size_regression_gates`).
     // 7_568 -> 7_584 / 7_536 -> 7_552: the runtime now owns the homing
-    // `Option<StallDetector>` and its clamp-write retry counter.
+    // `Option<StallDetector>` and its state-1/state-3 retry counters.
     // The three gain-restore cursor states (`SelftestRestoreGains`,
     // `InnerFailedRestoreGains`, `CalibrateRestoreGains`) now carry an
     // `Option<CalibrateGainsRestoreStep>` so each polls one register
@@ -1486,6 +1486,42 @@ fn homing_channel_tick_restore_failure_blocks_advance() {
     });
 }
 
+#[test]
+fn homing_state_1_phase_restore_failure_retries_twice_then_fails_closed() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut tmc = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+        );
+
+        assert_eq!(
+            three_homing_state_1_attempts(&mut runtime, &mut tmc, refs).await,
+            expected_exhausted_homing_state_1_budget()
+        );
+    });
+}
+
+#[test]
+fn homing_state_1_outer_gain_failure_retries_twice_then_fails_closed() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = crate::state::tmc::TmcChannelState::new();
+        tmc_state.corrupt_outer_gain_for_test(0x8000);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        assert_eq!(
+            three_homing_state_1_attempts(&mut runtime, &mut tmc, refs).await,
+            expected_exhausted_homing_state_1_budget()
+        );
+    });
+}
+
 /// Board current scale realistic enough that both the homing and the run
 /// current land inside the TMC4671 limit domain. `commissioning_runtime_config`
 /// uses 0.03125 mA/LSB, which caps the representable run current near 724 mA.
@@ -1515,6 +1551,37 @@ fn homing_state(runtime: &mut TmcControlRuntime) -> crate::state::tmc::TmcChanne
     runtime.set_motor_enabled_for_test(true);
     runtime.set_calibrated_for_test(true);
     tmc_state
+}
+
+async fn homing_tick(
+    runtime: &mut TmcControlRuntime,
+    tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
+    refs: TmcControlStateRefs<'_>,
+    state: u8,
+) -> HomingMaintenanceResult {
+    runtime
+        .apply_homing_channel_tick(tmc, refs, &homing_runtime_config(), state)
+        .await
+}
+
+async fn three_homing_state_1_attempts(
+    runtime: &mut TmcControlRuntime,
+    tmc: &mut Tmc4671Spi<RuntimeMockSpi>,
+    refs: TmcControlStateRefs<'_>,
+) -> [HomingMaintenanceResult; 3] {
+    [
+        homing_tick(runtime, tmc, refs, 1).await,
+        homing_tick(runtime, tmc, refs, 1).await,
+        homing_tick(runtime, tmc, refs, 1).await,
+    ]
+}
+
+const fn expected_exhausted_homing_state_1_budget() -> [HomingMaintenanceResult; 3] {
+    [
+        HomingMaintenanceResult::RetryCurrentState,
+        HomingMaintenanceResult::RetryCurrentState,
+        HomingMaintenanceResult::FailClosed,
+    ]
 }
 
 #[test]
@@ -1693,40 +1760,126 @@ fn homing_state_forced_idle_drops_detector_and_clamp_flag() {
 }
 
 #[test]
-fn homing_prepare_retries_then_fails_closed_on_clamp_write_failure() {
+fn homing_state_1_clamp_write_failure_retries_twice_then_fails_closed() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let tmc_state = homing_state(&mut runtime);
         let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
         let mut tmc = Tmc4671Spi::new(
             RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
         );
 
-        let mut results = std::vec::Vec::new();
-        for _ in 0..crate::tmc_control::state::HOMING_CLAMP_MAX_RETRIES {
-            results.push(
-                runtime
-                    .apply_homing_channel_tick(
-                        &mut tmc,
-                        TmcControlStateRefs::new(&tmc_state, &stepper_state),
-                        &homing_runtime_config(),
-                        1,
-                    )
-                    .await,
-            );
-        }
-
-        assert!(
-            results[..results.len() - 1]
-                .iter()
-                .all(|r| *r == HomingMaintenanceResult::RetryCurrentState)
-        );
         assert_eq!(
-            *results.last().unwrap(),
-            HomingMaintenanceResult::FailClosed
+            three_homing_state_1_attempts(&mut runtime, &mut tmc, refs).await,
+            expected_exhausted_homing_state_1_budget()
         );
         assert!(!tmc_state.homing_clamp_active.load(Relaxed));
         assert!(!runtime.stall_detector_armed_for_test());
+    });
+}
+
+#[test]
+fn homing_state_1_mixed_failure_causes_share_one_retry_budget() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut phase_restore_failure = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+        );
+
+        let first = homing_tick(&mut runtime, &mut phase_restore_failure, refs, 1).await;
+
+        tmc_state.corrupt_outer_gain_for_test(0x8000);
+        let mut outer_gain_failure = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let second = homing_tick(&mut runtime, &mut outer_gain_failure, refs, 1).await;
+
+        tmc_state.store_outer_gains(crate::pid::test_outer_gains(123, 0, 1152, 0), Relaxed);
+        let mut clamp_write_failure = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
+        );
+        let third = homing_tick(&mut runtime, &mut clamp_write_failure, refs, 1).await;
+
+        assert_eq!(first, HomingMaintenanceResult::RetryCurrentState);
+        assert_eq!(second, HomingMaintenanceResult::RetryCurrentState);
+        assert_eq!(third, HomingMaintenanceResult::FailClosed);
+    });
+}
+
+#[test]
+fn homing_state_1_success_resets_its_retry_budget() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        tmc_state.corrupt_outer_gain_for_test(0x8000);
+
+        for _ in 0..2 {
+            assert_eq!(
+                homing_tick(&mut runtime, &mut tmc, refs, 1).await,
+                HomingMaintenanceResult::RetryCurrentState
+            );
+        }
+
+        tmc_state.store_outer_gains(crate::pid::test_outer_gains(123, 0, 1152, 0), Relaxed);
+        assert_eq!(
+            homing_tick(&mut runtime, &mut tmc, refs, 1).await,
+            HomingMaintenanceResult::ReadyToAdvance
+        );
+
+        tmc_state.corrupt_outer_gain_for_test(0x8000);
+        assert_eq!(
+            three_homing_state_1_attempts(&mut runtime, &mut tmc, refs).await,
+            expected_exhausted_homing_state_1_budget()
+        );
+    });
+}
+
+#[test]
+fn homing_state_1_attempts_preserve_state_3_retry_budget() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        let mut successful_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            homing_tick(&mut runtime, &mut successful_tmc, refs, 1).await,
+            HomingMaintenanceResult::ReadyToAdvance
+        );
+
+        runtime.set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let mut phase_restore_failure = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+        );
+        assert_eq!(
+            homing_tick(&mut runtime, &mut phase_restore_failure, refs, 1).await,
+            HomingMaintenanceResult::RetryCurrentState
+        );
+
+        let mut restore_failure = Tmc4671Spi::new(
+            RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
+        );
+        assert_eq!(
+            homing_tick(&mut runtime, &mut restore_failure, refs, 3).await,
+            HomingMaintenanceResult::RetryCurrentState
+        );
+
+        let mut successful_tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        assert_eq!(
+            homing_tick(&mut runtime, &mut successful_tmc, refs, 1).await,
+            HomingMaintenanceResult::ReadyToAdvance
+        );
+
+        assert_eq!(
+            homing_tick(&mut runtime, &mut restore_failure, refs, 3).await,
+            HomingMaintenanceResult::FailClosed
+        );
     });
 }
 

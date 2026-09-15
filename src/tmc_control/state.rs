@@ -19,7 +19,7 @@ use crate::tmc_control::config::{TmcControlConfig, TmcControlHomingRefs, TmcCont
 use crate::tmc_control::signals::TmcControlSignals;
 use foci_tmc4671::pid::{PidGainPair, PidIGain};
 
-/// Consecutive homing-clamp write attempts tolerated before failing closed.
+/// Consecutive failed state-1 homing attempts tolerated before failing closed.
 pub(crate) const HOMING_CLAMP_MAX_RETRIES: u8 = 3;
 
 /// Consecutive run-current restore attempts tolerated before failing closed.
@@ -132,7 +132,8 @@ pub struct TmcControlRuntime {
     phase_advance_last_register: u32,
     pid_error_clear_countdown_ms: u8,
     stall_detector: Option<crate::tmc_control::stall_detector::StallDetector>,
-    homing_clamp_retries: u8,
+    homing_state_1_retries: u8,
+    homing_state_3_retries: u8,
     #[cfg(feature = "trace")]
     trace: TmcControlTraceState,
 }
@@ -175,7 +176,8 @@ impl TmcControlRuntime {
             phase_advance_last_register: 0,
             pid_error_clear_countdown_ms: 0,
             stall_detector: None,
-            homing_clamp_retries: 0,
+            homing_state_1_retries: 0,
+            homing_state_3_retries: 0,
             #[cfg(feature = "trace")]
             trace: TmcControlTraceState::new(),
         }
@@ -286,7 +288,8 @@ impl TmcControlRuntime {
     /// re-send the run current.
     pub fn clear_homing_runtime(&mut self) {
         self.stall_detector = None;
-        self.homing_clamp_retries = 0;
+        self.homing_state_1_retries = 0;
+        self.homing_state_3_retries = 0;
     }
 
     /// Reset channel atomics to firmware defaults after a config reset.
@@ -1793,12 +1796,12 @@ impl TmcControlRuntime {
             1 => {
                 if !self.restore_phase_advance_now(tmc_spi).await {
                     defmt::warn!("phase advance: failed to restore ABN offset before homing");
-                    return HomingMaintenanceResult::RetryCurrentState;
+                    return self.retry_homing_state_1();
                 }
 
                 let gains = match refs.tmc.load_outer_gains(Relaxed) {
                     Ok(gains) => gains,
-                    Err(_) => return HomingMaintenanceResult::RetryCurrentState,
+                    Err(_) => return self.retry_homing_state_1(),
                 };
                 let reg = PidGainPair::new(gains.position_p, PidIGain::ZERO).register_value();
                 let _ = tmc_spi
@@ -1806,7 +1809,14 @@ impl TmcControlRuntime {
                     .await;
                 defmt::info!("homing: position I suppressed");
 
-                self.apply_homing_current_clamp(tmc_spi, refs, config).await
+                match self.apply_homing_current_clamp(tmc_spi, refs, config).await {
+                    HomingMaintenanceResult::ReadyToAdvance => {
+                        self.homing_state_1_retries = 0;
+                        HomingMaintenanceResult::ReadyToAdvance
+                    }
+                    HomingMaintenanceResult::RetryCurrentState => self.retry_homing_state_1(),
+                    HomingMaintenanceResult::FailClosed => HomingMaintenanceResult::FailClosed,
+                }
             }
             2 => {
                 if let Some(detector) = self.stall_detector.as_mut() {
@@ -1844,7 +1854,8 @@ impl TmcControlRuntime {
                 self.restore_run_current_after_homing(tmc_spi, refs).await
             }
             _ => {
-                self.homing_clamp_retries = 0;
+                self.homing_state_1_retries = 0;
+                self.homing_state_3_retries = 0;
                 if self.stall_detector.take().is_some()
                     || refs.tmc.homing_clamp_active.load(Relaxed)
                 {
@@ -1855,6 +1866,19 @@ impl TmcControlRuntime {
                 HomingMaintenanceResult::ReadyToAdvance
             }
         }
+    }
+
+    fn retry_homing_state_1(&mut self) -> HomingMaintenanceResult {
+        self.homing_state_1_retries = self.homing_state_1_retries.saturating_add(1);
+        if self.homing_state_1_retries >= HOMING_CLAMP_MAX_RETRIES {
+            defmt::error!(
+                "homing: state 1 failed {} times",
+                self.homing_state_1_retries
+            );
+            self.homing_state_1_retries = 0;
+            return HomingMaintenanceResult::FailClosed;
+        }
+        HomingMaintenanceResult::RetryCurrentState
     }
 
     /// Clamp the torque/flux limit to the homing current and arm the detector.
@@ -1904,18 +1928,8 @@ impl TmcControlRuntime {
             .await
             .is_err()
         {
-            self.homing_clamp_retries = self.homing_clamp_retries.saturating_add(1);
-            if self.homing_clamp_retries >= HOMING_CLAMP_MAX_RETRIES {
-                defmt::error!(
-                    "homing: clamp write failed {} times",
-                    self.homing_clamp_retries
-                );
-                self.homing_clamp_retries = 0;
-                return HomingMaintenanceResult::FailClosed;
-            }
             return HomingMaintenanceResult::RetryCurrentState;
         }
-        self.homing_clamp_retries = 0;
         refs.tmc.stall_latched.store(false, Relaxed);
         refs.tmc.homing_clamp_active.store(true, Relaxed);
         self.stall_detector = Some(crate::tmc_control::stall_detector::StallDetector::new(
@@ -1942,18 +1956,18 @@ impl TmcControlRuntime {
                 .await
                 .is_err()
             {
-                self.homing_clamp_retries = self.homing_clamp_retries.saturating_add(1);
-                if self.homing_clamp_retries >= HOMING_RESTORE_MAX_RETRIES {
+                self.homing_state_3_retries = self.homing_state_3_retries.saturating_add(1);
+                if self.homing_state_3_retries >= HOMING_RESTORE_MAX_RETRIES {
                     defmt::error!(
                         "homing: run-current restore failed {} times",
-                        self.homing_clamp_retries
+                        self.homing_state_3_retries
                     );
-                    self.homing_clamp_retries = 0;
+                    self.homing_state_3_retries = 0;
                     return HomingMaintenanceResult::FailClosed;
                 }
                 return HomingMaintenanceResult::RetryCurrentState;
             }
-            self.homing_clamp_retries = 0;
+            self.homing_state_3_retries = 0;
             refs.tmc.homing_clamp_active.store(false, Relaxed);
         }
         if let Some(detector) = self.stall_detector.take() {
