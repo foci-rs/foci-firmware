@@ -223,6 +223,27 @@ impl<const N: usize> ChannelScheduler<N> {
         self.channels[channel as usize].commission_stats
     }
 
+    /// Next shared maintenance deadline.
+    pub const fn maintenance_due_us(&self) -> u64 {
+        self.maintenance_due_us
+    }
+
+    /// Advance a due maintenance grid point without opening a group.
+    ///
+    /// This is an intermediate measurement seam for the empty-group hardware
+    /// checkpoint. Task 11 removes it when the scheduler gains its final
+    /// maintenance arm state. It succeeds only while no group or unit is in
+    /// flight, and it deliberately leaves all maintenance counters unchanged.
+    /// Returns whether the due grid point was advanced.
+    pub fn advance_quiescent_maintenance_grid(&mut self, now_us: u64) -> bool {
+        if self.group.is_some() || self.in_flight.is_some() || self.maintenance_due_us > now_us {
+            return false;
+        }
+        let (next, _) = advance_grid(self.maintenance_due_us, MAINTENANCE_PERIOD_US, now_us);
+        self.maintenance_due_us = next;
+        true
+    }
+
     /// Earliest deadline across every source, or `None` when no source is armed.
     pub fn earliest_due_us(&self) -> Option<u64> {
         let mut earliest: Option<u64> = None;
@@ -853,6 +874,133 @@ mod tests {
         let unit = s.pick(1_000, 8).unwrap();
         assert_eq!(unit.class, UnitClass::MaintenanceFinalize);
         s.record(1_000, 0);
+    }
+
+    #[test]
+    fn quiescent_maintenance_grid_elides_single_channel_group() {
+        let mut s = ready(0, [10_000]);
+        let fast = s.pick(0, 0).unwrap();
+        assert_eq!(fast.class, UnitClass::Fast);
+        s.record(0, 0);
+        let stats = s.maintenance_stats();
+
+        assert_eq!(s.maintenance_due_us(), 1_000);
+        assert!(s.advance_quiescent_maintenance_grid(1_000));
+        assert_eq!(s.maintenance_due_us(), 2_000);
+        assert!(s.maintenance_group().is_none());
+        assert!(s.pick(1_000, 0).is_none());
+        assert_eq!(s.maintenance_stats(), stats);
+    }
+
+    #[test]
+    fn quiescent_maintenance_grid_elides_two_channel_group() {
+        let mut s = ready(0, [10_000, 10_000]);
+        for _ in 0..2 {
+            let fast = s.pick(0, 0).unwrap();
+            assert_eq!(fast.class, UnitClass::Fast);
+            s.record(0, 0);
+        }
+        let stats = s.maintenance_stats();
+
+        assert!(s.advance_quiescent_maintenance_grid(1_000));
+        assert!(s.maintenance_group().is_none());
+        assert!(s.pick(1_000, 0).is_none());
+        assert_eq!(s.maintenance_stats(), stats);
+    }
+
+    #[test]
+    fn quiescent_maintenance_grid_refuses_early_open_and_in_flight_calls() {
+        let mut early = ready(0, [10_000]);
+        assert!(!early.advance_quiescent_maintenance_grid(999));
+        assert_eq!(early.maintenance_due_us(), 1_000);
+
+        let mut in_flight = ready(0, [10_000]);
+        let fast = in_flight.pick(0, 0).unwrap();
+        assert_eq!(fast.class, UnitClass::Fast);
+        assert!(!in_flight.advance_quiescent_maintenance_grid(1_000));
+        assert_eq!(in_flight.maintenance_due_us(), 1_000);
+
+        let mut open = ready(0, [10_000, 10_000]);
+        for _ in 0..2 {
+            let fast = open.pick(0, 0).unwrap();
+            assert_eq!(fast.class, UnitClass::Fast);
+            open.record(0, 0);
+        }
+        let maintenance = open.pick(1_000, 0).unwrap();
+        assert_eq!(maintenance.class, UnitClass::Maintenance);
+        open.record(1_000, 0);
+        assert!(open.maintenance_group().is_some());
+        assert!(!open.advance_quiescent_maintenance_grid(1_000));
+        assert_eq!(open.maintenance_due_us(), 1_000);
+    }
+
+    #[test]
+    fn quiescent_maintenance_grid_uses_existing_late_and_wrap_arithmetic() {
+        let mut late = ready(0, [10_000]);
+        let fast = late.pick(0, 0).unwrap();
+        assert_eq!(fast.class, UnitClass::Fast);
+        late.record(0, 0);
+        let stats = late.maintenance_stats();
+
+        assert!(late.advance_quiescent_maintenance_grid(4_500));
+        assert_eq!(late.maintenance_due_us(), 5_000);
+        assert_eq!(late.maintenance_stats(), stats);
+        assert!(!late.advance_quiescent_maintenance_grid(4_999));
+
+        // Leave room for the constructor's one-second audit deadline while
+        // still advancing maintenance to the final representable grid point.
+        let start = u64::MAX - 2_000_000;
+        let mut near_wrap = ChannelScheduler::<1>::new(start, [10_000]);
+        assert_eq!(near_wrap.maintenance_due_us(), u64::MAX - 1_999_000);
+        assert!(near_wrap.advance_quiescent_maintenance_grid(u64::MAX - 1_500));
+        assert_eq!(near_wrap.maintenance_due_us(), u64::MAX - 1_000);
+        assert_eq!(near_wrap.maintenance_stats(), SourceStats::default());
+
+        let mut at_wrap = ChannelScheduler::<1>::new(u64::MAX - 1_000_000, [10_000]);
+        assert!(at_wrap.advance_quiescent_maintenance_grid(u64::MAX));
+        assert_eq!(at_wrap.maintenance_due_us(), u64::MAX);
+        assert_eq!(at_wrap.maintenance_stats(), SourceStats::default());
+    }
+
+    #[test]
+    fn quiescent_maintenance_grid_does_not_change_other_source_ordering() {
+        let mut ready_scheduler = ready(0, [1_000]);
+        let fast = ready_scheduler.pick(0, 0).unwrap();
+        assert_eq!(fast.class, UnitClass::Fast);
+        ready_scheduler.record(0, 0);
+        assert!(ready_scheduler.advance_quiescent_maintenance_grid(1_000));
+        let fast = ready_scheduler.pick(1_000, 0).unwrap();
+        assert_eq!((fast.class, fast.deadline_us), (UnitClass::Fast, 1_000));
+
+        let mut bootstrap = ChannelScheduler::<1>::new(0, [10_000]);
+        assert!(bootstrap.advance_quiescent_maintenance_grid(1_000));
+        assert_eq!(
+            bootstrap.pick(1_000, 0).unwrap().class,
+            UnitClass::Bootstrap
+        );
+
+        let mut commission = commissioning(0, [10_000], 0);
+        commission.set_commission_due(0, Some(1_000));
+        assert!(commission.advance_quiescent_maintenance_grid(1_000));
+        assert_eq!(
+            commission.pick(1_000, 0).unwrap().class,
+            UnitClass::Commission
+        );
+
+        let mut restore = ready(0, [10_000]);
+        restore.set_mode(0, ChannelMode::Restore, 0);
+        assert!(restore.advance_quiescent_maintenance_grid(1_000));
+        assert_eq!(restore.pick(1_000, 0).unwrap().class, UnitClass::Restore);
+
+        let mut audit = ready(0, [2_000_000]);
+        let fast = audit.pick(0, 0).unwrap();
+        assert_eq!(fast.class, UnitClass::Fast);
+        audit.record(0, 0);
+        assert!(audit.advance_quiescent_maintenance_grid(1_000_000));
+        assert_eq!(
+            audit.pick(1_000_000, 0).unwrap().class,
+            UnitClass::StatusAudit
+        );
     }
 
     #[test]
