@@ -53,8 +53,8 @@ pub use driver::{
 pub use interlock::fault_interlock_tripped;
 pub use request::{TmcPreRequestDisposition, TmcRequestBoard, handle_tmc_control_request};
 pub use scheduler::{
-    ChannelMode, ChannelScheduler, MAINTENANCE_PERIOD_US, MaintenanceGroup, STATUS_AUDIT_PERIOD_US,
-    SourceStats, Unit, UnitClass,
+    ChannelMode, ChannelScheduler, MAINTENANCE_PERIOD_US, MaintenanceArm, MaintenanceArmStats,
+    MaintenanceGroup, STATUS_AUDIT_PERIOD_US, SourceStats, Unit, UnitClass,
 };
 pub use signals::TmcControlSignals;
 pub use state::{

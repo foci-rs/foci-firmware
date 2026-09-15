@@ -84,6 +84,27 @@ impl SourceStats {
     }
 }
 
+/// Whether the shared maintenance deadline may open a new group.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum MaintenanceArm {
+    /// Maintenance remains eligible at its shared deadline.
+    #[default]
+    Armed,
+    /// No new maintenance group may open.
+    Disarmed,
+}
+
+/// Snapshot of the maintenance arm state and its transition counts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct MaintenanceArmStats {
+    /// Current shared maintenance arm state.
+    pub state: MaintenanceArm,
+    /// Effective transitions from armed to disarmed.
+    pub armed_to_disarmed: u32,
+    /// Effective transitions from disarmed to armed.
+    pub disarmed_to_armed: u32,
+}
+
 /// Where a channel is in its lifecycle, which decides which units it gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ChannelMode {
@@ -136,6 +157,7 @@ pub struct ChannelScheduler<const N: usize> {
     maintenance_due_us: u64,
     group: Option<MaintenanceGroup>,
     maintenance_stats: SourceStats,
+    maintenance_arm_stats: MaintenanceArmStats,
     audit_stats: SourceStats,
     bootstrap_stats: SourceStats,
     rr_cursor: u8,
@@ -170,6 +192,7 @@ impl<const N: usize> ChannelScheduler<N> {
             maintenance_due_us: now_us + MAINTENANCE_PERIOD_US,
             group: None,
             maintenance_stats: SourceStats::default(),
+            maintenance_arm_stats: MaintenanceArmStats::default(),
             audit_stats: SourceStats::default(),
             bootstrap_stats: SourceStats::default(),
             rr_cursor: 0,
@@ -228,20 +251,29 @@ impl<const N: usize> ChannelScheduler<N> {
         self.maintenance_due_us
     }
 
-    /// Advance a due maintenance grid point without opening a group.
+    /// Set whether the shared maintenance deadline may open a new group.
     ///
-    /// This is an intermediate measurement seam for the empty-group hardware
-    /// checkpoint. Task 11 removes it when the scheduler gains its final
-    /// maintenance arm state. It succeeds only while no group or unit is in
-    /// flight, and it deliberately leaves all maintenance counters unchanged.
-    /// Returns whether the due grid point was advanced.
-    pub fn advance_quiescent_maintenance_grid(&mut self, now_us: u64) -> bool {
-        if self.group.is_some() || self.in_flight.is_some() || self.maintenance_due_us > now_us {
-            return false;
+    /// Rearming anchors the deadline at `now_us`, so one group is immediately
+    /// eligible without replaying deadlines skipped while disarmed. A disarm
+    /// request is ignored while a group is open so its frozen work can finish.
+    pub fn set_maintenance_arm(&mut self, arm: MaintenanceArm, now_us: u64) {
+        if self.maintenance_arm_stats.state == arm
+            || (arm == MaintenanceArm::Disarmed && self.group.is_some())
+        {
+            return;
         }
-        let (next, _) = advance_grid(self.maintenance_due_us, MAINTENANCE_PERIOD_US, now_us);
-        self.maintenance_due_us = next;
-        true
+        match arm {
+            MaintenanceArm::Armed => {
+                self.maintenance_due_us = now_us;
+                self.maintenance_arm_stats.disarmed_to_armed =
+                    self.maintenance_arm_stats.disarmed_to_armed.wrapping_add(1);
+            }
+            MaintenanceArm::Disarmed => {
+                self.maintenance_arm_stats.armed_to_disarmed =
+                    self.maintenance_arm_stats.armed_to_disarmed.wrapping_add(1);
+            }
+        }
+        self.maintenance_arm_stats.state = arm;
     }
 
     /// Earliest deadline across every source, or `None` when no source is armed.
@@ -271,7 +303,7 @@ impl<const N: usize> ChannelScheduler<N> {
         }
         if self.group.is_some() {
             consider(0);
-        } else {
+        } else if self.maintenance_arm_stats.state == MaintenanceArm::Armed {
             consider(self.maintenance_due_us);
         }
         earliest
@@ -285,7 +317,10 @@ impl<const N: usize> ChannelScheduler<N> {
         if self.in_flight.is_some() {
             return None;
         }
-        if self.group.is_none() && self.maintenance_due_us <= now_us {
+        if self.group.is_none()
+            && self.maintenance_arm_stats.state == MaintenanceArm::Armed
+            && self.maintenance_due_us <= now_us
+        {
             let mut done = 0u8;
             for (idx, slot) in self.channels.iter().enumerate() {
                 if slot.mode != ChannelMode::Ready {
@@ -521,6 +556,11 @@ impl<const N: usize> ChannelScheduler<N> {
     /// Shared maintenance counters (one `requested`/`serviced` per group).
     pub fn maintenance_stats(&self) -> SourceStats {
         self.maintenance_stats
+    }
+
+    /// Current maintenance arm state and transition counts.
+    pub fn maintenance_arm_stats(&self) -> MaintenanceArmStats {
+        self.maintenance_arm_stats
     }
 
     /// Status-audit counters summed across channels.
@@ -877,103 +917,149 @@ mod tests {
     }
 
     #[test]
-    fn quiescent_maintenance_grid_elides_single_channel_group() {
-        let mut s = ready(0, [10_000]);
-        let fast = s.pick(0, 0).unwrap();
+    fn maintenance_arm_defaults_to_armed_for_one_and_two_channels() {
+        let mut one = ready(0, [10_000]);
+        let fast = one.pick(0, 0).unwrap();
         assert_eq!(fast.class, UnitClass::Fast);
-        s.record(0, 0);
-        let stats = s.maintenance_stats();
+        one.record(0, 0);
+        assert_eq!(one.maintenance_arm_stats().state, MaintenanceArm::Armed);
+        let maintenance = one.pick(1_000, 0).unwrap();
+        assert_eq!(maintenance.class, UnitClass::Maintenance);
+        one.record(1_000, 0);
+        let finalize = one.pick(1_000, 0).unwrap();
+        assert_eq!(finalize.class, UnitClass::MaintenanceFinalize);
 
-        assert_eq!(s.maintenance_due_us(), 1_000);
-        assert!(s.advance_quiescent_maintenance_grid(1_000));
-        assert_eq!(s.maintenance_due_us(), 2_000);
-        assert!(s.maintenance_group().is_none());
-        assert!(s.pick(1_000, 0).is_none());
-        assert_eq!(s.maintenance_stats(), stats);
+        let mut two = ready(0, [10_000, 10_000]);
+        for _ in 0..2 {
+            let fast = two.pick(0, 0).unwrap();
+            assert_eq!(fast.class, UnitClass::Fast);
+            two.record(0, 0);
+        }
+        let first = two.pick(1_000, 0).unwrap();
+        assert_eq!((first.class, first.channel), (UnitClass::Maintenance, 0));
+        two.record(1_000, 0);
+        let second = two.pick(1_000, 0).unwrap();
+        assert_eq!((second.class, second.channel), (UnitClass::Maintenance, 1));
+        two.record(1_000, 0);
+        assert_eq!(
+            two.pick(1_000, 0).unwrap().class,
+            UnitClass::MaintenanceFinalize
+        );
     }
 
     #[test]
-    fn quiescent_maintenance_grid_elides_two_channel_group() {
+    fn maintenance_arm_disarmed_excludes_the_deadline_and_emits_no_group() {
         let mut s = ready(0, [10_000, 10_000]);
         for _ in 0..2 {
             let fast = s.pick(0, 0).unwrap();
             assert_eq!(fast.class, UnitClass::Fast);
             s.record(0, 0);
         }
-        let stats = s.maintenance_stats();
 
-        assert!(s.advance_quiescent_maintenance_grid(1_000));
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 500);
+
+        assert_eq!(s.earliest_due_us(), Some(10_000));
+        assert!(s.pick(1_000, 9).is_none());
         assert!(s.maintenance_group().is_none());
-        assert!(s.pick(1_000, 0).is_none());
-        assert_eq!(s.maintenance_stats(), stats);
+        assert_eq!(s.maintenance_stats(), SourceStats::default());
     }
 
     #[test]
-    fn quiescent_maintenance_grid_refuses_early_open_and_in_flight_calls() {
-        let mut early = ready(0, [10_000]);
-        assert!(!early.advance_quiescent_maintenance_grid(999));
-        assert_eq!(early.maintenance_due_us(), 1_000);
-
-        let mut in_flight = ready(0, [10_000]);
-        let fast = in_flight.pick(0, 0).unwrap();
-        assert_eq!(fast.class, UnitClass::Fast);
-        assert!(!in_flight.advance_quiescent_maintenance_grid(1_000));
-        assert_eq!(in_flight.maintenance_due_us(), 1_000);
-
-        let mut open = ready(0, [10_000, 10_000]);
+    fn maintenance_arm_disarm_during_a_group_allows_frozen_finalize() {
+        let mut s = ready(0, [10_000, 10_000]);
         for _ in 0..2 {
-            let fast = open.pick(0, 0).unwrap();
+            let fast = s.pick(0, 0).unwrap();
             assert_eq!(fast.class, UnitClass::Fast);
-            open.record(0, 0);
+            s.record(0, 0);
         }
-        let maintenance = open.pick(1_000, 0).unwrap();
-        assert_eq!(maintenance.class, UnitClass::Maintenance);
-        open.record(1_000, 0);
-        assert!(open.maintenance_group().is_some());
-        assert!(!open.advance_quiescent_maintenance_grid(1_000));
-        assert_eq!(open.maintenance_due_us(), 1_000);
+        let first = s.pick(1_000, 7).unwrap();
+        assert_eq!((first.class, first.channel), (UnitClass::Maintenance, 0));
+        s.record(1_000, 0);
+
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 1_000);
+
+        assert_eq!(s.maintenance_arm_stats().state, MaintenanceArm::Armed);
+        assert_eq!(s.maintenance_arm_stats().armed_to_disarmed, 0);
+        assert_eq!(s.earliest_due_us(), Some(0));
+        let second = s.pick(1_000, 8).unwrap();
+        assert_eq!((second.class, second.channel), (UnitClass::Maintenance, 1));
+        assert_eq!(s.maintenance_group().unwrap().homing_snapshot(), 7);
+        s.record(1_000, 0);
+        let finalize = s.pick(1_000, 8).unwrap();
+        assert_eq!(finalize.class, UnitClass::MaintenanceFinalize);
+        s.record(1_000, 0);
+        assert!(s.maintenance_group().is_none());
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 1_000);
+        assert_eq!(s.maintenance_arm_stats().state, MaintenanceArm::Disarmed);
+        assert_eq!(s.earliest_due_us(), Some(10_000));
     }
 
     #[test]
-    fn quiescent_maintenance_grid_uses_existing_late_and_wrap_arithmetic() {
-        let mut late = ready(0, [10_000]);
-        let fast = late.pick(0, 0).unwrap();
-        assert_eq!(fast.class, UnitClass::Fast);
-        late.record(0, 0);
-        let stats = late.maintenance_stats();
+    fn maintenance_arm_rearm_is_immediate_without_idle_catch_up() {
+        let mut s = ready(0, [crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US; 2]);
+        for _ in 0..2 {
+            let fast = s.pick(0, 0).unwrap();
+            assert_eq!(fast.class, UnitClass::Fast);
+            s.record(0, 0);
+        }
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 500);
+        assert!(s.pick(4_500, 0).is_none());
 
-        assert!(late.advance_quiescent_maintenance_grid(4_500));
-        assert_eq!(late.maintenance_due_us(), 5_000);
-        assert_eq!(late.maintenance_stats(), stats);
-        assert!(!late.advance_quiescent_maintenance_grid(4_999));
+        s.set_maintenance_arm(MaintenanceArm::Armed, 4_500);
 
-        // Leave room for the constructor's one-second audit deadline while
-        // still advancing maintenance to the final representable grid point.
-        let start = u64::MAX - 2_000_000;
-        let mut near_wrap = ChannelScheduler::<1>::new(start, [10_000]);
-        assert_eq!(near_wrap.maintenance_due_us(), u64::MAX - 1_999_000);
-        assert!(near_wrap.advance_quiescent_maintenance_grid(u64::MAX - 1_500));
-        assert_eq!(near_wrap.maintenance_due_us(), u64::MAX - 1_000);
-        assert_eq!(near_wrap.maintenance_stats(), SourceStats::default());
+        assert_eq!(s.maintenance_due_us(), 4_500);
+        for expected in [
+            UnitClass::Maintenance,
+            UnitClass::Maintenance,
+            UnitClass::MaintenanceFinalize,
+        ] {
+            let unit = s.pick(4_500, 0).unwrap();
+            assert_eq!(unit.class, expected);
+            s.record(4_500, 0);
+        }
+        assert_eq!(s.maintenance_stats().serviced, 1);
+        assert_eq!(s.maintenance_stats().missed, 0);
 
-        let mut at_wrap = ChannelScheduler::<1>::new(u64::MAX - 1_000_000, [10_000]);
-        assert!(at_wrap.advance_quiescent_maintenance_grid(u64::MAX));
-        assert_eq!(at_wrap.maintenance_due_us(), u64::MAX);
-        assert_eq!(at_wrap.maintenance_stats(), SourceStats::default());
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 4_500);
+        let remaining = s.earliest_due_us().unwrap() - 4_500;
+        assert!(remaining <= u64::from(crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US));
     }
 
     #[test]
-    fn quiescent_maintenance_grid_does_not_change_other_source_ordering() {
+    fn maintenance_arm_stats_count_only_effective_transitions_and_wrap() {
+        let mut s = ChannelScheduler::<1>::new(0, [10_000]);
+        s.set_maintenance_arm(MaintenanceArm::Armed, 100);
+        assert_eq!(s.maintenance_arm_stats().armed_to_disarmed, 0);
+        assert_eq!(s.maintenance_arm_stats().disarmed_to_armed, 0);
+
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 100);
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 200);
+        assert_eq!(s.maintenance_arm_stats().armed_to_disarmed, 1);
+
+        s.set_maintenance_arm(MaintenanceArm::Armed, 300);
+        assert_eq!(s.maintenance_arm_stats().disarmed_to_armed, 1);
+        assert_eq!(s.maintenance_due_us(), 300);
+
+        s.maintenance_arm_stats.armed_to_disarmed = u32::MAX;
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, 400);
+        assert_eq!(s.maintenance_arm_stats().armed_to_disarmed, 0);
+        s.maintenance_arm_stats.disarmed_to_armed = u32::MAX;
+        s.set_maintenance_arm(MaintenanceArm::Armed, 500);
+        assert_eq!(s.maintenance_arm_stats().disarmed_to_armed, 0);
+        assert_eq!(s.maintenance_due_us(), 500);
+    }
+
+    #[test]
+    fn maintenance_arm_transitions_preserve_other_source_ordering() {
         let mut ready_scheduler = ready(0, [1_000]);
-        let fast = ready_scheduler.pick(0, 0).unwrap();
-        assert_eq!(fast.class, UnitClass::Fast);
+        let _ = ready_scheduler.pick(0, 0).unwrap();
         ready_scheduler.record(0, 0);
-        assert!(ready_scheduler.advance_quiescent_maintenance_grid(1_000));
+        ready_scheduler.set_maintenance_arm(MaintenanceArm::Disarmed, 1_000);
         let fast = ready_scheduler.pick(1_000, 0).unwrap();
         assert_eq!((fast.class, fast.deadline_us), (UnitClass::Fast, 1_000));
 
         let mut bootstrap = ChannelScheduler::<1>::new(0, [10_000]);
-        assert!(bootstrap.advance_quiescent_maintenance_grid(1_000));
+        bootstrap.set_maintenance_arm(MaintenanceArm::Disarmed, 1_000);
         assert_eq!(
             bootstrap.pick(1_000, 0).unwrap().class,
             UnitClass::Bootstrap
@@ -981,7 +1067,7 @@ mod tests {
 
         let mut commission = commissioning(0, [10_000], 0);
         commission.set_commission_due(0, Some(1_000));
-        assert!(commission.advance_quiescent_maintenance_grid(1_000));
+        commission.set_maintenance_arm(MaintenanceArm::Disarmed, 1_000);
         assert_eq!(
             commission.pick(1_000, 0).unwrap().class,
             UnitClass::Commission
@@ -989,18 +1075,36 @@ mod tests {
 
         let mut restore = ready(0, [10_000]);
         restore.set_mode(0, ChannelMode::Restore, 0);
-        assert!(restore.advance_quiescent_maintenance_grid(1_000));
+        restore.set_maintenance_arm(MaintenanceArm::Disarmed, 1_000);
         assert_eq!(restore.pick(1_000, 0).unwrap().class, UnitClass::Restore);
 
         let mut audit = ready(0, [2_000_000]);
-        let fast = audit.pick(0, 0).unwrap();
-        assert_eq!(fast.class, UnitClass::Fast);
+        let _ = audit.pick(0, 0).unwrap();
         audit.record(0, 0);
-        assert!(audit.advance_quiescent_maintenance_grid(1_000_000));
+        audit.set_maintenance_arm(MaintenanceArm::Disarmed, 1_000_000);
         assert_eq!(
             audit.pick(1_000_000, 0).unwrap().class,
             UnitClass::StatusAudit
         );
+    }
+
+    #[test]
+    fn maintenance_arm_transitions_preserve_timer_limit_ordering() {
+        let start = u64::MAX - STATUS_AUDIT_PERIOD_US;
+        let mut s = ChannelScheduler::<1>::new(start, [10_000]);
+        s.set_mode(0, ChannelMode::Parked, start);
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, start);
+        assert_eq!(s.earliest_due_us(), Some(u64::MAX));
+
+        s.set_maintenance_arm(MaintenanceArm::Armed, u64::MAX);
+        assert_eq!(s.maintenance_due_us(), u64::MAX);
+        let finalize = s.pick(u64::MAX, 0).unwrap();
+        assert_eq!(finalize.class, UnitClass::MaintenanceFinalize);
+        s.record(u64::MAX, 0);
+
+        s.set_maintenance_arm(MaintenanceArm::Disarmed, u64::MAX);
+        assert_eq!(s.earliest_due_us(), Some(u64::MAX));
+        assert_eq!(s.pick(u64::MAX, 0).unwrap().class, UnitClass::StatusAudit);
     }
 
     #[test]
