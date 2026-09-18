@@ -407,7 +407,8 @@ pub(crate) struct PositionTuneState {
     /// metrics, never a field-by-field blend). Not reset between rungs --
     /// every rung's own repeat loop always overwrites all three slots
     /// before the next rung's loop starts.
-    pub(crate) repeat_captures: [Option<(u32, RampedStrokeMetrics)>; RAMPED_STROKE_REPEATS as usize],
+    pub(crate) repeat_captures:
+        [Option<(u32, RampedStrokeMetrics)>; RAMPED_STROKE_REPEATS as usize],
     /// The walk's running-best-seen rung: the lowest-median-lag rung
     /// walked so far whose OWN ceiling check did not trip (spec,
     /// Decision's ordering rule) -- never a ceiling-tripping rung's
@@ -933,7 +934,10 @@ fn resolve_completed_rung(
     match resolve_rung_evidence(state.running_best, evidence, ceiling_tripped) {
         RungResolution::Advance { next, running_best } => {
             state.running_best = Some(running_best);
-            state.step = PositionTuneStep::RampedStroke { rung: next, repeat: 0 };
+            state.step = PositionTuneStep::RampedStroke {
+                rung: next,
+                repeat: 0,
+            };
             state.capture_running = false;
             Ok(())
         }
@@ -1243,7 +1247,7 @@ mod tests {
     fn select_median_repeat_returns_the_full_metrics_of_the_median_lag_repeat() {
         let repeats: [Option<(u32, RampedStrokeMetrics)>; 3] = [
             Some((1_500, metrics_tagged(11_111))),
-            Some((900, metrics_tagged(22_222))),  // lowest lag, not the median
+            Some((900, metrics_tagged(22_222))), // lowest lag, not the median
             Some((1_200, metrics_tagged(33_333))), // median lag
         ];
         let (median_lag_us, metrics) = select_median_repeat(&repeats);

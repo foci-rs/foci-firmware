@@ -56,7 +56,6 @@ pub fn is_new_running_best(current_lag_us: u32, running_best_lag_us: Option<u32>
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
