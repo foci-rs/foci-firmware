@@ -2244,6 +2244,52 @@ fn advance_homing_state_re_enters_preparation_after_a_restore_with_a_queued_pass
 }
 
 #[test]
+fn restore_leaves_state_3_before_consuming_the_re_entry_flag() {
+    let homing_state = core::sync::atomic::AtomicU8::new(3);
+    let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
+    let homing_reenter = core::sync::atomic::AtomicBool::new(false);
+
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 3, true);
+    assert_eq!(homing_state.load(Relaxed), 0);
+
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    crate::state::trsync::HOMING_STATE.store(0, Relaxed);
+    crate::state::trsync::HOMING_REENTER_PENDING.store(false, Relaxed);
+    assert!(
+        crate::state::trsync::begin_homing_preparation(900),
+        "a registration that arrives once state 3 is gone takes the idle path directly"
+    );
+    assert!(!crate::state::trsync::HOMING_REENTER_PENDING.load(Relaxed));
+    crate::state::trsync::HOMING_STATE.store(0, Relaxed);
+
+    homing_state.store(3, Relaxed);
+    homing_reenter.store(true, Relaxed);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 3, true);
+    assert_eq!(
+        homing_state.load(Relaxed),
+        1,
+        "a registration that arrived while state 3 was still held is promoted after the exchange"
+    );
+    assert!(!homing_reenter.load(Relaxed));
+
+    homing_state.store(0, Relaxed);
+    homing_reenter.store(true, Relaxed);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 3, true);
+    assert_eq!(
+        homing_state.load(Relaxed),
+        0,
+        "a stale snapshot never re-enters from idle"
+    );
+    assert!(
+        homing_reenter.load(Relaxed),
+        "the flag is left for the path that owns the state"
+    );
+}
+
+#[test]
 fn shutdown_quiesce_clears_safe_state_without_config_reset() {
     let mut runtime = TmcControlRuntime::new_for_channel(0);
     let gains = InnerLoopGains {

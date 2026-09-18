@@ -2052,15 +2052,26 @@ impl TmcControlRuntime {
         match snapshot {
             1 => homing.state.store(2, Relaxed),
             2 if homing.triggered.load(Relaxed) != 0xFF => homing.state.store(3, Relaxed),
-            3 => {
-                let next = if homing.reenter.swap(false, Relaxed) {
-                    1
-                } else {
-                    0
-                };
-                homing.state.store(next, Relaxed);
-            }
+            3 => Self::leave_restore_pending(&homing),
             _ => {}
+        }
+    }
+
+    /// Leave state 3, then promote a pass that registered during the restore.
+    ///
+    /// The order matters: the registration handler preempts this task and
+    /// runs to completion, so it lands either before the exchange (it saw 3,
+    /// set the flag, and the swap picks it up) or after it (it saw 0 and took
+    /// the idle path itself). Consuming the flag before leaving 3 would let a
+    /// registration in between set a flag nothing ever reads.
+    fn leave_restore_pending(homing: &TmcControlHomingRefs<'_>) {
+        if homing
+            .state
+            .compare_exchange(3, 0, Relaxed, Relaxed)
+            .is_ok()
+            && homing.reenter.swap(false, Relaxed)
+        {
+            let _ = homing.state.compare_exchange(0, 1, Relaxed, Relaxed);
         }
     }
 
