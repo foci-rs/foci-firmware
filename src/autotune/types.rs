@@ -487,6 +487,53 @@ pub enum CommissionError {
     GainFloorStepOvershoot,
 }
 
+/// Specific outcome behind a `CommissionError::PositionTuneFailed`.
+///
+/// Reported alongside the error code so the operator learns *why* the
+/// sweep failed, not just *that* it did -- the same split
+/// `StationarityExclusion` and `VelocityObservationClass` already use
+/// elsewhere in this crate. `to_wire_code` values are stable once shipped,
+/// same convention as `CommissionError::code()` — never renumber an
+/// existing variant, only append new ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum PositionTuneOutcome {
+    /// The on-MCU acceleration-per-torque fit produced a non-positive or
+    /// statistically insufficient slope.
+    AccelerationFitRejected,
+    /// The computed floor rounded to `PidPGain::ZERO`.
+    FloorUnrepresentableZero,
+    /// The computed floor exceeded `PidPGain::MAX`.
+    FloorUnrepresentableTooLarge,
+    /// The ceiling's `k` constant (PPR/velocity-P derived) was non-positive.
+    InvalidCeilingConfiguration,
+    /// The ceiling ratio check tripped at the floor rung itself.
+    FloorCeilingConflict,
+    /// The ladder reached `PidPGain::MAX` with neither stop condition
+    /// tripping.
+    SweepExhausted,
+    /// A capture (P-only rung, ramped stroke, or standstill hold) produced
+    /// zero samples -- distinct from `AccelerationFitRejected`, which is
+    /// specifically about the floor's slope fit rejecting a non-empty but
+    /// invalid capture.
+    CaptureEmpty,
+}
+
+impl PositionTuneOutcome {
+    /// Stable wire code, `0` reserved to mean "not applicable" (the phase
+    /// succeeded, or did not run) on the host-visible field Task 7 adds.
+    pub const fn to_wire_code(self) -> u8 {
+        match self {
+            Self::AccelerationFitRejected => 1,
+            Self::FloorUnrepresentableZero => 2,
+            Self::FloorUnrepresentableTooLarge => 3,
+            Self::InvalidCeilingConfiguration => 4,
+            Self::FloorCeilingConflict => 5,
+            Self::SweepExhausted => 6,
+            Self::CaptureEmpty => 7,
+        }
+    }
+}
+
 impl From<crate::commissioning::capture_timing::TimingReject> for CommissionError {
     fn from(reject: crate::commissioning::capture_timing::TimingReject) -> Self {
         use crate::commissioning::capture_timing::TimingReject;
