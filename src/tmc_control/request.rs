@@ -45,6 +45,10 @@ enum TuneRoute {
     Breakaway(crate::commissioning::outer::velocity::breakaway_campaign::BreakawayCampaign),
     IntegralResume(crate::commission_dispatch::integral::IntegralPreflight),
     Robustness(crate::commission_dispatch::robustness::RobustnessPreflight),
+    // Carries only the run sequence: this sweep admits no plan ahead of
+    // time, but `compute_tune_route` and `apply_tune_route` no longer share
+    // scope, so the sequence has to travel with the route.
+    PositionTune(u32),
 }
 
 /// Map a refused Stage-C resume onto the terminal the host will render.
@@ -1304,6 +1308,12 @@ where
             });
             TuneRoute::Robustness(preflight)
         }
+        // No preflight, unlike every sibling action: this phase's
+        // `MeasuringFloor` entry reads the encoder resolution, torque cap,
+        // and live velocity gains from the backend and installs its own
+        // safety envelope, so the shared checks above are the whole
+        // admission.
+        crate::tmc::AutotuneAction::PositionTune => TuneRoute::PositionTune(run_sequence),
     };
     Ok((tune_route, encoder_counts_per_rev))
 }
@@ -1470,6 +1480,15 @@ where
                 }
             };
             runtime.set_commission_engine(engine);
+        }
+        TuneRoute::PositionTune(run_sequence) => {
+            runtime.set_commission_engine(CommissioningEngine::new_outer_for_tmc_with_position_tune(
+                oid,
+                tmc_state,
+                outer_params,
+                entry_snapshot,
+                run_sequence,
+            ));
         }
     }
     normal_outcome(board.normal_tail())
@@ -2964,6 +2983,52 @@ mod tests {
         assert!(runtime.is_commission_active());
         // No motion command was written during the dispatch: the plan precedes
         // the long-motion phase.
+        let spi = tmc.into_inner();
+        assert!(
+            spi.write_attempts
+                .iter()
+                .all(|(addr, _)| { *addr != foci_tmc4671::registers::PID_VELOCITY_TARGET.addr() })
+        );
+    }
+
+    #[fixture_test]
+    async fn position_tune_action_installs_the_position_tune_phase() {
+        use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
+
+        let mut board = RecordingBoard::skip_tick_tail();
+        tmc_channel0()
+            .configure_motion_scale(stepper_channel0(), 1_000, 3_200)
+            .expect("valid motion scale");
+        tmc_channel0().store_current_limit(current_limit(2_816), Relaxed);
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        runtime.set_calibrated_for_test(true);
+        // Deliberately empty: the position-P sweep reads the live velocity
+        // gains from the chip at phase entry, so it admits without any
+        // retained acceptance point, unlike every other follow-up action.
+        let mut integral = IntegralRetentionSlot::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        handle_tmc_control_request_with_stages(
+            tune_request_with_action(crate::tmc::AutotuneAction::PositionTune),
+            TmcPreRequestDisposition::ContinueRequest,
+            &mut runtime,
+            &mut integral,
+            &mut tmc,
+            &mut board,
+        )
+        .await;
+
+        assert!(runtime.is_commission_active());
+        let engine = runtime
+            .take_commission_engine()
+            .expect("the dispatch installs an engine");
+        assert_eq!(
+            engine.current_phase_id(),
+            Some(crate::commissioning::vocabulary_generated::CommissionPhase::PositionTune)
+        );
+        // Construction is pure state assembly: the sweep's first stroke is
+        // only reachable through the engine step loop.
         let spi = tmc.into_inner();
         assert!(
             spi.write_attempts

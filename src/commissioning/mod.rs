@@ -770,6 +770,31 @@ impl CommissioningEngine {
         Ok(Self::assemble_outer(scaffold, phase))
     }
 
+    /// Create a two-bound position-P ladder engine over the installed tune.
+    ///
+    /// Takes no preflight and configures no safety envelope, unlike
+    /// [`Self::new_outer_for_tmc_with_robustness`]: this phase's own
+    /// `MeasuringFloor` entry reads the encoder resolution, torque cap, and
+    /// live velocity gains from the backend and installs the encoder domain
+    /// and velocity envelope itself, so there is nothing for a caller to
+    /// supply or for construction to reject.
+    pub(crate) fn new_outer_for_tmc_with_position_tune(
+        oid: u8,
+        tmc_state: &'static TmcChannelState,
+        params: OuterAutotuneInputs,
+        entry_snapshot: OuterGainRollbackSnapshot,
+        run_sequence: u32,
+    ) -> Self {
+        let scaffold = Self::outer_scaffold(oid, tmc_state, params, entry_snapshot, run_sequence);
+        let phase = OuterPhase::PositionTune {
+            state: crate::commissioning::outer::position_tune::PositionTuneState::new(
+                entry_snapshot,
+            ),
+            safety: scaffold.safety,
+        };
+        Self::assemble_outer(scaffold, phase)
+    }
+
     /// Return the order of the active fixed-I fixed-gain amplitude run.
     pub(crate) fn fixed_gain_amplitude_order(
         &self,

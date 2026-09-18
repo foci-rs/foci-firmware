@@ -32,7 +32,10 @@ impl AutotuneAction {
     /// Return the immutable amplitude order for an amplitude action.
     pub const fn amplitude_order(self) -> Option<FixedGainAmplitudeOrder> {
         match self {
-            Self::BreakawaySeeded | Self::IntegralResume | Self::RobustnessReversal => None,
+            Self::BreakawaySeeded
+            | Self::IntegralResume
+            | Self::RobustnessReversal
+            | Self::PositionTune => None,
             Self::FixedGainAmplitudeAscending => Some(FixedGainAmplitudeOrder::Ascending),
             Self::FixedGainAmplitudeDescending => Some(FixedGainAmplitudeOrder::Descending),
         }
@@ -44,7 +47,10 @@ impl AutotuneAction {
     /// wire byte; this keeps them separate in the type system.
     pub const fn amplitude_slot_order(self) -> Option<IntegralSlotOrder> {
         match self {
-            Self::BreakawaySeeded | Self::IntegralResume | Self::RobustnessReversal => None,
+            Self::BreakawaySeeded
+            | Self::IntegralResume
+            | Self::RobustnessReversal
+            | Self::PositionTune => None,
             Self::FixedGainAmplitudeAscending | Self::FixedGainAmplitudeDescending => {
                 Some(IntegralSlotOrder::ForwardFirst)
             }

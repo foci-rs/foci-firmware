@@ -456,7 +456,8 @@ impl AutotuneAction {
             | Self::FixedGainAmplitudeDescending
             | Self::BreakawaySeeded
             | Self::IntegralResume
-            | Self::RobustnessReversal => IntegralSlotOrder::ForwardFirst,
+            | Self::RobustnessReversal
+            | Self::PositionTune => IntegralSlotOrder::ForwardFirst,
         }
     }
 }
@@ -1483,7 +1484,7 @@ mod tests {
                 "reserved {code} decoded"
             );
         }
-        for code in [1u8, 2, 7, 8, 9] {
+        for code in [1u8, 2, 7, 8, 9, 10] {
             assert!(
                 AutotuneAction::from_u8(code).is_some(),
                 "live {code} rejected"
@@ -1503,7 +1504,11 @@ mod tests {
             AutotuneAction::from_u8(9),
             Some(AutotuneAction::RobustnessReversal)
         );
-        assert_eq!(AutotuneAction::from_u8(10), None);
+        assert_eq!(
+            AutotuneAction::from_u8(10),
+            Some(AutotuneAction::PositionTune)
+        );
+        assert_eq!(AutotuneAction::from_u8(11), None);
         assert_eq!(AutotuneAction::IntegralResume as u8, 8);
         assert_eq!(AutotuneAction::IntegralResume.amplitude_order(), None);
         assert_eq!(AutotuneAction::IntegralResume.amplitude_slot_order(), None);

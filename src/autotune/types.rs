@@ -1191,6 +1191,7 @@ mod tests {
                 ("BreakawaySeeded", 7),
                 ("IntegralResume", 8),
                 ("RobustnessReversal", 9),
+                ("PositionTune", 10),
             ]
         );
     }

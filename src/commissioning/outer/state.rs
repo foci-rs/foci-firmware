@@ -453,11 +453,6 @@ pub(crate) enum OuterPhase {
     /// Its cooperative stepper owns its own capture scheduling and reuses the
     /// engine's shared `TransientBuffer`; the shared outer-safety envelope
     /// check runs against `safety` between ticks like every other outer phase.
-    ///
-    /// Nothing constructs this until a host command builds the phase; its
-    /// stepper, safety envelope, and dispatch routing exist ahead of that
-    /// entry point.
-    #[allow(dead_code)]
     PositionTune {
         state: super::position_tune::PositionTuneState,
         safety: OuterSafetyLimits,

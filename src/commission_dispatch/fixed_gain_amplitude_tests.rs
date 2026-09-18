@@ -347,7 +347,7 @@ fn action_codes_and_invalid_values_are_exact() {
     assert_eq!(AutotuneAction::FixedGainAmplitudeDescending as u8, 2);
     assert_eq!(AutotuneAction::BreakawaySeeded as u8, 7);
     assert_eq!(AutotuneAction::IntegralResume as u8, 8);
-    for byte in [0u8, 3, 4, 5, 6, 10] {
+    for byte in [0u8, 3, 4, 5, 6, 11] {
         assert_eq!(AutotuneAction::from_u8(byte), None);
     }
     assert_eq!(
@@ -380,6 +380,17 @@ fn action_codes_and_invalid_values_are_exact() {
         AutotuneAction::RobustnessReversal.amplitude_slot_order(),
         None
     );
+    assert_eq!(
+        AutotuneAction::from_u8(10),
+        Some(AutotuneAction::PositionTune)
+    );
+    assert_eq!(AutotuneAction::PositionTune as u8, 10);
+    assert_eq!(
+        AutotuneAction::PositionTune.slot_order(),
+        IntegralSlotOrder::ForwardFirst
+    );
+    assert_eq!(AutotuneAction::PositionTune.amplitude_order(), None);
+    assert_eq!(AutotuneAction::PositionTune.amplitude_slot_order(), None);
     // The breakaway campaign runs its own schedule; it is neither an amplitude
     // acquisition nor a classic forward/reverse slot order.
     assert_eq!(

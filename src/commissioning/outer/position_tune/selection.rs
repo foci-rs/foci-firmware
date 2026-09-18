@@ -50,14 +50,6 @@ pub enum SweepDecision {
     Accept(RungOutcome),
     /// The ceiling tripped at the floor rung itself -- report conflict.
     Conflict,
-    /// The ladder reached `PidPGain::MAX` with neither condition tripping.
-    ///
-    /// `resolve_rung` never produces this: it evaluates one already-captured
-    /// rung's conditions, and exhaustion is only observable one step later, at
-    /// `next_rung`'s `None`. The variant completes the decision vocabulary the
-    /// driver matches on.
-    #[allow(dead_code)]
-    Exhausted,
 }
 
 /// Resolve one rung's evaluated stop conditions into a `SweepDecision`.

@@ -141,7 +141,6 @@ fn resolve_rung_evidence(
             },
             None => RungResolution::Failed(PositionTuneOutcome::SweepExhausted),
         },
-        SweepDecision::Exhausted => RungResolution::Failed(PositionTuneOutcome::SweepExhausted),
     }
 }
 
@@ -284,10 +283,6 @@ fn compute_ramped_stroke_metrics(
 pub(crate) enum PositionTuneStep {
     /// Measuring the acceleration-per-torque fit (runs once, before the first
     /// rung).
-    ///
-    /// Only [`PositionTuneState::new`] constructs this, so it stays unused
-    /// until the phase gains a host entry point.
-    #[allow(dead_code)]
     MeasuringFloor,
     /// Capturing the current rung's ramped reversal stroke.
     RampedStroke { rung: PidPGain },
@@ -350,11 +345,6 @@ pub(crate) struct PositionTuneState {
 
 impl PositionTuneState {
     /// Seed state for a fresh sweep.
-    ///
-    /// Unused until a host command builds [`OuterPhase::PositionTune`]: the
-    /// phase's stepper, safety envelope, and dispatch routing exist ahead of
-    /// that entry point.
-    #[allow(dead_code)]
     pub(crate) const fn new(entry: OuterGainRollbackSnapshot) -> Self {
         Self {
             step: PositionTuneStep::MeasuringFloor,

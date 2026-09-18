@@ -193,6 +193,14 @@ pub enum AutotuneAction {
     /// production motion actually produces, rather than the smooth
     /// constant-direction runs the other actions use.
     RobustnessReversal = 9,
+    /// Run the two-bound position-P ladder sweep against the already-tuned
+    /// velocity loop.
+    ///
+    /// An explicit follow-up to an installed velocity tune, not a stage of one:
+    /// the sweep reads the live velocity gains at phase entry and measures the
+    /// position loop against them, so it only means anything once velocity
+    /// tuning has already been deployed.
+    PositionTune = 10,
 }
 
 impl AutotuneAction {
@@ -204,6 +212,7 @@ impl AutotuneAction {
         ("BreakawaySeeded", 7),
         ("IntegralResume", 8),
         ("RobustnessReversal", 9),
+        ("PositionTune", 10),
     ];
 }
 
@@ -216,6 +225,7 @@ impl AutotuneAction {
             7 => Some(Self::BreakawaySeeded),
             8 => Some(Self::IntegralResume),
             9 => Some(Self::RobustnessReversal),
+            10 => Some(Self::PositionTune),
             _ => None,
         }
     }
