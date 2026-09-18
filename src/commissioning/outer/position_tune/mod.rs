@@ -65,6 +65,11 @@ pub(crate) const STANDSTILL_SAMPLE_PERIOD_US: u32 = 1_000;
 /// majority vote can never tie).
 pub(crate) const STANDSTILL_CAPTURE_COUNT: u8 = 5;
 
+/// Ramped-stroke repeats captured per rung, whose median `lag_us` selection
+/// acts on -- a single outlier repeat, in either direction, cannot move the
+/// median (spec, Decision).
+pub(crate) const RAMPED_STROKE_REPEATS: u8 = 3;
+
 /// Samples the floor's onset window yields on an un-slipped sample grid.
 ///
 /// The fit reconstructs each sample's timestamp from its index, so a capture
@@ -374,8 +379,8 @@ pub(crate) enum PositionTuneStep {
     /// Measuring the acceleration-per-torque fit (runs once, before the first
     /// rung).
     MeasuringFloor,
-    /// Capturing the current rung's ramped reversal stroke.
-    RampedStroke { rung: PidPGain },
+    /// Capturing one of this rung's three ramped-stroke repeats.
+    RampedStroke { rung: PidPGain, repeat: u8 },
     /// Capturing the current rung's 5 standstill-dither observations.
     StandstillHold { rung: PidPGain, capture_index: u8 },
     /// Terminal: an accepted P.
@@ -391,6 +396,13 @@ pub(crate) struct PositionTuneState {
     /// inner-bandwidth field has no other producer.
     pub(crate) bw_inner_rad_s: i64,
     pub(crate) dither_captures: [i32; STANDSTILL_CAPTURE_COUNT as usize],
+    /// This rung's three ramped-stroke repeat captures, filled in order as
+    /// each repeat completes and read once all three are `Some` (spec,
+    /// Decision: median-of-three lag with the winning repeat's full
+    /// metrics, never a field-by-field blend). Not reset between rungs --
+    /// every rung's own repeat loop always overwrites all three slots
+    /// before the next rung's loop starts.
+    pub(crate) repeat_captures: [Option<(u32, RampedStrokeMetrics)>; RAMPED_STROKE_REPEATS as usize],
     /// The previous rung's full evidence -- outcome AND metrics together,
     /// computed and stored immediately after that rung's own captures
     /// complete, before its `TransientBuffer` is reused for the next rung's
@@ -441,6 +453,7 @@ impl PositionTuneState {
             k_q16: 0,
             bw_inner_rad_s: 0,
             dither_captures: [0; STANDSTILL_CAPTURE_COUNT as usize],
+            repeat_captures: [None; RAMPED_STROKE_REPEATS as usize],
             previous_evidence: None,
             current_ramped_metrics: None,
             accepted: None,
@@ -650,6 +663,24 @@ fn standstill_excursion(workspace: &TransientBuffer) -> Result<i32, PositionTune
     Ok(i32::try_from(maximum - minimum).unwrap_or(i32::MAX))
 }
 
+/// Reduce this rung's three completed ramped-stroke repeats to the median
+/// `lag_us` and that repeat's own complete `RampedStrokeMetrics` (spec,
+/// Decision) -- never a field-by-field blend across the three.
+///
+/// Panics if any of the three slots is still `None`: the caller only calls
+/// this once all three repeats have completed.
+fn select_median_repeat(
+    repeat_captures: &[Option<(u32, RampedStrokeMetrics)>; RAMPED_STROKE_REPEATS as usize],
+) -> (u32, RampedStrokeMetrics) {
+    let lags = repeat_captures.map(|entry| {
+        entry
+            .map(|(lag_us, _)| lag_us)
+            .expect("every repeat slot is filled before the median is read")
+    });
+    let index = selection::median_repeat_index(lags);
+    repeat_captures[index].expect("every repeat slot is filled before the median is read")
+}
+
 /// Reconstruct the signed ramped-stroke capture and reduce it to metrics.
 ///
 /// Deliberately a synchronous helper: its full-length sample array is a plain
@@ -804,6 +835,7 @@ async fn finish_floor_capture<B: CommissioningBackend>(
     );
     state.step = PositionTuneStep::RampedStroke {
         rung: floor_result.floor,
+        repeat: 0,
     };
     state.capture_running = false;
     Ok(())
@@ -895,7 +927,7 @@ fn resolve_completed_rung(
     match resolve_rung_evidence(state.previous_evidence, evidence, ceiling_tripped) {
         RungResolution::Advance { next, retained } => {
             state.previous_evidence = Some(retained);
-            state.step = PositionTuneStep::RampedStroke { rung: next };
+            state.step = PositionTuneStep::RampedStroke { rung: next, repeat: 0 };
             state.capture_running = false;
             Ok(())
         }
@@ -1037,7 +1069,7 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 Err(fault) => fail_position_tune(phase, backend, fault).await,
             }
         }
-        PositionTuneStep::RampedStroke { rung } => {
+        PositionTuneStep::RampedStroke { rung, repeat } => {
             if !state.capture_running {
                 return match arm_ramped_stroke(state, safety, workspace, backend, rung).await {
                     Ok(()) => StepResult::At(state.next_sample_us),
@@ -1076,11 +1108,9 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
             }
             safety.end_primitive();
             // The ramped stroke and the five standstill holds share one
-            // `TransientBuffer`, so this rung's metrics are pulled out here,
-            // the moment its own capture completes, and retained until they
-            // are bundled into this rung's `RungEvidence`. Computing them
-            // after `resolve_rung` has already decided would read whatever
-            // capture happens to be in the buffer by then.
+            // `TransientBuffer`, so each repeat's own lag/metrics are pulled
+            // out here, the moment that repeat's capture completes, before
+            // the next repeat (or the standstill holds) reuse the buffer.
             match ramped_metrics(workspace).and_then(|metrics| {
                 let lag_us = position_lag_us(
                     metrics.final_position_error_counts,
@@ -1090,8 +1120,19 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 Ok((metrics, lag_us))
             }) {
                 Ok((metrics, lag_us)) => {
-                    state.current_ramped_metrics = Some(metrics);
-                    state.current_lag_us = lag_us;
+                    state.repeat_captures[usize::from(repeat)] = Some((lag_us, metrics));
+                    if repeat + 1 < RAMPED_STROKE_REPEATS {
+                        state.step = PositionTuneStep::RampedStroke {
+                            rung,
+                            repeat: repeat + 1,
+                        };
+                        state.capture_running = false;
+                        return StepResult::ReadyNow;
+                    }
+                    let (median_lag_us, median_metrics) =
+                        select_median_repeat(&state.repeat_captures);
+                    state.current_ramped_metrics = Some(median_metrics);
+                    state.current_lag_us = median_lag_us;
                     state.step = PositionTuneStep::StandstillHold {
                         rung,
                         capture_index: 0,
@@ -1190,6 +1231,30 @@ mod tests {
             final_position_error_counts: 0,
             oscillation_detected: false,
         }
+    }
+
+    #[test]
+    fn select_median_repeat_returns_the_full_metrics_of_the_median_lag_repeat() {
+        let repeats: [Option<(u32, RampedStrokeMetrics)>; 3] = [
+            Some((1_500, metrics_tagged(11_111))),
+            Some((900, metrics_tagged(22_222))),  // lowest lag, not the median
+            Some((1_200, metrics_tagged(33_333))), // median lag
+        ];
+        let (median_lag_us, metrics) = select_median_repeat(&repeats);
+        assert_eq!(median_lag_us, 1_200);
+        assert_eq!(metrics.settling_time_us, 33_333);
+    }
+
+    #[test]
+    fn select_median_repeat_breaks_a_tie_toward_the_earlier_repeat() {
+        let repeats: [Option<(u32, RampedStrokeMetrics)>; 3] = [
+            Some((1_000, metrics_tagged(11_111))), // tied at the median value, earlier
+            Some((1_000, metrics_tagged(22_222))), // tied at the median value, later
+            Some((500, metrics_tagged(33_333))),
+        ];
+        let (median_lag_us, metrics) = select_median_repeat(&repeats);
+        assert_eq!(median_lag_us, 1_000);
+        assert_eq!(metrics.settling_time_us, 11_111);
     }
 
     fn evidence(position_p_raw: u16, lag_us: u32, settling_time_us: u32) -> RungEvidence {
@@ -1366,7 +1431,7 @@ mod tests {
                         FLOOR_VELOCITY_RPM_PER_SAMPLE * sample_index,
                     );
                 }
-                PositionTuneStep::RampedStroke { rung } => {
+                PositionTuneStep::RampedStroke { rung, .. } => {
                     let error = if rung.raw() == FLOOR_RUNG_RAW {
                         FLOOR_RUNG_POSITION_ERROR
                     } else {

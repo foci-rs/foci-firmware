@@ -52,6 +52,20 @@ pub enum SweepDecision {
     Conflict,
 }
 
+/// Index (0..3) of the ramped-stroke repeat whose `lag_us` is the median of
+/// three repeats captured at one rung (spec, Decision) -- a single outlier
+/// repeat, in either direction, cannot move the median. A tie between two
+/// repeats' `lag_us` resolves to whichever was captured first (the lower
+/// index), the spec's explicit tie rule.
+pub fn median_repeat_index(lags: [u32; 3]) -> usize {
+    let mut sorted = lags;
+    sorted.sort_unstable();
+    let median_value = sorted[1];
+    lags.iter()
+        .position(|&lag| lag == median_value)
+        .expect("the median of three values is always one of the three")
+}
+
 /// Resolve one rung's evaluated stop conditions into a `SweepDecision`.
 ///
 /// `is_first_rung` is true only for the floor rung itself. **`accepted_outcome`
@@ -82,6 +96,21 @@ pub fn resolve_rung(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn median_repeat_index_picks_the_middle_value() {
+        // Sorted: 500, 1_000, 1_500 -- the median (1_000) is at index 0.
+        assert_eq!(median_repeat_index([1_000, 500, 1_500]), 0);
+    }
+
+    #[test]
+    fn median_repeat_index_breaks_exact_ties_toward_the_earlier_repeat() {
+        // Two repeats tie at 1_000, the median value; index 0 is earlier
+        // than index 2.
+        assert_eq!(median_repeat_index([1_000, 1_500, 1_000]), 0);
+        // Tie at a different pair of positions: index 1 is earlier than 2.
+        assert_eq!(median_repeat_index([500, 1_000, 1_000]), 1);
+    }
 
     #[test]
     fn next_rung_steps_by_half_octave() {
