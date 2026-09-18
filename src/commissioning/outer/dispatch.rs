@@ -17,6 +17,25 @@ pub(crate) fn fail_outer(phase: &mut OuterPhase, err: CommissionError) -> StepRe
     StepResult::OuterFailed(err)
 }
 
+/// Transition the position-P sweep to `PositionTuneFailed` and emit an
+/// `OuterFailed` result.
+///
+/// Identical to [`fail_outer`] from the restore machine's point of view -- it
+/// drives the same generic entry-gain restore every outer phase's failure
+/// uses -- except that the terminal phase retains `outcome`, so the reply can
+/// report which sweep failure occurred rather than only that one did.
+pub(crate) fn fail_outer_position_tune(
+    phase: &mut OuterPhase,
+    err: CommissionError,
+    outcome: crate::autotune::PositionTuneOutcome,
+) -> StepResult {
+    *phase = OuterPhase::PositionTuneFailed {
+        error: err,
+        outcome,
+    };
+    StepResult::OuterFailed(err)
+}
+
 /// Transition the outer phase to `FailedWithSafety` and emit an `OuterFailed` result.
 pub(crate) fn fail_outer_with_safety(
     phase: &mut OuterPhase,
@@ -119,7 +138,9 @@ fn velocity_timing_context(
         // PositionTune runs the plain envelope check; its stepper opens and
         // ends each bounded safety primitive itself.
         OuterPhase::PositionTune { .. } => Ok(None),
-        OuterPhase::Failed(_) | OuterPhase::FailedWithSafety { .. } => Ok(None),
+        OuterPhase::Failed(_)
+        | OuterPhase::PositionTuneFailed { .. }
+        | OuterPhase::FailedWithSafety { .. } => Ok(None),
     }
 }
 
@@ -256,6 +277,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             super::position_tune::step_position_tune(phase, buf, backend).await
         }
         OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
+        OuterPhase::PositionTuneFailed { error, .. } => StepResult::OuterFailed(*error),
         OuterPhase::FailedWithSafety { error, .. } => StepResult::OuterFailed(*error),
     };
     let next_safety_sample_us =

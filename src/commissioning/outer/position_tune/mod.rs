@@ -16,7 +16,9 @@ use crate::autotune::{
 };
 use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::backend::CommissioningBackend;
-use crate::commissioning::outer::{OuterMotionBudget, OuterPhase, OuterSafetyLimits, fail_outer};
+use crate::commissioning::outer::{
+    OuterMotionBudget, OuterPhase, OuterSafetyLimits, fail_outer, fail_outer_position_tune,
+};
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::types::{
     OuterResult, PositionTuneProvenance, StepResult, TuneProvenance,
@@ -463,11 +465,16 @@ impl From<PositionTuneOutcome> for PositionTuneFault {
     }
 }
 
-/// Zero excitation, report the outcome, and transition the phase to `Failed`.
+/// Zero excitation, report the outcome, and transition the phase to a terminal
+/// failure state.
 ///
 /// The entry-gain snapshot restore itself runs in
 /// `commission_dispatch::restore_machine`, which every `StepResult::OuterFailed`
-/// already drives; this is the same contract the other outer phases use.
+/// already drives; this is the same contract the other outer phases use. One
+/// of this phase's own outcomes additionally retains that outcome on the
+/// terminal phase, so the reply can report *which* sweep failure occurred --
+/// `CommissionError::PositionTuneFailed` alone collapses all of them into one
+/// status code.
 async fn fail_position_tune<B: CommissioningBackend>(
     phase: &mut OuterPhase,
     backend: &mut B,
@@ -476,18 +483,17 @@ async fn fail_position_tune<B: CommissioningBackend>(
     let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
     let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
     let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
-    let error = match fault {
-        PositionTuneFault::Engine(error) => error,
+    match fault {
+        PositionTuneFault::Engine(error) => fail_outer(phase, error),
         PositionTuneFault::Outcome(outcome) => {
             defmt::warn!(
                 "position tune failed: outcome={} wire_code={}",
                 outcome,
                 outcome.to_wire_code(),
             );
-            CommissionError::PositionTuneFailed
+            fail_outer_position_tune(phase, CommissionError::PositionTuneFailed, outcome)
         }
-    };
-    fail_outer(phase, error)
+    }
 }
 
 async fn read_sub_register<B: CommissioningBackend>(
@@ -1458,9 +1464,15 @@ mod tests {
             terminal,
             StepResult::OuterFailed(CommissionError::PositionTuneFailed)
         ));
+        // The generic error is the same for every sweep failure, so the
+        // terminal phase has to retain the specific outcome for the reply
+        // builder to have anything but zero to report.
         assert!(matches!(
             phase,
-            OuterPhase::Failed(CommissionError::PositionTuneFailed)
+            OuterPhase::PositionTuneFailed {
+                error: CommissionError::PositionTuneFailed,
+                outcome: PositionTuneOutcome::FloorCeilingConflict,
+            }
         ));
     }
 

@@ -459,6 +459,19 @@ pub(crate) enum OuterPhase {
     },
     /// A phase failed.
     Failed(CommissionError),
+    /// The position-P sweep failed for one of its own diagnostic reasons.
+    ///
+    /// Behaves exactly as [`Self::Failed`] everywhere the phase is inspected;
+    /// it exists only so the specific outcome survives the failure transition
+    /// and can be read back when the terminal reply is assembled. The generic
+    /// `error` alone reduces every distinct sweep failure to one status code.
+    /// Only the position-P sweep ever constructs this.
+    PositionTuneFailed {
+        /// Terminal status, always `CommissionError::PositionTuneFailed`.
+        error: CommissionError,
+        /// Which sweep failure this was, for the host-visible outcome code.
+        outcome: crate::autotune::PositionTuneOutcome,
+    },
     /// A phase failed because a Stage 2 safety envelope tripped.
     FailedWithSafety {
         /// Terminal Stage 2 status.
@@ -494,7 +507,9 @@ impl OuterPhase {
                 Some(CommissionPhase::ReversalStandstillRobustnessGate)
             }
             Self::PositionTune { .. } => Some(CommissionPhase::PositionTune),
-            Self::Failed(_) | Self::FailedWithSafety { .. } => None,
+            Self::Failed(_) | Self::PositionTuneFailed { .. } | Self::FailedWithSafety { .. } => {
+                None
+            }
         }
     }
 }

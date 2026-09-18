@@ -2118,6 +2118,74 @@ async fn outer_failed_safety_envelope_violation_full_disarm() {
 }
 
 #[fixture_test]
+async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
+    use crate::autotune::PositionTuneOutcome;
+
+    let mut backend = MockBackend::new();
+    // `MockBackend::new()` reports a zero current limit, so the sweep rejects
+    // its own excitation before commanding anything and fails with
+    // `AccelerationFitRejected` -- a real failure path, not an injected one.
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut cal = true;
+    let mut en = true;
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(
+        crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_position_tune(
+            7,
+            crate::state::tmc::tmc_channel0(),
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            0,
+        ),
+    );
+    seed_motor_sentinel(&mut backend).await;
+    seed_stability_clock(&mut backend);
+
+    // The engine announces the phase before it runs, so the failing tick is
+    // not the first one.
+    let mut step = StepResult::ReadyNow;
+    for _ in 0..16 {
+        step = engine
+            .as_mut()
+            .expect("engine present")
+            .step(&mut backend)
+            .await;
+        if matches!(step, StepResult::OuterFailed(_)) {
+            break;
+        }
+    }
+    assert!(matches!(
+        step,
+        StepResult::OuterFailed(crate::autotune::CommissionError::PositionTuneFailed)
+    ));
+
+    let outcome = drive_commission_result(step, &mut engine, &mut backend, &mut state, 4095).await;
+
+    // The generic `PositionTuneFailed` status tells the host only *that* the
+    // phase failed; the outcome code is the only channel carrying *which*
+    // failure it was, and the failure restore path must not zero it.
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult { status, result, .. },
+            ..
+        } => {
+            assert_eq!(
+                status,
+                crate::autotune::CommissionError::PositionTuneFailed.status_code()
+            );
+            assert_eq!(
+                result.position_tune_outcome_code,
+                PositionTuneOutcome::AccelerationFitRejected.to_wire_code()
+            );
+            assert_ne!(result.position_tune_outcome_code, 0);
+        }
+        _ => panic!("expected TuneResult"),
+    }
+
+    clear_motor_sentinel();
+}
+
+#[fixture_test]
 async fn outer_failed_safety_envelope_restores_entry_gains() {
     use core::sync::atomic::Ordering;
     use foci_tmc4671::registers::{PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS};

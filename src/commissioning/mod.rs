@@ -977,6 +977,24 @@ impl CommissioningEngine {
         }
     }
 
+    /// Wire code of the position-P sweep's specific failure outcome, or `0`
+    /// when this run is not a failed position-P sweep.
+    ///
+    /// The terminal reply's generic status carries only
+    /// `CommissionError::PositionTuneFailed`; this is the only channel that
+    /// tells the host which of the sweep's outcomes it was. Read at the same
+    /// point in the failure restore as [`Self::outer_safety_fault`], while the
+    /// engine still holds its terminal phase.
+    pub fn position_tune_outcome_code(&self) -> u8 {
+        match &self.engine_mode {
+            EngineMode::Outer {
+                phase: OuterPhase::PositionTuneFailed { outcome, .. },
+                ..
+            } => outcome.to_wire_code(),
+            _ => 0,
+        }
+    }
+
     /// Consume the engine's collected selftest results.
     ///
     /// Caller should only invoke this when the most recent `step()`
@@ -1039,6 +1057,7 @@ impl CommissioningEngine {
             | EngineMode::Outer {
                 phase:
                     OuterPhase::Failed(_)
+                    | OuterPhase::PositionTuneFailed { .. }
                     | OuterPhase::FailedWithSafety { .. }
                     | OuterPhase::RobustnessReversal { .. },
                 ..
