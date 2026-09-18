@@ -2,3 +2,4 @@
 
 pub(crate) mod ceiling;
 pub(crate) mod floor;
+pub(crate) mod selection;
