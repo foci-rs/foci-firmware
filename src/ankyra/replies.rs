@@ -3240,6 +3240,28 @@ pub struct FociTuneResult {
     /// Q0.16 position within `[band_lower_percent, band_upper_percent]`
     /// (0 = lower edge, 65535 = upper edge).
     pub band_position_q: u16,
+    /// `PositionTune` nominal position-loop bandwidth in Hz.
+    pub nominal_bandwidth_hz: u32,
+    /// `PositionTune` measured inner (velocity-loop) bandwidth in
+    /// rad/s.
+    pub inner_bandwidth_rad_s: u32,
+    /// `PositionTune` accepted rung's median ceiling ratio, scaled
+    /// by 1000.
+    pub dither_margin_milli: i32,
+    /// `PositionTune` measured ramped-stroke settling time in
+    /// microseconds.
+    pub settling_time_us: u32,
+    /// `PositionTune` measured ramped-stroke overshoot in position
+    /// counts.
+    pub overshoot_counts: u32,
+    /// `PositionTune` measured final position error in counts.
+    pub final_position_error_counts: i32,
+    /// `PositionTune` sustained-oscillation flag on the accepted
+    /// rung's ramped stroke.
+    pub oscillation_detected: bool,
+    /// Wire code of the specific `PositionTuneOutcome` behind a
+    /// `CommissionError::PositionTuneFailed` (0 = not applicable).
+    pub position_tune_outcome_code: u8,
 }
 
 #[cfg(test)]
@@ -3277,6 +3299,14 @@ mod tune_result_reply_wire_tests {
             band_lower_percent: 16,
             band_upper_percent: 17,
             band_position_q: 18,
+            nominal_bandwidth_hz: 19,
+            inner_bandwidth_rad_s: 20,
+            dither_margin_milli: 21,
+            settling_time_us: 22,
+            overshoot_counts: 23,
+            final_position_error_counts: 24,
+            oscillation_detected: true,
+            position_tune_outcome_code: 25,
         }
     }
 
@@ -3292,15 +3322,85 @@ mod tune_result_reply_wire_tests {
             &LEGACY_FIELD_BYTES[..],
             "existing fields must keep their wire order and values"
         );
+        let provenance_end = LEGACY_FIELD_BYTES.len() + 6;
         assert_eq!(
-            encoded.len(),
-            LEGACY_FIELD_BYTES.len() + 6,
-            "provenance must append exactly six bytes to the existing payload"
-        );
-        assert_eq!(
-            &encoded[LEGACY_FIELD_BYTES.len()..],
+            &encoded[LEGACY_FIELD_BYTES.len()..provenance_end],
             &[13, 14, 15, 16, 17, 18],
             "known provenance values must round-trip through the encoder unchanged"
+        );
+    }
+
+    #[test]
+    fn position_tune_fields_round_trip_after_provenance_in_declared_order() {
+        let reply = reply_with_known_provenance();
+        let mut scratch = ScratchOutput::<64>::new();
+        reply.write(&mut scratch);
+        let encoded = scratch.result();
+
+        let position_tune_start = LEGACY_FIELD_BYTES.len() + 6;
+        assert_eq!(
+            encoded.len(),
+            position_tune_start + 8,
+            "the 7 PositionTuneProvenance fields plus position_tune_outcome_code must \
+             append exactly eight bytes to the existing payload"
+        );
+        assert_eq!(
+            &encoded[position_tune_start..],
+            &[19, 20, 21, 22, 23, 24, 1, 25],
+            "known PositionTune fields (oscillation_detected=true encodes as 1) must \
+             round-trip through the encoder unchanged"
+        );
+    }
+
+    #[test]
+    fn position_tune_failure_reply_round_trips_zeroed_provenance_with_nonzero_outcome_code() {
+        // The actual shape a failed PositionTune reply takes: the
+        // provenance struct stays all-default per its own "all-zero on
+        // failure paths" contract, but the outcome code is the one field
+        // that must carry a real, nonzero value on exactly this path.
+        let reply = FociTuneResult {
+            oid: 1,
+            status: 12, // CommissionError::PositionTuneFailed
+            velocity_p: 0,
+            velocity_i: 0,
+            velocity_limit: 0,
+            position_p: 0,
+            position_i: 0,
+            velocity_filter_hz: 0,
+            position_filter_hz: 0,
+            flux_filter_hz: 0,
+            torque_filter_hz: 0,
+            warning_code: 0,
+            probed_velocity_mrev_s: 0,
+            d_eq_q: 0,
+            confidence_q: 0,
+            band_lower_percent: 0,
+            band_upper_percent: 0,
+            band_position_q: 0,
+            nominal_bandwidth_hz: 0,
+            inner_bandwidth_rad_s: 0,
+            dither_margin_milli: 0,
+            settling_time_us: 0,
+            overshoot_counts: 0,
+            final_position_error_counts: 0,
+            oscillation_detected: false,
+            position_tune_outcome_code: 7, // PositionTuneOutcome::CaptureEmpty
+        };
+        let mut scratch = ScratchOutput::<64>::new();
+        reply.write(&mut scratch);
+        let encoded = scratch.result();
+
+        // oid=1 and status=12 are the only nonzero legacy bytes; every
+        // provenance and PositionTune field is zero except the trailing
+        // outcome code.
+        let mut expected = [0u8; 26];
+        expected[0] = 1;
+        expected[1] = 12;
+        expected[25] = 7;
+        assert_eq!(
+            encoded, expected,
+            "an all-default PositionTuneProvenance with a nonzero outcome code must \
+             round-trip through the encoder unchanged"
         );
     }
 }

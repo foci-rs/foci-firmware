@@ -18,7 +18,9 @@ use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::{OuterMotionBudget, OuterPhase, OuterSafetyLimits, fail_outer};
 use crate::commissioning::schedule::next_grid_deadline;
-use crate::commissioning::types::{OuterResult, StepResult, TuneProvenance};
+use crate::commissioning::types::{
+    OuterResult, PositionTuneProvenance, StepResult, TuneProvenance,
+};
 use ceiling::{ceiling_trips, compute_k};
 use floor::compute_position_floor;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -812,6 +814,29 @@ fn resolve_completed_rung(
     }
 }
 
+/// Nominal position-loop bandwidth: a pure function of the accepted
+/// position P and unit constants, no torque constant or inertia (spec,
+/// Reporting section).
+fn nominal_bandwidth_hz(position_p_raw: u16) -> u32 {
+    let bandwidth_hz =
+        (f32::from(position_p_raw) / 256.0) * 65_536.0 / (60.0 * 2.0 * core::f32::consts::PI);
+    if bandwidth_hz.is_finite() && bandwidth_hz > 0.0 {
+        (bandwidth_hz + 0.5) as u32
+    } else {
+        0
+    }
+}
+
+/// Median of the accepted rung's 5 per-capture ceiling ratios (milli-ratios),
+/// reported as the rung's diagnostic dither margin (spec, Reporting section).
+/// The majority-vote trip decision itself never uses this median -- see
+/// `ceiling::ceiling_trips`'s own doc comment.
+fn dither_margin_milli(ceiling_ratios_milli: [i64; 5]) -> i32 {
+    let mut sorted = ceiling_ratios_milli;
+    sorted.sort_unstable();
+    sorted[2].clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
 /// Build the phase's success terminal from the accepted rung.
 ///
 /// Joins the accepted position P with the entry snapshot's remaining gains,
@@ -831,6 +856,15 @@ fn position_tune_terminal(state: &PositionTuneState, accepted: RungEvidence) -> 
         accepted.metrics.final_position_error_counts,
         accepted.metrics.oscillation_detected,
     );
+    let position_tune = PositionTuneProvenance {
+        nominal_bandwidth_hz: nominal_bandwidth_hz(accepted.outcome.position_p.raw()),
+        inner_bandwidth_rad_s: state.bw_inner_rad_s.clamp(0, i64::from(u32::MAX)) as u32,
+        dither_margin_milli: dither_margin_milli(accepted.outcome.ceiling_ratios_milli),
+        settling_time_us: accepted.metrics.settling_time_us,
+        overshoot_counts: accepted.metrics.overshoot_counts,
+        final_position_error_counts: accepted.metrics.final_position_error_counts,
+        oscillation_detected: accepted.metrics.oscillation_detected,
+    };
     StepResult::OuterDone(OuterResult {
         status: CommissionStatus::Accepted,
         velocity_p: state.entry.velocity_p.raw(),
@@ -844,6 +878,8 @@ fn position_tune_terminal(state: &PositionTuneState, accepted: RungEvidence) -> 
         torque_filter_hz: state.entry.torque_filter_hz,
         warning_code: 0,
         provenance: TuneProvenance::default(),
+        position_tune,
+        position_tune_outcome_code: 0,
     })
 }
 

@@ -2108,6 +2108,8 @@ mod tests {
             torque_filter_hz: 49,
             warning_code: 52,
             provenance: crate::commissioning::types::TuneProvenance::default(),
+            position_tune: crate::commissioning::types::PositionTuneProvenance::default(),
+            position_tune_outcome_code: 0,
         }
     }
 

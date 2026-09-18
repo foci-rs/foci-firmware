@@ -1999,6 +1999,8 @@ pub(crate) fn robustness_pass_outer_result(
         torque_filter_hz: entry.torque_filter_hz,
         warning_code: 0,
         provenance,
+        position_tune: crate::commissioning::types::PositionTuneProvenance::default(),
+        position_tune_outcome_code: 0,
     }
 }
 

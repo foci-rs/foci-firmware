@@ -1922,6 +1922,12 @@ mod tests {
             3_392,
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
+        // `OuterResult` gains `PositionTuneProvenance` plus
+        // `position_tune_outcome_code: u8`. `StepResult` and
+        // `CommissioningEngine` absorb the growth without changing size --
+        // the breakaway campaign payload above stays this enum's largest
+        // variant.
+        assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 68);
         // The breakaway campaign is the largest outer payload: its
         // probe/discovery/confirmation state machine and borrowed workspace
         // outweigh the classic VelocitySweep variant. Exact, so retained
@@ -2235,6 +2241,8 @@ mod tests {
             torque_filter_hz: 0,
             warning_code: 0,
             provenance: crate::commissioning::types::TuneProvenance::default(),
+            position_tune: crate::commissioning::types::PositionTuneProvenance::default(),
+            position_tune_outcome_code: 0,
         }
     }
 

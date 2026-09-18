@@ -1273,6 +1273,8 @@ fn sample_outer_result_for_dispatch() -> OuterResult {
         torque_filter_hz: 0,
         warning_code: 0,
         provenance: crate::commissioning::types::TuneProvenance::default(),
+        position_tune: crate::commissioning::types::PositionTuneProvenance::default(),
+        position_tune_outcome_code: 0,
     }
 }
 

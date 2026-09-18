@@ -2201,6 +2201,33 @@ pub struct TuneProvenance {
     pub band_position_q: u16,
 }
 
+/// `PositionTune` diagnostic provenance.
+///
+/// All-zero (via `Default`) on legacy replies, failure paths, and any
+/// commission that didn't run `PositionTune` (e.g. `InnerOnly`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
+pub struct PositionTuneProvenance {
+    /// Nominal position-loop bandwidth in Hz, from
+    /// `bandwidth_hz = (position_p/256) * 65536 / (60*2*pi)` (an
+    /// already-validated formula, position-only, no torque constant).
+    pub nominal_bandwidth_hz: u32,
+    /// Measured inner (velocity-loop) bandwidth in rad/s, from the on-MCU
+    /// acceleration-per-torque fit.
+    pub inner_bandwidth_rad_s: u32,
+    /// Accepted rung's median ceiling ratio, scaled by 1000 (1000 means the
+    /// measured dither exactly matched the quantization-only prediction).
+    pub dither_margin_milli: i32,
+    /// Measured ramped-stroke settling time in microseconds.
+    pub settling_time_us: u32,
+    /// Measured ramped-stroke overshoot in position counts.
+    pub overshoot_counts: u32,
+    /// Measured final position error in counts.
+    pub final_position_error_counts: i32,
+    /// Whether sustained oscillation was detected on the accepted rung's
+    /// ramped stroke.
+    pub oscillation_detected: bool,
+}
+
 /// Result of outer (mechanical) commissioning.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct OuterResult {
@@ -2229,6 +2256,17 @@ pub struct OuterResult {
     /// Provenance of the deployed tune (probed velocity, D_eq, confidence,
     /// response band). All-zero on legacy replies and failure paths.
     pub provenance: TuneProvenance,
+    /// `PositionTune` diagnostic provenance. All-zero on legacy
+    /// replies, failure paths, and any commission that didn't run
+    /// `PositionTune`.
+    pub position_tune: PositionTuneProvenance,
+    /// Wire code of the specific `PositionTuneOutcome` behind a
+    /// `CommissionError::PositionTuneFailed`, distinct from
+    /// `PositionTuneProvenance` because it must carry a real, nonzero value
+    /// on exactly the failure paths that struct's own contract keeps
+    /// zeroed. `0` means "not applicable" (the phase succeeded, or did not
+    /// run).
+    pub position_tune_outcome_code: u8,
 }
 
 impl Default for OuterResult {
@@ -2248,6 +2286,8 @@ impl Default for OuterResult {
             torque_filter_hz: 0,
             warning_code: 0,
             provenance: TuneProvenance::default(),
+            position_tune: PositionTuneProvenance::default(),
+            position_tune_outcome_code: 0,
         }
     }
 }
