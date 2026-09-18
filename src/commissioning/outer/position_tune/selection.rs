@@ -9,7 +9,9 @@ pub fn next_rung(current: PidPGain) -> Option<PidPGain> {
     // Guarantee forward progress even at very small raw values, where
     // integer rounding could otherwise repeat the same rung.
     let next_raw = scaled.max(u32::from(current.raw()) + 1);
-    u16::try_from(next_raw).ok().and_then(|raw| PidPGain::new(raw).ok())
+    u16::try_from(next_raw)
+        .ok()
+        .and_then(|raw| PidPGain::new(raw).ok())
 }
 
 /// True when `current_lag_us` improves on `previous_lag_us` by less than
@@ -26,7 +28,7 @@ pub fn is_lag_plateau(previous_lag_us: u32, current_lag_us: u32) -> bool {
 /// One rung's full evaluated evidence, carried by `SweepDecision::Accept`
 /// so Task 6's reporting layer has the lag and ceiling-ratio evidence
 /// without needing to re-derive it from the raw captures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct RungOutcome {
     pub position_p: PidPGain,
     /// Time-domain tracking lag in microseconds (see this module's
@@ -49,6 +51,12 @@ pub enum SweepDecision {
     /// The ceiling tripped at the floor rung itself -- report conflict.
     Conflict,
     /// The ladder reached `PidPGain::MAX` with neither condition tripping.
+    ///
+    /// `resolve_rung` never produces this: it evaluates one already-captured
+    /// rung's conditions, and exhaustion is only observable one step later, at
+    /// `next_rung`'s `None`. The variant completes the decision vocabulary the
+    /// driver matches on.
+    #[allow(dead_code)]
     Exhausted,
 }
 

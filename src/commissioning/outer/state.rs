@@ -448,6 +448,20 @@ pub(crate) enum OuterPhase {
         session: super::velocity::robustness_reversal::RobustnessReversalSession,
         safety: OuterSafetyLimits,
     },
+    /// Two-bound position-P ladder sweep.
+    ///
+    /// Its cooperative stepper owns its own capture scheduling and reuses the
+    /// engine's shared `TransientBuffer`; the shared outer-safety envelope
+    /// check runs against `safety` between ticks like every other outer phase.
+    ///
+    /// Nothing constructs this until a host command builds the phase; its
+    /// stepper, safety envelope, and dispatch routing exist ahead of that
+    /// entry point.
+    #[allow(dead_code)]
+    PositionTune {
+        state: super::position_tune::PositionTuneState,
+        safety: OuterSafetyLimits,
+    },
     /// A phase failed.
     Failed(CommissionError),
     /// A phase failed because a Stage 2 safety envelope tripped.
@@ -484,6 +498,7 @@ impl OuterPhase {
             Self::RobustnessReversal { .. } => {
                 Some(CommissionPhase::ReversalStandstillRobustnessGate)
             }
+            Self::PositionTune { .. } => Some(CommissionPhase::PositionTune),
             Self::Failed(_) | Self::FailedWithSafety { .. } => None,
         }
     }

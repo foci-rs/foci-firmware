@@ -116,6 +116,9 @@ fn velocity_timing_context(
         // The robustness gate likewise runs the plain envelope check; its stepper
         // opens and ends the bounded safety primitive itself.
         OuterPhase::RobustnessReversal { .. } => Ok(None),
+        // PositionTune runs the plain envelope check; its stepper opens and
+        // ends each bounded safety primitive itself.
+        OuterPhase::PositionTune { .. } => Ok(None),
         OuterPhase::Failed(_) | OuterPhase::FailedWithSafety { .. } => Ok(None),
     }
 }
@@ -248,6 +251,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 state, workspace, session, safety, backend,
             )
             .await
+        }
+        OuterPhase::PositionTune { .. } => {
+            super::position_tune::step_position_tune(phase, buf, backend).await
         }
         OuterPhase::Failed(err) => StepResult::OuterFailed(*err),
         OuterPhase::FailedWithSafety { error, .. } => StepResult::OuterFailed(*error),

@@ -1055,6 +1055,7 @@ pub(super) fn outer_safety_mut(phase: &mut OuterPhase) -> Option<&mut OuterSafet
         OuterPhase::VelocityIntegral { safety, .. } => Some(safety),
         OuterPhase::BreakawayCampaign { safety, .. } => Some(safety),
         OuterPhase::RobustnessReversal { safety, .. } => Some(safety),
+        OuterPhase::PositionTune { safety, .. } => Some(safety),
         OuterPhase::Failed(_) | OuterPhase::FailedWithSafety { .. } => None,
     }
 }
