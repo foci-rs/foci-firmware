@@ -2,13 +2,15 @@
 //!
 //! The host arms a fixed 5 s plan-wait timeout until a shape-specific
 //! workflow plan replaces it with that shape's own worst case. A position-P
-//! sweep spends about a second per half-octave rung over a data-dependent
-//! rung count, so the dispatch discloses this envelope before any motion,
-//! exactly as the reversal-robustness gate does for its K-cycle probe.
+//! sweep spends about 2 seconds per half-octave rung (three ramped-stroke
+//! repeats plus five standstill holds) over a data-dependent rung count, so
+//! the dispatch discloses this envelope before any motion, exactly as the
+//! reversal-robustness gate does for its K-cycle probe.
 
 use crate::commissioning::outer::position_tune::selection::next_rung;
 use crate::commissioning::outer::position_tune::{
-    P_ONLY_CAPTURE_US, RAMPED_STROKE_CAPTURE_US, STANDSTILL_CAPTURE_COUNT, STANDSTILL_HOLD_US,
+    P_ONLY_CAPTURE_US, RAMPED_STROKE_CAPTURE_US, RAMPED_STROKE_REPEATS, STANDSTILL_CAPTURE_COUNT,
+    STANDSTILL_HOLD_US,
 };
 use foci_tmc4671::pid::PidPGain;
 
@@ -18,10 +20,10 @@ const MICROS_PER_MILLI: u32 = 1_000;
 /// Rungs a clean run measures before a stop condition trips: the floor rung
 /// plus two more.
 ///
-/// A clean-run estimate, not a bound -- a well-conditioned axis reaches its
-/// lag plateau or ceiling margin within a rung or two of the identified
-/// floor. The host arms its run timeout off
-/// [`position_tune_worst_case_duration_ms`], never off this.
+/// A clean-run estimate, not a bound -- a well-conditioned axis trips the
+/// ceiling within a rung or two of the identified floor. The host arms its
+/// run timeout off [`position_tune_worst_case_duration_ms`], never off
+/// this.
 const NOMINAL_RUNG_COUNT: u32 = 3;
 
 /// Rungs the sweep can measure before `next_rung` runs out of representable
@@ -42,11 +44,13 @@ fn worst_case_rung_count() -> u32 {
     rungs
 }
 
-/// Wall-clock cost of one rung: its ramped stroke plus its standstill-dither
-/// captures.
+/// Wall-clock cost of one rung: its three ramped-stroke repeats plus its
+/// standstill-dither captures.
 fn per_rung_duration_ms() -> u32 {
+    let ramped_stroke_us =
+        RAMPED_STROKE_CAPTURE_US.saturating_mul(u32::from(RAMPED_STROKE_REPEATS));
     let standstill_us = u32::from(STANDSTILL_CAPTURE_COUNT).saturating_mul(STANDSTILL_HOLD_US);
-    RAMPED_STROKE_CAPTURE_US.saturating_add(standstill_us) / MICROS_PER_MILLI
+    ramped_stroke_us.saturating_add(standstill_us) / MICROS_PER_MILLI
 }
 
 /// Worst-case wall-clock duration of a full position-P sweep, in
@@ -88,21 +92,22 @@ mod tests {
     }
 
     #[test]
-    fn per_rung_duration_covers_the_stroke_and_every_standstill_capture() {
-        // 512 ms ramped stroke plus five 100 ms standstill holds.
-        assert_eq!(per_rung_duration_ms(), 1_012);
+    fn per_rung_duration_covers_all_three_strokes_and_every_standstill_capture() {
+        // Three 512 ms ramped-stroke repeats (1_536 ms) plus five 100 ms
+        // standstill holds (500 ms).
+        assert_eq!(per_rung_duration_ms(), 2_036);
     }
 
     #[test]
     fn worst_case_duration_bounds_the_full_ladder_plus_the_floor_capture() {
-        // 4 ms floor capture plus 31 rungs at 1_012 ms.
-        assert_eq!(position_tune_worst_case_duration_ms(), 31_376);
+        // 4 ms floor capture plus 31 rungs at 2_036 ms.
+        assert_eq!(position_tune_worst_case_duration_ms(), 63_120);
     }
 
     #[test]
     fn nominal_duration_estimates_a_three_rung_clean_run() {
-        // 4 ms floor capture plus 3 rungs at 1_012 ms.
-        assert_eq!(position_tune_nominal_duration_ms(), 3_040);
+        // 4 ms floor capture plus 3 rungs at 2_036 ms.
+        assert_eq!(position_tune_nominal_duration_ms(), 6_112);
     }
 
     #[test]
