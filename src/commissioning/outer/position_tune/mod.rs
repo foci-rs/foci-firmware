@@ -78,8 +78,14 @@ const FLOOR_EXPECTED_SAMPLES: usize = (P_ONLY_CAPTURE_US / P_ONLY_SAMPLE_PERIOD_
 /// and the stroke pushes one sample per `RAMPED_STROKE_SAMPLE_PERIOD_US`, so
 /// the first leg is the samples below this index and the second leg is the
 /// rest. A capture that ended early simply never reaches it.
+///
+/// The naive `CAPTURE_US / 2 / SAMPLE_PERIOD_US` is one sample too high: the
+/// first sample is taken one period after the capture starts, not at the
+/// start itself, so the sample whose timestamp lands exactly on the
+/// reversal (index `naive - 1`) is already commanded in the reverse
+/// direction and belongs in the second leg, not the first.
 const RAMPED_STROKE_REVERSAL_SAMPLE_INDEX: usize =
-    (RAMPED_STROKE_CAPTURE_US / 2 / RAMPED_STROKE_SAMPLE_PERIOD_US) as usize;
+    (RAMPED_STROKE_CAPTURE_US / 2 / RAMPED_STROKE_SAMPLE_PERIOD_US) as usize - 1;
 
 /// `MODE_RAMP_MODE_MOTION` values: advanced PI representation (bit 31) plus
 /// the motion mode, matching `integral_sweep.rs`'s `OUTER_VELOCITY_MODE`.
@@ -1631,6 +1637,23 @@ mod tests {
         assert_eq!(metrics.overshoot_counts, 0);
         assert!(!metrics.oscillation_detected);
         assert_eq!(metrics.final_position_error_counts, -100);
+    }
+
+    #[test]
+    fn reversal_sample_index_lands_one_before_the_scheduled_reversal() {
+        // `arm_ramped_stroke` schedules the reversal at exactly half the
+        // capture window (`RAMPED_STROKE_CAPTURE_US / 2`), but the first
+        // sample is taken one period after capture starts, not at time zero.
+        // So the sample whose timestamp equals the reversal instant is
+        // already commanded in the reverse direction and must fall in the
+        // second leg -- one index below the naive half-window count.
+        let naive_half_window_samples =
+            (RAMPED_STROKE_CAPTURE_US / 2 / RAMPED_STROKE_SAMPLE_PERIOD_US) as usize;
+        assert_eq!(
+            RAMPED_STROKE_REVERSAL_SAMPLE_INDEX,
+            naive_half_window_samples - 1
+        );
+        assert_eq!(RAMPED_STROKE_REVERSAL_SAMPLE_INDEX, 127);
     }
 
     #[test]
