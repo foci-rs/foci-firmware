@@ -53,6 +53,10 @@ pub enum CommissionPhase {
     /// remain unchanged — wire code 26, the next free code after the
     /// reserved 22-25 block.
     GainFloorMeasurement,
+    /// Outer phase — two-bound position-P ladder sweep (floor/ceiling).
+    /// Appended after GainFloorMeasurement so the stable wire values
+    /// remain unchanged — wire code 27, the next free code after 26.
+    PositionTune,
 }
 
 impl CommissionPhase {
@@ -79,6 +83,7 @@ impl CommissionPhase {
             Self::EncoderAlign => 16,
             Self::ClosedLoopActivation => 17,
             Self::GainFloorMeasurement => 26,
+            Self::PositionTune => 27,
         }
     }
 
@@ -100,6 +105,7 @@ impl CommissionPhase {
         ("EncoderAlign", 16),
         ("ClosedLoopActivation", 17),
         ("GainFloorMeasurement", 26),
+        ("PositionTune", 27),
     ];
 }
 

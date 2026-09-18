@@ -121,7 +121,6 @@ Closed-loop position mode entry — writes PID gains, velocity
 limit, voltage limits, biquad filters, STEP_WIDTH, enters
 position mode, and verifies stability. Runs as the final inner
 phase for Calibrate and Commission sequences — wire code 17."""
-
 [[phase]]
 ident = "GainFloorMeasurement"
 wire_code = 26
@@ -134,6 +133,15 @@ fresh-commission path only. Appended (not inserted between
 CurrentValidate and ClosedLoopActivation) so the stable wire values
 remain unchanged — wire code 26, the next free code after the
 reserved 22-25 block."""
+[[phase]]
+ident = "PositionTune"
+wire_code = 27
+label = "Position tune"
+trace_ident = "PositionTune"
+doc = """
+Outer phase — two-bound position-P ladder sweep (floor/ceiling).
+Appended after GainFloorMeasurement so the stable wire values
+remain unchanged — wire code 27, the next free code after 26."""
 
 [[breakaway]]
 ident = "BreakawayProbe"

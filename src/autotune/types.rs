@@ -132,7 +132,15 @@ pub enum CommissionError {
     MechanicalIdFailed,
     /// Velocity-loop step-response validation failed after retry. Code 11.
     VelocityValidationFailed,
-    /// Position-loop P ramp-up produced oscillation at minimum gain. Code 12.
+    /// PositionTune's two-bound sweep could not accept a position P. Code 12.
+    ///
+    /// Covers every outcome `PositionTuneOutcome`
+    /// (`commissioning::outer::position_tune`) can report: the sweep reached
+    /// `PidPGain::MAX` with neither stop condition tripping, the ceiling ratio
+    /// check tripped at the floor rung (floor/ceiling conflict), the computed
+    /// floor was unrepresentable (rounds to zero or exceeds `PidPGain::MAX`),
+    /// the ceiling's `k` constant was non-positive (invalid PPR or velocity P),
+    /// or the on-MCU acceleration-per-torque fit was rejected.
     PositionTuneFailed,
     /// Encoder alignment was not confirmed before outer commissioning. Code 13.
     EncoderNotAligned,
@@ -1107,6 +1115,7 @@ mod tests {
                 ("EncoderAlign", 16),
                 ("ClosedLoopActivation", 17),
                 ("GainFloorMeasurement", 26),
+                ("PositionTune", 27),
             ]
         );
         assert_eq!(
