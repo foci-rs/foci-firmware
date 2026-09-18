@@ -17,7 +17,7 @@ use ankyra::prelude::klipper_command;
 use crate::context::{BoardChannels, ShutdownRecovery, StateAccess, StepperHost, TrsyncHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::stepper::stepper_channel;
-use crate::state::trsync::HOMING_STATE;
+use crate::state::trsync::begin_homing_preparation;
 
 /// Register a stepper motor object.
 ///
@@ -248,30 +248,25 @@ pub fn stepper_stop_on_trigger(ctx: &mut dyn StepperStopOnTrigger, oid: u8, trsy
         }
     };
 
-    if let Err(()) = ctx.link_stepper_stop(stepper_idx, trsync_oid) {
-        defmt::error!(
-            "stepper_stop_on_trigger: oid={} trsync_oid={} failed",
-            oid,
-            trsync_oid,
-        );
-        if ctx.enter_shutdown() {
-            let clock = ctx.now();
-            ctx.send_shutdown(ShutdownReason::StepperStopOnTriggerFailed, clock);
-        }
-    } else {
-        // Begin homing I-suppression: transition Idle -> SuppressPending.
-        // HOMING_TRIGGERED is NOT set here — it is set by
-        // TriggerDomain::trigger() when the endstop/expire fires.
-        use core::sync::atomic::Ordering::Relaxed;
-        if HOMING_STATE
-            .compare_exchange(0, 1, Relaxed, Relaxed)
-            .is_ok()
-            && ctx.notify_homing_start().is_err()
-        {
-            defmt::error!("stepper_stop_on_trigger: homing-start notification failed");
+    match ctx.link_stepper_stop(stepper_idx, trsync_oid) {
+        Err(()) => {
+            defmt::error!(
+                "stepper_stop_on_trigger: oid={} trsync_oid={} failed",
+                oid,
+                trsync_oid,
+            );
             if ctx.enter_shutdown() {
                 let clock = ctx.now();
                 ctx.send_shutdown(ShutdownReason::StepperStopOnTriggerFailed, clock);
+            }
+        }
+        Ok(start_clock) => {
+            if begin_homing_preparation(start_clock) && ctx.notify_homing_start().is_err() {
+                defmt::error!("stepper_stop_on_trigger: homing-start notification failed");
+                if ctx.enter_shutdown() {
+                    let clock = ctx.now();
+                    ctx.send_shutdown(ShutdownReason::StepperStopOnTriggerFailed, clock);
+                }
             }
         }
     }
@@ -326,6 +321,7 @@ mod tests {
     use super::*;
     use crate::context::{BoardChannels, ClockSource, StateAccess};
     use crate::shutdown::ShutdownReason;
+    use crate::state::trsync::{HOMING_START_CLOCK, HOMING_STATE};
     use foci_klipper::state::State;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,7 +371,7 @@ mod tests {
         last_shutdown: Option<ShutdownReason>,
         stepper_calls: std::cell::RefCell<std::vec::Vec<StepperCall>>,
         queue_result: Result<(), crate::context::StepperEnqueueError>,
-        link_result: Result<(), ()>,
+        link_result: Result<u32, ()>,
         link_calls: usize,
         notification_result: Result<(), ()>,
         notification_calls: usize,
@@ -389,7 +385,7 @@ mod tests {
                 last_shutdown: None,
                 stepper_calls: std::cell::RefCell::new(std::vec::Vec::new()),
                 queue_result: Ok(()),
-                link_result: Ok(()),
+                link_result: Ok(0),
                 link_calls: 0,
                 notification_result: Ok(()),
                 notification_calls: 0,
@@ -474,7 +470,7 @@ mod tests {
             panic!("endstop_query not used in this test")
         }
 
-        fn link_stepper_stop(&mut self, _stepper_idx: usize, _trsync_oid: u8) -> Result<(), ()> {
+        fn link_stepper_stop(&mut self, _stepper_idx: usize, _trsync_oid: u8) -> Result<u32, ()> {
             self.link_calls += 1;
             self.link_result
         }
@@ -701,6 +697,23 @@ mod tests {
         assert_eq!(ctx.homing_state_at_notification, Some(1));
         assert_eq!(ctx.notification_calls, 1);
         assert_eq!(ctx.last_shutdown, None);
+        HOMING_STATE.store(0, Relaxed);
+    }
+
+    #[test]
+    fn stepper_stop_on_trigger_records_the_homing_start_clock() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        HOMING_STATE.store(0, Relaxed);
+        HOMING_START_CLOCK.store(0, Relaxed);
+        let mut ctx = MockCtx::new();
+        let mut sender = ();
+        ctx.link_result = Ok(0x1234_5678);
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 1).unwrap();
+
+        stepper_stop_on_trigger(&mut ctx, &mut sender, 10, 7);
+
+        assert_eq!(HOMING_STATE.load(Relaxed), 1);
+        assert_eq!(HOMING_START_CLOCK.load(Relaxed), 0x1234_5678);
         HOMING_STATE.store(0, Relaxed);
     }
 

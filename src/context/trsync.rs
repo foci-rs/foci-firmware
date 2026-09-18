@@ -72,7 +72,10 @@ pub trait TrsyncHost: crate::context::StateAccess {
     fn endstop_query(&mut self, oid: u8) -> Result<(bool, u32, u8), ()>;
 
     /// Link a physical stepper to a trsync stop signal.
-    fn link_stepper_stop(&mut self, stepper_idx: usize, trsync_oid: u8) -> Result<(), ()>;
+    ///
+    /// Returns the linked trsync's armed report clock, which Klipper derives
+    /// from the homing move's start clock.
+    fn link_stepper_stop(&mut self, stepper_idx: usize, trsync_oid: u8) -> Result<u32, ()>;
 
     /// Notify the board that homing has transitioned from idle to active.
     ///
@@ -139,7 +142,7 @@ impl<T: ?Sized + TrsyncHost> TrsyncHost for &mut T {
         (**self).endstop_query(oid)
     }
 
-    fn link_stepper_stop(&mut self, stepper_idx: usize, trsync_oid: u8) -> Result<(), ()> {
+    fn link_stepper_stop(&mut self, stepper_idx: usize, trsync_oid: u8) -> Result<u32, ()> {
         (**self).link_stepper_stop(stepper_idx, trsync_oid)
     }
 
@@ -563,15 +566,16 @@ pub fn endstop_query<B: TrsyncBoard + ?Sized>(
 }
 
 /// Link a physical stepper to a trsync stop signal.
+///
+/// Returns the trsync's armed report clock so the caller can record when the
+/// homing move's steps begin.
 pub fn link_stepper_stop<B: TrsyncBoard + ?Sized>(
     state: &mut TriggerDomainState,
     board: &B,
     stepper_idx: usize,
     trsync_oid: u8,
-) -> Result<(), TrsyncPolicyError> {
-    if !state.trsync_by_oid.contains_key(&trsync_oid) {
-        return Err(TrsyncPolicyError::UnknownTrsyncOid);
-    }
+) -> Result<u32, TrsyncPolicyError> {
+    let idx = trsync_idx(state, trsync_oid)?;
     let physical_idx = board
         .map_physical_stepper(stepper_idx)
         .ok_or(TrsyncPolicyError::InvalidStepper)?;
@@ -586,7 +590,7 @@ pub fn link_stepper_stop<B: TrsyncBoard + ?Sized>(
                 trsync_oid,
                 stepper_idx: physical_idx,
             });
-            return Ok(());
+            return Ok(state.trsync[idx].report_clock());
         }
     }
     Err(TrsyncPolicyError::StopSignalCapacity)
@@ -900,6 +904,17 @@ mod tests {
     }
 
     #[test]
+    fn link_stepper_stop_returns_the_armed_trsync_report_clock() {
+        let _guard = homing_test_guard();
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 2).unwrap();
+        trsync_arm(&mut state, &mut board, 2, 4_200, 10, 7).unwrap();
+
+        assert_eq!(link_stepper_stop(&mut state, &board, 0, 2), Ok(4_200));
+    }
+
+    #[test]
     fn dispatch_stops_stepper_before_marking_it_blocked() {
         let _guard = homing_test_guard();
         reset_homing_triggered();
@@ -933,7 +948,7 @@ mod tests {
         );
 
         board.valid_mapping = true;
-        assert_eq!(link_stepper_stop(&mut state, &board, 0, 1), Ok(()));
+        assert_eq!(link_stepper_stop(&mut state, &board, 0, 1), Ok(0));
         assert_eq!(
             link_stepper_stop(&mut state, &board, 0, 1),
             Err(TrsyncPolicyError::DuplicateStopSignal)
@@ -942,7 +957,7 @@ mod tests {
         let mut state = fresh_state();
         register_trsync(&mut state, 1).unwrap();
         for idx in 0..STOP_SIGNAL_CAPACITY {
-            assert_eq!(link_stepper_stop(&mut state, &board, idx, 1), Ok(()));
+            assert_eq!(link_stepper_stop(&mut state, &board, idx, 1), Ok(0));
         }
         assert_eq!(
             link_stepper_stop(&mut state, &board, STOP_SIGNAL_CAPACITY, 1),

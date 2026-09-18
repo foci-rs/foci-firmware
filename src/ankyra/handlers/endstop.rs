@@ -252,7 +252,7 @@ mod tests {
         fn endstop_query(&mut self, _oid: u8) -> Result<(bool, u32, u8), ()> {
             panic!("endstop_query not used in this test")
         }
-        fn link_stepper_stop(&mut self, _stepper_idx: usize, _trsync_oid: u8) -> Result<(), ()> {
+        fn link_stepper_stop(&mut self, _stepper_idx: usize, _trsync_oid: u8) -> Result<u32, ()> {
             panic!("link_stepper_stop not used in this test")
         }
         fn notify_homing_start(&mut self) -> Result<(), ()> {

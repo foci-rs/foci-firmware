@@ -14,7 +14,7 @@ use crate::tmc_control::bootstrap::{TmcSafetyBootstrapStage, bootstrap_tmc_safet
 use crate::tmc_control::commission_poll::{CommissionPollDriver, PollDriverAction};
 use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
 use crate::tmc_control::scheduler::{ChannelMode, Unit, UnitClass};
-use crate::tmc_control::state::{HomingMaintenanceResult, TmcControlRuntime};
+use crate::tmc_control::state::{HomingClockWindow, HomingMaintenanceResult, TmcControlRuntime};
 
 /// TMC4671 `CHIPINFO_SI_TYPE` value for a genuine chip.
 const EXPECTED_CHIP_ID: u32 = 0x3436_3731;
@@ -138,6 +138,8 @@ pub struct DriveCtx<'a> {
     pub homing_active: bool,
     /// Homing state frozen for the current maintenance group.
     pub homing_snapshot: u8,
+    /// Board clock window for homing preparation.
+    pub homing_clock: HomingClockWindow,
     /// Polled STATUS level for this channel.
     pub status_pin_asserted: bool,
     /// `STATUS_MASK` value for the safety bootstrap and the audit.
@@ -440,6 +442,7 @@ impl ChannelDriver {
                 refs,
                 ctx.config,
                 ctx.homing_snapshot,
+                ctx.homing_clock,
             )
             .await;
         UnitOutcome::Maintenance { homing }
@@ -701,6 +704,7 @@ mod tests {
                 now_us: 0,
                 homing_active,
                 homing_snapshot,
+                homing_clock: HomingClockWindow { now: 0, start: 0 },
                 status_pin_asserted,
                 status_mask: 1 << 26,
                 config: &self.config,
@@ -1423,6 +1427,7 @@ mod tests {
             now_us: 0,
             homing_active: false,
             homing_snapshot: 0,
+            homing_clock: HomingClockWindow { now: 0, start: 0 },
             status_pin_asserted: false,
             status_mask: 1 << 26,
             config: &config,

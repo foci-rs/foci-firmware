@@ -108,6 +108,41 @@ pub enum HomingMaintenanceResult {
     RetryCurrentState,
     /// Homing cannot proceed safely; the board must disable the motor.
     FailClosed,
+    /// The clamp window has not opened yet; keep the global homing state and
+    /// retry on the next maintenance group without consuming the retry budget.
+    Deferred,
+}
+
+/// Board clock context for the homing preparation window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub struct HomingClockWindow {
+    /// Current Klipper clock.
+    pub now: u32,
+    /// Clock at which the homing move's steps begin (`HOMING_START_CLOCK`).
+    pub start: u32,
+}
+
+/// Lead, in Klipper clock ticks, by which homing preparation precedes the
+/// homing move's start clock: 4 ms.
+///
+/// Wide enough for one maintenance period plus the clamp's SPI writes on
+/// either board, and for the report-clock offset Klipper adds on a later MCU
+/// of a multi-MCU home, while short enough that only the decelerating tail
+/// of the previous move runs under the clamp.
+pub const fn homing_clamp_lead_ticks(clock_freq: u32) -> u32 {
+    clock_freq / 250
+}
+
+/// Whether the homing preparation window has opened for `window`.
+///
+/// Uses wrapping clock arithmetic; Klipper never schedules a homing start
+/// more than a fraction of the clock period ahead of the command that
+/// announces it.
+pub fn homing_clamp_due(window: HomingClockWindow, clock_freq: u32) -> bool {
+    let opens = window
+        .start
+        .wrapping_sub(homing_clamp_lead_ticks(clock_freq));
+    (window.now.wrapping_sub(opens) as i32) >= 0
 }
 
 /// Long-lived board-agnostic TMC control state.
@@ -1801,12 +1836,16 @@ impl TmcControlRuntime {
         refs: TmcControlStateRefs<'_>,
         config: &TmcControlConfig,
         homing_state: u8,
+        window: HomingClockWindow,
     ) -> HomingMaintenanceResult
     where
         B: embedded_hal_async::spi::SpiDevice<u8>,
     {
         match homing_state {
             1 => {
+                if !homing_clamp_due(window, config.clock_freq) {
+                    return HomingMaintenanceResult::Deferred;
+                }
                 if !self.restore_phase_advance_now(tmc_spi).await {
                     defmt::warn!("phase advance: failed to restore ABN offset before homing");
                     return self.retry_homing_state_1();
@@ -1829,6 +1868,7 @@ impl TmcControlRuntime {
                     }
                     HomingMaintenanceResult::RetryCurrentState => self.retry_homing_state_1(),
                     HomingMaintenanceResult::FailClosed => HomingMaintenanceResult::FailClosed,
+                    HomingMaintenanceResult::Deferred => HomingMaintenanceResult::Deferred,
                 }
             }
             2 => {
@@ -2029,12 +2069,13 @@ impl TmcControlRuntime {
         refs: TmcControlStateRefs<'_>,
         config: &TmcControlConfig,
         homing_snapshot: u8,
+        window: HomingClockWindow,
     ) -> HomingMaintenanceResult
     where
         B: embedded_hal_async::spi::SpiDevice<u8>,
     {
         self.apply_pid_error_settle_tick(tmc_spi, refs).await;
-        self.apply_homing_channel_tick(tmc_spi, refs, config, homing_snapshot)
+        self.apply_homing_channel_tick(tmc_spi, refs, config, homing_snapshot, window)
             .await
     }
 
@@ -2154,6 +2195,11 @@ impl TmcControlRuntime {
     #[cfg(test)]
     pub(crate) fn stall_detector_armed_for_test(&self) -> bool {
         self.stall_detector.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn homing_state_1_retries_for_test(&self) -> u8 {
+        self.homing_state_1_retries
     }
 
     #[cfg(test)]

@@ -58,8 +58,9 @@ pub use scheduler::{
 };
 pub use signals::TmcControlSignals;
 pub use state::{
-    EmergencyDisableFault, HomingMaintenanceResult, TmcControlRuntime, TmcControlTraceState,
-    TmcControlTraceTick, classify_emergency_disable_fault, combine_emergency_disable_fault,
+    EmergencyDisableFault, HomingClockWindow, HomingMaintenanceResult, TmcControlRuntime,
+    TmcControlTraceState, TmcControlTraceTick, classify_emergency_disable_fault,
+    combine_emergency_disable_fault, homing_clamp_due, homing_clamp_lead_ticks,
     is_adc_current_clipped,
 };
 

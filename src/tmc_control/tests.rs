@@ -16,6 +16,9 @@ use crate::tmc_control::helpers::{
     refresh_velocity_scale_from_state,
 };
 use crate::tmc_control::request::live_gain_failure_outcome;
+use crate::tmc_control::state::{
+    HOMING_CLAMP_MAX_RETRIES, HomingClockWindow, homing_clamp_due, homing_clamp_lead_ticks,
+};
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -1354,6 +1357,7 @@ fn homing_channel_tick_suppresses_position_i_without_global_advance() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &commissioning_runtime_config(),
                 1,
+                due_homing_window(),
             )
             .await;
 
@@ -1380,6 +1384,7 @@ fn homing_channel_tick_preserves_openffboard_ungated_suppression() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &commissioning_runtime_config(),
                 1,
+                due_homing_window(),
             )
             .await;
 
@@ -1406,6 +1411,7 @@ fn homing_channel_tick_restores_position_i_and_clears_integrator() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &commissioning_runtime_config(),
                 3,
+                due_homing_window(),
             )
             .await;
 
@@ -1439,6 +1445,7 @@ fn homing_channel_tick_preserves_openffboard_ungated_restore() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &commissioning_runtime_config(),
                 3,
+                due_homing_window(),
             )
             .await;
 
@@ -1474,6 +1481,7 @@ fn homing_channel_tick_restore_failure_blocks_advance() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &commissioning_runtime_config(),
                 1,
+                due_homing_window(),
             )
             .await;
 
@@ -1533,6 +1541,10 @@ fn homing_runtime_config() -> TmcControlConfig {
     config
 }
 
+fn due_homing_window() -> HomingClockWindow {
+    HomingClockWindow { now: 0, start: 0 }
+}
+
 fn homing_limit_for(run_ma: u32) -> foci_tmc4671::current_limit::PidTorqueFluxLimit {
     crate::tmc_control::current_limit::current_limit_from_run_ma(
         run_ma,
@@ -1560,7 +1572,13 @@ async fn homing_tick(
     state: u8,
 ) -> HomingMaintenanceResult {
     runtime
-        .apply_homing_channel_tick(tmc, refs, &homing_runtime_config(), state)
+        .apply_homing_channel_tick(
+            tmc,
+            refs,
+            &homing_runtime_config(),
+            state,
+            due_homing_window(),
+        )
         .await
 }
 
@@ -1598,6 +1616,7 @@ fn homing_prepare_clamps_torque_limit_and_arms_detector() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &homing_runtime_config(),
                 1,
+                due_homing_window(),
             )
             .await;
 
@@ -1617,6 +1636,90 @@ fn homing_prepare_clamps_torque_limit_and_arms_detector() {
 }
 
 #[test]
+fn homing_clamp_due_opens_a_fixed_lead_before_the_start_clock() {
+    let clock_freq = 84_000_000;
+    let lead = homing_clamp_lead_ticks(clock_freq);
+    assert_eq!(lead, 336_000, "4 ms lead at 84 MHz");
+    let start = 10_000_000;
+    let window = |now| HomingClockWindow { now, start };
+    assert!(!homing_clamp_due(window(start - lead - 1), clock_freq));
+    assert!(homing_clamp_due(window(start - lead), clock_freq));
+    assert!(homing_clamp_due(window(start + 5), clock_freq));
+    let wrapped = HomingClockWindow {
+        now: u32::MAX - 100,
+        start: lead + 50,
+    };
+    assert!(!homing_clamp_due(wrapped, clock_freq));
+}
+
+#[test]
+fn homing_state_1_defers_the_clamp_until_the_start_window_opens() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        let config = homing_runtime_config();
+        let lead = homing_clamp_lead_ticks(config.clock_freq);
+        let start = 50_000_000;
+
+        let early = HomingClockWindow {
+            now: start - lead - 1_000,
+            start,
+        };
+        let deferred = runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &config, 1, early)
+            .await;
+
+        assert_eq!(deferred, HomingMaintenanceResult::Deferred);
+        assert!(
+            tmc.inner().writes.is_empty(),
+            "no register may change while the previous move is still running"
+        );
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!runtime.stall_detector_armed_for_test());
+
+        let due = HomingClockWindow {
+            now: start - lead,
+            start,
+        };
+        let applied = runtime
+            .apply_homing_channel_tick(&mut tmc, refs, &config, 1, due)
+            .await;
+
+        assert_eq!(applied, HomingMaintenanceResult::ReadyToAdvance);
+        assert!(tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(runtime.stall_detector_armed_for_test());
+    });
+}
+
+#[test]
+fn homing_state_1_deferral_does_not_consume_the_retry_budget() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+        let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
+        let config = homing_runtime_config();
+        let start = 50_000_000;
+        let early = HomingClockWindow {
+            now: start - homing_clamp_lead_ticks(config.clock_freq) - 1,
+            start,
+        };
+
+        for _ in 0..(HOMING_CLAMP_MAX_RETRIES + 2) {
+            let result = runtime
+                .apply_homing_channel_tick(&mut tmc, refs, &config, 1, early)
+                .await;
+            assert_eq!(result, HomingMaintenanceResult::Deferred);
+        }
+        assert!(runtime.homing_state_1_retries_for_test() == 0);
+    });
+}
+
+#[test]
 fn homing_prepare_without_homing_current_leaves_limit_alone() {
     pollster::block_on(async {
         let mut runtime = TmcControlRuntime::new_for_channel(0);
@@ -1631,6 +1734,7 @@ fn homing_prepare_without_homing_current_leaves_limit_alone() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &homing_runtime_config(),
                 1,
+                due_homing_window(),
             )
             .await;
 
@@ -1657,6 +1761,7 @@ fn homing_prepare_fails_closed_for_stall_endstop_without_current() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &homing_runtime_config(),
                 1,
+                due_homing_window(),
             )
             .await;
 
@@ -1680,6 +1785,7 @@ fn homing_prepare_fails_closed_when_not_armed_for_steps() {
                 TmcControlStateRefs::new(&tmc_state, &stepper_state),
                 &homing_runtime_config(),
                 1,
+                due_homing_window(),
             )
             .await;
 
@@ -1705,6 +1811,7 @@ fn homing_prepare_fails_closed_when_homing_current_not_below_run_current() {
                     TmcControlStateRefs::new(&tmc_state, &stepper_state),
                     &homing_runtime_config(),
                     1,
+                    due_homing_window(),
                 )
                 .await;
 
@@ -1724,7 +1831,13 @@ fn homing_shutdown_quiesce_drops_detector_and_retry_state() {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                1,
+                due_homing_window(),
+            )
             .await;
         assert!(runtime.stall_detector_armed_for_test());
 
@@ -1743,13 +1856,25 @@ fn homing_state_forced_idle_drops_detector_and_clamp_flag() {
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                1,
+                due_homing_window(),
+            )
             .await;
         tmc_state.stall_latched.store(true, Relaxed);
         assert!(tmc_state.homing_clamp_active.load(Relaxed));
 
         let result = runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 0)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                0,
+                due_homing_window(),
+            )
             .await;
 
         assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
@@ -1900,22 +2025,46 @@ fn homing_detect_sets_latch_after_persistence() {
         );
         let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                1,
+                due_homing_window(),
+            )
             .await;
 
         assert_eq!(
             runtime
-                .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+                .apply_homing_channel_tick(
+                    &mut tmc,
+                    refs,
+                    &homing_runtime_config(),
+                    2,
+                    due_homing_window()
+                )
                 .await,
             HomingMaintenanceResult::ReadyToAdvance
         );
         assert!(!tmc_state.stall_latched.load(Relaxed));
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                2,
+                due_homing_window(),
+            )
             .await;
         assert!(!tmc_state.stall_latched.load(Relaxed));
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                2,
+                due_homing_window(),
+            )
             .await;
         assert!(tmc_state.stall_latched.load(Relaxed));
 
@@ -1940,17 +2089,41 @@ fn homing_restore_writes_run_current_and_publishes_result() {
         );
         let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                1,
+                due_homing_window(),
+            )
             .await;
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                2,
+                due_homing_window(),
+            )
             .await;
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 2)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                2,
+                due_homing_window(),
+            )
             .await;
 
         let result = runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 3)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                3,
+                due_homing_window(),
+            )
             .await;
 
         assert_eq!(result, HomingMaintenanceResult::ReadyToAdvance);
@@ -1977,17 +2150,35 @@ fn homing_restore_failure_retries_then_fails_closed() {
         let refs = TmcControlStateRefs::new(&tmc_state, &stepper_state);
         let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
         runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 1)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                1,
+                due_homing_window(),
+            )
             .await;
         let mut tmc = Tmc4671Spi::new(
             RuntimeMockSpi::default().fail_writes_to(PID_TORQUE_FLUX_LIMITS.addr()),
         );
 
         let first = runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 3)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                3,
+                due_homing_window(),
+            )
             .await;
         let second = runtime
-            .apply_homing_channel_tick(&mut tmc, refs, &homing_runtime_config(), 3)
+            .apply_homing_channel_tick(
+                &mut tmc,
+                refs,
+                &homing_runtime_config(),
+                3,
+                due_homing_window(),
+            )
             .await;
 
         assert_eq!(first, HomingMaintenanceResult::RetryCurrentState);
