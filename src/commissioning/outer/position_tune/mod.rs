@@ -129,6 +129,14 @@ fn resolve_rung_evidence(
 ) -> RungResolution {
     let lag_plateaued =
         previous.is_some_and(|prev| is_lag_plateau(prev.outcome.lag_us, current.outcome.lag_us));
+    defmt::info!(
+        "position tune rung: p={} lag_us={} previous_lag_us={} ceiling_tripped={} lag_plateaued={}",
+        current.outcome.position_p.raw(),
+        current.outcome.lag_us,
+        previous.map(|prev| prev.outcome.lag_us),
+        ceiling_tripped,
+        lag_plateaued,
+    );
     // At the floor rung `resolve_rung`'s only reachable results are `Conflict`
     // (a ceiling trip) and `Continue`, neither of which reads
     // `accepted_outcome`: there is no previous lag to plateau against, so this
