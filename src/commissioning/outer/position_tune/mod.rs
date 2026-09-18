@@ -32,7 +32,7 @@ use foci_tmc4671::registers::{
     PID_VELOCITY_ACTUAL, PID_VELOCITY_P_VELOCITY_I, PID_VELOCITY_TARGET, PidTorqueFluxTarget,
     Register, SubRegister,
 };
-use selection::{RungOutcome, SweepDecision, is_lag_plateau, next_rung, resolve_rung};
+use selection::{RungOutcome, is_new_running_best, next_rung};
 
 /// Fixed capture parameters for this phase. All are conservative starting
 /// points to be validated against real captures on hardware, not values
@@ -109,68 +109,73 @@ pub(crate) struct RungEvidence {
 /// What the sweep does once one rung's evidence is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RungResolution {
-    /// Neither stop condition tripped and a next rung is representable.
-    /// `retained` becomes the next rung's `previous_evidence`.
+    /// This rung's own ceiling did not trip and a next rung is
+    /// representable. `running_best` is the walk's updated running-best-
+    /// seen rung (unchanged from the input if this rung did not improve on
+    /// it -- a ceiling-tripping rung's evidence never reaches this variant
+    /// at all, see `Accept` below).
     Advance {
         next: PidPGain,
-        retained: RungEvidence,
+        running_best: RungEvidence,
     },
-    /// A stop condition tripped; this is the accepted rung's full evidence.
+    /// A ceiling trip after the floor rung stopped the walk; this is
+    /// always the running-best-seen rung, never the rung whose own ceiling
+    /// just tripped.
     Accept(RungEvidence),
-    /// The sweep cannot produce an accepted rung.
+    /// The sweep cannot produce an accepted rung: a ceiling trip at the
+    /// floor rung itself, or `PidPGain::MAX` reached with no ceiling trip
+    /// (never a fallback to a best-so-far value).
     Failed(PositionTuneOutcome),
 }
 
-/// Apply both stop conditions to one completed rung's evidence.
+/// Fold one completed rung's evidence into the exhaustive walk.
 ///
-/// `previous` is `None` only at the floor rung. The accepted rung is always
-/// the rung *before* the condition that tripped, for both stop conditions, so
-/// this hands `resolve_rung` the previous rung's outcome and, on `Accept`,
-/// returns the previous rung's retained evidence -- never the tripping rung's.
+/// `running_best.is_none()` is true exactly when this is the floor rung's
+/// own evidence -- there is no separate `is_first_rung` argument to keep in
+/// sync with it, since the running best is only ever `None` before the
+/// floor rung's evidence has been folded in.
+///
+/// A rung becomes eligible to replace `running_best` only when its own
+/// ceiling check did not trip (spec, Decision's ordering rule): a
+/// ceiling-tripping rung's evidence, however low its lag, is discarded
+/// here and never compared against or allowed to replace the running best.
 fn resolve_rung_evidence(
-    previous: Option<RungEvidence>,
+    running_best: Option<RungEvidence>,
     current: RungEvidence,
     ceiling_tripped: bool,
 ) -> RungResolution {
-    let lag_plateaued =
-        previous.is_some_and(|prev| is_lag_plateau(prev.outcome.lag_us, current.outcome.lag_us));
+    let is_first_rung = running_best.is_none();
+    let running_best_lag_us = running_best.map(|evidence| evidence.outcome.lag_us);
     defmt::info!(
-        "position tune rung: p={} lag_us={} previous_lag_us={} ceiling_tripped={} lag_plateaued={}",
+        "position tune rung: p={} lag_us={} ceiling_tripped={} is_first_rung={} running_best_lag_us={}",
         current.outcome.position_p.raw(),
         current.outcome.lag_us,
-        previous.map(|prev| prev.outcome.lag_us),
         ceiling_tripped,
-        lag_plateaued,
+        is_first_rung,
+        running_best_lag_us,
     );
-    // At the floor rung `resolve_rung`'s only reachable results are `Conflict`
-    // (a ceiling trip) and `Continue`, neither of which reads
-    // `accepted_outcome`: there is no previous lag to plateau against, so this
-    // rung's own outcome is a well-typed placeholder, not a claim that the
-    // floor rung could accept itself.
-    let accepted_outcome = previous.map_or(current.outcome, |prev| prev.outcome);
-    match resolve_rung(
-        previous.is_none(),
-        ceiling_tripped,
-        lag_plateaued,
-        accepted_outcome,
-    ) {
-        SweepDecision::Conflict => {
+    if ceiling_tripped {
+        return if is_first_rung {
             RungResolution::Failed(PositionTuneOutcome::FloorCeilingConflict)
-        }
-        SweepDecision::Accept(_) => {
-            debug_assert!(
-                previous.is_some(),
-                "Accept is unreachable at the floor rung"
-            );
-            RungResolution::Accept(previous.unwrap_or(current))
-        }
-        SweepDecision::Continue => match next_rung(current.outcome.position_p) {
-            Some(next) => RungResolution::Advance {
-                next,
-                retained: current,
-            },
-            None => RungResolution::Failed(PositionTuneOutcome::SweepExhausted),
+        } else {
+            RungResolution::Accept(
+                running_best.expect("a non-first rung always has a running best"),
+            )
+        };
+    }
+    let updated_best = if is_new_running_best(current.outcome.lag_us, running_best_lag_us) {
+        current
+    } else {
+        // `is_new_running_best` always returns true when `running_best` is
+        // `None`, so this branch is only reachable with a real prior best.
+        running_best.expect("a non-improving comparison always has a running best")
+    };
+    match next_rung(current.outcome.position_p) {
+        Some(next) => RungResolution::Advance {
+            next,
+            running_best: updated_best,
         },
+        None => RungResolution::Failed(PositionTuneOutcome::SweepExhausted),
     }
 }
 
@@ -403,11 +408,12 @@ pub(crate) struct PositionTuneState {
     /// every rung's own repeat loop always overwrites all three slots
     /// before the next rung's loop starts.
     pub(crate) repeat_captures: [Option<(u32, RampedStrokeMetrics)>; RAMPED_STROKE_REPEATS as usize],
-    /// The previous rung's full evidence -- outcome AND metrics together,
-    /// computed and stored immediately after that rung's own captures
-    /// complete, before its `TransientBuffer` is reused for the next rung's
-    /// capture. `None` only before the floor rung's own evidence is computed.
-    pub(crate) previous_evidence: Option<RungEvidence>,
+    /// The walk's running-best-seen rung: the lowest-median-lag rung
+    /// walked so far whose OWN ceiling check did not trip (spec,
+    /// Decision's ordering rule) -- never a ceiling-tripping rung's
+    /// evidence, however low its lag. `None` only before the floor rung's
+    /// own evidence has been folded in.
+    pub(crate) running_best: Option<RungEvidence>,
     /// The *current* rung's `RampedStrokeMetrics`, computed the moment its
     /// `RampedStroke` capture completes -- before the five `StandstillHold`
     /// sub-steps that follow reuse the same `TransientBuffer`. Taken (and
@@ -454,7 +460,7 @@ impl PositionTuneState {
             bw_inner_rad_s: 0,
             dither_captures: [0; STANDSTILL_CAPTURE_COUNT as usize],
             repeat_captures: [None; RAMPED_STROKE_REPEATS as usize],
-            previous_evidence: None,
+            running_best: None,
             current_ramped_metrics: None,
             accepted: None,
             entry,
@@ -924,9 +930,9 @@ fn resolve_completed_rung(
         },
         metrics,
     };
-    match resolve_rung_evidence(state.previous_evidence, evidence, ceiling_tripped) {
-        RungResolution::Advance { next, retained } => {
-            state.previous_evidence = Some(retained);
+    match resolve_rung_evidence(state.running_best, evidence, ceiling_tripped) {
+        RungResolution::Advance { next, running_best } => {
+            state.running_best = Some(running_best);
             state.step = PositionTuneStep::RampedStroke { rung: next, repeat: 0 };
             state.capture_running = false;
             Ok(())
@@ -1216,7 +1222,7 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
 mod tests {
     use super::ceiling::{ceiling_trips, compute_k};
     use super::floor::compute_position_floor;
-    use super::selection::{RungOutcome, SweepDecision, next_rung, resolve_rung};
+    use super::selection::{RungOutcome, next_rung};
     use super::*;
     use crate::autotune::PositionTuneOutcome;
     use crate::commission_dispatch::test_support::{MockBackend, current_limit};
@@ -1269,10 +1275,10 @@ mod tests {
     }
 
     #[test]
-    fn ceiling_trip_after_the_floor_accepts_the_previous_rungs_own_metrics() {
-        // Rung A (previous, quiet) and rung B (current, tripping) carry
+    fn ceiling_trip_after_the_floor_accepts_the_running_bests_own_metrics() {
+        // Rung A (running best, quiet) and rung B (current, tripping) carry
         // distinguishable metrics. Accepting B's metrics here would be the
-        // retention-timing bug: by the time `resolve_rung` decides, the shared
+        // retention-timing bug: by the time `resolve_rung_evidence` decides, the shared
         // TransientBuffer already holds B's capture, not A's.
         let rung_a = evidence(63, 1_000, 11_111);
         let rung_b = evidence(89, 960, 22_222);
@@ -1281,23 +1287,7 @@ mod tests {
             resolve_rung_evidence(Some(rung_a), rung_b, /* ceiling_tripped */ true);
 
         let RungResolution::Accept(accepted) = resolution else {
-            panic!("a ceiling trip after the floor rung must accept the previous rung");
-        };
-        assert_eq!(accepted.outcome.position_p.raw(), 63);
-        assert_eq!(accepted.metrics.settling_time_us, 11_111);
-    }
-
-    #[test]
-    fn lag_plateau_accepts_the_previous_rungs_own_metrics() {
-        // 3% improvement versus the previous rung is a plateau.
-        let rung_a = evidence(63, 1_000, 11_111);
-        let rung_b = evidence(89, 970, 22_222);
-
-        let resolution =
-            resolve_rung_evidence(Some(rung_a), rung_b, /* ceiling_tripped */ false);
-
-        let RungResolution::Accept(accepted) = resolution else {
-            panic!("a lag plateau must accept the previous rung");
+            panic!("a ceiling trip after the floor rung must accept the running best");
         };
         assert_eq!(accepted.outcome.position_p.raw(), 63);
         assert_eq!(accepted.metrics.settling_time_us, 11_111);
@@ -1316,25 +1306,59 @@ mod tests {
     }
 
     #[test]
-    fn a_quiet_improving_rung_advances_and_retains_its_own_evidence() {
+    fn an_improving_rung_advances_and_becomes_the_new_running_best() {
         let rung_a = evidence(63, 1_000, 11_111);
-        let rung_b = evidence(89, 500, 22_222);
+        let rung_b = evidence(89, 500, 22_222); // strictly better lag
 
         let resolution =
             resolve_rung_evidence(Some(rung_a), rung_b, /* ceiling_tripped */ false);
 
-        let RungResolution::Advance { next, retained } = resolution else {
-            panic!("a rung that still improves and stays quiet must advance");
+        let RungResolution::Advance { next, running_best } = resolution else {
+            panic!("a rung that improves and stays quiet must advance");
         };
         assert!(next.raw() > 89);
-        assert_eq!(retained.metrics.settling_time_us, 22_222);
+        assert_eq!(running_best.outcome.position_p.raw(), 89);
+        assert_eq!(running_best.metrics.settling_time_us, 22_222);
     }
 
     #[test]
-    fn a_quiet_rung_with_no_representable_successor_reports_sweep_exhausted() {
-        // `resolve_rung` never produces `Exhausted` itself: the ladder
-        // reaching PidPGain::MAX is observed at `next_rung`'s `None`.
-        let previous = evidence(PidPGain::MAX.raw(), 1_000, 11_111);
+    fn a_non_improving_rung_advances_but_keeps_the_earlier_running_best() {
+        let rung_a = evidence(63, 500, 11_111); // the better rung
+        let rung_b = evidence(89, 800, 22_222); // worse than rung_a, but not tripped
+
+        let resolution =
+            resolve_rung_evidence(Some(rung_a), rung_b, /* ceiling_tripped */ false);
+
+        let RungResolution::Advance { running_best, .. } = resolution else {
+            panic!("a quiet rung must advance regardless of its own lag");
+        };
+        // The running best is still rung_a's evidence, never rung_b's,
+        // even though the walk did advance past rung_b.
+        assert_eq!(running_best.outcome.position_p.raw(), 63);
+        assert_eq!(running_best.metrics.settling_time_us, 11_111);
+    }
+
+    #[test]
+    fn an_exact_lag_tie_keeps_the_lower_p_running_best() {
+        let rung_a = evidence(63, 1_000, 11_111);
+        let rung_b = evidence(89, 1_000, 22_222); // exact tie on lag_us
+
+        let resolution =
+            resolve_rung_evidence(Some(rung_a), rung_b, /* ceiling_tripped */ false);
+
+        let RungResolution::Advance { running_best, .. } = resolution else {
+            panic!("a quiet rung must advance");
+        };
+        assert_eq!(running_best.outcome.position_p.raw(), 63);
+    }
+
+    #[test]
+    fn exhaustion_at_pid_p_gain_max_never_falls_back_to_the_running_best() {
+        // `previous` (the running best) is given a far better lag than
+        // `current` deliberately -- if any fallback-to-best-so-far logic
+        // existed, it would be tempting here. The walk must still fail
+        // with SweepExhausted, never Accept `previous`.
+        let previous = evidence(PidPGain::MAX.raw(), 1, 11_111);
         let current = evidence(PidPGain::MAX.raw(), 100, 22_222);
 
         let resolution = resolve_rung_evidence(Some(previous), current, false);
@@ -1560,85 +1584,6 @@ mod tests {
                 outcome: PositionTuneOutcome::FloorCeilingConflict,
             }
         ));
-    }
-
-    #[test]
-    fn full_pipeline_accepts_the_previous_rung_on_a_ceiling_trip() {
-        // Floor: reuse Task 3's exact verified fixture (velocity_p=350,
-        // commanded_torque_count=1000 -> floor raw 63).
-        let floor_samples: [(u32, i32); 5] = [
-            (0, 0),
-            (1_000, 195),
-            (2_000, 390),
-            (3_000, 585),
-            (4_000, 780),
-        ];
-        let velocity_p = PidPGain::new(350).unwrap();
-        let floor_result =
-            compute_position_floor(&floor_samples, 1_000, velocity_p).expect("valid floor fit");
-        let floor = floor_result.floor;
-        assert_eq!(floor.raw(), 63);
-
-        // Ceiling: k for PPR=1000, velocity_p=350.
-        let k_q16 = compute_k(1_000, velocity_p).expect("valid k");
-
-        // At the floor rung, synthesize 5 standstill captures that all match
-        // the pure-quantization prediction closely (no trip) -- the sweep must
-        // continue past the floor rung.
-        let predicted_at_floor = k_q16.saturating_mul(i64::from(floor.raw())) / 65_536;
-        let predicted_at_floor_i32 = i32::try_from(predicted_at_floor).unwrap();
-        let quiet_captures: [i32; 5] = [
-            predicted_at_floor_i32,
-            predicted_at_floor_i32 * 105 / 100,
-            predicted_at_floor_i32 * 95 / 100,
-            predicted_at_floor_i32 * 102 / 100,
-            predicted_at_floor_i32 * 98 / 100,
-        ];
-        let (floor_ceiling_tripped, floor_ratios) = ceiling_trips(&quiet_captures, k_q16, floor);
-        assert!(!floor_ceiling_tripped);
-
-        // This is the "previous rung" outcome the eventual ceiling trip below
-        // must be accepted with -- retained by the phase driver across the loop.
-        let floor_outcome = RungOutcome {
-            position_p: floor,
-            lag_us: 1_000,
-            ceiling_ratios_milli: floor_ratios,
-        };
-        let floor_decision = resolve_rung(
-            /* is_first_rung */ true,
-            floor_ceiling_tripped,
-            /* lag_plateaued */ false,
-            floor_outcome,
-        );
-        assert_eq!(floor_decision, SweepDecision::Continue);
-
-        // Next rung: synthesize captures that clearly trip the ceiling (well
-        // over the 2x margin on at least 3 of 5).
-        let next = next_rung(floor).expect("representable next rung");
-        let predicted_at_next = k_q16.saturating_mul(i64::from(next.raw())) / 65_536;
-        let predicted_at_next_i32 = i32::try_from(predicted_at_next).unwrap();
-        let loud_captures: [i32; 5] = [
-            predicted_at_next_i32 * 3,
-            predicted_at_next_i32 * 3,
-            predicted_at_next_i32,
-            predicted_at_next_i32 * 3,
-            predicted_at_next_i32,
-        ];
-        let (next_ceiling_tripped, _next_ratios) = ceiling_trips(&loud_captures, k_q16, next);
-        assert!(next_ceiling_tripped);
-
-        // The accepted outcome passed here is `floor_outcome` (the previous
-        // rung), NOT a `RungOutcome` for `next` -- `next` is the rung that
-        // violated the ceiling, and must never be the accepted result.
-        let next_decision = resolve_rung(
-            /* is_first_rung */ false,
-            next_ceiling_tripped,
-            false,
-            floor_outcome,
-        );
-        assert!(
-            matches!(next_decision, SweepDecision::Accept(outcome) if outcome.position_p == floor)
-        );
     }
 
     #[test]
