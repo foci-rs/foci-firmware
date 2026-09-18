@@ -30,10 +30,8 @@ pub struct RungOutcome {
 }
 
 /// Index (0..3) of the ramped-stroke repeat whose `lag_us` is the median of
-/// three repeats captured at one rung (spec, Decision) -- a single outlier
-/// repeat, in either direction, cannot move the median. A tie between two
-/// repeats' `lag_us` resolves to whichever was captured first (the lower
-/// index), the spec's explicit tie rule.
+/// three repeats captured at one rung. A tie between two repeats' `lag_us`
+/// resolves to whichever was captured first (the lower index).
 pub fn median_repeat_index(lags: [u32; 3]) -> usize {
     let mut sorted = lags;
     sorted.sort_unstable();
@@ -44,11 +42,8 @@ pub fn median_repeat_index(lags: [u32; 3]) -> usize {
 }
 
 /// True when `current_lag_us` should replace `running_best_lag_us` as the
-/// walk's running-best-seen rung (spec, Decision): global-minimum
-/// selection over every eligible rung walked so far, ties favoring the
-/// lower P -- which, because the walk proceeds strictly upward, is
-/// whichever was seen first, so an exact tie (`==`) must NOT replace the
-/// running best.
+/// walk's running-best-seen rung: strict improvement only -- an exact tie
+/// (`==`) must NOT replace the running best.
 pub fn is_new_running_best(current_lag_us: u32, running_best_lag_us: Option<u32>) -> bool {
     match running_best_lag_us {
         None => true,
@@ -62,16 +57,12 @@ mod tests {
 
     #[test]
     fn median_repeat_index_picks_the_middle_value() {
-        // Sorted: 500, 1_000, 1_500 -- the median (1_000) is at index 0.
         assert_eq!(median_repeat_index([1_000, 500, 1_500]), 0);
     }
 
     #[test]
     fn median_repeat_index_breaks_exact_ties_toward_the_earlier_repeat() {
-        // Two repeats tie at 1_000, the median value; index 0 is earlier
-        // than index 2.
         assert_eq!(median_repeat_index([1_000, 1_500, 1_000]), 0);
-        // Tie at a different pair of positions: index 1 is earlier than 2.
         assert_eq!(median_repeat_index([500, 1_000, 1_000]), 1);
     }
 
@@ -104,8 +95,8 @@ mod tests {
 
     #[test]
     fn is_new_running_best_requires_strict_improvement() {
-        assert!(is_new_running_best(900, Some(1_000))); // strictly better
-        assert!(!is_new_running_best(1_000, Some(1_000))); // exact tie: keep the earlier, lower-P rung
-        assert!(!is_new_running_best(1_100, Some(1_000))); // worse
+        assert!(is_new_running_best(900, Some(1_000)));
+        assert!(!is_new_running_best(1_000, Some(1_000)));
+        assert!(!is_new_running_best(1_100, Some(1_000)));
     }
 }

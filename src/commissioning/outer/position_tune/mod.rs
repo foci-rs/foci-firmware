@@ -65,9 +65,8 @@ pub(crate) const STANDSTILL_SAMPLE_PERIOD_US: u32 = 1_000;
 /// majority vote can never tie).
 pub(crate) const STANDSTILL_CAPTURE_COUNT: u8 = 5;
 
-/// Ramped-stroke repeats captured per rung, whose median `lag_us` selection
-/// acts on -- a single outlier repeat, in either direction, cannot move the
-/// median (spec, Decision).
+/// Ramped-stroke repeats captured per rung; selection acts on their median
+/// `lag_us`.
 pub(crate) const RAMPED_STROKE_REPEATS: u8 = 3;
 
 /// Samples the floor's onset window yields on an un-slipped sample grid.
@@ -109,36 +108,18 @@ pub(crate) struct RungEvidence {
 /// What the sweep does once one rung's evidence is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RungResolution {
-    /// This rung's own ceiling did not trip and a next rung is
-    /// representable. `running_best` is the walk's updated running-best-
-    /// seen rung (unchanged from the input if this rung did not improve on
-    /// it -- a ceiling-tripping rung's evidence never reaches this variant
-    /// at all, see `Accept` below).
+    /// Neither stop condition tripped and a next rung is representable.
     Advance {
         next: PidPGain,
         running_best: RungEvidence,
     },
-    /// A ceiling trip after the floor rung stopped the walk; this is
-    /// always the running-best-seen rung, never the rung whose own ceiling
-    /// just tripped.
+    /// A ceiling trip after the floor rung stopped the walk.
     Accept(RungEvidence),
-    /// The sweep cannot produce an accepted rung: a ceiling trip at the
-    /// floor rung itself, or `PidPGain::MAX` reached with no ceiling trip
-    /// (never a fallback to a best-so-far value).
+    /// The sweep cannot produce an accepted rung.
     Failed(PositionTuneOutcome),
 }
 
 /// Fold one completed rung's evidence into the exhaustive walk.
-///
-/// `running_best.is_none()` is true exactly when this is the floor rung's
-/// own evidence -- there is no separate `is_first_rung` argument to keep in
-/// sync with it, since the running best is only ever `None` before the
-/// floor rung's evidence has been folded in.
-///
-/// A rung becomes eligible to replace `running_best` only when its own
-/// ceiling check did not trip (spec, Decision's ordering rule): a
-/// ceiling-tripping rung's evidence, however low its lag, is discarded
-/// here and never compared against or allowed to replace the running best.
 fn resolve_rung_evidence(
     running_best: Option<RungEvidence>,
     current: RungEvidence,
@@ -166,8 +147,6 @@ fn resolve_rung_evidence(
     let updated_best = if is_new_running_best(current.outcome.lag_us, running_best_lag_us) {
         current
     } else {
-        // `is_new_running_best` always returns true when `running_best` is
-        // `None`, so this branch is only reachable with a real prior best.
         running_best.expect("a non-improving comparison always has a running best")
     };
     match next_rung(current.outcome.position_p) {
@@ -401,19 +380,10 @@ pub(crate) struct PositionTuneState {
     /// inner-bandwidth field has no other producer.
     pub(crate) bw_inner_rad_s: i64,
     pub(crate) dither_captures: [i32; STANDSTILL_CAPTURE_COUNT as usize],
-    /// This rung's three ramped-stroke repeat captures, filled in order as
-    /// each repeat completes and read once all three are `Some` (spec,
-    /// Decision: median-of-three lag with the winning repeat's full
-    /// metrics, never a field-by-field blend). Not reset between rungs --
-    /// every rung's own repeat loop always overwrites all three slots
-    /// before the next rung's loop starts.
+    /// This rung's three ramped-stroke repeat captures.
     pub(crate) repeat_captures:
         [Option<(u32, RampedStrokeMetrics)>; RAMPED_STROKE_REPEATS as usize],
-    /// The walk's running-best-seen rung: the lowest-median-lag rung
-    /// walked so far whose OWN ceiling check did not trip (spec,
-    /// Decision's ordering rule) -- never a ceiling-tripping rung's
-    /// evidence, however low its lag. `None` only before the floor rung's
-    /// own evidence has been folded in.
+    /// The walk's running-best-seen rung.
     pub(crate) running_best: Option<RungEvidence>,
     /// The *current* rung's `RampedStrokeMetrics`, computed the moment its
     /// `RampedStroke` capture completes -- before the five `StandstillHold`
@@ -671,8 +641,7 @@ fn standstill_excursion(workspace: &TransientBuffer) -> Result<i32, PositionTune
 }
 
 /// Reduce this rung's three completed ramped-stroke repeats to the median
-/// `lag_us` and that repeat's own complete `RampedStrokeMetrics` (spec,
-/// Decision) -- never a field-by-field blend across the three.
+/// `lag_us` and that repeat's own complete `RampedStrokeMetrics`.
 ///
 /// Panics if any of the three slots is still `None`: the caller only calls
 /// this once all three repeats have completed.
@@ -1117,10 +1086,6 @@ pub(crate) async fn step_position_tune<B: CommissioningBackend>(
                 };
             }
             safety.end_primitive();
-            // The ramped stroke and the five standstill holds share one
-            // `TransientBuffer`, so each repeat's own lag/metrics are pulled
-            // out here, the moment that repeat's capture completes, before
-            // the next repeat (or the standstill holds) reuse the buffer.
             match ramped_metrics(workspace).and_then(|metrics| {
                 let lag_us = position_lag_us(
                     metrics.final_position_error_counts,
@@ -1247,8 +1212,8 @@ mod tests {
     fn select_median_repeat_returns_the_full_metrics_of_the_median_lag_repeat() {
         let repeats: [Option<(u32, RampedStrokeMetrics)>; 3] = [
             Some((1_500, metrics_tagged(11_111))),
-            Some((900, metrics_tagged(22_222))), // lowest lag, not the median
-            Some((1_200, metrics_tagged(33_333))), // median lag
+            Some((900, metrics_tagged(22_222))),
+            Some((1_200, metrics_tagged(33_333))),
         ];
         let (median_lag_us, metrics) = select_median_repeat(&repeats);
         assert_eq!(median_lag_us, 1_200);
@@ -1258,8 +1223,8 @@ mod tests {
     #[test]
     fn select_median_repeat_breaks_a_tie_toward_the_earlier_repeat() {
         let repeats: [Option<(u32, RampedStrokeMetrics)>; 3] = [
-            Some((1_000, metrics_tagged(11_111))), // tied at the median value, earlier
-            Some((1_000, metrics_tagged(22_222))), // tied at the median value, later
+            Some((1_000, metrics_tagged(11_111))),
+            Some((1_000, metrics_tagged(22_222))),
             Some((500, metrics_tagged(33_333))),
         ];
         let (median_lag_us, metrics) = select_median_repeat(&repeats);
@@ -1280,10 +1245,6 @@ mod tests {
 
     #[test]
     fn ceiling_trip_after_the_floor_accepts_the_running_bests_own_metrics() {
-        // Rung A (running best, quiet) and rung B (current, tripping) carry
-        // distinguishable metrics. Accepting B's metrics here would be the
-        // retention-timing bug: by the time `resolve_rung_evidence` decides, the shared
-        // TransientBuffer already holds B's capture, not A's.
         let rung_a = evidence(63, 1_000, 11_111);
         let rung_b = evidence(89, 960, 22_222);
 
@@ -1358,10 +1319,6 @@ mod tests {
 
     #[test]
     fn exhaustion_at_pid_p_gain_max_never_falls_back_to_the_running_best() {
-        // `previous` (the running best) is given a far better lag than
-        // `current` deliberately -- if any fallback-to-best-so-far logic
-        // existed, it would be tempting here. The walk must still fail
-        // with SweepExhausted, never Accept `previous`.
         let previous = evidence(PidPGain::MAX.raw(), 1, 11_111);
         let current = evidence(PidPGain::MAX.raw(), 100, 22_222);
 
@@ -1802,23 +1759,12 @@ mod tests {
 
     #[test]
     fn the_walk_climbs_past_a_local_dip_and_never_admits_the_tripping_rungs_evidence() {
-        // Rungs reached by next_rung from this fixture's floor (63):
-        // 63 -> 89 -> 125 -> 176 -> 248.
-        //
-        // Rung 125's lag regresses versus rung 89 -- a local dip a greedy,
-        // no-backtracking stop condition could never see past. Rung 176,
-        // reached only by continuing past that dip, has the lowest lag of
-        // every ELIGIBLE rung. Rung 248's lag (50) would be the lowest of
-        // the entire walk by far, but its own ceiling trips, so it must
-        // never become the running best -- the walk must still stop there
-        // and accept rung 176, not rung 89 (what a greedy design would
-        // have picked) and not rung 248 (what an ordering bug would pick).
         let lag_table: &[(u16, i32)] = &[
-            (63, 2_000),  // floor
-            (89, 1_500),  // improves
-            (125, 1_600), // regresses -- the local dip
-            (176, 900),   // the true eligible global minimum, past the dip
-            (248, 50),    // lowest lag of the whole walk, but ceiling trips
+            (63, 2_000),
+            (89, 1_500),
+            (125, 1_600),
+            (176, 900),
+            (248, 50),
         ];
         let mut backend = position_tune_backend();
         let mut phase = position_tune_phase();
