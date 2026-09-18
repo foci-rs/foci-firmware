@@ -65,7 +65,7 @@ fn fit_velocity_slope_rpm_per_s(samples: &[(u32, i32)]) -> Option<i64> {
 ///
 /// See `docs/specs/2026-09-13-foci-340-position-tune-two-bound-design.md`,
 /// "Floor: inner (velocity-loop) bandwidth", for the physical derivation
-/// (`accel_per_count` equals FOCI-215's combined `Kadc*Kt/J` term, `bw_inner`
+/// (`accel_per_count` equals the combined `Kadc*Kt/J` term, `bw_inner`
 /// is in rad/s not Hz). Fitting directly against the register's native RPM
 /// domain rather than converting to true SI rad/s is a further
 /// simplification beyond the spec: the accel-per-torque fit's RPM/s result
@@ -73,9 +73,9 @@ fn fit_velocity_slope_rpm_per_s(samples: &[(u32, i32)]) -> Option<i64> {
 /// conversion anywhere in this function -- the `RPM<->rad/s` conversion
 /// factors that appear in the physical derivation cancel exactly (verified
 /// numerically: `Kp_v=1.367` (`velocity_p=350`) times the RPM/s-domain
-/// accel-per-torque derived from FOCI-215's constants reproduces the same
-/// ~266 rad/s the spec's rad/s²-domain derivation gives). Do not
-/// reintroduce a `2*pi` factor into this function.
+/// accel-per-torque derived from the rotor-only crosscheck constants
+/// reproduces the same ~266 rad/s the spec's rad/s²-domain derivation
+/// gives). Do not reintroduce a `2*pi` factor into this function.
 ///
 /// Returns both the floor and `bw_inner_rad_s` — Task 6 retains the latter
 /// for Task 7's `inner_bandwidth_rad_s` report field; it is not just an
@@ -153,14 +153,14 @@ mod tests {
     }
 
     #[test]
-    fn floor_matches_foci_215_rotor_only_worked_example() {
-        // FOCI-215 archived crosscheck's implied accel-per-torque (rotor-only
-        // inertia, physical Kt=0.15 N*m/A, J=8.5e-6 kg*m^2, Kadc=1.155e-3
-        // A/count) is ~20.38 rad/s^2/count, i.e. ~194.6 RPM/s/count. This
-        // fixture rounds that to a clean 195 RPM/s/count and a commanded
-        // torque step of 1000 raw counts, giving samples with an *exact*
-        // integer slope of 195 RPM per 1000us (no rounding at any sample
-        // point): velocity(t_us) = 195_000 * t_us / 1_000_000.
+    fn floor_matches_rotor_only_inertia_worked_example() {
+        // The archived rotor-only crosscheck's implied accel-per-torque
+        // (rotor-only inertia, physical Kt=0.15 N*m/A, J=8.5e-6 kg*m^2,
+        // Kadc=1.155e-3 A/count) is ~20.38 rad/s^2/count, i.e. ~194.6
+        // RPM/s/count. This fixture rounds that to a clean 195 RPM/s/count
+        // and a commanded torque step of 1000 raw counts, giving samples with
+        // an *exact* integer slope of 195 RPM per 1000us (no rounding at any
+        // sample point): velocity(t_us) = 195_000 * t_us / 1_000_000.
         let commanded_torque_count = 1000_i32;
         let samples: [(u32, i32); 5] = [
             (0, 0),
