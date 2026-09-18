@@ -58,9 +58,9 @@ fn per_rung_duration_ms() -> u32 {
 ///
 /// Bounds the sweep at its structural maximum -- every rung `next_rung` can
 /// reach from the smallest representable gain -- on top of the one-time
-/// P-only floor capture. Neither stop condition is guaranteed to trip before
-/// the ladder runs out, so this is the only duration the host can safely arm
-/// against.
+/// P-only floor capture. Neither a ceiling trip nor `PidPGain::MAX` exhaustion
+/// is guaranteed before the ladder runs out, so this is the only duration the
+/// host can safely arm against.
 pub(crate) fn position_tune_worst_case_duration_ms() -> u32 {
     let floor_capture_ms = u64::from(P_ONLY_CAPTURE_US / MICROS_PER_MILLI);
     let sweep_ms = u64::from(worst_case_rung_count()) * u64::from(per_rung_duration_ms());
@@ -70,9 +70,10 @@ pub(crate) fn position_tune_worst_case_duration_ms() -> u32 {
 /// Clean-run duration estimate of a position-P sweep, in milliseconds: the
 /// host's `nominal_workflow_ms`.
 ///
-/// A stop condition trips within [`NOMINAL_RUNG_COUNT`] rungs of the floor,
-/// so no further rung is measured. This is only a disclosure hint; the host
-/// arms its run timeout off [`position_tune_worst_case_duration_ms`].
+/// A ceiling trip or `PidPGain::MAX` exhaustion stops the walk within
+/// [`NOMINAL_RUNG_COUNT`] rungs of the floor, so no further rung is measured.
+/// This is only a disclosure hint; the host arms its run timeout off
+/// [`position_tune_worst_case_duration_ms`].
 pub(crate) fn position_tune_nominal_duration_ms() -> u32 {
     let floor_capture_ms = u64::from(P_ONLY_CAPTURE_US / MICROS_PER_MILLI);
     let sweep_ms = u64::from(NOMINAL_RUNG_COUNT) * u64::from(per_rung_duration_ms());

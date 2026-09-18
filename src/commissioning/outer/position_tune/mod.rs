@@ -108,14 +108,22 @@ pub(crate) struct RungEvidence {
 /// What the sweep does once one rung's evidence is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum RungResolution {
-    /// Neither stop condition tripped and a next rung is representable.
+    /// This rung's own ceiling did not trip and a next rung is
+    /// representable. `running_best` is the walk's updated running-best-
+    /// seen rung (unchanged from the input if this rung did not improve on
+    /// it -- a ceiling-tripping rung's evidence never reaches this variant
+    /// at all, see `Accept` below).
     Advance {
         next: PidPGain,
         running_best: RungEvidence,
     },
-    /// A ceiling trip after the floor rung stopped the walk.
+    /// A ceiling trip after the floor rung stopped the walk; this is
+    /// always the running-best-seen rung, never the rung whose own ceiling
+    /// just tripped.
     Accept(RungEvidence),
-    /// The sweep cannot produce an accepted rung.
+    /// The sweep cannot produce an accepted rung: a ceiling trip at the
+    /// floor rung itself, or `PidPGain::MAX` reached with no ceiling trip
+    /// (never a fallback to a best-so-far value).
     Failed(PositionTuneOutcome),
 }
 
@@ -607,10 +615,10 @@ fn ramp_step_counts(velocity_counts_per_s: i32, period_us: u32) -> i32 {
 /// during that stroke into a time-domain tracking lag.
 ///
 /// Both inputs are signed (a reversal stroke commands both directions, and
-/// leading versus following error have opposite signs); the plateau check only
-/// compares lag *magnitudes*, so take absolute values in a widened domain
-/// before dividing. `None` when the commanded velocity is zero -- a rejected
-/// capture, never a silent lag of zero.
+/// leading versus following error have opposite signs); the exhaustive walk
+/// compares lag *magnitudes* to select the global minimum, so take absolute
+/// values in a widened domain before dividing. `None` when the commanded
+/// velocity is zero -- a rejected capture, never a silent lag of zero.
 fn position_lag_us(
     position_error_counts: i32,
     commanded_velocity_counts_per_s: i32,
