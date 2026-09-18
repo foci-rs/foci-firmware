@@ -1057,6 +1057,7 @@ impl CommissioningEngine {
             | EngineMode::Outer {
                 phase:
                     OuterPhase::Failed(_)
+                    | OuterPhase::PositionTune { .. }
                     | OuterPhase::PositionTuneFailed { .. }
                     | OuterPhase::FailedWithSafety { .. }
                     | OuterPhase::RobustnessReversal { .. },
