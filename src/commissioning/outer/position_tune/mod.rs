@@ -70,6 +70,15 @@ pub(crate) const STANDSTILL_CAPTURE_COUNT: u8 = 5;
 /// and its implied slope would be wrong.
 const FLOOR_EXPECTED_SAMPLES: usize = (P_ONLY_CAPTURE_US / P_ONLY_SAMPLE_PERIOD_US) as usize;
 
+/// Sample index at which the ramped stroke's commanded direction reverses.
+///
+/// `arm_ramped_stroke` sets the reversal at exactly half the capture window,
+/// and the stroke pushes one sample per `RAMPED_STROKE_SAMPLE_PERIOD_US`, so
+/// the first leg is the samples below this index and the second leg is the
+/// rest. A capture that ended early simply never reaches it.
+const RAMPED_STROKE_REVERSAL_SAMPLE_INDEX: usize =
+    (RAMPED_STROKE_CAPTURE_US / 2 / RAMPED_STROKE_SAMPLE_PERIOD_US) as usize;
+
 /// `MODE_RAMP_MODE_MOTION` values: advanced PI representation (bit 31) plus
 /// the motion mode, matching `integral_sweep.rs`'s `OUTER_VELOCITY_MODE`.
 const POSITION_TUNE_TORQUE_MODE: u32 = 0x8000_0001;
@@ -150,41 +159,68 @@ fn resolve_rung_evidence(
 ///
 /// A ramped reversal stroke at nonzero commanded velocity has a nonzero
 /// steady-state following error by design, so every metric here is measured
-/// relative to the tail-window steady-state reference, never relative to zero.
+/// relative to a steady-state reference, never relative to zero.
+///
+/// The stroke is bipolar: it ramps one way for half the window and then
+/// reverses, so the following error settles near `+lag` on the first leg and
+/// near `-lag` on the second. Each leg therefore gets its own steady-state
+/// reference, and the two legs' results are combined into the single set of
+/// fields the wire format carries. One reference for the whole capture would
+/// be the reverse leg's, leaving the forward leg measured against a value it
+/// never approaches: it reports the commanded reversal as a failure to settle
+/// on every rung, hides any forward-leg overshoot below the reverse leg's
+/// steady state, and cannot see forward-leg ringing at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct RampedStrokeMetrics {
-    /// Elapsed time, from stroke start, at which `|position_error -
-    /// steady_state|` first drops below 10% of the observed peak absolute
-    /// deviation from `steady_state` and stays below it for the remainder of
-    /// the capture. Censored to the full window when it never does — settling
-    /// time is a diagnostic, not a stop condition.
+    /// Worst of the two legs' settling times, each measured from its own leg's
+    /// start: the elapsed time at which `|position_error - steady_state|`
+    /// first drops below 10% of that leg's peak absolute deviation from its
+    /// `steady_state` and stays below it for the rest of the leg. Censored to
+    /// the full leg when it never does — settling time is a diagnostic, not a
+    /// stop condition.
+    ///
+    /// The worse leg rather than only the terminal leg: both legs are genuine
+    /// step responses of the same loop at the same gain, so a forward leg that
+    /// rings for 100 ms is exactly as much of a tuning result as a reverse leg
+    /// that does, and reporting only the second would discard it silently.
     pub settling_time_us: u32,
-    /// Peak excursion **past** `steady_state`, in the direction opposite the
-    /// stroke's initial approach. A monotonic approach that never crosses past
-    /// `steady_state` reports `0`, not the approach distance.
+    /// Largest excursion **past** a leg's own `steady_state`, in the direction
+    /// opposite that leg's initial approach, taken over both legs. A leg whose
+    /// approach is monotonic and never crosses past its `steady_state`
+    /// contributes `0`, not its approach distance.
     pub overshoot_counts: u32,
     /// The last recorded `position_error` sample, signed, in counts relative
     /// to zero — the actual final tracking error reported to the operator.
+    /// Unaffected by the leg split: it is the terminal sample either way.
     pub final_position_error_counts: i32,
-    /// True when `(position_error - steady_state)` crosses zero more than 2
-    /// times after the peak absolute deviation from `steady_state`.
+    /// True when either leg's `(position_error - steady_state)` crosses zero
+    /// more than 2 times after that leg's peak absolute deviation. Counted
+    /// per leg against that leg's own reference, so the commanded direction
+    /// reversal — a leg boundary, never a within-leg crossing — cannot be
+    /// misread as ringing.
     pub oscillation_detected: bool,
 }
 
-fn compute_ramped_stroke_metrics(
-    samples: &[i32],
-    sample_period_us: u32,
-) -> Result<RampedStrokeMetrics, PositionTuneOutcome> {
-    // A failed, aborted, or never-started capture producing zero samples must
-    // be a reported failure, not a panic -- `tail_len` below would otherwise
-    // be 0, and dividing by it would panic.
+/// One directional leg's reduction, before the two legs are combined.
+struct LegMetrics {
+    /// Settling index **within this leg**, in samples from the leg's start.
+    settle_index: usize,
+    overshoot_counts: u32,
+    oscillation_detected: bool,
+}
+
+/// Reduce one directional leg against its own tail-window steady state.
+///
+/// `None` for an empty leg: a capture that ended before the reversal has no
+/// second leg, and a zero-length slice has no steady state to measure against.
+fn leg_metrics(samples: &[i32]) -> Option<LegMetrics> {
     if samples.is_empty() {
-        return Err(PositionTuneOutcome::CaptureEmpty);
+        return None;
     }
 
-    // Steady-state reference: mean of the last 10% of samples (at least 1
-    // sample). This is what "settled" means for this stroke -- whatever
-    // following error persists once any transient has decayed, not zero.
+    // Steady-state reference: mean of the last 10% of this leg's samples (at
+    // least 1 sample). This is what "settled" means for this leg -- whatever
+    // following error persists once its transient has decayed, not zero.
     let tail_len = (samples.len() / 10).max(1).min(samples.len());
     let tail = &samples[samples.len() - tail_len..];
     let steady_state =
@@ -216,12 +252,11 @@ fn compute_ramped_stroke_metrics(
         .find(|&&s| s != steady_state)
         .map(|&s| s < steady_state);
     let Some(approaching_from_below) = approaching_from_below else {
-        // Every sample equals steady_state: zero overshoot, skip the loop
+        // Every sample equals steady_state: zero overshoot, skip the loops
         // below entirely rather than picking an arbitrary direction.
-        return Ok(RampedStrokeMetrics {
-            settling_time_us: 0,
+        return Some(LegMetrics {
+            settle_index: 0,
             overshoot_counts: 0,
-            final_position_error_counts: *samples.last().unwrap_or(&0),
             oscillation_detected: false,
         });
     };
@@ -239,8 +274,8 @@ fn compute_ramped_stroke_metrics(
     let overshoot_counts = u32::try_from(overshoot.max(0)).unwrap_or(u32::MAX);
 
     // Oscillation: zero-crossings of (sample - steady_state) strictly after
-    // the peak-deviation sample -- ringing around the eventual settled value,
-    // not around literal zero.
+    // this leg's peak-deviation sample -- ringing around the value this leg
+    // eventually settles at, not around literal zero.
     let mut crossings = 0u8;
     for window in samples[peak_index..].windows(2) {
         let a = i64::from(window[0]) - i64::from(steady_state);
@@ -251,9 +286,9 @@ fn compute_ramped_stroke_metrics(
     }
     let oscillation_detected = crossings > 2;
 
-    // Settling time: first index after which every remaining sample stays
-    // within 10% of peak_deviation of steady_state, converted to elapsed
-    // microseconds. Censored to the full window if it never settles.
+    // Settling index: first index after which every remaining sample in this
+    // leg stays within 10% of peak_deviation of steady_state. Censored to the
+    // leg's full length if it never settles.
     let settle_threshold = i64::from(peak_deviation) / 10;
     let mut settle_index = samples.len();
     'outer: for start in 0..samples.len() {
@@ -266,6 +301,45 @@ fn compute_ramped_stroke_metrics(
         settle_index = start;
         break;
     }
+
+    Some(LegMetrics {
+        settle_index,
+        overshoot_counts,
+        oscillation_detected,
+    })
+}
+
+/// Reduce a full ramped-reversal capture to its wire-format metrics.
+///
+/// `reversal_index` is the sample index at which the commanded direction
+/// reverses; samples below it form the forward leg and the rest the reverse
+/// leg. An index at or past `samples.len()` means the capture ended before the
+/// reversal, which reduces to a single leg.
+fn compute_ramped_stroke_metrics(
+    samples: &[i32],
+    sample_period_us: u32,
+    reversal_index: usize,
+) -> Result<RampedStrokeMetrics, PositionTuneOutcome> {
+    // A failed, aborted, or never-started capture producing zero samples must
+    // be a reported failure, not a panic -- a leg's tail length would
+    // otherwise be 0, and dividing by it would panic.
+    if samples.is_empty() {
+        return Err(PositionTuneOutcome::CaptureEmpty);
+    }
+
+    let split = reversal_index.min(samples.len());
+    let mut settle_index = 0_usize;
+    let mut overshoot_counts = 0_u32;
+    let mut oscillation_detected = false;
+    for leg in [&samples[..split], &samples[split..]] {
+        let Some(metrics) = leg_metrics(leg) else {
+            continue;
+        };
+        settle_index = settle_index.max(metrics.settle_index);
+        overshoot_counts = overshoot_counts.max(metrics.overshoot_counts);
+        oscillation_detected |= metrics.oscillation_detected;
+    }
+
     let settling_time_us = u32::try_from(settle_index)
         .unwrap_or(u32::MAX)
         .saturating_mul(sample_period_us);
@@ -566,7 +640,11 @@ fn ramped_metrics(workspace: &TransientBuffer) -> Result<RampedStrokeMetrics, Po
     for (slot, &raw) in samples.iter_mut().zip(captured) {
         *slot = raw as i32;
     }
-    compute_ramped_stroke_metrics(&samples[..captured.len()], RAMPED_STROKE_SAMPLE_PERIOD_US)
+    compute_ramped_stroke_metrics(
+        &samples[..captured.len()],
+        RAMPED_STROKE_SAMPLE_PERIOD_US,
+        RAMPED_STROKE_REVERSAL_SAMPLE_INDEX,
+    )
 }
 
 fn start_capture(
@@ -1456,7 +1534,8 @@ mod tests {
     #[test]
     fn stable_following_error_reports_no_overshoot_and_no_oscillation() {
         let samples = [50_i32; 20];
-        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US).expect("valid capture");
+        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US, samples.len())
+            .expect("valid capture");
 
         assert_eq!(metrics.overshoot_counts, 0);
         assert!(!metrics.oscillation_detected);
@@ -1467,7 +1546,8 @@ mod tests {
     #[test]
     fn monotonic_approach_to_nonzero_steady_state_is_not_overshoot() {
         let samples: [i32; 10] = [0, 10, 20, 30, 40, 48, 50, 50, 50, 50];
-        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US).expect("valid capture");
+        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US, samples.len())
+            .expect("valid capture");
 
         assert_eq!(metrics.overshoot_counts, 0);
         assert!(!metrics.oscillation_detected);
@@ -1477,7 +1557,8 @@ mod tests {
     #[test]
     fn genuine_overshoot_is_measured_past_the_settled_value() {
         let samples: [i32; 12] = [0, 20, 50, 80, 110, 120, 100, 70, 55, 50, 50, 50];
-        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US).expect("valid capture");
+        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US, samples.len())
+            .expect("valid capture");
 
         assert_eq!(metrics.overshoot_counts, 70);
         assert!(metrics.settling_time_us > 5 * PERIOD_US);
@@ -1487,7 +1568,8 @@ mod tests {
     #[test]
     fn sustained_ringing_after_the_peak_is_detected() {
         let samples: [i32; 12] = [0, 40, 90, 30, 70, 30, 70, 30, 70, 50, 50, 50];
-        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US).expect("valid capture");
+        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US, samples.len())
+            .expect("valid capture");
 
         assert!(metrics.oscillation_detected);
     }
@@ -1495,15 +1577,73 @@ mod tests {
     #[test]
     fn first_sample_equal_to_steady_state_does_not_flip_the_approach_direction() {
         let samples: [i32; 10] = [50, 40, 45, 49, 50, 50, 50, 50, 50, 50];
-        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US).expect("valid capture");
+        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US, samples.len())
+            .expect("valid capture");
 
         assert_eq!(metrics.overshoot_counts, 0);
+    }
+
+    /// A clean bipolar capture: the forward leg settles at `+100` counts of
+    /// following error, the reverse leg at `-100`. Nothing in it rings and
+    /// nothing overshoots -- the only large excursion is the commanded
+    /// direction reversal itself, at the leg boundary.
+    const BIPOLAR_REVERSAL_INDEX: usize = 12;
+    const CLEAN_BIPOLAR: [i32; 24] = [
+        0, 40, 70, 90, 98, 100, 100, 100, 100, 100, 100, 100, // forward leg
+        20, -60, -90, -98, -100, -100, -100, -100, -100, -100, -100, -100,
+    ];
+
+    #[test]
+    fn a_clean_direction_reversal_is_not_read_as_a_failure_to_settle() {
+        let metrics =
+            compute_ramped_stroke_metrics(&CLEAN_BIPOLAR, PERIOD_US, BIPOLAR_REVERSAL_INDEX)
+                .expect("valid capture");
+
+        // Each leg settles within 3 samples of its own start. A single
+        // whole-capture reference would instead measure both legs against the
+        // reverse leg's -100 and report the reversal point (~14 samples in) as
+        // the settling time on every rung, regardless of the actual dynamics.
+        assert_eq!(metrics.settling_time_us, 3 * PERIOD_US);
+        assert_eq!(metrics.overshoot_counts, 0);
+        assert!(!metrics.oscillation_detected);
+        assert_eq!(metrics.final_position_error_counts, -100);
+    }
+
+    #[test]
+    fn overshoot_on_the_forward_leg_survives_into_the_combined_metrics() {
+        let mut samples = CLEAN_BIPOLAR;
+        // Forward leg now overshoots its own +100 steady state by 40 counts.
+        samples[..BIPOLAR_REVERSAL_INDEX]
+            .copy_from_slice(&[0, 40, 80, 120, 140, 110, 95, 100, 100, 100, 100, 100]);
+
+        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US, BIPOLAR_REVERSAL_INDEX)
+            .expect("valid capture");
+
+        // Measured against the forward leg's own +100, not against the reverse
+        // leg's -100 -- which the whole excursion sits above, so a single
+        // reference reports no overshoot at all.
+        assert_eq!(metrics.overshoot_counts, 40);
+    }
+
+    #[test]
+    fn ringing_confined_to_one_leg_is_detected_against_that_legs_own_reference() {
+        let mut samples = CLEAN_BIPOLAR;
+        samples[..BIPOLAR_REVERSAL_INDEX]
+            .copy_from_slice(&[0, 60, 130, 70, 125, 70, 125, 70, 125, 100, 100, 100]);
+
+        let metrics = compute_ramped_stroke_metrics(&samples, PERIOD_US, BIPOLAR_REVERSAL_INDEX)
+            .expect("valid capture");
+
+        // Every one of these swings stays above the reverse leg's -100, so a
+        // single whole-capture reference sees a monotone signal and no
+        // crossings at all.
+        assert!(metrics.oscillation_detected);
     }
 
     #[test]
     fn empty_capture_is_a_reported_failure_not_a_panic() {
         assert_eq!(
-            compute_ramped_stroke_metrics(&[], PERIOD_US),
+            compute_ramped_stroke_metrics(&[], PERIOD_US, 0),
             Err(PositionTuneOutcome::CaptureEmpty)
         );
     }
