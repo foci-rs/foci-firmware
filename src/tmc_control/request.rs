@@ -1313,7 +1313,26 @@ where
         // and live velocity gains from the backend and installs its own
         // safety envelope, so the shared checks above are the whole
         // admission.
-        crate::tmc::AutotuneAction::PositionTune => TuneRoute::PositionTune(run_sequence),
+        crate::tmc::AutotuneAction::PositionTune => {
+            // Disclose the sweep's worst-case duration before any motion
+            // so the host arms its extended run timeout: the half-octave
+            // rung ladder runs far longer than the host's 5 s initial plan
+            // window, which caps the run when no workflow plan arrives.
+            let workflow = crate::commissioning::outer::velocity::workflow_plan::
+                CommissioningWorkflowPlan::new_position_tune(
+                    run_sequence,
+                    crate::commission_dispatch::position_tune::
+                        position_tune_nominal_duration_ms(),
+                    crate::commission_dispatch::position_tune::
+                        position_tune_worst_case_duration_ms(),
+                )
+                .expect("position tune workflow envelope is always valid");
+            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                oid,
+                plan: workflow,
+            });
+            TuneRoute::PositionTune(run_sequence)
+        }
     };
     Ok((tune_route, encoder_counts_per_rev))
 }
@@ -3019,6 +3038,36 @@ mod tests {
         )
         .await;
 
+        // The worst-case-duration envelope is the very first reply, before the
+        // engine and any motion, so the host arms its extended run timeout
+        // instead of capping the sweep at its 5 s plan window.
+        let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
+        else {
+            panic!("position tune workflow envelope must be first")
+        };
+        assert_eq!(
+            workflow.shape,
+            crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::
+                PositionTune
+        );
+        assert_eq!(
+            workflow.maximum_workflow_ms,
+            crate::commission_dispatch::position_tune::position_tune_worst_case_duration_ms()
+        );
+        assert_eq!(
+            workflow.nominal_workflow_ms,
+            crate::commission_dispatch::position_tune::position_tune_nominal_duration_ms()
+        );
+        assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
+        // Exactly one workflow plan is emitted.
+        assert_eq!(
+            board
+                .replies
+                .iter()
+                .filter(|reply| matches!(reply, ReplyPayload::CommissioningWorkflowPlan { .. }))
+                .count(),
+            1
+        );
         assert!(runtime.is_commission_active());
         let engine = runtime
             .take_commission_engine()

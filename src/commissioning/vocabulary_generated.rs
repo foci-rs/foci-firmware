@@ -148,6 +148,10 @@ pub enum VelocityAutotuneWorkflowKind {
     /// Distinct from every acquisition shape so the host arms the extended run
     /// timeout for the multi-cycle probe instead of the 5 s plan window.
     ReversalStandstillRobustnessGate = 4,
+    /// Run the two-bound position-P sweep over the live velocity gains.
+    /// Distinct from every acquisition shape so the host arms the extended run
+    /// timeout for the half-octave rung sweep instead of the 5 s plan window.
+    PositionTune = 5,
 }
 
 impl VelocityAutotuneWorkflowKind {
@@ -159,6 +163,7 @@ impl VelocityAutotuneWorkflowKind {
         ("FixedGainAmplitudeDescending", 2),
         ("BreakawaySeededProportionalThenIntegral", 3),
         ("ReversalStandstillRobustnessGate", 4),
+        ("PositionTune", 5),
     ];
 }
 

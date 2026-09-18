@@ -36,7 +36,8 @@ impl CommissioningWorkflowPlan {
             VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending
             | VelocityAutotuneWorkflowKind::FixedGainAmplitudeDescending
             | VelocityAutotuneWorkflowKind::BreakawaySeededProportionalThenIntegral
-            | VelocityAutotuneWorkflowKind::ReversalStandstillRobustnessGate => false,
+            | VelocityAutotuneWorkflowKind::ReversalStandstillRobustnessGate
+            | VelocityAutotuneWorkflowKind::PositionTune => false,
         };
         if !valid {
             return Err(VelocityIntegralPlanError::InvalidRequest);
@@ -132,6 +133,32 @@ impl CommissioningWorkflowPlan {
         Ok(Self {
             run_sequence,
             shape: VelocityAutotuneWorkflowKind::ReversalStandstillRobustnessGate,
+            nominal_workflow_ms,
+            maximum_workflow_ms,
+        })
+    }
+
+    /// Construct one checked position-P sweep workflow envelope.
+    ///
+    /// Reserved before the sweep's first motion so the host arms its extended
+    /// run timeout: the half-octave rung ladder runs far longer than the
+    /// host's 5 s initial plan window. `maximum_workflow_ms` is
+    /// `position_tune_worst_case_duration_ms`, `nominal_workflow_ms` a
+    /// clean-run estimate.
+    pub fn new_position_tune(
+        run_sequence: u32,
+        nominal_workflow_ms: u32,
+        maximum_workflow_ms: u32,
+    ) -> Result<Self, VelocityIntegralPlanError> {
+        if nominal_workflow_ms == 0
+            || maximum_workflow_ms == 0
+            || nominal_workflow_ms > maximum_workflow_ms
+        {
+            return Err(VelocityIntegralPlanError::InvalidRequest);
+        }
+        Ok(Self {
+            run_sequence,
+            shape: VelocityAutotuneWorkflowKind::PositionTune,
             nominal_workflow_ms,
             maximum_workflow_ms,
         })

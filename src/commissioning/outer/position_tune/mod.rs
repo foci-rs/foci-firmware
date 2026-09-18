@@ -61,7 +61,7 @@ pub(crate) const STANDSTILL_SAMPLE_PERIOD_US: u32 = 1_000;
 
 /// Standstill-dither observations per rung (spec: `M = 5`, odd so the 3-of-5
 /// majority vote can never tie).
-const STANDSTILL_CAPTURE_COUNT: u8 = 5;
+pub(crate) const STANDSTILL_CAPTURE_COUNT: u8 = 5;
 
 /// Samples the floor's onset window yields on an un-slipped sample grid.
 ///

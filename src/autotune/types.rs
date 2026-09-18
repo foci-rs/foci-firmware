@@ -1181,6 +1181,7 @@ mod tests {
                 ("FixedGainAmplitudeDescending", 2),
                 ("BreakawaySeededProportionalThenIntegral", 3),
                 ("ReversalStandstillRobustnessGate", 4),
+                ("PositionTune", 5),
             ]
         );
         assert_eq!(

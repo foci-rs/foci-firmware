@@ -19,6 +19,7 @@ pub mod integral;
 mod integral_tests;
 #[cfg(test)]
 mod manifest_completeness_tests;
+pub mod position_tune;
 pub mod post_actions;
 pub mod replies;
 mod restore;

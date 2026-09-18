@@ -189,6 +189,14 @@ doc = """
 Run the reversal-standstill robustness gate over the retained acceptance point.
 Distinct from every acquisition shape so the host arms the extended run
 timeout for the multi-cycle probe instead of the 5 s plan window."""
+[[workflow_shape]]
+ident = "PositionTune"
+wire_code = 5
+const_stem = "SHAPE_POSITION_TUNE"
+doc = """
+Run the two-bound position-P sweep over the live velocity gains.
+Distinct from every acquisition shape so the host arms the extended run
+timeout for the half-octave rung sweep instead of the 5 s plan window."""
 
 [[action]]
 ident = "FixedGainAmplitudeAscending"

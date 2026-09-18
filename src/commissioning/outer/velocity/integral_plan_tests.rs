@@ -566,7 +566,7 @@ fn forward_first_preserves_the_historical_parity_mapping() {
 }
 
 #[test]
-fn workflow_kind_discriminants_are_a_clean_zero_through_four_sequence() {
+fn workflow_kind_discriminants_are_a_clean_zero_through_five_sequence() {
     assert_eq!(VelocityAutotuneWorkflowKind::Resume as u8, 0);
     assert_eq!(
         VelocityAutotuneWorkflowKind::FixedGainAmplitudeAscending as u8,
@@ -584,6 +584,7 @@ fn workflow_kind_discriminants_are_a_clean_zero_through_four_sequence() {
         VelocityAutotuneWorkflowKind::ReversalStandstillRobustnessGate as u8,
         4
     );
+    assert_eq!(VelocityAutotuneWorkflowKind::PositionTune as u8, 5);
 
     // The breakaway shape has its own dedicated constructor, matching the
     // existing precedent set by the fixed-gain-amplitude shapes: it is not
