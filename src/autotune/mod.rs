@@ -18,7 +18,6 @@ mod hold;
 mod integral_gain;
 mod metrics;
 mod models;
-mod position;
 #[cfg(test)]
 mod test_support;
 mod types;
@@ -82,9 +81,6 @@ pub use models::{
     CURRENT_VALIDATION_AXIS_TORQUE, CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS, CurrentGainSynthesis,
     CurrentGainSynthesisError, CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
     ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel, FilterConfig, PositionGains, VelocityGains,
-};
-pub use position::{
-    PositionOscillationDiagnostics, analyze_position_oscillation, detect_position_oscillation,
 };
 pub use types::{
     CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT, CLOSED_LOOP_ACTIVATION_STATUS_FAIL_RUNAWAY,
