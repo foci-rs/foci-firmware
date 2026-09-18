@@ -2194,27 +2194,53 @@ fn homing_restore_failure_retries_then_fails_closed() {
 fn advance_homing_state_after_channels_waits_for_all_channels() {
     let homing_state = core::sync::atomic::AtomicU8::new(1);
     let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
-    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    let homing_reenter = core::sync::atomic::AtomicBool::new(false);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
 
     TmcControlRuntime::advance_homing_state_after_channels(homing, 1, false);
     assert_eq!(homing_state.load(Relaxed), 1);
 
-    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
     TmcControlRuntime::advance_homing_state_after_channels(homing, 1, true);
     assert_eq!(homing_state.load(Relaxed), 2);
 
-    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
     TmcControlRuntime::advance_homing_state_after_channels(homing, 2, true);
     assert_eq!(homing_state.load(Relaxed), 2);
 
     homing_triggered.store(0, Relaxed);
-    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
     TmcControlRuntime::advance_homing_state_after_channels(homing, 2, true);
     assert_eq!(homing_state.load(Relaxed), 3);
 
-    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered);
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
     TmcControlRuntime::advance_homing_state_after_channels(homing, 3, true);
     assert_eq!(homing_state.load(Relaxed), 0);
+}
+
+#[test]
+fn advance_homing_state_re_enters_preparation_after_a_restore_with_a_queued_pass() {
+    let homing_state = core::sync::atomic::AtomicU8::new(3);
+    let homing_triggered = core::sync::atomic::AtomicU8::new(0xFF);
+    let homing_reenter = core::sync::atomic::AtomicBool::new(true);
+
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 3, false);
+    assert_eq!(
+        homing_state.load(Relaxed),
+        3,
+        "an unfinished restore keeps waiting"
+    );
+    assert!(homing_reenter.load(Relaxed));
+
+    let homing = TmcControlHomingRefs::new(&homing_state, &homing_triggered, &homing_reenter);
+    TmcControlRuntime::advance_homing_state_after_channels(homing, 3, true);
+    assert_eq!(
+        homing_state.load(Relaxed),
+        1,
+        "the pass that registered during the restore gets its own preparation"
+    );
+    assert!(!homing_reenter.load(Relaxed));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Configuration and borrowed state bundles for TMC control runtime calls.
 
-use core::sync::atomic::AtomicU8;
+use core::sync::atomic::{AtomicBool, AtomicU8};
 
 use crate::config::TmcConfig;
 use crate::state::stepper::StepperChannelState;
@@ -58,11 +58,21 @@ pub struct TmcControlHomingRefs<'a> {
     pub state: &'a AtomicU8,
     /// Homing triggered flag atomically mirrored by board code.
     pub triggered: &'a AtomicU8,
+    /// A pass registered during the previous pass's restore.
+    pub reenter: &'a AtomicBool,
 }
 
 impl<'a> TmcControlHomingRefs<'a> {
     /// Build a homing-reference bundle.
-    pub const fn new(state: &'a AtomicU8, triggered: &'a AtomicU8) -> Self {
-        Self { state, triggered }
+    pub const fn new(
+        state: &'a AtomicU8,
+        triggered: &'a AtomicU8,
+        reenter: &'a AtomicBool,
+    ) -> Self {
+        Self {
+            state,
+            triggered,
+            reenter,
+        }
     }
 }

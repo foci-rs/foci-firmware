@@ -1,7 +1,7 @@
 //! Trsync protocol state: homing FSM, homing-triggered oid, endstop
 //! pin map.
 
-use core::sync::atomic::{AtomicU8, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32};
 
 use foci_klipper::state::NUM_ENDSTOPS;
 
@@ -29,6 +29,15 @@ pub static HOMING_STATE: AtomicU8 = AtomicU8::new(0);
 /// offsets the report clock by up to 0.3 x the trsync timeout after the start.
 pub static HOMING_START_CLOCK: AtomicU32 = AtomicU32::new(0);
 
+/// A homing pass registered while the previous pass was still being torn
+/// down (state 2 or 3), so the tick must re-enter state 1 after the restore
+/// instead of returning to idle.
+///
+/// Klipper's second homing pass registers within milliseconds of the first
+/// pass's trigger, before the tick has restored run current; without this
+/// the registration would be lost and the second pass would run unclamped.
+pub static HOMING_REENTER_PENDING: AtomicBool = AtomicBool::new(false);
+
 /// Begin homing preparation for a move whose steps start at `start_clock`.
 ///
 /// Publishes the start clock before the idle-to-pending transition so no
@@ -38,19 +47,24 @@ pub static HOMING_START_CLOCK: AtomicU32 = AtomicU32::new(0);
 pub fn begin_homing_preparation(start_clock: u32) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     HOMING_START_CLOCK.store(start_clock, Relaxed);
-    HOMING_STATE
-        .compare_exchange(0, 1, Relaxed, Relaxed)
-        .is_ok()
+    match HOMING_STATE.compare_exchange(0, 1, Relaxed, Relaxed) {
+        Ok(_) => true,
+        Err(2 | 3) => {
+            HOMING_REENTER_PENDING.store(true, Relaxed);
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 /// Whether a step scheduled at `step_clock` must wait for homing preparation.
 ///
-/// Only steps at or after [`HOMING_START_CLOCK`] are held while
-/// [`HOMING_STATE`] is 1; steps of a move still in flight when the host
-/// announced the home run on schedule.
+/// Only steps at or after [`HOMING_START_CLOCK`] are held, while
+/// [`HOMING_STATE`] is 1 or a re-entry is queued behind a restore; steps of
+/// a move still in flight when the host announced the home run on schedule.
 pub fn step_held_for_homing(step_clock: u32) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
-    HOMING_STATE.load(Relaxed) == 1
+    (HOMING_STATE.load(Relaxed) == 1 || HOMING_REENTER_PENDING.load(Relaxed))
         && (step_clock.wrapping_sub(HOMING_START_CLOCK.load(Relaxed)) as i32) >= 0
 }
 
@@ -99,6 +113,47 @@ mod tests {
 
         HOMING_STATE.store(2, Relaxed);
         assert!(!step_held_for_homing(1_000_500));
+        HOMING_STATE.store(0, Relaxed);
+    }
+
+    #[test]
+    fn registration_during_restore_queues_a_re_entry_instead_of_being_lost() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        HOMING_REENTER_PENDING.store(false, Relaxed);
+
+        HOMING_STATE.store(3, Relaxed);
+        assert!(!begin_homing_preparation(500));
+        assert_eq!(HOMING_STATE.load(Relaxed), 3);
+        assert!(HOMING_REENTER_PENDING.load(Relaxed));
+        assert_eq!(HOMING_START_CLOCK.load(Relaxed), 500);
+
+        HOMING_REENTER_PENDING.store(false, Relaxed);
+        HOMING_STATE.store(1, Relaxed);
+        assert!(
+            !begin_homing_preparation(600),
+            "a companion registration in state 1 is not a re-entry"
+        );
+        assert!(!HOMING_REENTER_PENDING.load(Relaxed));
+
+        HOMING_STATE.store(0, Relaxed);
+        assert!(begin_homing_preparation(700));
+        assert_eq!(HOMING_STATE.load(Relaxed), 1);
+        assert!(!HOMING_REENTER_PENDING.load(Relaxed));
+        HOMING_STATE.store(0, Relaxed);
+    }
+
+    #[test]
+    fn step_hold_covers_a_queued_re_entry_while_restore_is_pending() {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        HOMING_START_CLOCK.store(1_000_000, Relaxed);
+        HOMING_STATE.store(3, Relaxed);
+        HOMING_REENTER_PENDING.store(true, Relaxed);
+
+        assert!(!step_held_for_homing(999_999));
+        assert!(step_held_for_homing(1_000_000));
+
+        HOMING_REENTER_PENDING.store(false, Relaxed);
+        assert!(!step_held_for_homing(1_000_000));
         HOMING_STATE.store(0, Relaxed);
     }
 }

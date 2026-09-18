@@ -2052,7 +2052,14 @@ impl TmcControlRuntime {
         match snapshot {
             1 => homing.state.store(2, Relaxed),
             2 if homing.triggered.load(Relaxed) != 0xFF => homing.state.store(3, Relaxed),
-            3 => homing.state.store(0, Relaxed),
+            3 => {
+                let next = if homing.reenter.swap(false, Relaxed) {
+                    1
+                } else {
+                    0
+                };
+                homing.state.store(next, Relaxed);
+            }
             _ => {}
         }
     }

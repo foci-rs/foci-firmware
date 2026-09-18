@@ -25,7 +25,9 @@ use crate::state::lifecycle::{
 };
 use crate::state::stepper::reset_all_stepper_channels;
 use crate::state::tmc::{TMC_QUEUE_FLUSH, reset_all_tmc_channels};
-use crate::state::trsync::{ENDSTOP_PIN_IDS, HOMING_STATE, HOMING_TRIGGERED};
+use crate::state::trsync::{
+    ENDSTOP_PIN_IDS, HOMING_REENTER_PENDING, HOMING_STATE, HOMING_TRIGGERED,
+};
 
 #[klipper_command(in_shutdown)]
 pub fn get_clock(ctx: &mut dyn ClockSource) {
@@ -105,6 +107,7 @@ pub fn config_reset(ctx: &mut dyn LifecycleReset) {
     REPORT_PENDING.store(false, Relaxed);
     HOMING_TRIGGERED.store(0xFF, Relaxed);
     HOMING_STATE.store(0, Relaxed);
+    HOMING_REENTER_PENDING.store(false, Relaxed);
     // Clear firmware-side endstop pin assignments
     for pin_id in &ENDSTOP_PIN_IDS {
         pin_id.store(0xFF, Relaxed);
@@ -308,6 +311,28 @@ mod tests {
 
         assert_eq!(LAST_HOST_LIVENESS_TICKS.load(Relaxed), 123);
         assert!(HAS_RECEIVED_VALID_CLOCK.load(Relaxed));
+    }
+
+    #[test]
+    fn config_reset_drops_a_queued_homing_re_entry() {
+        use crate::state::trsync::HOMING_REENTER_PENDING;
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        let _shared_guard =
+            crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+        HOMING_STATE.store(3, Relaxed);
+        HOMING_REENTER_PENDING.store(true, Relaxed);
+
+        let mut ctx = MockCtx::new();
+        ctx.state.mcu_state = McuState::Shutdown { reason: 0 };
+        let mut sender = ();
+        config_reset(&mut ctx, &mut sender);
+
+        assert_eq!(HOMING_STATE.load(Relaxed), 0);
+        assert!(
+            !HOMING_REENTER_PENDING.load(Relaxed),
+            "a re-entry queued before the reset must not re-arm homing afterwards"
+        );
     }
 
     #[test]
