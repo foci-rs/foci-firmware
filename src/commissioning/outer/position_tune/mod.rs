@@ -1495,6 +1495,71 @@ mod tests {
         panic!("the sweep did not reach a terminal within the tick budget");
     }
 
+    /// Like `drive_sweep`, but with a caller-supplied per-rung position-error
+    /// table and a single rung (by raw P) whose standstill dither trips the
+    /// ceiling. Every other visited rung stays quiet: its measured dither is
+    /// pinned to exactly the predicted quantization-only value (computed
+    /// live from `state.k_q16`, so the fixture works regardless of the exact
+    /// `k` this backend's PPR/velocity-P combination produces), and the
+    /// tripping rung's is pinned to 3x that prediction.
+    ///
+    /// Panics if the walk visits a rung `lag_table` has no entry for --
+    /// a missing entry would otherwise silently default to an unintended
+    /// lag value instead of failing loudly.
+    fn drive_sweep_with(
+        phase: &mut OuterPhase,
+        backend: &mut MockBackend,
+        lag_table: &[(u16, i32)],
+        trip_rung_raw: u16,
+    ) -> StepResult {
+        let mut workspace = TransientBuffer::new();
+        let mut clock_us = backend.elapsed_us_value;
+
+        for _ in 0..20_000 {
+            let OuterPhase::PositionTune { state, .. } = &*phase else {
+                panic!("the phase must stay resident until it reports a terminal");
+            };
+            let sample_index = u32::from(workspace.len());
+            match state.step {
+                PositionTuneStep::MeasuringFloor => {
+                    let _ = backend.registers.insert(
+                        PID_VELOCITY_ACTUAL.addr(),
+                        FLOOR_VELOCITY_RPM_PER_SAMPLE * sample_index,
+                    );
+                }
+                PositionTuneStep::RampedStroke { rung, .. } => {
+                    let (_, error) = lag_table
+                        .iter()
+                        .find(|(raw, _)| *raw == rung.raw())
+                        .unwrap_or_else(|| panic!("no lag_table entry for rung {}", rung.raw()));
+                    let _ = backend
+                        .registers
+                        .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), *error as u32);
+                }
+                PositionTuneStep::StandstillHold { rung, .. } => {
+                    let predicted = state.k_q16.saturating_mul(i64::from(rung.raw())) / 65_536;
+                    let multiplier: i64 = if rung.raw() == trip_rung_raw { 3 } else { 1 };
+                    let amplitude = i32::try_from(predicted * multiplier).unwrap_or(i32::MAX);
+                    let torque = if sample_index % 2 == 0 { 0 } else { amplitude };
+                    let _ = backend.registers.insert(
+                        PID_TORQUE_FLUX_TARGET.addr(),
+                        torque_target_register(torque),
+                    );
+                }
+                PositionTuneStep::Done => {}
+            }
+
+            backend.elapsed_us_value = clock_us;
+            let result = pollster::block_on(step_position_tune(phase, &mut workspace, backend));
+            match result {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                terminal => return terminal,
+            }
+        }
+        panic!("the sweep did not reach a terminal within the tick budget");
+    }
+
     #[test]
     fn a_driven_sweep_accepts_the_floor_rung_when_the_next_rung_trips_the_ceiling() {
         let mut backend = position_tune_backend();
@@ -1733,5 +1798,36 @@ mod tests {
             compute_ramped_stroke_metrics(&[], PERIOD_US, 0),
             Err(PositionTuneOutcome::CaptureEmpty)
         );
+    }
+
+    #[test]
+    fn the_walk_climbs_past_a_local_dip_and_never_admits_the_tripping_rungs_evidence() {
+        // Rungs reached by next_rung from this fixture's floor (63):
+        // 63 -> 89 -> 125 -> 176 -> 248.
+        //
+        // Rung 125's lag regresses versus rung 89 -- a local dip a greedy,
+        // no-backtracking stop condition could never see past. Rung 176,
+        // reached only by continuing past that dip, has the lowest lag of
+        // every ELIGIBLE rung. Rung 248's lag (50) would be the lowest of
+        // the entire walk by far, but its own ceiling trips, so it must
+        // never become the running best -- the walk must still stop there
+        // and accept rung 176, not rung 89 (what a greedy design would
+        // have picked) and not rung 248 (what an ordering bug would pick).
+        let lag_table: &[(u16, i32)] = &[
+            (63, 2_000),  // floor
+            (89, 1_500),  // improves
+            (125, 1_600), // regresses -- the local dip
+            (176, 900),   // the true eligible global minimum, past the dip
+            (248, 50),    // lowest lag of the whole walk, but ceiling trips
+        ];
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+
+        let terminal = drive_sweep_with(&mut phase, &mut backend, lag_table, 248);
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("expected OuterDone, got {terminal:?}");
+        };
+        assert_eq!(result.position_p, 176);
     }
 }
