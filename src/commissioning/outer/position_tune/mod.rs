@@ -776,6 +776,13 @@ async fn finish_floor_capture<B: CommissioningBackend>(
     for (index, (slot, &raw)) in samples.iter_mut().zip(captured).enumerate() {
         *slot = (index as u32 * P_ONLY_SAMPLE_PERIOD_US, raw as i32);
     }
+    for &(elapsed_us, velocity_rpm) in &samples {
+        defmt::info!(
+            "position tune floor sample: elapsed_us={} velocity_rpm={}",
+            elapsed_us,
+            velocity_rpm,
+        );
+    }
     let floor_result = compute_position_floor(
         &samples,
         i32::from(state.commanded_torque_count),
