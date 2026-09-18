@@ -882,17 +882,29 @@ fn resolve_completed_rung(
     }
 }
 
+/// `2*pi` as a Q16.16 fixed-point integer, the same scaled-integer
+/// convention `ceiling::compute_k`'s `k_q16` uses. `6.283185307 * 65536 =
+/// 411774.86`, so this is exact to within 1.4e-7 relative -- far below the
+/// 1 Hz quantization of the field it feeds.
+const TAU_Q16: i64 = 411_775;
+
 /// Nominal position-loop bandwidth: a pure function of the accepted
 /// position P and unit constants, no torque constant or inertia (spec,
 /// Reporting section).
+///
+/// `bandwidth_hz = (position_p/256) * 65536 / (60 * 2*pi)`, evaluated in
+/// integer arithmetic throughout: the numerator is scaled by the same 65536
+/// `TAU_Q16` carries before the single divide, so the Q16.16 factor cancels
+/// and no intermediate is truncated. Rounded to nearest rather than
+/// truncated, matching the half-up rounding the field reported before.
 fn nominal_bandwidth_hz(position_p_raw: u16) -> u32 {
-    let bandwidth_hz =
-        (f32::from(position_p_raw) / 256.0) * 65_536.0 / (60.0 * 2.0 * core::f32::consts::PI);
-    if bandwidth_hz.is_finite() && bandwidth_hz > 0.0 {
-        (bandwidth_hz + 0.5) as u32
-    } else {
-        0
-    }
+    // (p * 65536 / 256) * 65536 / (60 * TAU_Q16), with the /256 folded into
+    // the literal: 65536/256 * 65536 = 16_777_216. At PidPGain::MAX this
+    // numerator is ~5.5e11, three orders below i64::MAX.
+    let numerator = i64::from(position_p_raw) * 16_777_216;
+    let denominator = 60 * TAU_Q16;
+    let rounded = (numerator + denominator / 2) / denominator;
+    u32::try_from(rounded).unwrap_or(u32::MAX)
 }
 
 /// Median of the accepted rung's 5 per-capture ceiling ratios (milli-ratios),
@@ -1638,6 +1650,17 @@ mod tests {
         // single whole-capture reference sees a monotone signal and no
         // crossings at all.
         assert!(metrics.oscillation_detected);
+    }
+
+    #[test]
+    fn nominal_bandwidth_matches_the_floor_rungs_worked_example() {
+        // bandwidth_hz = (63/256) * 65536 / (60*2*pi) = 16128 / 376.9911 =
+        // 42.78 Hz, which rounds to 43. 63 is the floor rung the rotor-only
+        // worked example in `floor.rs` produces.
+        assert_eq!(nominal_bandwidth_hz(63), 43);
+        // (256/256) * 65536 / (60*2*pi) = 65536 / 376.9911 = 173.84 -> 174.
+        assert_eq!(nominal_bandwidth_hz(256), 174);
+        assert_eq!(nominal_bandwidth_hz(0), 0);
     }
 
     #[test]
