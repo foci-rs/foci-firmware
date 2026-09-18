@@ -14,10 +14,11 @@ use crate::autotune::{
     CommissionError, CommissionPhase, CommissionStatus, PositionTuneOutcome, TRANSIENT_LEN,
     TransientBuffer,
 };
+use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::{OuterMotionBudget, OuterPhase, OuterSafetyLimits, fail_outer};
 use crate::commissioning::schedule::next_grid_deadline;
-use crate::commissioning::types::{OuterResult, StepResult};
+use crate::commissioning::types::{OuterResult, StepResult, TuneProvenance};
 use ceiling::{ceiling_trips, compute_k};
 use floor::compute_position_floor;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
@@ -319,8 +320,19 @@ pub(crate) struct PositionTuneState {
     /// The accepted rung, retained so the terminal is idempotent if the
     /// engine steps a completed phase again.
     accepted: Option<RungEvidence>,
+    /// Outer gains as they stood at Stage 2 entry.
+    ///
+    /// This phase tunes position P and nothing else, so every other field of
+    /// the terminal `OuterResult` is reported from here. The `OuterDone`
+    /// restore path stores `velocity_limit` and the four biquad cutoffs to the
+    /// channel config unconditionally, with no zero guard, so a default-filled
+    /// result would clamp the velocity controller's input to zero and leave the
+    /// machine unable to move after a *successful* tune.
+    entry: OuterGainRollbackSnapshot,
+    /// Velocity P as read from the chip at phase entry: the gain the floor fit
+    /// and the ceiling's `k` are actually measured against, which is not
+    /// necessarily what the terminal reports.
     velocity_p: PidPGain,
-    velocity_i_raw: u16,
     commanded_torque_count: i16,
     commanded_velocity_counts_per_s: i32,
     current_lag_us: u32,
@@ -341,7 +353,7 @@ impl PositionTuneState {
     /// phase's stepper, safety envelope, and dispatch routing exist ahead of
     /// that entry point.
     #[allow(dead_code)]
-    pub(crate) const fn new() -> Self {
+    pub(crate) const fn new(entry: OuterGainRollbackSnapshot) -> Self {
         Self {
             step: PositionTuneStep::MeasuringFloor,
             k_q16: 0,
@@ -350,8 +362,8 @@ impl PositionTuneState {
             previous_evidence: None,
             current_ramped_metrics: None,
             accepted: None,
+            entry,
             velocity_p: PidPGain::ZERO,
-            velocity_i_raw: 0,
             commanded_torque_count: 0,
             commanded_velocity_counts_per_s: 0,
             current_lag_us: 0,
@@ -636,7 +648,6 @@ async fn arm_floor_capture<B: CommissioningBackend>(
 
     let velocity_gains = read_velocity_gains(backend).await?;
     state.velocity_p = velocity_gains.p;
-    state.velocity_i_raw = velocity_gains.i.raw();
     // `compute_k` takes encoder pulses per revolution; the safety domain and
     // the backend both work in quadrature counts, which are four per pulse.
     state.k_q16 = compute_k(counts_per_rev / 4, velocity_gains.p)?;
@@ -802,6 +813,13 @@ fn resolve_completed_rung(
 }
 
 /// Build the phase's success terminal from the accepted rung.
+///
+/// Joins the accepted position P with the entry snapshot's remaining gains,
+/// velocity limit, and biquad cutoffs, the same way
+/// `robustness_reversal::robustness_pass_outer_result` does: the `OuterDone`
+/// restore path writes those fields straight to the channel config without a
+/// zero guard, so anything this phase does not tune must be carried through
+/// rather than defaulted.
 fn position_tune_terminal(state: &PositionTuneState, accepted: RungEvidence) -> StepResult {
     defmt::info!(
         "position tune accepted: p={} bw_inner_rad_s={} lag_us={} settling_us={} overshoot={} final_error={} oscillation={}",
@@ -815,10 +833,17 @@ fn position_tune_terminal(state: &PositionTuneState, accepted: RungEvidence) -> 
     );
     StepResult::OuterDone(OuterResult {
         status: CommissionStatus::Accepted,
-        velocity_p: state.velocity_p.raw(),
-        velocity_i: state.velocity_i_raw,
+        velocity_p: state.entry.velocity_p.raw(),
+        velocity_i: state.entry.velocity_i.raw(),
+        velocity_limit: state.entry.velocity_limit,
         position_p: accepted.outcome.position_p.raw(),
-        ..OuterResult::default()
+        position_i: state.entry.position_i.raw(),
+        velocity_filter_hz: state.entry.velocity_filter_hz,
+        position_filter_hz: state.entry.position_filter_hz,
+        flux_filter_hz: state.entry.flux_filter_hz,
+        torque_filter_hz: state.entry.torque_filter_hz,
+        warning_code: 0,
+        provenance: TuneProvenance::default(),
     })
 }
 
@@ -1128,6 +1153,31 @@ mod tests {
     const FLOOR_RUNG_DITHER: i32 = 5;
     const SECOND_RUNG_DITHER: i32 = 40;
 
+    /// Entry gains with a distinct nonzero value in every field this phase
+    /// does not tune, so a defaulted terminal field reads as zero rather than
+    /// coincidentally matching.
+    fn position_tune_entry_snapshot() -> OuterGainRollbackSnapshot {
+        OuterGainRollbackSnapshot {
+            velocity_p: PidPGain::new(350).unwrap(),
+            velocity_i: PidIGain::new(1_280).unwrap(),
+            position_p: PidPGain::new(640).unwrap(),
+            position_i: PidIGain::new(7).unwrap(),
+            velocity_limit: 500_000,
+            voltage_limit: 16_000,
+            velocity_filter_hz: 1_100,
+            torque_filter_hz: 1_200,
+            position_filter_hz: 1_300,
+            flux_filter_hz: 1_400,
+        }
+    }
+
+    fn position_tune_phase() -> OuterPhase {
+        OuterPhase::PositionTune {
+            state: PositionTuneState::new(position_tune_entry_snapshot()),
+            safety: OuterSafetyLimits::new(0, OuterMotionBudget::firmware_caps()),
+        }
+    }
+
     fn position_tune_backend() -> MockBackend {
         let mut backend = MockBackend::new();
         backend.spi_elapsed_step_us = 0;
@@ -1212,10 +1262,7 @@ mod tests {
     #[test]
     fn a_driven_sweep_accepts_the_floor_rung_when_the_next_rung_trips_the_ceiling() {
         let mut backend = position_tune_backend();
-        let mut phase = OuterPhase::PositionTune {
-            state: PositionTuneState::new(),
-            safety: OuterSafetyLimits::new(0, OuterMotionBudget::firmware_caps()),
-        };
+        let mut phase = position_tune_phase();
 
         let terminal = drive_sweep(&mut phase, &mut backend, FLOOR_RUNG_DITHER);
 
@@ -1227,6 +1274,35 @@ mod tests {
     }
 
     #[test]
+    fn a_successful_sweep_carries_every_untuned_entry_gain_into_its_terminal() {
+        // The OuterDone restore path stores velocity_limit and the four biquad
+        // cutoffs to the channel config with no zero guard, so a terminal built
+        // from OuterResult::default() would leave the velocity controller's
+        // input clamped to zero after a *successful* tune.
+        let entry = position_tune_entry_snapshot();
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+
+        let terminal = drive_sweep(&mut phase, &mut backend, FLOOR_RUNG_DITHER);
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("a completed sweep reports OuterDone, got {terminal:?}");
+        };
+        assert_eq!(result.velocity_limit, entry.velocity_limit);
+        assert_eq!(result.velocity_p, entry.velocity_p.raw());
+        assert_eq!(result.velocity_i, entry.velocity_i.raw());
+        assert_eq!(result.position_i, entry.position_i.raw());
+        assert_eq!(result.velocity_filter_hz, entry.velocity_filter_hz);
+        assert_eq!(result.position_filter_hz, entry.position_filter_hz);
+        assert_eq!(result.flux_filter_hz, entry.flux_filter_hz);
+        assert_eq!(result.torque_filter_hz, entry.torque_filter_hz);
+        // Position P is the one field this phase tunes, so it comes from the
+        // accepted rung rather than from the snapshot.
+        assert_eq!(result.position_p, FLOOR_RUNG_RAW);
+        assert_ne!(result.position_p, entry.position_p.raw());
+    }
+
+    #[test]
     fn a_driven_sweep_reports_the_accepted_rungs_own_ramped_stroke_metrics() {
         // The regression this phase's capture ordering exists to prevent: rung
         // 89's ramped stroke, and then its five standstill holds, both reuse
@@ -1235,10 +1311,7 @@ mod tests {
         // accept decision rather than retained when rung 63's own capture
         // completed.
         let mut backend = position_tune_backend();
-        let mut phase = OuterPhase::PositionTune {
-            state: PositionTuneState::new(),
-            safety: OuterSafetyLimits::new(0, OuterMotionBudget::firmware_caps()),
-        };
+        let mut phase = position_tune_phase();
 
         let _ = drive_sweep(&mut phase, &mut backend, FLOOR_RUNG_DITHER);
 
@@ -1261,10 +1334,7 @@ mod tests {
     #[test]
     fn a_ceiling_trip_at_the_floor_rung_fails_the_phase() {
         let mut backend = position_tune_backend();
-        let mut phase = OuterPhase::PositionTune {
-            state: PositionTuneState::new(),
-            safety: OuterSafetyLimits::new(0, OuterMotionBudget::firmware_caps()),
-        };
+        let mut phase = position_tune_phase();
         // The floor rung itself is loud, so the very first rung tested trips.
         let terminal = drive_sweep(&mut phase, &mut backend, SECOND_RUNG_DITHER);
 
