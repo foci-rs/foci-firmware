@@ -214,8 +214,13 @@ const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 /// `MODE_RAMP_MODE_MOTION` value for advanced PI torque mode.
 ///
 /// High bit selects the advanced controller structure used by the tuned
-/// current loop; low bits select torque mode.
-const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
+/// current loop; low bits select torque mode. `pub(crate)` so
+/// `gain_floor::step_gain_floor_measurement` can enter the same mode
+/// before its own torque step -- `CurrentValidate`'s own teardown leaves
+/// the chip in stopped mode (`restore_current_validation_safe_state`
+/// writes `MODE_RAMP_MODE_MOTION = 0`), so the gain-floor phase must
+/// explicitly re-enter torque mode or its commanded target has no effect.
+pub(crate) const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
 const CURRENT_VALIDATE_PWM_SV_CHOP: u32 = 7;
 const CURRENT_VALIDATE_PHI_E_SELECTION: u32 = 3;
 

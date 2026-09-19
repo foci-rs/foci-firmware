@@ -122,10 +122,29 @@ where
         return super::fail_inner(phase, CommissionError::Spi);
     }
 
+    // Enter torque mode -- the same advanced PI controller structure
+    // `current_loop.rs`'s own `AxisStepSetup` uses before its torque step.
+    // `CurrentValidate`'s teardown (`restore_current_validation_safe_state`)
+    // leaves `MODE_RAMP_MODE_MOTION` at 0 (stopped) on the way into this
+    // phase; without re-entering torque mode here, the commanded target
+    // below has no effect on the real chip -- confirmed live on Ouroboros
+    // hardware, where `PID_TORQUE_FLUX_ACTUAL` stayed noise-level regardless
+    // of the commanded target and the rotor never moved.
+    if backend
+        .write_register(
+            foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+            super::current_loop::CURRENT_TORQUE_MODE,
+        )
+        .await
+        .is_err()
+    {
+        return super::fail_inner(phase, CommissionError::Spi);
+    }
+
     // Final interlock check immediately before enabling -- a fault can have
-    // latched during either awaited integrator-clear write above, and this
-    // is the last point before the motor is actually energized. No await
-    // between this check and `set_enable_pin`.
+    // latched during either awaited integrator-clear write above or the
+    // mode write just above, and this is the last point before the motor is
+    // actually energized. No await between this check and `set_enable_pin`.
     if backend.interlock_tripped() {
         return super::fail_inner(phase, CommissionError::FaultInterlock);
     }
@@ -182,12 +201,36 @@ where
         .iter()
         .map(|s| (s.t_us, s.position.wrapping_sub(position_0)))
         .collect();
+    let min_pos = position_samples.iter().map(|(_, p)| *p).min().unwrap_or(0);
+    let max_pos = position_samples.iter().map(|(_, p)| *p).max().unwrap_or(0);
+    let min_torque = capture.iter().map(|s| s.torque_actual).min().unwrap_or(0);
+    let max_torque = capture.iter().map(|s| s.torque_actual).max().unwrap_or(0);
+    let first_torque = capture.first().map(|s| s.torque_actual).unwrap_or(0);
+    let last_torque = capture.last().map(|s| s.torque_actual).unwrap_or(0);
+    defmt::info!(
+        "TEMP-DIAG torque_actual: first={} last={} range=[{},{}]",
+        first_torque,
+        last_torque,
+        min_torque,
+        max_torque
+    );
+    defmt::info!(
+        "TEMP-DIAG quadratic fit input: {} samples, commanded_sign={} i_target={} pos_range=[{},{}] p2p={}",
+        position_samples.len(),
+        commanded_sign,
+        i_target,
+        min_pos,
+        max_pos,
+        max_pos - min_pos
+    );
     let accel_raw_q32 = match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
         Ok(v) => v,
         Err(quadratic_fit::GainFloorFitError::WrongSign) => {
+            defmt::warn!("TEMP-DIAG quadratic fit: WrongSign");
             return super::fail_inner(phase, CommissionError::GainFloorNonPositiveSlope);
         }
-        Err(_) => {
+        Err(e) => {
+            defmt::warn!("TEMP-DIAG quadratic fit rejected: {}", e);
             return super::fail_inner(phase, CommissionError::GainFloorInsufficientLinearPoints);
         }
     };
@@ -472,6 +515,57 @@ mod tests {
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
+        });
+    }
+
+    #[test]
+    fn step_gain_floor_measurement_enters_torque_mode_before_commanding_the_step() {
+        pollster::block_on(async {
+            let i_target: i16 = 2000;
+            let ceiling = 4_000u16;
+            let mut phase = gain_floor_phase(i_target, ceiling);
+            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+                accel_raw_per_us2: 0.002,
+                tau_current_us: 1000.0,
+                i_target,
+            });
+
+            let _ = step_gain_floor_measurement(&mut phase, &mut backend).await;
+
+            // `CurrentValidate`'s own teardown leaves `MODE_RAMP_MODE_MOTION`
+            // at 0 (stopped) -- see `restore_current_validation_safe_state`.
+            // Without explicitly re-entering torque mode here, a commanded
+            // `PID_TORQUE_FLUX_TARGET` has no effect on the real chip: it
+            // stays in stopped mode and ignores the target entirely. This is
+            // exactly the failure found live on Ouroboros hardware:
+            // `torque_actual` stayed noise-level regardless of the commanded
+            // target, and the rotor never moved.
+            let mode_write_index = backend.spi_log.iter().position(|op| {
+                matches!(
+                    op,
+                    SpiOp::Write(addr, val)
+                        if *addr == foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr()
+                            && *val == super::super::current_loop::CURRENT_TORQUE_MODE
+                )
+            });
+            let torque_target_write_index = backend.spi_log.iter().position(|op| {
+                matches!(
+                    op,
+                    SpiOp::Write(addr, val)
+                        if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr()
+                            && *val != 0
+                )
+            });
+            assert!(
+                mode_write_index.is_some(),
+                "must write MODE_RAMP_MODE_MOTION=CURRENT_TORQUE_MODE before commanding a torque step"
+            );
+            assert!(
+                mode_write_index < torque_target_write_index,
+                "torque mode must be entered before the nonzero torque step is commanded"
+            );
         });
     }
 
