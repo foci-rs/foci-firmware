@@ -6,6 +6,7 @@
 //! phase/capture/safety conventions, following `velocity/integral_sweep.rs`'s
 //! rung-stepping and `StepResult` shape.
 
+pub(crate) mod bounds;
 pub(crate) mod ceiling;
 pub(crate) mod floor;
 pub(crate) mod selection;
