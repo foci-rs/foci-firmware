@@ -416,7 +416,7 @@ pub(crate) fn resolve_theta_e_us_input(
     configured_theta_e_us: u32,
 ) -> (u32, ThetaSource) {
     match measured {
-        Some(theta) if theta < tau_e_us / 2 => (theta, ThetaSource::Measured),
+        Some(theta) if theta > 0 && theta < tau_e_us / 2 => (theta, ThetaSource::Measured),
         _ => (configured_theta_e_us, ThetaSource::ConfigFallback),
     }
 }
@@ -6126,6 +6126,19 @@ mod tests {
     fn resolve_theta_falls_back_when_measurement_absent() {
         let (theta, source) = resolve_theta_e_us_input(None, 1_000, 300);
         assert_eq!(theta, 300);
+        assert_eq!(source, ThetaSource::ConfigFallback);
+    }
+
+    #[test]
+    fn resolve_theta_falls_back_when_measured_theta_is_zero() {
+        // A measured theta of exactly 0 is a saturated `correct_onset_bias`
+        // result (the bias term exceeded the raw crossing), not a real
+        // physical delay of zero. `synthesize_current_gains` hard-rejects
+        // theta_e_us == 0, so accepting this as "Measured" fails the whole
+        // model instead of falling back to the configured value the way an
+        // absent measurement already does.
+        let (theta, source) = resolve_theta_e_us_input(Some(0), 1_000, 160);
+        assert_eq!(theta, 160);
         assert_eq!(source, ThetaSource::ConfigFallback);
     }
 
