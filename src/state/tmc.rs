@@ -827,17 +827,23 @@ impl TmcChannelState {
 
     /// Restore `motor_armed` to the value `stimulus_capture_motor_armed_once`
     /// captured, and close the stimulus session so the next
-    /// `stimulus_capture_motor_armed_once` call captures fresh. Idempotent:
-    /// a repeat call with no session open restores `stimulus_prior_motor_armed`'s
-    /// last value again (a no-op once the session is already closed and
-    /// `motor_armed` already matches it).
+    /// `stimulus_capture_motor_armed_once` call captures fresh. Idempotent
+    /// and safe to call defensively before any capture has happened this
+    /// session (e.g. the spec's stop-before-first-arm admission step): with
+    /// no session open, `stimulus_prior_motor_armed` holds a stale value
+    /// from whatever session last captured, so this is a true no-op on
+    /// `motor_armed` rather than restoring that stale value over a
+    /// genuinely-armed state set by unrelated production code in between.
     pub fn stimulus_restore_motor_armed(&self) {
-        self.motor_armed.store(
-            self.stimulus_prior_motor_armed.load(Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-        self.stimulus_prior_motor_armed_captured
-            .store(false, Ordering::Relaxed);
+        if self
+            .stimulus_prior_motor_armed_captured
+            .swap(false, Ordering::Relaxed)
+        {
+            self.motor_armed.store(
+                self.stimulus_prior_motor_armed.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+        }
     }
 }
 
@@ -1280,5 +1286,29 @@ mod tests {
         channel.motor_armed.store(false, Relaxed);
         assert!(channel.stimulus_capture_motor_armed_once());
         assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
+    }
+
+    #[test]
+    fn stimulus_restore_motor_armed_without_a_capture_leaves_motor_armed_untouched() {
+        let channel = TmcChannelState::new();
+
+        // Session N: capture a `false` prior, arm, then close the session.
+        // `stimulus_prior_motor_armed` is left holding that stale `false`.
+        channel.motor_armed.store(false, Relaxed);
+        assert!(channel.stimulus_capture_motor_armed_once());
+        channel.motor_armed.store(true, Relaxed);
+        channel.stimulus_restore_motor_armed();
+        assert!(!channel.motor_armed.load(Relaxed));
+        assert!(!channel.stimulus_prior_motor_armed_captured.load(Relaxed));
+
+        // Something outside the stimulus facet -- the normal production
+        // arming path -- legitimately arms the channel with no capture in
+        // between.
+        channel.motor_armed.store(true, Relaxed);
+
+        // A fresh session's defensive, idempotent stop-before-first-arm must
+        // not clobber that genuine arm with session N's stale capture.
+        channel.stimulus_restore_motor_armed();
+        assert!(channel.motor_armed.load(Relaxed));
     }
 }
