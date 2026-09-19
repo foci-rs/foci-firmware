@@ -197,50 +197,11 @@ mod tests {
             + u64::from(u32::from(STANDSTILL_CAPTURE_COUNT)) * u64::from(STANDSTILL_HOLD_US);
         let expected_ms =
             u32::try_from(expected_us.div_ceil(1_000)).expect("fits a u32 millisecond count");
-
-        assert_eq!(
-            per_rung_duration_ms(&budget, TEST_STEPS_PER_REV, TEST_STEP_TIMER_HZ),
-            Some(expected_ms)
-        );
-    }
-
-    #[test]
-    fn per_rung_duration_includes_every_stroke_lead_and_rounds_up() {
-        // Isolates the two regressions directly: the envelope must equal a
-        // hand-computed total that adds one `STROKE_LEAD_US` per stroke (six
-        // strokes: `RAMPED_STROKE_REPEATS` homing + `RAMPED_STROKE_REPEATS`
-        // motion) on top of the planned stroke bodies, and must round that
-        // total up to the millisecond rather than truncate it.
-        let budget = OuterMotionBudget::firmware_caps();
-        let homing_us = plan_stroke(&stroke_request(
-            budget.homing_speed_mrev_s,
-            &budget,
-            TEST_STEPS_PER_REV,
-            TEST_STEP_TIMER_HZ,
-        ))
-        .expect("firmware-cap homing speed plans a stroke")
-        .stroke_us();
-        let motion_us = plan_stroke(&stroke_request(
-            budget.machine_velocity_ceiling_mrev_s,
-            &budget,
-            TEST_STEPS_PER_REV,
-            TEST_STEP_TIMER_HZ,
-        ))
-        .expect("firmware-cap motion speed plans a stroke")
-        .stroke_us();
-        let repeats = u64::from(u32::from(RAMPED_STROKE_REPEATS));
-        let total_us = u64::from(homing_us) * repeats
-            + u64::from(motion_us) * repeats
-            + repeats * 2 * u64::from(STROKE_LEAD_US)
-            + u64::from(RESTORE_WAIT_US)
-            + u64::from(u32::from(STANDSTILL_CAPTURE_COUNT)) * u64::from(STANDSTILL_HOLD_US);
-        let expected_ms =
-            u32::try_from(total_us.div_ceil(1_000)).expect("fits a u32 millisecond count");
         // The hand-computed total's own remainder mod 1000 must be nonzero
         // for this case to actually exercise the ceiling-vs-floor
         // distinction rather than passing vacuously.
         assert_ne!(
-            total_us % 1_000,
+            expected_us % 1_000,
             0,
             "fixture must have a nonzero microsecond remainder to prove ceiling rounding"
         );

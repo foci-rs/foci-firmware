@@ -923,20 +923,20 @@ impl TmcControlRuntime {
         if !tmc.cancel_requested.swap(false, Relaxed) {
             return None;
         }
-        // Halt the step-queue stimulus before either cancel branch below
-        // drives its own disarm. Both branches eventually clear
-        // `motor_armed` (via `disarm_motor`), which stops the step-timer
-        // ISR from emitting further steps, but does not itself drain the
-        // queue, cancel the scheduler's stepper entry, or close the
-        // stimulus's motor-armed capture session (see
-        // `TmcChannelState::stimulus_restore_motor_armed`) -- a queue left
-        // undrained and a capture session left open corrupt the next
-        // stimulus session's own restore. Unconditional, matching the
-        // engine-level shutdown abort in `CommissioningEngine::step`:
-        // `stimulus_stop`/`set_stimulus_feedforward(false)` are documented
-        // idempotent, a safe no-op when no stimulus session is open.
-        crate::commissioning::outer::position_tune::abort_stimulus(backend);
         if self.restore_machine.is_some() {
+            // Halt the step-queue stimulus before this branch drives its own
+            // disarm. `request_restore_cancel`/`drive_restore_cancel`
+            // eventually clear `motor_armed` (via `disarm_motor`), which
+            // stops the step-timer ISR from emitting further steps, but
+            // does not itself drain the queue, cancel the scheduler's
+            // stepper entry, or close the stimulus's motor-armed capture
+            // session (see `TmcChannelState::stimulus_restore_motor_armed`)
+            // -- a queue left undrained and a capture session left open
+            // corrupt the next stimulus session's own restore. Gated on
+            // there actually being a restore or engine to cancel: an idle
+            // cancel (neither present) must not touch the stimulus at all,
+            // or it stops unrelated in-flight motion.
+            crate::commissioning::outer::position_tune::abort_stimulus(backend);
             self.request_restore_cancel();
             match self
                 .drive_restore_cancel(
@@ -953,6 +953,11 @@ impl TmcControlRuntime {
                 }
             }
         } else if let Some(engine) = self.commission_engine.as_ref() {
+            // Same rationale as the restore-machine branch above: halt the
+            // stimulus before this branch's own terminal restore drives its
+            // disarm, so a queue left undrained doesn't corrupt the next
+            // stimulus session's restore.
+            crate::commissioning::outer::position_tune::abort_stimulus(backend);
             let kind = engine.kind();
             let mut machine = crate::commission_dispatch::TerminalRestoreMachine::start_cancelled(
                 kind,
@@ -2492,5 +2497,48 @@ mod tests {
             crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US,
             crate::tmc::velocity_transient_period_us(100)
         );
+    }
+
+    #[test]
+    fn an_idle_operator_cancel_does_not_touch_the_stimulus() {
+        pollster::block_on(async {
+            let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+                .lock()
+                .await;
+            crate::state::tmc::reset_all_tmc_channels();
+            crate::state::stepper::reset_all_stepper_channels();
+
+            let tmc = crate::state::tmc::tmc_channel0();
+            let stepper = crate::state::stepper::stepper_channel0();
+            let mut runtime = TmcControlRuntime::new_for_channel(0);
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+            tmc.cancel_requested.store(true, Relaxed);
+
+            assert!(!runtime.is_restore_pending());
+            assert!(!runtime.is_commission_active());
+
+            let outcome = runtime
+                .drive_operator_cancel(&mut backend, tmc, stepper, 4_095)
+                .await;
+
+            assert!(
+                outcome.is_none(),
+                "a cancel with nothing in flight must be a no-op"
+            );
+            assert!(
+                !tmc.cancel_requested.load(Relaxed),
+                "the cancel flag must still be consumed"
+            );
+            assert!(
+                backend.stimulus_log.is_empty(),
+                "an idle cancel must not touch the stimulus, got {:?}",
+                backend.stimulus_log
+            );
+            assert!(
+                backend.event_log.is_empty(),
+                "an idle cancel must not issue any backend operation, got {:?}",
+                backend.event_log
+            );
+        });
     }
 }

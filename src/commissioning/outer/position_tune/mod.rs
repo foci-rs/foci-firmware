@@ -220,11 +220,18 @@ impl From<PositionTuneOutcome> for PositionTuneFault {
 /// Must be the first effect at every site that calls it: the step timer must
 /// be halted and the queue drained before that caller zeroes excitation or
 /// disables the driver, so no queued segment can keep pulsing a channel
-/// whose driver has just been cut. Called first in `fail_position_tune`; at
-/// the top of all three of `dispatch.rs`'s outer-safety exits
-/// (invalid-budget, safety-fault, check-error); and unconditionally at the
-/// top of `CommissioningEngine::step`'s shutdown branch, which bypasses
-/// `step_inner`/`step_outer` (and so every one of the sites above) entirely.
+/// whose driver has just been cut. Called first in `fail_position_tune`;
+/// first in each of `arm_stroke`'s three stroke-arming failure paths (queue
+/// overflow, enqueue refusal, arm rejection); at the top of all three of
+/// `dispatch.rs`'s outer-safety exits (invalid-budget, safety-fault,
+/// check-error); unconditionally at the top of `CommissioningEngine::step`'s
+/// shutdown branch, which bypasses `step_inner`/`step_outer` (and so every
+/// one of the sites above) entirely; unconditionally at the top of
+/// `apply_shutdown_safe_state`, both boards' shared shutdown-loop helper;
+/// and, in `TmcControlRuntime::drive_operator_cancel`, first in each of its
+/// two active-cancellation branches (a pending restore, or an installed
+/// commission engine) -- never called at all when an operator cancel finds
+/// neither, so an idle cancel does not stop unrelated in-flight motion.
 pub(crate) fn abort_stimulus<B: CommissioningBackend>(backend: &mut B) {
     backend.stimulus_stop();
     backend.set_stimulus_feedforward(false);
