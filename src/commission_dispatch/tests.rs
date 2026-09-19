@@ -2,8 +2,8 @@
 //! Tests for drive_commission_result. Populated per-variant in Tasks 12-18.
 
 use super::test_support::{
-    MockBackend, SpiOp, accepted_commission_result as sample_commission_result, fresh_state_locals,
-    sample_entry_snapshot, sample_outer_params,
+    MockBackend, SpiOp, accepted_commission_result as sample_commission_result, current_limit,
+    fresh_state_locals, sample_entry_snapshot, sample_outer_params,
 };
 use super::test_support::{breakaway_campaign_engine, robustness_reversal_engine};
 use super::*;
@@ -2198,6 +2198,135 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
                 result.position_tune,
                 crate::commissioning::types::PositionTuneProvenance::default()
             );
+        }
+        _ => panic!("expected TuneResult"),
+    }
+
+    clear_motor_sentinel();
+}
+
+#[fixture_test]
+async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_path() {
+    // The previous test's `ConfigurationInvalid` failure happens inside
+    // `predict`, before the phase ever measures a rung, so its
+    // `result.position_tune` is legitimately all-default -- that alone
+    // can't catch a wrong-variant match or a mixed-up field in
+    // `position_tune_failure_provenance()` or `restore_machine.rs`'s
+    // `result.position_tune = ...` assignment. This one drives a real
+    // multi-rung sweep through the full `CommissioningEngine` (not the
+    // bare `OuterPhase` `position_tune::tests` module drives) so a failure
+    // there would show up as a wrong or all-zero `result.position_tune`.
+    use crate::commissioning::outer::position_tune::{PositionTuneStep, StrokeKind};
+    use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
+    use foci_tmc4671::registers::{PID_ERROR_PID_POSITION_ERROR, PID_VELOCITY_P_VELOCITY_I};
+
+    let mut backend = MockBackend::new();
+    backend.spi_elapsed_step_us = 0;
+    backend.elapsed_us_value = 1_000_000;
+    backend.current_limit_value = current_limit(5_000);
+    backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
+    backend.configured_physical_width = Some(8);
+    let _ = backend.registers.insert(
+        PID_VELOCITY_P_VELOCITY_I.addr(),
+        PidGainPair::new(PidPGain::new(350).unwrap(), PidIGain::ZERO).register_value(),
+    );
+
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut cal = true;
+    let mut en = true;
+    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    let mut engine = Some(
+        crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_position_tune(
+            7,
+            crate::state::tmc::tmc_channel0(),
+            sample_outer_params(),
+            sample_entry_snapshot(),
+            0,
+        ),
+    );
+    seed_motor_sentinel(&mut backend).await;
+
+    // Force the start rung to `Advance` on a homing-bound violation (the
+    // same shape as `position_tune::tests::the_walk_advances_...`), then
+    // trip the quarter-turn encoder-aliasing safety guard the instant the
+    // second rung's own stroke begins -- so the terminal carries the first
+    // rung's completed evidence, not a zeroed block.
+    let mut clock_us = backend.elapsed_us_value;
+    let mut step = StepResult::ReadyNow;
+    let mut start_raw: Option<u16> = None;
+    let mut second_rung_entered = false;
+
+    for _ in 0..20_000 {
+        let Some(phase_step) = engine
+            .as_ref()
+            .expect("engine present")
+            .position_tune_step_for_test()
+        else {
+            break;
+        };
+        match phase_step {
+            PositionTuneStep::Predict | PositionTuneStep::StandstillHold { .. } => {}
+            PositionTuneStep::Stroke { rung, kind, .. } => {
+                let raw = rung.raw();
+                let is_start = *start_raw.get_or_insert(raw) == raw;
+                let error = if is_start && kind == StrokeKind::Homing {
+                    10_000
+                } else {
+                    50
+                };
+                let _ = backend
+                    .registers
+                    .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), error as u32);
+                if !is_start && !second_rung_entered {
+                    backend.mechanical_encoder_position_counts_value = 5_000;
+                    second_rung_entered = true;
+                }
+            }
+            PositionTuneStep::AwaitRestore { .. } => {
+                tmc_state()
+                    .feedforward_surfaces_idle
+                    .store(true, core::sync::atomic::Ordering::Relaxed);
+            }
+            PositionTuneStep::Done => {}
+        }
+
+        backend.elapsed_us_value = clock_us;
+        step = engine
+            .as_mut()
+            .expect("engine present")
+            .step(&mut backend)
+            .await;
+        match step {
+            StepResult::At(next_us) => clock_us = next_us,
+            StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+            _ => break,
+        }
+    }
+    assert!(
+        matches!(step, StepResult::OuterFailed(_)),
+        "expected a safety-envelope failure within the tick budget, got {step:?}"
+    );
+    let start_raw = start_raw.expect("at least one rung must have been driven");
+
+    // `seed_stability_clock` installs a scripted `elapsed_us()` sequence
+    // that a bare read consumes ahead of `elapsed_us_value` -- installing
+    // it before the sweep loop above starved every timing computation the
+    // sweep itself makes. The restore machinery is the thing that actually
+    // needs it, so it's seeded here, right before driving the restore.
+    seed_stability_clock(&mut backend);
+    let outcome = drive_commission_result(step, &mut engine, &mut backend, &mut state, 4095).await;
+    match outcome {
+        CommissionOutcome::Terminal {
+            reply: ReplyPayload::TuneResult { result, .. },
+            ..
+        } => {
+            assert_ne!(
+                result.position_tune,
+                crate::commissioning::types::PositionTuneProvenance::default(),
+                "a mid-sweep failure must carry the completed rung's evidence, not a zeroed block"
+            );
+            assert_eq!(result.position_tune.rungs_measured, 1);
+            assert_eq!(result.position_tune.last_rung_p, start_raw);
         }
         _ => panic!("expected TuneResult"),
     }

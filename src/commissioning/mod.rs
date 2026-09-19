@@ -1025,6 +1025,25 @@ impl CommissioningEngine {
         }
     }
 
+    /// The resident `PositionTune` phase's current sub-step, for tests that
+    /// need to script registers per tick while driving the full engine
+    /// (rather than the bare `OuterPhase`) through a multi-rung sweep.
+    /// `None` once the phase is no longer `PositionTune` (predict not yet
+    /// run, or a terminal already replaced it).
+    #[cfg(test)]
+    pub(crate) fn position_tune_step_for_test(
+        &self,
+    ) -> Option<crate::commissioning::outer::position_tune::PositionTuneStep> {
+        let EngineMode::Outer {
+            phase: OuterPhase::PositionTune { state, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        Some(state.step)
+    }
+
     /// Consume the engine's collected selftest results.
     ///
     /// Caller should only invoke this when the most recent `step()`
