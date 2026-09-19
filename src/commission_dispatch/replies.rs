@@ -2191,6 +2191,7 @@ mod tests {
                 candidate_attempt: 0,
                 lambda_us: 19,
                 theta_e_us: 20,
+                theta_source: 0,
                 ringing_count: 21,
                 bandwidth_hz: 22,
                 tau_e_us: 23,

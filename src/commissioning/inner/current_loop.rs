@@ -1968,6 +1968,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                 candidate_attempt: data.candidate_attempt,
                 lambda_us: data.gains.lambda_us,
                 theta_e_us: data.model.theta_e_us,
+                theta_source: data.model.theta_source,
                 ringing_count: 0,
                 bandwidth_hz: data.gains.effective_bandwidth_hz,
                 tau_e_us: data.model.tau_e_us,
@@ -2961,6 +2962,9 @@ mod tests {
                     );
                     assert_eq!(result.inner.resistance_current_ceiling_count, 1_600);
                     assert!(!result.inner.resistance_power_stage_tripped);
+                    assert_eq!(result.inner.theta_e_us, 100);
+                    assert_eq!(result.inner.tau_e_us, 2000);
+                    assert_eq!(result.inner.theta_source, 0);
                 }
                 other => panic!("expected failed CommissionDone, got {other:?}"),
             }

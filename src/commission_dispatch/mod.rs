@@ -451,6 +451,7 @@ fn zero_commission_result() -> CommissionResult {
         candidate_attempt: 0,
         lambda_us: 0,
         theta_e_us: 0,
+        theta_source: 0,
         ringing_count: 0,
         bandwidth_hz: 0,
         tau_e_us: 0,

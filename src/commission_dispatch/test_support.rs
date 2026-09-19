@@ -1157,6 +1157,7 @@ pub fn accepted_commission_result() -> crate::commissioning::types::CommissionRe
             candidate_attempt: 0,
             lambda_us: 100,
             theta_e_us: 50,
+            theta_source: 0,
             ringing_count: 0,
             bandwidth_hz: 1000,
             tau_e_us: 730,

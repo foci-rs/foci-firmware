@@ -235,6 +235,9 @@ pub struct FociCommissionResult {
     pub lambda_us: u32,
     /// Measured electrical time constant in microseconds.
     pub theta_e_us: u32,
+    /// Source of the accepted `theta_e_us`: 0 = high-rate measurement, 1 =
+    /// board-configured fallback (FOCI-205).
+    pub theta_source: u8,
     /// Ringing count observed during the step response.
     pub ringing_count: u8,
     /// Closed-loop bandwidth in Hz.
@@ -1100,6 +1103,7 @@ mod resistance_reply_size_tests {
             torque_i: u16::MAX,
             lambda_us: u32::MAX,
             theta_e_us: u32::MAX,
+            theta_source: u8::MAX,
             ringing_count: u8::MAX,
             bandwidth_hz: u32::MAX,
             fallback_velocity_p: u16::MAX,
