@@ -2192,6 +2192,18 @@ pub struct FociStepperPerfStatsResult {
     pub trigger_stop_site_count: u32,
     /// Longest `PERF_SITE_TRIGGER_STOP` measured span in CPU cycles.
     pub trigger_stop_site_max_cycles: u32,
+    /// Cumulative TIM5 IRQ handler cycles since the last reset, low word.
+    pub total_irq_cycles_lo: u32,
+    /// Cumulative TIM5 IRQ handler cycles since the last reset, high word.
+    pub total_irq_cycles_hi: u32,
+    /// Cumulative TIM5 scheduler dispatch cycles since the last reset, low word.
+    pub total_dispatch_cycles_lo: u32,
+    /// Cumulative TIM5 scheduler dispatch cycles since the last reset, high word.
+    pub total_dispatch_cycles_hi: u32,
+    /// CPU cycles elapsed since the last reset, low word.
+    pub elapsed_cycles_lo: u32,
+    /// CPU cycles elapsed since the last reset, high word.
+    pub elapsed_cycles_hi: u32,
 }
 
 /// `foci_stepper_stop_stats_result` reply - physical stop/reset counters.

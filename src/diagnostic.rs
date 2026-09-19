@@ -993,6 +993,8 @@ struct StepperPerfCounterState {
     total_irq_cycles_hi: AtomicU32,
     total_dispatch_cycles_lo: AtomicU32,
     total_dispatch_cycles_hi: AtomicU32,
+    window_start_lo: AtomicU32,
+    window_start_hi: AtomicU32,
 }
 
 impl StepperPerfCounterState {
@@ -1042,6 +1044,8 @@ impl StepperPerfCounterState {
             total_irq_cycles_hi: AtomicU32::new(0),
             total_dispatch_cycles_lo: AtomicU32::new(0),
             total_dispatch_cycles_hi: AtomicU32::new(0),
+            window_start_lo: AtomicU32::new(0),
+            window_start_hi: AtomicU32::new(0),
         }
     }
 
@@ -1105,11 +1109,13 @@ impl StepperPerfCounterState {
 /// and read as a coherent lo/hi pair via a short critical section
 /// (`read_split_u32`) — see its doc comment for why a retry-based read is not
 /// sufficient for a value written this frequently.
-pub struct StepperPerfCounters<const CPU_CYCLES_PER_US: u32> {
+pub struct StepperPerfCounters<const CPU_CYCLES_PER_US: u32, const CLOCK_TICKS_PER_US: u32> {
     counters: StepperPerfCounterState,
 }
 
-impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
+impl<const CPU_CYCLES_PER_US: u32, const CLOCK_TICKS_PER_US: u32>
+    StepperPerfCounters<CPU_CYCLES_PER_US, CLOCK_TICKS_PER_US>
+{
     /// Create zeroed step-dispatch performance counters.
     pub const fn new() -> Self {
         Self {
@@ -1254,6 +1260,46 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
         record_max(&counters.tim5_events_max_per_irq, event_count);
     }
 
+    /// Cumulative CPU cycles elapsed since the last `record_window_reset`,
+    /// converted from the caller-supplied extended MCU-clock tick value.
+    ///
+    /// `now_ticks` is the board's extended (wrap-corrected) MCU clock, not a
+    /// raw 32-bit register read -- see the board handler that calls this for
+    /// how that value is assembled. Read-only; does not mutate `window_start`.
+    pub fn elapsed_cycles(&self, now_ticks: u64) -> (u32, u32) {
+        let (start_lo, start_hi) = (
+            self.counters.window_start_lo.load(Relaxed),
+            self.counters.window_start_hi.load(Relaxed),
+        );
+        let window_start = (u64::from(start_hi) << 32) | u64::from(start_lo);
+        let elapsed_ticks = now_ticks.wrapping_sub(window_start);
+        let elapsed_cycles =
+            elapsed_ticks * u64::from(CPU_CYCLES_PER_US) / u64::from(CLOCK_TICKS_PER_US);
+        (elapsed_cycles as u32, (elapsed_cycles >> 32) as u32)
+    }
+
+    /// Start a fresh measurement window at `now_ticks`, clearing the
+    /// cumulative IRQ/dispatch totals from the window that just ended.
+    ///
+    /// Callers that also want a coherent read of the ending window's totals
+    /// must call `snapshot(channel, true, ...)` and `elapsed_cycles(now_ticks)`
+    /// *before* this, then wrap all three calls in one `critical_section::with`
+    /// so no P2/P3 write can land between the read and this clear/re-stamp.
+    pub fn record_window_reset(&self, now_ticks: u64) {
+        critical_section::with(|_| {
+            self.counters.total_irq_cycles_lo.store(0, Relaxed);
+            self.counters.total_irq_cycles_hi.store(0, Relaxed);
+            self.counters.total_dispatch_cycles_lo.store(0, Relaxed);
+            self.counters.total_dispatch_cycles_hi.store(0, Relaxed);
+            self.counters
+                .window_start_lo
+                .store(now_ticks as u32, Relaxed);
+            self.counters
+                .window_start_hi
+                .store((now_ticks >> 32) as u32, Relaxed);
+        });
+    }
+
     /// Record signed segment-load lateness observed by the stepper ISR.
     pub fn record_stepper_load_lateness(&self, lateness_ticks: i32) {
         self.counters
@@ -1350,7 +1396,9 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
     }
 }
 
-impl<const CPU_CYCLES_PER_US: u32> Default for StepperPerfCounters<CPU_CYCLES_PER_US> {
+impl<const CPU_CYCLES_PER_US: u32, const CLOCK_TICKS_PER_US: u32> Default
+    for StepperPerfCounters<CPU_CYCLES_PER_US, CLOCK_TICKS_PER_US>
+{
     fn default() -> Self {
         Self::new()
     }
@@ -2039,7 +2087,7 @@ mod tests {
 
     #[test]
     fn stepper_perf_counters_track_critical_sections_and_queue_site() {
-        let counters = StepperPerfCounters::<520>::new();
+        let counters = StepperPerfCounters::<520, 260>::new();
 
         counters.record_critical_section(0, 999);
         counters.record_critical_section(1, 10_000);
@@ -2063,7 +2111,7 @@ mod tests {
     #[test]
     fn record_critical_section_tracks_shutdown_reset_and_trigger_stop_independently_of_the_global_max()
      {
-        let counters: StepperPerfCounters<168> = StepperPerfCounters::new();
+        let counters: StepperPerfCounters<168, 84> = StepperPerfCounters::new();
         // A large TIM5 sample should not erase the dedicated shutdown/reset/
         // trigger-stop counters, even though it dominates crit_max_site.
         counters.record_critical_section(2, 100_000); // PERF_SITE_TIM5
@@ -2084,7 +2132,7 @@ mod tests {
 
     #[test]
     fn record_critical_section_leaves_dedicated_site_counters_at_zero_for_non_matching_sites() {
-        let counters: StepperPerfCounters<168> = StepperPerfCounters::new();
+        let counters: StepperPerfCounters<168, 84> = StepperPerfCounters::new();
         counters.record_critical_section(0, 42); // PERF_SITE_TRIGGER_DOMAIN (generic)
         let snapshot = counters.snapshot(0, false, false);
         assert_eq!(snapshot.shutdown_site_count, 0);
@@ -2094,7 +2142,7 @@ mod tests {
 
     #[test]
     fn stepper_perf_counters_track_tim5_irq_and_empty_samples() {
-        let counters = StepperPerfCounters::<168>::new();
+        let counters = StepperPerfCounters::<168, 84>::new();
 
         counters.record_tim5_irq(500, 300, 3);
         counters.record_tim5_irq(900, 450, 0);
@@ -2122,7 +2170,7 @@ mod tests {
 
     #[test]
     fn stepper_perf_counters_track_scheduler_and_load_lateness() {
-        let counters = StepperPerfCounters::<168>::new();
+        let counters = StepperPerfCounters::<168, 84>::new();
 
         counters.record_scheduler_cycles(120, 2);
         counters.record_scheduler_cycles(330, 3);
@@ -2146,7 +2194,7 @@ mod tests {
 
     #[test]
     fn stepper_perf_counters_clear_after_snapshot_when_requested() {
-        let counters = StepperPerfCounters::<168>::new();
+        let counters = StepperPerfCounters::<168, 84>::new();
 
         counters.record_critical_section(1, 20_000);
         counters.record_tim5_irq(700, 600, 2);
@@ -2211,7 +2259,7 @@ mod tests {
 
     #[test]
     fn stepper_perf_counters_accumulate_total_irq_and_dispatch_cycles() {
-        let counters = StepperPerfCounters::<168>::new();
+        let counters = StepperPerfCounters::<168, 84>::new();
 
         counters.record_tim5_irq(500, 300, 3);
         counters.record_tim5_irq(900, 450, 0);
@@ -2225,7 +2273,7 @@ mod tests {
 
     #[test]
     fn stepper_perf_counters_carry_total_irq_cycles_into_high_word_on_overflow() {
-        let counters = StepperPerfCounters::<168>::new();
+        let counters = StepperPerfCounters::<168, 84>::new();
 
         counters.record_tim5_irq(u32::MAX - 10, 0, 1);
         counters.record_tim5_irq(20, 0, 1);
@@ -2237,7 +2285,7 @@ mod tests {
 
     #[test]
     fn stepper_perf_counters_clear_totals_with_other_counters_on_reset() {
-        let counters = StepperPerfCounters::<168>::new();
+        let counters = StepperPerfCounters::<168, 84>::new();
 
         counters.record_tim5_irq(700, 600, 2);
 
@@ -2250,5 +2298,48 @@ mod tests {
         assert_eq!(after_clear.total_irq_cycles_hi, 0);
         assert_eq!(after_clear.total_dispatch_cycles_lo, 0);
         assert_eq!(after_clear.total_dispatch_cycles_hi, 0);
+    }
+
+    #[test]
+    fn elapsed_cycles_converts_tim5_ticks_to_cpu_cycles_at_two_to_one_ratio() {
+        // OpenFFBoard: 168 MHz CPU, 84 MHz TIM5 -- 2 CPU cycles per TIM5 tick.
+        let counters = StepperPerfCounters::<168, 84>::new();
+        counters.record_window_reset(1_000);
+
+        let (lo, hi) = counters.elapsed_cycles(1_500);
+
+        assert_eq!((lo, hi), (1_000, 0)); // 500 ticks * 2 = 1000 cycles
+    }
+
+    #[test]
+    fn elapsed_cycles_converts_at_ouroboros_ratio() {
+        // Ouroboros: 520 MHz CPU, 260 MHz TIM5 -- also a 2:1 ratio.
+        let counters = StepperPerfCounters::<520, 260>::new();
+        counters.record_window_reset(10_000);
+
+        let (lo, hi) = counters.elapsed_cycles(10_100);
+
+        assert_eq!((lo, hi), (200, 0)); // 100 ticks * 2 = 200 cycles
+    }
+
+    #[test]
+    fn elapsed_cycles_is_zero_immediately_after_reset() {
+        let counters = StepperPerfCounters::<168, 84>::new();
+        counters.record_window_reset(42);
+
+        assert_eq!(counters.elapsed_cycles(42), (0, 0));
+    }
+
+    #[test]
+    fn record_window_reset_clears_totals_and_restamps_window_start() {
+        let counters = StepperPerfCounters::<168, 84>::new();
+        counters.record_tim5_irq(700, 600, 2);
+
+        counters.record_window_reset(5_000);
+
+        let snapshot = counters.snapshot(0, false, false);
+        assert_eq!(snapshot.total_irq_cycles_lo, 0);
+        assert_eq!(snapshot.total_dispatch_cycles_lo, 0);
+        assert_eq!(counters.elapsed_cycles(5_000), (0, 0));
     }
 }
