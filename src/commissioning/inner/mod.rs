@@ -31,6 +31,7 @@ pub mod coil;
 pub mod current_loop;
 pub mod electrical_identification;
 pub mod encoder;
+mod gain_floor;
 pub mod phase;
 
 // ---------------------------------------------------------------------------
