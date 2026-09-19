@@ -320,6 +320,9 @@ pub struct TmcChannelState {
     /// feedforward or phase-advance surface is left applied on the chip.
     /// A stimulus phase polls this after clearing the opt-in.
     pub feedforward_surfaces_idle: AtomicBool,
+    /// `motor_armed` as it was when a commissioning stimulus armed the step
+    /// timer; `stimulus_stop` puts it back. Owned by the stimulus facet.
+    pub stimulus_prior_motor_armed: AtomicBool,
     /// Host-controlled gate for raw-enable auto-calibration.
     pub auto_calibrate_on_enable_allowed: AtomicBool,
     /// Position P gain for cross-priority access (Q8.8).
@@ -428,6 +431,7 @@ impl TmcChannelState {
             cancel_requested: AtomicBool::new(false),
             commission_stimulus_active: AtomicBool::new(false),
             feedforward_surfaces_idle: AtomicBool::new(false),
+            stimulus_prior_motor_armed: AtomicBool::new(false),
             auto_calibrate_on_enable_allowed: AtomicBool::new(false),
             position_p_value: AtomicU16::new(
                 crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS.position_p.raw(),
@@ -533,6 +537,7 @@ impl TmcChannelState {
         self.cancel_requested.store(false, Relaxed);
         self.commission_stimulus_active.store(false, Relaxed);
         self.feedforward_surfaces_idle.store(false, Relaxed);
+        self.stimulus_prior_motor_armed.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);
         self.store_outer_gains(crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS, Relaxed);
         self.clear_velocity_clamp_latch();
@@ -1173,5 +1178,9 @@ mod tests {
 
         assert!(!channel.commission_stimulus_active.load(Relaxed));
         assert!(!channel.feedforward_surfaces_idle.load(Relaxed));
+
+        channel.stimulus_prior_motor_armed.store(true, Relaxed);
+        channel.reset();
+        assert!(!channel.stimulus_prior_motor_armed.load(Relaxed));
     }
 }
