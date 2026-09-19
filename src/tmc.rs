@@ -270,6 +270,10 @@ pub enum TmcRequestKind {
         positive_position_headroom_mrev: u32,
         /// Host-computed max primitive duration in milliseconds.
         max_duration_ms: u16,
+        /// Axis homing speed, mrev/s; the homing bound's speed.
+        homing_speed_mrev_s: u32,
+        /// Machine acceleration, mrev/s^2; the stroke ramp rate.
+        max_accel_mrev_s2: u32,
     },
     /// Set velocity biquad low-pass filter cutoff frequency.
     /// 0 = disabled, 10..1000 Hz = enabled.
@@ -554,6 +558,8 @@ pub fn tmc_tune(
     negative_position_headroom_mrev: u32,
     positive_position_headroom_mrev: u32,
     max_duration_ms: u16,
+    homing_speed_mrev_s: u32,
+    max_accel_mrev_s2: u32,
 ) -> TmcRequest {
     tmc_tune_with_action(
         channel,
@@ -574,6 +580,8 @@ pub fn tmc_tune(
         negative_position_headroom_mrev,
         positive_position_headroom_mrev,
         max_duration_ms,
+        homing_speed_mrev_s,
+        max_accel_mrev_s2,
     )
 }
 
@@ -599,6 +607,8 @@ pub fn tmc_tune_with_action(
     negative_position_headroom_mrev: u32,
     positive_position_headroom_mrev: u32,
     max_duration_ms: u16,
+    homing_speed_mrev_s: u32,
+    max_accel_mrev_s2: u32,
 ) -> TmcRequest {
     TmcRequest::new_with_autotune_action(
         channel,
@@ -620,6 +630,8 @@ pub fn tmc_tune_with_action(
             negative_position_headroom_mrev,
             positive_position_headroom_mrev,
             max_duration_ms,
+            homing_speed_mrev_s,
+            max_accel_mrev_s2,
         },
     )
 }

@@ -93,6 +93,8 @@ fn breakaway_integral_plan()
             negative_position_headroom_mrev: request.negative_position_headroom_mrev,
             positive_position_headroom_mrev: request.positive_position_headroom_mrev,
             max_duration_ms: request.max_duration_ms,
+            homing_speed_mrev_s: 0,
+            max_accel_mrev_s2: 0,
         },
         PWM_HZ,
         COUNTS_PER_REV,
@@ -716,6 +718,8 @@ fn outer_params() -> crate::commissioning::OuterAutotuneInputs {
         negative_position_headroom_mrev: request().negative_position_headroom_mrev,
         positive_position_headroom_mrev: request().positive_position_headroom_mrev,
         max_duration_ms: request().max_duration_ms,
+        homing_speed_mrev_s: 4_375,
+        max_accel_mrev_s2: 200_000,
     }
 }
 

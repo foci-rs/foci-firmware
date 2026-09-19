@@ -180,6 +180,8 @@ fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDige
         negative_position_headroom_mrev: request.negative_position_headroom_mrev,
         positive_position_headroom_mrev: request.positive_position_headroom_mrev,
         max_duration_ms: request.max_duration_ms,
+        homing_speed_mrev_s: 0,
+        max_accel_mrev_s2: 0,
     };
     let plan = plan_breakaway_velocity_integral_response(
         token,

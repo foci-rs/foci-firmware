@@ -548,6 +548,8 @@ fn plan_velocity_sweep_with_limit(
             negative_position_headroom_mrev: request.negative_position_headroom_mrev,
             positive_position_headroom_mrev: request.positive_position_headroom_mrev,
             max_duration_ms: request.max_duration_ms,
+            homing_speed_mrev_s: 0,
+            max_accel_mrev_s2: 0,
         },
         encoder_counts_per_rev,
         planned_velocity_mrev_s,

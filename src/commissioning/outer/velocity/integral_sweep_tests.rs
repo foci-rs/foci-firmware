@@ -783,6 +783,8 @@ fn amplitude_recovery_uses_the_retained_top_point_after_a_low_amplitude_precisio
             negative_position_headroom_mrev: 50_000,
             positive_position_headroom_mrev: 50_000,
             max_duration_ms: 3_000,
+            homing_speed_mrev_s: 4_375,
+            max_accel_mrev_s2: 200_000,
         },
     );
     safety
@@ -2596,6 +2598,8 @@ fn phase() -> OuterPhase {
                 negative_position_headroom_mrev: 50_000,
                 positive_position_headroom_mrev: 50_000,
                 max_duration_ms: 60_000,
+                homing_speed_mrev_s: 4_375,
+                max_accel_mrev_s2: 200_000,
             },
         ),
     }

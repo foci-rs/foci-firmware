@@ -765,6 +765,8 @@ where
                     negative_position_headroom_mrev,
                     positive_position_headroom_mrev,
                     max_duration_ms,
+                    homing_speed_mrev_s,
+                    max_accel_mrev_s2,
                 },
             ..
         } => {
@@ -785,6 +787,8 @@ where
                 negative_position_headroom_mrev,
                 positive_position_headroom_mrev,
                 max_duration_ms,
+                homing_speed_mrev_s,
+                max_accel_mrev_s2,
             };
             if let Some(status) = tune_reject_reason(board, runtime) {
                 emit_commission_phase_failure::<Board, Spi>(board, oid, status);
@@ -1019,6 +1023,8 @@ struct TuneRequestFields {
     negative_position_headroom_mrev: u32,
     positive_position_headroom_mrev: u32,
     max_duration_ms: u16,
+    homing_speed_mrev_s: u32,
+    max_accel_mrev_s2: u32,
 }
 
 #[inline(never)]
@@ -1412,6 +1418,8 @@ where
         negative_position_headroom_mrev,
         positive_position_headroom_mrev,
         max_duration_ms,
+        homing_speed_mrev_s,
+        max_accel_mrev_s2,
     } = fields;
     let tmc_state = board.tmc_state();
     tmc_state
@@ -1434,6 +1442,8 @@ where
         negative_position_headroom_mrev,
         positive_position_headroom_mrev,
         max_duration_ms,
+        homing_speed_mrev_s,
+        max_accel_mrev_s2,
     };
     match tune_route {
         TuneRoute::FixedGainAmplitude(preflight) => {
@@ -2032,6 +2042,8 @@ mod tests {
                 negative_position_headroom_mrev: 7025,
                 positive_position_headroom_mrev: 7025,
                 max_duration_ms: 3000,
+                homing_speed_mrev_s: 4_375,
+                max_accel_mrev_s2: 200_000,
             },
         )
     }
@@ -3076,6 +3088,11 @@ mod tests {
             engine.current_phase_id(),
             Some(crate::commissioning::vocabulary_generated::CommissionPhase::PositionTune)
         );
+        let outer_budget = engine
+            .outer_budget_for_test()
+            .expect("a position-tune phase carries an outer motion budget");
+        assert_eq!(outer_budget.homing_speed_mrev_s, 4_375);
+        assert_eq!(outer_budget.max_accel_mrev_s2, 200_000);
         // Construction is pure state assembly: the sweep's first stroke is
         // only reachable through the engine step loop.
         let spi = tmc.into_inner();
@@ -3124,6 +3141,8 @@ mod tests {
                 negative_position_headroom_mrev: request.negative_position_headroom_mrev,
                 positive_position_headroom_mrev: request.positive_position_headroom_mrev,
                 max_duration_ms: request.max_duration_ms,
+                homing_speed_mrev_s: 0,
+                max_accel_mrev_s2: 0,
             },
             25_000,
             4_000,

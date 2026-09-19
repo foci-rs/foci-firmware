@@ -46,6 +46,10 @@ pub(crate) struct OuterMotionBudget {
     pub(crate) positive_position_headroom_mrev: u32,
     /// Maximum primitive duration in milliseconds.
     pub(crate) max_duration_ms: u16,
+    /// Axis homing speed, mrev/s; the homing bound's speed.
+    pub(crate) homing_speed_mrev_s: u32,
+    /// Machine acceleration, mrev/s^2; the stroke ramp rate.
+    pub(crate) max_accel_mrev_s2: u32,
 }
 
 impl OuterMotionBudget {
@@ -63,6 +67,8 @@ impl OuterMotionBudget {
             negative_position_headroom_mrev: FIRMWARE_MAX_TRAVEL_MREV,
             positive_position_headroom_mrev: FIRMWARE_MAX_TRAVEL_MREV,
             max_duration_ms: 3_000,
+            homing_speed_mrev_s: 4_375,
+            max_accel_mrev_s2: 200_000,
         }
     }
 
@@ -71,6 +77,8 @@ impl OuterMotionBudget {
         max_stroke_travel_mrev: u32,
         requested_velocity_mrev_s: u32,
         max_duration_ms: u16,
+        homing_speed_mrev_s: u32,
+        max_accel_mrev_s2: u32,
     ) -> Self {
         Self {
             requested_velocity_mrev_s,
@@ -81,6 +89,8 @@ impl OuterMotionBudget {
             negative_position_headroom_mrev: 2_000,
             positive_position_headroom_mrev: 2_000,
             max_duration_ms,
+            homing_speed_mrev_s,
+            max_accel_mrev_s2,
         }
     }
 
@@ -1369,8 +1379,10 @@ mod tests {
 
     #[test]
     fn outer_safety_clamps_position_window_to_host_budget() {
-        let mut safety =
-            OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
+        let mut safety = OuterSafetyLimits::new(
+            100,
+            OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000),
+        );
 
         safety.configure_encoder_resolution(4_000).unwrap();
 
@@ -1381,7 +1393,7 @@ mod tests {
 
     #[test]
     fn outer_safety_legacy_setup_retains_the_two_revolution_backstop() {
-        let mut budget = OuterMotionBudget::test_budget(2_500, 6_000, 3_000);
+        let mut budget = OuterMotionBudget::test_budget(2_500, 6_000, 3_000, 4_375, 200_000);
         budget.negative_position_headroom_mrev = 3_000;
         budget.positive_position_headroom_mrev = 4_000;
         let mut safety = OuterSafetyLimits::new(100, budget);
@@ -1395,7 +1407,7 @@ mod tests {
 
     #[test]
     fn robustness_window_opens_to_the_absolute_clamp() {
-        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
+        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000, 4_375, 200_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
@@ -1426,7 +1438,7 @@ mod tests {
     #[test]
     fn robustness_absolute_window_tolerates_a_transient_within_the_reserve() {
         pollster::block_on(async {
-            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000);
             budget.negative_position_headroom_mrev = 100;
             budget.positive_position_headroom_mrev = 200;
             let mut safety = OuterSafetyLimits::new(100, budget);
@@ -1455,7 +1467,7 @@ mod tests {
     #[test]
     fn robustness_absolute_window_still_faults_beyond_the_reserve() {
         pollster::block_on(async {
-            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000);
             budget.negative_position_headroom_mrev = 100;
             budget.positive_position_headroom_mrev = 200;
             let mut safety = OuterSafetyLimits::new(100, budget);
@@ -1493,7 +1505,7 @@ mod tests {
     /// there is no sound data yet to size a tighter margin from.
     #[test]
     fn integral_window_opens_to_the_absolute_clamp() {
-        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
+        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000, 4_375, 200_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
@@ -1508,7 +1520,7 @@ mod tests {
 
     #[test]
     fn integral_window_tightens_with_a_finite_reserve() {
-        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
+        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000, 4_375, 200_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
@@ -1524,7 +1536,7 @@ mod tests {
 
     #[test]
     fn integral_window_finite_reserve_clamps_to_the_headroom_ceiling() {
-        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
+        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000, 4_375, 200_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
@@ -1539,7 +1551,7 @@ mod tests {
 
     #[test]
     fn integral_window_no_reserve_opens_to_the_headroom_ceiling() {
-        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000);
+        let mut budget = OuterMotionBudget::test_budget(3_000, 6_000, 3_000, 4_375, 200_000);
         budget.negative_position_headroom_mrev = 4_000;
         budget.positive_position_headroom_mrev = 5_000;
 
@@ -1981,8 +1993,10 @@ mod tests {
     #[test]
     fn outer_safety_local_window_spans_motion_and_zero_settle() {
         pollster::block_on(async {
-            let mut safety =
-                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
+            let mut safety = OuterSafetyLimits::new(
+                100,
+                OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000),
+            );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
@@ -2013,8 +2027,10 @@ mod tests {
     #[test]
     fn outer_safety_allows_healthy_deceleration_to_use_settle_reserve() {
         pollster::block_on(async {
-            let mut safety =
-                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 3_000));
+            let mut safety = OuterSafetyLimits::new(
+                100,
+                OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000),
+            );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = OuterSafetyTimestamp::some(0).unwrap();
@@ -2037,7 +2053,7 @@ mod tests {
     #[test]
     fn outer_safety_asymmetric_window_catches_cumulative_drift() {
         pollster::block_on(async {
-            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000);
             budget.negative_position_headroom_mrev = 100;
             budget.positive_position_headroom_mrev = 200;
             let mut safety = OuterSafetyLimits::new(100, budget);
@@ -2069,7 +2085,7 @@ mod tests {
     #[test]
     fn outer_safety_position_tie_break_reports_absolute_branch() {
         pollster::block_on(async {
-            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+            let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000);
             budget.positive_position_headroom_mrev = 200;
             let mut safety = OuterSafetyLimits::new(100, budget);
             safety.configure_encoder_resolution(4_000).unwrap();
@@ -2101,14 +2117,17 @@ mod tests {
 
     #[test]
     fn outer_safety_refuses_zero_budget() {
-        let safety = OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(0, 6_000, 3_000));
+        let safety = OuterSafetyLimits::new(
+            100,
+            OuterMotionBudget::test_budget(0, 6_000, 3_000, 4_375, 200_000),
+        );
 
         assert!(!safety.budget_is_usable());
     }
 
     #[test]
     fn outer_safety_refuses_reserve_that_consumes_the_window() {
-        let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000);
+        let mut budget = OuterMotionBudget::test_budget(500, 6_000, 3_000, 4_375, 200_000);
         budget.settle_travel_reserve_mrev = 500;
         let safety = OuterSafetyLimits::new(100, budget);
 
@@ -2118,8 +2137,10 @@ mod tests {
     #[test]
     fn outer_safety_violates_on_unusable_budget() {
         pollster::block_on(async {
-            let mut safety =
-                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(0, 6_000, 3_000));
+            let mut safety = OuterSafetyLimits::new(
+                100,
+                OuterMotionBudget::test_budget(0, 6_000, 3_000, 4_375, 200_000),
+            );
             let mut backend = MockBackend::new();
 
             let fault = check_outer_safety(&mut safety, &mut backend)
@@ -2133,8 +2154,10 @@ mod tests {
     #[test]
     fn outer_safety_violates_on_duration_budget() {
         pollster::block_on(async {
-            let mut safety =
-                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(500, 6_000, 1));
+            let mut safety = OuterSafetyLimits::new(
+                100,
+                OuterMotionBudget::test_budget(500, 6_000, 1, 4_375, 200_000),
+            );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.primitive_start_us = Some(1_000);
             let mut backend = MockBackend::new();
@@ -2413,8 +2436,10 @@ mod tests {
     #[test]
     fn outer_safety_reports_velocity_fault_details() {
         pollster::block_on(async {
-            let mut safety =
-                OuterSafetyLimits::new(100, OuterMotionBudget::test_budget(750, 6_000, 3_000));
+            let mut safety = OuterSafetyLimits::new(
+                100,
+                OuterMotionBudget::test_budget(750, 6_000, 3_000, 4_375, 200_000),
+            );
             safety.configure_encoder_resolution(4_000).unwrap();
             safety.set_encoder_baseline(0).unwrap();
             safety.last_sample_us = OuterSafetyTimestamp::some(100_000).unwrap();

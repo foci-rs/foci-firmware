@@ -89,6 +89,8 @@ pub fn sample_outer_params() -> crate::commissioning::OuterAutotuneInputs {
         negative_position_headroom_mrev: 2000,
         positive_position_headroom_mrev: 2000,
         max_duration_ms: 3000,
+        homing_speed_mrev_s: 4_375,
+        max_accel_mrev_s2: 200_000,
     }
 }
 

@@ -153,6 +153,8 @@ mod tests {
                     negative_position_headroom_mrev: 2000,
                     positive_position_headroom_mrev: 2000,
                     max_duration_ms: 3000,
+                    homing_speed_mrev_s: 4_375,
+                    max_accel_mrev_s2: 200_000,
                 },
             ),
             TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 4 }),

@@ -113,6 +113,10 @@ pub struct OuterAutotuneInputs {
     pub positive_position_headroom_mrev: u32,
     /// Host-computed max primitive duration in milliseconds.
     pub max_duration_ms: u16,
+    /// Axis homing speed, mrev/s; the homing bound's speed.
+    pub homing_speed_mrev_s: u32,
+    /// Machine acceleration, mrev/s^2; the stroke ramp rate.
+    pub max_accel_mrev_s2: u32,
     /// Requested execution order of the forward and reverse observation slots.
     pub slot_order: crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder,
 }
@@ -501,6 +505,8 @@ impl CommissioningEngine {
             negative_position_headroom_mrev,
             positive_position_headroom_mrev,
             max_duration_ms,
+            homing_speed_mrev_s,
+            max_accel_mrev_s2,
         } = params;
         let budget = OuterMotionBudget {
             requested_velocity_mrev_s,
@@ -511,6 +517,8 @@ impl CommissioningEngine {
             negative_position_headroom_mrev,
             positive_position_headroom_mrev,
             max_duration_ms,
+            homing_speed_mrev_s,
+            max_accel_mrev_s2,
         };
         let safety = OuterSafetyLimits::new(0, budget);
         OuterScaffold {
@@ -1121,6 +1129,20 @@ impl CommissioningEngine {
             EngineMode::Inner { phase, .. } => phase.current_phase_id(),
             EngineMode::Outer { phase, .. } => phase.current_phase_id(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn outer_budget_for_test(
+        &self,
+    ) -> Option<crate::commissioning::outer::OuterMotionBudget> {
+        let EngineMode::Outer {
+            phase: crate::commissioning::outer::OuterPhase::PositionTune { safety, .. },
+            ..
+        } = &self.engine_mode
+        else {
+            return None;
+        };
+        Some(safety.budget)
     }
 
     /// The active outer phase, when it has not yet been reported to the host.
@@ -2044,6 +2066,8 @@ mod tests {
             negative_position_headroom_mrev: 2000,
             positive_position_headroom_mrev: 2000,
             max_duration_ms: 3000,
+            homing_speed_mrev_s: 4_375,
+            max_accel_mrev_s2: 200_000,
         }
     }
 

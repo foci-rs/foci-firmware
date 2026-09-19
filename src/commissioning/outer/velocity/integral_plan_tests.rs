@@ -86,6 +86,8 @@ fn motion_budget() -> OuterMotionBudget {
         negative_position_headroom_mrev: 7_025,
         positive_position_headroom_mrev: 7_025,
         max_duration_ms: 3_000,
+        homing_speed_mrev_s: 4_375,
+        max_accel_mrev_s2: 200_000,
     }
 }
 

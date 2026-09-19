@@ -140,7 +140,7 @@ pub enum BoardAction {
 /// future path can add compact routing actions without silently dropping safety work.
 pub type BoardActions = heapless::Vec<BoardAction, 8>;
 
-const _: () = assert!(core::mem::size_of::<BoardActions>() <= 400);
+const _: () = assert!(core::mem::size_of::<BoardActions>() <= 456);
 
 /// Push an action and assert the fixed action buffer is large enough.
 pub fn push_action(actions: &mut BoardActions, action: BoardAction) {
