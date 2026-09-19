@@ -430,6 +430,36 @@ pub enum CommissionError {
     VelocityInvalidEvidence,
     /// A breakaway-to-integral plan could not be constructed. Code 109.
     VelocityIntegralPlanInvalid,
+    /// `accel_per_count` position-domain quadratic fit: fewer than 20
+    /// samples, peak-to-peak position excitation below the 20-count
+    /// anti-degeneracy floor, or residual exceeds `residual_fail_permille =
+    /// 75`. Code 110.
+    GainFloorInsufficientLinearPoints,
+    /// `accel_per_count` quadratic fit: fitted `accel_raw` is zero, negative,
+    /// or disagrees in sign with the commanded torque step direction. Code 111.
+    GainFloorNonPositiveSlope,
+    /// Current-response exponential fit: non-monotonic, saturated, or
+    /// residual exceeds `residual_fail_permille = 75`. Code 112.
+    GainFloorCurrentFitRejected,
+    /// Current-response fit: captured window did not reach `3 *
+    /// tau_current`, fewer than 20 independently-timed samples fall within
+    /// it, or a per-slot sample deadline was missed (immediate trip, not
+    /// deferred to end-of-capture). Code 113.
+    GainFloorInsufficientCoverage,
+    /// Actual-current containment tripped: `abs(pid_torque_actual)` or
+    /// `abs(pid_flux_actual)` exceeded `resistance_current_ceiling_count`
+    /// during the gain-floor measurement torque step. Code 114.
+    GainFloorPeakCurrentExceeded,
+    /// Motion abort bound tripped during the gain-floor measurement torque
+    /// step: uncontrolled displacement exceeded 32760 raw position counts.
+    /// Code 115.
+    GainFloorMotionEnvelopeExceeded,
+    /// Computed `velocity_p_raw` rounds to `PidPGain::ZERO` or exceeds
+    /// `PidPGain::MAX`. Code 116.
+    GainFloorVelocityGainUnrepresentable,
+    /// Computed `position_p_raw` rounds to `PidPGain::ZERO` or exceeds
+    /// `PidPGain::MAX`. Code 117.
+    GainFloorPositionGainUnrepresentable,
 }
 
 impl From<crate::commissioning::capture_timing::TimingReject> for CommissionError {
@@ -565,6 +595,14 @@ impl CommissionError {
             Self::VelocityWrongDirection => 107,
             Self::VelocityInvalidEvidence => 108,
             Self::VelocityIntegralPlanInvalid => 109,
+            Self::GainFloorInsufficientLinearPoints => 110,
+            Self::GainFloorNonPositiveSlope => 111,
+            Self::GainFloorCurrentFitRejected => 112,
+            Self::GainFloorInsufficientCoverage => 113,
+            Self::GainFloorPeakCurrentExceeded => 114,
+            Self::GainFloorMotionEnvelopeExceeded => 115,
+            Self::GainFloorVelocityGainUnrepresentable => 116,
+            Self::GainFloorPositionGainUnrepresentable => 117,
         }
     }
 }
@@ -852,6 +890,14 @@ mod tests {
             CommissionError::FaultInterlock,
             CommissionError::HostLivenessExpired,
             CommissionError::NetDisplacementOverflow,
+            CommissionError::GainFloorInsufficientLinearPoints,
+            CommissionError::GainFloorNonPositiveSlope,
+            CommissionError::GainFloorCurrentFitRejected,
+            CommissionError::GainFloorInsufficientCoverage,
+            CommissionError::GainFloorPeakCurrentExceeded,
+            CommissionError::GainFloorMotionEnvelopeExceeded,
+            CommissionError::GainFloorVelocityGainUnrepresentable,
+            CommissionError::GainFloorPositionGainUnrepresentable,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -929,6 +975,42 @@ mod tests {
         assert_eq!(
             CommissionStatus::Failed(CommissionError::ChipResetDetected).to_u8(),
             18
+        );
+    }
+
+    #[test]
+    fn gain_floor_error_codes_are_contiguous_from_110() {
+        assert_eq!(
+            CommissionError::GainFloorInsufficientLinearPoints.status_code(),
+            110
+        );
+        assert_eq!(
+            CommissionError::GainFloorNonPositiveSlope.status_code(),
+            111
+        );
+        assert_eq!(
+            CommissionError::GainFloorCurrentFitRejected.status_code(),
+            112
+        );
+        assert_eq!(
+            CommissionError::GainFloorInsufficientCoverage.status_code(),
+            113
+        );
+        assert_eq!(
+            CommissionError::GainFloorPeakCurrentExceeded.status_code(),
+            114
+        );
+        assert_eq!(
+            CommissionError::GainFloorMotionEnvelopeExceeded.status_code(),
+            115
+        );
+        assert_eq!(
+            CommissionError::GainFloorVelocityGainUnrepresentable.status_code(),
+            116
+        );
+        assert_eq!(
+            CommissionError::GainFloorPositionGainUnrepresentable.status_code(),
+            117
         );
     }
 
