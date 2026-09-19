@@ -2128,14 +2128,6 @@ pub struct FociStepperPerfStatsResult {
     pub crit_max_cycles: u32,
     /// Site code that produced `crit_max_cycles`.
     pub crit_max_site: u8,
-    /// Critical sections longer than 10 us.
-    pub crit_over_10us: u32,
-    /// Critical sections longer than 50 us.
-    pub crit_over_50us: u32,
-    /// Critical sections longer than 100 us.
-    pub crit_over_100us: u32,
-    /// Critical sections longer than 1000 us.
-    pub crit_over_1000us: u32,
     /// `queue_step` trigger-domain sections measured since the last reset.
     pub queue_step_count: u32,
     /// Longest `queue_step` trigger-domain section in CPU cycles.
@@ -2158,8 +2150,6 @@ pub struct FociStepperPerfStatsResult {
     pub tim5_burst_cycles_per_event_max_cycles: u32,
     /// Events processed by the activation that set `tim5_burst_cycles_per_event_max`.
     pub tim5_burst_cycles_per_event_max_events: u32,
-    /// Max per-activation cycles/event for activations with at least three events.
-    pub tim5_burst_cycles_per_event_floor3_max: u32,
     /// Max TIM5 entry lateness in TIM5 ticks.
     pub tim5_entry_latency_max_ticks: u32,
     /// Max positive scheduler pop lateness in TIM5 ticks.
@@ -2168,30 +2158,18 @@ pub struct FociStepperPerfStatsResult {
     pub scheduler_cycles_max: u32,
     /// Events processed in the activation that set `scheduler_cycles_max`.
     pub scheduler_cycles_events_at_max: u32,
-    /// Max per-activation `scheduler_cycles / processed_events`.
-    pub scheduler_cycles_per_event_max: u32,
-    /// Max scheduler cycles/event for activations with at least three events.
-    pub scheduler_cycles_per_event_floor3_max: u32,
     /// Scheduler insertions dropped because the fixed table was full.
     pub scheduler_full_count: u32,
     /// Max positive stepper segment-load lateness in TIM5 ticks.
     pub stepper_load_lateness_max_ticks: u32,
-    /// Last stepper segment-load lateness as signed TIM5 ticks.
-    pub stepper_load_lateness_last_ticks: i32,
     /// Non-zero when firmware was built with trace instrumentation.
     pub build_trace_enabled: u8,
     /// `PERF_SITE_SHUTDOWN` critical sections measured since the last reset.
     pub shutdown_site_count: u32,
-    /// Longest `PERF_SITE_SHUTDOWN` critical section in CPU cycles.
-    pub shutdown_site_max_cycles: u32,
     /// `PERF_SITE_RESET` critical sections measured since the last reset.
     pub reset_site_count: u32,
-    /// Longest `PERF_SITE_RESET` critical section in CPU cycles.
-    pub reset_site_max_cycles: u32,
     /// `PERF_SITE_TRIGGER_STOP` samples measured since the last reset.
     pub trigger_stop_site_count: u32,
-    /// Longest `PERF_SITE_TRIGGER_STOP` measured span in CPU cycles.
-    pub trigger_stop_site_max_cycles: u32,
     /// Cumulative TIM5 IRQ handler cycles since the last reset, low word.
     pub total_irq_cycles_lo: u32,
     /// Cumulative TIM5 IRQ handler cycles since the last reset, high word.
