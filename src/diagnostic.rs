@@ -1209,7 +1209,11 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
     pub fn record_tim5_irq(&self, irq_cycles: u32, dispatch_cycles: u32, event_count: u32) {
         let counters = &self.counters;
         counters.sample_count.fetch_add(1, Relaxed);
-        add_split_u32(&counters.total_irq_cycles_lo, &counters.total_irq_cycles_hi, irq_cycles);
+        add_split_u32(
+            &counters.total_irq_cycles_lo,
+            &counters.total_irq_cycles_hi,
+            irq_cycles,
+        );
         add_split_u32(
             &counters.total_dispatch_cycles_lo,
             &counters.total_dispatch_cycles_hi,
@@ -1271,9 +1275,12 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
         build_trace_enabled: bool,
     ) -> StepperPerfSnapshot {
         let counters = &self.counters;
-        let total_irq_cycles = read_split_u32(&counters.total_irq_cycles_lo, &counters.total_irq_cycles_hi);
-        let total_dispatch_cycles =
-            read_split_u32(&counters.total_dispatch_cycles_lo, &counters.total_dispatch_cycles_hi);
+        let total_irq_cycles =
+            read_split_u32(&counters.total_irq_cycles_lo, &counters.total_irq_cycles_hi);
+        let total_dispatch_cycles = read_split_u32(
+            &counters.total_dispatch_cycles_lo,
+            &counters.total_dispatch_cycles_hi,
+        );
         let snapshot = StepperPerfSnapshot {
             channel,
             sample_count: counters.sample_count.load(Relaxed),
