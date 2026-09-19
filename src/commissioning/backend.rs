@@ -336,6 +336,21 @@ pub trait CommissionBoardConfig {
 
     /// Configured operational PIDOUT_UQ_UD_LIMITS value.
     fn operational_voltage_limit(&self) -> u32;
+
+    /// Configured stall-detection threshold, in position-error units.
+    ///
+    /// `PositionTune` derives its tracking bound from this value; zero means
+    /// unconfigured, which the derivation rejects rather than falling back to
+    /// a guessed threshold.
+    fn stall_threshold_units(&self) -> u32 {
+        0
+    }
+
+    /// Configured velocity feedforward gain, in permille (1000 = unity), or
+    /// zero when the channel's velocity feedforward is not enabled.
+    fn velocity_feedforward_gain_permille(&self) -> u32 {
+        0
+    }
 }
 
 /// Commissioning trace emission capability.
@@ -1018,6 +1033,28 @@ where
         self.tmc_state()
             .voltage_limit_cfg
             .load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn stall_threshold_units(&self) -> u32 {
+        self.tmc_state()
+            .stall_threshold_units
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn velocity_feedforward_gain_permille(&self) -> u32 {
+        let channel = self.tmc_state();
+        if channel
+            .velocity_feedforward
+            .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            u32::from(
+                channel
+                    .velocity_feedforward_gain_permille
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            )
+        } else {
+            0
+        }
     }
 }
 

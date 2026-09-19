@@ -798,6 +798,7 @@ impl CommissioningEngine {
         let phase = OuterPhase::PositionTune {
             state: crate::commissioning::outer::position_tune::PositionTuneState::new(
                 entry_snapshot,
+                params.profile,
             ),
             safety: scaffold.safety,
         };

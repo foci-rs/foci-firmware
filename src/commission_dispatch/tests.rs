@@ -2132,9 +2132,10 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
     use crate::autotune::PositionTuneOutcome;
 
     let mut backend = MockBackend::new();
-    // `MockBackend::new()` reports a zero current limit, so the sweep rejects
-    // its own excitation before commanding anything and fails with
-    // `AccelerationFitRejected` -- a real failure path, not an injected one.
+    // `MockBackend::new()` leaves `PID_VELOCITY_P_VELOCITY_I` unset, so
+    // `predict` reads a zero velocity P and `compute_k` rejects it before
+    // anything is commanded, failing with `ConfigurationInvalid` -- a real
+    // failure path, not an injected one.
     let (_, _, mut gains) = fresh_state_locals();
     let mut cal = true;
     let mut en = true;
@@ -2185,7 +2186,7 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
             );
             assert_eq!(
                 result.position_tune_outcome_code,
-                PositionTuneOutcome::AccelerationFitRejected.to_wire_code()
+                PositionTuneOutcome::ConfigurationInvalid.to_wire_code()
             );
             assert_ne!(result.position_tune_outcome_code, 0);
         }

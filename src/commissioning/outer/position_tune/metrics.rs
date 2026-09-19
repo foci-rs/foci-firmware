@@ -3,12 +3,10 @@
 use crate::autotune::{PositionTuneOutcome, TRANSIENT_LEN};
 use crate::commissioning::stimulus::trapezoid::StrokeProfile;
 
-#[allow(dead_code)]
 const MICROS_PER_MILLI: u32 = 1_000;
 
 /// The emitted stroke's boundaries, captured once per stroke from the
 /// profile so the capture windows follow the schedule the ISR runs.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct StrokeTiming {
     pub ramp_end_us: u32,
@@ -18,7 +16,6 @@ pub(crate) struct StrokeTiming {
 }
 
 impl StrokeTiming {
-    #[allow(dead_code)]
     pub(crate) fn from_profile(profile: &StrokeProfile) -> Self {
         Self {
             ramp_end_us: profile.ramp_end_us(),
@@ -31,14 +28,12 @@ impl StrokeTiming {
 
 /// Smallest whole-millisecond sample period that fits `stroke_us` into
 /// the capture buffer.
-#[allow(dead_code)]
 pub(crate) fn sample_period_us(stroke_us: u32) -> u32 {
     let samples = TRANSIENT_LEN as u32;
     let raw = stroke_us.div_ceil(samples);
     raw.div_ceil(MICROS_PER_MILLI).max(1) * MICROS_PER_MILLI
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct LegWindow {
     pub start: usize,
@@ -47,7 +42,6 @@ pub(crate) struct LegWindow {
     pub end: usize,
 }
 
-#[allow(dead_code)]
 pub(crate) fn leg_windows(
     timing: &StrokeTiming,
     sample_period_us: u32,
@@ -66,7 +60,6 @@ pub(crate) fn leg_windows(
     [window(0), window(timing.leg_us)]
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub(crate) struct LegMetrics {
     pub cruise_mean_abs_units: u32,
@@ -75,7 +68,6 @@ pub(crate) struct LegMetrics {
     pub cruise_rms_units: u32,
 }
 
-#[allow(dead_code)]
 pub(crate) fn leg_metrics(
     samples: &[i32],
     window: &LegWindow,
@@ -108,8 +100,9 @@ pub(crate) fn leg_metrics(
     let cruise_rms = u32::try_from((squares / cruise.len() as u128).isqrt()).unwrap_or(u32::MAX);
 
     // Steady-state reference for overshoot: the mean of the cruise window's
-    // last 10% (at least 1 sample), same as the sibling `RampedStrokeMetrics`
-    // reduction in `position_tune/mod.rs` -- steady-state must be measured
+    // last 10% (at least 1 sample), the same convention `position_tune/mod.rs`
+    // itself used before this module replaced its floor/ceiling reduction --
+    // steady-state must be measured
     // after the loop has settled, not blended with a window that may still
     // be transient. But the cruise window's own *final* sample sits right at
     // the reversal boundary, exactly where a reversal-adjacent overshoot
@@ -150,7 +143,6 @@ pub(crate) fn leg_metrics(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn worst_of(a: &LegMetrics, b: &LegMetrics) -> LegMetrics {
     LegMetrics {
         cruise_mean_abs_units: a.cruise_mean_abs_units.max(b.cruise_mean_abs_units),
@@ -160,7 +152,6 @@ pub(crate) fn worst_of(a: &LegMetrics, b: &LegMetrics) -> LegMetrics {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn median3(mut values: [u32; 3]) -> u32 {
     values.sort_unstable();
     values[1]

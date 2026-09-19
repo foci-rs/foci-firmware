@@ -499,6 +499,16 @@ pub struct MockBackend {
     pub stimulus_clock_now: u32,
     /// Whether `stimulus_arm` is allowed to succeed.
     pub stimulus_energized: bool,
+    /// Value returned by `stall_threshold_units()`.
+    pub stall_threshold_units_value: u32,
+    /// Value returned by `velocity_feedforward_gain_permille()`.
+    pub velocity_feedforward_gain_value: u32,
+    /// Single ordered log interleaving every SPI write and every
+    /// step-stimulus operation, so tests can assert their relative order.
+    /// Deliberately separate from `spi_log` and `stimulus_log`: those two
+    /// stay independently ordered for their own existing assertions, and
+    /// this is the only log both append to.
+    pub event_log: heapless::Vec<MockEvent, 2_048>,
 }
 
 impl MockBackend {
@@ -591,6 +601,9 @@ impl MockBackend {
             stimulus_step_timer_hz: 260_000_000,
             stimulus_clock_now: 0,
             stimulus_energized: true,
+            stall_threshold_units_value: 819,
+            velocity_feedforward_gain_value: 1_750,
+            event_log: heapless::Vec::new(),
         }
     }
 
@@ -911,6 +924,9 @@ impl CommissionRegisterIo for MockBackend {
             .filter(|operation| matches!(operation, SpiOp::Write(logged, _) if *logged == addr))
             .count();
         self.spi_log.push(SpiOp::Write(addr, val)).ok();
+        self.event_log
+            .push(MockEvent::Spi(SpiOp::Write(addr, val)))
+            .ok();
         if self.fail_on_write_occurrence == Some((addr, address_occurrence)) {
             return Err(MockSpiError);
         }
@@ -1138,6 +1154,14 @@ impl CommissionBoardConfig for MockBackend {
     fn operational_voltage_limit(&self) -> u32 {
         self.operational_voltage_limit_value
     }
+
+    fn stall_threshold_units(&self) -> u32 {
+        self.stall_threshold_units_value
+    }
+
+    fn velocity_feedforward_gain_permille(&self) -> u32 {
+        self.velocity_feedforward_gain_value
+    }
 }
 
 impl CommissionTrace for MockBackend {
@@ -1178,6 +1202,14 @@ pub enum StimulusOp {
     Feedforward(bool),
 }
 
+/// One event in `MockBackend::event_log`, the single ordered log
+/// interleaving every SPI write and every step-stimulus operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MockEvent {
+    Spi(SpiOp),
+    Stimulus(StimulusOp),
+}
+
 impl CommissionStepStimulus for MockBackend {
     fn stimulus_step_timer_hz(&self) -> u32 {
         self.stimulus_step_timer_hz
@@ -1197,10 +1229,16 @@ impl CommissionStepStimulus for MockBackend {
 
     fn stimulus_set_direction(&mut self, forward: bool) {
         let _ = self.stimulus_log.push(StimulusOp::SetDirection(forward));
+        let _ = self
+            .event_log
+            .push(MockEvent::Stimulus(StimulusOp::SetDirection(forward)));
     }
 
     fn stimulus_reset_step_clock(&mut self, clock: u32) -> Result<(), StimulusError> {
         let _ = self.stimulus_log.push(StimulusOp::ResetClock(clock));
+        let _ = self
+            .event_log
+            .push(MockEvent::Stimulus(StimulusOp::ResetClock(clock)));
         Ok(())
     }
 
@@ -1218,6 +1256,9 @@ impl CommissionStepStimulus for MockBackend {
             });
         }
         let _ = self.stimulus_log.push(StimulusOp::Queue(segment));
+        let _ = self
+            .event_log
+            .push(MockEvent::Stimulus(StimulusOp::Queue(segment)));
         Ok(())
     }
 
@@ -1226,15 +1267,20 @@ impl CommissionStepStimulus for MockBackend {
             return Err(StimulusError::NotEnergized);
         }
         let _ = self.stimulus_log.push(StimulusOp::Arm);
+        let _ = self.event_log.push(MockEvent::Stimulus(StimulusOp::Arm));
         Ok(())
     }
 
     fn stimulus_stop(&mut self) {
         let _ = self.stimulus_log.push(StimulusOp::Stop);
+        let _ = self.event_log.push(MockEvent::Stimulus(StimulusOp::Stop));
     }
 
     fn set_stimulus_feedforward(&mut self, enabled: bool) {
         let _ = self.stimulus_log.push(StimulusOp::Feedforward(enabled));
+        let _ = self
+            .event_log
+            .push(MockEvent::Stimulus(StimulusOp::Feedforward(enabled)));
         self.tmc_state
             .commission_stimulus_active
             .store(enabled, Relaxed);

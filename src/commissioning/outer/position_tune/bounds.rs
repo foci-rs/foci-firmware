@@ -5,10 +5,8 @@ use foci_tmc4671::pid::PidPGain;
 
 /// `256 * 60 / 1000` as a hundredths ratio: position units of steady-state
 /// error per (mrev/s) per unit of P, times 100.
-#[allow(dead_code)]
 const MODEL_NUMERATOR_HUNDREDTHS: u64 = 1_536;
 
-#[allow(dead_code)]
 pub(crate) fn margin_permille(profile: CommissionProfile) -> u32 {
     match profile {
         CommissionProfile::Conservative => 1_500,
@@ -17,25 +15,22 @@ pub(crate) fn margin_permille(profile: CommissionProfile) -> u32 {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn bound_units(
     stall_threshold_units: u32,
     margin_permille: u32,
 ) -> Result<u32, PositionTuneOutcome> {
     if stall_threshold_units == 0 || margin_permille == 0 {
-        return Err(PositionTuneOutcome::InvalidCeilingConfiguration);
+        return Err(PositionTuneOutcome::ConfigurationInvalid);
     }
     let bound = u64::from(stall_threshold_units) * 1_000 / u64::from(margin_permille);
-    u32::try_from(bound.max(1)).map_err(|_| PositionTuneOutcome::InvalidCeilingConfiguration)
+    u32::try_from(bound.max(1)).map_err(|_| PositionTuneOutcome::ConfigurationInvalid)
 }
 
-#[allow(dead_code)]
 fn feedforward_residual_permille(ff_permille: u32) -> u64 {
     u64::from(ff_permille.abs_diff(1_000))
 }
 
 /// Steady-state following error the P-only position loop leaves at `speed`.
-#[allow(dead_code)]
 pub(crate) fn predicted_error_units(
     speed_mrev_s: u32,
     ff_permille: u32,
@@ -52,14 +47,13 @@ pub(crate) fn predicted_error_units(
 }
 
 /// Smallest P whose predicted error at `speed` is inside `bound_units`.
-#[allow(dead_code)]
 pub(crate) fn predicted_start_p(
     speed_mrev_s: u32,
     ff_permille: u32,
     bound_units: u32,
 ) -> Result<PidPGain, PositionTuneOutcome> {
     if bound_units == 0 {
-        return Err(PositionTuneOutcome::InvalidCeilingConfiguration);
+        return Err(PositionTuneOutcome::ConfigurationInvalid);
     }
     let numerator = MODEL_NUMERATOR_HUNDREDTHS
         * u64::from(speed_mrev_s)
@@ -69,10 +63,9 @@ pub(crate) fn predicted_start_p(
     u16::try_from(raw)
         .ok()
         .and_then(|raw| PidPGain::new(raw).ok())
-        .ok_or(PositionTuneOutcome::InvalidCeilingConfiguration)
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)
 }
 
-#[allow(dead_code)]
 pub(crate) fn start_rung(
     homing_speed_mrev_s: u32,
     motion_speed_mrev_s: u32,
@@ -107,11 +100,11 @@ mod tests {
         assert_eq!(bound_units(819, 1_500), Ok(546));
         assert_eq!(
             bound_units(0, 2_000),
-            Err(PositionTuneOutcome::InvalidCeilingConfiguration)
+            Err(PositionTuneOutcome::ConfigurationInvalid)
         );
         assert_eq!(
             bound_units(819, 0),
-            Err(PositionTuneOutcome::InvalidCeilingConfiguration)
+            Err(PositionTuneOutcome::ConfigurationInvalid)
         );
     }
 
@@ -132,7 +125,7 @@ mod tests {
     fn start_rung_rejects_unrepresentable_gains() {
         assert_eq!(
             predicted_start_p(10_000, 0, 1),
-            Err(PositionTuneOutcome::InvalidCeilingConfiguration)
+            Err(PositionTuneOutcome::ConfigurationInvalid)
         );
         assert!(predicted_start_p(0, 0, 409).unwrap().raw() >= 1);
     }
@@ -162,7 +155,7 @@ mod tests {
         // narrow to u16/PidPGain rejects the (correctly huge) result.
         assert_eq!(
             predicted_start_p(u32::MAX, u32::from(u16::MAX), 1),
-            Err(PositionTuneOutcome::InvalidCeilingConfiguration)
+            Err(PositionTuneOutcome::ConfigurationInvalid)
         );
         // Widest bound alongside the widest speed/feedforward: the u64
         // product still does not overflow, and the result narrows cleanly.

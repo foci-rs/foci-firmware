@@ -135,12 +135,12 @@ pub enum CommissionError {
     /// PositionTune's two-bound sweep could not accept a position P. Code 12.
     ///
     /// Covers every outcome `PositionTuneOutcome`
-    /// (`commissioning::outer::position_tune`) can report: the sweep reached
-    /// `PidPGain::MAX` with neither stop condition tripping, the ceiling ratio
-    /// check tripped at the floor rung (floor/ceiling conflict), the computed
-    /// floor was unrepresentable (rounds to zero or exceeds `PidPGain::MAX`),
-    /// the ceiling's `k` constant was non-positive (invalid PPR or velocity P),
-    /// or the on-MCU acceleration-per-torque fit was rejected.
+    /// (`commissioning::outer::position_tune`) can report: the config-derived
+    /// tracking bound or start rung was unrepresentable, the sweep reached
+    /// `PidPGain::MAX` with no rung meeting the bound, a capture produced no
+    /// samples, the overshoot-ratio or dither ceiling guard tripped, the
+    /// step-queue stimulus refused admission or an enqueue, or the
+    /// post-stroke feedforward restoration did not complete in time.
     PositionTuneFailed,
     /// Encoder alignment was not confirmed before outer commissioning. Code 13.
     EncoderNotAligned,
@@ -497,39 +497,41 @@ pub enum CommissionError {
 /// existing variant, only append new ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum PositionTuneOutcome {
-    /// The on-MCU acceleration-per-torque fit produced a non-positive or
-    /// statistically insufficient slope.
-    AccelerationFitRejected,
-    /// The computed floor rounded to `PidPGain::ZERO`.
-    FloorUnrepresentableZero,
-    /// The computed floor exceeded `PidPGain::MAX`.
-    FloorUnrepresentableTooLarge,
-    /// The ceiling's `k` constant (PPR/velocity-P derived) was non-positive.
-    InvalidCeilingConfiguration,
-    /// The ceiling ratio check tripped at the floor rung itself.
-    FloorCeilingConflict,
-    /// The ladder reached `PidPGain::MAX` with neither stop condition
-    /// tripping.
+    /// The config-derived tracking bound or the closed-form start rung was
+    /// unrepresentable (a zero or overflowing input to the prediction, or the
+    /// ceiling's `k` constant was non-positive).
+    ConfigurationInvalid,
+    /// The ladder reached `PidPGain::MAX` with no rung meeting the tracking
+    /// bound.
     SweepExhausted,
-    /// A capture (P-only rung, ramped stroke, or standstill hold) produced
-    /// zero samples -- distinct from `AccelerationFitRejected`, which is
-    /// specifically about the floor's slope fit rejecting a non-empty but
-    /// invalid capture.
+    /// A capture (a stroke leg or a standstill hold) produced zero samples.
     CaptureEmpty,
+    /// A rung met the tracking bound but tripped the overshoot-ratio,
+    /// overshoot-over-bound, or dither ceiling guard.
+    Conflict,
+    /// The step-queue stimulus refused admission (trigger-blocked, refused
+    /// clock reset, insufficient queue capacity for the planned profile) or
+    /// refused an enqueue or arm mid-stroke.
+    StimulusRejected,
+    /// The post-stroke feedforward restoration did not complete within the
+    /// allotted wait.
+    RestorationTimeout,
 }
 
 impl PositionTuneOutcome {
     /// Stable wire code, `0` reserved to mean "not applicable" (the phase
     /// succeeded, or did not run) on the host-visible field Task 7 adds.
+    ///
+    /// Codes 1, 2, 3 and 5 are retired (the floor/ceiling-conflict sweep this
+    /// phase replaced) and reserved: never reused.
     pub const fn to_wire_code(self) -> u8 {
         match self {
-            Self::AccelerationFitRejected => 1,
-            Self::FloorUnrepresentableZero => 2,
-            Self::FloorUnrepresentableTooLarge => 3,
-            Self::InvalidCeilingConfiguration => 4,
-            Self::FloorCeilingConflict => 5,
+            Self::ConfigurationInvalid => 4,
             Self::SweepExhausted => 6,
             Self::CaptureEmpty => 7,
+            Self::Conflict => 8,
+            Self::StimulusRejected => 9,
+            Self::RestorationTimeout => 10,
         }
     }
 }

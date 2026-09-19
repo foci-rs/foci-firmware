@@ -10,18 +10,18 @@ use foci_tmc4671::pid::PidPGain;
 /// measured `PID_TORQUE_FLUX_TARGET` excursion.
 pub fn compute_k(ppr: u32, velocity_p: PidPGain) -> Result<i64, PositionTuneOutcome> {
     if ppr == 0 || velocity_p.raw() == 0 {
-        return Err(PositionTuneOutcome::InvalidCeilingConfiguration);
+        return Err(PositionTuneOutcome::ConfigurationInvalid);
     }
     let numerator = 65_536_i64
         .checked_mul(i64::from(velocity_p.raw()))
-        .ok_or(PositionTuneOutcome::InvalidCeilingConfiguration)?;
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
     let denominator = 4_i64
         .checked_mul(i64::from(ppr))
         .and_then(|v| v.checked_mul(256))
         .and_then(|v| v.checked_mul(256))
-        .ok_or(PositionTuneOutcome::InvalidCeilingConfiguration)?;
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
     if denominator == 0 {
-        return Err(PositionTuneOutcome::InvalidCeilingConfiguration);
+        return Err(PositionTuneOutcome::ConfigurationInvalid);
     }
     // Keep k in Q16.16 (scaled by 65536) so the caller's `k * position_p /
     // 65536` recovers the real dither prediction without losing precision
@@ -29,14 +29,14 @@ pub fn compute_k(ppr: u32, velocity_p: PidPGain) -> Result<i64, PositionTuneOutc
     let k_q16 = numerator
         .checked_mul(65_536)
         .and_then(|v| v.checked_div(denominator))
-        .ok_or(PositionTuneOutcome::InvalidCeilingConfiguration)?;
+        .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
     // A sufficiently large PPR combined with a small nonzero velocity_p can
     // quantize k_q16 to zero even though neither input was itself zero --
     // treat that the same as an invalid configuration, not a valid k of 0
     // (which ceiling_trips would otherwise read as an extreme, always-tripping
     // prediction rather than a rejected configuration).
     if k_q16 <= 0 {
-        return Err(PositionTuneOutcome::InvalidCeilingConfiguration);
+        return Err(PositionTuneOutcome::ConfigurationInvalid);
     }
     Ok(k_q16)
 }
@@ -86,7 +86,7 @@ mod tests {
         let velocity_p = PidPGain::new(755).unwrap();
         assert_eq!(
             compute_k(0, velocity_p),
-            Err(PositionTuneOutcome::InvalidCeilingConfiguration)
+            Err(PositionTuneOutcome::ConfigurationInvalid)
         );
     }
 
@@ -94,7 +94,7 @@ mod tests {
     fn compute_k_rejects_zero_velocity_p() {
         assert_eq!(
             compute_k(1000, PidPGain::ZERO),
-            Err(PositionTuneOutcome::InvalidCeilingConfiguration)
+            Err(PositionTuneOutcome::ConfigurationInvalid)
         );
     }
 
@@ -106,7 +106,7 @@ mod tests {
         let velocity_p = PidPGain::new(1).unwrap();
         assert_eq!(
             compute_k(1_000_000_000, velocity_p),
-            Err(PositionTuneOutcome::InvalidCeilingConfiguration)
+            Err(PositionTuneOutcome::ConfigurationInvalid)
         );
     }
 

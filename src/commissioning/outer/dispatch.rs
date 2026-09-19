@@ -179,6 +179,7 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             Err(error) => return velocity_fault_terminal(phase, error, None),
         }
     };
+    let is_position_tune = matches!(phase, OuterPhase::PositionTune { .. });
     let active_safety = if draining_campaign_terminal {
         None
     } else {
@@ -186,6 +187,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     };
     if let Some(safety) = active_safety {
         if !safety.budget_request_is_valid() {
+            if is_position_tune {
+                super::position_tune::abort_stimulus(backend);
+            }
             defmt::warn!(
                 "outer safety: invalid motion budget travel={} velocity={} duration={} dir={}",
                 safety.budget.max_stroke_travel_mrev,
@@ -218,6 +222,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
         };
         match safety_result {
             Ok(Some(fault)) => {
+                if is_position_tune {
+                    super::position_tune::abort_stimulus(backend);
+                }
                 // Zero excitation immediately on any safety violation.
                 let _ = backend
                     .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
@@ -241,6 +248,9 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             }
             Ok(None) => {}
             Err(error) => {
+                if is_position_tune {
+                    super::position_tune::abort_stimulus(backend);
+                }
                 defmt::warn!("outer safety check failed: {}", error);
                 if matches!(
                     phase,
