@@ -361,9 +361,6 @@ fn assemble_electrical_model(
 /// Where the accepted `theta_e_us` input to `assemble_electrical_model` came
 /// from: an accepted high-rate measurement, or the board-configured
 /// fallback value.
-// Wired into the capture state machine by a later task in this plan; until
-// then only the tests below construct these variants.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ThetaSource {
     /// The high-rate capture produced an accepted measurement.
@@ -383,9 +380,6 @@ pub(crate) enum ThetaSource {
 /// same gate again to whichever value was selected (see spec's Estimate and
 /// gate section: "Fallback changes the input to the existing gate, never
 /// the gate's behavior").
-// Wired into the capture state machine by a later task in this plan; until
-// then only the tests below call this function.
-#[allow(dead_code)]
 pub(crate) fn resolve_theta_e_us_input(
     measured: Option<u32>,
     tau_e_us: u32,
@@ -408,9 +402,6 @@ pub(crate) fn resolve_theta_e_us_input(
 /// anything for storage in a `u16` offset, so a value that would overflow
 /// that storage is correctly classified as a timing rejection rather than a
 /// silent truncation or a separate overflow error.
-// Wired into the capture state machine by a later task in this plan; until
-// then only the tests below call this function.
-#[allow(dead_code)]
 pub(crate) fn high_rate_delay_timing_ok(
     last_offset_us: u32,
     sample_count: u16,
@@ -428,9 +419,6 @@ pub(crate) fn high_rate_delay_timing_ok(
 /// (which stays peak-based, unchanged) and does not affect accept/reject.
 /// Under overshoot or ringing, the peak sample and this settled value can
 /// differ; that is expected, not a defect.
-// Wired into the capture state machine by a later task in this plan; until
-// then only the tests below call this function.
-#[allow(dead_code)]
 pub(crate) fn settled_amplitude_counts(samples: &[u32]) -> Option<u32> {
     samples.last().copied()
 }
