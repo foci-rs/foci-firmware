@@ -933,18 +933,12 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
             match sequence {
                 InnerSequence::Calibrate => {
                     // Use the gain snapshot captured when calibration started.
-                    // Falling back to defaults keeps direct unit construction
-                    // and legacy callers conservative, but production re-enable
-                    // paths should provide the host-stored tuned values.
-                    let gains = calibrate_entry_gains.unwrap_or(CalibrateEntryGains {
-                        inner: crate::pid::DEFAULT_INNER_GAINS,
-                        outer: Some(crate::pid::DEFAULT_OUTER_GAINS),
-                        velocity_limit: backend.operational_velocity_limit(),
-                        velocity_filter_hz: 0,
-                        torque_filter_hz: 0,
-                        position_filter_hz: 0,
-                        flux_filter_hz: 0,
-                    });
+                    // An absent snapshot means the host never provided
+                    // verified gains for this re-enable, so fail closed
+                    // rather than arm with a fabricated substitute.
+                    let Some(gains) = calibrate_entry_gains else {
+                        return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
+                    };
                     let Some(outer) = gains.outer else {
                         return super::fail_inner(phase, CommissionError::CurrentValidationFailed);
                     };
@@ -2338,6 +2332,58 @@ mod tests {
             assert_eq!(torque_filter_hz, gains.torque_filter_hz);
             assert_eq!(position_filter_hz, gains.position_filter_hz);
             assert_eq!(flux_filter_hz, gains.flux_filter_hz);
+        });
+    }
+
+    #[test]
+    fn absent_calibrate_entry_gains_fails_commissioning_not_arms() {
+        pollster::block_on(async {
+            let _guard = SHARED_STATE_MUTEX.lock().await;
+            let mut phase = InnerPhase::EncoderAlign {
+                state: EncoderAlignState::StopDrive {
+                    old_count: encoder_count(42),
+                    electrical_residual_counts: 2,
+                    stability_counts: 1,
+                    movement_counts: 25,
+                    min_movement_counts: 2,
+                    counts_per_electrical_rev: 80,
+                },
+            };
+            let mut adc_cal = Some(AdcCalResult {
+                adc_i0: 1,
+                adc_i1: 2,
+                encoder_count: 0,
+                encoder_alignment_electrical_residual_counts: 0,
+                encoder_alignment_stability_counts: 0,
+                encoder_alignment_movement_counts: 0,
+                encoder_alignment_min_movement_counts: 0,
+                encoder_alignment_counts_per_electrical_rev: 0,
+                adc_residual_chop0: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+                adc_residual_chop7: crate::commissioning::types::AdcResidualEvidence::EMPTY,
+            });
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+            let mut backend = MockBackend::new();
+
+            let result = step_encoder_align(
+                &mut phase,
+                InnerSequence::Calibrate,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+            ));
+            assert!(
+                !backend.enable_pin,
+                "must not arm on a missing calibrate_entry_gains snapshot"
+            );
         });
     }
 
