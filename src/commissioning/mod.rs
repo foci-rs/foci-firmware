@@ -15,6 +15,7 @@ pub mod helpers;
 pub mod inner;
 pub mod outer;
 pub mod schedule;
+pub(crate) mod stimulus;
 pub mod types;
 
 #[cfg(test)]
