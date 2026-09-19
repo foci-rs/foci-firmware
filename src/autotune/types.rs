@@ -1074,6 +1074,7 @@ mod tests {
                 ("ReversalStandstillRobustnessGate", 21),
                 ("EncoderAlign", 16),
                 ("ClosedLoopActivation", 17),
+                ("GainFloorMeasurement", 26),
             ]
         );
         assert_eq!(

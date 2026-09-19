@@ -17,6 +17,18 @@ use heapless::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct MockSpiError;
 
+/// Parameters for `MockBackend::script_gain_floor_capture`'s synthesized
+/// quadratic position / exponential current response.
+#[derive(Debug, Clone, Copy)]
+pub struct GainFloorCaptureScript {
+    /// Raw position counts per microsecond^2 (accel_raw in the fit's own units).
+    pub accel_raw_per_us2: f64,
+    /// First-order current-response time constant, in microseconds.
+    pub tau_current_us: f64,
+    /// Commanded torque target the exponential response asymptotes toward.
+    pub i_target: i16,
+}
+
 /// Construct a validated current limit for test fixtures.
 pub fn current_limit(raw: u32) -> PidTorqueFluxLimit {
     PidTorqueFluxLimit::new(raw).expect("test current limit must be valid")
@@ -399,6 +411,14 @@ pub struct MockBackend {
     /// Last value written to `UQ_UD_EXT`, tracked only when
     /// `script_resistance_current_proportional_to_ud` is set.
     last_uq_ud_ext_write: u32,
+    /// When set, synthesizes `PID_POSITION_ACTUAL` (quadratic in elapsed
+    /// time) and `PID_TORQUE_FLUX_ACTUAL` (first-order exponential in
+    /// elapsed time, flux held at zero) directly from `elapsed_us()`, so a
+    /// full fixed-grid gain-floor capture can exercise the real quadratic
+    /// and current-response fits end to end. Requires
+    /// `advance_elapsed_on_delay = true` and a capture starting at
+    /// `elapsed_us_value == 0` so `elapsed_us()` reads as time-since-capture-start.
+    pub script_gain_floor_capture: Option<GainFloorCaptureScript>,
     /// Set by every `record_safe_state_report` call, mirroring
     /// `TmcChannelState::safe_state_incomplete`: a clean pass alone does not
     /// clear this, only a caller explicitly confirming a fresh sentinel pass
@@ -519,6 +539,7 @@ impl MockBackend {
             assert_motor_armed_false_on_write: false,
             script_resistance_current_proportional_to_ud: false,
             last_uq_ud_ext_write: 0,
+            script_gain_floor_capture: None,
             safe_state_incomplete: false,
             safe_state_last_pass_failed: false,
             safe_state_report: None,
@@ -531,6 +552,14 @@ impl MockBackend {
             verified_write_calls: 0,
             raw_ops_attributed_to_verified_calls: 0,
         }
+    }
+
+    /// Construct a `MockBackend` with a specific board current-loop
+    /// bandwidth, for tests exercising bandwidth-gated behavior.
+    pub fn new_with_bandwidth_hz(bandwidth_hz: f32) -> Self {
+        let mut backend = Self::new();
+        backend.tmc_config.bandwidth_hz = bandwidth_hz;
+        backend
     }
 
     /// Set sequential `ABN_DECODER_COUNT` values for read-register tests.
@@ -748,6 +777,21 @@ impl CommissionRegisterIo for MockBackend {
                 .elapsed_us_value
                 .saturating_add(self.openloop_phi_elapsed_step_us);
             return Ok(val);
+        }
+        if let Some(script) = self.script_gain_floor_capture {
+            let t = self.elapsed_us_value as f64;
+            if addr == foci_tmc4671::registers::PID_POSITION_ACTUAL.addr() {
+                let position = (0.5 * script.accel_raw_per_us2 * t * t) as i32;
+                return Ok(position as u32);
+            }
+            if addr == foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL.addr() {
+                let value = f64::from(script.i_target) * (1.0 - (-t / script.tau_current_us).exp());
+                let torque_actual = value as i16;
+                let packed = foci_tmc4671::registers::PidTorqueFluxActual::new()
+                    .with_pid_flux_actual(0)
+                    .with_pid_torque_actual(torque_actual);
+                return Ok(packed.into());
+            }
         }
         if self.script_resistance_current_proportional_to_ud {
             if addr == foci_tmc4671::registers::ADC_IWY_IUX.addr() {

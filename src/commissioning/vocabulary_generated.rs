@@ -46,6 +46,13 @@ pub enum CommissionPhase {
     /// position mode, and verifies stability. Runs as the final inner
     /// phase for Calibrate and Commission sequences — wire code 17.
     ClosedLoopActivation,
+    /// Inner phase — commissioning fallback gain-floor measurement, inserted
+    /// between current-loop validation and closed-loop activation on the
+    /// fresh-commission path only. Appended (not inserted between
+    /// CurrentValidate and ClosedLoopActivation) so the stable wire values
+    /// remain unchanged — wire code 26, the next free code after the
+    /// reserved 22-25 block.
+    GainFloorMeasurement,
 }
 
 impl CommissionPhase {
@@ -71,6 +78,7 @@ impl CommissionPhase {
             Self::ReversalStandstillRobustnessGate => 21,
             Self::EncoderAlign => 16,
             Self::ClosedLoopActivation => 17,
+            Self::GainFloorMeasurement => 26,
         }
     }
 
@@ -91,6 +99,7 @@ impl CommissionPhase {
         ("ReversalStandstillRobustnessGate", 21),
         ("EncoderAlign", 16),
         ("ClosedLoopActivation", 17),
+        ("GainFloorMeasurement", 26),
     ];
 }
 

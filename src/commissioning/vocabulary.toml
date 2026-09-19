@@ -122,6 +122,19 @@ limit, voltage limits, biquad filters, STEP_WIDTH, enters
 position mode, and verifies stability. Runs as the final inner
 phase for Calibrate and Commission sequences — wire code 17."""
 
+[[phase]]
+ident = "GainFloorMeasurement"
+wire_code = 26
+label = "Gain floor measurement"
+trace_ident = "GainFloorMeasurement"
+doc = """
+Inner phase — commissioning fallback gain-floor measurement, inserted
+between current-loop validation and closed-loop activation on the
+fresh-commission path only. Appended (not inserted between
+CurrentValidate and ClosedLoopActivation) so the stable wire values
+remain unchanged — wire code 26, the next free code after the
+reserved 22-25 block."""
+
 [[breakaway]]
 ident = "BreakawayProbe"
 wire_code = 0

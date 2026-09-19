@@ -502,6 +502,15 @@ pub(crate) enum InnerPhase {
         state: CurrentValidateState,
         data: CurrentValidateData,
     },
+    /// Commissioning fallback gain-floor measurement, inserted between
+    /// current-loop validation finalize and ClosedLoopActivation on the
+    /// fresh-commission path only.
+    GainFloorMeasurement {
+        state: gain_floor::GainFloorState,
+        i_target: i16,
+        resistance_current_ceiling_count: u16,
+        inner_result: Option<InnerResult>,
+    },
     /// Closed-loop position mode entry with PID gains, filters, and stability check.
     ClosedLoopActivation {
         /// Current sub-state.
@@ -559,6 +568,7 @@ impl InnerPhase {
             }
             Self::CurrentTune { .. } => Some(CommissionPhase::CurrentTune),
             Self::CurrentValidate { .. } => Some(CommissionPhase::CurrentValidate),
+            Self::GainFloorMeasurement { .. } => Some(CommissionPhase::GainFloorMeasurement),
             Self::ClosedLoopActivation { .. } => Some(CommissionPhase::ClosedLoopActivation),
             Self::Failed(_) => None,
         }
@@ -677,6 +687,9 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
         InnerPhase::CurrentValidate { .. } => {
             current_loop::step_current_validate(phase, buf, profile, sequence, adc_cal, backend)
                 .await
+        }
+        InnerPhase::GainFloorMeasurement { .. } => {
+            gain_floor::step_gain_floor_measurement(phase, backend).await
         }
         InnerPhase::ClosedLoopActivation { .. } => {
             closed_loop_activation::step_closed_loop_activation(

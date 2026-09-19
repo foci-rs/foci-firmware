@@ -110,7 +110,7 @@ pub(crate) fn fit_current_response(
     }
 
     let bw_hz = 1.0 / (2.0 * core::f32::consts::PI * tau_current_us / 1_000_000.0);
-    Ok(bw_hz.round() as u32)
+    Ok(libm::roundf(bw_hz) as u32)
 }
 
 #[cfg(test)]

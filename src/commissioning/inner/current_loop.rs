@@ -2122,26 +2122,47 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     let flux_filter_hz = backend
                         .configured_flux_filter_hz()
                         .unwrap_or(default_current_filter_hz);
-                    *phase = InnerPhase::ClosedLoopActivation {
-                        state: ClosedLoopActivationState::WriteGains,
-                        flux_p: data.gains.flux_p,
-                        flux_i: data.gains.flux_i,
-                        torque_p: data.gains.torque_p,
-                        torque_i: data.gains.torque_i,
-                        // Conservative fallback outer gains.
-                        velocity_p: crate::pid::DEFAULT_OUTER_GAINS.velocity_p,
-                        velocity_i: crate::pid::DEFAULT_OUTER_GAINS.velocity_i,
-                        position_p: crate::pid::DEFAULT_OUTER_GAINS.position_p,
-                        position_i: crate::pid::DEFAULT_OUTER_GAINS.position_i,
-                        velocity_limit: vel_limit,
-                        velocity_filter_hz: 0,
-                        torque_filter_hz,
-                        position_filter_hz: 0,
-                        flux_filter_hz,
+
+                    // Gain-floor measurement (spec, "Bandwidth-gated fresh
+                    // commissioning path") only applies inside the current
+                    // loop's supported bandwidth range; a board configured
+                    // outside it keeps writing DEFAULT_OUTER_GAINS unchanged,
+                    // exactly as before this gate existed.
+                    const SUPPORTED_BW_MIN_HZ: f32 = 95.5;
+                    const SUPPORTED_BW_MAX_HZ: f32 = 796.0;
+                    let bandwidth_hz = backend.tmc_config().bandwidth_hz;
+                    if !(SUPPORTED_BW_MIN_HZ..=SUPPORTED_BW_MAX_HZ).contains(&bandwidth_hz) {
+                        *phase = InnerPhase::ClosedLoopActivation {
+                            state: ClosedLoopActivationState::WriteGains,
+                            flux_p: data.gains.flux_p,
+                            flux_i: data.gains.flux_i,
+                            torque_p: data.gains.torque_p,
+                            torque_i: data.gains.torque_i,
+                            // Conservative fallback outer gains.
+                            velocity_p: crate::pid::DEFAULT_OUTER_GAINS.velocity_p,
+                            velocity_i: crate::pid::DEFAULT_OUTER_GAINS.velocity_i,
+                            position_p: crate::pid::DEFAULT_OUTER_GAINS.position_p,
+                            position_i: crate::pid::DEFAULT_OUTER_GAINS.position_i,
+                            velocity_limit: vel_limit,
+                            velocity_filter_hz: 0,
+                            torque_filter_hz,
+                            position_filter_hz: 0,
+                            flux_filter_hz,
+                            inner_result: Some(result),
+                            attempt: 0,
+                        };
+                        return StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation);
+                    }
+
+                    let i_target = data.torque_step_amplitude as i16;
+                    let resistance_current_ceiling_count = result.resistance_current_ceiling_count;
+                    *phase = InnerPhase::GainFloorMeasurement {
+                        state: super::gain_floor::GainFloorState::Start,
+                        i_target,
+                        resistance_current_ceiling_count,
                         inner_result: Some(result),
-                        attempt: 0,
                     };
-                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+                    StepResult::PhaseChanged(CommissionPhase::GainFloorMeasurement)
                 }
                 InnerSequence::Calibrate | InnerSequence::Selftest => {
                     unreachable!("Calibrate/Selftest never reach CurrentValidate")
@@ -2901,6 +2922,85 @@ mod tests {
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
+        });
+    }
+
+    #[test]
+    fn bandwidth_in_range_attempts_gain_floor_phase() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+                *state = CurrentValidateState::Finalize;
+            }
+            let mut buf = TransientBuffer::new();
+            // 600 Hz (Ouroboros) is inside [95.5, 796] Hz.
+            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::GainFloorMeasurement)
+            ));
+            match phase {
+                InnerPhase::GainFloorMeasurement { .. } => {}
+                other => panic!("expected GainFloorMeasurement phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn bandwidth_out_of_range_skips_to_default_outer_gains() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+                *state = CurrentValidateState::Finalize;
+            }
+            let mut buf = TransientBuffer::new();
+            // 1600 Hz (OpenFFBoard) is outside [95.5, 796] Hz.
+            let mut backend = MockBackend::new_with_bandwidth_hz(1600.0);
+
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+            ));
+            match phase {
+                InnerPhase::ClosedLoopActivation {
+                    velocity_p,
+                    velocity_i,
+                    position_p,
+                    position_i,
+                    ..
+                } => {
+                    assert_eq!(velocity_p, crate::pid::DEFAULT_OUTER_GAINS.velocity_p);
+                    assert_eq!(velocity_i, crate::pid::DEFAULT_OUTER_GAINS.velocity_i);
+                    assert_eq!(position_p, crate::pid::DEFAULT_OUTER_GAINS.position_p);
+                    assert_eq!(position_i, crate::pid::DEFAULT_OUTER_GAINS.position_i);
+                }
+                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
+            }
+            assert!(
+                backend.spi_log.is_empty(),
+                "no torque step should ever be commanded on the out-of-range fallback path"
+            );
         });
     }
 

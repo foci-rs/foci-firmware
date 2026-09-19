@@ -12,9 +12,9 @@ pub(crate) fn compute_velocity_p(
     bw_current_floor_hz: u32,
 ) -> Result<(foci_tmc4671::pid::PidPGain, f32), crate::autotune::CommissionError> {
     let omega_target_rad_s = 2.0 * core::f32::consts::PI * bw_current_floor_hz as f32 / N_V;
-    let velocity_p_raw = (256.0 * omega_target_rad_s * 2.0 * core::f32::consts::PI
-        / (60.0 * accel_per_count))
-        .ceil();
+    let velocity_p_raw = libm::ceilf(
+        256.0 * omega_target_rad_s * 2.0 * core::f32::consts::PI / (60.0 * accel_per_count),
+    );
     if velocity_p_raw <= 0.0 {
         return Err(crate::autotune::CommissionError::GainFloorVelocityGainUnrepresentable);
     }
@@ -33,7 +33,7 @@ pub(crate) fn compute_position_p(
     omega_target_rad_s: f32,
 ) -> Result<foci_tmc4671::pid::PidPGain, crate::autotune::CommissionError> {
     let bw_position_target_rad_s = omega_target_rad_s / N_P;
-    let position_p_raw = (bw_position_target_rad_s * 60.0 * 256.0 / 65536.0).ceil();
+    let position_p_raw = libm::ceilf(bw_position_target_rad_s * 60.0 * 256.0 / 65536.0);
     if position_p_raw <= 0.0 {
         return Err(crate::autotune::CommissionError::GainFloorPositionGainUnrepresentable);
     }
