@@ -27,8 +27,8 @@ pub mod velocity_measurement;
 mod velocity_units;
 
 pub use buffer::{
-    CaptureDirection, DelayTimestampOffsets, TRANSIENT_LEN, TransientBuffer,
-    normalize_capture_sample,
+    CaptureDirection, DelayTimestampOffsets, HIGH_RATE_DELAY_LEN, TRANSIENT_LEN,
+    TransientBuffer, normalize_capture_sample,
 };
 pub use current::current_loop_actionable_status_mask;
 pub use current::current_loop_entry_actionable_status_mask;

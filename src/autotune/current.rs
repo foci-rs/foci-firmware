@@ -465,6 +465,27 @@ pub fn estimate_electrical_delay(
         .ok_or(CommissionError::ElectricalModelNoSamples)
 }
 
+/// Sample count for the high-rate electrical-delay capture.
+///
+/// `min(ceil(5 * tau_e_us / period_us), HIGH_RATE_DELAY_LEN, floor(65535 /
+/// (2 * period_us)))`. The third term keeps the worst-case accepted final
+/// sample's actual `u16` offset in range: the capture's total-duration
+/// timing-rejection bound (see `high_rate_delay_timing_ok`) is `2x` nominal
+/// duration, so the worst-case accepted final offset is `2 * (sample_count -
+/// 1) * period_us`, and this term is derived from the same `2x` constant
+/// rather than chosen independently.
+pub fn high_rate_sample_count(tau_e_us: u32, period_us: u16) -> u16 {
+    let period_us_u32 = u32::from(period_us);
+    let tau_bound = (u64::from(tau_e_us) * 5).div_ceil(u64::from(period_us_u32));
+    let tau_bound = u16::try_from(tau_bound).unwrap_or(u16::MAX);
+
+    let buffer_bound = crate::autotune::HIGH_RATE_DELAY_LEN as u16;
+
+    let u16_safety_bound = (65_535u32 / (2 * period_us_u32)) as u16;
+
+    tau_bound.min(buffer_bound).min(u16_safety_bound).max(1)
+}
+
 /// Return the retry policy decision for one current-axis validation failure.
 pub fn current_axis_retry_decision(
     axis_status: u8,
@@ -1592,5 +1613,32 @@ mod tests {
             0,
             "adc_i_clipped must remain entry-actionable"
         );
+    }
+
+    #[test]
+    fn high_rate_sample_count_scales_with_tau() {
+        // tau=1_350us, period=20us: ceil(5*1350/20) = 338, well under both other caps.
+        assert_eq!(high_rate_sample_count(1_350, 20), 338);
+    }
+
+    #[test]
+    fn high_rate_sample_count_caps_at_buffer_capacity() {
+        // Large tau at 20us period would want >512; capped at 512.
+        assert_eq!(high_rate_sample_count(100_000, 20), 512);
+    }
+
+    #[test]
+    fn high_rate_sample_count_caps_at_u16_safety_bound_on_openffboard_default() {
+        // At 200us period, floor(65535 / (2*200)) = 163, below the 512 buffer cap
+        // and below what a large tau would otherwise request.
+        assert_eq!(high_rate_sample_count(100_000, 200), 163);
+    }
+
+    #[test]
+    fn high_rate_sample_count_ouroboros_default_matches_spike_math() {
+        // tau=1_350us (the spec's cited example), period=20us: ceil(5*1350/20)=338.
+        assert_eq!(high_rate_sample_count(1_350, 20), 338);
+        // Small tau still returns at least 1.
+        assert!(high_rate_sample_count(1, 20) >= 1);
     }
 }
