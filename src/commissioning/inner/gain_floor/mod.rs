@@ -201,36 +201,12 @@ where
         .iter()
         .map(|s| (s.t_us, s.position.wrapping_sub(position_0)))
         .collect();
-    let min_pos = position_samples.iter().map(|(_, p)| *p).min().unwrap_or(0);
-    let max_pos = position_samples.iter().map(|(_, p)| *p).max().unwrap_or(0);
-    let min_torque = capture.iter().map(|s| s.torque_actual).min().unwrap_or(0);
-    let max_torque = capture.iter().map(|s| s.torque_actual).max().unwrap_or(0);
-    let first_torque = capture.first().map(|s| s.torque_actual).unwrap_or(0);
-    let last_torque = capture.last().map(|s| s.torque_actual).unwrap_or(0);
-    defmt::info!(
-        "TEMP-DIAG torque_actual: first={} last={} range=[{},{}]",
-        first_torque,
-        last_torque,
-        min_torque,
-        max_torque
-    );
-    defmt::info!(
-        "TEMP-DIAG quadratic fit input: {} samples, commanded_sign={} i_target={} pos_range=[{},{}] p2p={}",
-        position_samples.len(),
-        commanded_sign,
-        i_target,
-        min_pos,
-        max_pos,
-        max_pos - min_pos
-    );
     let accel_raw_q32 = match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
         Ok(v) => v,
         Err(quadratic_fit::GainFloorFitError::WrongSign) => {
-            defmt::warn!("TEMP-DIAG quadratic fit: WrongSign");
             return super::fail_inner(phase, CommissionError::GainFloorNonPositiveSlope);
         }
-        Err(e) => {
-            defmt::warn!("TEMP-DIAG quadratic fit rejected: {}", e);
+        Err(_) => {
             return super::fail_inner(phase, CommissionError::GainFloorInsufficientLinearPoints);
         }
     };
