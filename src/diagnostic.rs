@@ -989,6 +989,10 @@ struct StepperPerfCounterState {
     scheduler_full_count: AtomicU32,
     stepper_load_lateness_max_ticks: AtomicU32,
     stepper_load_lateness_last_ticks: AtomicI32,
+    total_irq_cycles_lo: AtomicU32,
+    total_irq_cycles_hi: AtomicU32,
+    total_dispatch_cycles_lo: AtomicU32,
+    total_dispatch_cycles_hi: AtomicU32,
 }
 
 impl StepperPerfCounterState {
@@ -1034,6 +1038,10 @@ impl StepperPerfCounterState {
             scheduler_full_count: AtomicU32::new(0),
             stepper_load_lateness_max_ticks: AtomicU32::new(0),
             stepper_load_lateness_last_ticks: AtomicI32::new(0),
+            total_irq_cycles_lo: AtomicU32::new(0),
+            total_irq_cycles_hi: AtomicU32::new(0),
+            total_dispatch_cycles_lo: AtomicU32::new(0),
+            total_dispatch_cycles_hi: AtomicU32::new(0),
         }
     }
 
@@ -1081,14 +1089,22 @@ impl StepperPerfCounterState {
         self.scheduler_full_count.store(0, Relaxed);
         self.stepper_load_lateness_max_ticks.store(0, Relaxed);
         self.stepper_load_lateness_last_ticks.store(0, Relaxed);
+        self.total_irq_cycles_lo.store(0, Relaxed);
+        self.total_irq_cycles_hi.store(0, Relaxed);
+        self.total_dispatch_cycles_lo.store(0, Relaxed);
+        self.total_dispatch_cycles_hi.store(0, Relaxed);
     }
 }
 
 /// Shared board-agnostic step-dispatch performance counters.
 ///
 /// The counters are diagnostic best-effort views over relaxed atomics. Snapshot
-/// callers may observe fields from different instants while P3 updates them;
-/// this avoids adding locks or critical sections to stepper hot paths.
+/// callers may observe fields from different instants while P3 updates them.
+/// Every field except `total_irq_cycles`/`total_dispatch_cycles` avoids locks
+/// or critical sections entirely; those two are written every TIM5 activation
+/// and read as a coherent lo/hi pair via a short critical section
+/// (`read_split_u32`) — see its doc comment for why a retry-based read is not
+/// sufficient for a value written this frequently.
 pub struct StepperPerfCounters<const CPU_CYCLES_PER_US: u32> {
     counters: StepperPerfCounterState,
 }
@@ -1193,6 +1209,12 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
     pub fn record_tim5_irq(&self, irq_cycles: u32, dispatch_cycles: u32, event_count: u32) {
         let counters = &self.counters;
         counters.sample_count.fetch_add(1, Relaxed);
+        add_split_u32(&counters.total_irq_cycles_lo, &counters.total_irq_cycles_hi, irq_cycles);
+        add_split_u32(
+            &counters.total_dispatch_cycles_lo,
+            &counters.total_dispatch_cycles_hi,
+            dispatch_cycles,
+        );
         counters.tim5_activation_count.fetch_add(1, Relaxed);
         counters
             .tim5_event_count_total
@@ -1249,6 +1271,9 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
         build_trace_enabled: bool,
     ) -> StepperPerfSnapshot {
         let counters = &self.counters;
+        let total_irq_cycles = read_split_u32(&counters.total_irq_cycles_lo, &counters.total_irq_cycles_hi);
+        let total_dispatch_cycles =
+            read_split_u32(&counters.total_dispatch_cycles_lo, &counters.total_dispatch_cycles_hi);
         let snapshot = StepperPerfSnapshot {
             channel,
             sample_count: counters.sample_count.load(Relaxed),
@@ -1305,6 +1330,10 @@ impl<const CPU_CYCLES_PER_US: u32> StepperPerfCounters<CPU_CYCLES_PER_US> {
             stepper_load_lateness_last_ticks: counters
                 .stepper_load_lateness_last_ticks
                 .load(Relaxed),
+            total_irq_cycles_lo: total_irq_cycles.0,
+            total_irq_cycles_hi: total_irq_cycles.1,
+            total_dispatch_cycles_lo: total_dispatch_cycles.0,
+            total_dispatch_cycles_hi: total_dispatch_cycles.1,
             build_trace_enabled,
         };
         if clear {
@@ -1380,6 +1409,27 @@ fn record_max_with_site(max: &AtomicU32, site: &AtomicU32, value: u32, site_code
             Err(next) => current = next,
         }
     }
+}
+
+/// Add `delta` to a wrap-safe split-`u32` cumulative counter, carrying into
+/// `hi` on `lo` overflow. `record_tim5_irq` is this counter's sole writer
+/// (one TIM5 activation at a time), so this needs no synchronization beyond
+/// the atomics themselves — see `read_split_u32` for the reader-side
+/// coherence requirement this single-writer property does not provide.
+fn add_split_u32(lo: &AtomicU32, hi: &AtomicU32, delta: u32) {
+    let prev_lo = lo.fetch_add(delta, Relaxed);
+    if prev_lo.checked_add(delta).is_none() {
+        hi.fetch_add(1, Relaxed);
+    }
+}
+
+/// Read a wrap-safe split-`u32` cumulative counter coherently, excluding
+/// `add_split_u32`'s writer for the duration via a short critical section.
+/// A hi-lo-hi retry loop is not sufficient here: it cannot distinguish a
+/// stable pair from the specific interval where `lo` has already wrapped to
+/// a small value but `hi`'s carry has not yet landed.
+fn read_split_u32(lo: &AtomicU32, hi: &AtomicU32) -> (u32, u32) {
+    critical_section::with(|_| (lo.load(Relaxed), hi.load(Relaxed)))
 }
 
 /// Snapshot of board-local step-dispatch performance counters.
@@ -1467,6 +1517,14 @@ pub struct StepperPerfSnapshot {
     pub stepper_load_lateness_max_ticks: u32,
     /// Last stepper segment-load lateness as signed TIM5 ticks.
     pub stepper_load_lateness_last_ticks: i32,
+    /// Cumulative TIM5 IRQ handler cycles since the last reset, low word.
+    pub total_irq_cycles_lo: u32,
+    /// Cumulative TIM5 IRQ handler cycles since the last reset, high word.
+    pub total_irq_cycles_hi: u32,
+    /// Cumulative TIM5 scheduler dispatch cycles since the last reset, low word.
+    pub total_dispatch_cycles_lo: u32,
+    /// Cumulative TIM5 scheduler dispatch cycles since the last reset, high word.
+    pub total_dispatch_cycles_hi: u32,
     /// Non-zero when the board was built with trace instrumentation.
     pub build_trace_enabled: bool,
 }
@@ -2142,5 +2200,48 @@ mod tests {
         counters.record_p2_send();
         counters.record_p2_send();
         assert_eq!(counters.overlap_count(), 3);
+    }
+
+    #[test]
+    fn stepper_perf_counters_accumulate_total_irq_and_dispatch_cycles() {
+        let counters = StepperPerfCounters::<168>::new();
+
+        counters.record_tim5_irq(500, 300, 3);
+        counters.record_tim5_irq(900, 450, 0);
+
+        let snapshot = counters.snapshot(0, false, false);
+        assert_eq!(snapshot.total_irq_cycles_lo, 1400);
+        assert_eq!(snapshot.total_irq_cycles_hi, 0);
+        assert_eq!(snapshot.total_dispatch_cycles_lo, 750);
+        assert_eq!(snapshot.total_dispatch_cycles_hi, 0);
+    }
+
+    #[test]
+    fn stepper_perf_counters_carry_total_irq_cycles_into_high_word_on_overflow() {
+        let counters = StepperPerfCounters::<168>::new();
+
+        counters.record_tim5_irq(u32::MAX - 10, 0, 1);
+        counters.record_tim5_irq(20, 0, 1);
+
+        let snapshot = counters.snapshot(0, false, false);
+        assert_eq!(snapshot.total_irq_cycles_lo, 9);
+        assert_eq!(snapshot.total_irq_cycles_hi, 1);
+    }
+
+    #[test]
+    fn stepper_perf_counters_clear_totals_with_other_counters_on_reset() {
+        let counters = StepperPerfCounters::<168>::new();
+
+        counters.record_tim5_irq(700, 600, 2);
+
+        let before_clear = counters.snapshot(7, true, false);
+        assert_eq!(before_clear.total_irq_cycles_lo, 700);
+        assert_eq!(before_clear.total_dispatch_cycles_lo, 600);
+
+        let after_clear = counters.snapshot(7, false, false);
+        assert_eq!(after_clear.total_irq_cycles_lo, 0);
+        assert_eq!(after_clear.total_irq_cycles_hi, 0);
+        assert_eq!(after_clear.total_dispatch_cycles_lo, 0);
+        assert_eq!(after_clear.total_dispatch_cycles_hi, 0);
     }
 }
