@@ -217,11 +217,14 @@ impl From<PositionTuneOutcome> for PositionTuneFault {
 
 /// Halt the step-queue stimulus and clear the feedforward opt-in.
 ///
-/// The order is deliberate and safety-relevant: the step timer is halted and
-/// the queue drained before the caller zeroes excitation or disables the
-/// driver, so no queued segment can keep pulsing a channel whose driver has
-/// just been cut. Called at the top of every failure path this phase takes,
-/// including the outer safety layer's own exits (`dispatch.rs`).
+/// Must be the first effect at every site that calls it: the step timer must
+/// be halted and the queue drained before that caller zeroes excitation or
+/// disables the driver, so no queued segment can keep pulsing a channel
+/// whose driver has just been cut. Called first in `fail_position_tune`; at
+/// the top of all three of `dispatch.rs`'s outer-safety exits
+/// (invalid-budget, safety-fault, check-error); and unconditionally at the
+/// top of `CommissioningEngine::step`'s shutdown branch, which bypasses
+/// `step_inner`/`step_outer` (and so every one of the sites above) entirely.
 pub(crate) fn abort_stimulus<B: CommissioningBackend>(backend: &mut B) {
     backend.stimulus_stop();
     backend.set_stimulus_feedforward(false);
@@ -1405,16 +1408,16 @@ mod tests {
             StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
         ));
 
-        let stop_index = backend
-            .event_log
-            .iter()
-            .position(|event| *event == MockEvent::Stimulus(StimulusOp::Stop))
-            .expect("Stop must be recorded in the shared event log");
-        let ff_false_index = backend
-            .event_log
-            .iter()
-            .position(|event| *event == MockEvent::Stimulus(StimulusOp::Feedforward(false)))
-            .expect("Feedforward(false) must be recorded in the shared event log");
+        // `arm_stroke`'s own admission (the first `engine.step` in the drive
+        // loop above) already emits a `Stop` and a `Feedforward` toggle, so
+        // asserting on the *first* occurrence of either op in the whole log
+        // would pass unconditionally -- it says nothing about where the
+        // safety exit's own `abort_stimulus` call landed. Instead, find the
+        // safety exit's own zeroing write and require the event pair
+        // immediately before it to be exactly `abort_stimulus`'s own two
+        // ops, adjacent, nothing else between them and the write: this form
+        // fails the instant anything is inserted ahead of the abort, or the
+        // abort is moved after the write.
         let write_zero_index = backend
             .event_log
             .iter()
@@ -1422,13 +1425,82 @@ mod tests {
                 matches!(event, MockEvent::Spi(SpiOp::Write(addr, 0)) if *addr == PID_TORQUE_FLUX_TARGET.addr())
             })
             .expect("the safety-fault exit's PID_TORQUE_FLUX_TARGET zero write must be recorded");
+        let preceding = &backend.event_log[..write_zero_index];
         assert!(
-            stop_index < write_zero_index,
-            "Stimulus(Stop) must precede the safety exit's excitation zeroing"
+            preceding.len() >= 2,
+            "expected abort_stimulus's pair before the safety exit's write, got {preceding:?}"
         );
+        assert_eq!(
+            &preceding[preceding.len() - 2..],
+            [
+                MockEvent::Stimulus(StimulusOp::Stop),
+                MockEvent::Stimulus(StimulusOp::Feedforward(false)),
+            ],
+            "abort_stimulus's Stop then Feedforward(false) must be the last events before the \
+             safety exit's excitation zeroing, with nothing else between them and the write"
+        );
+    }
+
+    #[fixture_test]
+    fn a_shutdown_mid_stroke_stops_the_stimulus_before_the_engines_safe_state_restore() {
+        // `CommissioningEngine::step`'s shutdown branch bypasses
+        // `step_inner`/`step_outer` entirely -- and so every one of
+        // `dispatch.rs`'s outer-safety exits and `fail_position_tune` -- so
+        // it needs its own `abort_stimulus` call, independent of the one
+        // this module's own failure path and the outer safety layer make.
+        let mut backend = position_tune_backend();
+        let params = sample_outer_params();
+        let entry = sample_entry_snapshot();
+        let mut engine =
+            crate::commissioning::CommissioningEngine::new_outer_for_tmc_with_position_tune(
+                7,
+                crate::state::tmc::tmc_channel0(),
+                params,
+                entry,
+                0,
+            );
+
+        let mut clock_us = backend.elapsed_us_value;
+        for _ in 0..6 {
+            backend.elapsed_us_value = clock_us;
+            let result = pollster::block_on(engine.step(&mut backend));
+            match result {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                other => panic!("unexpected early terminal: {other:?}"),
+            }
+        }
+
+        backend.shutdown_requested = true;
+        backend.elapsed_us_value = clock_us;
+        let terminal = pollster::block_on(engine.step(&mut backend));
+        assert!(matches!(
+            terminal,
+            StepResult::OuterFailed(CommissionError::Shutdown)
+        ));
+
+        // The safe-state restore sequence's first write is always
+        // `MODE_RAMP_MODE_MOTION = 0` (see `tmc_safe_state`'s step 0).
+        let restore_write_index = backend
+            .event_log
+            .iter()
+            .position(|event| {
+                matches!(event, MockEvent::Spi(SpiOp::Write(addr, 0)) if *addr == MODE_RAMP_MODE_MOTION.addr())
+            })
+            .expect("the safe-state restore's MODE_RAMP_MODE_MOTION zero write must be recorded");
+        let preceding = &backend.event_log[..restore_write_index];
         assert!(
-            ff_false_index < write_zero_index,
-            "Stimulus(Feedforward(false)) must precede the safety exit's excitation zeroing"
+            preceding.len() >= 2,
+            "expected abort_stimulus's pair before the safe-state restore, got {preceding:?}"
+        );
+        assert_eq!(
+            &preceding[preceding.len() - 2..],
+            [
+                MockEvent::Stimulus(StimulusOp::Stop),
+                MockEvent::Stimulus(StimulusOp::Feedforward(false)),
+            ],
+            "the shutdown branch's abort_stimulus call must stop the stimulus and clear \
+             feedforward before the safe-state restore begins"
         );
     }
 

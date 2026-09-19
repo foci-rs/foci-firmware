@@ -1756,9 +1756,16 @@ impl CommissioningEngine {
             }
             // Defense in depth: dispatch already restores safe state on
             // terminal failures, but the shutdown abort path bypasses
-            // step_inner / step_outer entirely. Drive the canonical helper
-            // here so step processing is gated and the chip is de-energized
-            // before the abort is reported.
+            // step_inner / step_outer entirely, so it never reaches
+            // `fail_position_tune` or any of `dispatch.rs`'s outer-safety
+            // exits. Halt the step-queue stimulus unconditionally, before
+            // anything else, for the same reason those sites do: clearing
+            // `motor_armed` does not itself stop an already-armed step
+            // timer, only `stimulus_stop` does. Unconditional rather than
+            // gated on `OuterPhase::PositionTune` -- `stimulus_stop` and
+            // `set_stimulus_feedforward(false)` are documented idempotent,
+            // so this is a safe no-op whenever no stimulus was ever armed.
+            crate::commissioning::outer::position_tune::abort_stimulus(backend);
             self.tmc_state
                 .motor_armed
                 .store(false, core::sync::atomic::Ordering::Relaxed);
