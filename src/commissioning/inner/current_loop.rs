@@ -2809,7 +2809,8 @@ mod tests {
     }
 
     #[test]
-    fn accepted_current_validation_hands_off_bandwidth_default_current_filters() {
+    fn accepted_current_validation_sets_pwm_relative_default_current_filters_regardless_of_bandwidth()
+     {
         pollster::block_on(async {
             let mut phase = current_validate_phase();
             if let InnerPhase::CurrentValidate { state, data } = &mut phase {
@@ -2818,6 +2819,9 @@ mod tests {
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
+            // Deliberately different from effective_bandwidth_hz above -- the
+            // default filter is 0.4 * fPWM (FOCI-162) and must not vary with
+            // either bandwidth value.
             backend.tmc_config.bandwidth_hz = 1600.0;
 
             let result = step_current_validate(
@@ -2843,9 +2847,9 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(velocity_filter_hz, 0);
-                    assert_eq!(torque_filter_hz, 3200);
+                    assert_eq!(torque_filter_hz, 10_000);
                     assert_eq!(position_filter_hz, 0);
-                    assert_eq!(flux_filter_hz, 3200);
+                    assert_eq!(flux_filter_hz, 10_000);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }

@@ -17,9 +17,8 @@ pub const fn dsadc_mdec_from_pwm_maxcnt(pwm_maxcnt: u16) -> u16 {
     }
 }
 
-const CURRENT_FILTER_RATIO_TO_BANDWIDTH: f32 = 4.0;
 const CURRENT_FILTER_FLOOR_HZ: u32 = 1000;
-const CURRENT_FILTER_MAX_HZ: u32 = 6000;
+const CURRENT_FILTER_PWM_RATIO: f32 = 0.4;
 
 /// Board-specific TMC4671 hardware configuration.
 ///
@@ -97,27 +96,24 @@ impl TmcConfig {
         (self.pwm_maxcnt as u32 + 1) * 10
     }
 
-    /// Default torque/flux current-measurement filter cutoff in Hz.
+    /// Default torque/flux target-path filter cutoff in Hz.
     ///
-    /// The cutoff tracks the current-loop bandwidth so retuning the loop keeps
-    /// roughly the same filter-to-crossover ratio. The upper bound stays below
-    /// the 25 kHz PWM Nyquist region and follows lower PWM frequencies by
-    /// capping at one quarter of the PWM frequency.
+    /// FOCI-162's hardware comparison ladder found no measurable difference
+    /// in current-step tracking, saturation, or coefficient quantization
+    /// across 6-10 kHz on the current-loop bandwidths tested, so the cutoff
+    /// no longer tracks bandwidth: it is `0.4 * fPWM`, a PWM-relative
+    /// constant that is self-limiting relative to Nyquist by construction
+    /// (`docs/validation/foci-162-2026-09-19-target-filter-cutoff/`).
     pub fn default_current_filter_hz(&self) -> u16 {
         self.default_current_filter_hz_for_bandwidth(self.bandwidth_hz)
     }
 
-    /// Default torque/flux current-measurement filter cutoff for an accepted
-    /// current-loop bandwidth in Hz.
-    pub fn default_current_filter_hz_for_bandwidth(&self, bandwidth_hz: f32) -> u16 {
-        let derived = if bandwidth_hz.is_finite() && bandwidth_hz > 0.0 {
-            (bandwidth_hz * CURRENT_FILTER_RATIO_TO_BANDWIDTH + 0.5) as u32
-        } else {
-            0
-        };
-        let with_floor = derived.max(CURRENT_FILTER_FLOOR_HZ);
-        let pwm_margin = self.pwm_freq_hz() / 4;
-        with_floor.min(CURRENT_FILTER_MAX_HZ).min(pwm_margin) as u16
+    /// Default torque/flux target-path filter cutoff. `bandwidth_hz` is
+    /// accepted for call-site compatibility but no longer affects the
+    /// result -- see [`Self::default_current_filter_hz`].
+    pub fn default_current_filter_hz_for_bandwidth(&self, _bandwidth_hz: f32) -> u16 {
+        let pwm_margin = (self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u32;
+        pwm_margin.max(CURRENT_FILTER_FLOOR_HZ) as u16
     }
 
     /// BBM register value: `(bbm_h << 8) | bbm_l`.
@@ -217,32 +213,28 @@ mod tests {
     }
 
     #[test]
-    fn current_filter_default_tracks_bandwidth_and_caps_at_six_khz() {
-        let mut cfg = test_config();
-
-        cfg.bandwidth_hz = 400.0;
-        assert_eq!(cfg.default_current_filter_hz(), 1600);
-
-        cfg.bandwidth_hz = 1200.0;
-        assert_eq!(cfg.default_current_filter_hz(), 4800);
-
-        cfg.bandwidth_hz = 1600.0;
-        assert_eq!(cfg.default_current_filter_hz(), 6000);
-
-        cfg.bandwidth_hz = 2000.0;
-        assert_eq!(cfg.default_current_filter_hz(), 6000);
-    }
-
-    #[test]
-    fn current_filter_default_has_floor_and_pwm_margin() {
+    fn current_filter_default_is_0_4_times_pwm_freq_independent_of_bandwidth() {
         let mut cfg = test_config();
 
         cfg.bandwidth_hz = 50.0;
-        assert_eq!(cfg.default_current_filter_hz(), 1000);
+        assert_eq!(cfg.default_current_filter_hz(), 10_000);
 
-        cfg.bandwidth_hz = 1600.0;
+        cfg.bandwidth_hz = 2000.0;
+        assert_eq!(cfg.default_current_filter_hz(), 10_000);
+    }
+
+    #[test]
+    fn current_filter_default_scales_with_pwm_freq() {
+        let mut cfg = test_config();
         cfg.pwm_maxcnt = 9999;
-        assert_eq!(cfg.default_current_filter_hz(), 2500);
+        assert_eq!(cfg.default_current_filter_hz(), 4_000);
+    }
+
+    #[test]
+    fn current_filter_default_has_floor() {
+        let mut cfg = test_config();
+        cfg.pwm_maxcnt = 49_999;
+        assert_eq!(cfg.default_current_filter_hz(), 1_000);
     }
 
     #[test]
