@@ -12,6 +12,8 @@
 //! `docs/notes/foci-firmware-lift-handler-audit.md` for the exact
 //! capability bound used by each handler.
 
+use core::sync::atomic::Ordering::Relaxed;
+
 use ankyra::prelude::klipper_command;
 
 use crate::context::{BoardChannels, ShutdownRecovery, StateAccess, StepperHost, TrsyncHost};
@@ -104,6 +106,9 @@ pub fn queue_step(ctx: &mut dyn StepperQueue, oid: u8, interval: u32, count: u16
     }) else {
         return;
     };
+    if refuse_if_commissioning_owned(ctx, oid, channel) {
+        return;
+    }
     let move_ = foci_klipper::stepper::StepMove::new(interval, count, add);
     if let Err(error) = ctx.queue_step_move(channel, move_) {
         defmt::error!("queue_step: oid={} channel={} {}", oid, channel, error);
@@ -132,6 +137,9 @@ pub fn set_next_step_dir(ctx: &mut dyn StepperDirection, oid: u8, dir: u8) {
     }) else {
         return;
     };
+    if refuse_if_commissioning_owned(ctx, oid, channel) {
+        return;
+    }
     ctx.set_next_step_dir(channel, dir != 0);
 }
 
@@ -154,6 +162,9 @@ pub fn reset_step_clock(ctx: &mut dyn StepperReset, oid: u8, clock: u32) {
     }) else {
         return;
     };
+    if refuse_if_commissioning_owned(ctx, oid, channel) {
+        return;
+    }
     if let Err(e) = ctx.reset_step_clock(channel, clock) {
         defmt::error!("reset_step_clock: oid={} channel={} {}", oid, channel, e);
         if ctx.enter_shutdown() {
@@ -183,6 +194,27 @@ fn stepper_channel_or_shutdown(
             None
         }
     }
+}
+
+/// A host step command on a channel the commissioning engine currently
+/// owns is a protocol violation: the engine may have the channel armed for
+/// its own stroke, so a host segment would execute inside it. Shut down,
+/// as `reset_step_clock` does for a timing violation.
+fn refuse_if_commissioning_owned(ctx: &mut dyn ShutdownRecovery, oid: u8, channel: u8) -> bool {
+    let owned = crate::state::tmc::tmc_channel(channel)
+        .is_some_and(|tmc| tmc.commission_in_flight.load(Relaxed));
+    if owned {
+        defmt::error!(
+            "stepper command on commissioning-owned channel: oid={} channel={}",
+            oid,
+            channel
+        );
+        if ctx.enter_shutdown() {
+            let clock = ctx.now();
+            ctx.send_shutdown(ShutdownReason::StepperOwnedByCommissioning, clock);
+        }
+    }
+    owned
 }
 
 /// Report the current position of a stepper.
@@ -579,6 +611,83 @@ mod tests {
         );
         assert_eq!(ctx.last_shutdown, None);
         assert_eq!(sender.diagnostics.as_slice(), &[]);
+    }
+
+    fn commissioning_owned_channel0() -> &'static crate::state::tmc::TmcChannelState {
+        let tmc = crate::state::tmc::tmc_channel0();
+        tmc.commission_in_flight.store(true, Relaxed);
+        tmc
+    }
+
+    #[test]
+    fn queue_step_on_a_commissioning_owned_channel_shuts_down_without_queuing() {
+        let mut ctx = MockCtx::new();
+        let mut sender = MockSender::new();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 0).unwrap();
+        let tmc = commissioning_owned_channel0();
+
+        queue_step(&mut ctx, &mut sender, 10, 100, 7, 0);
+
+        assert!(ctx.stepper_calls.borrow().is_empty());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::StepperOwnedByCommissioning)
+        );
+        tmc.commission_in_flight.store(false, Relaxed);
+    }
+
+    #[test]
+    fn set_next_step_dir_on_a_commissioning_owned_channel_shuts_down() {
+        let mut ctx = MockCtx::new();
+        let mut sender = MockSender::new();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 0).unwrap();
+        let tmc = commissioning_owned_channel0();
+
+        set_next_step_dir(&mut ctx, &mut sender, 10, 1);
+
+        assert!(ctx.stepper_calls.borrow().is_empty());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::StepperOwnedByCommissioning)
+        );
+        tmc.commission_in_flight.store(false, Relaxed);
+    }
+
+    #[test]
+    fn reset_step_clock_on_a_commissioning_owned_channel_shuts_down() {
+        let mut ctx = MockCtx::new();
+        let mut sender = MockSender::new();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 0).unwrap();
+        let tmc = commissioning_owned_channel0();
+
+        reset_step_clock(&mut ctx, &mut sender, 10, 1_234);
+
+        assert!(ctx.stepper_calls.borrow().is_empty());
+        assert_eq!(
+            ctx.last_shutdown,
+            Some(ShutdownReason::StepperOwnedByCommissioning)
+        );
+        tmc.commission_in_flight.store(false, Relaxed);
+    }
+
+    #[test]
+    fn host_step_commands_route_normally_once_commissioning_releases_the_channel() {
+        let mut ctx = MockCtx::new();
+        let mut sender = MockSender::new();
+        foci_klipper::commands::stepper::config_stepper_channel(ctx.state(), 10, 0).unwrap();
+        let tmc = commissioning_owned_channel0();
+        tmc.commission_in_flight.store(false, Relaxed);
+
+        queue_step(&mut ctx, &mut sender, 10, 100, 7, 0);
+
+        assert_eq!(
+            ctx.stepper_calls.borrow().as_slice(),
+            &[StepperCall::Queue {
+                channel: 0,
+                count: 7
+            }]
+        );
+        assert_eq!(ctx.last_shutdown, None);
     }
 
     #[test]

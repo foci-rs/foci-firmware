@@ -52,6 +52,7 @@ pub enum ShutdownReason {
     QueueStepFailed,
     StepperTooFarInPast,
     CannotResetTimeWhenStepperActive,
+    StepperOwnedByCommissioning,
     StepperStopOnTriggerUnknownStepper,
     StepperStopOnTriggerFailed,
     ConfigEndstopFailed,
@@ -106,6 +107,7 @@ impl ShutdownReason {
             Self::QueueStepFailed => "queue_step failed",
             Self::StepperTooFarInPast => "Stepper too far in past",
             Self::CannotResetTimeWhenStepperActive => "Can't reset time when stepper active",
+            Self::StepperOwnedByCommissioning => "stepper owned by commissioning",
             Self::StepperStopOnTriggerUnknownStepper => "stepper_stop_on_trigger: unknown stepper",
             Self::StepperStopOnTriggerFailed => "stepper_stop_on_trigger failed",
             Self::ConfigEndstopFailed => "config_endstop failed",
@@ -237,6 +239,9 @@ macro_rules! dispatch_shutdown {
                     "Can't reset time when stepper active",
                     $clock
                 );
+            }
+            $crate::shutdown::ShutdownReason::StepperOwnedByCommissioning => {
+                ::ankyra::klipper_shutdown_from!($sender, "stepper owned by commissioning", $clock);
             }
             $crate::shutdown::ShutdownReason::StepperStopOnTriggerUnknownStepper => {
                 ::ankyra::klipper_shutdown_from!(
@@ -449,6 +454,7 @@ macro_rules! foci_ankyra_config {
                 "queue_step failed",
                 "Stepper too far in past",
                 "Can't reset time when stepper active",
+                "stepper owned by commissioning",
                 "stepper_stop_on_trigger: unknown stepper",
                 "stepper_stop_on_trigger failed",
                 "config_endstop failed",
