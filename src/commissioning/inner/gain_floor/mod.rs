@@ -280,7 +280,7 @@ where
 mod tests {
     use super::*;
     use crate::autotune::{CommissionProfile, CommissionStatus, InnerSequence, TransientBuffer};
-    use crate::commission_dispatch::test_support::{GainFloorCaptureScript, MockBackend};
+    use crate::commission_dispatch::test_support::{GainFloorCaptureScript, MockBackend, SpiOp};
     use crate::commissioning::types::{
         AdcResidualEvidence, CommissionTimingSummary, CurrentValidationAxisEvidence,
         InductanceEvidence, InnerResult,
@@ -552,6 +552,15 @@ mod tests {
     /// dispatched result is `StepResult::InnerFailed(_)`, so routing through
     /// it (rather than the phase-local handler alone) is what actually
     /// proves the restore-machine boundary ran for this failure.
+    ///
+    /// `!backend.enable_pin` alone does not distinguish the wrapper's restore
+    /// from `gain_floor`'s own `set_enable_pin(false)` calls on every exit
+    /// path, so this also checks for `PIDOUT_UQ_UD_LIMITS = 1024`, a register
+    /// write `restore_safe_state_via_backend` performs (`tmc_safe_state.rs`,
+    /// `SafeStateRestoreStep::advance` step 7) that no `gain_floor` code path
+    /// ever touches -- the same `SpiOp::Write` idiom
+    /// `commission_dispatch/tests.rs`'s safety-fault-teardown tests use to
+    /// confirm a specific register reload happened.
     fn assert_routes_through_restore_machine(
         phase: &mut InnerPhase,
         backend: &mut MockBackend,
@@ -583,6 +592,16 @@ mod tests {
         assert!(
             !backend.enable_pin,
             "{expected:?} must de-energize on measurement failure"
+        );
+        assert!(
+            backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, val)
+                    if *addr == foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr()
+                        && *val == 1024
+            )),
+            "{expected:?} must route through restore_safe_state_via_backend \
+             (no PIDOUT_UQ_UD_LIMITS=1024 write observed)"
         );
     }
 
