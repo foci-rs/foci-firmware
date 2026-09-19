@@ -141,14 +141,16 @@ pub(crate) fn plan_leg(request: &StrokeRequest) -> Result<LegPlan, StrokePlanErr
     let (ramp_steps, cruise_steps, cruise_interval) =
         leg_at(request, steps_per_leg, accel_steps, speed).expect("fits was checked");
     let ramp_us = speed * 1_000_000 / u64::from(request.accel_mrev_s2);
-    let cruise_us = cruise_steps * cruise_interval * 1_000_000 / u64::from(request.step_timer_hz);
+    let cruise_ticks_wide = u128::from(cruise_steps) * u128::from(cruise_interval);
+    let cruise_us_wide =
+        cruise_ticks_wide * 1_000_000 / u128::from(request.step_timer_hz);
     Ok(LegPlan {
         speed_mrev_s: narrow(speed)?,
         steps_per_leg: narrow(steps_per_leg)?,
         ramp_steps: narrow(ramp_steps)?,
         cruise_steps: narrow(cruise_steps)?,
         ramp_us: narrow(ramp_us)?,
-        cruise_us: narrow(cruise_us)?,
+        cruise_us: narrow(cruise_us_wide.try_into().unwrap_or(u64::MAX))?,
         cruise_interval_ticks: narrow(cruise_interval)?,
     })
 }
@@ -293,5 +295,24 @@ mod tests {
         ] {
             assert_eq!(plan_leg(&zeroed), Err(StrokePlanError::ZeroInput));
         }
+    }
+
+    #[test]
+    fn plan_leg_rejects_cruise_calculation_overflow() {
+        // Inputs chosen to create large cruise_steps and cruise_interval whose
+        // product would overflow u64 before division by step_timer_hz, triggering
+        // SegmentOverflow on the final narrow() of cruise_us.
+        // speed_mrev_s=1 and accel_mrev_s2=1 produce tiny ramp_steps, leaving
+        // most of the excursion for cruise. Large step_timer_hz and low velocity
+        // yield large cruise_interval. Their product in microseconds exceeds u32.
+        let request = StrokeRequest {
+            speed_mrev_s: 1,
+            accel_mrev_s2: 1,
+            excursion_mrev: 3_000_000,
+            steps_per_rev: 8_000,
+            step_timer_hz: 4_000_000_000,
+            min_cruise_us: 50_000,
+        };
+        assert_eq!(plan_leg(&request), Err(StrokePlanError::SegmentOverflow));
     }
 }
