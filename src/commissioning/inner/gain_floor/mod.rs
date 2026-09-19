@@ -502,4 +502,159 @@ mod tests {
             );
         });
     }
+
+    /// Shared assertion for the `gain_floor_*_routes_through_restore_machine`
+    /// tests below: the same three `fail_inner` markers
+    /// `gain_floor_measurement_failure_fails_commissioning` above asserts for
+    /// `GainFloorPeakCurrentExceeded` alone, generalized to any variant.
+    fn assert_routes_through_restore_machine(
+        phase: &mut InnerPhase,
+        backend: &mut MockBackend,
+        expected: CommissionError,
+    ) {
+        let result = pollster::block_on(step_gain_floor_measurement(phase, backend));
+        assert!(
+            matches!(result, StepResult::InnerFailed(e) if e == expected),
+            "expected InnerFailed({expected:?}), got {result:?}"
+        );
+        assert!(
+            matches!(phase, InnerPhase::Failed(e) if *e == expected),
+            "expected InnerPhase::Failed({expected:?}), got {phase:?}"
+        );
+        assert!(
+            !backend.enable_pin,
+            "{expected:?} must de-energize on measurement failure"
+        );
+    }
+
+    // `GainFloorPositionGainUnrepresentable` has no test here: its only
+    // input, omega_target, is derived from bw_current_floor_hz, which the
+    // current-response fit's own coverage/sample-count gates keep inside
+    // [95.5 Hz, 796 Hz] for any capture that reaches a successful fit --
+    // across that whole range position_p_raw stays near [2, 12], nowhere
+    // near PidPGain::ZERO or MAX. `gains::position_p_max_overflow_rejected`
+    // covers its trigger condition directly; its fail_inner call site in
+    // this file is the same arm used for compute_velocity_p just above it,
+    // exercised by `gain_floor_velocity_gain_unrepresentable_routes_through_restore_machine`
+    // below.
+
+    #[test]
+    fn gain_floor_insufficient_coverage_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4000);
+        let mut backend = MockBackend::new();
+        backend.set_elapsed_us_sequence(&[0, 5]);
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorInsufficientCoverage,
+        );
+    }
+
+    #[test]
+    fn gain_floor_peak_current_exceeded_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 100);
+        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        let overcurrent = foci_tmc4671::registers::PidTorqueFluxActual::new()
+            .with_pid_flux_actual(0)
+            .with_pid_torque_actual(200);
+        let _ = backend.registers.insert(
+            foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL.addr(),
+            overcurrent.into(),
+        );
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorPeakCurrentExceeded,
+        );
+    }
+
+    #[test]
+    fn gain_floor_motion_envelope_exceeded_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4000);
+        let mut backend = MockBackend::new();
+        backend.read_position_actual_sequence.push(0).unwrap();
+        backend.read_position_actual_sequence.push(40_000).unwrap();
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorMotionEnvelopeExceeded,
+        );
+    }
+
+    #[test]
+    fn gain_floor_non_positive_slope_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4000);
+        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        backend.advance_elapsed_on_delay = true;
+        backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+            accel_raw_per_us2: -0.002,
+            tau_current_us: 1000.0,
+            i_target: 2000,
+        });
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorNonPositiveSlope,
+        );
+    }
+
+    #[test]
+    fn gain_floor_insufficient_linear_points_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4000);
+        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        backend.advance_elapsed_on_delay = true;
+        backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+            accel_raw_per_us2: 0.0,
+            tau_current_us: 1000.0,
+            i_target: 2000,
+        });
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorInsufficientLinearPoints,
+        );
+    }
+
+    #[test]
+    fn gain_floor_current_fit_rejected_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4000);
+        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        backend.advance_elapsed_on_delay = true;
+        // tau_current_us=1.0 saturates almost the whole capture at i_target,
+        // tripping the current-response fit's saturated-trace rejection.
+        backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+            accel_raw_per_us2: 0.002,
+            tau_current_us: 1.0,
+            i_target: 2000,
+        });
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorCurrentFitRejected,
+        );
+    }
+
+    #[test]
+    fn gain_floor_velocity_gain_unrepresentable_routes_through_restore_machine() {
+        // accel_per_count is divided by both i_target and encoder counts-per-rev
+        // (`accel_raw_q32_to_accel_per_count`); maxing both out shrinks it far
+        // enough that velocity_p_raw overflows PidPGain::MAX, without touching
+        // the position/current fits' own excitation or residual checks (both
+        // depend only on the dimensionless current ratio, not on these scales).
+        let i_target = i16::MAX;
+        let mut phase = gain_floor_phase(i_target, 40_000);
+        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        backend.advance_elapsed_on_delay = true;
+        backend.mechanical_encoder_quadrature_counts_per_rev_value = u32::MAX;
+        backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+            accel_raw_per_us2: 0.002,
+            tau_current_us: 1000.0,
+            i_target,
+        });
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorVelocityGainUnrepresentable,
+        );
+    }
 }
