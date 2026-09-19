@@ -1,5 +1,5 @@
 //! Position-domain quadratic least-squares fit for the commissioning
-//! fallback gain-floor measurement (FOCI-421).
+//! fallback gain-floor measurement.
 //!
 //! Fits `centered_position(t) = p0 + v0*t + 0.5*accel_raw*t^2` over the
 //! captured window via normal equations in i64 fixed-point arithmetic —

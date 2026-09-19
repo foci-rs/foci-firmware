@@ -1,3 +1,3 @@
-//! Commissioning fallback gain-floor measurement (FOCI-421).
+//! Commissioning fallback gain-floor measurement.
 
 pub(crate) mod quadratic_fit;
