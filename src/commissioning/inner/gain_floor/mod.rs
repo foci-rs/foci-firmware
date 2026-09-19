@@ -153,10 +153,13 @@ where
     // on every exit path -- success or failure -- before mapping the
     // capture's own result. `run_capture` already de-energizes on its own
     // exit; this additionally re-zeroes the target so ClosedLoopActivation's
-    // entry never inherits a nonzero torque command left over from here.
+    // entry never inherits a nonzero torque command left over from here --
+    // ClosedLoopActivation never re-zeroes this register itself, so a
+    // silently-dropped failure on this write would otherwise leak a stale
+    // nonzero torque command into the next phase.
     let capture_result =
         capture::run_capture(backend, i_target, resistance_current_ceiling_count).await;
-    let _ = backend
+    let zero_target_result = backend
         .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
         .await;
     backend.set_enable_pin(false);
@@ -165,6 +168,9 @@ where
         Ok(buf) => buf,
         Err(e) => return super::fail_inner(phase, e),
     };
+    if zero_target_result.is_err() {
+        return super::fail_inner(phase, CommissionError::Spi);
+    }
 
     let commanded_sign: i8 = if i_target >= 0 { 1 } else { -1 };
     // fit_accel_raw requires centered_position (wrapping_sub against the
@@ -273,12 +279,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::autotune::CommissionStatus;
+    use crate::autotune::{CommissionProfile, CommissionStatus, InnerSequence, TransientBuffer};
     use crate::commission_dispatch::test_support::{GainFloorCaptureScript, MockBackend};
     use crate::commissioning::types::{
         AdcResidualEvidence, CommissionTimingSummary, CurrentValidationAxisEvidence,
         InductanceEvidence, InnerResult,
     };
+    use crate::selftest::{CommissionDiagnostics, SelftestResults};
 
     fn sample_inner_result(resistance_current_ceiling_count: u16) -> InnerResult {
         InnerResult {
@@ -469,6 +476,39 @@ mod tests {
     }
 
     #[test]
+    fn gain_floor_measurement_cleanup_zero_write_failure_fails_commissioning() {
+        pollster::block_on(async {
+            let i_target: i16 = 2000;
+            let ceiling = 4_000u16;
+            let mut phase = gain_floor_phase(i_target, ceiling);
+            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+                accel_raw_per_us2: 0.002,
+                tau_current_us: 1000.0,
+                i_target,
+            });
+            // PID_TORQUE_FLUX_TARGET is written twice before the post-capture
+            // cleanup write (the initial zero, then the commanded torque
+            // step); failing the third (zero-based occurrence 2) targets
+            // only that cleanup write, with the capture itself succeeding.
+            backend.fail_on_write_occurrence =
+                Some((foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr(), 2));
+
+            let result = step_gain_floor_measurement(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::Spi)
+            ));
+            assert!(
+                !backend.enable_pin,
+                "must de-energize even when the cleanup zero-write fails"
+            );
+        });
+    }
+
+    #[test]
     fn gain_floor_measurement_failure_fails_commissioning() {
         pollster::block_on(async {
             let i_target: i16 = 2000;
@@ -504,15 +544,34 @@ mod tests {
     }
 
     /// Shared assertion for the `gain_floor_*_routes_through_restore_machine`
-    /// tests below: the same three `fail_inner` markers
-    /// `gain_floor_measurement_failure_fails_commissioning` above asserts for
-    /// `GainFloorPeakCurrentExceeded` alone, generalized to any variant.
+    /// tests below: drives the failure through `super::super::step_inner`
+    /// (not the phase-local `step_gain_floor_measurement` handler directly),
+    /// following `coil.rs`'s `coil_fault_records_raw_current_sample` calling
+    /// pattern. `step_inner` unconditionally calls
+    /// `tmc_safe_state::restore_safe_state_via_backend` whenever the
+    /// dispatched result is `StepResult::InnerFailed(_)`, so routing through
+    /// it (rather than the phase-local handler alone) is what actually
+    /// proves the restore-machine boundary ran for this failure.
     fn assert_routes_through_restore_machine(
         phase: &mut InnerPhase,
         backend: &mut MockBackend,
         expected: CommissionError,
     ) {
-        let result = pollster::block_on(step_gain_floor_measurement(phase, backend));
+        let mut buf = TransientBuffer::new();
+        let mut adc_cal = None;
+        let mut selftest_results = SelftestResults::default();
+        let mut diagnostics = CommissionDiagnostics::default();
+        let result = pollster::block_on(super::super::step_inner(
+            phase,
+            &mut buf,
+            CommissionProfile::Balanced,
+            InnerSequence::Commission,
+            &mut adc_cal,
+            None,
+            &mut selftest_results,
+            &mut diagnostics,
+            backend,
+        ));
         assert!(
             matches!(result, StepResult::InnerFailed(e) if e == expected),
             "expected InnerFailed({expected:?}), got {result:?}"

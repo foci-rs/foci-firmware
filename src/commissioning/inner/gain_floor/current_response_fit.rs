@@ -85,9 +85,25 @@ pub(crate) fn fit_current_response(
     }
     let tau_current_us = -1.0 / slope;
 
-    // Coverage: captured window must extend to at least 3*tau_current.
+    // Coverage: captured window must extend to at least 3*tau_current...
     let last_t = samples.last().map(|(t, _)| *t as f32).unwrap_or(0.0);
-    if last_t < 3.0 * tau_current_us {
+    let window_end_us = 3.0 * tau_current_us;
+    if last_t < window_end_us {
+        return Err(CurrentFitError::InsufficientCoverage);
+    }
+    // ...AND at least MIN_SAMPLES usable samples must fall within that
+    // window. `usable` above counts usable samples across the whole capture,
+    // which a fast response (small tau_current) can clear from padding late
+    // in the trace even when very few samples land inside its own 3*tau --
+    // the window-length check above does not catch that on its own.
+    let usable_within_window = samples
+        .iter()
+        .filter(|&&(t, i_actual)| {
+            let ratio = f32::from(i_actual) / f32::from(i_target);
+            (0.0..1.0).contains(&ratio) && (t as f32) <= window_end_us
+        })
+        .count();
+    if usable_within_window < MIN_SAMPLES {
         return Err(CurrentFitError::InsufficientCoverage);
     }
 
@@ -159,6 +175,23 @@ mod tests {
         let samples = synthetic_exponential(2000, 3000.0, 20, 30); // 3*tau=9ms > 600us captured
         assert_eq!(
             fit_current_response(&samples, 2000),
+            Err(CurrentFitError::InsufficientCoverage)
+        );
+    }
+
+    #[test]
+    fn insufficient_coverage_rejected_when_too_few_samples_within_3_tau_window() {
+        // tau_current=60us -> 3*tau=180us, containing only 13 of the
+        // 15us-period samples, even though the capture continues on to
+        // t=345us (5.75*tau) and racks up 24 total usable samples past
+        // MIN_SAMPLES. The old check only verified the window reached
+        // 3*tau (last_t=345 >> 180), which this trace trivially satisfies
+        // -- it must be rejected on the separate in-window density check
+        // instead. i_target is large (20000) to keep i16 quantization noise
+        // small relative to the signal all the way out to 5.75*tau.
+        let samples = synthetic_exponential(20000, 60.0, 24, 15);
+        assert_eq!(
+            fit_current_response(&samples, 20000),
             Err(CurrentFitError::InsufficientCoverage)
         );
     }
