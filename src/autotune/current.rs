@@ -468,12 +468,14 @@ pub fn estimate_electrical_delay(
 /// Sample count for the high-rate electrical-delay capture.
 ///
 /// `min(ceil(5 * tau_e_us / period_us), HIGH_RATE_DELAY_LEN, floor(65535 /
-/// (2 * period_us)))`. The third term keeps the worst-case accepted final
-/// sample's actual `u16` offset in range: the capture's total-duration
-/// timing-rejection bound (see `high_rate_delay_timing_ok`) is `2x` nominal
-/// duration, so the worst-case accepted final offset is `2 * (sample_count -
-/// 1) * period_us`, and this term is derived from the same `2x` constant
-/// rather than chosen independently.
+/// (2 * period_us)))`.
+///
+/// The third term keeps the worst-case accepted final sample's actual `u16`
+/// offset in range: the capture's total-duration timing-rejection bound (see
+/// `high_rate_delay_timing_ok`) is `2x` nominal duration, so the worst-case
+/// accepted final offset is `2 * (sample_count - 1) * period_us`, and this
+/// term is derived from the same `2x` constant rather than chosen
+/// independently.
 pub fn high_rate_sample_count(tau_e_us: u32, period_us: u16) -> u16 {
     let period_us_u32 = u32::from(period_us);
     let tau_bound = (u64::from(tau_e_us) * 5).div_ceil(u64::from(period_us_u32));
