@@ -55,8 +55,6 @@ pub(crate) fn fail_outer_with_safety(
     StepResult::OuterFailed(err)
 }
 
-/// The position-P sweep's live evidence, when `phase` is `PositionTune`;
-/// `Default` (all-zero) for every other phase.
 fn position_tune_provenance(phase: &OuterPhase) -> PositionTuneProvenance {
     match phase {
         OuterPhase::PositionTune { state, .. } => state.provenance,

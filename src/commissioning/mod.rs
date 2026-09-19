@@ -2018,11 +2018,9 @@ mod tests {
             3_392,
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
-        // `PositionTuneProvenance` grew from 7 fields (~28 bytes) to 15
-        // (rungs and stroke speeds, the bound, and both leg endpoints'
-        // homing/motion measurements). `StepResult` and `CommissioningEngine`
-        // absorb the growth without changing size -- the breakaway campaign
-        // payload above stays this enum's largest variant.
+        // `StepResult` and `CommissioningEngine` absorb `PositionTuneProvenance`
+        // growth without changing size -- the breakaway campaign payload
+        // above stays this enum's largest variant.
         assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 88);
         // The breakaway campaign is the largest outer payload: its
         // probe/discovery/confirmation state machine and borrowed workspace
