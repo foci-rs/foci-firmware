@@ -782,27 +782,36 @@ fn scheduled_capture_shutdown_uses_canonical_engine_failure_path() {
 }
 
 #[test]
-fn scheduled_step_keeps_delay_capture_inside_one_deadline_loop() {
+fn scheduled_step_keeps_delay_capture_inside_one_step() {
     pollster::block_on(async {
-        use crate::autotune::DelayTimestampOffsets;
-        use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope};
         use crate::commissioning::inner::DelayCaptureState;
+
+        const SAMPLE_COUNT: u16 = 256;
 
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut engine =
             CommissioningEngine::new_commission(7, crate::autotune::CommissionProfile::Balanced);
         engine.set_delay_capture_for_test(DelayCaptureState {
             baseline: 0,
-            origin_us: 1_000,
-            next_sample_us: 1_200,
-            offsets: DelayTimestampOffsets::new(),
-            timing: CaptureTiming::new(200, TimingEnvelope::DELAY),
+            origin_cycles: 0,
+            period_us: 1,
+            sample_count: SAMPLE_COUNT,
+            cycles_per_us: 1,
         });
         runtime.set_commission_engine(engine);
 
         let mut backend = MockBackend::new();
         backend.elapsed_us_value = 1_200;
         backend.advance_elapsed_on_delay = true;
+        // One deadline-release read and one post-read timestamp per sample,
+        // advancing one cycle (one microsecond here) per sample.
+        let mut cycles = heapless::Vec::<u32, 512>::new();
+        for tick in 1..=u32::from(SAMPLE_COUNT) {
+            cycles.push(tick).unwrap();
+            cycles.push(tick).unwrap();
+        }
+        backend.set_cycle_count_sequence(&cycles);
+        backend.cycle_count_value = 100_000;
         backend
             .registers
             .insert(foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL.addr(), 100)
@@ -817,7 +826,7 @@ fn scheduled_step_keeps_delay_capture_inside_one_deadline_loop() {
             poll,
             crate::commissioning::schedule::CommissionPoll::ReadyNow { event: None }
         ));
-        assert_eq!(backend.capture_register_reads, 256);
+        assert_eq!(backend.capture_register_reads, usize::from(SAMPLE_COUNT));
     });
 }
 

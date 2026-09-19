@@ -27,8 +27,8 @@ pub mod velocity_measurement;
 mod velocity_units;
 
 pub use buffer::{
-    CaptureDirection, DelayTimestampOffsets, HIGH_RATE_DELAY_LEN, TRANSIENT_LEN,
-    TransientBuffer, normalize_capture_sample,
+    CaptureDirection, DelayTimestampOffsets, HIGH_RATE_DELAY_LEN, HighRateDelayOffsets,
+    HighRateSampleBuffer, TRANSIENT_LEN, TransientBuffer, normalize_capture_sample,
 };
 pub use current::current_loop_actionable_status_mask;
 pub use current::current_loop_entry_actionable_status_mask;
@@ -42,7 +42,7 @@ pub use current::{
     CURRENT_AXIS_VALIDATION_ZERO_TARGET, CURRENT_VALIDATION_SETTLED_MAX_SAMPLES,
     CurrentAxisRetryDecision, CurrentAxisSample, CurrentAxisSampleClassification,
     CurrentAxisSampleCriteria, classify_current_axis_sample, current_axis_retry_decision,
-    retry_current_loop_gains, synthesize_current_gains,
+    high_rate_sample_count, retry_current_loop_gains, synthesize_current_gains,
 };
 pub use equivalent_disturbance::{
     EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16, equivalent_disturbance_from_rate,

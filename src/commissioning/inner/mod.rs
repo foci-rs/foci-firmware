@@ -273,21 +273,24 @@ pub(crate) struct InductanceCaptureState {
     pub(crate) current_envelope: u16,
 }
 
-/// Mutually exclusive state retained across electrical-delay sample polls.
-#[derive(Debug, Clone, defmt::Format)]
+/// Parameters for the high-rate electrical-delay capture, established once
+/// `DelayApplyStep`'s voltage step has been confirmed applied.
+#[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) struct DelayCaptureState {
     pub(crate) baseline: i16,
-    pub(crate) origin_us: u64,
-    pub(crate) next_sample_us: u64,
-    pub(crate) offsets: crate::autotune::DelayTimestampOffsets,
-    pub(crate) timing: crate::commissioning::capture_timing::CaptureTiming,
+    pub(crate) origin_cycles: u32,
+    pub(crate) period_us: u16,
+    pub(crate) sample_count: u16,
+    pub(crate) cycles_per_us: u32,
 }
 
-/// Completed delay timestamps and timing evidence retained through restoration.
+/// Completed high-rate delay samples/offsets and timing outcome, retained
+/// through restoration.
 #[derive(Debug, Clone, defmt::Format)]
 pub(crate) struct DelayCompletedCapture {
-    pub(crate) offsets: crate::autotune::DelayTimestampOffsets,
-    pub(crate) timing: crate::commissioning::capture_timing::CaptureTimingEvidence,
+    pub(crate) samples: crate::autotune::HighRateSampleBuffer,
+    pub(crate) offsets: crate::autotune::HighRateDelayOffsets,
+    pub(crate) timing_ok: bool,
 }
 
 /// One verified register operation in the bounded inductance restore sequence.

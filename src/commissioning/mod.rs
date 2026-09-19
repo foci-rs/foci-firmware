@@ -1962,17 +1962,22 @@ mod tests {
         // must hold all state live across a suspension point; the flat
         // sequential restore it replaced let each write complete before the
         // next one was polled, so it never needed to carry that state.
-        assert_eq!(engine_step, 4_400);
-        assert!(engine_step <= 4_400);
-        assert_eq!(step_inner, 4_352);
-        assert!(step_inner <= 4_352);
-        assert_eq!(electrical_id, 656);
-        assert!(electrical_id <= 656);
-        assert!(electrical_id <= 960);
-        assert_eq!(scheduled_step, 4_480);
+        // The high-rate electrical-delay burst holds its sample buffer and its
+        // parallel offset container live across the per-sample SPI await, so
+        // the electrical-ID future carries both (656 -> 3_248). The futures
+        // that are actually polled on the interrupt stack already reserved
+        // space for wider branches and absorb all but 16 bytes of that.
+        assert_eq!(engine_step, 4_416);
+        assert!(engine_step <= 4_416);
+        assert_eq!(step_inner, 4_368);
+        assert!(step_inner <= 4_368);
+        assert_eq!(electrical_id, 3_248);
+        assert!(electrical_id <= 3_248);
+        assert!(electrical_id <= 3_328);
+        assert_eq!(scheduled_step, 4_496);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
-        assert!(scheduled_step <= 4_480);
+        assert!(scheduled_step <= 4_496);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -3315,13 +3320,10 @@ mod tests {
                 state: inner::ElectricalIdentificationState::DelaySample {
                     capture: inner::DelayCaptureState {
                         baseline: 0,
-                        origin_us: 1_000,
-                        next_sample_us: 1_160,
-                        offsets: crate::autotune::DelayTimestampOffsets::new(),
-                        timing: capture_timing::CaptureTiming::new(
-                            160,
-                            capture_timing::TimingEnvelope::DELAY,
-                        ),
+                        origin_cycles: 0,
+                        period_us: 20,
+                        sample_count: 8,
+                        cycles_per_us: 520,
                     },
                 },
                 data,
