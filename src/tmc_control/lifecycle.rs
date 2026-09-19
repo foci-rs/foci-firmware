@@ -351,6 +351,19 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     tmc: &'static crate::state::tmc::TmcChannelState,
     stepper: &'static crate::state::stepper::StepperChannelState,
 ) -> bool {
+    // Halt the step-queue stimulus first, before anything below clears
+    // `motor_armed` or writes a safe-state register. Clearing `motor_armed`
+    // stops the step-timer ISR from emitting further steps, but does not
+    // itself drain the queue, cancel the scheduler's stepper entry, or close
+    // the stimulus's motor-armed capture session (see
+    // `TmcChannelState::stimulus_restore_motor_armed`) -- left open, that
+    // session corrupts the `motor_armed` restore of whatever stimulus runs
+    // next. Unconditional, matching the engine-level shutdown abort in
+    // `CommissioningEngine::step`: `stimulus_stop`/
+    // `set_stimulus_feedforward(false)` are documented idempotent, a safe
+    // no-op when no stimulus session is open, and this helper is called
+    // repeatedly while shutdown remains active.
+    crate::commissioning::outer::position_tune::abort_stimulus(backend);
     // A terminal restore caught mid-sequence is driven to safe state here,
     // before the disarm and engine take below clear the state it depends on.
     // Both boards funnel their shutdown path through this helper.

@@ -1,7 +1,8 @@
 use super::*;
 use crate::commission_dispatch::test_support::breakaway_campaign_engine;
 use crate::commission_dispatch::test_support::{
-    MockBackend, SpiOp, accepted_commission_result, current_limit,
+    MockBackend, MockEvent, SpiOp, StimulusOp, accepted_commission_result, current_limit,
+    sample_entry_snapshot, sample_outer_params,
 };
 use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::CommissioningEngine;
@@ -27,11 +28,11 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use foci_tmc4671::registers::{
     ABN_DECODER_MODE, ABN_DECODER_PHI_E_PHI_M_OFFSET, ABN_DECODER_PPR, CONFIG_BIQUAD_T_ENABLE,
-    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
-    PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I, PID_POSITION_ACTUAL,
-    PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS, PID_TORQUE_FLUX_OFFSET,
-    PID_TORQUE_P_TORQUE_I, PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I, PIDOUT_UQ_UD_LIMITS,
-    STATUS_FLAGS, STEP_WIDTH,
+    MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
+    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_FLUX_P_FLUX_I,
+    PID_POSITION_ACTUAL, PID_POSITION_P_POSITION_I, PID_POSITION_TARGET, PID_TORQUE_FLUX_LIMITS,
+    PID_TORQUE_FLUX_OFFSET, PID_TORQUE_P_TORQUE_I, PID_VELOCITY_OFFSET, PID_VELOCITY_P_VELOCITY_I,
+    PIDOUT_UQ_UD_LIMITS, STATUS_FLAGS, STEP_WIDTH,
 };
 use foci_tmc4671::spi::Tmc4671Spi;
 
@@ -4608,6 +4609,153 @@ fn cancelled_mid_phase_disarms_only_the_targeted_channel_and_reports_cancelled()
             !other_channel.cancel_requested.load(Relaxed),
             "the other channel's cancel flag must be untouched"
         );
+    });
+}
+
+/// A `MockBackend` primed to run a `PositionTune` outer engine to a live
+/// mid-stroke capture, mirroring
+/// `position_tune::tests::position_tune_backend` -- the fields `predict`
+/// needs to succeed (a physical step width, a resolvable encoder resolution,
+/// and a valid velocity-gain register) are set explicitly since
+/// `MockBackend::new()` leaves them at defaults `predict` rejects.
+fn position_tune_cancel_backend() -> MockBackend {
+    let mut backend = MockBackend::new();
+    backend.spi_elapsed_step_us = 0;
+    backend.elapsed_us_value = 1_000_000;
+    backend.current_limit_value = current_limit(5_000);
+    backend.mechanical_encoder_quadrature_counts_per_rev_value = 4_000;
+    backend.configured_physical_width = Some(8);
+    let _ = backend.registers.insert(
+        PID_VELOCITY_P_VELOCITY_I.addr(),
+        foci_tmc4671::pid::PidGainPair::new(
+            foci_tmc4671::pid::PidPGain::new(350).unwrap(),
+            foci_tmc4671::pid::PidIGain::ZERO,
+        )
+        .register_value(),
+    );
+    backend
+}
+
+/// Drive a fresh `PositionTune` outer engine partway into its first stroke's
+/// capture -- far enough that the step-queue stimulus is genuinely armed and
+/// `capture_running`, short of the small excursion's own deadline (mirrors
+/// `position_tune::tests::an_outer_safety_fault_mid_stroke_...`'s own drive
+/// loop).
+fn position_tune_engine_mid_stroke(backend: &mut MockBackend) -> CommissioningEngine {
+    let mut engine = CommissioningEngine::new_outer_for_tmc_with_position_tune(
+        7,
+        crate::state::tmc::tmc_channel0(),
+        sample_outer_params(),
+        sample_entry_snapshot(),
+        0,
+    );
+    let mut clock_us = backend.elapsed_us_value;
+    for _ in 0..6 {
+        backend.elapsed_us_value = clock_us;
+        let result = pollster::block_on(engine.step(backend));
+        match result {
+            crate::commissioning::types::StepResult::At(next_us) => clock_us = next_us,
+            crate::commissioning::types::StepResult::ReadyNow
+            | crate::commissioning::types::StepResult::PhaseChanged(_) => {}
+            other => panic!("unexpected early terminal driving to mid-stroke: {other:?}"),
+        }
+    }
+    engine
+}
+
+/// Find the first `MODE_RAMP_MODE_MOTION = 0` write in `event_log` -- the
+/// safe-state restore's own first write (`tmc_safe_state`'s step 0) -- and
+/// require `abort_stimulus`'s `Stop` then `Feedforward(false)` to be the two
+/// events immediately before it, with nothing else between.
+fn assert_stimulus_stopped_before_safe_state_restore(event_log: &[MockEvent]) {
+    let restore_write_index = event_log
+        .iter()
+        .position(|event| {
+            matches!(event, MockEvent::Spi(SpiOp::Write(addr, 0)) if *addr == MODE_RAMP_MODE_MOTION.addr())
+        })
+        .expect("the safe-state restore's MODE_RAMP_MODE_MOTION zero write must be recorded");
+    let preceding = &event_log[..restore_write_index];
+    assert!(
+        preceding.len() >= 2,
+        "expected abort_stimulus's pair before the safe-state restore, got {preceding:?}"
+    );
+    assert_eq!(
+        &preceding[preceding.len() - 2..],
+        [
+            MockEvent::Stimulus(StimulusOp::Stop),
+            MockEvent::Stimulus(StimulusOp::Feedforward(false)),
+        ],
+        "abort_stimulus's Stop then Feedforward(false) must be the last events before the \
+         safe-state restore begins, with nothing else between them and the write"
+    );
+}
+
+#[test]
+fn an_operator_cancel_mid_stroke_stops_the_stimulus_before_the_disarm() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+
+        let mut backend = position_tune_cancel_backend();
+        let engine = position_tune_engine_mid_stroke(&mut backend);
+
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_commission_engine(engine);
+        assert!(
+            !runtime.is_restore_pending(),
+            "a mid-stroke engine has not yet produced a terminal restore"
+        );
+        tmc.cancel_requested.store(true, Relaxed);
+
+        let pwm_maxcnt = commissioning_runtime_config().tmc.pwm_maxcnt;
+        let outcome = runtime
+            .drive_operator_cancel(&mut backend, tmc, stepper, pwm_maxcnt)
+            .await
+            .expect("a cancel latched mid-stroke must produce a terminal outcome");
+        assert!(matches!(
+            outcome,
+            crate::commission_dispatch::CommissionOutcome::Terminal { .. }
+        ));
+
+        assert_stimulus_stopped_before_safe_state_restore(&backend.event_log);
+    });
+}
+
+#[test]
+fn a_shutdown_safe_state_mid_stroke_stops_the_stimulus_before_the_disarm() {
+    pollster::block_on(async {
+        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
+            .lock()
+            .await;
+        crate::state::tmc::reset_all_tmc_channels();
+        crate::state::stepper::reset_all_stepper_channels();
+
+        let mut backend = position_tune_cancel_backend();
+        let engine = position_tune_engine_mid_stroke(&mut backend);
+
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_commission_engine(engine);
+        assert!(
+            !runtime.is_restore_pending(),
+            "a mid-stroke engine has not yet produced a terminal restore"
+        );
+
+        let _ = crate::tmc_control::lifecycle::apply_shutdown_safe_state(
+            &mut runtime,
+            &mut backend,
+            tmc,
+            stepper,
+        )
+        .await;
+
+        assert_stimulus_stopped_before_safe_state_restore(&backend.event_log);
     });
 }
 

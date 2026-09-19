@@ -923,6 +923,19 @@ impl TmcControlRuntime {
         if !tmc.cancel_requested.swap(false, Relaxed) {
             return None;
         }
+        // Halt the step-queue stimulus before either cancel branch below
+        // drives its own disarm. Both branches eventually clear
+        // `motor_armed` (via `disarm_motor`), which stops the step-timer
+        // ISR from emitting further steps, but does not itself drain the
+        // queue, cancel the scheduler's stepper entry, or close the
+        // stimulus's motor-armed capture session (see
+        // `TmcChannelState::stimulus_restore_motor_armed`) -- a queue left
+        // undrained and a capture session left open corrupt the next
+        // stimulus session's own restore. Unconditional, matching the
+        // engine-level shutdown abort in `CommissioningEngine::step`:
+        // `stimulus_stop`/`set_stimulus_feedforward(false)` are documented
+        // idempotent, a safe no-op when no stimulus session is open.
+        crate::commissioning::outer::position_tune::abort_stimulus(backend);
         if self.restore_machine.is_some() {
             self.request_restore_cancel();
             match self
