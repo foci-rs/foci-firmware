@@ -77,6 +77,8 @@ struct OwnedTerminalData {
     authority: Option<
         crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
     >,
+    robustness_evidence:
+        Option<crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence>,
 }
 
 impl OwnedTerminalData {
@@ -93,6 +95,7 @@ impl OwnedTerminalData {
             use_handled_stop_take: false,
             reproduction: None,
             authority: None,
+            robustness_evidence: None,
         }
     }
 }
@@ -892,6 +895,7 @@ impl TerminalRestoreMachine {
                                     status,
                                     result: outer,
                                     safety_fault: None,
+                                    robustness_evidence: self.terminal.robustness_evidence,
                                 },
                                 actions: PostActions {
                                     stop_trace: true,
@@ -930,6 +934,7 @@ impl TerminalRestoreMachine {
                                 zero_outer_result()
                             },
                             safety_fault: None,
+                            robustness_evidence: self.terminal.robustness_evidence,
                         },
                         actions: PostActions {
                             stop_trace: true,
@@ -1306,6 +1311,7 @@ impl TerminalRestoreMachine {
                                 &point,
                             );
                             self.terminal.payload = TerminalPayload::OuterDone(result);
+                            self.terminal.robustness_evidence = Some(terminal.evidence);
                             self.cursor = RestoreCursor::OuterDoneRestorePosition(None);
                         }
                         None => {
@@ -1656,6 +1662,7 @@ impl TerminalRestoreMachine {
                 status: reply_status,
                 result: zero_outer_result(),
                 safety_fault,
+                robustness_evidence: None,
             },
             actions,
         }
@@ -1813,6 +1820,7 @@ impl TerminalRestoreMachine {
                     status,
                     result: zero_outer_result(),
                     safety_fault: None,
+                    robustness_evidence: None,
                 }
             }
             TerminalPayload::VelocityIntegral(mut terminal) => {

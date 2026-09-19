@@ -141,15 +141,19 @@ fn channel_runtime_size_stays_bounded() {
     // `Option<restore::EntrySnapshotRestoreStep>`, whose `Filters` variant
     // embeds a `FilterCutoffsStep`; it becomes `RestoreCursor`'s largest
     // variant, so the runtime grows by the resulting size delta.
+    // 8_000 -> 8_144 / 7_968 -> 8_112: the restore machine's per-terminal
+    // state carries an `Option<RobustnessEvidence>` so a robustness pass, which
+    // deploys through `OuterDone` and never emits its terminal, can still put
+    // the per-direction cycle evidence on the wire ahead of the tune result.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_000);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 7_968);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_112);
 }
 
 #[test]

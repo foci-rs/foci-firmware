@@ -947,9 +947,13 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             status,
             result,
             safety_fault,
+            robustness_evidence,
         } => {
             if let Some(fault) = safety_fault {
                 sink.foci_outer_safety_fault(oid, fault);
+            }
+            if let Some(evidence) = robustness_evidence {
+                emit_robustness_cycle_evidence(sink, oid, &evidence);
             }
             sink.foci_tune_result(oid, status, &result);
         }
@@ -3091,6 +3095,7 @@ mod tests {
                 status: 9,
                 result: outer_result(),
                 safety_fault: None,
+                robustness_evidence: None,
             },
         );
 
@@ -3210,6 +3215,7 @@ mod tests {
                     elapsed_us: 120_000,
                     duration_cap_us: 3_000_000,
                 }),
+                robustness_evidence: None,
             },
         );
 
@@ -3446,6 +3452,56 @@ mod tests {
         assert_eq!(
             encode_robustness_terminal_reply(&terminal).len(),
             ROBUSTNESS_TERMINAL_REPLY_BYTES
+        );
+    }
+
+    #[test]
+    fn emit_terminal_reply_emits_cycle_evidence_before_a_deployed_tune_result() {
+        use crate::commission_dispatch::robustness::{
+            RobustnessPreflightRejection, failed_robustness_terminal,
+        };
+        use crate::commissioning::outer::velocity::robustness_reporting::encode_robustness_cycle_evidence;
+
+        let mut evidence =
+            failed_robustness_terminal(1, RobustnessPreflightRejection::NoAcceptedCandidate)
+                .evidence;
+        evidence.iae_medians_qs = [9, -9];
+        evidence.dac_rms_medians_q = [21, -21];
+        let result = outer_result();
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            ReplyPayload::TuneResult {
+                oid: 8,
+                status: 9,
+                result: outer_result(),
+                safety_fault: None,
+                robustness_evidence: Some(evidence),
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::RobustnessCycleEvidence {
+                    oid: 8,
+                    payload: encode_robustness_cycle_evidence(0, &evidence, &evidence.cycles[0])
+                        .to_vec(),
+                },
+                Event::RobustnessCycleEvidence {
+                    oid: 8,
+                    payload: encode_robustness_cycle_evidence(1, &evidence, &evidence.cycles[1])
+                        .to_vec(),
+                },
+                Event::Tune {
+                    oid: 8,
+                    status: 9,
+                    velocity_p: result.velocity_p,
+                    position_p: result.position_p,
+                    warning_code: result.warning_code,
+                },
+            ]
         );
     }
 

@@ -291,6 +291,11 @@ pub enum ReplyPayload {
         status: u8,
         result: OuterResult,
         safety_fault: Option<OuterSafetyFault>,
+        /// Per-direction robustness evidence when this tune deployed through
+        /// a robustness pass; the pass never emits a robustness terminal, so
+        /// this is the only way the cycle-evidence replies reach the host.
+        robustness_evidence:
+            Option<crate::commissioning::outer::velocity::robustness_evidence::RobustnessEvidence>,
     },
     /// FociCalibrateResult: ADC calibration complete.
     CalibrateResult {
