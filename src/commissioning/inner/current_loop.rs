@@ -219,6 +219,30 @@ const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
 const CURRENT_VALIDATE_PWM_SV_CHOP: u32 = 7;
 const CURRENT_VALIDATE_PHI_E_SELECTION: u32 = 3;
 
+/// Fraction of `resistance_current_ceiling_count` used as the gain-floor
+/// measurement's own torque-step amplitude, in permille.
+///
+/// Distinct from `torque_step_amplitude` (current-validation's step,
+/// deliberately capped at `VALIDATION_MIN_STEP_AMPLITUDE` since it only
+/// needs to see *any* current response, not measurable mechanical
+/// displacement). Reusing that amplitude for the gain-floor phase's
+/// position-domain fit was found live on Ouroboros hardware to produce
+/// zero measurable rotor displacement across the whole capture window
+/// (too weak to move real motor inertia in the fixed 5ms capture) --
+/// this dedicated, ceiling-relative amplitude replaces it. 500 (50%)
+/// is a starting calibration point with substantial headroom below the
+/// overcurrent ceiling; expected to be tuned from real hardware runs.
+const GAIN_FLOOR_TORQUE_STEP_CEILING_FRACTION_PERMILLE: u32 = 500;
+
+/// Compute the gain-floor measurement's own torque-step amplitude as a
+/// fraction of the resistance-identification current ceiling.
+fn gain_floor_torque_step_amplitude(resistance_current_ceiling_count: u16) -> i16 {
+    let scaled = u32::from(resistance_current_ceiling_count)
+        * GAIN_FLOOR_TORQUE_STEP_CEILING_FRACTION_PERMILLE
+        / 1000;
+    scaled.min(i16::MAX as u32) as i16
+}
+
 fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
     match axis {
         CurrentValidationAxis::Flux => target as u16 as u32,
@@ -2154,8 +2178,9 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         return StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation);
                     }
 
-                    let i_target = data.torque_step_amplitude as i16;
                     let resistance_current_ceiling_count = result.resistance_current_ceiling_count;
+                    let i_target =
+                        gain_floor_torque_step_amplitude(resistance_current_ceiling_count);
                     *phase = InnerPhase::GainFloorMeasurement {
                         state: super::gain_floor::GainFloorState::Start,
                         i_target,
@@ -2174,6 +2199,18 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gain_floor_torque_step_amplitude_is_half_the_ceiling() {
+        assert_eq!(gain_floor_torque_step_amplitude(1_600), 800);
+    }
+
+    #[test]
+    fn gain_floor_torque_step_amplitude_stays_within_i16_range_at_max_ceiling() {
+        let amplitude = gain_floor_torque_step_amplitude(u16::MAX);
+        assert!(amplitude > 0);
+        assert!(i32::from(amplitude) <= i32::from(i16::MAX));
+    }
+
     use crate::autotune::{
         AXIS_SPLIT_SOURCE_NONE, CURRENT_GAINS_SOURCE_FAILED, CURRENT_GAINS_TIER_NONE,
         CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC, CURRENT_LOOP_FAILURE_NONE,
