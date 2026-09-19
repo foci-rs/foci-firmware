@@ -2,9 +2,15 @@
 
 /// Ramp runs per acceleration or deceleration phase. Boundaries sit at
 /// equal velocity increments so the first run, where the interval changes
-/// fastest, stays within the `i16` per-step `add`.
+/// fastest, stays within the `i16` per-step `add`. 32 rather than the
+/// original 16: at 16, the ramp's total emitted duration (the sum of the
+/// one-sided ceiling rounding across all partitions) was 5.1% above the
+/// analytic `speed / accel` estimate on the project's own reference
+/// profile (`live_rig_fast`), just over the 5% bound
+/// `profile_timing_is_measured_from_the_generated_runs` holds it to; 32
+/// brings that to 1.5%, comfortably inside the bound.
 #[allow(dead_code)]
-pub(crate) const RAMP_SEGMENTS: u64 = 16;
+pub(crate) const RAMP_SEGMENTS: u64 = 32;
 
 /// Smallest cruise interval accepted: below this the one-tick rounding of
 /// `clock / speed` alone exceeds the two-percent cruise-speed bar.
@@ -159,8 +165,11 @@ fn narrow(value: u64) -> Result<u32, StrokePlanError> {
     u32::try_from(value).map_err(|_| StrokePlanError::SegmentOverflow)
 }
 
-/// Both legs' runs plus `u16` splitting headroom.
-pub(crate) const MAX_STROKE_SEGMENTS: usize = 160;
+/// Both legs' runs plus `u16` splitting headroom: 2 legs x (`RAMP_SEGMENTS`
+/// partitions + up to `RAMP_SEGMENTS` single-step fallbacks + 1 join run,
+/// mirrored for the deceleration side) + headroom for a cruise run split at
+/// the `u16` count limit.
+pub(crate) const MAX_STROKE_SEGMENTS: usize = 8 * RAMP_SEGMENTS as usize + 32;
 
 /// One constant-`add` run of steps, in the format the step queue executes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -202,7 +211,11 @@ pub(crate) struct StrokeProfile {
 #[allow(dead_code)]
 impl StrokeProfile {
     fn ticks_to_us(&self, ticks: u64) -> u32 {
-        u32::try_from(ticks * 1_000_000 / u64::from(self.step_timer_hz)).unwrap_or(u32::MAX)
+        // Widen before multiplying: `ticks` alone can approach u64::MAX
+        // (`leg_ticks.saturating_mul(2)` in `stroke_us`), the same
+        // overflow shape fixed elsewhere in this module.
+        let us = u128::from(ticks) * 1_000_000 / u128::from(self.step_timer_hz);
+        u32::try_from(us).unwrap_or(u32::MAX)
     }
 
     /// End of the acceleration ramp within a leg, us.
@@ -273,7 +286,9 @@ fn emit_leg(
 }
 
 /// Whether a full stroke at exactly `speed_mrev_s` keeps the minimum
-/// cruise after the join has taken its steps.
+/// cruise after the join has taken its steps. Always `false` above the
+/// phase's own `request.speed_mrev_s` (see `emit_leg`), so the search this
+/// predicate drives never plans faster than what was asked for.
 #[allow(dead_code)]
 pub(crate) fn stroke_fits(request: &StrokeRequest, speed_mrev_s: u32) -> bool {
     matches!(emit_leg(request, speed_mrev_s), Ok(Some(_)))
@@ -393,58 +408,66 @@ fn ceil_div_toward_zero(numerator: i128, denominator: i128) -> i128 {
     -((-numerator) / denominator)
 }
 
-/// Append one run to `runs`, splitting at the `u16` limit and carrying the
-/// interval; returns the interval the schedule reaches after the run.
+/// Append one run to `runs`, splitting at the `u16` limit; returns the
+/// partition's own *last emitted step*, not the position one step beyond
+/// it (which is what `push_ramp_run` itself returns, and correct for its
+/// own use: the next run's declared start is one `add` past the previous
+/// run's last step, matching how a single continuous run's own steps
+/// work).
 ///
-/// The `add` targets the run's own *last emitted step* (index `count - 1`),
-/// not the position one step beyond it: dividing by `count` instead would
-/// leave the last physical step of every run one `add` short of `target`,
-/// which is exact for the queue's own bookkeeping (the next run still
-/// starts from `interval + add * count`, per `push_ramp_run`) but drifts
-/// the emitted cadence far from the ideal curve on short early runs, where
-/// `add` is large relative to `count`. The final partition (`last`) keeps
-/// the `count`-divisor instead, so its returned continuation lands at or
-/// above the cruise interval exactly as `acceleration_runs`' join step
-/// requires; on that run `count` is large enough that the two divisors
-/// barely differ.
+/// The `add` is chosen so this partition's last emitted step (index
+/// `count - 1`, counting from the run's own declared start) lands at or
+/// above `target`; the run's declared start is therefore `last_emitted +
+/// add`, one `add` past the incoming anchor, not the anchor itself.
+/// Anchoring `add`'s divisor on `count` against `last_emitted` (rather
+/// than on `count - 1` against the declared start) keeps both the run's
+/// own last step and the anchor handed to the next partition on the slow
+/// side of the ideal curve; a `count - 1` divisor makes the last step
+/// exact but overshoots the next anchor to the fast side by a full `add`,
+/// since that anchor is one step further along the same arithmetic
+/// sequence than the last emitted step is.
+///
+/// A single-step partition (`count == 1`) has no room for an `add` at
+/// all — nothing after its one step would ever apply it — so it always
+/// takes `target` directly, clamped to never exceed the incoming anchor.
 ///
 /// Representation is never a reason to refuse a speed: when the ideal
 /// per-step change does not fit `i16` (only the first few steps from rest,
 /// where the interval halves within a step or two), the partition is
 /// emitted as single-step runs at the exact interval instead, so
-/// `stroke_fits` stays monotone in speed and the binary search is sound. A
-/// single-step partition has no room for an `add` at all, so it always
-/// takes `target` directly.
-#[allow(dead_code, clippy::too_many_arguments)]
+/// `stroke_fits` stays monotone in speed and the binary search is sound.
 fn push_ramp_partition(
     runs: &mut RampRuns,
     clock: u64,
     accel_steps: u64,
     start: u64,
     count: u64,
-    interval: i128,
+    last_emitted: i128,
     target: i128,
-    last: bool,
 ) -> Result<i128, StrokePlanError> {
     if count == 1 {
-        let value = u32::try_from(target).map_err(|_| StrokePlanError::SegmentOverflow)?;
+        let value = target.min(last_emitted);
+        let interval = u32::try_from(value).map_err(|_| StrokePlanError::SegmentOverflow)?;
         runs.push(StrokeSegment {
             forward: true,
-            interval: value,
+            interval,
             count: 1,
             add: 0,
         })
         .map_err(|_| StrokePlanError::SegmentOverflow)?;
-        return Ok(target);
+        return Ok(value);
     }
-    let divisor = if last { count } else { count - 1 };
-    let add = ceil_div_toward_zero((target - interval).min(0), i128::from(divisor));
-    if let Ok(add) = i16::try_from(add) {
-        return push_ramp_run(runs, interval, count, add);
+    let add = ceil_div_toward_zero((target - last_emitted).min(0), i128::from(count));
+    if let Ok(add16) = i16::try_from(add) {
+        let run_start = last_emitted + add;
+        push_ramp_run(runs, run_start, count, add16)?;
+        // The run's own last step, not `push_ramp_run`'s returned
+        // continuation (one `add` further along the same sequence).
+        return Ok(last_emitted + add * i128::from(count));
     }
-    let mut interval = interval;
+    let mut prev = last_emitted;
     for step in 0..count {
-        let exact = i128::from(ramp_interval(clock, accel_steps, start + step + 1)).min(interval);
+        let exact = i128::from(ramp_interval(clock, accel_steps, start + step + 1)).min(prev);
         runs.push(StrokeSegment {
             forward: true,
             interval: u32::try_from(exact).map_err(|_| StrokePlanError::SegmentOverflow)?,
@@ -452,9 +475,9 @@ fn push_ramp_partition(
             add: 0,
         })
         .map_err(|_| StrokePlanError::SegmentOverflow)?;
-        interval = exact;
+        prev = exact;
     }
-    Ok(interval)
+    Ok(prev)
 }
 
 #[allow(dead_code)]
@@ -480,12 +503,12 @@ fn push_ramp_run(
     Ok(interval)
 }
 
-/// The acceleration ramp as continuous constant-`add` runs. Each run starts
-/// at the interval the previous run's schedule reaches next and rounds its
-/// `add` as the ceiling toward the ideal interval at its own end, so a run
-/// never ends faster than ideal and error does not accumulate; a final join
-/// run of `diff` steps at `add = -1` lands exactly on the cruise interval,
-/// taking those steps from the cruise.
+/// The acceleration ramp as continuous constant-`add` runs. Each partition
+/// hands the next one its own last emitted step (see `push_ramp_partition`),
+/// so every partition's `add` is rounded toward its own target and the
+/// error from that rounding never accumulates across partitions; a final
+/// join run of `diff` steps at `add = -1` lands exactly on the cruise
+/// interval, taking those steps from the cruise.
 /// Returns the runs and the cruise step count that remains.
 #[allow(dead_code)]
 fn acceleration_runs(
@@ -497,7 +520,7 @@ fn acceleration_runs(
     let mut runs = RampRuns::new();
     // A ramp of zero steps starts at cruise speed outright; otherwise from
     // the interval of the first step from rest.
-    let mut interval = if ramp_steps == 0 {
+    let mut last_emitted = if ramp_steps == 0 {
         i128::from(leg.cruise_interval_ticks)
     } else {
         i128::from(ramp_interval(clock, accel_steps, 1))
@@ -510,26 +533,26 @@ fn acceleration_runs(
             continue;
         }
         let target = i128::from(ramp_interval(clock, accel_steps, end));
-        let last = end == ramp_steps;
-        interval = push_ramp_partition(
+        last_emitted = push_ramp_partition(
             &mut runs,
             clock,
             accel_steps,
             start,
             count,
-            interval,
+            last_emitted,
             target,
-            last,
         )?;
     }
-    // Every run ended at or above its target, and the last target
-    // (`clock / sqrt(2 a ramp_steps)` with `ramp_steps` floored from
-    // `v^2 / 2a`) is at or above the cruise interval, so the ramp arrives
+    // Every partition's own last emitted step ended at or above its
+    // target (`push_ramp_partition`'s ceiling rounding), and the final
+    // target (`clock / sqrt(2 a ramp_steps)`, with `ramp_steps` floored
+    // from `v^2 / 2a`) is at or above the cruise interval, so this holds
+    // unconditionally, not just for the last partition: the ramp arrives
     // from above and the join only ever walks down.
     let cruise_interval = i128::from(leg.cruise_interval_ticks);
-    debug_assert!(interval >= cruise_interval);
-    let join_steps =
-        u64::try_from(interval - cruise_interval).map_err(|_| StrokePlanError::SegmentOverflow)?;
+    debug_assert!(last_emitted >= cruise_interval);
+    let join_steps = u64::try_from(last_emitted - cruise_interval)
+        .map_err(|_| StrokePlanError::SegmentOverflow)?;
     let mut cruise_steps = u64::from(leg.cruise_steps);
     if join_steps > 0 {
         // The deceleration ramp mirrors these runs verbatim, including this
@@ -542,9 +565,16 @@ fn acceleration_runs(
         if both_joins >= cruise_steps {
             return Err(StrokePlanError::SegmentOverflow);
         }
-        interval = push_ramp_run(&mut runs, interval, join_steps, -1)?;
+        // Same "declared start is one `add` past the incoming anchor" rule
+        // as `push_ramp_partition`: the join's own last emitted step (not
+        // `push_ramp_run`'s returned continuation, one `add` further along)
+        // is what must land exactly on the cruise interval.
+        let add = -1_i128;
+        let run_start = last_emitted + add;
+        push_ramp_run(&mut runs, run_start, join_steps, -1)?;
+        last_emitted = run_start + add * i128::from(join_steps - 1);
         cruise_steps -= both_joins;
-        debug_assert_eq!(interval, cruise_interval);
+        debug_assert_eq!(last_emitted, cruise_interval);
     }
     Ok((runs, cruise_steps))
 }
@@ -972,8 +1002,13 @@ mod tests {
             );
         }
         let (accel, cruise, _) = forward_slices(&profile);
+        // The join's own last emitted step (not `next_interval`, one `add`
+        // further along its sequence) is what the brief describes as
+        // landing "exactly on the cruise interval"; the cruise's constant
+        // `add = 0` run then continues from that step per `continuous`'s
+        // "own add" branch, not from the join's continuation.
         assert_eq!(
-            next_interval(accel.last().unwrap()),
+            last_emitted(accel.last().unwrap()),
             i64::from(cruise[0].interval)
         );
         assert_eq!(cruise[0].interval, profile.leg.cruise_interval_ticks);
@@ -997,8 +1032,56 @@ mod tests {
         }
         let join = accel.last().unwrap();
         assert!(join.add <= 0);
-        assert_eq!(next_interval(join), i64::from(cruise[0].interval));
+        assert_eq!(last_emitted(join), i64::from(cruise[0].interval));
         assert!(steps.last().unwrap().1 >= i64::from(profile.leg.cruise_interval_ticks));
+    }
+
+    #[test]
+    fn push_ramp_partition_falls_back_to_exact_per_step_values_when_add_overflows_i16() {
+        // A direct fixture on `push_ramp_partition` itself, not routed
+        // through `plan_stroke`: the only other test exercising the
+        // i16-overflow fallback loop
+        // (`a_steep_first_partition_falls_back_to_single_steps_and_speed_stays_maximal`)
+        // happens to land on a `count == 1` partition, which the early
+        // return above the fallback loop intercepts before the i16 check
+        // ever runs -- leaving the fallback loop itself, which is still
+        // reachable in production for a `count >= 2` partition whose ideal
+        // per-step change is too steep to fit `i16`, uncovered. clock /
+        // accel_steps chosen so the jump from step 1 to step 2 (200_000 ->
+        // 100_000 ticks) halves in one step, forcing `add` to -50_000 for
+        // a 2-step partition -- outside i16::MIN (-32_768).
+        let clock = 200_000_u64;
+        let accel_steps = 1_u64;
+        let start = 0_u64;
+        let count = 2_u64;
+        let last_emitted = i128::from(ramp_interval(clock, accel_steps, 1));
+        let target = i128::from(ramp_interval(clock, accel_steps, start + count));
+        let mut runs = RampRuns::new();
+        let returned = push_ramp_partition(
+            &mut runs,
+            clock,
+            accel_steps,
+            start,
+            count,
+            last_emitted,
+            target,
+        )
+        .unwrap();
+        assert_eq!(runs.len(), 2, "each fallback step is its own run");
+        for (index, run) in runs.iter().enumerate() {
+            let step = start + index as u64 + 1;
+            assert_eq!(run.count, 1);
+            assert_eq!(run.add, 0);
+            assert_eq!(
+                i128::from(run.interval),
+                i128::from(ramp_interval(clock, accel_steps, step)),
+                "step {step} must use the exact ideal interval"
+            );
+        }
+        assert_eq!(
+            returned,
+            i128::from(ramp_interval(clock, accel_steps, start + count))
+        );
     }
 
     #[test]
@@ -1015,13 +1098,14 @@ mod tests {
 
     #[test]
     fn a_ramp_partition_above_the_u16_limit_is_split_end_to_end() {
-        // 65536 steps/rev at 1000 mrev/s^2: the ramp is ~550 000 steps and
-        // its last velocity-spaced partition (31/256 of it) exceeds u16::MAX
-        // on its own, so an acceleration run must split.
+        // 65536 steps/rev at 1000 mrev/s^2, 6000 mrev/s cruise: the ramp is
+        // ~1 180 000 steps and its last velocity-spaced partition (63/1024
+        // of it, at RAMP_SEGMENTS == 32) exceeds u16::MAX on its own, so an
+        // acceleration run must split.
         let request = StrokeRequest {
             steps_per_rev: 65_536,
-            excursion_mrev: 20_000,
-            speed_mrev_s: 4_100,
+            excursion_mrev: 40_000,
+            speed_mrev_s: 6_000,
             accel_mrev_s2: 1_000,
             ..live_rig_fast()
         };
@@ -1135,6 +1219,43 @@ mod tests {
             profile.leg.ramp_steps * 2 + profile.leg.cruise_steps,
             profile.leg.steps_per_leg
         );
+    }
+
+    #[test]
+    fn every_ramp_step_stays_at_or_above_the_ideal_curve() {
+        let request = live_rig_fast();
+        let profile = plan_stroke(&request).unwrap();
+        let (accel, _, _) = forward_slices(&profile);
+        let steps = simulate(&accel);
+        let accel_steps =
+            u64::from(request.accel_mrev_s2) * u64::from(request.steps_per_rev) / 1_000;
+        let clock = u64::from(request.step_timer_hz);
+        // Checking only run *ends* (as the test above does) missed a real
+        // bug: a run's own last step can land on target while the value
+        // carried to the *next* run's start overshoots past it, to the
+        // fast side, for a whole run in between. Check every single step
+        // of the true ramp (not the join's extra steps beyond
+        // `ramp_steps`, where the sqrt curve no longer applies once the
+        // profile has capped at cruise speed) against the ideal curve, one
+        // tick of rounding slack. Step 1 is exempted: the first
+        // partition's own declared start is deliberately one `add` below
+        // the seed `clock / sqrt(2 * accel_steps)` (see
+        // `push_ramp_partition`'s doc comment) so its *last* step lands on
+        // target -- a fixed, single-step artifact at the ramp's boundary,
+        // not an accumulating error, and already covered by the run-end
+        // test above (whose first run end is well past step 1).
+        let ramp_steps = u64::from(profile.leg.ramp_steps);
+        for (index, (_, interval)) in steps.iter().enumerate() {
+            let step = index as u64 + 1;
+            if step == 1 || step > ramp_steps {
+                continue;
+            }
+            let ideal = clock / (2 * accel_steps * step).isqrt().max(1);
+            assert!(
+                *interval + 1 >= ideal as i64,
+                "step {step}: emitted {interval} ticks is faster than ideal {ideal} ticks"
+            );
+        }
     }
 
     #[test]
