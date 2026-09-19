@@ -107,24 +107,35 @@ pub(crate) fn leg_metrics(
         .sum();
     let cruise_rms = u32::try_from((squares / cruise.len() as u128).isqrt()).unwrap_or(u32::MAX);
 
-    // Steady-state reference for overshoot is the cruise window's own signed
-    // mean (`cruise_mean`, already derived above for the RMS term), not a
-    // last-10%-of-cruise tail: an overshoot that lands in that tail (as a
-    // reversal-end overshoot naturally does) would otherwise pull the
-    // reference toward the overshoot itself and undercount it.
+    // Steady-state reference for overshoot: the mean of the cruise window's
+    // last 10% (at least 1 sample), same as the sibling `RampedStrokeMetrics`
+    // reduction in `position_tune/mod.rs` -- steady-state must be measured
+    // after the loop has settled, not blended with a window that may still
+    // be transient. But the cruise window's own *final* sample sits right at
+    // the reversal boundary, exactly where a reversal-adjacent overshoot
+    // spike lands, so it is trimmed out of the tail average before that
+    // average is taken (leaving at least 1 sample): an un-trimmed tail would
+    // let the spike itself pull its own reference toward it and undercount
+    // the overshoot it is meant to measure.
+    let tail_len = (cruise.len() / 10).max(1);
+    let tail = &cruise[cruise.len() - tail_len..];
+    let trim = tail.len().saturating_sub(1).min(2);
+    let trimmed_tail = &tail[..tail.len() - trim];
+    let steady =
+        trimmed_tail.iter().map(|&s| i64::from(s)).sum::<i64>() / trimmed_tail.len() as i64;
     let approaching_from_below = leg
         .iter()
-        .find(|&&s| i64::from(s) != cruise_mean)
-        .map(|&s| i64::from(s) < cruise_mean);
+        .find(|&&s| i64::from(s) != steady)
+        .map(|&s| i64::from(s) < steady);
     let overshoot = match approaching_from_below {
         None => 0,
         Some(from_below) => leg
             .iter()
             .map(|&s| {
                 let excess = if from_below {
-                    i64::from(s) - cruise_mean
+                    i64::from(s) - steady
                 } else {
-                    cruise_mean - i64::from(s)
+                    steady - i64::from(s)
                 };
                 excess.max(0)
             })
@@ -254,6 +265,28 @@ mod tests {
         assert_eq!(m.cruise_mean_abs_units, 40);
         assert_eq!(m.overshoot_units, 12);
         assert!(m.cruise_rms_units <= 2);
+    }
+
+    #[test]
+    fn cruise_rms_does_not_overflow_a_u64_accumulator() {
+        // Half the window at i32::MIN, half at i32::MAX: both are values a
+        // caller can legally pass. cruise_mean truncates to 0, so each
+        // squared deviation is ~2^62 and the summed total across all 256
+        // samples is ~1.18e21 -- about 64x past u64::MAX. A `u64` squares
+        // accumulator panics (debug) or silently wraps (release) on this
+        // input; the widened i128/u128 accumulator does not.
+        let mut samples = std::vec![0_i32; 256];
+        for (i, s) in samples.iter_mut().enumerate() {
+            *s = if i < 128 { i32::MIN } else { i32::MAX };
+        }
+        let window = LegWindow {
+            start: 0,
+            cruise_start: 0,
+            cruise_end: 256,
+            end: 256,
+        };
+        let m = leg_metrics(&samples, &window).unwrap();
+        assert_eq!(m.cruise_rms_units, 2_147_483_647);
     }
 
     #[test]
