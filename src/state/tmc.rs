@@ -311,6 +311,15 @@ pub struct TmcChannelState {
     /// cancel the next run (see `commission_dispatch/mod.rs`'s run-admission
     /// call sites).
     pub cancel_requested: AtomicBool,
+    /// A commissioning phase is driving the step queue and wants the
+    /// planner-referenced control paths (feedforward, phase advance, fast
+    /// control period) live exactly as production runs them. Set and
+    /// cleared only by the stimulus facet; read by the control tick.
+    pub commission_stimulus_active: AtomicBool,
+    /// Mirror written by the control tick after every pass: true when no
+    /// feedforward or phase-advance surface is left applied on the chip.
+    /// A stimulus phase polls this after clearing the opt-in.
+    pub feedforward_surfaces_idle: AtomicBool,
     /// Host-controlled gate for raw-enable auto-calibration.
     pub auto_calibrate_on_enable_allowed: AtomicBool,
     /// Position P gain for cross-priority access (Q8.8).
@@ -417,6 +426,8 @@ impl TmcChannelState {
             encoder_reversed: AtomicBool::new(false),
             commission_in_flight: AtomicBool::new(false),
             cancel_requested: AtomicBool::new(false),
+            commission_stimulus_active: AtomicBool::new(false),
+            feedforward_surfaces_idle: AtomicBool::new(false),
             auto_calibrate_on_enable_allowed: AtomicBool::new(false),
             position_p_value: AtomicU16::new(
                 crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS.position_p.raw(),
@@ -520,6 +531,8 @@ impl TmcChannelState {
         self.encoder_reversed.store(false, Relaxed);
         self.commission_in_flight.store(false, Relaxed);
         self.cancel_requested.store(false, Relaxed);
+        self.commission_stimulus_active.store(false, Relaxed);
+        self.feedforward_surfaces_idle.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);
         self.store_outer_gains(crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS, Relaxed);
         self.clear_velocity_clamp_latch();
@@ -882,7 +895,7 @@ mod tests {
 
     #[test]
     fn tmc_channel_state_size_is_pinned() {
-        assert_eq!(size_of::<TmcChannelState>(), 180);
+        assert_eq!(size_of::<TmcChannelState>(), 184);
     }
 
     #[test]
@@ -1146,5 +1159,19 @@ mod tests {
         assert!(!state.stall_result_latched.load(Relaxed));
         assert_eq!(state.stall_peak_error_units.load(Relaxed), 0);
         assert_eq!(state.stall_trigger_tick.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn reset_clears_the_commission_stimulus_opt_in_and_idle_mirror() {
+        let channel = TmcChannelState::new();
+        assert!(!channel.commission_stimulus_active.load(Relaxed));
+        assert!(!channel.feedforward_surfaces_idle.load(Relaxed));
+
+        channel.commission_stimulus_active.store(true, Relaxed);
+        channel.feedforward_surfaces_idle.store(true, Relaxed);
+        channel.reset();
+
+        assert!(!channel.commission_stimulus_active.load(Relaxed));
+        assert!(!channel.feedforward_surfaces_idle.load(Relaxed));
     }
 }
