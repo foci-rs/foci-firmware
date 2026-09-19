@@ -51,6 +51,72 @@ pub fn is_new_running_best(current_lag_us: u32, running_best_lag_us: Option<u32>
     }
 }
 
+/// One rung's evaluated evidence for `decide`.
+#[allow(dead_code)]
+pub(crate) struct RungMeasurement {
+    pub position_p: PidPGain,
+    pub homing_peak_abs_units: u32,
+    pub motion_cruise_mean_abs_units: u32,
+    pub motion_overshoot_units: u32,
+    pub motion_cruise_rms_units: u32,
+    pub ceiling_ratios_milli: [i64; 5],
+}
+
+/// Which guard tripped when `decide` reports `RungDecision::Conflict`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum ConflictKind {
+    OvershootRatio,
+    OvershootOverBound,
+    Dither,
+}
+
+/// What to do with the current rung, from `decide`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum RungDecision {
+    Accept,
+    Advance,
+    Conflict(ConflictKind),
+}
+
+/// Reversal overshoot may not grow past this multiple of the running
+/// minimum overshoot seen so far without tripping a conflict.
+#[allow(dead_code)]
+pub(crate) const OVERSHOOT_RATIO_LIMIT: u32 = 3;
+
+/// Decide what to do with one rung's measurement against the tracking
+/// bound and the dither/overshoot-ratio guards.
+///
+/// `min.max(1)` keeps a zero running minimum from making any nonzero
+/// overshoot a ratio trip; the ratio guard is about growth, and a rung with
+/// zero overshoot has nothing to grow from.
+#[allow(dead_code)]
+pub(crate) fn decide(
+    m: &RungMeasurement,
+    bound_units: u32,
+    min_overshoot_so_far: Option<u32>,
+    ceiling_tripped: bool,
+) -> RungDecision {
+    if ceiling_tripped {
+        return RungDecision::Conflict(ConflictKind::Dither);
+    }
+    let homing_ok = m.homing_peak_abs_units <= bound_units;
+    let motion_ok = m.motion_cruise_mean_abs_units <= bound_units;
+    if !(homing_ok && motion_ok) {
+        return RungDecision::Advance;
+    }
+    if m.motion_overshoot_units > bound_units {
+        return RungDecision::Conflict(ConflictKind::OvershootOverBound);
+    }
+    if let Some(min) = min_overshoot_so_far
+        && m.motion_overshoot_units > min.max(1).saturating_mul(OVERSHOOT_RATIO_LIMIT)
+    {
+        return RungDecision::Conflict(ConflictKind::OvershootRatio);
+    }
+    RungDecision::Accept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +164,55 @@ mod tests {
         assert!(is_new_running_best(900, Some(1_000)));
         assert!(!is_new_running_best(1_000, Some(1_000)));
         assert!(!is_new_running_best(1_100, Some(1_000)));
+    }
+
+    fn measurement(p: u16, homing: u32, cruise: u32, overshoot: u32) -> RungMeasurement {
+        RungMeasurement {
+            position_p: PidPGain::new(p).unwrap(),
+            homing_peak_abs_units: homing,
+            motion_cruise_mean_abs_units: cruise,
+            motion_overshoot_units: overshoot,
+            motion_cruise_rms_units: 0,
+            ceiling_ratios_milli: [0; 5],
+        }
+    }
+
+    #[test]
+    fn accepts_the_first_rung_inside_both_bounds() {
+        assert_eq!(decide(&measurement(165, 300, 200, 50), 409, None, false), RungDecision::Accept);
+    }
+
+    #[test]
+    fn advances_while_either_metric_is_outside_the_bound() {
+        assert_eq!(decide(&measurement(100, 600, 200, 50), 409, None, false), RungDecision::Advance);
+        assert_eq!(decide(&measurement(100, 300, 500, 50), 409, None, false), RungDecision::Advance);
+    }
+
+    #[test]
+    fn overshoot_over_the_bound_with_tracking_met_is_a_conflict() {
+        assert_eq!(
+            decide(&measurement(300, 300, 200, 500), 409, Some(50), false),
+            RungDecision::Conflict(ConflictKind::OvershootOverBound)
+        );
+        // Tracking still failing: keep walking, the bound will decide later.
+        assert_eq!(decide(&measurement(300, 600, 200, 500), 409, Some(50), false), RungDecision::Advance);
+    }
+
+    #[test]
+    fn overshoot_ratio_trips_only_after_the_first_rung() {
+        assert_eq!(decide(&measurement(600, 300, 200, 200), 409, None, false), RungDecision::Accept);
+        assert_eq!(
+            decide(&measurement(600, 300, 200, 200), 409, Some(50), false),
+            RungDecision::Conflict(ConflictKind::OvershootRatio)
+        );
+        assert_eq!(decide(&measurement(600, 300, 200, 149), 409, Some(50), false), RungDecision::Accept);
+    }
+
+    #[test]
+    fn dither_trip_is_a_conflict_whatever_the_metrics_say() {
+        assert_eq!(
+            decide(&measurement(165, 300, 200, 50), 409, None, true),
+            RungDecision::Conflict(ConflictKind::Dither)
+        );
     }
 }
