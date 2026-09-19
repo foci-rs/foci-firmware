@@ -240,6 +240,11 @@ pub trait CommissionTiming {
     /// Whether a shutdown has been requested.
     fn is_shutdown_requested(&self) -> bool;
 
+    /// Free-running cycle counter for sub-microsecond pacing (DWT `CYCCNT`
+    /// on real hardware). Board-provided; test backends provide a
+    /// deterministic sequence instead of touching real MMIO.
+    fn cycle_count(&self) -> u32;
+
     /// Cooperative microsecond delay.
     ///
     /// Used by the OuterFailed stability check and any other firmware-side
@@ -424,6 +429,9 @@ pub trait CommissionTimingAccess {
     /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested(&self) -> bool;
 
+    /// Free-running cycle counter (see `CommissionTiming::cycle_count`).
+    fn commission_cycle_count(&self) -> u32;
+
     /// Cooperative microsecond delay.
     async fn commission_delay_us(&mut self, us: u32);
 }
@@ -468,6 +476,9 @@ pub trait CommissionBackendHooks {
 
     /// Whether a shutdown has been requested.
     fn commission_is_shutdown_requested() -> bool;
+
+    /// Free-running cycle counter (see `CommissionTiming::cycle_count`).
+    fn commission_cycle_count() -> u32;
 
     /// Cooperative microsecond delay.
     async fn commission_delay_us(us: u32);
@@ -603,6 +614,10 @@ where
 
     fn commission_is_shutdown_requested(&self) -> bool {
         Hooks::commission_is_shutdown_requested()
+    }
+
+    fn commission_cycle_count(&self) -> u32 {
+        Hooks::commission_cycle_count()
     }
 
     async fn commission_delay_us(&mut self, us: u32) {
@@ -849,6 +864,10 @@ where
         self.commission_is_shutdown_requested()
     }
 
+    fn cycle_count(&self) -> u32 {
+        self.commission_cycle_count()
+    }
+
     async fn delay_us(&mut self, us: u32) {
         self.commission_delay_us(us).await;
     }
@@ -963,6 +982,8 @@ mod tests {
         excitation_voltage: 512,
         bandwidth_hz: 50.0,
         electrical_model_theta_e_us: 160,
+        high_rate_delay_period_us: 20,
+        high_rate_delay_cycles_per_us: 520,
         current_validation_flux_max_encoder_delta_counts: 4,
         current_validation_torque_max_encoder_delta_counts: 16,
         resistance_max_expected_current_count: 1600,
@@ -979,6 +1000,7 @@ mod tests {
     };
     static ELAPSED_US: AtomicU64 = AtomicU64::new(0);
     static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+    static CYCLE_COUNT: AtomicU32 = AtomicU32::new(0);
     static LAST_DELAY_US: AtomicU32 = AtomicU32::new(0);
     static LAST_TRACE_CHANNEL: AtomicU8 = AtomicU8::new(u8::MAX);
     static LAST_TRACE_EVENT_ID: AtomicU16 = AtomicU16::new(0);
@@ -1073,6 +1095,10 @@ mod tests {
 
         fn commission_is_shutdown_requested() -> bool {
             SHUTDOWN_REQUESTED.load(Relaxed)
+        }
+
+        fn commission_cycle_count() -> u32 {
+            CYCLE_COUNT.fetch_add(1, Relaxed)
         }
 
         async fn commission_delay_us(us: u32) {

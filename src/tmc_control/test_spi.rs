@@ -211,6 +211,9 @@ impl embedded_hal::digital::OutputPin for TestPin {
 /// Monotonic clock the test hooks report.
 pub(crate) static ELAPSED_US: AtomicU64 = AtomicU64::new(0);
 
+/// Free-running cycle counter the test hooks report; advances on every read.
+pub(crate) static CYCLE_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
     pwm_maxcnt: 3999,
     tmc_clock_hz: 25_000_000,
@@ -222,6 +225,8 @@ pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
     excitation_voltage: 512,
     bandwidth_hz: 50.0,
     electrical_model_theta_e_us: 160,
+    high_rate_delay_period_us: 20,
+    high_rate_delay_cycles_per_us: 520,
     current_validation_flux_max_encoder_delta_counts: 4,
     current_validation_torque_max_encoder_delta_counts: 16,
     resistance_max_expected_current_count: 1600,
@@ -255,6 +260,10 @@ impl CommissionBackendHooks for TestHooks {
 
     fn commission_is_shutdown_requested() -> bool {
         false
+    }
+
+    fn commission_cycle_count() -> u32 {
+        CYCLE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
     }
 
     async fn commission_delay_us(_us: u32) {}
