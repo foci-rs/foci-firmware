@@ -259,6 +259,7 @@ mod tests {
             directions: [direction_a(), direction_b()],
             residual_medians_q: [17, -17],
             iae_medians_qs: [9, -9],
+            dac_rms_medians_q: [21, -21],
             cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
             // Direction 0 grace-retried one tail; direction 1 had none.
             tail_counts: [1, 0],
@@ -281,6 +282,7 @@ mod tests {
                 directions: [direction_a(), direction_b()],
                 residual_medians_q: [17, -17],
                 iae_medians_qs: [9, -9],
+                dac_rms_medians_q: [21, -21],
                 cycles: [[None; ROBUSTNESS_CYCLES_PER_DIRECTION]; 2],
                 tail_counts: [0, 0],
                 displaced_tails: [None, None],

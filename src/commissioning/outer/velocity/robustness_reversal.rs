@@ -1739,6 +1739,10 @@ fn assembled_evidence(
             session.ledgers[0].median_recovery_iae_qs(),
             session.ledgers[1].median_recovery_iae_qs(),
         ],
+        dac_rms_medians_q: [
+            session.ledgers[0].median_dac_rms_q(),
+            session.ledgers[1].median_dac_rms_q(),
+        ],
         cycles: session.cycle_wires,
         tail_counts: [
             session.ledgers[0].tail_count(),
@@ -3215,6 +3219,35 @@ mod tests {
         // Direction 1 never ran: all-zero medians.
         assert_eq!(evidence.residual_medians_q[1], 0);
         assert_eq!(evidence.iae_medians_qs[1], 0);
+    }
+
+    /// Distinct per-cycle dac_rms_q values reduce to the correct median in the
+    /// assembled evidence, mirroring `assembled_evidence_medians_convert_iae_before_median`
+    /// but for the new field -- proves the producer path from CycleLedger through
+    /// assembled_evidence actually wires median_dac_rms_q(), not just that the
+    /// ledger method itself works in isolation.
+    #[test]
+    fn assembled_evidence_dac_rms_median_reduces_filled_slots() {
+        let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
+        session.ledgers[0] = CycleLedger::new(i64::from(u32::MAX));
+        let dac_rms_values = [100_i64, 400, 200, 300];
+        for dac_rms_q in dac_rms_values {
+            session.ledgers[0].record(CycleRecord::Conclusive(ReversalMetrics {
+                reconvergence_time_us: 50_000,
+                settled_residual_q: 0,
+                recovery_iae_q: 0,
+                dac_rms_q,
+                forward_settle_time_us: 10_000,
+                reconvergence_ratio_ppm: 0,
+            }));
+        }
+
+        let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
+
+        // Median of [100, 200, 300, 400] = 250, raw rate-Q, no unit conversion.
+        assert_eq!(evidence.dac_rms_medians_q[0], 250);
+        // Direction 1 never ran: all-zero median.
+        assert_eq!(evidence.dac_rms_medians_q[1], 0);
     }
 
     /// The call site reads `reversal_overshoot_counts()` directly -- no stroke

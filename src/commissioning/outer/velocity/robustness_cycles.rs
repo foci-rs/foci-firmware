@@ -216,6 +216,15 @@ impl CycleLedger {
         saturating_i64_to_i32(median_i64(&mut values[..count]))
     }
 
+    /// Median settled dAC_rms over filled slots, in raw rate-Q units (no IAE
+    /// seconds conversion), saturating into `i32`.
+    pub(crate) fn median_dac_rms_q(&self) -> i32 {
+        let mut values: [i64; ROBUSTNESS_CYCLES_PER_DIRECTION] =
+            [0; ROBUSTNESS_CYCLES_PER_DIRECTION];
+        let count = self.collect_i64(&mut values, |m| m.dac_rms_q);
+        saturating_i64_to_i32(median_i64(&mut values[..count]))
+    }
+
     /// Count of filled slots.
     pub(crate) fn valid_cycles(&self) -> u8 {
         self.slots.iter().flatten().count() as u8
@@ -569,5 +578,30 @@ mod tests {
         }
         assert_eq!(grace_ledger.valid_cycles(), 5);
         assert!(grace_ledger.meets_floor());
+    }
+
+    #[test]
+    fn median_dac_rms_q_reduces_filled_slots_with_no_unit_conversion() {
+        let mut ledger = CycleLedger::new(i64::MAX); // iae_max_q high enough that nothing tails
+        let metrics = |dac_rms_q: i64| ReversalMetrics {
+            reconvergence_time_us: 10_000,
+            settled_residual_q: 0,
+            recovery_iae_q: 0,
+            dac_rms_q,
+            forward_settle_time_us: 5_000,
+            reconvergence_ratio_ppm: 0,
+        };
+        for value in [100_i64, 300, 200] {
+            ledger.record(CycleRecord::Conclusive(metrics(value)));
+        }
+        // Median of [100, 300, 200] sorted = 200; raw value, no /1e6 conversion
+        // (unlike median_recovery_iae_qs, which does convert).
+        assert_eq!(ledger.median_dac_rms_q(), 200);
+    }
+
+    #[test]
+    fn median_dac_rms_q_is_zero_for_an_empty_ledger() {
+        let ledger = CycleLedger::new(i64::MAX);
+        assert_eq!(ledger.median_dac_rms_q(), 0);
     }
 }

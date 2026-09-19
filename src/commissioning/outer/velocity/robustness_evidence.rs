@@ -55,6 +55,10 @@ pub struct RobustnessEvidence {
     /// Median recovery IAE per direction, in rate-Q seconds. Off-terminal:
     /// carried for the detailed reply, not the compact wire terminal.
     pub iae_medians_qs: [i32; 2],
+    /// Median settled dAC_rms per direction, in raw rate-Q units (not IAE's
+    /// rate-Q-seconds). Off-terminal: carried for the detailed reply, not the
+    /// compact wire terminal.
+    pub dac_rms_medians_q: [i32; 2],
     /// Per-cycle wire triples for each direction, in cycle order. An unfilled
     /// slot is `None`. Off-terminal: carried by the per-cycle evidence reply,
     /// not encoded into the compact 39-byte terminal. `pub(crate)` because
