@@ -947,6 +947,7 @@ mod tests {
             l_count_micro: 1_346,
             tau_e_us: 1_515,
             theta_e_us: 160,
+            theta_source: 0,
         };
         let mut config = autotune_test_config();
         config.bandwidth_hz = 600.0;
@@ -976,6 +977,7 @@ mod tests {
             l_count_micro: 1_366,
             tau_e_us: 1_366,
             theta_e_us: 160,
+            theta_source: 0,
         };
         let mut config = autotune_test_config();
         config.bandwidth_hz = 650.0;

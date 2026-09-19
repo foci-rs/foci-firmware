@@ -28,5 +28,6 @@ pub(super) fn test_electrical_model() -> ElectricalModel {
         l_count_micro: 2950,
         tau_e_us: 2622,
         theta_e_us: 700,
+        theta_source: 0,
     }
 }

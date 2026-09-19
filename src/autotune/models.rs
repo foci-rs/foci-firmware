@@ -16,6 +16,12 @@ pub struct ElectricalModel {
     pub tau_e_us: u32,
     /// Effective transport delay in microseconds (from transient onset).
     pub theta_e_us: u32,
+    /// Source of `theta_e_us`: 0 = high-rate measurement, 1 =
+    /// board-configured fallback (FOCI-205). Wire-shaped directly (not
+    /// `electrical_identification::ThetaSource`, which is `pub(crate)` and
+    /// not visible to board crates) so it survives unchanged through every
+    /// later copy of this struct.
+    pub theta_source: u8,
 }
 
 /// Fixed-point scale used for [`ElectricalModel::r_count_milli`].
@@ -335,6 +341,7 @@ mod tests {
             l_count_micro: 256,
             tau_e_us: 50,
             theta_e_us: 10,
+            theta_source: 0,
         };
         assert_eq!(model.r_count_milli, 512);
         assert_eq!(model.l_count_micro, 256);

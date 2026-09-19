@@ -351,11 +351,18 @@ fn assemble_electrical_model(
         return Err(ModelAssemblyError::ModelScaleZero { l_count_micro });
     }
 
-    // --- Configured transport-delay gate ---
+    let (theta_e_us_input, theta_source) =
+        resolve_theta_e_us_input(data.delay_estimate_us, tau_e_us, configured_theta_e_us);
+    let theta_source_wire: u8 = match theta_source {
+        ThetaSource::Measured => 0,
+        ThetaSource::ConfigFallback => 1,
+    };
+
+    // --- Transport-delay gate (measured-or-fallback) ---
     // tau_e_us is guaranteed non-zero here (model scale gate passed).
-    if configured_theta_e_us >= tau_e_us / 2 {
+    if theta_e_us_input >= tau_e_us / 2 {
         return Err(ModelAssemblyError::ThetaTooLarge {
-            theta_us: configured_theta_e_us,
+            theta_us: theta_e_us_input,
             tau_us: tau_e_us,
         });
     }
@@ -365,7 +372,7 @@ fn assemble_electrical_model(
     if r_diff_permille >= RESISTANCE_MISMATCH_WARN_PERMILLE {
         warning_flags |= INNER_WARN_BIT_RESISTANCE_MISMATCH;
     }
-    if configured_theta_e_us >= tau_e_us / 4 {
+    if theta_e_us_input >= tau_e_us / 4 {
         warning_flags |= INNER_WARN_BIT_THETA_TAU;
     }
 
@@ -374,7 +381,8 @@ fn assemble_electrical_model(
             r_count_milli,
             l_count_micro,
             tau_e_us,
-            theta_e_us: configured_theta_e_us,
+            theta_e_us: theta_e_us_input,
+            theta_source: theta_source_wire,
         },
         warning_flags,
     })
@@ -6055,6 +6063,24 @@ mod tests {
             assembly.warning_flags & INNER_WARN_BIT_RESISTANCE_MISMATCH,
             0
         );
+    }
+
+    #[test]
+    fn validate_uses_measured_theta_when_available_and_accepted() {
+        let mut data = representative_data();
+        data.delay_estimate_us = Some(200); // well under tau_e_us / 2 (801 / 2 = 400) for this fixture
+        let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
+        assert_eq!(assembly.model.theta_source, 0); // 0 = measured
+        assert_eq!(assembly.model.theta_e_us, 200);
+    }
+
+    #[test]
+    fn validate_falls_back_to_configured_theta_when_no_measurement() {
+        let mut data = representative_data();
+        data.delay_estimate_us = None;
+        let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
+        assert_eq!(assembly.model.theta_source, 1); // 1 = config fallback
+        assert_eq!(assembly.model.theta_e_us, TEST_THETA_E_US);
     }
 
     #[test]
