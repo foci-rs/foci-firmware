@@ -9,7 +9,18 @@ use foci_tmc4671::registers::{PID_POSITION_ACTUAL, PID_TORQUE_FLUX_ACTUAL, PidTo
 use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
 
-const SAMPLE_PERIOD_US: u32 = 30;
+// Widened from the design's originally specified 30us after hardware
+// validation measured ~44us for the two real TMC4671 SPI register reads
+// this loop performs per slot (SPI2 already runs at the chip's protocol
+// maximum, 8MHz -- see board_config.rs -- so the overrun is software/DMA
+// overhead on top of the SPI transfer itself, not a clock-speed shortfall).
+// 60us gives ~35% margin over that single measurement. This narrows the
+// design's documented supported bandwidth range at its fast edge (the
+// coverage check's 20-samples-within-3*tau_current floor is only met down
+// to roughly tau_current >= 400us at this period, versus 200us at 30us),
+// which affects only a hypothetical future board/motor near the range's
+// upper bound -- neither board in this codebase operates there today.
+const SAMPLE_PERIOD_US: u32 = 60;
 const CAPTURE_DURATION_US: u32 = 5_000;
 const MAX_SAMPLES: usize = 200;
 const MOTION_ABORT_THRESHOLD: u32 = 32_760;
@@ -145,7 +156,9 @@ mod tests {
         // scripting.
         let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
         let buffer = result.expect("capture should complete cleanly");
-        assert_eq!(buffer.len(), 167);
+        // CAPTURE_DURATION_US=5000 / SAMPLE_PERIOD_US=60: slots 0..83 (83*60=4980
+        // < 5000; 84*60=5040 does not), so 84 samples.
+        assert_eq!(buffer.len(), 84);
     }
 
     #[test]
@@ -204,10 +217,10 @@ mod tests {
         let result =
             pollster::block_on(run_capture(&mut backend, 2000, 4000)).expect("valid capture");
         for (i, sample) in result.iter().enumerate() {
-            assert_eq!(sample.t_us, i as u32 * 30);
+            assert_eq!(sample.t_us, i as u32 * 60);
         }
         // `MockBackend::delay_us_log` caps at 32 entries; the capture window
-        // issues one delay per slot after the first (166 here), so the log
+        // issues one delay per slot after the first (83 here), so the log
         // fills to capacity rather than recording every delay. What matters
         // is that delay_us was genuinely called, every logged wait is
         // exactly one slot period, and the log is not empty -- an
@@ -215,7 +228,7 @@ mod tests {
         // it empty.
         assert!(!backend.delay_us_log.is_empty());
         assert_eq!(backend.delay_us_log.len(), backend.delay_us_log.capacity());
-        assert!(backend.delay_us_log.iter().all(|&delay| delay == 30));
+        assert!(backend.delay_us_log.iter().all(|&delay| delay == 60));
     }
 
     #[test]
@@ -241,12 +254,12 @@ mod tests {
     fn slot_deadline_exceeded_trips_immediately_instead_of_finishing_the_capture() {
         let mut backend = MockBackend::new();
         // capture_start = 0, slot 0 arrives on time (now = 0), but the
-        // post-read check reports elapsed time past slot 0's 30us budget --
+        // post-read check reports elapsed time past slot 0's 60us budget --
         // the two reads did not complete in time. This is the actual
         // safety-relevant timing violation the spec requires: a slot's
         // reads not completing within SAMPLE_PERIOD_US of its scheduled
         // start, evaluated immediately rather than deferred to end-of-capture.
-        backend.set_elapsed_us_sequence(&[0, 0, 40]);
+        backend.set_elapsed_us_sequence(&[0, 0, 70]);
         let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
         assert_eq!(result, Err(CommissionError::GainFloorInsufficientCoverage));
     }

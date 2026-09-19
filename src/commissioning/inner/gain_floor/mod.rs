@@ -621,11 +621,11 @@ mod tests {
         let mut phase = gain_floor_phase(2000, 4000);
         let mut backend = MockBackend::new();
         // Slot 0 arrives on time (now = 0) but its two reads do not
-        // complete within the 30us slot budget (post-read elapsed = 40) --
+        // complete within the 60us slot budget (post-read elapsed = 70) --
         // the actual safety-relevant timing violation, not mere arrival
         // lateness (which alone is not a trip condition; see capture.rs's
         // own `late_arrival_that_still_completes_within_budget_does_not_trip`).
-        backend.set_elapsed_us_sequence(&[0, 0, 40]);
+        backend.set_elapsed_us_sequence(&[0, 0, 70]);
         assert_routes_through_restore_machine(
             &mut phase,
             &mut backend,
