@@ -49,7 +49,11 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     },
 };
 
-/// Conservative default gains for the position and velocity loops.
+/// Fresh-commission fallback outer-loop gains for boards whose configured
+/// current-loop bandwidth (`TmcConfig::bandwidth_hz`) falls outside the
+/// gain-floor measurement's supported `[95.5 Hz, 796 Hz]` range (Task 7).
+/// Not tuned to be "conservative" for any specific motor — historical value,
+/// left unchanged so boards outside that range keep their current behavior.
 pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
     position_p: match PidPGain::new(640) {
         Ok(gain) => gain,
@@ -60,6 +64,20 @@ pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
         Ok(gain) => gain,
         Err(_) => panic!("valid default"),
     },
+    velocity_i: PidIGain::ZERO,
+};
+
+/// Pre-commissioning placeholder written by `TmcChannelState::reset()` after
+/// a config reset. Never applied to hardware while armed:
+/// `arm_motor_electrical`'s calibration assert refuses to arm before a
+/// commissioning result exists, and by the time any fresh commission reaches
+/// `ClosedLoopActivation`, the gains actually written come from either the
+/// gain-floor measurement (Task 7) or `DEFAULT_OUTER_GAINS` (below) — never
+/// this value.
+pub const CONFIG_RESET_PLACEHOLDER_GAINS: OuterLoopGains = OuterLoopGains {
+    position_p: PidPGain::ZERO,
+    position_i: PidIGain::ZERO,
+    velocity_p: PidPGain::ZERO,
     velocity_i: PidIGain::ZERO,
 };
 
@@ -211,6 +229,25 @@ mod tests {
 
         assert_eq!(flux_reg, 0x02c3_0a20);
         assert_eq!(torque_reg, 0x02c3_0a20);
+    }
+
+    #[test]
+    fn config_reset_placeholder_gains_are_obviously_inert() {
+        // "Obviously inert": far below any value that could produce meaningful
+        // motion if ever written armed. Zero P gain is the clearest such value.
+        assert_eq!(CONFIG_RESET_PLACEHOLDER_GAINS.velocity_p, PidPGain::ZERO);
+        assert_eq!(CONFIG_RESET_PLACEHOLDER_GAINS.position_p, PidPGain::ZERO);
+        assert_eq!(CONFIG_RESET_PLACEHOLDER_GAINS.velocity_i, PidIGain::ZERO);
+        assert_eq!(CONFIG_RESET_PLACEHOLDER_GAINS.position_i, PidIGain::ZERO);
+    }
+
+    #[test]
+    fn default_outer_gains_value_is_unchanged() {
+        // DEFAULT_OUTER_GAINS keeps its historical value: it is now the
+        // fresh-commission fallback for boards outside the gain-floor
+        // measurement's supported bandwidth range, not an inert placeholder.
+        assert_eq!(DEFAULT_OUTER_GAINS.velocity_p.raw(), 1152);
+        assert_eq!(DEFAULT_OUTER_GAINS.position_p.raw(), 640);
     }
 
     #[test]

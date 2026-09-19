@@ -418,10 +418,18 @@ impl TmcChannelState {
             commission_in_flight: AtomicBool::new(false),
             cancel_requested: AtomicBool::new(false),
             auto_calibrate_on_enable_allowed: AtomicBool::new(false),
-            position_p_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()),
-            position_i_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.position_i.raw()),
-            velocity_p_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.velocity_p.raw()),
-            velocity_i_value: AtomicU16::new(crate::pid::DEFAULT_OUTER_GAINS.velocity_i.raw()),
+            position_p_value: AtomicU16::new(
+                crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS.position_p.raw(),
+            ),
+            position_i_value: AtomicU16::new(
+                crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS.position_i.raw(),
+            ),
+            velocity_p_value: AtomicU16::new(
+                crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS.velocity_p.raw(),
+            ),
+            velocity_i_value: AtomicU16::new(
+                crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS.velocity_i.raw(),
+            ),
             velocity_ff_clamp_latched: AtomicBool::new(false),
             velocity_ff_clamp_count: AtomicU32::new(0),
             homing_current_ma: AtomicU32::new(0),
@@ -513,7 +521,7 @@ impl TmcChannelState {
         self.commission_in_flight.store(false, Relaxed);
         self.cancel_requested.store(false, Relaxed);
         self.auto_calibrate_on_enable_allowed.store(false, Relaxed);
-        self.store_outer_gains(crate::pid::DEFAULT_OUTER_GAINS, Relaxed);
+        self.store_outer_gains(crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS, Relaxed);
         self.clear_velocity_clamp_latch();
         self.homing_current_ma.store(0, Relaxed);
         self.stall_threshold_units.store(0, Relaxed);
@@ -915,7 +923,7 @@ mod tests {
 
         assert_eq!(
             state.load_outer_gains(Relaxed),
-            Ok(crate::pid::DEFAULT_OUTER_GAINS)
+            Ok(crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS)
         );
     }
 
