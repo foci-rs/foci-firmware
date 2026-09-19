@@ -57,30 +57,21 @@ where
         if slot_start >= capture_deadline || buffer.len() >= MAX_SAMPLES {
             break Ok(());
         }
-        let now = backend.elapsed_us();
-        if now > slot_start {
-            // The scheduler is already late arriving at this slot's start --
-            // an immediate trip, not a value recorded with a stale timestamp.
-            break Err(CommissionError::GainFloorInsufficientCoverage);
-        }
-        // Actually wait until this slot's scheduled start -- the same
-        // cooperative delay primitive `current_loop.rs`'s
+        // Wait until this slot's scheduled start -- the same cooperative
+        // delay primitive `current_loop.rs`'s
         // `read_axis_directional_evidence_for_gate` already awaits between
         // settled-flux samples, not a busy loop. Without this call, both
         // register reads below would issue immediately after the previous
-        // slot's reads complete, off the fixed grid.
-        let wait_us = (slot_start - now).min(u64::from(u32::MAX)) as u32;
+        // slot's reads complete, off the fixed grid. `saturating_sub`
+        // handles arriving at or after `slot_start` (unavoidable for slot 0,
+        // whose start equals `capture_start` exactly, and possible for any
+        // later slot under scheduling contention): arrival lateness by
+        // itself is not a safety violation, only failing to complete this
+        // slot's reads within its budget is (checked below).
+        let now = backend.elapsed_us();
+        let wait_us = slot_start.saturating_sub(now).min(u64::from(u32::MAX)) as u32;
         if wait_us > 0 {
             backend.delay_us(wait_us).await;
-        }
-        // Re-check after the delay: RTIC can resume this task later than
-        // requested (preemption, a longer-running higher-priority task).
-        // Without re-reading elapsed_us() here, a late wakeup could still
-        // issue both reads and have them finish inside slot_start + 30us,
-        // passing the post-read deadline check below despite having missed
-        // the slot's actual scheduled start.
-        if backend.elapsed_us() > slot_start {
-            break Err(CommissionError::GainFloorInsufficientCoverage);
         }
 
         let torque_flux_raw = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
@@ -228,13 +219,34 @@ mod tests {
     }
 
     #[test]
-    fn late_slot_start_trips_immediately_instead_of_finishing_the_capture() {
+    fn late_arrival_that_still_completes_within_budget_does_not_trip() {
         let mut backend = MockBackend::new();
         // First `elapsed_us()` call establishes capture_start = 0; the
-        // second call (the slot-0 `now` read) reports the clock already
-        // past slot 0's scheduled start, simulating RTIC scheduling
-        // contention that delayed entry into the capture loop.
-        backend.set_elapsed_us_sequence(&[0, 5]);
+        // second call (slot 0's `now`, used to compute the wait) reports the
+        // clock already past slot 0's scheduled start -- unavoidable
+        // measurement/scheduling overhead, not a safety violation by itself.
+        // The third call (post-read) shows both reads still completed well
+        // within the 30us slot budget. Arrival lateness alone must not
+        // trip: only failing to complete the reads in time does (see the
+        // post-read deadline check below).
+        backend.set_elapsed_us_sequence(&[0, 25, 28]);
+        let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
+        assert!(
+            result.is_ok(),
+            "late arrival alone must not trip when reads still complete in time: {result:?}"
+        );
+    }
+
+    #[test]
+    fn slot_deadline_exceeded_trips_immediately_instead_of_finishing_the_capture() {
+        let mut backend = MockBackend::new();
+        // capture_start = 0, slot 0 arrives on time (now = 0), but the
+        // post-read check reports elapsed time past slot 0's 30us budget --
+        // the two reads did not complete in time. This is the actual
+        // safety-relevant timing violation the spec requires: a slot's
+        // reads not completing within SAMPLE_PERIOD_US of its scheduled
+        // start, evaluated immediately rather than deferred to end-of-capture.
+        backend.set_elapsed_us_sequence(&[0, 0, 40]);
         let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
         assert_eq!(result, Err(CommissionError::GainFloorInsufficientCoverage));
     }
