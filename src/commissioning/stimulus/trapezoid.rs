@@ -80,7 +80,7 @@ fn leg_at(
         return None;
     }
     let min_cruise_ticks =
-        u64::from(request.min_cruise_us) * u64::from(request.step_timer_hz) / 1_000_000;
+        (u64::from(request.min_cruise_us) * u64::from(request.step_timer_hz)).div_ceil(1_000_000);
     let min_cruise_steps = min_cruise_ticks.div_ceil(cruise_interval).max(1);
     if 2 * ramp_steps + min_cruise_steps > steps_per_leg {
         return None;
@@ -125,6 +125,11 @@ pub(crate) fn plan_leg(request: &StrokeRequest) -> Result<LegPlan, StrokePlanErr
     let floor = 1_000_u64.div_ceil(steps_per_rev).max(1);
     let fits = |speed: u64| leg_at(request, steps_per_leg, accel_steps, speed).is_some();
     if !fits(floor) {
+        return Err(StrokePlanError::NoCruise);
+    }
+    // The search below assumes `floor <= requested`; a requested speed
+    // below the floor cannot be served regardless of `fits(floor)`.
+    if requested < floor {
         return Err(StrokePlanError::NoCruise);
     }
     let speed = if fits(requested) {
@@ -276,7 +281,7 @@ fn emit_leg(
     let accel_steps = steps_per_second(u64::from(request.accel_mrev_s2), steps_per_rev);
     let clock = u64::from(request.step_timer_hz);
     let (runs, cruise_steps) = acceleration_runs(&leg, accel_steps, clock)?;
-    let min_cruise_ticks = u64::from(request.min_cruise_us) * clock / 1_000_000;
+    let min_cruise_ticks = (u64::from(request.min_cruise_us) * clock).div_ceil(1_000_000);
     if cruise_steps * u64::from(leg.cruise_interval_ticks) < min_cruise_ticks {
         return Ok(None);
     }
@@ -683,6 +688,21 @@ mod tests {
     }
 
     #[test]
+    fn plan_leg_rejects_a_requested_speed_below_the_floor_instead_of_underflowing() {
+        // 500 steps/rev: floor = 1_000.div_ceil(500) = 2 mrev/s (the
+        // smallest speed giving at least one step/s). A requested speed of
+        // 1 mrev/s truncates to 0 steps/s (`steps_per_second` floors), so
+        // `fits(requested)` is false while `requested < floor`; the binary
+        // search must not be entered with `hi < lo`.
+        let request = StrokeRequest {
+            speed_mrev_s: 1,
+            steps_per_rev: 500,
+            ..live_rig_fast()
+        };
+        assert_eq!(plan_leg(&request), Err(StrokePlanError::NoCruise));
+    }
+
+    #[test]
     fn plan_leg_rejects_an_excursion_with_no_steps() {
         // 1 mrev on 500 steps/rev is zero whole steps: nothing can move.
         let request = StrokeRequest {
@@ -724,6 +744,32 @@ mod tests {
         // 1 MHz clock: ticks are microseconds.
         let ticks = u64::from(plan.cruise_steps) * u64::from(plan.cruise_interval_ticks);
         assert!(ticks >= 50_000);
+    }
+
+    #[test]
+    fn minimum_cruise_holds_on_a_non_round_clock() {
+        // step_timer_hz = 1_000_001 is not an exact multiple of 1_000_000,
+        // so floor division for `min_cruise_ticks` (50_000 * 1_000_001 /
+        // 1_000_000 = 50_000.05 -> 50_000) understates the true minimum by
+        // a fraction of a tick. Tuned so the leg is tight at that
+        // requested speed (ramp_steps = 1, steps_per_leg = 3): under the
+        // floor-based computation the single admitted cruise step lasts
+        // 49_999 us, just under the 50_000 us guarantee.
+        let request = StrokeRequest {
+            speed_mrev_s: 20,
+            accel_mrev_s2: 200,
+            excursion_mrev: 3,
+            steps_per_rev: 1_000,
+            step_timer_hz: 1_000_001,
+            min_cruise_us: 50_000,
+        };
+        let plan = plan_leg(&request).unwrap();
+        assert!(
+            plan.cruise_us >= request.min_cruise_us,
+            "cruise {} us must meet the {} us minimum",
+            plan.cruise_us,
+            request.min_cruise_us
+        );
     }
 
     #[test]
