@@ -21,7 +21,7 @@ use crate::autotune::TmcMechanicalRpm;
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::autotune::velocity_measurement::{DyadicBlocker, StationarityWork};
 use crate::autotune::velocity_measurement::{
-    StationarityResult, VELOCITY_RATE_Q_SCALE, estimate_confidence,
+    StationarityResult, VELOCITY_RATE_Q_SCALE, VelocityObservationSource, estimate_confidence,
 };
 use crate::commission_dispatch::robustness::{
     ROBUSTNESS_CAUSE_ANALYSIS_POLL_FAILED, ROBUSTNESS_CAUSE_ANALYSIS_TIMEOUT,
@@ -63,8 +63,8 @@ use super::robustness_cycles::{
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
     ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
-    ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds, reduce_plant_rate_q,
-    robustness_thresholds_for, tripped_mask,
+    ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds, dac_rms_q,
+    reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -416,6 +416,7 @@ struct LegScore<'a> {
     reconvergence_time_us: u32,
     recovery_iae: i64,
     suffix: &'a crate::autotune::velocity_measurement::StationarySuffix,
+    ring: &'a VelocityObservationRing,
 }
 
 /// Score one measured reversal leg into its raw per-cycle
@@ -431,16 +432,22 @@ fn score_reversal_leg(input: LegScore<'_>) -> Result<ReversalMetrics, Commission
         reconvergence_time_us,
         recovery_iae,
         suffix,
+        ring,
     } = input;
     let signed_target_rpm = reverse_target_rpm(point, direction);
     let (settled_low, settled_high) = settled_rate_interval_q(suffix)?;
     let (deficit_low, deficit_high) =
         deficit_interval_q(signed_target_rpm, counts_per_rev, settled_low, settled_high)?;
     let settled_residual_q = deficit_low.saturating_add(deficit_high) / 2;
+    let target_rate_q_value = target_rate_q(signed_target_rpm, counts_per_rev);
+    let suffix_len = usize::from(suffix.suffix_len);
+    let start_index = ring.observation_len().saturating_sub(suffix_len);
+    let dac_rms = dac_rms_q(ring, start_index, suffix_len, target_rate_q_value);
     let mut metrics = ReversalMetrics {
         reconvergence_time_us,
         settled_residual_q,
         recovery_iae_q: recovery_iae,
+        dac_rms_q: dac_rms,
         forward_settle_time_us,
         reconvergence_ratio_ppm: 0,
     };
@@ -931,6 +938,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         reconvergence_time_us,
                         recovery_iae: workspace.capture.recovery_iae_q(),
                         suffix: &suffix,
+                        ring: &workspace.observations,
                     }) {
                         Ok(metrics) => metrics,
                         Err(_) => {
@@ -1673,6 +1681,7 @@ fn median_tripped(ledger: &CycleLedger, point: &AcceptancePoint, counts_per_rev:
         reconvergence_time_us: u32::from(ledger.median_reconvergence_ms()).saturating_mul(1_000),
         settled_residual_q: i64::from(ledger.median_settled_residual_q()),
         recovery_iae_q: i64::from(ledger.median_recovery_iae_qs()).saturating_mul(1_000_000),
+        dac_rms_q: 0,
         forward_settle_time_us: u32::from(ledger.median_forward_settle_ms()).saturating_mul(1_000),
         reconvergence_ratio_ppm: 0,
     };
@@ -2431,6 +2440,7 @@ mod tests {
             reconvergence_time_us: HUGE_DURATION_US,
             settled_residual_q: i64::MAX,
             recovery_iae_q: i64::MAX,
+            dac_rms_q: 0,
             forward_settle_time_us: HUGE_DURATION_US,
             reconvergence_ratio_ppm: 0,
         }));
@@ -2438,6 +2448,7 @@ mod tests {
             reconvergence_time_us: HUGE_DURATION_US,
             settled_residual_q: i64::MIN,
             recovery_iae_q: i64::MIN,
+            dac_rms_q: 0,
             forward_settle_time_us: HUGE_DURATION_US,
             reconvergence_ratio_ppm: 0,
         }));
@@ -2810,6 +2821,7 @@ mod tests {
             reconvergence_time_us: 50_000,
             settled_residual_q: 0,
             recovery_iae_q,
+            dac_rms_q: 0,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
         }
@@ -2915,6 +2927,7 @@ mod tests {
             reconvergence_time_us: reconvergence_ms.saturating_mul(1_000),
             settled_residual_q: 0,
             recovery_iae_q,
+            dac_rms_q: 0,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
         }
@@ -3186,6 +3199,7 @@ mod tests {
                 reconvergence_time_us: 50_000,
                 settled_residual_q: residual_q,
                 recovery_iae_q: iae,
+                dac_rms_q: 0,
                 forward_settle_time_us: 10_000,
                 reconvergence_ratio_ppm: 0,
             }));

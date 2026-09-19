@@ -9,7 +9,6 @@
 //! independent of which (if any) suffix the selector would have chosen.
 
 use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
-#[cfg(test)]
 use crate::autotune::velocity_measurement::VelocityObservationSource;
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
@@ -31,6 +30,10 @@ pub struct ReversalMetrics {
     /// Integral of absolute rate error over the recovery window, in
     /// rate-Q-microsecond units.
     pub recovery_iae_q: i64,
+    /// Demeaned first-difference RMS of settled per-tick rate error, in raw
+    /// rate-Q units (not IAE's rate-Q-seconds). Meaningful only when this
+    /// leg reached the settled tail; `0` otherwise.
+    pub dac_rms_q: i64,
     /// Elapsed time from the initial (forward) approach to its own settle.
     pub forward_settle_time_us: u32,
     /// `reconvergence_time_us` expressed as parts-per-million of
@@ -130,6 +133,60 @@ pub(crate) fn recovery_iae_q(
         iae_q = iae_q.saturating_add(contribution_q);
     }
     iae_q
+}
+
+/// Demeaned first-difference RMS of the per-tick rate error over
+/// `[start_index, start_index + len)` of `source`.
+///
+/// Mirrors `docs/validation/foc-250-2026-08-18-p-sweep-stepper-x/analyze_sweep.py`'s
+/// `over_gain_metrics`: demean the window's rate error against `target_rate_q`,
+/// then take the RMS of the demeaned series' first difference. Missing
+/// indices (past what `source` holds) are skipped, not treated as zero.
+/// Returns 0 for fewer than 2 available samples.
+pub(crate) fn dac_rms_q<S: VelocityObservationSource + ?Sized>(
+    source: &S,
+    start_index: usize,
+    len: usize,
+    target_rate_q: i64,
+) -> i64 {
+    let mut sum_q: i64 = 0;
+    let mut count: i64 = 0;
+    for offset in 0..len {
+        let Some(observation) = source.observation(start_index + offset) else {
+            continue;
+        };
+        let error_q = per_tick_rate_q(observation.delta_counts, observation.elapsed_us)
+            .saturating_sub(target_rate_q);
+        sum_q = sum_q.saturating_add(error_q);
+        count += 1;
+    }
+    if count < 2 {
+        return 0;
+    }
+    let mean_q = sum_q / count;
+
+    let mut sq_diff_sum_f: f32 = 0.0;
+    let mut diff_count: i64 = 0;
+    let mut prev_ac_q: Option<i64> = None;
+    for offset in 0..len {
+        let Some(observation) = source.observation(start_index + offset) else {
+            continue;
+        };
+        let error_q = per_tick_rate_q(observation.delta_counts, observation.elapsed_us)
+            .saturating_sub(target_rate_q);
+        let ac_q = error_q.saturating_sub(mean_q);
+        if let Some(prev_ac_q) = prev_ac_q {
+            let diff_q = (ac_q.saturating_sub(prev_ac_q)) as f32;
+            sq_diff_sum_f += diff_q * diff_q;
+            diff_count += 1;
+        }
+        prev_ac_q = Some(ac_q);
+    }
+    if diff_count == 0 {
+        return 0;
+    }
+    let mean_sq_diff_f = sq_diff_sum_f / (diff_count as f32);
+    libm::sqrtf(mean_sq_diff_f) as i64
 }
 
 /// Online band-entry and recovery-IAE accumulator for one capture leg.
@@ -630,6 +687,7 @@ mod tests {
             reconvergence_time_us: 50_000,
             settled_residual_q: 100,
             recovery_iae_q: 500_000,
+            dac_rms_q: 0,
             forward_settle_time_us: 20_000,
             reconvergence_ratio_ppm: 0,
         };
@@ -659,6 +717,7 @@ mod tests {
             reconvergence_time_us: 0,
             settled_residual_q: -600,
             recovery_iae_q: 0,
+            dac_rms_q: 0,
             forward_settle_time_us: 0,
             reconvergence_ratio_ppm: 0,
         };
@@ -863,6 +922,7 @@ mod tests {
             reconvergence_time_us: 260_000,
             settled_residual_q: 0,
             recovery_iae_q: accept_ceiling_q,
+            dac_rms_q: 0,
             forward_settle_time_us: 240_000,
             reconvergence_ratio_ppm: 0,
         };
@@ -879,5 +939,143 @@ mod tests {
         let t = robustness_thresholds_for(5_000, 11_733_333);
         assert_eq!(t.t_max_us, ROBUSTNESS_THRESHOLDS.t_max_us);
         assert_eq!(t.r_max_q, ROBUSTNESS_THRESHOLDS.r_max_q);
+    }
+
+    use crate::autotune::velocity_measurement::RawVelocityObservation;
+
+    fn observation(delta_counts: i32, elapsed_us: u32) -> RawVelocityObservation {
+        RawVelocityObservation::new(delta_counts, elapsed_us).expect("non-zero elapsed_us")
+    }
+
+    #[test]
+    fn dac_rms_q_is_zero_for_a_flat_window() {
+        // Constant rate exactly at target: every error is 0, so both the mean
+        // and every first difference are 0.
+        let target_rate_q = per_tick_rate_q(100, 1_000);
+        let samples = [observation(100, 1_000); 8];
+        assert_eq!(dac_rms_q(&samples[..], 0, samples.len(), target_rate_q), 0);
+    }
+
+    #[test]
+    fn dac_rms_q_is_nonzero_for_alternating_error() {
+        // Error alternates +d/-d around the target every tick: after demeaning
+        // (mean 0 for an even-length alternating series), each first difference
+        // has magnitude 2d, so dac_rms_q = 2d exactly.
+        let target_rate_q = per_tick_rate_q(100, 1_000);
+        let high = observation(110, 1_000);
+        let low = observation(90, 1_000);
+        let samples = [high, low, high, low, high, low, high, low];
+        let d = per_tick_rate_q(110, 1_000) - target_rate_q;
+        assert_eq!(
+            dac_rms_q(&samples[..], 0, samples.len(), target_rate_q),
+            2 * d
+        );
+    }
+
+    #[test]
+    fn dac_rms_q_reads_only_the_requested_window() {
+        // A transient prefix outside [start_index, start_index + len) must not
+        // affect the result -- this is the property that keeps the fold from
+        // reintroducing the pre-band-entry transient when called with the
+        // suffix's trailing range.
+        let target_rate_q = per_tick_rate_q(100, 1_000);
+        let transient = observation(9_999, 1_000);
+        let flat = observation(100, 1_000);
+        let samples = [transient, transient, flat, flat, flat, flat];
+        assert_eq!(dac_rms_q(&samples[..], 2, 4, target_rate_q), 0);
+    }
+
+    #[test]
+    fn dac_rms_q_is_sign_symmetric_for_forward_and_reverse_targets() {
+        let forward_target_q = per_tick_rate_q(100, 1_000);
+        let reverse_target_q = per_tick_rate_q(-100, 1_000);
+        let forward_samples = [
+            observation(110, 1_000),
+            observation(90, 1_000),
+            observation(110, 1_000),
+            observation(90, 1_000),
+        ];
+        let reverse_samples = [
+            observation(-110, 1_000),
+            observation(-90, 1_000),
+            observation(-110, 1_000),
+            observation(-90, 1_000),
+        ];
+        assert_eq!(
+            dac_rms_q(&forward_samples[..], 0, 4, forward_target_q),
+            dac_rms_q(&reverse_samples[..], 0, 4, reverse_target_q)
+        );
+    }
+
+    #[test]
+    fn dac_rms_q_does_not_panic_on_a_short_or_empty_range() {
+        let target_rate_q = per_tick_rate_q(100, 1_000);
+        let samples = [observation(100, 1_000)];
+        assert_eq!(dac_rms_q(&samples[..], 0, 0, target_rate_q), 0);
+        assert_eq!(dac_rms_q(&samples[..], 0, 1, target_rate_q), 0);
+        // Range extends past what the source has -- observation() returns None
+        // for the missing indices; must not panic, must not count them.
+        assert_eq!(dac_rms_q(&samples[..], 0, 5, target_rate_q), 0);
+    }
+
+    /// Cross-check against `analyze_sweep.py`'s `over_gain_metrics` definition,
+    /// via a genuinely independent reference calculation -- **not** the same
+    /// closed-form shortcut the alternating-error test above uses (an earlier
+    /// draft of this test reused that shortcut's algebra and was rejected in
+    /// plan review for not actually being independent). This test hand-picks a
+    /// non-alternating, non-symmetric error sequence and recomputes the demean
+    /// -> first-difference -> RMS steps in a small separate loop written fresh
+    /// for this test, then compares against `dac_rms_q`'s output.
+    ///
+    /// **Fixed after a second plan-review round**: the first draft of this test
+    /// used `elapsed_us=1`, which (via `per_tick_rate_q`'s `* MICROS_PER_SECOND *
+    /// VELOCITY_RATE_Q_SCALE / elapsed_us` scaling) produces per-tick values
+    /// around `1e9` -- large enough that `f32` rounding (the implementation's
+    /// own arithmetic, matching `libm::sqrtf` elsewhere in this codebase) can
+    /// legitimately diverge from an `f64` reference by much more than a fixed
+    /// `+-1`. It also used `Vec<f64>`, needless even though `#[cfg(test)]`
+    /// enables `std` in this crate (`lib.rs: #[cfg(test)] extern crate std;`):
+    /// no other test in this file family allocates, so this one shouldn't
+    /// either. Both are fixed below: `elapsed_us=1_000` brings per-tick values
+    /// down to the `1e6`-ish range this codebase's real rate-Q values actually
+    /// live in (see `robustness_metrics.rs`'s own doc comments citing similar
+    /// magnitudes), and the comparison uses a tolerance proportional to the
+    /// reference magnitude rather than a hand-guessed absolute bound, since the
+    /// exact `f32` rounding behavior at any given magnitude isn't something to
+    /// assert precisely without having run the code:
+    #[test]
+    fn dac_rms_q_matches_an_independently_computed_reference() {
+        let target_rate_q = 0_i64;
+        let elapsed_us = 1_000_u32;
+        // Non-alternating, non-symmetric-mean error sequence (in units of K =
+        // per_tick_rate_q(1, elapsed_us)): [2, 10, 4, 8, 6].
+        const DELTA_COUNTS: [i32; 5] = [2, 10, 4, 8, 6];
+        let samples: [RawVelocityObservation; 5] = DELTA_COUNTS.map(|d| observation(d, elapsed_us));
+        let k = per_tick_rate_q(1, elapsed_us) as f64;
+
+        // Independent reference: demean, first-difference, mean-of-squares,
+        // sqrt -- fixed-size array, no allocation, no Vec.
+        let errors: [f64; 5] = DELTA_COUNTS.map(|d| d as f64);
+        let mean: f64 = errors.iter().sum::<f64>() / errors.len() as f64;
+        let ac: [f64; 5] = errors.map(|e| e - mean);
+        let mut sq_diff_sum = 0.0_f64;
+        for i in 1..ac.len() {
+            let diff = ac[i] - ac[i - 1];
+            sq_diff_sum += diff * diff;
+        }
+        let mean_sq_diff = sq_diff_sum / (ac.len() - 1) as f64;
+        let expected = mean_sq_diff.sqrt() * k;
+
+        let actual = dac_rms_q(&samples[..], 0, samples.len(), target_rate_q) as f64;
+        // 1% relative tolerance: generous enough to absorb f32-vs-f64 rounding
+        // at this magnitude without asserting a specific rounding bound this
+        // plan can't verify without running the code; tight enough to still
+        // catch a materially wrong formula (a missing demean step, wrong
+        // denominator, etc. would miss by far more than 1%).
+        let tolerance = expected.abs() * 0.01;
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "dac_rms_q={actual}, independent reference={expected}, tolerance={tolerance}"
+        );
     }
 }

@@ -359,6 +359,7 @@ mod tests {
             reconvergence_time_us: reconv_ms * 1_000,
             settled_residual_q: 42,
             recovery_iae_q,
+            dac_rms_q: 0,
             forward_settle_time_us: 10_000,
             reconvergence_ratio_ppm: 0,
         }
