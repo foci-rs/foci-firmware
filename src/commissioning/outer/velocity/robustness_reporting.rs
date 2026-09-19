@@ -11,7 +11,7 @@ use crate::commissioning::types::RobustnessReversalTerminal;
 /// [`RobustnessReversalTerminal::schema_revision`](crate::commissioning::types::RobustnessReversalTerminal::schema_revision)
 /// stay `u16` so schema comparisons elsewhere (the detailed reply, host
 /// tooling) do not need a second, narrower type.
-pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 3;
+pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 4;
 
 /// Bytes in the compact schema-3 robustness-terminal reply payload: a
 /// 15-byte header, 12 bytes per reversal direction (two directions), and a
@@ -120,11 +120,11 @@ pub(crate) fn encode_robustness_terminal_reply(
     bytes
 }
 
-/// Bytes in the schema-2 per-cycle robustness-evidence payload: a 10-byte
-/// header (direction, schema revision, off-terminal residual/IAE medians
-/// for this direction), [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte cycle
-/// triples, a 1-byte tail count, and one 6-byte displaced-tail triple.
-pub(crate) const ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES: usize = 47;
+/// Bytes in the schema-2 per-cycle robustness-evidence payload: a 14-byte
+/// header (direction, schema revision, off-terminal residual/IAE/dAC_rms
+/// medians for this direction), [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte
+/// cycle triples, a 1-byte tail count, and one 6-byte displaced-tail triple.
+pub(crate) const ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES: usize = 51;
 
 /// Sentinel value marking an unfilled cycle slot's `u16` fields.
 const CYCLE_SLOT_UNFILLED: u16 = 0xFFFF;
@@ -142,8 +142,8 @@ pub(crate) struct CycleWire {
 
 /// Encode one direction's schema-2 per-cycle robustness-evidence payload.
 ///
-/// Fixed 10-byte header (direction, schema revision, this direction's
-/// off-terminal residual/IAE medians) plus
+/// Fixed 14-byte header (direction, schema revision, this direction's
+/// off-terminal residual/IAE/dAC_rms medians) plus
 /// [`ROBUSTNESS_CYCLES_PER_DIRECTION`] cycle triples (reconvergence,
 /// overshoot, forward-settle), 6 bytes each; then this direction's tail
 /// count (1 byte) and its displaced (grace-retried) tail triple (6 bytes),
@@ -173,6 +173,11 @@ pub(crate) fn encode_robustness_cycle_evidence(
         &mut bytes,
         &mut offset,
         &evidence.iae_medians_qs[index].to_le_bytes(),
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &evidence.dac_rms_medians_q[index].to_le_bytes(),
     );
     for cycle in cycles {
         push_cycle_triple(&mut bytes, &mut offset, cycle);
@@ -302,7 +307,7 @@ mod tests {
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] = [
             // schema_revision (wire u8)
-            0x03,
+            0x04,
             // run_sequence (u32 LE)
             0x44, 0x33, 0x22, 0x11,
             // outcome, cause
@@ -472,11 +477,13 @@ mod tests {
         #[rustfmt::skip]
         let expected: [u8; ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES] = [
             // direction, schema
-            0x00, 0x03,
+            0x00, 0x04,
             // residual_median_q (i32 LE) = 17
             0x11, 0x00, 0x00, 0x00,
             // iae_median_qs (i32 LE) = 9
             0x09, 0x00, 0x00, 0x00,
+            // dac_rms_median_q (i32 LE) = 21
+            0x15, 0x00, 0x00, 0x00,
             // cycle 0: reconvergence, overshoot, forward_settle (u16 LE)
             0x64, 0x00, 0x01, 0x00, 0x32, 0x00,
             // cycle 1
@@ -513,11 +520,15 @@ mod tests {
             i32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]),
             evidence.iae_medians_qs[1]
         );
+        assert_eq!(
+            i32::from_le_bytes([bytes[10], bytes[11], bytes[12], bytes[13]]),
+            evidence.dac_rms_medians_q[1]
+        );
         // 30 cycle-slot sentinel bytes, then the tail count (0), then the
         // displaced-tail triple as a 6-byte sentinel (no grace tail).
-        assert_eq!(&bytes[10..40], &[0xFF_u8; 30][..]);
-        assert_eq!(bytes[40], 0);
-        assert_eq!(&bytes[41..], &[0xFF_u8; 6][..]);
+        assert_eq!(&bytes[14..44], &[0xFF_u8; 30][..]);
+        assert_eq!(bytes[44], 0);
+        assert_eq!(&bytes[45..], &[0xFF_u8; 6][..]);
     }
 
     #[test]
