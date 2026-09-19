@@ -216,6 +216,154 @@ pub fn normalize_capture_sample(torque_actual: i16, direction: CaptureDirection)
     normalized.max(0) as u32
 }
 
+/// Capacity of the high-rate electrical-delay capture buffer and its
+/// parallel offset container. Sized for FOCI-205: large enough to cover
+/// `5 * tau_e_us` at both boards' default periods (see
+/// `high_rate_sample_count` in `autotune/current.rs`). This is the same
+/// constant `electrical_capture::HIGH_RATE_CAPTURE_SAMPLE_CAPACITY` uses
+/// (re-exported, not redeclared, so the two capacities cannot drift).
+pub const HIGH_RATE_DELAY_LEN: usize = crate::electrical_capture::HIGH_RATE_CAPTURE_SAMPLE_CAPACITY;
+
+/// Fixed-capacity raw-sample buffer for the high-rate electrical-delay
+/// capture. Parallel to [`HighRateDelayOffsets`]; unlike [`TransientBuffer`]
+/// this buffer has no notion of a single fixed sample period, because each
+/// sample's actual offset is recorded separately.
+#[derive(Clone, defmt::Format)]
+pub struct HighRateSampleBuffer {
+    samples: [u32; HIGH_RATE_DELAY_LEN],
+    len: u16,
+}
+
+impl Default for HighRateSampleBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HighRateSampleBuffer {
+    /// Create an empty buffer.
+    pub const fn new() -> Self {
+        Self {
+            samples: [0u32; HIGH_RATE_DELAY_LEN],
+            len: 0,
+        }
+    }
+
+    /// Reset the buffer for a new capture.
+    pub fn reset(&mut self) {
+        self.len = 0;
+    }
+
+    /// Append one sample. Returns `true` if stored, `false` if full.
+    pub fn push(&mut self, value: u32) -> bool {
+        let idx = self.len as usize;
+        if idx >= HIGH_RATE_DELAY_LEN {
+            return false;
+        }
+        self.samples[idx] = value;
+        self.len += 1;
+        true
+    }
+
+    /// Number of samples currently stored.
+    pub fn len(&self) -> u16 {
+        self.len
+    }
+
+    /// Returns `true` if no samples have been captured yet.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns `true` if the buffer holds `HIGH_RATE_DELAY_LEN` samples.
+    pub fn is_full(&self) -> bool {
+        self.len as usize >= HIGH_RATE_DELAY_LEN
+    }
+
+    /// Slice of the captured samples (length may be less than `HIGH_RATE_DELAY_LEN`).
+    pub fn samples(&self) -> &[u32] {
+        &self.samples[..self.len as usize]
+    }
+}
+
+impl core::fmt::Debug for HighRateSampleBuffer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HighRateSampleBuffer")
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+/// Actual per-sample observation offsets (microseconds from capture origin)
+/// for one high-rate electrical-delay capture. Parallel to
+/// [`HighRateSampleBuffer`]. Unlike [`DelayTimestampOffsets`] the values
+/// pushed here are true elapsed time since capture origin, not derived from
+/// a fixed nominal period.
+#[derive(Debug, Clone, defmt::Format)]
+pub struct HighRateDelayOffsets {
+    offsets_us: [u16; HIGH_RATE_DELAY_LEN],
+    len: u16,
+}
+
+impl Default for HighRateDelayOffsets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HighRateDelayOffsets {
+    /// Create an empty offset container.
+    pub const fn new() -> Self {
+        Self {
+            offsets_us: [0; HIGH_RATE_DELAY_LEN],
+            len: 0,
+        }
+    }
+
+    /// Append one strictly increasing nonzero offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TimestampRange` when `offset_us` cannot fit in `u16`,
+    /// `NonMonotonicTime` when it does not advance, or `TelemetryOverflow`
+    /// when the fixed container is full.
+    pub fn push(
+        &mut self,
+        offset_us: u32,
+    ) -> Result<(), crate::commissioning::capture_timing::TimingReject> {
+        use crate::commissioning::capture_timing::TimingReject;
+
+        let offset_us = u16::try_from(offset_us).map_err(|_| TimingReject::TimestampRange)?;
+        if offset_us == 0
+            || (self.len != 0 && offset_us <= self.offsets_us[usize::from(self.len - 1)])
+        {
+            return Err(TimingReject::NonMonotonicTime);
+        }
+        let index = usize::from(self.len);
+        if index >= HIGH_RATE_DELAY_LEN {
+            return Err(TimingReject::TelemetryOverflow);
+        }
+        self.offsets_us[index] = offset_us;
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Number of stored offsets.
+    pub const fn len(&self) -> u16 {
+        self.len
+    }
+
+    /// Whether no offsets have been stored.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Stored offsets in capture order.
+    pub fn offsets_us(&self) -> &[u16] {
+        &self.offsets_us[..usize::from(self.len)]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +489,45 @@ mod tests {
     fn normalize_forward_wrong_sign_clamps_to_zero() {
         // Forward capture but torque_actual is negative (wrong sign).
         assert_eq!(normalize_capture_sample(-367, CaptureDirection::Forward), 0);
+    }
+
+    #[test]
+    fn high_rate_sample_buffer_push_and_read() {
+        let mut buf = HighRateSampleBuffer::new();
+        buf.reset();
+        assert!(buf.is_empty());
+        assert!(buf.push(10));
+        assert!(buf.push(20));
+        assert!(buf.push(30));
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.samples(), &[10u32, 20, 30]);
+    }
+
+    #[test]
+    fn high_rate_sample_buffer_rejects_beyond_capacity() {
+        let mut buf = HighRateSampleBuffer::new();
+        buf.reset();
+        for i in 0u32..HIGH_RATE_DELAY_LEN as u32 {
+            assert!(buf.push(i), "push {i} should succeed");
+        }
+        assert!(buf.is_full());
+        assert!(!buf.push(9999));
+        assert_eq!(buf.len() as usize, HIGH_RATE_DELAY_LEN);
+    }
+
+    #[test]
+    fn high_rate_delay_offsets_are_range_and_monotonicity_checked() {
+        let mut offsets = HighRateDelayOffsets::new();
+        assert_eq!(offsets.push(20), Ok(()));
+        assert_eq!(offsets.push(40), Ok(()));
+        assert_eq!(offsets.offsets_us(), &[20u16, 40]);
+        assert_eq!(
+            offsets.push(40),
+            Err(crate::commissioning::capture_timing::TimingReject::NonMonotonicTime)
+        );
+        assert_eq!(
+            offsets.push(65_536),
+            Err(crate::commissioning::capture_timing::TimingReject::TimestampRange)
+        );
     }
 }
