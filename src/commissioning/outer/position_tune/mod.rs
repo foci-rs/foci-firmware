@@ -9,6 +9,7 @@
 pub(crate) mod bounds;
 pub(crate) mod ceiling;
 pub(crate) mod floor;
+pub(crate) mod metrics;
 pub(crate) mod selection;
 
 use crate::autotune::{
