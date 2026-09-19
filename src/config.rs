@@ -17,7 +17,6 @@ pub const fn dsadc_mdec_from_pwm_maxcnt(pwm_maxcnt: u16) -> u16 {
     }
 }
 
-const CURRENT_FILTER_FLOOR_HZ: u32 = 1000;
 const CURRENT_FILTER_PWM_RATIO: f32 = 0.4;
 
 /// Board-specific TMC4671 hardware configuration.
@@ -112,8 +111,7 @@ impl TmcConfig {
     /// accepted for call-site compatibility but no longer affects the
     /// result -- see [`Self::default_current_filter_hz`].
     pub fn default_current_filter_hz_for_bandwidth(&self, _bandwidth_hz: f32) -> u16 {
-        let pwm_margin = (self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u32;
-        pwm_margin.max(CURRENT_FILTER_FLOOR_HZ) as u16
+        (self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u16
     }
 
     /// BBM register value: `(bbm_h << 8) | bbm_l`.
@@ -231,10 +229,13 @@ mod tests {
     }
 
     #[test]
-    fn current_filter_default_has_floor() {
+    fn current_filter_default_has_no_floor_below_nyquist_at_low_pwm_freq() {
+        // At low PWM rates 0.4 * fPWM must stay unfloored -- a floor here
+        // would risk exceeding Nyquist (fPWM / 2) for boards slower than the
+        // two 25 kHz configurations this crate ships today.
         let mut cfg = test_config();
         cfg.pwm_maxcnt = 49_999;
-        assert_eq!(cfg.default_current_filter_hz(), 1_000);
+        assert_eq!(cfg.default_current_filter_hz(), 800);
     }
 
     #[test]
