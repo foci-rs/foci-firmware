@@ -94,16 +94,20 @@ mod tests {
 
     #[test]
     fn per_rung_duration_covers_all_three_strokes_and_every_standstill_capture() {
+        // Three 512 ms ramped-stroke repeats (1_536 ms) plus five 100 ms
+        // standstill holds (500 ms).
         assert_eq!(per_rung_duration_ms(), 2_036);
     }
 
     #[test]
     fn worst_case_duration_bounds_the_full_ladder_plus_the_floor_capture() {
+        // 4 ms floor capture plus 31 rungs at 2_036 ms.
         assert_eq!(position_tune_worst_case_duration_ms(), 63_120);
     }
 
     #[test]
     fn nominal_duration_estimates_a_three_rung_clean_run() {
+        // 4 ms floor capture plus 3 rungs at 2_036 ms.
         assert_eq!(position_tune_nominal_duration_ms(), 6_112);
     }
 

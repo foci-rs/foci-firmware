@@ -136,12 +136,16 @@ fn resolve_rung_evidence(
     let is_first_rung = running_best.is_none();
     let running_best_lag_us = running_best.map(|evidence| evidence.outcome.lag_us);
     defmt::info!(
-        "position tune rung: p={} lag_us={} ceiling_tripped={} is_first_rung={} running_best_lag_us={}",
+        "position tune rung: p={} lag_us={} ceiling_tripped={} is_first_rung={} running_best_lag_us={} settling_time_us={} overshoot_counts={} oscillation_detected={} dither_margin_milli={}",
         current.outcome.position_p.raw(),
         current.outcome.lag_us,
         ceiling_tripped,
         is_first_rung,
         running_best_lag_us,
+        current.metrics.settling_time_us,
+        current.metrics.overshoot_counts,
+        current.metrics.oscillation_detected,
+        dither_margin_milli(current.outcome.ceiling_ratios_milli),
     );
     if ceiling_tripped {
         return if is_first_rung {
