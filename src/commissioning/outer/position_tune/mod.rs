@@ -1408,8 +1408,6 @@ mod tests {
 
     #[fixture_test]
     fn a_conflict_terminal_carries_both_rungs() {
-        // Same scenario as `an_overshoot_ratio_trip_reports_conflict_with_the_last_rung`,
-        // asserting on the retained evidence instead of just the outcome.
         let mut backend = position_tune_backend();
         let mut phase = position_tune_phase();
         let start_raw = predicted_start_of(&mut phase, &mut backend);
@@ -1601,13 +1599,9 @@ mod tests {
 
     #[fixture_test]
     fn a_safety_fault_after_a_completed_rung_keeps_its_evidence() {
-        // Plan 2a's mid-stroke safety-fault scenario, but forced past the
-        // start rung's homing-bound violation first (the same walk
-        // `a_conflict_terminal_carries_both_rungs` drives) so the fault lands
-        // on the second rung with the first rung's evidence already
-        // recorded. Drives through `step_outer_with_trace` directly (not the
-        // full `CommissioningEngine`) so the test can keep scripting
-        // registers from the resident phase, exactly as `drive_sweep` does.
+        // Drives through `step_outer_with_trace` directly (not the full
+        // `CommissioningEngine`) so the test can keep scripting registers
+        // from the resident phase, exactly as `drive_sweep` does.
         let mut backend = position_tune_backend();
         let mut phase = position_tune_phase();
         let start_raw = predicted_start_of(&mut phase, &mut backend);
@@ -1635,10 +1629,6 @@ mod tests {
                     let _ = backend
                         .registers
                         .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), error as u32);
-                    // Trip the quarter-turn aliasing guard the instant the
-                    // second rung's own stroke begins, mirroring
-                    // `an_outer_safety_fault_mid_stroke_...`'s single-shot
-                    // encoder jump.
                     if rung.raw() != start_raw && !second_rung_entered {
                         backend.mechanical_encoder_position_counts_value = 5_000;
                         second_rung_entered = true;

@@ -2207,15 +2207,6 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
 
 #[fixture_test]
 async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_path() {
-    // The previous test's `ConfigurationInvalid` failure happens inside
-    // `predict`, before the phase ever measures a rung, so its
-    // `result.position_tune` is legitimately all-default -- that alone
-    // can't catch a wrong-variant match or a mixed-up field in
-    // `position_tune_failure_provenance()` or `restore_machine.rs`'s
-    // `result.position_tune = ...` assignment. This one drives a real
-    // multi-rung sweep through the full `CommissioningEngine` (not the
-    // bare `OuterPhase` `position_tune::tests` module drives) so a failure
-    // there would show up as a wrong or all-zero `result.position_tune`.
     use crate::commissioning::outer::position_tune::{PositionTuneStep, StrokeKind};
     use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
     use foci_tmc4671::registers::{PID_ERROR_PID_POSITION_ERROR, PID_VELOCITY_P_VELOCITY_I};
@@ -2246,11 +2237,9 @@ async fn position_tune_failure_carries_real_rung_evidence_through_the_dispatch_p
     );
     seed_motor_sentinel(&mut backend).await;
 
-    // Force the start rung to `Advance` on a homing-bound violation (the
-    // same shape as `position_tune::tests::the_walk_advances_...`), then
-    // trip the quarter-turn encoder-aliasing safety guard the instant the
-    // second rung's own stroke begins -- so the terminal carries the first
-    // rung's completed evidence, not a zeroed block.
+    // Trips the quarter-turn encoder-aliasing safety guard on the second
+    // rung's stroke, so the terminal carries the first rung's completed
+    // evidence, not a zeroed block.
     let mut clock_us = backend.elapsed_us_value;
     let mut step = StepResult::ReadyNow;
     let mut start_raw: Option<u16> = None;
