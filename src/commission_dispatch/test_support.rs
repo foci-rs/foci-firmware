@@ -4,11 +4,13 @@
 
 use crate::commissioning::backend::{
     CommissionBoardConfig, CommissionEncoderRead, CommissionMotorControl, CommissionPendingConfig,
-    CommissionRegisterIo, CommissionTiming, CommissionTrace,
+    CommissionRegisterIo, CommissionStepStimulus, CommissionTiming, CommissionTrace, StimulusError,
 };
 use crate::config::TmcConfig;
 use crate::tmc_control::lifecycle::LifecycleFlag;
 use crate::tmc_control::pending_config::{PendingConfigItem, PendingConfigSink};
+use core::sync::atomic::Ordering::Relaxed;
+use foci_klipper::stepper::StepMove;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::registers::Register;
 use heapless::Vec;
@@ -481,6 +483,20 @@ pub struct MockBackend {
     /// nothing, since the measurement only runs after the inner call
     /// actually returns.
     pub raw_ops_attributed_to_verified_calls: usize,
+    /// Ordered log of every step-stimulus operation issued during the test.
+    pub stimulus_log: heapless::Vec<StimulusOp, 512>,
+    /// Value returned by `stimulus_is_trigger_blocked()`.
+    pub stimulus_trigger_blocked: bool,
+    /// Refuse `stimulus_queue_segment` once this many segments are queued.
+    pub stimulus_refuse_after: Option<usize>,
+    /// Value returned by `stimulus_queue_free()`.
+    pub stimulus_queue_free: usize,
+    /// Value returned by `stimulus_step_timer_hz()`.
+    pub stimulus_step_timer_hz: u32,
+    /// Value returned by `stimulus_step_clock_now()`.
+    pub stimulus_clock_now: u32,
+    /// Whether `stimulus_arm` is allowed to succeed.
+    pub stimulus_energized: bool,
 }
 
 impl MockBackend {
@@ -566,6 +582,13 @@ impl MockBackend {
             pending_config_set_at_interlock_check: 0,
             verified_write_calls: 0,
             raw_ops_attributed_to_verified_calls: 0,
+            stimulus_log: heapless::Vec::new(),
+            stimulus_trigger_blocked: false,
+            stimulus_refuse_after: None,
+            stimulus_queue_free: 1_023,
+            stimulus_step_timer_hz: 260_000_000,
+            stimulus_clock_now: 0,
+            stimulus_energized: true,
         }
     }
 
@@ -1142,6 +1165,84 @@ impl CommissionTrace for MockBackend {
     }
 }
 
+/// One step-stimulus operation recorded by `MockBackend`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StimulusOp {
+    SetDirection(bool),
+    ResetClock(u32),
+    Queue(StepMove),
+    Arm,
+    Stop,
+    Feedforward(bool),
+}
+
+impl CommissionStepStimulus for MockBackend {
+    fn stimulus_step_timer_hz(&self) -> u32 {
+        self.stimulus_step_timer_hz
+    }
+
+    fn stimulus_step_clock_now(&self) -> u32 {
+        self.stimulus_clock_now
+    }
+
+    fn stimulus_queue_free(&self) -> usize {
+        self.stimulus_queue_free
+    }
+
+    fn stimulus_is_trigger_blocked(&self) -> bool {
+        self.stimulus_trigger_blocked
+    }
+
+    fn stimulus_set_direction(&mut self, forward: bool) {
+        let _ = self.stimulus_log.push(StimulusOp::SetDirection(forward));
+    }
+
+    fn stimulus_reset_step_clock(&mut self, clock: u32) -> Result<(), StimulusError> {
+        let _ = self.stimulus_log.push(StimulusOp::ResetClock(clock));
+        Ok(())
+    }
+
+    fn stimulus_queue_segment(&mut self, segment: StepMove) -> Result<(), StimulusError> {
+        let queued = self
+            .stimulus_log
+            .iter()
+            .filter(|op| matches!(op, StimulusOp::Queue(_)))
+            .count();
+        if let Some(limit) = self.stimulus_refuse_after
+            && queued >= limit
+        {
+            return Err(StimulusError::QueueRefused {
+                queue_len: queued as u32,
+            });
+        }
+        let _ = self.stimulus_log.push(StimulusOp::Queue(segment));
+        Ok(())
+    }
+
+    fn stimulus_arm(&mut self) -> Result<(), StimulusError> {
+        if !self.stimulus_energized {
+            return Err(StimulusError::NotEnergized);
+        }
+        let _ = self.stimulus_log.push(StimulusOp::Arm);
+        Ok(())
+    }
+
+    fn stimulus_stop(&mut self) {
+        let _ = self.stimulus_log.push(StimulusOp::Stop);
+    }
+
+    fn set_stimulus_feedforward(&mut self, enabled: bool) {
+        let _ = self.stimulus_log.push(StimulusOp::Feedforward(enabled));
+        self.tmc_state
+            .commission_stimulus_active
+            .store(enabled, Relaxed);
+    }
+
+    fn stimulus_feedforward_idle(&self) -> bool {
+        self.tmc_state.feedforward_surfaces_idle.load(Relaxed)
+    }
+}
+
 /// Mutex for tests that mutate firmware-shared statics
 /// (channel motor-armed / in-flight flags, and the gain/filter atomics in
 /// `state::tmc`).
@@ -1548,5 +1649,54 @@ mod tests {
                 8_000
             );
         });
+    }
+
+    #[test]
+    fn mock_records_the_stimulus_sequence_and_refuses_after_the_configured_count() {
+        let mut backend = MockBackend::new();
+        backend.stimulus_refuse_after = Some(2);
+
+        backend.stimulus_set_direction(true);
+        backend.stimulus_reset_step_clock(100).unwrap();
+        backend
+            .stimulus_queue_segment(StepMove::new(10, 1, 0))
+            .unwrap();
+        backend
+            .stimulus_queue_segment(StepMove::new(10, 2, 0))
+            .unwrap();
+        let refused = backend.stimulus_queue_segment(StepMove::new(10, 3, 0));
+        backend.stimulus_stop();
+
+        assert_eq!(refused, Err(StimulusError::QueueRefused { queue_len: 2 }));
+        assert_eq!(
+            backend.stimulus_log.as_slice(),
+            &[
+                StimulusOp::SetDirection(true),
+                StimulusOp::ResetClock(100),
+                StimulusOp::Queue(StepMove::new(10, 1, 0)),
+                StimulusOp::Queue(StepMove::new(10, 2, 0)),
+                StimulusOp::Stop,
+            ]
+        );
+    }
+
+    #[test]
+    fn mock_reports_the_configured_free_capacity() {
+        let mut backend = MockBackend::new();
+        assert_eq!(backend.stimulus_queue_free(), 1_023);
+        backend.stimulus_queue_free = 3;
+        assert_eq!(backend.stimulus_queue_free(), 3);
+    }
+
+    #[test]
+    fn mock_arm_requires_energized_and_reports_trigger_block() {
+        let mut backend = MockBackend::new();
+        backend.stimulus_energized = false;
+        assert_eq!(backend.stimulus_arm(), Err(StimulusError::NotEnergized));
+        backend.stimulus_energized = true;
+        backend.stimulus_trigger_blocked = true;
+        assert!(backend.stimulus_is_trigger_blocked());
+        assert_eq!(backend.stimulus_arm(), Ok(()));
+        assert_eq!(backend.stimulus_log.last(), Some(&StimulusOp::Arm));
     }
 }

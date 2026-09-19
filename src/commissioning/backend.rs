@@ -7,11 +7,13 @@
 
 use core::convert::Infallible;
 use core::marker::PhantomData;
+use core::sync::atomic::Ordering::Relaxed;
 
 use crate::config::TmcConfig;
 use crate::tmc_control::pending_config::{PendingConfigItem, PendingConfigSink};
 use embedded_hal::digital::OutputPin;
 use embedded_hal_async::spi::{ErrorType, SpiDevice};
+use foci_klipper::stepper::StepMove;
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::registers::{ABN_DECODER_COUNT, MotorTypeNPolePairs, Register};
 use foci_tmc4671::spi::{SpiError, Tmc4671Spi};
@@ -382,6 +384,64 @@ pub trait CommissionPendingConfig {
     ) -> Result<(), PendingConfigItem>;
 }
 
+/// Why a stimulus operation was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum StimulusError {
+    /// This backend or board ships no step stimulus.
+    Unsupported,
+    /// The channel does not exist on this board.
+    InvalidChannel,
+    /// The stepper is trigger-blocked by an unhandled homing stop.
+    TriggerBlocked,
+    /// The step timer is active, so the clock cannot be reset.
+    TimerActive,
+    /// A stop left the stepper needing a clock reset before it can queue.
+    NeedsReset,
+    /// The step queue refused the segment.
+    QueueRefused {
+        /// Queue occupancy at refusal.
+        queue_len: u32,
+    },
+    /// The enable pin is not asserted, so the timer may not be armed.
+    NotEnergized,
+}
+
+/// Step-queue stimulus a commissioning phase drives on its own channel.
+///
+/// Every operation is the production step path's own primitive reached
+/// from the commissioning engine: direction capture, step-clock reset,
+/// segment enqueue, timer arm, and the physical stop the trsync path uses.
+/// The feedforward pair flips the channel's stimulus opt-in and reads the
+/// control tick's restoration mirror.
+pub trait CommissionStepStimulus {
+    /// Step timer frequency in Hz; 0 when no stimulus is available.
+    fn stimulus_step_timer_hz(&self) -> u32;
+    /// Current step-timer clock.
+    fn stimulus_step_clock_now(&self) -> u32;
+    /// Free segment slots on the channel's step queue right now. The phase
+    /// compares the whole generated profile against this before queuing
+    /// its first segment, so admission is all or nothing.
+    fn stimulus_queue_free(&self) -> usize;
+    /// Whether an unhandled trigger stop would discard queued segments.
+    fn stimulus_is_trigger_blocked(&self) -> bool;
+    /// DIR level captured for the next queued segment.
+    fn stimulus_set_direction(&mut self, forward: bool);
+    /// Clear `need_reset` and set the base clock the next segment starts from.
+    fn stimulus_reset_step_clock(&mut self, clock: u32) -> Result<(), StimulusError>;
+    /// Enqueue one segment under the captured direction.
+    fn stimulus_queue_segment(&mut self, segment: StepMove) -> Result<(), StimulusError>;
+    /// Mark the channel armed for steps and arm the timer for the queued profile.
+    fn stimulus_arm(&mut self) -> Result<(), StimulusError>;
+    /// Halt an in-flight segment, drain the queue, mark `need_reset`, and put
+    /// `motor_armed` back to what `stimulus_arm` found. Trigger-block state
+    /// is untouched. Idempotent.
+    fn stimulus_stop(&mut self);
+    /// Opt the channel's planner paths on or off for a stroke.
+    fn set_stimulus_feedforward(&mut self, enabled: bool);
+    /// Whether the control tick reports every feedforward surface restored.
+    fn stimulus_feedforward_idle(&self) -> bool;
+}
+
 /// Opt-in access to a production TMC4671 SPI driver for shared backend impls.
 ///
 /// Do not implement this helper for `MockBackend`; the mock provides explicit
@@ -454,6 +514,35 @@ pub trait CommissionTraceAccess {
     }
 }
 
+/// Per-instance step-stimulus hooks. Implemented by the shared adapter;
+/// not by `MockBackend`, which implements `CommissionStepStimulus` directly.
+pub trait CommissionStepStimulusAccess {
+    /// Step timer frequency; 0 means this board ships no step stimulus.
+    fn commission_step_timer_hz_impl(&self) -> u32;
+    /// Current step-timer clock.
+    fn commission_step_clock_now_impl(&self) -> u32;
+    /// Free segment slots on this channel's step queue.
+    fn commission_stimulus_queue_free_impl(&self) -> usize;
+    /// Whether this channel is trigger-blocked.
+    fn commission_stimulus_trigger_blocked_impl(&self) -> bool;
+    /// Capture the DIR level for this channel's next queued segment.
+    fn commission_stimulus_set_direction_impl(&mut self, forward: bool);
+    /// Reset this channel's step clock.
+    fn commission_stimulus_reset_step_clock_impl(
+        &mut self,
+        clock: u32,
+    ) -> Result<(), StimulusError>;
+    /// Enqueue one segment on this channel.
+    fn commission_stimulus_queue_segment_impl(
+        &mut self,
+        segment: StepMove,
+    ) -> Result<(), StimulusError>;
+    /// Arm this channel's step timer for its queued profile.
+    fn commission_stimulus_arm_impl(&mut self) -> Result<(), StimulusError>;
+    /// Halt this channel's in-flight segment and drain its queue.
+    fn commission_stimulus_stop_impl(&mut self);
+}
+
 /// Board-specific hooks used by [`SharedCommissioningBackend`].
 #[allow(async_fn_in_trait)]
 pub trait CommissionBackendHooks {
@@ -471,6 +560,53 @@ pub trait CommissionBackendHooks {
 
     /// Cooperative microsecond delay.
     async fn commission_delay_us(us: u32);
+
+    /// Step timer frequency; 0 means this board ships no step stimulus.
+    fn commission_step_timer_hz() -> u32 {
+        0
+    }
+
+    /// Current step-timer clock.
+    fn commission_step_clock_now() -> u32 {
+        0
+    }
+
+    /// Free segment slots on the given channel's step queue.
+    fn commission_stimulus_queue_free(_channel: u8) -> usize {
+        0
+    }
+
+    /// Whether the given channel is trigger-blocked.
+    fn commission_stimulus_trigger_blocked(_channel: u8) -> bool {
+        true
+    }
+
+    /// Capture the DIR level for the given channel's next queued segment.
+    fn commission_stimulus_set_direction(_channel: u8, _forward: bool) {}
+
+    /// Reset the given channel's step clock.
+    fn commission_stimulus_reset_step_clock(
+        _channel: u8,
+        _clock: u32,
+    ) -> Result<(), StimulusError> {
+        Err(StimulusError::Unsupported)
+    }
+
+    /// Enqueue one segment on the given channel.
+    fn commission_stimulus_queue_segment(
+        _channel: u8,
+        _segment: StepMove,
+    ) -> Result<(), StimulusError> {
+        Err(StimulusError::Unsupported)
+    }
+
+    /// Arm the given channel's step timer for its queued profile.
+    fn commission_stimulus_arm(_channel: u8) -> Result<(), StimulusError> {
+        Err(StimulusError::Unsupported)
+    }
+
+    /// Halt the given channel's in-flight segment and drain its queue.
+    fn commission_stimulus_stop(_channel: u8) {}
 
     /// Record a transport-neutral commissioning trace event.
     fn record_commission_trace_event(
@@ -607,6 +743,54 @@ where
 
     async fn commission_delay_us(&mut self, us: u32) {
         Hooks::commission_delay_us(us).await;
+    }
+}
+
+impl<'a, Spi, Pin, Hooks> CommissionStepStimulusAccess
+    for SharedCommissioningBackend<'a, Spi, Pin, Hooks>
+where
+    Hooks: CommissionBackendHooks,
+{
+    fn commission_step_timer_hz_impl(&self) -> u32 {
+        Hooks::commission_step_timer_hz()
+    }
+
+    fn commission_step_clock_now_impl(&self) -> u32 {
+        Hooks::commission_step_clock_now()
+    }
+
+    fn commission_stimulus_queue_free_impl(&self) -> usize {
+        Hooks::commission_stimulus_queue_free(self.channel)
+    }
+
+    fn commission_stimulus_trigger_blocked_impl(&self) -> bool {
+        Hooks::commission_stimulus_trigger_blocked(self.channel)
+    }
+
+    fn commission_stimulus_set_direction_impl(&mut self, forward: bool) {
+        Hooks::commission_stimulus_set_direction(self.channel, forward);
+    }
+
+    fn commission_stimulus_reset_step_clock_impl(
+        &mut self,
+        clock: u32,
+    ) -> Result<(), StimulusError> {
+        Hooks::commission_stimulus_reset_step_clock(self.channel, clock)
+    }
+
+    fn commission_stimulus_queue_segment_impl(
+        &mut self,
+        segment: StepMove,
+    ) -> Result<(), StimulusError> {
+        Hooks::commission_stimulus_queue_segment(self.channel, segment)
+    }
+
+    fn commission_stimulus_arm_impl(&mut self) -> Result<(), StimulusError> {
+        Hooks::commission_stimulus_arm(self.channel)
+    }
+
+    fn commission_stimulus_stop_impl(&mut self) {
+        Hooks::commission_stimulus_stop(self.channel);
     }
 }
 
@@ -879,6 +1063,57 @@ where
     }
 }
 
+impl<T> CommissionStepStimulus for T
+where
+    T: CommissionStepStimulusAccess + CommissionTmcStateAccess,
+{
+    fn stimulus_step_timer_hz(&self) -> u32 {
+        self.commission_step_timer_hz_impl()
+    }
+
+    fn stimulus_step_clock_now(&self) -> u32 {
+        self.commission_step_clock_now_impl()
+    }
+
+    fn stimulus_queue_free(&self) -> usize {
+        self.commission_stimulus_queue_free_impl()
+    }
+
+    fn stimulus_is_trigger_blocked(&self) -> bool {
+        self.commission_stimulus_trigger_blocked_impl()
+    }
+
+    fn stimulus_set_direction(&mut self, forward: bool) {
+        self.commission_stimulus_set_direction_impl(forward)
+    }
+
+    fn stimulus_reset_step_clock(&mut self, clock: u32) -> Result<(), StimulusError> {
+        self.commission_stimulus_reset_step_clock_impl(clock)
+    }
+
+    fn stimulus_queue_segment(&mut self, segment: StepMove) -> Result<(), StimulusError> {
+        self.commission_stimulus_queue_segment_impl(segment)
+    }
+
+    fn stimulus_arm(&mut self) -> Result<(), StimulusError> {
+        self.commission_stimulus_arm_impl()
+    }
+
+    fn stimulus_stop(&mut self) {
+        self.commission_stimulus_stop_impl()
+    }
+
+    fn set_stimulus_feedforward(&mut self, enabled: bool) {
+        self.tmc_state()
+            .commission_stimulus_active
+            .store(enabled, Relaxed);
+    }
+
+    fn stimulus_feedforward_idle(&self) -> bool {
+        self.tmc_state().feedforward_surfaces_idle.load(Relaxed)
+    }
+}
+
 /// Complete commissioning backend capability bundle.
 pub trait CommissioningBackend:
     CommissionRegisterIo
@@ -888,6 +1123,7 @@ pub trait CommissioningBackend:
     + CommissionBoardConfig
     + CommissionTrace
     + CommissionPendingConfig
+    + CommissionStepStimulus
 {
 }
 
@@ -899,6 +1135,7 @@ impl<T> CommissioningBackend for T where
         + CommissionBoardConfig
         + CommissionTrace
         + CommissionPendingConfig
+        + CommissionStepStimulus
 {
 }
 
@@ -906,6 +1143,7 @@ impl<T> CommissioningBackend for T where
 mod tests {
     use super::*;
 
+    use core::cell::RefCell;
     use core::convert::Infallible;
     #[cfg(feature = "trace")]
     use core::sync::atomic::AtomicI32;
@@ -913,6 +1151,8 @@ mod tests {
         AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering::Relaxed,
     };
 
+    use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embedded_hal_async::spi::Operation;
     use foci_firmware_macros::fixture_test;
     use foci_tmc4671::registers::PID_POSITION_TARGET;
@@ -983,6 +1223,10 @@ mod tests {
     static LAST_TRACE_EVENT_ID: AtomicU16 = AtomicU16::new(0);
     #[cfg(feature = "trace")]
     static LAST_VELOCITY_DELTA: AtomicI32 = AtomicI32::new(0);
+    static STIMULUS_CALLS: BlockingMutex<
+        CriticalSectionRawMutex,
+        RefCell<heapless::Vec<(u8, &'static str), 32>>,
+    > = BlockingMutex::new(RefCell::new(heapless::Vec::new()));
 
     #[derive(Default)]
     struct RecordingSpi {
@@ -1090,6 +1334,67 @@ mod tests {
         ) {
             LAST_TRACE_CHANNEL.store(channel, Relaxed);
             LAST_VELOCITY_DELTA.store(observation.delta_counts, Relaxed);
+        }
+
+        fn commission_step_timer_hz() -> u32 {
+            42_000_000
+        }
+
+        fn commission_step_clock_now() -> u32 {
+            7
+        }
+
+        fn commission_stimulus_queue_free(channel: u8) -> usize {
+            STIMULUS_CALLS.lock(|calls| {
+                let _ = calls.borrow_mut().push((channel, "queue_free"));
+            });
+            77
+        }
+
+        fn commission_stimulus_trigger_blocked(channel: u8) -> bool {
+            STIMULUS_CALLS.lock(|calls| {
+                let _ = calls.borrow_mut().push((channel, "trigger_blocked"));
+            });
+            false
+        }
+
+        fn commission_stimulus_set_direction(channel: u8, _forward: bool) {
+            STIMULUS_CALLS.lock(|calls| {
+                let _ = calls.borrow_mut().push((channel, "set_direction"));
+            });
+        }
+
+        fn commission_stimulus_reset_step_clock(
+            channel: u8,
+            _clock: u32,
+        ) -> Result<(), StimulusError> {
+            STIMULUS_CALLS.lock(|calls| {
+                let _ = calls.borrow_mut().push((channel, "reset_step_clock"));
+            });
+            Ok(())
+        }
+
+        fn commission_stimulus_queue_segment(
+            channel: u8,
+            _segment: StepMove,
+        ) -> Result<(), StimulusError> {
+            STIMULUS_CALLS.lock(|calls| {
+                let _ = calls.borrow_mut().push((channel, "queue_segment"));
+            });
+            Ok(())
+        }
+
+        fn commission_stimulus_arm(channel: u8) -> Result<(), StimulusError> {
+            STIMULUS_CALLS.lock(|calls| {
+                let _ = calls.borrow_mut().push((channel, "arm"));
+            });
+            Ok(())
+        }
+
+        fn commission_stimulus_stop(channel: u8) {
+            STIMULUS_CALLS.lock(|calls| {
+                let _ = calls.borrow_mut().push((channel, "stop"));
+            });
         }
     }
 
@@ -1465,5 +1770,130 @@ mod tests {
 
         assert_eq!(LAST_TRACE_CHANNEL.load(Relaxed), 3);
         assert_eq!(LAST_VELOCITY_DELTA.load(Relaxed), -7);
+    }
+
+    #[fixture_test]
+    fn stimulus_facet_forwards_each_operation_with_its_channel() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let mut backend =
+            SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+                1,
+                &mut tmc,
+                &mut enable_pin,
+                &TEST_TMC_STATE,
+            );
+        STIMULUS_CALLS.lock(|calls| calls.borrow_mut().clear());
+
+        backend.stimulus_set_direction(false);
+        backend.stimulus_reset_step_clock(1_234).unwrap();
+        backend
+            .stimulus_queue_segment(StepMove::new(3_173, 10, 0))
+            .unwrap();
+        backend.stimulus_arm().unwrap();
+        backend.stimulus_stop();
+        let _ = backend.stimulus_is_trigger_blocked();
+        assert_eq!(backend.stimulus_queue_free(), 77);
+
+        STIMULUS_CALLS.lock(|calls| {
+            assert_eq!(
+                calls.borrow().as_slice(),
+                &[
+                    (1, "set_direction"),
+                    (1, "reset_step_clock"),
+                    (1, "queue_segment"),
+                    (1, "arm"),
+                    (1, "stop"),
+                    (1, "trigger_blocked"),
+                    (1, "queue_free"),
+                ]
+            );
+        });
+        assert_eq!(backend.stimulus_step_timer_hz(), 42_000_000);
+    }
+
+    #[fixture_test]
+    fn stimulus_feedforward_opt_in_writes_the_atomic_and_reads_the_mirror() {
+        let _guard = TEST_LOCK
+            .lock()
+            .expect("commissioning backend test lock is available");
+        reset_hooks();
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let mut backend =
+            SharedCommissioningBackend::<RecordingSpi, RecordingPin, RecordingHooks>::new(
+                0,
+                &mut tmc,
+                &mut enable_pin,
+                &TEST_TMC_STATE,
+            );
+        TEST_TMC_STATE
+            .commission_stimulus_active
+            .store(false, Relaxed);
+        TEST_TMC_STATE
+            .feedforward_surfaces_idle
+            .store(false, Relaxed);
+
+        backend.set_stimulus_feedforward(true);
+        assert!(TEST_TMC_STATE.commission_stimulus_active.load(Relaxed));
+        assert!(!backend.stimulus_feedforward_idle());
+
+        backend.set_stimulus_feedforward(false);
+        TEST_TMC_STATE
+            .feedforward_surfaces_idle
+            .store(true, Relaxed);
+        assert!(!TEST_TMC_STATE.commission_stimulus_active.load(Relaxed));
+        assert!(backend.stimulus_feedforward_idle());
+    }
+
+    #[test]
+    fn default_hooks_report_no_stimulus() {
+        struct BareHooks;
+        impl CommissionBackendHooks for BareHooks {
+            fn commission_tmc_config() -> &'static TmcConfig {
+                &TEST_CONFIG
+            }
+
+            fn commission_feedback_configs() -> &'static [crate::config::FeedbackConfig] {
+                &TEST_FEEDBACK_CONFIGS
+            }
+
+            fn commission_elapsed_us() -> u64 {
+                0
+            }
+
+            fn commission_is_shutdown_requested() -> bool {
+                false
+            }
+
+            async fn commission_delay_us(_us: u32) {}
+        }
+
+        let mut tmc = Tmc4671Spi::new(RecordingSpi::default());
+        let mut enable_pin = RecordingPin::default();
+        let mut backend = SharedCommissioningBackend::<RecordingSpi, RecordingPin, BareHooks>::new(
+            0,
+            &mut tmc,
+            &mut enable_pin,
+            &TEST_TMC_STATE,
+        );
+        assert_eq!(backend.stimulus_step_timer_hz(), 0);
+        assert_eq!(backend.stimulus_queue_free(), 0);
+        assert!(backend.stimulus_is_trigger_blocked());
+        assert_eq!(
+            backend.stimulus_reset_step_clock(0),
+            Err(StimulusError::Unsupported)
+        );
+        assert_eq!(
+            backend.stimulus_queue_segment(StepMove::new(1, 1, 0)),
+            Err(StimulusError::Unsupported)
+        );
+        assert_eq!(backend.stimulus_arm(), Err(StimulusError::Unsupported));
     }
 }
