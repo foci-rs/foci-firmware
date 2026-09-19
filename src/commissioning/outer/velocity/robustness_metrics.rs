@@ -1018,31 +1018,12 @@ mod tests {
         assert_eq!(dac_rms_q(&samples[..], 0, 5, target_rate_q), 0);
     }
 
-    /// Cross-check against `analyze_sweep.py`'s `over_gain_metrics` definition,
-    /// via a genuinely independent reference calculation -- **not** the same
-    /// closed-form shortcut the alternating-error test above uses (an earlier
-    /// draft of this test reused that shortcut's algebra and was rejected in
-    /// plan review for not actually being independent). This test hand-picks a
-    /// non-alternating, non-symmetric error sequence and recomputes the demean
-    /// -> first-difference -> RMS steps in a small separate loop written fresh
-    /// for this test, then compares against `dac_rms_q`'s output.
-    ///
-    /// **Fixed after a second plan-review round**: the first draft of this test
-    /// used `elapsed_us=1`, which (via `per_tick_rate_q`'s `* MICROS_PER_SECOND *
-    /// VELOCITY_RATE_Q_SCALE / elapsed_us` scaling) produces per-tick values
-    /// around `1e9` -- large enough that `f32` rounding (the implementation's
-    /// own arithmetic, matching `libm::sqrtf` elsewhere in this codebase) can
-    /// legitimately diverge from an `f64` reference by much more than a fixed
-    /// `+-1`. It also used `Vec<f64>`, needless even though `#[cfg(test)]`
-    /// enables `std` in this crate (`lib.rs: #[cfg(test)] extern crate std;`):
-    /// no other test in this file family allocates, so this one shouldn't
-    /// either. Both are fixed below: `elapsed_us=1_000` brings per-tick values
-    /// down to the `1e6`-ish range this codebase's real rate-Q values actually
-    /// live in (see `robustness_metrics.rs`'s own doc comments citing similar
-    /// magnitudes), and the comparison uses a tolerance proportional to the
-    /// reference magnitude rather than a hand-guessed absolute bound, since the
-    /// exact `f32` rounding behavior at any given magnitude isn't something to
-    /// assert precisely without having run the code:
+    /// Cross-checks `dac_rms_q` against `analyze_sweep.py`'s `over_gain_metrics`
+    /// definition via a genuinely independent reference: a non-alternating,
+    /// non-symmetric error sequence run through a separate demean ->
+    /// first-difference -> RMS calculation, compared against `dac_rms_q`'s
+    /// output. A 1% relative tolerance absorbs `f32`-vs-`f64` rounding at
+    /// realistic rate-Q magnitudes without masking a materially wrong formula.
     #[test]
     fn dac_rms_q_matches_an_independently_computed_reference() {
         let target_rate_q = 0_i64;
@@ -1068,10 +1049,9 @@ mod tests {
 
         let actual = dac_rms_q(&samples[..], 0, samples.len(), target_rate_q) as f64;
         // 1% relative tolerance: generous enough to absorb f32-vs-f64 rounding
-        // at this magnitude without asserting a specific rounding bound this
-        // plan can't verify without running the code; tight enough to still
-        // catch a materially wrong formula (a missing demean step, wrong
-        // denominator, etc. would miss by far more than 1%).
+        // at this magnitude, tight enough to still catch a materially wrong
+        // formula (a missing demean step, wrong denominator, etc. would miss
+        // by far more than 1%).
         let tolerance = expected.abs() * 0.01;
         assert!(
             (actual - expected).abs() <= tolerance,

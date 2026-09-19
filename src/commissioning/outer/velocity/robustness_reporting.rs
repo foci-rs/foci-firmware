@@ -13,7 +13,7 @@ use crate::commissioning::types::RobustnessReversalTerminal;
 /// tooling) do not need a second, narrower type.
 pub const ROBUSTNESS_SCHEMA_REVISION: u16 = 4;
 
-/// Bytes in the compact schema-3 robustness-terminal reply payload: a
+/// Bytes in the compact schema-4 robustness-terminal reply payload: a
 /// 15-byte header, 12 bytes per reversal direction (two directions), and a
 /// 12-byte run-level tail carrying the gate's constructed `plant_rate_q`
 /// (i64) and `iae_max_q` (i32, scaled to rate-Q seconds).
@@ -48,11 +48,12 @@ fn saturating_i64_to_i32(value: i64) -> i32 {
 /// already uses, so the two compare directly once both are on the host),
 /// for [`ROBUSTNESS_TERMINAL_REPLY_BYTES`] bytes total.
 ///
-/// `residual_medians_q` and `iae_medians_qs` are deliberately absent from
-/// this encoding: they live off-terminal and are carried by the detailed
-/// reply instead, keeping the ordinary terminal inside the single-frame
-/// data budget. `plant_rate_q`/`iae_max_q` are run-level (identical for both
-/// directions), so they ride the terminal instead.
+/// `residual_medians_q`, `iae_medians_qs`, and `dac_rms_medians_q` are
+/// deliberately absent from this encoding: they live off-terminal and are
+/// carried by the detailed reply instead, keeping the ordinary terminal
+/// inside the single-frame data budget. `plant_rate_q`/`iae_max_q` are
+/// run-level (identical for both directions), so they ride the terminal
+/// instead.
 pub(crate) fn encode_robustness_terminal_reply(
     terminal: &RobustnessReversalTerminal,
 ) -> [u8; ROBUSTNESS_TERMINAL_REPLY_BYTES] {
@@ -120,7 +121,7 @@ pub(crate) fn encode_robustness_terminal_reply(
     bytes
 }
 
-/// Bytes in the schema-2 per-cycle robustness-evidence payload: a 14-byte
+/// Bytes in the schema-4 per-cycle robustness-evidence payload: a 14-byte
 /// header (direction, schema revision, off-terminal residual/IAE/dAC_rms
 /// medians for this direction), [`ROBUSTNESS_CYCLES_PER_DIRECTION`] 6-byte
 /// cycle triples, a 1-byte tail count, and one 6-byte displaced-tail triple.
@@ -140,7 +141,7 @@ pub(crate) struct CycleWire {
     pub forward_settle_ms: u16,
 }
 
-/// Encode one direction's schema-2 per-cycle robustness-evidence payload.
+/// Encode one direction's schema-4 per-cycle robustness-evidence payload.
 ///
 /// Fixed 14-byte header (direction, schema revision, this direction's
 /// off-terminal residual/IAE/dAC_rms medians) plus
@@ -414,7 +415,7 @@ mod tests {
         assert!(ROBUSTNESS_TERMINAL_REPLY_BYTES <= 54);
     }
 
-    /// Every schema-2 per-direction field is already wire-narrow, so nothing
+    /// Every schema-4 per-direction field is already wire-narrow, so nothing
     /// in the encoder itself clamps a wider value. This instead proves the
     /// wire format round-trips a field already saturated to its type's
     /// boundary (`u16::MAX`/`u8::MAX`, as a saturating upstream conversion --
