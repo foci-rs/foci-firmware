@@ -503,6 +503,7 @@ pub struct MockBackend {
     pub stall_threshold_units_value: u32,
     /// Value returned by `velocity_feedforward_gain_permille()`.
     pub velocity_feedforward_gain_value: u32,
+    pub feedforward_path_flags_value: u8,
     /// Single ordered log interleaving every SPI write and every
     /// step-stimulus operation, so tests can assert their relative order.
     /// Deliberately separate from `spi_log` and `stimulus_log`: those two
@@ -603,6 +604,7 @@ impl MockBackend {
             stimulus_energized: true,
             stall_threshold_units_value: 819,
             velocity_feedforward_gain_value: 1_750,
+            feedforward_path_flags_value: 0b0_0001,
             event_log: heapless::Vec::new(),
         }
     }
@@ -1161,6 +1163,10 @@ impl CommissionBoardConfig for MockBackend {
 
     fn velocity_feedforward_gain_permille(&self) -> u32 {
         self.velocity_feedforward_gain_value
+    }
+
+    fn feedforward_path_flags(&self) -> u8 {
+        self.feedforward_path_flags_value
     }
 }
 

@@ -2189,6 +2189,15 @@ async fn position_tune_failure_reports_its_specific_outcome_on_the_wire() {
                 PositionTuneOutcome::ConfigurationInvalid.to_wire_code()
             );
             assert_ne!(result.position_tune_outcome_code, 0);
+            // `predict` fails before it ever refreshes the phase's
+            // provenance, so the restore path's `position_tune_failure_provenance()`
+            // read carries the same all-default block a legacy failure did --
+            // this pins that the read happens at all, not just that it's
+            // nonzero in the cases that reach a rung.
+            assert_eq!(
+                result.position_tune,
+                crate::commissioning::types::PositionTuneProvenance::default()
+            );
         }
         _ => panic!("expected TuneResult"),
     }

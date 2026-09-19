@@ -2,7 +2,7 @@
 
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
-use crate::commissioning::types::{OuterSafetyFault, StepResult};
+use crate::commissioning::types::{OuterSafetyFault, PositionTuneProvenance, StepResult};
 
 use super::safety::outer_safety_mut;
 use super::{
@@ -22,16 +22,20 @@ pub(crate) fn fail_outer(phase: &mut OuterPhase, err: CommissionError) -> StepRe
 ///
 /// Identical to [`fail_outer`] from the restore machine's point of view -- it
 /// drives the same generic entry-gain restore every outer phase's failure
-/// uses -- except that the terminal phase retains `outcome`, so the reply can
-/// report which sweep failure occurred rather than only that one did.
+/// uses -- except that the terminal phase retains `outcome` and `provenance`,
+/// so the reply can report which sweep failure occurred (or that it was a
+/// generic engine failure, `outcome: None`) and the last rung the walk
+/// actually measured.
 pub(crate) fn fail_outer_position_tune(
     phase: &mut OuterPhase,
     err: CommissionError,
-    outcome: crate::autotune::PositionTuneOutcome,
+    outcome: Option<crate::autotune::PositionTuneOutcome>,
+    provenance: PositionTuneProvenance,
 ) -> StepResult {
     *phase = OuterPhase::PositionTuneFailed {
         error: err,
         outcome,
+        provenance,
     };
     StepResult::OuterFailed(err)
 }
@@ -41,12 +45,23 @@ pub(crate) fn fail_outer_with_safety(
     phase: &mut OuterPhase,
     err: CommissionError,
     safety_fault: OuterSafetyFault,
+    position_tune: PositionTuneProvenance,
 ) -> StepResult {
     *phase = OuterPhase::FailedWithSafety {
         error: err,
         safety_fault,
+        position_tune,
     };
     StepResult::OuterFailed(err)
+}
+
+/// The position-P sweep's live evidence, when `phase` is `PositionTune`;
+/// `Default` (all-zero) for every other phase.
+fn position_tune_provenance(phase: &OuterPhase) -> PositionTuneProvenance {
+    match phase {
+        OuterPhase::PositionTune { state, .. } => state.provenance,
+        _ => PositionTuneProvenance::default(),
+    }
 }
 
 fn clamp_outer_safety_deadline(
@@ -207,7 +222,8 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
             ) {
                 return velocity_fault_terminal(phase, err, Some(fault));
             }
-            return fail_outer_with_safety(phase, err, fault);
+            let position_tune = position_tune_provenance(phase);
+            return fail_outer_with_safety(phase, err, fault, position_tune);
         }
         let safety_result = if let Some(context) = timing_context {
             check_outer_safety_with_timing(
@@ -244,7 +260,8 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 ) {
                     return velocity_fault_terminal(phase, err, Some(fault));
                 }
-                return fail_outer_with_safety(phase, err, fault);
+                let position_tune = position_tune_provenance(phase);
+                return fail_outer_with_safety(phase, err, fault, position_tune);
             }
             Ok(None) => {}
             Err(error) => {
@@ -259,6 +276,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                         | OuterPhase::RobustnessReversal { .. }
                 ) {
                     return velocity_fault_terminal(phase, error, None);
+                }
+                if is_position_tune {
+                    let provenance = position_tune_provenance(phase);
+                    return fail_outer_position_tune(phase, error, None, provenance);
                 }
                 return fail_outer(phase, error);
             }

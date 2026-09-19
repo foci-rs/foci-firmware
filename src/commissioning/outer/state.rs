@@ -467,10 +467,17 @@ pub(crate) enum OuterPhase {
     /// `error` alone reduces every distinct sweep failure to one status code.
     /// Only the position-P sweep ever constructs this.
     PositionTuneFailed {
-        /// Terminal status, always `CommissionError::PositionTuneFailed`.
+        /// Terminal status. `CommissionError::PositionTuneFailed` when
+        /// `outcome` is `Some`; the generic engine error that failed the
+        /// phase when it's `None`.
         error: CommissionError,
         /// Which sweep failure this was, for the host-visible outcome code.
-        outcome: crate::autotune::PositionTuneOutcome,
+        /// `None` for a generic engine-level failure (e.g. an SPI error),
+        /// which reports outcome code 0.
+        outcome: Option<crate::autotune::PositionTuneOutcome>,
+        /// The last rung the walk measured before this failure, so the
+        /// reply carries real evidence instead of a zeroed block.
+        provenance: crate::commissioning::types::PositionTuneProvenance,
     },
     /// A phase failed because a Stage 2 safety envelope tripped.
     FailedWithSafety {
@@ -478,6 +485,10 @@ pub(crate) enum OuterPhase {
         error: CommissionError,
         /// Host-visible safety-envelope evidence.
         safety_fault: OuterSafetyFault,
+        /// The position-P sweep's evidence at the moment of the fault, when
+        /// the failing phase was `PositionTune`; `Default` for every other
+        /// phase.
+        position_tune: crate::commissioning::types::PositionTuneProvenance,
     },
 }
 

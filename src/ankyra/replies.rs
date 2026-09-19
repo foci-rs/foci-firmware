@@ -3240,25 +3240,48 @@ pub struct FociTuneResult {
     /// Q0.16 position within `[band_lower_percent, band_upper_percent]`
     /// (0 = lower edge, 65535 = upper edge).
     pub band_position_q: u16,
-    /// `PositionTune` nominal position-loop bandwidth in Hz.
+    /// `PositionTune` closed-form start rung the sweep predicted.
+    pub predicted_start_p: u16,
+    /// `PositionTune` position P of the last rung measured.
+    pub last_rung_p: u16,
+    /// `PositionTune` position P of the rung that set the
+    /// running-minimum motion overshoot.
+    pub min_overshoot_p: u16,
+    /// `PositionTune` running-minimum motion overshoot, in
+    /// position-error units.
+    pub min_overshoot_units: u32,
+    /// `PositionTune` config-derived tracking bound, in
+    /// position-error units.
+    pub bound_units: u32,
+    /// `PositionTune` planned homing-leg cruise speed, in
+    /// milli-revolutions/second.
+    pub homing_speed_mrev_s: u32,
+    /// `PositionTune` planned motion-leg cruise speed, in
+    /// milli-revolutions/second.
+    pub motion_speed_mrev_s: u32,
+    /// `PositionTune` last rung's median homing-leg peak absolute
+    /// tracking error.
+    pub homing_peak_abs_units: u32,
+    /// `PositionTune` last rung's median motion-leg mean absolute
+    /// cruise tracking error.
+    pub motion_cruise_mean_abs_units: u32,
+    /// `PositionTune` last rung's median motion-leg overshoot.
+    pub motion_overshoot_units: u32,
+    /// `PositionTune` last rung's median motion-leg cruise RMS
+    /// tracking error.
+    pub motion_cruise_rms_units: u32,
+    /// `PositionTune` nominal position-loop bandwidth in Hz for the
+    /// last rung.
     pub nominal_bandwidth_hz: u32,
-    /// `PositionTune` measured inner (velocity-loop) bandwidth in
-    /// rad/s.
-    pub inner_bandwidth_rad_s: u32,
-    /// `PositionTune` accepted rung's median ceiling ratio, scaled
-    /// by 1000.
+    /// `PositionTune` last rung's median ceiling ratio, scaled by
+    /// 1000.
     pub dither_margin_milli: i32,
-    /// `PositionTune` measured ramped-stroke settling time in
-    /// microseconds.
-    pub settling_time_us: u32,
-    /// `PositionTune` measured ramped-stroke overshoot in position
-    /// counts.
-    pub overshoot_counts: u32,
-    /// `PositionTune` measured final position error in counts.
-    pub final_position_error_counts: i32,
-    /// `PositionTune` sustained-oscillation flag on the accepted
-    /// rung's ramped stroke.
-    pub oscillation_detected: bool,
+    /// `PositionTune` count of rungs measured before this terminal.
+    pub rungs_measured: u8,
+    /// `PositionTune` feedforward paths live on the last admitted
+    /// motion stroke (bit 0 velocity, 1 transient, 2 acceleration,
+    /// 3 decoupling, 4 phase advance).
+    pub stimulus_feedforward_paths: u8,
     /// Wire code of the specific `PositionTuneOutcome` behind a
     /// `CommissionError::PositionTuneFailed` (0 = not applicable).
     pub position_tune_outcome_code: u8,
@@ -3274,7 +3297,7 @@ mod tune_result_reply_wire_tests {
     //! single-byte range of `-32..96`).
     use super::FociTuneResult;
     use ankyra::ScratchOutput;
-    use ankyra::encoding::Writable;
+    use ankyra::encoding::{Readable, Writable};
 
     /// Pre-provenance field values, in struct-declaration order.
     const LEGACY_FIELD_BYTES: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -3299,14 +3322,22 @@ mod tune_result_reply_wire_tests {
             band_lower_percent: 16,
             band_upper_percent: 17,
             band_position_q: 18,
-            nominal_bandwidth_hz: 19,
-            inner_bandwidth_rad_s: 20,
-            dither_margin_milli: 21,
-            settling_time_us: 22,
-            overshoot_counts: 23,
-            final_position_error_counts: 24,
-            oscillation_detected: true,
-            position_tune_outcome_code: 25,
+            predicted_start_p: 19,
+            last_rung_p: 20,
+            min_overshoot_p: 21,
+            min_overshoot_units: 22,
+            bound_units: 23,
+            homing_speed_mrev_s: 24,
+            motion_speed_mrev_s: 25,
+            homing_peak_abs_units: 26,
+            motion_cruise_mean_abs_units: 27,
+            motion_overshoot_units: 28,
+            motion_cruise_rms_units: 29,
+            nominal_bandwidth_hz: 30,
+            dither_margin_milli: 31,
+            rungs_measured: 32,
+            stimulus_feedforward_paths: 33,
+            position_tune_outcome_code: 34,
         }
     }
 
@@ -3340,24 +3371,22 @@ mod tune_result_reply_wire_tests {
         let position_tune_start = LEGACY_FIELD_BYTES.len() + 6;
         assert_eq!(
             encoded.len(),
-            position_tune_start + 8,
-            "the 7 PositionTuneProvenance fields plus position_tune_outcome_code must \
-             append exactly eight bytes to the existing payload"
+            position_tune_start + 16,
+            "the 15 PositionTuneProvenance fields plus position_tune_outcome_code must \
+             append exactly sixteen bytes to the existing payload"
         );
         assert_eq!(
             &encoded[position_tune_start..],
-            &[19, 20, 21, 22, 23, 24, 1, 25],
-            "known PositionTune fields (oscillation_detected=true encodes as 1) must \
-             round-trip through the encoder unchanged"
+            &[
+                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34
+            ],
+            "known PositionTune fields must round-trip through the encoder unchanged, in \
+             declared order"
         );
     }
 
     #[test]
-    fn position_tune_failure_reply_round_trips_zeroed_provenance_with_nonzero_outcome_code() {
-        // The actual shape a failed PositionTune reply takes: the
-        // provenance struct stays all-default per its own "all-zero on
-        // failure paths" contract, but the outcome code is the one field
-        // that must carry a real, nonzero value on exactly this path.
+    fn position_tune_failure_reply_carries_the_last_rungs_evidence() {
         let reply = FociTuneResult {
             oid: 1,
             status: 12, // CommissionError::PositionTuneFailed
@@ -3377,31 +3406,63 @@ mod tune_result_reply_wire_tests {
             band_lower_percent: 0,
             band_upper_percent: 0,
             band_position_q: 0,
+            predicted_start_p: 0,
+            last_rung_p: 388,
+            min_overshoot_p: 195,
+            min_overshoot_units: 40,
+            bound_units: 0,
+            homing_speed_mrev_s: 0,
+            motion_speed_mrev_s: 0,
+            homing_peak_abs_units: 0,
+            motion_cruise_mean_abs_units: 0,
+            motion_overshoot_units: 500,
+            motion_cruise_rms_units: 0,
             nominal_bandwidth_hz: 0,
-            inner_bandwidth_rad_s: 0,
             dither_margin_milli: 0,
-            settling_time_us: 0,
-            overshoot_counts: 0,
-            final_position_error_counts: 0,
-            oscillation_detected: false,
-            position_tune_outcome_code: 7, // PositionTuneOutcome::CaptureEmpty
+            rungs_measured: 3,
+            stimulus_feedforward_paths: 0,
+            position_tune_outcome_code: 8, // PositionTuneOutcome::Conflict
         };
         let mut scratch = ScratchOutput::<64>::new();
         reply.write(&mut scratch);
-        let encoded = scratch.result();
+        let mut cursor = scratch.result();
 
-        // oid=1 and status=12 are the only nonzero legacy bytes; every
-        // provenance and PositionTune field is zero except the trailing
-        // outcome code.
-        let mut expected = [0u8; 26];
-        expected[0] = 1;
-        expected[1] = 12;
-        expected[25] = 7;
-        assert_eq!(
-            encoded, expected,
-            "an all-default PositionTuneProvenance with a nonzero outcome code must \
-             round-trip through the encoder unchanged"
-        );
+        for _ in 0..12 {
+            let _ = u8::read(&mut cursor).expect("legacy u8 field");
+        }
+        let _ = u32::read(&mut cursor).expect("probed_velocity_mrev_s");
+        let _ = i32::read(&mut cursor).expect("d_eq_q");
+        let _ = u16::read(&mut cursor).expect("confidence_q");
+        let _ = u8::read(&mut cursor).expect("band_lower_percent");
+        let _ = u8::read(&mut cursor).expect("band_upper_percent");
+        let _ = u16::read(&mut cursor).expect("band_position_q");
+
+        let predicted_start_p = u16::read(&mut cursor).expect("predicted_start_p");
+        let last_rung_p = u16::read(&mut cursor).expect("last_rung_p");
+        let min_overshoot_p = u16::read(&mut cursor).expect("min_overshoot_p");
+        let min_overshoot_units = u32::read(&mut cursor).expect("min_overshoot_units");
+        let bound_units = u32::read(&mut cursor).expect("bound_units");
+        let _ = u32::read(&mut cursor).expect("homing_speed_mrev_s");
+        let _ = u32::read(&mut cursor).expect("motion_speed_mrev_s");
+        let _ = u32::read(&mut cursor).expect("homing_peak_abs_units");
+        let _ = u32::read(&mut cursor).expect("motion_cruise_mean_abs_units");
+        let motion_overshoot_units = u32::read(&mut cursor).expect("motion_overshoot_units");
+        let _ = u32::read(&mut cursor).expect("motion_cruise_rms_units");
+        let _ = u32::read(&mut cursor).expect("nominal_bandwidth_hz");
+        let _ = i32::read(&mut cursor).expect("dither_margin_milli");
+        let rungs_measured = u8::read(&mut cursor).expect("rungs_measured");
+        let _ = u8::read(&mut cursor).expect("stimulus_feedforward_paths");
+        let outcome_code = u8::read(&mut cursor).expect("position_tune_outcome_code");
+
+        assert_eq!(predicted_start_p, 0);
+        assert_eq!(last_rung_p, 388);
+        assert_eq!(min_overshoot_p, 195);
+        assert_eq!(min_overshoot_units, 40);
+        assert_eq!(bound_units, 0);
+        assert_eq!(motion_overshoot_units, 500);
+        assert_eq!(rungs_measured, 3);
+        assert_eq!(outcome_code, 8);
+        assert!(cursor.is_empty(), "every field must have been decoded");
     }
 }
 

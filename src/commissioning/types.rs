@@ -2203,29 +2203,49 @@ pub struct TuneProvenance {
 
 /// `PositionTune` diagnostic provenance.
 ///
-/// All-zero (via `Default`) on legacy replies, failure paths, and any
-/// commission that didn't run `PositionTune` (e.g. `InnerOnly`).
+/// All-zero (via `Default`) on legacy replies and any commission that
+/// didn't run `PositionTune` (e.g. `InnerOnly`). On a failed sweep this
+/// carries the last rung the phase actually measured, not a zeroed block --
+/// see `CommissioningEngine::position_tune_failure_provenance`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub struct PositionTuneProvenance {
-    /// Nominal position-loop bandwidth in Hz, from
+    /// Closed-form start rung the sweep predicted before measuring anything.
+    pub predicted_start_p: u16,
+    /// Position P of the last rung the walk measured (the accepted rung on
+    /// success, or the rung in progress when a failure was reported).
+    pub last_rung_p: u16,
+    /// Position P of the rung that set the running-minimum motion overshoot,
+    /// zero before any rung has advanced.
+    pub min_overshoot_p: u16,
+    /// The running-minimum motion overshoot itself, in position-error units.
+    pub min_overshoot_units: u32,
+    /// Config-derived tracking bound, in position-error units.
+    pub bound_units: u32,
+    /// Planned homing-leg cruise speed, in milli-revolutions/second.
+    pub homing_speed_mrev_s: u32,
+    /// Planned motion-leg cruise speed, in milli-revolutions/second.
+    pub motion_speed_mrev_s: u32,
+    /// Last rung's median homing-leg peak absolute tracking error.
+    pub homing_peak_abs_units: u32,
+    /// Last rung's median motion-leg mean absolute cruise tracking error.
+    pub motion_cruise_mean_abs_units: u32,
+    /// Last rung's median motion-leg overshoot.
+    pub motion_overshoot_units: u32,
+    /// Last rung's median motion-leg cruise RMS tracking error.
+    pub motion_cruise_rms_units: u32,
+    /// Nominal position-loop bandwidth in Hz for the last rung, from
     /// `bandwidth_hz = (position_p/256) * 65536 / (60*2*pi)` (an
     /// already-validated formula, position-only, no torque constant).
     pub nominal_bandwidth_hz: u32,
-    /// Measured inner (velocity-loop) bandwidth in rad/s, from the on-MCU
-    /// acceleration-per-torque fit.
-    pub inner_bandwidth_rad_s: u32,
-    /// Accepted rung's median ceiling ratio, scaled by 1000 (1000 means the
+    /// Last rung's median ceiling ratio, scaled by 1000 (1000 means the
     /// measured dither exactly matched the quantization-only prediction).
     pub dither_margin_milli: i32,
-    /// Measured ramped-stroke settling time in microseconds.
-    pub settling_time_us: u32,
-    /// Measured ramped-stroke overshoot in position counts.
-    pub overshoot_counts: u32,
-    /// Measured final position error in counts.
-    pub final_position_error_counts: i32,
-    /// Whether sustained oscillation was detected on the accepted rung's
-    /// ramped stroke.
-    pub oscillation_detected: bool,
+    /// Count of rungs the walk measured before this terminal.
+    pub rungs_measured: u8,
+    /// Feedforward paths live on the last admitted motion stroke: bit 0
+    /// velocity, 1 transient, 2 acceleration, 3 decoupling, 4 phase advance.
+    /// Zero until a motion stroke has been admitted.
+    pub stimulus_feedforward_paths: u8,
 }
 
 /// Result of outer (mechanical) commissioning.
@@ -2256,16 +2276,15 @@ pub struct OuterResult {
     /// Provenance of the deployed tune (probed velocity, D_eq, confidence,
     /// response band). All-zero on legacy replies and failure paths.
     pub provenance: TuneProvenance,
-    /// `PositionTune` diagnostic provenance. All-zero on legacy
-    /// replies, failure paths, and any commission that didn't run
-    /// `PositionTune`.
+    /// `PositionTune` diagnostic provenance. All-zero on legacy replies and
+    /// any commission that didn't run `PositionTune`; on a failed sweep this
+    /// carries the last rung the phase actually measured rather than a
+    /// zeroed block.
     pub position_tune: PositionTuneProvenance,
     /// Wire code of the specific `PositionTuneOutcome` behind a
-    /// `CommissionError::PositionTuneFailed`, distinct from
-    /// `PositionTuneProvenance` because it must carry a real, nonzero value
-    /// on exactly the failure paths that struct's own contract keeps
-    /// zeroed. `0` means "not applicable" (the phase succeeded, or did not
-    /// run).
+    /// `CommissionError::PositionTuneFailed`. `0` means "not applicable"
+    /// (the phase succeeded, did not run, or failed on a generic engine
+    /// error rather than one of this phase's own diagnostic outcomes).
     pub position_tune_outcome_code: u8,
 }
 

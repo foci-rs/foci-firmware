@@ -351,6 +351,12 @@ pub trait CommissionBoardConfig {
     fn velocity_feedforward_gain_permille(&self) -> u32 {
         0
     }
+
+    /// Feedforward paths currently live on this channel: bit 0 velocity,
+    /// 1 transient, 2 acceleration, 3 decoupling, 4 phase advance.
+    fn feedforward_path_flags(&self) -> u8 {
+        0
+    }
 }
 
 /// Commissioning trace emission capability.
@@ -1062,6 +1068,42 @@ where
         } else {
             0
         }
+    }
+
+    fn feedforward_path_flags(&self) -> u8 {
+        let channel = self.tmc_state();
+        let mut flags = 0u8;
+        if channel
+            .velocity_feedforward
+            .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            flags |= 0b0_0001;
+        }
+        if channel
+            .velocity_transient_feedforward
+            .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            flags |= 0b0_0010;
+        }
+        if channel
+            .accel_feedforward
+            .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            flags |= 0b0_0100;
+        }
+        if channel
+            .decoupling_feedforward
+            .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            flags |= 0b0_1000;
+        }
+        if channel
+            .phase_advance
+            .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            flags |= 0b1_0000;
+        }
+        flags
     }
 }
 

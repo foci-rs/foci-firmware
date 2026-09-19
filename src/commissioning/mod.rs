@@ -1000,8 +1000,28 @@ impl CommissioningEngine {
             EngineMode::Outer {
                 phase: OuterPhase::PositionTuneFailed { outcome, .. },
                 ..
-            } => outcome.to_wire_code(),
+            } => outcome.map_or(0, crate::autotune::PositionTuneOutcome::to_wire_code),
             _ => 0,
+        }
+    }
+
+    /// The position-P sweep's evidence at the moment of failure, from either
+    /// `PositionTuneFailed` or `FailedWithSafety`; `Default` (all-zero)
+    /// otherwise. Read at the same point in the failure restore as
+    /// [`Self::position_tune_outcome_code`].
+    pub fn position_tune_failure_provenance(
+        &self,
+    ) -> crate::commissioning::types::PositionTuneProvenance {
+        match &self.engine_mode {
+            EngineMode::Outer {
+                phase: OuterPhase::PositionTuneFailed { provenance, .. },
+                ..
+            } => *provenance,
+            EngineMode::Outer {
+                phase: OuterPhase::FailedWithSafety { position_tune, .. },
+                ..
+            } => *position_tune,
+            _ => Default::default(),
         }
     }
 
@@ -1998,12 +2018,12 @@ mod tests {
             3_392,
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
-        // `OuterResult` gains `PositionTuneProvenance` plus
-        // `position_tune_outcome_code: u8`. `StepResult` and
-        // `CommissioningEngine` absorb the growth without changing size --
-        // the breakaway campaign payload above stays this enum's largest
-        // variant.
-        assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 68);
+        // `PositionTuneProvenance` grew from 7 fields (~28 bytes) to 15
+        // (rungs and stroke speeds, the bound, and both leg endpoints'
+        // homing/motion measurements). `StepResult` and `CommissioningEngine`
+        // absorb the growth without changing size -- the breakaway campaign
+        // payload above stays this enum's largest variant.
+        assert_eq!(size_of::<crate::commissioning::types::OuterResult>(), 88);
         // The breakaway campaign is the largest outer payload: its
         // probe/discovery/confirmation state machine and borrowed workspace
         // outweigh the classic VelocitySweep variant. Exact, so retained

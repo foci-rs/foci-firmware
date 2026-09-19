@@ -1652,23 +1652,22 @@ impl TerminalRestoreMachine {
             restore_level,
         );
 
-        let (oid, safety_fault, position_tune_outcome_code) = {
+        let (oid, safety_fault, position_tune_outcome_code, position_tune_provenance) = {
             let engine_ref = engine.as_ref().expect("engine slot None on OuterFailed");
             (
                 engine_ref.oid(),
                 engine_ref.outer_safety_fault(),
                 engine_ref.position_tune_outcome_code(),
+                engine_ref.position_tune_failure_provenance(),
             )
         };
         state.tmc.commission_in_flight.store(false, Relaxed);
         self.terminal.use_handled_stop_take = self.terminal.velocity_workflow_restored;
         let _ = self.take_engine(engine);
 
-        // Every outer phase's failure reports the same zeroed result; the
-        // position-P sweep additionally carries which of its own outcomes
-        // failed, which is zero for every other phase.
         let mut result = zero_outer_result();
         result.position_tune_outcome_code = position_tune_outcome_code;
+        result.position_tune = position_tune_provenance;
 
         CommissionOutcome::Terminal {
             reply: ReplyPayload::TuneResult {

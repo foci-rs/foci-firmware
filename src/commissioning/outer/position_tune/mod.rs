@@ -22,7 +22,7 @@ use crate::autotune::{
 use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::{
-    OuterMotionBudget, OuterPhase, OuterSafetyLimits, fail_outer, fail_outer_position_tune,
+    OuterMotionBudget, OuterPhase, OuterSafetyLimits, fail_outer_position_tune,
 };
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::stimulus::trapezoid::{LegPlan, StrokeRequest, plan_leg, plan_stroke};
@@ -133,9 +133,20 @@ pub(crate) struct PositionTuneState {
     pub(crate) dither_captures: [i32; STANDSTILL_CAPTURE_COUNT as usize],
     pub(crate) homing_repeats: [Option<LegMetrics>; RAMPED_STROKE_REPEATS as usize],
     pub(crate) motion_repeats: [Option<LegMetrics>; RAMPED_STROKE_REPEATS as usize],
-    pub(crate) min_overshoot_so_far: Option<u32>,
+    /// The rung that produced the running-minimum motion overshoot, and
+    /// that overshoot itself; `None` before the first `Advance`.
+    pub(crate) min_overshoot_so_far: Option<(PidPGain, u32)>,
     pub(crate) rungs_measured: u8,
     pub(crate) last_measurement: Option<RungMeasurement>,
+    /// Feedforward paths live on the last admitted motion stroke (from
+    /// `backend.feedforward_path_flags()` at `arm_stroke` admission); zero
+    /// until a motion stroke has been admitted.
+    pub(crate) feedforward_paths_active: u8,
+    /// Live diagnostic evidence, rebuilt at the end of `predict`, after
+    /// every stroke admission, and in `resolve_completed_rung`, so every
+    /// failure exit can report the last rung actually measured instead of a
+    /// zeroed block.
+    pub(crate) provenance: PositionTuneProvenance,
     /// The accepted rung, retained so the terminal is idempotent if the
     /// engine steps a completed phase again.
     accepted: Option<RungMeasurement>,
@@ -181,6 +192,24 @@ impl PositionTuneState {
             min_overshoot_so_far: None,
             rungs_measured: 0,
             last_measurement: None,
+            feedforward_paths_active: 0,
+            provenance: PositionTuneProvenance {
+                predicted_start_p: 0,
+                last_rung_p: 0,
+                min_overshoot_p: 0,
+                min_overshoot_units: 0,
+                bound_units: 0,
+                homing_speed_mrev_s: 0,
+                motion_speed_mrev_s: 0,
+                homing_peak_abs_units: 0,
+                motion_cruise_mean_abs_units: 0,
+                motion_overshoot_units: 0,
+                motion_cruise_rms_units: 0,
+                nominal_bandwidth_hz: 0,
+                dither_margin_milli: 0,
+                rungs_measured: 0,
+                stimulus_feedforward_paths: 0,
+            },
             accepted: None,
             entry,
             velocity_p: PidPGain::ZERO,
@@ -256,15 +285,26 @@ async fn fail_position_tune<B: CommissioningBackend>(
     let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
     let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
     let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+    let provenance = match &*phase {
+        OuterPhase::PositionTune { state, .. } => state.provenance,
+        _ => PositionTuneProvenance::default(),
+    };
     match fault {
-        PositionTuneFault::Engine(error) => fail_outer(phase, error),
+        PositionTuneFault::Engine(error) => {
+            fail_outer_position_tune(phase, error, None, provenance)
+        }
         PositionTuneFault::Outcome(outcome) => {
             defmt::warn!(
                 "position tune failed: outcome={} wire_code={}",
                 outcome,
                 outcome.to_wire_code(),
             );
-            fail_outer_position_tune(phase, CommissionError::PositionTuneFailed, outcome)
+            fail_outer_position_tune(
+                phase,
+                CommissionError::PositionTuneFailed,
+                Some(outcome),
+                provenance,
+            )
         }
     }
 }
@@ -422,6 +462,12 @@ async fn predict<B: CommissioningBackend>(
     state.homing_leg = Some(homing);
     state.motion_leg = Some(motion);
     safety.arm_safety_observation(backend.elapsed_us())?;
+    state.step = PositionTuneStep::Stroke {
+        rung: state.predicted_start,
+        kind: StrokeKind::Homing,
+        repeat: 0,
+    };
+    refresh_provenance(state);
     defmt::info!(
         "position tune predict: bound={} start_p={} homing={}mrev/s motion={}mrev/s ff={} predicted_homing_error={} predicted_motion_error={}",
         state.bound_units,
@@ -436,11 +482,6 @@ async fn predict<B: CommissioningBackend>(
             state.predicted_start.raw()
         ),
     );
-    state.step = PositionTuneStep::Stroke {
-        rung: state.predicted_start,
-        kind: StrokeKind::Homing,
-        repeat: 0,
-    };
     Ok(())
 }
 
@@ -502,6 +543,9 @@ async fn arm_stroke<B: CommissioningBackend>(
         .stimulus_reset_step_clock(base_clock)
         .map_err(|_| PositionTuneOutcome::StimulusRejected)?;
     backend.set_stimulus_feedforward(matches!(kind, StrokeKind::Motion));
+    if matches!(kind, StrokeKind::Motion) {
+        state.feedforward_paths_active = backend.feedforward_path_flags();
+    }
 
     let steps_per_rev = 65_536
         / backend
@@ -553,6 +597,7 @@ async fn arm_stroke<B: CommissioningBackend>(
         profile.stroke_us(),
     )?;
     state.next_poll_us = backend.elapsed_us() + u64::from(STROKE_POLL_US);
+    refresh_provenance(state);
     Ok(())
 }
 
@@ -650,7 +695,7 @@ fn resolve_completed_rung(
     let decision = selection::decide(
         &measurement,
         state.bound_units,
-        state.min_overshoot_so_far,
+        state.min_overshoot_so_far.map(|(_, units)| units),
         ceiling_tripped,
     );
     state.rungs_measured = state.rungs_measured.saturating_add(1);
@@ -665,36 +710,81 @@ fn resolve_completed_rung(
         dither_margin_milli(measurement.ceiling_ratios_milli),
         decision,
     );
-    match decision {
+    let result = match decision {
         RungDecision::Accept => {
             state.accepted = Some(measurement);
             state.step = PositionTuneStep::Done;
             state.capture_running = false;
+            Ok(())
         }
-        RungDecision::Conflict(_) => return Err(PositionTuneOutcome::Conflict.into()),
+        RungDecision::Conflict(_) => Err(PositionTuneOutcome::Conflict.into()),
         RungDecision::Advance => {
-            state.min_overshoot_so_far = Some(
-                state
-                    .min_overshoot_so_far
-                    .map_or(motion.overshoot_units, |min| {
-                        min.min(motion.overshoot_units)
-                    }),
-            );
-            let next = next_rung(rung).ok_or(PositionTuneOutcome::SweepExhausted)?;
-            state.homing_repeats = [None; RAMPED_STROKE_REPEATS as usize];
-            state.motion_repeats = [None; RAMPED_STROKE_REPEATS as usize];
-            state.step = PositionTuneStep::Stroke {
-                rung: next,
-                kind: StrokeKind::Homing,
-                repeat: 0,
-            };
-            // The completed rung's last capture (its fifth standstill hold)
-            // left `capture_running` set; the walk's next sub-step is a
-            // fresh `Stroke` arm, not a continuation of that capture.
-            state.capture_running = false;
+            state.min_overshoot_so_far = Some(match state.min_overshoot_so_far {
+                Some((prev_rung, prev_units)) if prev_units <= motion.overshoot_units => {
+                    (prev_rung, prev_units)
+                }
+                _ => (rung, motion.overshoot_units),
+            });
+            match next_rung(rung) {
+                Some(next) => {
+                    state.homing_repeats = [None; RAMPED_STROKE_REPEATS as usize];
+                    state.motion_repeats = [None; RAMPED_STROKE_REPEATS as usize];
+                    state.step = PositionTuneStep::Stroke {
+                        rung: next,
+                        kind: StrokeKind::Homing,
+                        repeat: 0,
+                    };
+                    // The completed rung's last capture (its fifth standstill
+                    // hold) left `capture_running` set; the walk's next
+                    // sub-step is a fresh `Stroke` arm, not a continuation of
+                    // that capture.
+                    state.capture_running = false;
+                    Ok(())
+                }
+                None => Err(PositionTuneOutcome::SweepExhausted.into()),
+            }
         }
-    }
-    Ok(())
+    };
+    refresh_provenance(state);
+    result
+}
+
+/// Rebuild `state.provenance` from the walk's current evidence: the
+/// predicted start rung, the config-derived bound and planned stroke speeds,
+/// the last measured rung (or the accepted one), the running-minimum
+/// overshoot and its rung, and the feedforward paths live on the last
+/// admitted motion stroke. Called at the end of `predict`, after every
+/// stroke admission, and in `resolve_completed_rung`, so every failure exit
+/// reads real evidence instead of a zeroed block.
+fn refresh_provenance(state: &mut PositionTuneState) {
+    let measurement = state.last_measurement.or(state.accepted);
+    let last_rung_p = measurement.map_or(0, |m| m.position_p.raw());
+    let homing_peak_abs_units = measurement.map_or(0, |m| m.homing_peak_abs_units);
+    let motion_cruise_mean_abs_units = measurement.map_or(0, |m| m.motion_cruise_mean_abs_units);
+    let motion_overshoot_units = measurement.map_or(0, |m| m.motion_overshoot_units);
+    let motion_cruise_rms_units = measurement.map_or(0, |m| m.motion_cruise_rms_units);
+    let dither_margin = measurement.map_or(0, |m| dither_margin_milli(m.ceiling_ratios_milli));
+    let (min_overshoot_p, min_overshoot_units) = state
+        .min_overshoot_so_far
+        .map_or((0, 0), |(p, units)| (p.raw(), units));
+
+    state.provenance = PositionTuneProvenance {
+        predicted_start_p: state.predicted_start.raw(),
+        last_rung_p,
+        min_overshoot_p,
+        min_overshoot_units,
+        bound_units: state.bound_units,
+        homing_speed_mrev_s: state.homing_leg.map_or(0, |leg| leg.speed_mrev_s),
+        motion_speed_mrev_s: state.motion_leg.map_or(0, |leg| leg.speed_mrev_s),
+        homing_peak_abs_units,
+        motion_cruise_mean_abs_units,
+        motion_overshoot_units,
+        motion_cruise_rms_units,
+        nominal_bandwidth_hz: nominal_bandwidth_hz(last_rung_p),
+        dither_margin_milli: dither_margin,
+        rungs_measured: state.rungs_measured,
+        stimulus_feedforward_paths: state.feedforward_paths_active,
+    };
 }
 
 /// Nominal position-loop bandwidth: a pure function of the accepted
@@ -733,11 +823,8 @@ fn dither_margin_milli(ceiling_ratios_milli: [i64; 5]) -> i32 {
 /// `robustness_reversal::robustness_pass_outer_result` does: the `OuterDone`
 /// restore path writes those fields straight to the channel config without a
 /// zero guard, so anything this phase does not tune must be carried through
-/// rather than defaulted. The provenance fields this phase's own predecessor
-/// used to fill from a floor capture (`inner_bandwidth_rad_s`,
-/// `settling_time_us`, `overshoot_counts`, `final_position_error_counts`,
-/// `oscillation_detected`) have no producer in this design and are zeroed;
-/// a later plan replaces them.
+/// rather than defaulted. `state.provenance` is already current for the
+/// accepted rung: `resolve_completed_rung` refreshes it before returning.
 fn position_tune_terminal(state: &PositionTuneState, accepted: RungMeasurement) -> StepResult {
     defmt::info!(
         "position tune accepted: p={} bound_units={} rungs_measured={}",
@@ -745,15 +832,7 @@ fn position_tune_terminal(state: &PositionTuneState, accepted: RungMeasurement) 
         state.bound_units,
         state.rungs_measured,
     );
-    let position_tune = PositionTuneProvenance {
-        nominal_bandwidth_hz: nominal_bandwidth_hz(accepted.position_p.raw()),
-        inner_bandwidth_rad_s: 0,
-        dither_margin_milli: dither_margin_milli(accepted.ceiling_ratios_milli),
-        settling_time_us: 0,
-        overshoot_counts: 0,
-        final_position_error_counts: 0,
-        oscillation_detected: false,
-    };
+    let position_tune = state.provenance;
     StepResult::OuterDone(OuterResult {
         status: CommissionStatus::Accepted,
         velocity_p: state.entry.velocity_p.raw(),
@@ -1321,9 +1400,72 @@ mod tests {
             phase,
             OuterPhase::PositionTuneFailed {
                 error: CommissionError::PositionTuneFailed,
-                outcome: PositionTuneOutcome::Conflict,
+                outcome: Some(PositionTuneOutcome::Conflict),
+                ..
             }
         ));
+    }
+
+    #[fixture_test]
+    fn a_conflict_terminal_carries_both_rungs() {
+        // Same scenario as `an_overshoot_ratio_trip_reports_conflict_with_the_last_rung`,
+        // asserting on the retained evidence instead of just the outcome.
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+        let second_rung_raw = next_rung(PidPGain::new(start_raw).unwrap())
+            .expect("a representable next rung")
+            .raw();
+
+        let terminal = drive_sweep(
+            &mut phase,
+            &mut backend,
+            move |state, sample_index| {
+                let PositionTuneStep::Stroke { rung, kind, .. } = state.step else {
+                    return 0;
+                };
+                match kind {
+                    StrokeKind::Homing => {
+                        if rung.raw() == start_raw {
+                            10_000
+                        } else {
+                            50
+                        }
+                    }
+                    StrokeKind::Motion => {
+                        let spike_over_steady = if rung.raw() == start_raw { 40 } else { 200 };
+                        let ramp_samples = state
+                            .stroke_timing
+                            .map(|timing| timing.ramp_end_us / state.sample_period_us.max(1))
+                            .unwrap_or(0);
+                        let spike_index = (ramp_samples / 2).max(1);
+                        if sample_index == 0 {
+                            0
+                        } else if u32::from(sample_index) == spike_index {
+                            50 + spike_over_steady
+                        } else {
+                            50
+                        }
+                    }
+                }
+            },
+            |rung, k_q16| quantization_only(rung, k_q16),
+        );
+
+        assert!(matches!(
+            terminal,
+            StepResult::OuterFailed(CommissionError::PositionTuneFailed)
+        ));
+        let OuterPhase::PositionTuneFailed { provenance, .. } = &phase else {
+            panic!("expected PositionTuneFailed, got {phase:?}");
+        };
+        assert_eq!(provenance.rungs_measured, 2);
+        assert_eq!(provenance.last_rung_p, second_rung_raw);
+        assert_eq!(provenance.min_overshoot_p, start_raw);
+        // The ratio guard only trips when the later rung's overshoot grows
+        // well past the running minimum, so this ordering alone confirms
+        // both rungs' evidence landed on the fields the spec names for them.
+        assert!(provenance.motion_overshoot_units > provenance.min_overshoot_units);
     }
 
     #[fixture_test]
@@ -1342,7 +1484,8 @@ mod tests {
             phase,
             OuterPhase::PositionTuneFailed {
                 error: CommissionError::PositionTuneFailed,
-                outcome: PositionTuneOutcome::StimulusRejected,
+                outcome: Some(PositionTuneOutcome::StimulusRejected),
+                ..
             }
         ));
         assert!(!backend.stimulus_log.iter().any(|op| *op == StimulusOp::Arm));
@@ -1365,7 +1508,8 @@ mod tests {
             phase,
             OuterPhase::PositionTuneFailed {
                 error: CommissionError::PositionTuneFailed,
-                outcome: PositionTuneOutcome::StimulusRejected,
+                outcome: Some(PositionTuneOutcome::StimulusRejected),
+                ..
             }
         ));
         assert!(
@@ -1453,6 +1597,103 @@ mod tests {
             "abort_stimulus's Stop then Feedforward(false) must be the last events before the \
              safety exit's excitation zeroing, with nothing else between them and the write"
         );
+    }
+
+    #[fixture_test]
+    fn a_safety_fault_after_a_completed_rung_keeps_its_evidence() {
+        // Plan 2a's mid-stroke safety-fault scenario, but forced past the
+        // start rung's homing-bound violation first (the same walk
+        // `a_conflict_terminal_carries_both_rungs` drives) so the fault lands
+        // on the second rung with the first rung's evidence already
+        // recorded. Drives through `step_outer_with_trace` directly (not the
+        // full `CommissioningEngine`) so the test can keep scripting
+        // registers from the resident phase, exactly as `drive_sweep` does.
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let start_raw = predicted_start_of(&mut phase, &mut backend);
+
+        let mut workspace = TransientBuffer::new();
+        let mut trace_summary_seqs = crate::commissioning::outer::TraceSummarySeqs::new();
+        let mut clock_us = backend.elapsed_us_value;
+        let mut second_rung_entered = false;
+
+        for _ in 0..20_000 {
+            let OuterPhase::PositionTune { state, .. } = &phase else {
+                panic!("the phase must stay resident until it reports a terminal");
+            };
+            match state.step {
+                PositionTuneStep::Predict => {}
+                PositionTuneStep::Stroke { rung, kind, .. } => {
+                    let error = if rung.raw() == start_raw {
+                        match kind {
+                            StrokeKind::Homing => 10_000,
+                            StrokeKind::Motion => 50,
+                        }
+                    } else {
+                        50
+                    };
+                    let _ = backend
+                        .registers
+                        .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), error as u32);
+                    // Trip the quarter-turn aliasing guard the instant the
+                    // second rung's own stroke begins, mirroring
+                    // `an_outer_safety_fault_mid_stroke_...`'s single-shot
+                    // encoder jump.
+                    if rung.raw() != start_raw && !second_rung_entered {
+                        backend.mechanical_encoder_position_counts_value = 5_000;
+                        second_rung_entered = true;
+                    }
+                }
+                PositionTuneStep::AwaitRestore { .. } => {
+                    backend
+                        .tmc_state
+                        .feedforward_surfaces_idle
+                        .store(true, Relaxed);
+                }
+                PositionTuneStep::StandstillHold { rung, .. } => {
+                    let sample_index = workspace.len();
+                    let predicted = quantization_only(rung.raw(), state.k_q16);
+                    let torque = if sample_index % 2 == 0 { 0 } else { predicted };
+                    let _ = backend.registers.insert(
+                        PID_TORQUE_FLUX_TARGET.addr(),
+                        torque_target_register(torque),
+                    );
+                }
+                PositionTuneStep::Done => {}
+            }
+
+            backend.elapsed_us_value = clock_us;
+            let result = pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
+                &mut phase,
+                &mut workspace,
+                CommissionProfile::Balanced,
+                crate::autotune::OperatingMode::Nominal,
+                0,
+                0,
+                false,
+                0,
+                0,
+                &mut trace_summary_seqs,
+                &mut backend,
+            ));
+            match result {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                terminal => {
+                    assert!(matches!(
+                        terminal,
+                        StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
+                    ));
+                    let OuterPhase::FailedWithSafety { position_tune, .. } = &phase else {
+                        panic!("expected FailedWithSafety, got {phase:?}");
+                    };
+                    assert_eq!(position_tune.rungs_measured, 1);
+                    assert_eq!(position_tune.last_rung_p, start_raw);
+                    return;
+                }
+            }
+        }
+        panic!("expected a terminal within the tick budget");
     }
 
     #[fixture_test]
@@ -1566,7 +1807,8 @@ mod tests {
                         phase,
                         OuterPhase::PositionTuneFailed {
                             error: CommissionError::PositionTuneFailed,
-                            outcome: PositionTuneOutcome::RestorationTimeout,
+                            outcome: Some(PositionTuneOutcome::RestorationTimeout),
+                            ..
                         }
                     ));
                     assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
@@ -1593,7 +1835,8 @@ mod tests {
             phase,
             OuterPhase::PositionTuneFailed {
                 error: CommissionError::PositionTuneFailed,
-                outcome: PositionTuneOutcome::ConfigurationInvalid,
+                outcome: Some(PositionTuneOutcome::ConfigurationInvalid),
+                ..
             }
         ));
         assert!(
@@ -1603,6 +1846,45 @@ mod tests {
                 .any(|op| matches!(op, StimulusOp::Queue(_))),
             "no segment may be queued once the stepper is trigger-blocked"
         );
+    }
+
+    #[fixture_test]
+    fn a_failure_before_the_first_motion_stroke_reports_no_feedforward_paths() {
+        // A refused enqueue on the first (homing) stroke -- no motion stroke
+        // has ever been admitted, so the failure's evidence must not carry a
+        // configured-but-never-run feedforward mask.
+        let mut backend = position_tune_backend();
+        backend.stimulus_refuse_after = Some(0);
+        let mut phase = position_tune_phase();
+
+        let terminal = drive_sweep(&mut phase, &mut backend, |_state, _idx| 50, |_rung, _k| 0);
+
+        assert!(matches!(
+            terminal,
+            StepResult::OuterFailed(CommissionError::PositionTuneFailed)
+        ));
+        let OuterPhase::PositionTuneFailed { provenance, .. } = &phase else {
+            panic!("expected PositionTuneFailed, got {phase:?}");
+        };
+        assert_eq!(provenance.stimulus_feedforward_paths, 0);
+
+        // A completed rung's accepted terminal carries whatever feedforward
+        // paths were live on its last (motion) stroke admission.
+        let mut backend = position_tune_backend();
+        backend.feedforward_path_flags_value = 0b0_0101; // velocity + acceleration
+        let mut phase = position_tune_phase();
+
+        let terminal = drive_sweep(
+            &mut phase,
+            &mut backend,
+            |_state, _idx| 50,
+            |rung, k_q16| quantization_only(rung, k_q16),
+        );
+
+        let StepResult::OuterDone(result) = terminal else {
+            panic!("expected OuterDone, got {terminal:?}");
+        };
+        assert_eq!(result.position_tune.stimulus_feedforward_paths, 0b0_0101);
     }
 
     #[fixture_test]

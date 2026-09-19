@@ -4249,6 +4249,7 @@ fn dispatcher_drains_campaign_closure_under_a_persistent_budget_fault() {
             OuterPhase::FailedWithSafety {
                 error: CommissionError::SafetyEnvelopeViolation,
                 safety_fault,
+                ..
             } if safety_fault.reason
                 == crate::commissioning::types::OUTER_SAFETY_FAULT_INVALID_BUDGET
         ),
@@ -4299,6 +4300,7 @@ fn terminal_phase_precedes_completed_breadcrumb_for_all_failure_kinds() {
                     OuterPhase::FailedWithSafety {
                         error: CommissionError::SafetyEnvelopeViolation,
                         safety_fault,
+                        ..
                     } if safety_fault == expected_fault
                 ),
                 "the safety terminal phase must precede the completed breadcrumb"
