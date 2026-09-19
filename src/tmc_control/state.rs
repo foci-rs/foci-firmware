@@ -2,6 +2,7 @@
 
 use core::sync::atomic::Ordering::Relaxed;
 
+use crate::autotune::CommissionError;
 use crate::commission_dispatch::{DispatchState, TerminalRestoreMachine};
 use crate::commissioning::CommissioningEngine;
 use crate::commissioning::schedule::CommissionEvent;
@@ -546,6 +547,67 @@ impl TmcControlRuntime {
     /// Returns true when a commissioning engine is currently active.
     pub fn is_commission_active(&self) -> bool {
         self.commission_engine.is_some()
+    }
+
+    /// Whether the planner-referenced control paths (feedforward, phase
+    /// advance, fast control period) may run: either no commissioning
+    /// engine is installed, or the installed one is driving a step-queue
+    /// stimulus and has opted those paths back on.
+    pub(crate) fn planner_paths_allowed(&self, refs: TmcControlStateRefs<'_>) -> bool {
+        self.commission_engine.is_none() || refs.tmc.commission_stimulus_active.load(Relaxed)
+    }
+
+    /// True while any feedforward or phase-advance surface is still applied
+    /// on the chip and needs a tick to restore it.
+    pub(crate) fn feedforward_restoration_pending(&self) -> bool {
+        self.feedforward_was_active
+            || self.torque_flux_offset_was_active
+            || self.phase_advance_was_active
+    }
+
+    fn publish_feedforward_surfaces_idle(&self, refs: TmcControlStateRefs<'_>) {
+        refs.tmc
+            .feedforward_surfaces_idle
+            .store(!self.feedforward_restoration_pending(), Relaxed);
+    }
+
+    /// Force the pending terminal restore onto its safe-disarm path with
+    /// the safe-state-incomplete outcome. Used when a stimulus's
+    /// feedforward surfaces could not be restored within the driver's
+    /// retry budget. Reuses the operator-cancel machinery: the cancel
+    /// latch plus `drive_restore_cancel`, which runs the machine's
+    /// `force_safe_terminal` (safe-state register sequence, disarm, stop
+    /// post-action) and retires the engine in one step.
+    ///
+    /// A later task wires this into the retry-budget-exhausted path.
+    #[allow(dead_code)]
+    pub(crate) async fn force_restore_safe_state_incomplete<B>(
+        &mut self,
+        backend: &mut B,
+        tmc: &'static TmcChannelState,
+        stepper: &'static StepperChannelState,
+    ) -> Option<crate::commission_dispatch::CommissionOutcome>
+    where
+        B: CommissioningBackend,
+    {
+        self.restore_machine.as_ref()?;
+        self.request_restore_cancel();
+        match self
+            .drive_restore_cancel(backend, tmc, stepper, CommissionError::SafeStateIncomplete)
+            .await
+        {
+            crate::commission_dispatch::RestoreStep::Done(outcome) => Some(outcome),
+            crate::commission_dispatch::RestoreStep::Pending => {
+                unreachable!("force_safe_terminal completes in one step")
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restore_status_error_for_test(&self) -> Option<CommissionError> {
+        self.restore_machine
+            .as_ref()
+            .map(|machine| machine.status_error())
     }
 
     /// Install a new commissioning engine, replacing any existing one.
@@ -1233,7 +1295,7 @@ impl TmcControlRuntime {
         let reference = match self.planner_velocity_scale {
             Some(scale)
                 if self.motor_enabled
-                    && self.commission_engine.is_none()
+                    && self.planner_paths_allowed(refs)
                     && !homing_active
                     && !reset =>
             {
@@ -1274,19 +1336,19 @@ impl TmcControlRuntime {
         let ff_active = self.motor_enabled
             && self.planner_rpm_scale.is_some()
             && refs.tmc.velocity_feedforward.load(Relaxed)
-            && self.commission_engine.is_none();
+            && self.planner_paths_allowed(refs);
         let velocity_transient_active = self.motor_enabled
             && self.planner_rpm_scale.is_some()
             && refs.tmc.velocity_transient_feedforward.load(Relaxed)
-            && self.commission_engine.is_none();
+            && self.planner_paths_allowed(refs);
         let accel_ff_active = self.motor_enabled
             && self.planner_velocity_scale.is_some()
             && refs.tmc.accel_feedforward.load(Relaxed)
-            && self.commission_engine.is_none();
+            && self.planner_paths_allowed(refs);
         let decoupling_ff_active = self.motor_enabled
             && self.planner_velocity_scale.is_some()
             && refs.tmc.decoupling_feedforward.load(Relaxed)
-            && self.commission_engine.is_none();
+            && self.planner_paths_allowed(refs);
 
         let velocity_offset_active = ff_active || velocity_transient_active;
         if velocity_offset_active {
@@ -1371,6 +1433,7 @@ impl TmcControlRuntime {
         self.feedforward_was_active = velocity_offset_active;
 
         if !slow_control_tick {
+            self.publish_feedforward_surfaces_idle(refs);
             return Ok(());
         }
 
@@ -1530,6 +1593,7 @@ impl TmcControlRuntime {
         }
         self.torque_flux_offset_was_active = accel_ff_active || decoupling_ff_active;
 
+        self.publish_feedforward_surfaces_idle(refs);
         Ok(())
     }
 
@@ -1639,7 +1703,7 @@ impl TmcControlRuntime {
         let phase_advance_requested = self.motor_enabled
             && self.planner_velocity_scale.is_some()
             && refs.tmc.phase_advance.load(Relaxed)
-            && self.commission_engine.is_none();
+            && self.planner_paths_allowed(refs);
         let phase_advance_active = phase_advance_requested && !homing_active && !reset;
 
         if phase_advance_active && !self.phase_advance_was_active {
@@ -1801,6 +1865,8 @@ impl TmcControlRuntime {
                 }
             }
         }
+
+        self.publish_feedforward_surfaces_idle(refs);
     }
 
     fn mark_phase_advance_restored(&mut self) {
@@ -2133,24 +2199,19 @@ impl TmcControlRuntime {
     /// Compute the requested control period in microseconds from current state.
     ///
     /// Returns [`crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US`] whenever the
-    /// motor is not electrically enabled — a `Ready`-but-disabled channel
-    /// does not need fast-loop servicing. Otherwise, returns the fast
-    /// transient period when all of the following hold:
-    /// - the planner velocity scale is configured,
-    /// - no commissioning engine is active, and
-    /// - the `velocity_transient_feedforward` atomic in channel state is `true`.
-    ///
-    /// Otherwise (enabled but not transient-feedforward-active) returns
+    /// motor is disabled or [`Self::planner_paths_allowed`] is false.
+    /// Otherwise, returns the fast transient period when the planner
+    /// velocity scale is configured and the `velocity_transient_feedforward`
+    /// atomic in channel state is `true`; otherwise
     /// `velocity_transient_period_us(VELOCITY_TRANSIENT_DEFAULT_RATE_HZ)`.
     ///
     /// # Parameters
     /// - `refs`: Borrowed channel atomics for this motor.
     pub fn control_period_us(&self, refs: TmcControlStateRefs<'_>) -> u32 {
-        if !self.motor_enabled {
+        if !self.motor_enabled || !self.planner_paths_allowed(refs) {
             return crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US;
         }
         let fast_active = self.planner_velocity_scale.is_some()
-            && self.commission_engine.is_none()
             && refs
                 .tmc
                 .velocity_transient_feedforward

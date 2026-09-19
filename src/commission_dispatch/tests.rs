@@ -876,6 +876,16 @@ fn calibrate_inner_failure_preserves_encoder_fault_status() {
     );
 }
 
+#[test]
+fn safe_state_incomplete_maps_onto_its_own_calibration_status() {
+    assert_eq!(
+        super::calibration_status_from_commission_error(
+            crate::autotune::CommissionError::SafeStateIncomplete
+        ),
+        crate::calibration::CalibrationError::SafeStateIncomplete.status_code()
+    );
+}
+
 #[fixture_test]
 async fn inner_failed_calibrate_emits_calibrate_reply() {
     tmc_state()

@@ -576,6 +576,7 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
         CommissionError::CurrentHoldFailed => CalibrationError::CurrentHoldFailed,
         CommissionError::FaultInterlock => CalibrationError::FaultInterlock,
         CommissionError::Shutdown => CalibrationError::Shutdown,
+        CommissionError::SafeStateIncomplete => CalibrationError::SafeStateIncomplete,
         _ => CalibrationError::InternalError,
     };
     calibration_error.status_code()

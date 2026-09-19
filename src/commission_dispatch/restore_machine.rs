@@ -324,6 +324,11 @@ impl TerminalRestoreMachine {
         self.terminal.status_error = status_error;
     }
 
+    #[cfg(test)]
+    pub(crate) fn status_error(&self) -> CommissionError {
+        self.terminal.status_error
+    }
+
     /// Return this machine's board-local TMC channel.
     pub const fn channel(&self) -> u8 {
         self.channel
