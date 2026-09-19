@@ -949,8 +949,6 @@ mod tests {
 
     #[test]
     fn dac_rms_q_is_zero_for_a_flat_window() {
-        // Constant rate exactly at target: every error is 0, so both the mean
-        // and every first difference are 0.
         let target_rate_q = per_tick_rate_q(100, 1_000);
         let samples = [observation(100, 1_000); 8];
         assert_eq!(dac_rms_q(&samples[..], 0, samples.len(), target_rate_q), 0);
@@ -974,10 +972,6 @@ mod tests {
 
     #[test]
     fn dac_rms_q_reads_only_the_requested_window() {
-        // A transient prefix outside [start_index, start_index + len) must not
-        // affect the result -- this is the property that keeps the fold from
-        // reintroducing the pre-band-entry transient when called with the
-        // suffix's trailing range.
         let target_rate_q = per_tick_rate_q(100, 1_000);
         let transient = observation(9_999, 1_000);
         let flat = observation(100, 1_000);
@@ -1034,8 +1028,6 @@ mod tests {
         let samples: [RawVelocityObservation; 5] = DELTA_COUNTS.map(|d| observation(d, elapsed_us));
         let k = per_tick_rate_q(1, elapsed_us) as f64;
 
-        // Independent reference: demean, first-difference, mean-of-squares,
-        // sqrt -- fixed-size array, no allocation, no Vec.
         let errors: [f64; 5] = DELTA_COUNTS.map(|d| d as f64);
         let mean: f64 = errors.iter().sum::<f64>() / errors.len() as f64;
         let ac: [f64; 5] = errors.map(|e| e - mean);

@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn median_dac_rms_q_reduces_filled_slots_with_no_unit_conversion() {
-        let mut ledger = CycleLedger::new(i64::MAX); // iae_max_q high enough that nothing tails
+        let mut ledger = CycleLedger::new(i64::MAX);
         let metrics = |dac_rms_q: i64| ReversalMetrics {
             reconvergence_time_us: 10_000,
             settled_residual_q: 0,
@@ -594,8 +594,6 @@ mod tests {
         for value in [100_i64, 300, 200] {
             ledger.record(CycleRecord::Conclusive(metrics(value)));
         }
-        // Median of [100, 300, 200] sorted = 200; raw value, no /1e6 conversion
-        // (unlike median_recovery_iae_qs, which does convert).
         assert_eq!(ledger.median_dac_rms_q(), 200);
     }
 

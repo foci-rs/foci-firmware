@@ -3221,11 +3221,6 @@ mod tests {
         assert_eq!(evidence.iae_medians_qs[1], 0);
     }
 
-    /// Distinct per-cycle dac_rms_q values reduce to the correct median in the
-    /// assembled evidence, mirroring `assembled_evidence_medians_convert_iae_before_median`
-    /// but for the new field -- proves the producer path from CycleLedger through
-    /// assembled_evidence actually wires median_dac_rms_q(), not just that the
-    /// ledger method itself works in isolation.
     #[test]
     fn assembled_evidence_dac_rms_median_reduces_filled_slots() {
         let mut session = RobustnessReversalSession::new(test_point(), 7, COUNTS_PER_REV);
@@ -3244,7 +3239,6 @@ mod tests {
 
         let evidence = assembled_evidence(&session, test_safety().counts_per_rev());
 
-        // Median of [100, 200, 300, 400] = 250, raw rate-Q, no unit conversion.
         assert_eq!(evidence.dac_rms_medians_q[0], 250);
         // Direction 1 never ran: all-zero median.
         assert_eq!(evidence.dac_rms_medians_q[1], 0);
