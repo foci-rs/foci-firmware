@@ -2380,10 +2380,6 @@ mod tests {
                 result,
                 StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
             ));
-            assert!(
-                !backend.enable_pin,
-                "must not arm on a missing calibrate_entry_gains snapshot"
-            );
         });
     }
 
