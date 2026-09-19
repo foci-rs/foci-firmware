@@ -217,7 +217,7 @@ pub fn normalize_capture_sample(torque_actual: i16, direction: CaptureDirection)
 }
 
 /// Capacity of the high-rate electrical-delay capture buffer and its
-/// parallel offset container. Sized for FOCI-205: large enough to cover
+/// parallel offset container. Large enough to cover
 /// `5 * tau_e_us` at both boards' default periods (see
 /// `high_rate_sample_count` in `autotune/current.rs`). This is the same
 /// constant `electrical_capture::HIGH_RATE_CAPTURE_SAMPLE_CAPACITY` uses

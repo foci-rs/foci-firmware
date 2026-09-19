@@ -17,7 +17,7 @@ pub struct ElectricalModel {
     /// Effective transport delay in microseconds (from transient onset).
     pub theta_e_us: u32,
     /// Source of `theta_e_us`: 0 = high-rate measurement, 1 =
-    /// board-configured fallback (FOCI-205). Wire-shaped directly (not
+    /// board-configured fallback. Wire-shaped directly (not
     /// `electrical_identification::ThetaSource`, which is `pub(crate)` and
     /// not visible to board crates) so it survives unchanged through every
     /// later copy of this struct.

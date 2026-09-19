@@ -41,8 +41,9 @@ pub use current::{
     CURRENT_AXIS_VALIDATION_STATUS_FLAGS, CURRENT_AXIS_VALIDATION_WRONG_SIGN,
     CURRENT_AXIS_VALIDATION_ZERO_TARGET, CURRENT_VALIDATION_SETTLED_MAX_SAMPLES,
     CurrentAxisRetryDecision, CurrentAxisSample, CurrentAxisSampleClassification,
-    CurrentAxisSampleCriteria, classify_current_axis_sample, current_axis_retry_decision,
-    high_rate_sample_count, retry_current_loop_gains, synthesize_current_gains,
+    CurrentAxisSampleCriteria, MAX_CAPTURE_DURATION_US, classify_current_axis_sample,
+    correct_onset_bias, current_axis_retry_decision, high_rate_sample_count,
+    retry_current_loop_gains, synthesize_current_gains,
 };
 pub use equivalent_disturbance::{
     EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16, equivalent_disturbance_from_rate,

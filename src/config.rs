@@ -46,7 +46,7 @@ pub struct TmcConfig {
     pub bandwidth_hz: f32,
     /// Board-derived effective electrical delay for current-loop synthesis.
     pub electrical_model_theta_e_us: u32,
-    /// High-rate electrical-delay capture period in microseconds (FOCI-205).
+    /// High-rate electrical-delay capture period in microseconds.
     /// Ouroboros: 20 (spike-validated). OpenFFBoard: 200 (unchanged from
     /// the prior low-rate default, pending its own timing validation).
     pub high_rate_delay_period_us: u16,

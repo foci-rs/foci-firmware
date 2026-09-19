@@ -236,7 +236,7 @@ pub struct FociCommissionResult {
     /// Measured electrical time constant in microseconds.
     pub theta_e_us: u32,
     /// Source of the accepted `theta_e_us`: 0 = high-rate measurement, 1 =
-    /// board-configured fallback (FOCI-205).
+    /// board-configured fallback.
     pub theta_source: u8,
     /// Ringing count observed during the step response.
     pub ringing_count: u8,

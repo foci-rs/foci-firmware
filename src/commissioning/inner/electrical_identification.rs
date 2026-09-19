@@ -2501,12 +2501,18 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 
         ElectricalIdentificationState::DelayEvaluate { completed } => {
             data.delay_timing = None;
+            // The raw crossing is 10% of the capture's own peak, which a
+            // first-order RL step reaches at `theta + tau * ln(10/9)`. The
+            // bias is removed here, not inside the shared threshold
+            // estimator, using the same tau the sizing step already derived.
+            let tau_e_us = compute_tau_e_us(data).unwrap_or(0);
             let measured = if completed.timing_ok {
                 crate::autotune::estimate_electrical_delay(
                     completed.samples.samples(),
                     completed.offsets.offsets_us(),
                 )
                 .ok()
+                .map(|crossing_us| crate::autotune::correct_onset_bias(crossing_us, tau_e_us))
             } else {
                 None
             };
@@ -6213,5 +6219,45 @@ mod tests {
         let offsets_us = [10u16, 20, 30, 40, 50, 60];
         let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
         assert_eq!(onset, 50); // peak=205, threshold=21, first sample >= 21 is index 4.
+    }
+
+    #[test]
+    fn delay_evaluate_stores_the_bias_corrected_onset() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::DelayEvaluate {
+                    completed: completed_delay_capture(&[0, 100, 1_000], &[160, 350, 515]),
+                },
+                data: representative_data(),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::At(_)));
+            let InnerPhase::ElectricalIdentification { state, data } = &phase else {
+                unreachable!();
+            };
+            assert!(matches!(
+                state,
+                ElectricalIdentificationState::DelayCooldown { .. }
+            ));
+            // peak=1000, threshold=100, so the raw crossing is 350us. This
+            // fixture's tau_e_us is 801, making the 10%-threshold bias term
+            // 801 * 27/256 = 84us.
+            assert_eq!(compute_tau_e_us(data).unwrap(), 801);
+            assert_eq!(data.delay_estimate_us, Some(350 - 84));
+        });
     }
 }
