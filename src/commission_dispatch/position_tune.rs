@@ -26,7 +26,7 @@ const MICROS_PER_MILLI: u32 = 1_000;
 /// ceiling within a rung or two of the identified floor. The host arms its
 /// run timeout off [`position_tune_worst_case_duration_ms`], never off
 /// this.
-const NOMINAL_RUNG_COUNT: u32 = 2;
+const NOMINAL_RUNG_COUNT: u32 = 3;
 
 /// Rungs the sweep can measure before `next_rung` runs out of representable
 /// gains.
@@ -206,14 +206,14 @@ mod tests {
     }
 
     #[test]
-    fn nominal_duration_is_two_rungs_at_the_per_rung_cost() {
+    fn nominal_duration_is_three_rungs_at_the_per_rung_cost() {
         let budget = OuterMotionBudget::firmware_caps();
         let per_rung_ms = per_rung_duration_ms(&budget, TEST_STEPS_PER_REV, TEST_STEP_TIMER_HZ)
             .expect("firmware caps plan both strokes");
 
         assert_eq!(
             position_tune_nominal_duration_ms(&budget, TEST_STEPS_PER_REV, TEST_STEP_TIMER_HZ),
-            2 * per_rung_ms
+            3 * per_rung_ms
         );
     }
 

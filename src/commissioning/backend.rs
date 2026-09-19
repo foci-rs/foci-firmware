@@ -430,6 +430,13 @@ pub enum StimulusError {
 /// control tick's restoration mirror.
 pub trait CommissionStepStimulus {
     /// Step timer frequency in Hz; 0 when no stimulus is available.
+    ///
+    /// Distinct from `tmc_control::request::TmcRequestBoard::stimulus_step_timer_hz`
+    /// (same name, different source, wired separately per board): this one
+    /// backs actual stroke execution once the commissioning engine is
+    /// running; that one backs the dispatch-time duration disclosure before
+    /// the engine exists. A board must keep both in sync with the same
+    /// hardware timer frequency.
     fn stimulus_step_timer_hz(&self) -> u32;
     /// Current step-timer clock.
     fn stimulus_step_clock_now(&self) -> u32;

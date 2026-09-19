@@ -164,6 +164,12 @@ where
     /// does not override this default reports an unplannable stroke, so the
     /// position-P sweep's disclosed duration falls back to `u32::MAX` rather
     /// than a false, understated envelope.
+    ///
+    /// Distinct from `commissioning::backend::CommissionStepStimulus::stimulus_step_timer_hz`
+    /// (same name, different source): this one backs the dispatch-time
+    /// duration disclosure, before the commissioning engine exists; that one
+    /// backs actual stroke execution. A board must keep both wired to the
+    /// same hardware timer frequency.
     fn stimulus_step_timer_hz(&self) -> u32 {
         0
     }
