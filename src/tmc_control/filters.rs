@@ -69,6 +69,23 @@ fn biquad_filter_regs(target: BiquadFilterTarget) -> BiquadFilterSubRegs {
     }
 }
 
+/// The valid cutoff ceiling for one biquad filter target.
+///
+/// Velocity and position stay on the conservative motion-filter ceiling;
+/// torque and flux use the wider current-filter ceiling. Centralizing this
+/// here means every `butterworth_lowpass` caller in this file supplies the
+/// correct limit rather than assuming one.
+pub(crate) fn cutoff_ceiling_hz(target: BiquadFilterTarget) -> u16 {
+    match target {
+        BiquadFilterTarget::Velocity | BiquadFilterTarget::Position => {
+            crate::biquad::MOTION_CUTOFF_MAX_HZ
+        }
+        BiquadFilterTarget::Torque | BiquadFilterTarget::Flux => {
+            crate::biquad::CURRENT_CUTOFF_MAX_HZ
+        }
+    }
+}
+
 fn store_filter_hz(tmc_state: &TmcChannelState, target: BiquadFilterTarget, filter_hz: u16) {
     use core::sync::atomic::Ordering::Relaxed;
 
@@ -112,7 +129,9 @@ where
         return Ok(());
     }
 
-    let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+    let Some(coeffs) =
+        crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt, cutoff_ceiling_hz(target))
+    else {
         defmt::error!("Invalid biquad filter cutoff: {} Hz", filter_hz);
         return Err(());
     };
@@ -196,6 +215,7 @@ where
 
     async fn apply_one<B>(
         tmc: &mut Tmc4671Spi<B>,
+        target: BiquadFilterTarget,
         filter_hz: u16,
         pwm_maxcnt: u16,
         regs: BiquadFilterSubRegs,
@@ -206,7 +226,9 @@ where
         if filter_hz == 0 {
             return Ok(());
         }
-        let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+        let Some(coeffs) =
+            crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt, cutoff_ceiling_hz(target))
+        else {
             return Ok(());
         };
 
@@ -221,6 +243,7 @@ where
 
     apply_one(
         tmc,
+        BiquadFilterTarget::Velocity,
         tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
@@ -235,6 +258,7 @@ where
     .await?;
     apply_one(
         tmc,
+        BiquadFilterTarget::Torque,
         tmc_state.torque_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
@@ -249,6 +273,7 @@ where
     .await?;
     apply_one(
         tmc,
+        BiquadFilterTarget::Position,
         tmc_state.position_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
@@ -263,6 +288,7 @@ where
     .await?;
     apply_one(
         tmc,
+        BiquadFilterTarget::Flux,
         tmc_state.flux_filter_hz.load_or_zero(Relaxed),
         pwm_maxcnt,
         BiquadFilterSubRegs {
@@ -396,7 +422,9 @@ async fn apply_one_backend_filter<B: CommissioningBackend>(
     if filter_hz == 0 {
         return Ok(());
     }
-    let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+    let Some(coeffs) =
+        crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt, cutoff_ceiling_hz(target))
+    else {
         return Ok(());
     };
     let regs = biquad_filter_regs(target);
@@ -464,7 +492,11 @@ impl FilterCutoffsStep {
             if filter_hz == 0 {
                 continue;
             }
-            let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+            let Some(coeffs) = crate::biquad::butterworth_lowpass(
+                filter_hz,
+                pwm_maxcnt,
+                cutoff_ceiling_hz(target),
+            ) else {
                 continue;
             };
             let regs = biquad_filter_regs(target);
@@ -562,6 +594,118 @@ mod tests {
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
         crate::state::tmc::tmc_channel0()
+    }
+
+    #[fixture_test]
+    async fn apply_live_filter_rejects_velocity_above_motion_ceiling() {
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        let result = apply_live_filter(
+            &mut tmc,
+            tmc_state(),
+            BiquadFilterTarget::Velocity,
+            2000,
+            3999,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a 2000 Hz velocity cutoff must be rejected -- it exceeds the motion-filter \
+             ceiling even though it is a valid current-filter value"
+        );
+    }
+
+    #[fixture_test]
+    async fn apply_live_filter_accepts_torque_at_ten_khz() {
+        use core::sync::atomic::Ordering;
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        let result = apply_live_filter(
+            &mut tmc,
+            tmc_state(),
+            BiquadFilterTarget::Torque,
+            10_000,
+            3999,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "a 10 kHz torque cutoff must be accepted -- it is within the current-filter ceiling"
+        );
+
+        tmc_state().torque_filter_hz.store(None, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn apply_stored_filters_skips_velocity_above_motion_ceiling() {
+        use core::sync::atomic::Ordering;
+        tmc_state()
+            .velocity_filter_hz
+            .store(Some(2000), Ordering::Relaxed);
+        tmc_state()
+            .torque_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .position_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
+
+        let raw_spi = MockRawSpi::default();
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+
+        apply_stored_filters(&mut tmc, tmc_state(), 3999)
+            .await
+            .expect("restore should succeed even when a filter is skipped");
+
+        let raw_spi = tmc.into_inner();
+        assert!(
+            raw_spi.writes.is_empty(),
+            "a 2000 Hz velocity cutoff must produce zero SPI writes on restore -- it \
+             exceeds the motion-filter ceiling"
+        );
+
+        tmc_state()
+            .velocity_filter_hz
+            .store(None, Ordering::Relaxed);
+    }
+
+    #[fixture_test]
+    async fn apply_stored_filters_via_backend_skips_velocity_above_motion_ceiling() {
+        use core::sync::atomic::Ordering;
+        tmc_state()
+            .velocity_filter_hz
+            .store(Some(2000), Ordering::Relaxed);
+        tmc_state()
+            .torque_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state()
+            .position_filter_hz
+            .store(Some(0), Ordering::Relaxed);
+        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
+
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        apply_stored_filters_via_backend(&mut backend, tmc_state(), 3999)
+            .await
+            .expect("filter writes should succeed even when one filter is skipped");
+
+        use crate::commission_dispatch::test_support::SpiOp;
+        use foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE;
+        let has_velocity_enable_one = backend.spi_log.iter().any(
+            |op| matches!(op, SpiOp::Write(addr, 1) if *addr == CONFIG_BIQUAD_V_ENABLE.data.addr()),
+        );
+        assert!(
+            !has_velocity_enable_one,
+            "a 2000 Hz velocity cutoff must not be enabled -- it exceeds the motion-filter \
+             ceiling even though it is a valid current-filter value"
+        );
+
+        tmc_state()
+            .velocity_filter_hz
+            .store(None, Ordering::Relaxed);
     }
 
     #[fixture_test]
@@ -697,8 +841,12 @@ mod tests {
                         && pair[1] == (sub.data.addr(), value)
                 })
             };
-            let coeffs = crate::biquad::butterworth_lowpass(100, 4095)
-                .expect("100 Hz is a valid test cutoff");
+            let coeffs = crate::biquad::butterworth_lowpass(
+                100,
+                4095,
+                cutoff_ceiling_hz(BiquadFilterTarget::Velocity),
+            )
+            .expect("100 Hz is a valid test cutoff");
             use foci_tmc4671::registers::{
                 CONFIG_BIQUAD_V_A_1, CONFIG_BIQUAD_V_A_2, CONFIG_BIQUAD_V_B_0, CONFIG_BIQUAD_V_B_1,
                 CONFIG_BIQUAD_V_B_2,

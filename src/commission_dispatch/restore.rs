@@ -698,7 +698,7 @@ impl EntryGainFiltersStep {
         let mut ops = [(placeholder, 0u32, 0u8); 48];
         let mut len = 0usize;
 
-        for (filter_hz, coeff_regs, enable_reg) in [
+        for (filter_hz, coeff_regs, enable_reg, max_hz) in [
             (
                 snapshot.velocity_filter_hz,
                 [
@@ -709,6 +709,7 @@ impl EntryGainFiltersStep {
                     CONFIG_BIQUAD_V_B_2,
                 ],
                 CONFIG_BIQUAD_V_ENABLE,
+                crate::biquad::MOTION_CUTOFF_MAX_HZ,
             ),
             (
                 snapshot.torque_filter_hz,
@@ -720,6 +721,7 @@ impl EntryGainFiltersStep {
                     CONFIG_BIQUAD_T_B_2,
                 ],
                 CONFIG_BIQUAD_T_ENABLE,
+                crate::biquad::CURRENT_CUTOFF_MAX_HZ,
             ),
             (
                 snapshot.position_filter_hz,
@@ -731,6 +733,7 @@ impl EntryGainFiltersStep {
                     CONFIG_BIQUAD_X_B_2,
                 ],
                 CONFIG_BIQUAD_X_ENABLE,
+                crate::biquad::MOTION_CUTOFF_MAX_HZ,
             ),
             (
                 snapshot.flux_filter_hz,
@@ -742,13 +745,15 @@ impl EntryGainFiltersStep {
                     CONFIG_BIQUAD_F_B_2,
                 ],
                 CONFIG_BIQUAD_F_ENABLE,
+                crate::biquad::CURRENT_CUTOFF_MAX_HZ,
             ),
         ] {
             if filter_hz == 0 {
                 push_disable_pair(&mut ops, enable_reg, &mut len);
                 continue;
             }
-            let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt) else {
+            let Some(coeffs) = crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt, max_hz)
+            else {
                 continue;
             };
             let start = len;
@@ -1941,5 +1946,35 @@ mod tests {
         };
         assert_eq!(result, Err(RestoreEntryGainsErrorKind::PiRepresentation));
         crate::state::tmc::tmc_channel0().reset();
+    }
+
+    #[fixture_test]
+    async fn entry_gain_filters_step_skips_velocity_above_motion_ceiling() {
+        // A velocity cutoff above the 1000 Hz motion ceiling but below the
+        // 10 kHz current ceiling must still be skipped on restore -- the
+        // per-target ceiling threaded through this loop is the only thing
+        // stopping it from reusing the wider torque/flux limit.
+        let snapshot = crate::commissioning::OuterGainRollbackSnapshot {
+            velocity_filter_hz: 2000,
+            ..crate::commission_dispatch::test_support::sample_entry_snapshot()
+        };
+
+        let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+        let mut step = EntryGainFiltersStep::start(&snapshot, 3999);
+        while !step.advance(&mut backend).await {}
+
+        use foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE;
+        let has_velocity_enable_one = backend.spi_log.iter().any(|op| {
+            matches!(
+                op,
+                crate::commission_dispatch::test_support::SpiOp::Write(addr, 1)
+                    if *addr == CONFIG_BIQUAD_V_ENABLE.data.addr()
+            )
+        });
+        assert!(
+            !has_velocity_enable_one,
+            "a 2000 Hz velocity cutoff must not be enabled on restore -- it exceeds \
+             the motion-filter ceiling even though it is a valid current-filter value"
+        );
     }
 }

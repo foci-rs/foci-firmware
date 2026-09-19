@@ -63,7 +63,11 @@ pub(crate) async fn write_biquad_velocity_checked<B: CommissioningBackend>(
     pwm_maxcnt: u16,
 ) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
-    if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
+    if let Some(coeffs) = crate::biquad::butterworth_lowpass(
+        cutoff_hz,
+        pwm_maxcnt,
+        crate::biquad::MOTION_CUTOFF_MAX_HZ,
+    ) {
         write_sub_register_checked(backend, CONFIG_BIQUAD_V_A_1, coeffs.a_1 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_V_A_2, coeffs.a_2 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_V_B_0, coeffs.b_0 as u32).await?;
@@ -91,7 +95,11 @@ pub(crate) async fn write_biquad_position_checked<B: CommissioningBackend>(
     pwm_maxcnt: u16,
 ) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
-    if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
+    if let Some(coeffs) = crate::biquad::butterworth_lowpass(
+        cutoff_hz,
+        pwm_maxcnt,
+        crate::biquad::MOTION_CUTOFF_MAX_HZ,
+    ) {
         write_sub_register_checked(backend, CONFIG_BIQUAD_X_A_1, coeffs.a_1 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_X_A_2, coeffs.a_2 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_X_B_0, coeffs.b_0 as u32).await?;
@@ -119,7 +127,11 @@ pub(crate) async fn write_biquad_flux_checked<B: CommissioningBackend>(
     pwm_maxcnt: u16,
 ) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
-    if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
+    if let Some(coeffs) = crate::biquad::butterworth_lowpass(
+        cutoff_hz,
+        pwm_maxcnt,
+        crate::biquad::CURRENT_CUTOFF_MAX_HZ,
+    ) {
         write_sub_register_checked(backend, CONFIG_BIQUAD_F_A_1, coeffs.a_1 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_F_A_2, coeffs.a_2 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_F_B_0, coeffs.b_0 as u32).await?;
@@ -147,7 +159,11 @@ pub(crate) async fn write_biquad_torque_checked<B: CommissioningBackend>(
     pwm_maxcnt: u16,
 ) -> Result<(), ()> {
     use foci_tmc4671::registers::*;
-    if let Some(coeffs) = crate::biquad::butterworth_lowpass(cutoff_hz, pwm_maxcnt) {
+    if let Some(coeffs) = crate::biquad::butterworth_lowpass(
+        cutoff_hz,
+        pwm_maxcnt,
+        crate::biquad::CURRENT_CUTOFF_MAX_HZ,
+    ) {
         write_sub_register_checked(backend, CONFIG_BIQUAD_T_A_1, coeffs.a_1 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_T_A_2, coeffs.a_2 as u32).await?;
         write_sub_register_checked(backend, CONFIG_BIQUAD_T_B_0, coeffs.b_0 as u32).await?;
@@ -157,4 +173,77 @@ pub(crate) async fn write_biquad_torque_checked<B: CommissioningBackend>(
         defmt::info!("biquad torque: {}Hz enabled", cutoff_hz);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_biquad_velocity_checked_rejects_above_motion_ceiling() {
+        pollster::block_on(async {
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+            write_biquad_velocity_checked(&mut backend, 2000, 3999)
+                .await
+                .expect("an invalid cutoff is a silent no-op, not an SPI error");
+
+            assert!(
+                backend.spi_log.is_empty(),
+                "a 2000 Hz velocity cutoff must produce zero SPI writes -- it exceeds \
+                 the motion-filter ceiling even though it is a valid current-filter value"
+            );
+        });
+    }
+
+    #[test]
+    fn write_biquad_position_checked_rejects_above_motion_ceiling() {
+        pollster::block_on(async {
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+            write_biquad_position_checked(&mut backend, 2000, 3999)
+                .await
+                .expect("an invalid cutoff is a silent no-op, not an SPI error");
+
+            assert!(
+                backend.spi_log.is_empty(),
+                "a 2000 Hz position cutoff must produce zero SPI writes -- it exceeds \
+                 the motion-filter ceiling even though it is a valid current-filter value"
+            );
+        });
+    }
+
+    #[test]
+    fn write_biquad_torque_checked_accepts_ten_khz() {
+        pollster::block_on(async {
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+            write_biquad_torque_checked(&mut backend, 10_000, 3999)
+                .await
+                .expect("10 kHz is within the current-filter ceiling");
+
+            assert!(
+                !backend.spi_log.is_empty(),
+                "a 10 kHz torque cutoff must produce SPI writes -- it is within the \
+                 current-filter ceiling"
+            );
+        });
+    }
+
+    #[test]
+    fn write_biquad_flux_checked_accepts_ten_khz() {
+        pollster::block_on(async {
+            let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
+
+            write_biquad_flux_checked(&mut backend, 10_000, 3999)
+                .await
+                .expect("10 kHz is within the current-filter ceiling");
+
+            assert!(
+                !backend.spi_log.is_empty(),
+                "a 10 kHz flux cutoff must produce SPI writes -- it is within the \
+                 current-filter ceiling"
+            );
+        });
+    }
 }

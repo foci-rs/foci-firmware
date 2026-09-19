@@ -35,11 +35,16 @@ pub struct BiquadCoeffs {
 /// Scale factor for Q3.29 fixed-point: 2^29.
 const Q3_29_SCALE: f32 = 536_870_912.0; // 2^29
 
-/// Minimum valid cutoff frequency in Hz.
+/// Minimum valid cutoff frequency in Hz, shared by every biquad target.
 const CUTOFF_MIN_HZ: u16 = 10;
 
-/// Maximum valid cutoff frequency in Hz.
-const CUTOFF_MAX_HZ: u16 = 6000;
+/// Maximum valid cutoff frequency in Hz for the velocity and position
+/// (motion) target filters.
+pub(crate) const MOTION_CUTOFF_MAX_HZ: u16 = 1000;
+
+/// Maximum valid cutoff frequency in Hz for the torque and flux (current)
+/// target filters.
+pub(crate) const CURRENT_CUTOFF_MAX_HZ: u16 = 10_000;
 
 /// Compute Q3.29 biquad coefficients for a second-order Butterworth low-pass filter.
 ///
@@ -65,15 +70,19 @@ const CUTOFF_MAX_HZ: u16 = 6000;
 ///
 /// # Parameters
 ///
-/// - `cutoff_hz`: desired filter cutoff frequency in Hz, must be in `10..=6000`
+/// - `cutoff_hz`: desired filter cutoff frequency in Hz, must be in
+///   `10..=max_hz`
 /// - `pwm_maxcnt`: TMC4671 PWM_MAXCNT register value, must be `> 0`
+/// - `max_hz`: the caller-supplied ceiling for this filter target —
+///   [`MOTION_CUTOFF_MAX_HZ`] for velocity/position,
+///   [`CURRENT_CUTOFF_MAX_HZ`] for torque/flux
 ///
 /// # Returns
 ///
-/// `Some(BiquadCoeffs)` with Q3.29 register values, or `None` if either
+/// `Some(BiquadCoeffs)` with Q3.29 register values, or `None` if any
 /// argument is out of range.
-pub fn butterworth_lowpass(cutoff_hz: u16, pwm_maxcnt: u16) -> Option<BiquadCoeffs> {
-    if !(CUTOFF_MIN_HZ..=CUTOFF_MAX_HZ).contains(&cutoff_hz) {
+pub fn butterworth_lowpass(cutoff_hz: u16, pwm_maxcnt: u16, max_hz: u16) -> Option<BiquadCoeffs> {
+    if !(CUTOFF_MIN_HZ..=max_hz).contains(&cutoff_hz) {
         return None;
     }
     if pwm_maxcnt == 0 {
@@ -134,7 +143,7 @@ mod tests {
     /// 200 Hz cutoff at 25 kHz PWM (pwm_maxcnt = 3999 → T = 4000 * 10 ns = 40 µs).
     #[test]
     fn butterworth_200hz_at_25khz_pwm() {
-        let coeffs = butterworth_lowpass(200, 3999).expect("valid params");
+        let coeffs = butterworth_lowpass(200, 3999, CURRENT_CUTOFF_MAX_HZ).expect("valid params");
         assert_ne!(coeffs.b_0, 0, "b_0 must be non-zero");
         assert_ne!(coeffs.b_1, 0, "b_1 must be non-zero");
         assert_ne!(coeffs.b_2, 0, "b_2 must be non-zero");
@@ -147,33 +156,46 @@ mod tests {
 
     #[test]
     fn rejects_zero_cutoff() {
-        assert!(butterworth_lowpass(0, 3999).is_none());
+        assert!(butterworth_lowpass(0, 3999, CURRENT_CUTOFF_MAX_HZ).is_none());
     }
 
     #[test]
     fn rejects_cutoff_below_minimum() {
-        assert!(butterworth_lowpass(9, 3999).is_none());
+        assert!(butterworth_lowpass(9, 3999, CURRENT_CUTOFF_MAX_HZ).is_none());
     }
 
     #[test]
-    fn rejects_cutoff_above_maximum() {
-        assert!(butterworth_lowpass(6001, 3999).is_none());
+    fn rejects_cutoff_above_current_maximum() {
+        assert!(butterworth_lowpass(10_001, 3999, CURRENT_CUTOFF_MAX_HZ).is_none());
     }
 
     #[test]
-    fn allows_current_filter_cutoff_at_six_khz() {
-        assert!(butterworth_lowpass(6000, 3999).is_some());
+    fn allows_current_filter_cutoff_at_ten_khz() {
+        assert!(butterworth_lowpass(10_000, 3999, CURRENT_CUTOFF_MAX_HZ).is_some());
+    }
+
+    #[test]
+    fn allows_motion_filter_cutoff_at_one_khz() {
+        assert!(butterworth_lowpass(1000, 3999, MOTION_CUTOFF_MAX_HZ).is_some());
+    }
+
+    #[test]
+    fn motion_ceiling_rejects_cutoff_valid_for_current_ceiling() {
+        // 2000 Hz is a valid torque/flux cutoff but must stay rejected for
+        // velocity/position, which keep the 1000 Hz motion-filter ceiling.
+        assert!(butterworth_lowpass(2000, 3999, CURRENT_CUTOFF_MAX_HZ).is_some());
+        assert!(butterworth_lowpass(2000, 3999, MOTION_CUTOFF_MAX_HZ).is_none());
     }
 
     #[test]
     fn rejects_zero_pwm_maxcnt() {
-        assert!(butterworth_lowpass(200, 0).is_none());
+        assert!(butterworth_lowpass(200, 0, CURRENT_CUTOFF_MAX_HZ).is_none());
     }
 
     #[test]
     fn higher_cutoff_has_larger_b_coefficients() {
-        let low = butterworth_lowpass(50, 3999).expect("50 Hz valid");
-        let high = butterworth_lowpass(500, 3999).expect("500 Hz valid");
+        let low = butterworth_lowpass(50, 3999, CURRENT_CUTOFF_MAX_HZ).expect("50 Hz valid");
+        let high = butterworth_lowpass(500, 3999, CURRENT_CUTOFF_MAX_HZ).expect("500 Hz valid");
         assert!(
             high.b_0 > low.b_0,
             "higher cutoff should have larger b_0: 50 Hz={} 500 Hz={}",
@@ -184,7 +206,7 @@ mod tests {
 
     #[test]
     fn coefficients_are_within_q3_29_range() {
-        let coeffs = butterworth_lowpass(200, 3999).expect("valid params");
+        let coeffs = butterworth_lowpass(200, 3999, CURRENT_CUTOFF_MAX_HZ).expect("valid params");
         // a_2 is negated (-a2_z stored). a2_z is positive for a stable filter,
         // so the stored value should be negative.
         assert!(
