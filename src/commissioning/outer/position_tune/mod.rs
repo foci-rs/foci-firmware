@@ -22,7 +22,7 @@ use crate::autotune::{
 use crate::commissioning::OuterGainRollbackSnapshot;
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::outer::{
-    OuterPhase, OuterSafetyLimits, fail_outer, fail_outer_position_tune,
+    OuterMotionBudget, OuterPhase, OuterSafetyLimits, fail_outer, fail_outer_position_tune,
 };
 use crate::commissioning::schedule::next_grid_deadline;
 use crate::commissioning::stimulus::trapezoid::{LegPlan, StrokeRequest, plan_leg, plan_stroke};
@@ -437,29 +437,26 @@ async fn predict<B: CommissioningBackend>(
     Ok(())
 }
 
-/// Build the `StrokeRequest` a rung's leg is (re-)planned from at arm time:
-/// only the planned leg's own speed is carried over from `predict`, every
-/// other field is recomputed fresh from the still-unchanged budget and
-/// backend, exactly as `predict` computed it the first time.
-fn stroke_request<B: CommissioningBackend>(
-    leg: &LegPlan,
-    safety: &OuterSafetyLimits,
-    backend: &B,
-) -> Result<StrokeRequest, PositionTuneOutcome> {
-    let budget = safety.budget;
-    let steps_per_rev = 65_536
-        / backend
-            .configured_physical_step_width()
-            .filter(|width| *width > 0)
-            .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
-    Ok(StrokeRequest {
-        speed_mrev_s: leg.speed_mrev_s,
+/// Build the `StrokeRequest` a leg at `speed_mrev_s` is planned from: every
+/// field but the speed comes straight from `budget`, `steps_per_rev`, and
+/// `step_timer_hz`. Both this phase's own stroke arm and the dispatch-side
+/// duration envelope (`commission_dispatch::position_tune`) call this, so
+/// the disclosed worst-case/nominal durations and the actual stroke agree on
+/// the same request shape.
+pub(crate) fn stroke_request(
+    speed_mrev_s: u32,
+    budget: &OuterMotionBudget,
+    steps_per_rev: u32,
+    step_timer_hz: u32,
+) -> StrokeRequest {
+    StrokeRequest {
+        speed_mrev_s,
         accel_mrev_s2: budget.max_accel_mrev_s2,
         excursion_mrev: budget.max_stroke_travel_mrev / 2,
         steps_per_rev,
-        step_timer_hz: backend.stimulus_step_timer_hz(),
+        step_timer_hz,
         min_cruise_us: MIN_CRUISE_US,
-    })
+    }
 }
 
 /// Install one rung's position P, plan its stroke, and queue it on the
@@ -499,7 +496,17 @@ async fn arm_stroke<B: CommissioningBackend>(
         .map_err(|_| PositionTuneOutcome::StimulusRejected)?;
     backend.set_stimulus_feedforward(matches!(kind, StrokeKind::Motion));
 
-    let request = stroke_request(&leg, safety, backend)?;
+    let steps_per_rev = 65_536
+        / backend
+            .configured_physical_step_width()
+            .filter(|width| *width > 0)
+            .ok_or(PositionTuneOutcome::ConfigurationInvalid)?;
+    let request = stroke_request(
+        leg.speed_mrev_s,
+        &safety.budget,
+        steps_per_rev,
+        backend.stimulus_step_timer_hz(),
+    );
     let profile = plan_stroke(&request).map_err(|_| PositionTuneOutcome::StimulusRejected)?;
     if profile.segments.len() > backend.stimulus_queue_free() {
         defmt::warn!(

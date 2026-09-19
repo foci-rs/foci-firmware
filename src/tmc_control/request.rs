@@ -157,6 +157,16 @@ where
     fn default_current_filter_hz(&self) -> u16;
     /// Return the configured PWM frequency that defines the Stage-C I ladder.
     fn pwm_freq_hz(&self) -> u32;
+    /// Return the step-queue stimulus timer frequency, in Hz.
+    ///
+    /// Mirrors `CommissionBackendHooks::commission_step_timer_hz`'s own
+    /// "0 means this board ships no step stimulus" convention: a board that
+    /// does not override this default reports an unplannable stroke, so the
+    /// position-P sweep's disclosed duration falls back to `u32::MAX` rather
+    /// than a false, understated envelope.
+    fn stimulus_step_timer_hz(&self) -> u32 {
+        0
+    }
     /// Return the board-verified velocity-limit evidence capability.
     fn velocity_limit_evidence_capability(&self) -> u32;
     /// Return whether the selected channel's physical step queue is empty.
@@ -1071,6 +1081,8 @@ where
         negative_position_headroom_mrev,
         positive_position_headroom_mrev,
         max_duration_ms,
+        homing_speed_mrev_s,
+        max_accel_mrev_s2,
         ..
     } = fields;
     let current_limit = board
@@ -1323,14 +1335,42 @@ where
             // Disclose the sweep's worst-case duration before any motion
             // so the host arms its extended run timeout: the half-octave
             // rung ladder runs far longer than the host's 5 s initial plan
-            // window, which caps the run when no workflow plan arrives.
+            // window, which caps the run when no workflow plan arrives. The
+            // per-rung cost is planned from the same budget and step-queue
+            // configuration the phase itself arms its strokes from.
+            let position_tune_budget = crate::commissioning::outer::OuterMotionBudget {
+                requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s,
+                requested_velocity_source,
+                max_stroke_travel_mrev,
+                settle_travel_reserve_mrev,
+                negative_position_headroom_mrev,
+                positive_position_headroom_mrev,
+                max_duration_ms,
+                homing_speed_mrev_s,
+                max_accel_mrev_s2,
+            };
+            let position_tune_steps_per_rev = board
+                .tmc_state()
+                .physical_step_width()
+                .filter(|width| *width > 0)
+                .map_or(0, |width| 65_536 / width);
+            let position_tune_step_timer_hz = board.stimulus_step_timer_hz();
             let workflow = crate::commissioning::outer::velocity::workflow_plan::
                 CommissioningWorkflowPlan::new_position_tune(
                     run_sequence,
                     crate::commission_dispatch::position_tune::
-                        position_tune_nominal_duration_ms(),
+                        position_tune_nominal_duration_ms(
+                            &position_tune_budget,
+                            position_tune_steps_per_rev,
+                            position_tune_step_timer_hz,
+                        ),
                     crate::commission_dispatch::position_tune::
-                        position_tune_worst_case_duration_ms(),
+                        position_tune_worst_case_duration_ms(
+                            &position_tune_budget,
+                            position_tune_steps_per_rev,
+                            position_tune_step_timer_hz,
+                        ),
                 )
                 .expect("position tune workflow envelope is always valid");
             board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
@@ -1849,6 +1889,10 @@ mod tests {
 
         fn pwm_freq_hz(&self) -> u32 {
             25_000
+        }
+
+        fn stimulus_step_timer_hz(&self) -> u32 {
+            260_000_000
         }
 
         fn velocity_limit_evidence_capability(&self) -> u32 {
@@ -3062,13 +3106,42 @@ mod tests {
             crate::commissioning::outer::velocity::workflow_plan::VelocityAutotuneWorkflowKind::
                 PositionTune
         );
+        // Same budget and step-queue configuration `tune_request_with_action`
+        // and `RecordingBoard` feed the dispatch itself.
+        let expected_budget = crate::commissioning::outer::OuterMotionBudget {
+            requested_velocity_mrev_s: 6_000,
+            machine_velocity_ceiling_mrev_s: 10_000,
+            requested_velocity_source:
+                crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource::
+                    Defaulted,
+            max_stroke_travel_mrev: 2_500,
+            settle_travel_reserve_mrev: 250,
+            negative_position_headroom_mrev: 7_025,
+            positive_position_headroom_mrev: 7_025,
+            max_duration_ms: 3_000,
+            homing_speed_mrev_s: 4_375,
+            max_accel_mrev_s2: 200_000,
+        };
+        let expected_steps_per_rev = 65_536
+            / tmc_channel0()
+                .physical_step_width()
+                .expect("configure_motion_scale set a physical step width");
+        let expected_step_timer_hz = board.stimulus_step_timer_hz();
         assert_eq!(
             workflow.maximum_workflow_ms,
-            crate::commission_dispatch::position_tune::position_tune_worst_case_duration_ms()
+            crate::commission_dispatch::position_tune::position_tune_worst_case_duration_ms(
+                &expected_budget,
+                expected_steps_per_rev,
+                expected_step_timer_hz,
+            )
         );
         assert_eq!(
             workflow.nominal_workflow_ms,
-            crate::commission_dispatch::position_tune::position_tune_nominal_duration_ms()
+            crate::commission_dispatch::position_tune::position_tune_nominal_duration_ms(
+                &expected_budget,
+                expected_steps_per_rev,
+                expected_step_timer_hz,
+            )
         );
         assert!(workflow.nominal_workflow_ms <= workflow.maximum_workflow_ms);
         // Exactly one workflow plan is emitted.
