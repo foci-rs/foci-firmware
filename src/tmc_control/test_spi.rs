@@ -1,7 +1,7 @@
 //! Shared mock SPI and commissioning-backend test support for `tmc_control`.
 
 use core::convert::Infallible;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU32, AtomicU64};
 
 use embedded_hal_async::spi::{ErrorKind, ErrorType, Operation, SpiDevice};
 
@@ -212,7 +212,7 @@ impl embedded_hal::digital::OutputPin for TestPin {
 pub(crate) static ELAPSED_US: AtomicU64 = AtomicU64::new(0);
 
 /// Free-running cycle counter the test hooks report; advances on every read.
-pub(crate) static CYCLE_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub(crate) static CYCLE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
     pwm_maxcnt: 3999,
