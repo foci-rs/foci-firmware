@@ -578,9 +578,6 @@ impl TmcControlRuntime {
     /// latch plus `drive_restore_cancel`, which runs the machine's
     /// `force_safe_terminal` (safe-state register sequence, disarm, stop
     /// post-action) and retires the engine in one step.
-    ///
-    /// A later task wires this into the retry-budget-exhausted path.
-    #[allow(dead_code)]
     pub(crate) async fn force_restore_safe_state_incomplete<B>(
         &mut self,
         backend: &mut B,
@@ -732,11 +729,23 @@ impl TmcControlRuntime {
             self.restore_machine.is_none(),
             "a terminal restore is already in flight on this channel"
         );
-        self.restore_machine = Some(TerminalRestoreMachine::start_staged(
-            result,
-            self.channel,
-            config.tmc.pwm_maxcnt,
-        ));
+        // Seed the pre-force status with the terminal's own cause, so a
+        // safe-state-incomplete escape that reads it before forcing sees the
+        // fault that put the channel on the restore path, not the machine's
+        // Shutdown default. `drive_restore_cancel` still overwrites this with
+        // `SafeStateIncomplete` immediately before the forced terminal.
+        let status_error = match &result {
+            CommissionTerminal::InnerFailed(error) | CommissionTerminal::OuterFailed(error) => {
+                Some(*error)
+            }
+            _ => None,
+        };
+        let mut machine =
+            TerminalRestoreMachine::start_staged(result, self.channel, config.tmc.pwm_maxcnt);
+        if let Some(error) = status_error {
+            machine.set_status_error(error);
+        }
+        self.restore_machine = Some(machine);
     }
 
     /// Returns true while a terminal restore still owns this channel.

@@ -159,6 +159,7 @@ pub struct ChannelDriver {
     reset_for_fast: bool,
     reset_for_maintenance: bool,
     last_command_velocity_reference: i32,
+    stimulus_restore_attempts: u8,
     /// Sequence number for commission trace engine events.
     pub commission_trace_engine_seq: u32,
     /// Homing state the last maintenance unit acted on, for tests only.
@@ -174,6 +175,10 @@ pub const PID_LIMIT_MASK: u32 = 0x0000_FFFF;
 /// `STATUS_FLAGS` PWM saturation bits.
 pub const PWM_LIMIT_MASK: u32 = (1 << 24) | (1 << 25);
 
+/// Consecutive restore drives a stimulus's feedforward surfaces may stay
+/// unrestored before the terminal degrades to safe-state-incomplete.
+pub(crate) const STIMULUS_RESTORE_ATTEMPT_LIMIT: u8 = 8;
+
 impl ChannelDriver {
     /// Create a driver for `channel`, starting at the first bootstrap step.
     pub const fn new(channel: u8) -> Self {
@@ -184,6 +189,7 @@ impl ChannelDriver {
             reset_for_fast: false,
             reset_for_maintenance: false,
             last_command_velocity_reference: 0,
+            stimulus_restore_attempts: 0,
             commission_trace_engine_seq: 0,
             #[cfg(test)]
             last_maintenance_homing_active: false,
@@ -496,6 +502,50 @@ impl ChannelDriver {
             crate::state::stepper::stepper_channel(self.channel()).expect("validated TMC channel");
 
         if self.runtime.is_restore_pending() {
+            tmc_state.commission_stimulus_active.store(false, Relaxed);
+            if self.runtime.feedforward_restoration_pending() {
+                self.apply_stimulus_ticks(backend, &ctx).await;
+                if self.runtime.feedforward_restoration_pending() {
+                    self.stimulus_restore_attempts =
+                        self.stimulus_restore_attempts.saturating_add(1);
+                    if self.stimulus_restore_attempts < STIMULUS_RESTORE_ATTEMPT_LIMIT {
+                        return UnitOutcome::Commission {
+                            event: None,
+                            next: CommissionNext::PollNow,
+                        };
+                    }
+                    defmt::error!(
+                        "stimulus surfaces unrestored after retry budget; forcing safe terminal"
+                    );
+                    self.stimulus_restore_attempts = 0;
+                    return match self
+                        .runtime
+                        .force_restore_safe_state_incomplete(backend, tmc_state, stepper)
+                        .await
+                    {
+                        Some(crate::commission_dispatch::CommissionOutcome::Terminal {
+                            reply,
+                            actions,
+                        }) => {
+                            self.poll_driver = CommissionPollDriver::new();
+                            #[cfg(feature = "trace")]
+                            {
+                                self.commission_trace_phase = None;
+                            }
+                            UnitOutcome::CommissionTerminal { reply, actions }
+                        }
+                        other => {
+                            defmt::error!("forced safe terminal produced a nonterminal outcome");
+                            let _ = other;
+                            UnitOutcome::Commission {
+                                event: None,
+                                next: CommissionNext::PollNow,
+                            }
+                        }
+                    };
+                }
+            }
+            self.stimulus_restore_attempts = 0;
             return match self
                 .runtime
                 .poll_commissioning_terminal(backend, &mut ctx.retention, tmc_state, stepper)
@@ -529,6 +579,11 @@ impl ChannelDriver {
         let Some(mut poll) = self.runtime.step_commissioning_scheduled(backend).await else {
             return UnitOutcome::Idle;
         };
+        if tmc_state.commission_stimulus_active.load(Relaxed)
+            || self.runtime.feedforward_restoration_pending()
+        {
+            self.apply_stimulus_ticks(backend, &ctx).await;
+        }
         let driver_action = match self.poll_driver.classify(&poll, ctx.now_us) {
             Ok(action) => action,
             Err(error) => {
@@ -583,6 +638,48 @@ impl ChannelDriver {
         let (outcome, _phase_changed) = commission_outcome(action, driver_action);
         outcome
     }
+
+    /// Run the feedforward and phase-advance ticks a commissioning stimulus
+    /// depends on. The scheduler hands a Commissioning-mode channel neither
+    /// the fast nor the maintenance unit, so while a phase drives the step
+    /// queue the commission unit has to carry those ticks itself, at the
+    /// engine's poll cadence, and keep carrying them after the opt-in
+    /// clears until every applied surface is restored.
+    async fn apply_stimulus_ticks<B>(&mut self, backend: &mut B, ctx: &DriveCtx<'_>)
+    where
+        B: CommissioningBackend + CommissionTmcSpiAccess + CommissionTmcStateAccess,
+    {
+        let tmc_state = backend.tmc_state();
+        let refs = self.refs(tmc_state);
+        let reset = self.take_reset(tmc_state, true);
+        self.last_command_velocity_reference =
+            self.runtime
+                .command_velocity_reference(refs, ctx.homing_active, reset);
+        if self
+            .runtime
+            .apply_feedforward_tick(
+                backend.tmc_spi(),
+                refs,
+                ctx.config,
+                ctx.homing_active,
+                reset,
+                true,
+            )
+            .await
+            .is_err()
+        {
+            defmt::warn!("stimulus feedforward tick failed");
+        }
+        self.runtime
+            .apply_phase_and_position_tick(
+                backend.tmc_spi(),
+                refs,
+                self.last_command_velocity_reference,
+                ctx.homing_active,
+                reset,
+            )
+            .await;
+    }
 }
 
 /// Map a nonterminal or terminal tick action plus the poll driver's decision
@@ -623,13 +720,18 @@ pub fn commission_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commission_dispatch::CommissionRetention;
+    use crate::autotune::CommissionError;
+    use crate::commission_dispatch::test_support::current_limit;
+    use crate::commission_dispatch::{CommissionRetention, StepperPostAction};
     use crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot;
     use crate::tmc_control::TmcControlConfig;
     use crate::tmc_control::scheduler::{ChannelMode, Unit, UnitClass};
     use crate::tmc_control::test_spi::{RuntimeMockSpi, TEST_CONFIG, TestBackend, TestPin};
     use foci_firmware_macros::fixture_test;
-    use foci_tmc4671::registers::{STATUS_FLAGS, STATUS_MASK};
+    use foci_tmc4671::registers::{
+        ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_TORQUE_FLUX_OFFSET, PID_VELOCITY_OFFSET, STATUS_FLAGS,
+        STATUS_MASK,
+    };
     use foci_tmc4671::spi::Tmc4671Spi;
 
     const CHIP_ID: u32 = 0x3436_3731;
@@ -1367,6 +1469,283 @@ mod tests {
             ChannelMode::Commissioning | ChannelMode::Restore
         ));
         assert!(rig.spi().writes.len() >= writes_before);
+    }
+
+    fn stimulus_rig() -> Rig {
+        let mut rig = ready_rig(RuntimeMockSpi::default().echo_writes());
+        rig.driver.runtime.set_commission_engine(
+            crate::commission_dispatch::test_support::breakaway_campaign_engine(),
+        );
+        rig.driver.runtime.set_motor_enabled_for_test(true);
+        rig.driver
+            .runtime
+            .set_planner_velocity_scale_for_test(84_000_000);
+        assert_eq!(rig.driver.mode(), ChannelMode::Commissioning);
+        rig
+    }
+
+    fn clear_stimulus_atomics() {
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        let stepper_state = crate::state::stepper::stepper_channel0();
+        tmc_state.commission_stimulus_active.store(false, Relaxed);
+        tmc_state.velocity_feedforward.store(false, Relaxed);
+        tmc_state.accel_feedforward.store(false, Relaxed);
+        stepper_state.interval.store(0, Relaxed);
+        stepper_state.interval_add.store(0, Relaxed);
+    }
+
+    #[fixture_test]
+    async fn commission_unit_runs_the_feedforward_tick_while_a_stimulus_is_active() {
+        let mut rig = stimulus_rig();
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        let stepper_state = crate::state::stepper::stepper_channel0();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.direction.store(false, Relaxed);
+        tmc_state.commission_stimulus_active.store(true, Relaxed);
+
+        let _ = rig.drive(UnitClass::Commission).await;
+
+        let expected = crate::tmc::compute_planner_command_rpm_reference(
+            crate::motion_scale::PlannerRpmScale::from_reduced(84_000_000, 1),
+            2_800,
+            false,
+        ) as u32;
+        assert!(
+            rig.spi()
+                .writes
+                .iter()
+                .any(|(addr, value)| *addr == PID_VELOCITY_OFFSET.addr() && *value == expected),
+            "the commission unit must apply the velocity feedforward offset"
+        );
+        assert!(!tmc_state.feedforward_surfaces_idle.load(Relaxed));
+        clear_stimulus_atomics();
+    }
+
+    #[fixture_test]
+    async fn commission_unit_keeps_ticking_after_the_opt_in_clears_until_every_surface_is_restored()
+    {
+        let mut rig = stimulus_rig();
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        let stepper_state = crate::state::stepper::stepper_channel0();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state.accel_feedforward.store(true, Relaxed);
+        tmc_state
+            .accel_feedforward_accel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state
+            .accel_feedforward_decel_gain_permille
+            .store(1_000, Relaxed);
+        tmc_state.store_current_limit(current_limit(10_000), Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        stepper_state.interval_add.store(-10, Relaxed);
+        tmc_state.commission_stimulus_active.store(true, Relaxed);
+
+        let _ = rig.drive(UnitClass::Commission).await;
+        assert!(rig.driver.runtime.feedforward_restoration_pending());
+        assert!(
+            rig.spi()
+                .writes
+                .iter()
+                .any(|(addr, _)| *addr == PID_TORQUE_FLUX_OFFSET.addr())
+        );
+
+        tmc_state.commission_stimulus_active.store(false, Relaxed);
+        stepper_state.interval.store(0, Relaxed);
+        stepper_state.interval_add.store(0, Relaxed);
+        let writes_before = rig.spi().writes.len();
+
+        let _ = rig.drive(UnitClass::Commission).await;
+
+        let tail = &rig.spi().writes[writes_before..];
+        assert!(tail.contains(&(PID_VELOCITY_OFFSET.addr(), 0)));
+        assert!(tail.contains(&(PID_TORQUE_FLUX_OFFSET.addr(), 0)));
+        assert!(!rig.driver.runtime.feedforward_restoration_pending());
+        assert!(tmc_state.feedforward_surfaces_idle.load(Relaxed));
+
+        let writes_after = rig.spi().writes.len();
+        let _ = rig.drive(UnitClass::Commission).await;
+        assert!(
+            !rig.spi().writes[writes_after..]
+                .iter()
+                .any(|(addr, _)| *addr == PID_VELOCITY_OFFSET.addr()
+                    || *addr == PID_TORQUE_FLUX_OFFSET.addr()),
+            "once restored, the commission unit stops touching the offsets"
+        );
+        clear_stimulus_atomics();
+    }
+
+    fn terminal_rig(spi: RuntimeMockSpi) -> Rig {
+        use crate::commissioning::schedule::CommissionTerminal;
+        let mut rig = ready_rig(spi);
+        rig.driver
+            .runtime
+            .set_commission_engine(crate::commissioning::CommissioningEngine::new_calibrate(0));
+        rig.driver.runtime.set_motor_enabled_for_test(true);
+        rig.driver
+            .runtime
+            .set_planner_velocity_scale_for_test(84_000_000);
+        rig.driver.runtime.begin_commissioning_terminal(
+            CommissionTerminal::InnerFailed(crate::autotune::CommissionError::Spi),
+            &rig.config,
+        );
+        assert_eq!(rig.driver.mode(), ChannelMode::Restore);
+        rig
+    }
+
+    #[fixture_test]
+    async fn restore_branch_clears_the_opt_in_and_restores_before_polling_the_machine() {
+        let mut rig = terminal_rig(RuntimeMockSpi::default().echo_writes());
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        tmc_state.commission_stimulus_active.store(true, Relaxed);
+        rig.driver.runtime.set_feedforward_was_active(true);
+        rig.driver
+            .runtime
+            .set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+        let writes_before = rig.spi().writes.len();
+
+        let outcome = rig.drive(UnitClass::Restore).await;
+
+        assert!(matches!(
+            outcome,
+            UnitOutcome::Commission {
+                event: None,
+                next: CommissionNext::PollNow
+            }
+        ));
+        assert!(!tmc_state.commission_stimulus_active.load(Relaxed));
+        let tail = &rig.spi().writes[writes_before..];
+        assert!(tail.contains(&(PID_VELOCITY_OFFSET.addr(), 0)));
+        assert!(tail.contains(&(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr(), 0x1111_2222)));
+        assert!(!rig.driver.runtime.feedforward_restoration_pending());
+        assert!(tmc_state.feedforward_surfaces_idle.load(Relaxed));
+        assert!(
+            rig.driver.runtime.is_restore_pending(),
+            "machine not polled yet"
+        );
+        assert_eq!(
+            rig.driver.runtime.restore_status_error_for_test(),
+            Some(CommissionError::Spi)
+        );
+        clear_stimulus_atomics();
+    }
+
+    #[fixture_test]
+    async fn restore_branch_holds_the_terminal_while_the_abn_restore_keeps_failing() {
+        let mut rig = terminal_rig(
+            RuntimeMockSpi::default()
+                .echo_writes()
+                .fail_writes_to(ABN_DECODER_PHI_E_PHI_M_OFFSET.addr()),
+        );
+        rig.driver
+            .runtime
+            .set_phase_advance_for_test(true, 0x1111_2222, 0x3333_4444);
+
+        for attempt in 1..STIMULUS_RESTORE_ATTEMPT_LIMIT {
+            let outcome = rig.drive(UnitClass::Restore).await;
+            assert!(
+                matches!(
+                    outcome,
+                    UnitOutcome::Commission {
+                        event: None,
+                        next: CommissionNext::PollNow
+                    }
+                ),
+                "attempt {attempt}: the machine must not be polled while a surface is unrestored"
+            );
+            assert!(rig.driver.runtime.feedforward_restoration_pending());
+            assert!(rig.driver.runtime.is_restore_pending());
+            assert_eq!(
+                rig.driver.runtime.restore_status_error_for_test(),
+                Some(CommissionError::Spi)
+            );
+        }
+        assert!(
+            rig.spi()
+                .write_attempts
+                .iter()
+                .filter(|(addr, _)| *addr == ABN_DECODER_PHI_E_PHI_M_OFFSET.addr())
+                .count()
+                >= usize::from(STIMULUS_RESTORE_ATTEMPT_LIMIT - 1),
+            "every restore drive retried the ABN base write"
+        );
+
+        let outcome = rig.drive(UnitClass::Restore).await;
+
+        let UnitOutcome::CommissionTerminal { reply, actions } = outcome else {
+            panic!("the retry budget must force a terminal");
+        };
+        assert!(
+            matches!(
+                reply,
+                ReplyPayload::CalibrateResult { status, .. }
+                    if status == crate::calibration::CalibrationError::SafeStateIncomplete
+                        .status_code()
+            ),
+            "the forced terminal reports safe-state-incomplete"
+        );
+        assert_eq!(actions.stepper, StepperPostAction::Stop);
+        assert!(!rig.driver.runtime.is_motor_enabled());
+        assert!(!crate::state::tmc::tmc_channel0().motor_armed.load(Relaxed));
+        assert!(!rig.driver.runtime.is_restore_pending());
+        assert!(!rig.driver.runtime.is_commission_active());
+        assert_eq!(rig.driver.mode(), ChannelMode::Ready);
+        assert!(
+            !crate::state::tmc::tmc_channel0()
+                .feedforward_surfaces_idle
+                .load(Relaxed)
+        );
+        clear_stimulus_atomics();
+    }
+
+    #[fixture_test]
+    async fn commission_unit_leaves_feedforward_alone_without_a_stimulus() {
+        let mut rig = stimulus_rig();
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        let stepper_state = crate::state::stepper::stepper_channel0();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+
+        let _ = rig.drive(UnitClass::Commission).await;
+
+        assert!(
+            !rig.spi()
+                .writes
+                .iter()
+                .any(|(addr, _)| *addr == PID_VELOCITY_OFFSET.addr()),
+            "no stimulus, no feedforward write from the commission unit"
+        );
+        clear_stimulus_atomics();
+    }
+
+    #[fixture_test]
+    async fn commission_unit_suppresses_feedforward_terms_while_homing_is_active() {
+        let mut rig = stimulus_rig();
+        let tmc_state = crate::state::tmc::tmc_channel0();
+        let stepper_state = crate::state::stepper::stepper_channel0();
+        tmc_state.velocity_feedforward.store(true, Relaxed);
+        tmc_state
+            .velocity_feedforward_gain_permille
+            .store(1_000, Relaxed);
+        stepper_state.interval.store(2_800, Relaxed);
+        tmc_state.commission_stimulus_active.store(true, Relaxed);
+
+        let _ = rig.drive_with_homing(UnitClass::Commission, true, 1).await;
+
+        assert!(
+            !rig.spi()
+                .writes
+                .iter()
+                .any(|(addr, value)| *addr == PID_VELOCITY_OFFSET.addr() && *value != 0),
+            "homing suppresses the velocity offset exactly as production does"
+        );
+        clear_stimulus_atomics();
     }
 
     #[fixture_test]
