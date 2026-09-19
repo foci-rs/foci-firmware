@@ -2,13 +2,11 @@
 
 /// Ramp runs per acceleration or deceleration phase. Boundaries sit at
 /// equal velocity increments so the first run, where the interval changes
-/// fastest, stays within the `i16` per-step `add`. 32 rather than the
-/// original 16: at 16, the ramp's total emitted duration (the sum of the
-/// one-sided ceiling rounding across all partitions) was 5.1% above the
-/// analytic `speed / accel` estimate on the project's own reference
-/// profile (`live_rig_fast`), just over the 5% bound
-/// `profile_timing_is_measured_from_the_generated_runs` holds it to; 32
-/// brings that to 1.5%, comfortably inside the bound.
+/// fastest, stays within the `i16` per-step `add`; raising this value
+/// tightens the ramp's fit to the analytic `speed / accel` estimate,
+/// bounded by `profile_timing_is_measured_from_the_generated_runs`.
+/// `MAX_STROKE_SEGMENTS` and `RampRuns`' capacity scale with it, so raise
+/// it deliberately rather than for convenience.
 #[allow(dead_code)]
 pub(crate) const RAMP_SEGMENTS: u64 = 32;
 
@@ -431,6 +429,19 @@ fn ceil_div_toward_zero(numerator: i128, denominator: i128) -> i128 {
 /// all — nothing after its one step would ever apply it — so it always
 /// takes `target` directly, clamped to never exceed the incoming anchor.
 ///
+/// The very first partition (`runs.is_empty()`) is a second special case:
+/// its incoming anchor is the seed `clock / sqrt(2 * accel_steps)`, the
+/// exact value `u(1)` demands (`ramp_interval` clamps step 0 to step 1),
+/// so it is a genuine emitted step, not merely a boundary the general
+/// `last_emitted + add` rule was derived for. `u(s)` is locally concave,
+/// not convex, across s = 0..2 (the clamp), which is exactly why the
+/// general rule's "next anchor stays on the slow side of a convex chord"
+/// argument does not hold here, and applying it anyway understates the
+/// first partition's own start. The first partition instead declares its
+/// run directly at the seed (not `seed + add`) with `add` rounded against
+/// `count - 1` (not `count`), so its own last step still lands on
+/// `target`.
+///
 /// Representation is never a reason to refuse a speed: when the ideal
 /// per-step change does not fit `i16` (only the first few steps from rest,
 /// where the interval halves within a step or two), the partition is
@@ -457,13 +468,20 @@ fn push_ramp_partition(
         .map_err(|_| StrokePlanError::SegmentOverflow)?;
         return Ok(value);
     }
-    let add = ceil_div_toward_zero((target - last_emitted).min(0), i128::from(count));
+    let is_first = runs.is_empty();
+    let divisor = if is_first { count - 1 } else { count };
+    let add = ceil_div_toward_zero((target - last_emitted).min(0), i128::from(divisor));
     if let Ok(add16) = i16::try_from(add) {
-        let run_start = last_emitted + add;
+        let run_start = if is_first {
+            last_emitted
+        } else {
+            last_emitted + add
+        };
         push_ramp_run(runs, run_start, count, add16)?;
-        // The run's own last step, not `push_ramp_run`'s returned
-        // continuation (one `add` further along the same sequence).
-        return Ok(last_emitted + add * i128::from(count));
+        // The run's own last step (index `count - 1` from its declared
+        // start), not `push_ramp_run`'s returned continuation (one more
+        // `add` further along the same sequence).
+        return Ok(run_start + add * i128::from(count - 1));
     }
     let mut prev = last_emitted;
     for step in 0..count {
@@ -957,8 +975,24 @@ mod tests {
     /// A boundary is continuous when the next run's first interval follows
     /// either the previous run's slope or its own: within one run the
     /// schedule keeps its `add`; where the slope changes (join into cruise,
-    /// cruise into the mirrored deceleration) the step is the new run's.
+    /// cruise into the mirrored deceleration) the step is the new run's. A
+    /// third case covers `push_ramp_partition`'s i16-overflow fallback: a
+    /// run of a single step (`count == 1`, `add == 0`) carries no slope to
+    /// continue -- its own value is independently snapped to the ideal
+    /// curve (or, for the deceleration mirror, to the accel run it
+    /// mirrors), not derived by extrapolating from its neighbor. The
+    /// `next_interval`/`last_emitted` formulas both reduce to requiring
+    /// `next.interval == prev.interval` when both are such singletons,
+    /// which is wrong in either direction (accel: decreasing; the
+    /// deceleration mirror, built by iterating the same runs in reverse:
+    /// increasing). Two adjacent singletons are therefore always
+    /// continuous; `deceleration_runs_mirror_the_emitted_acceleration_runs`
+    /// separately verifies each one's actual value against its mirrored
+    /// counterpart.
     fn continuous(prev: &StrokeSegment, next: &StrokeSegment) -> bool {
+        if prev.count == 1 && prev.add == 0 && next.count == 1 && next.add == 0 {
+            return true;
+        }
         let first = i64::from(next.interval);
         first == next_interval(prev) || first == last_emitted(prev) + i64::from(next.add)
     }
@@ -1223,38 +1257,51 @@ mod tests {
 
     #[test]
     fn every_ramp_step_stays_at_or_above_the_ideal_curve() {
-        let request = live_rig_fast();
-        let profile = plan_stroke(&request).unwrap();
-        let (accel, _, _) = forward_slices(&profile);
-        let steps = simulate(&accel);
-        let accel_steps =
-            u64::from(request.accel_mrev_s2) * u64::from(request.steps_per_rev) / 1_000;
-        let clock = u64::from(request.step_timer_hz);
         // Checking only run *ends* (as the test above does) missed a real
-        // bug: a run's own last step can land on target while the value
-        // carried to the *next* run's start overshoots past it, to the
-        // fast side, for a whole run in between. Check every single step
-        // of the true ramp (not the join's extra steps beyond
-        // `ramp_steps`, where the sqrt curve no longer applies once the
-        // profile has capped at cruise speed) against the ideal curve, one
-        // tick of rounding slack. Step 1 is exempted: the first
-        // partition's own declared start is deliberately one `add` below
-        // the seed `clock / sqrt(2 * accel_steps)` (see
-        // `push_ramp_partition`'s doc comment) so its *last* step lands on
-        // target -- a fixed, single-step artifact at the ramp's boundary,
-        // not an accumulating error, and already covered by the run-end
-        // test above (whose first run end is well past step 1).
-        let ramp_steps = u64::from(profile.leg.ramp_steps);
-        for (index, (_, interval)) in steps.iter().enumerate() {
-            let step = index as u64 + 1;
-            if step == 1 || step > ramp_steps {
-                continue;
+        // bug once already: a run's own last step can land on target
+        // while the value carried to the *next* run's start overshoots
+        // past it, to the fast side, for a whole run in between. Check
+        // every single step against the ideal curve, one tick of
+        // rounding slack -- including the join's steps beyond the
+        // analytic ramp length (`accel` has no separate marker for where
+        // the join starts, and the join also happens to stay on the slow
+        // side: it walks down from the ramp's last step to the cruise
+        // interval by single ticks, and never undercuts the curve's own
+        // continued extrapolation on any profile this loop exercises).
+        // No exemptions: `push_ramp_partition` special-cases its first
+        // partition (declared at the seed itself, not `seed + add`)
+        // specifically so this holds for every step, including the
+        // first.
+        for request in [
+            live_rig_fast(),
+            StrokeRequest {
+                excursion_mrev: 300,
+                ..live_rig_fast()
+            },
+            StrokeRequest {
+                excursion_mrev: 2,
+                ..live_rig_fast()
+            },
+            StrokeRequest {
+                excursion_mrev: 60,
+                speed_mrev_s: 2_000,
+                ..live_rig_fast()
+            },
+        ] {
+            let profile = plan_stroke(&request).unwrap();
+            let (accel, _, _) = forward_slices(&profile);
+            let steps = simulate(&accel);
+            let accel_steps =
+                u64::from(request.accel_mrev_s2) * u64::from(request.steps_per_rev) / 1_000;
+            let clock = u64::from(request.step_timer_hz);
+            for (index, (_, interval)) in steps.iter().enumerate() {
+                let step = index as u64 + 1;
+                let ideal = clock / (2 * accel_steps * step).isqrt().max(1);
+                assert!(
+                    *interval + 1 >= ideal as i64,
+                    "{request:?}: step {step}: emitted {interval} ticks is faster than ideal {ideal} ticks"
+                );
             }
-            let ideal = clock / (2 * accel_steps * step).isqrt().max(1);
-            assert!(
-                *interval + 1 >= ideal as i64,
-                "step {step}: emitted {interval} ticks is faster than ideal {ideal} ticks"
-            );
         }
     }
 
