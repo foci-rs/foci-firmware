@@ -1106,9 +1106,9 @@ impl StepperPerfCounterState {
 /// callers may observe fields from different instants while P3 updates them.
 /// Every field except `total_irq_cycles`/`total_dispatch_cycles` avoids locks
 /// or critical sections entirely; those two are written every TIM5 activation
-/// and read as a coherent lo/hi pair via a short critical section
-/// (`read_split_u32`) — see its doc comment for why a retry-based read is not
-/// sufficient for a value written this frequently.
+/// and read coherently in `snapshot()` via a single critical section spanning
+/// all four lo/hi loads — see `add_split_u32`'s doc comment for why a
+/// retry-based read is not sufficient for a value written this frequently.
 pub struct StepperPerfCounters<const CPU_CYCLES_PER_US: u32, const CLOCK_TICKS_PER_US: u32> {
     counters: StepperPerfCounterState,
 }
@@ -1321,12 +1321,22 @@ impl<const CPU_CYCLES_PER_US: u32, const CLOCK_TICKS_PER_US: u32>
         build_trace_enabled: bool,
     ) -> StepperPerfSnapshot {
         let counters = &self.counters;
-        let total_irq_cycles =
-            read_split_u32(&counters.total_irq_cycles_lo, &counters.total_irq_cycles_hi);
-        let total_dispatch_cycles = read_split_u32(
-            &counters.total_dispatch_cycles_lo,
-            &counters.total_dispatch_cycles_hi,
-        );
+        // Both pairs must come from one critical section, not two: a P2/P3
+        // `record_tim5_irq` write landing between two independent sections
+        // would torn-read irq cycles from before an activation against
+        // dispatch cycles from after it (or vice versa).
+        let (total_irq_cycles, total_dispatch_cycles) = critical_section::with(|_| {
+            (
+                (
+                    counters.total_irq_cycles_lo.load(Relaxed),
+                    counters.total_irq_cycles_hi.load(Relaxed),
+                ),
+                (
+                    counters.total_dispatch_cycles_lo.load(Relaxed),
+                    counters.total_dispatch_cycles_hi.load(Relaxed),
+                ),
+            )
+        });
         let snapshot = StepperPerfSnapshot {
             channel,
             sample_count: counters.sample_count.load(Relaxed),
@@ -1469,22 +1479,16 @@ fn record_max_with_site(max: &AtomicU32, site: &AtomicU32, value: u32, site_code
 /// Add `delta` to a wrap-safe split-`u32` cumulative counter, carrying into
 /// `hi` on `lo` overflow. `record_tim5_irq` is this counter's sole writer
 /// (one TIM5 activation at a time), so this needs no synchronization beyond
-/// the atomics themselves — see `read_split_u32` for the reader-side
-/// coherence requirement this single-writer property does not provide.
+/// the atomics themselves — see `snapshot()`'s critical section for the
+/// reader-side coherence requirement this single-writer property does not
+/// provide: a hi-lo-hi retry loop cannot distinguish a stable pair from the
+/// specific interval where `lo` has already wrapped to a small value but
+/// `hi`'s carry has not yet landed.
 fn add_split_u32(lo: &AtomicU32, hi: &AtomicU32, delta: u32) {
     let prev_lo = lo.fetch_add(delta, Relaxed);
     if prev_lo.checked_add(delta).is_none() {
         hi.fetch_add(1, Relaxed);
     }
-}
-
-/// Read a wrap-safe split-`u32` cumulative counter coherently, excluding
-/// `add_split_u32`'s writer for the duration via a short critical section.
-/// A hi-lo-hi retry loop is not sufficient here: it cannot distinguish a
-/// stable pair from the specific interval where `lo` has already wrapped to
-/// a small value but `hi`'s carry has not yet landed.
-fn read_split_u32(lo: &AtomicU32, hi: &AtomicU32) -> (u32, u32) {
-    critical_section::with(|_| (lo.load(Relaxed), hi.load(Relaxed)))
 }
 
 /// Snapshot of board-local step-dispatch performance counters.
