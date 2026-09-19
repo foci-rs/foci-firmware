@@ -268,17 +268,6 @@ impl CaptureTiming {
         Ok(slot)
     }
 
-    /// Retain a rejected scheduler slot without counting a valid observation.
-    pub(crate) fn record_rejected_slot(&mut self, slot: SampleSlot, observation_us: u64) {
-        self.record_skipped_slots(slot.missed);
-        match observation_us.checked_sub(slot.sample_deadline_us) {
-            Some(lateness_us) => {
-                update_max_u32(&mut self.max_lateness_us, lateness_us, &mut self.overflowed)
-            }
-            None => self.overflowed = true,
-        }
-    }
-
     fn record_skipped_slots(&mut self, missed: u32) {
         self.missed_samples = saturating_add_u16(self.missed_samples, missed, &mut self.overflowed);
         let missed = match u8::try_from(missed) {
@@ -511,21 +500,6 @@ mod tests {
     }
 
     #[test]
-    fn rejected_slot_retains_miss_without_counting_valid_sample() {
-        let mut timing = CaptureTiming::new(160, TimingEnvelope::DELAY);
-        let slot = sample_slot(1_000, 160, 1_200).unwrap();
-
-        timing.record_rejected_slot(slot, 1_210);
-        let (evidence, overflowed) = timing.snapshot();
-
-        assert_eq!(evidence.valid_samples, 0);
-        assert_eq!(evidence.missed_samples, 1);
-        assert_eq!(evidence.max_consecutive_misses, 1);
-        assert_eq!(evidence.max_lateness_us, 50);
-        assert!(!overflowed);
-    }
-
-    #[test]
     fn source_overflow_sets_provenance_and_saturates_spi_span() {
         let mut timing = CaptureTiming::new(160, TimingEnvelope::DELAY);
 
@@ -602,8 +576,9 @@ mod tests {
     #[test]
     fn inductance_defers_total_miss_acceptance_to_the_coverage_gate() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
-        let two_slot_gap = sample_slot(1_000, 100, 1_200).unwrap();
-        timing.record_rejected_slot(two_slot_gap, 1_200);
+        timing
+            .record_sample(1_000, 1_200, 1_200, 1_210, 10)
+            .unwrap();
         timing
             .record_sample(1_300, 1_300, 1_310, 1_320, 10)
             .unwrap();
@@ -630,8 +605,9 @@ mod tests {
     #[test]
     fn inductance_rejects_three_consecutive_misses() {
         let mut timing = CaptureTiming::new(100, TimingEnvelope::INDUCTANCE);
-        let three_slot_gap = sample_slot(1_000, 100, 1_300).unwrap();
-        timing.record_rejected_slot(three_slot_gap, 1_300);
+        timing
+            .record_sample(1_000, 1_300, 1_300, 1_310, 10)
+            .unwrap();
 
         assert_eq!(timing.finish(), Err(TimingReject::ConsecutiveMisses));
     }
