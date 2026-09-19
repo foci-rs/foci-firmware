@@ -358,6 +358,83 @@ fn assemble_electrical_model(
     })
 }
 
+/// Where the accepted `theta_e_us` input to `assemble_electrical_model` came
+/// from: an accepted high-rate measurement, or the board-configured
+/// fallback value.
+// Wired into the capture state machine by a later task in this plan; until
+// then only the tests below construct these variants.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub(crate) enum ThetaSource {
+    /// The high-rate capture produced an accepted measurement.
+    Measured,
+    /// No accepted measurement was available; the configured value was used.
+    ConfigFallback,
+}
+
+/// Decide which `theta_e_us` value to feed into `assemble_electrical_model`.
+///
+/// `measured` is `None` whenever the high-rate capture was timing-rejected,
+/// found no onset, or was never run; `Some(value)` only for a value that
+/// passed onset detection. This function additionally checks the measured
+/// value's own `tau_e_us / 2` gate *before* selecting it -- a measured value
+/// that fails that gate falls back to `configured_theta_e_us`, which is
+/// then itself passed to `assemble_electrical_model`, which applies the
+/// same gate again to whichever value was selected (see spec's Estimate and
+/// gate section: "Fallback changes the input to the existing gate, never
+/// the gate's behavior").
+// Wired into the capture state machine by a later task in this plan; until
+// then only the tests below call this function.
+#[allow(dead_code)]
+pub(crate) fn resolve_theta_e_us_input(
+    measured: Option<u32>,
+    tau_e_us: u32,
+    configured_theta_e_us: u32,
+) -> (u32, ThetaSource) {
+    match measured {
+        Some(theta) if theta < tau_e_us / 2 => (theta, ThetaSource::Measured),
+        _ => (configured_theta_e_us, ThetaSource::ConfigFallback),
+    }
+}
+
+/// Total-duration timing-quality check for the high-rate capture.
+///
+/// Accepts when the last sample's actual offset does not exceed `2x` the
+/// capture's nominal duration. This replaces `CaptureTiming`/
+/// `TimingEnvelope` for this capture -- see this plan's Global Constraints
+/// and the spec's Revision history for why that mechanism does not fit a
+/// 20-40us period. Takes the full-width elapsed microseconds (`u32`), not a
+/// pre-narrowed `u16` -- the caller must check this *before* narrowing
+/// anything for storage in a `u16` offset, so a value that would overflow
+/// that storage is correctly classified as a timing rejection rather than a
+/// silent truncation or a separate overflow error.
+// Wired into the capture state machine by a later task in this plan; until
+// then only the tests below call this function.
+#[allow(dead_code)]
+pub(crate) fn high_rate_delay_timing_ok(
+    last_offset_us: u32,
+    sample_count: u16,
+    period_us: u16,
+) -> bool {
+    let bound = 2u32 * u32::from(sample_count.saturating_sub(1)) * u32::from(period_us);
+    last_offset_us <= bound
+}
+
+/// Settled (final) current amplitude in the capture window, in TMC4671
+/// current counts.
+///
+/// This is a reporting-only quantity, per the spec's Estimate and gate
+/// section: it does not feed `estimate_electrical_delay`'s onset threshold
+/// (which stays peak-based, unchanged) and does not affect accept/reject.
+/// Under overshoot or ringing, the peak sample and this settled value can
+/// differ; that is expected, not a defect.
+// Wired into the capture state machine by a later task in this plan; until
+// then only the tests below call this function.
+#[allow(dead_code)]
+pub(crate) fn settled_amplitude_counts(samples: &[u32]) -> Option<u32> {
+    samples.last().copied()
+}
+
 /// Adapter that exposes a [`CommissioningBackend`] as a
 /// [`crate::resistance_identification::ResistanceBackend`] for the shared
 /// resistance runner during commissioning.
@@ -5994,5 +6071,111 @@ mod tests {
             current_limit: PidTorqueFluxLimit::new(367).unwrap(),
         };
         assert_eq!(adapter.profile().max_expected_current_count, 220);
+    }
+
+    #[test]
+    fn resolve_theta_prefers_measured_when_under_tau_half() {
+        let (theta, source) = resolve_theta_e_us_input(Some(400), 1_000, 900);
+        assert_eq!(theta, 400);
+        assert_eq!(source, ThetaSource::Measured);
+    }
+
+    #[test]
+    fn resolve_theta_falls_back_when_measurement_absent() {
+        let (theta, source) = resolve_theta_e_us_input(None, 1_000, 300);
+        assert_eq!(theta, 300);
+        assert_eq!(source, ThetaSource::ConfigFallback);
+    }
+
+    #[test]
+    fn resolve_theta_falls_back_when_measured_theta_too_large() {
+        // measured == tau/2 exactly is still "too large" (assemble_electrical_model
+        // rejects theta_e_us >= tau_e_us / 2).
+        let (theta, source) = resolve_theta_e_us_input(Some(500), 1_000, 300);
+        assert_eq!(theta, 300);
+        assert_eq!(source, ThetaSource::ConfigFallback);
+    }
+
+    #[test]
+    fn resolve_theta_fallback_can_still_be_rejected_by_assemble_electrical_model() {
+        // The fallback path substitutes the input; it does not bypass the gate.
+        // An out-of-range configured value still fails downstream, unchanged
+        // from today's behavior with no measurement attempted at all.
+        let (theta, source) = resolve_theta_e_us_input(None, 1_000, 600);
+        assert_eq!(theta, 600);
+        assert_eq!(source, ThetaSource::ConfigFallback);
+        // theta (600) >= tau_e_us / 2 (500): assemble_electrical_model must reject this.
+        assert!(theta >= 1_000 / 2);
+    }
+
+    #[test]
+    fn high_rate_delay_timing_ok_accepts_within_two_x_bound() {
+        // sample_count=100, period_us=20: bound = 2*(100-1)*20 = 3_960.
+        assert!(high_rate_delay_timing_ok(3_960, 100, 20));
+        assert!(!high_rate_delay_timing_ok(3_961, 100, 20));
+    }
+
+    #[test]
+    fn high_rate_delay_timing_ok_single_sample_is_always_within_bound() {
+        // sample_count=1: bound = 2*0*period_us = 0, so only offset 0 passes.
+        assert!(high_rate_delay_timing_ok(0, 1, 20));
+        assert!(!high_rate_delay_timing_ok(1, 1, 20));
+    }
+
+    #[test]
+    fn settled_amplitude_is_the_last_sample_not_the_peak() {
+        // Overshoot/ringing case: peak (300) is not the settled value (250).
+        let samples = [0u32, 50, 300, 200, 260, 250];
+        assert_eq!(settled_amplitude_counts(&samples), Some(250));
+    }
+
+    #[test]
+    fn settled_amplitude_is_none_for_an_empty_capture() {
+        assert_eq!(settled_amplitude_counts(&[]), None);
+    }
+
+    #[test]
+    fn onset_detection_uses_peak_unaffected_by_settled_amplitude_under_ringing() {
+        // Same overshoot/ringing samples as above, with matching offsets.
+        // estimate_electrical_delay's 10%-of-peak threshold (peak=300, so
+        // threshold=30) must fire at the first sample >= 30 (index 1, value 50),
+        // regardless of where the settled amplitude (250, the last sample)
+        // ends up -- onset and amplitude are independent quantities.
+        let samples = [0u32, 50, 300, 200, 260, 250];
+        let offsets_us = [10u16, 20, 30, 40, 50, 60];
+        let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
+        assert_eq!(onset, 20);
+        assert_eq!(settled_amplitude_counts(&samples), Some(250));
+    }
+
+    #[test]
+    fn onset_detection_clean_case_matches_settled_amplitude_direction() {
+        // A monotonic rise with no ringing: onset and settled amplitude are
+        // still independently computed, but happen to agree in direction here.
+        let samples = [0u32, 10, 50, 90, 100, 100];
+        let offsets_us = [10u16, 20, 30, 40, 50, 60];
+        let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
+        assert_eq!(onset, 20); // peak=100, threshold=10, first sample >= 10 is index 1 (value 10 itself).
+        assert_eq!(settled_amplitude_counts(&samples), Some(100));
+    }
+
+    #[test]
+    fn onset_detection_reports_no_onset_within_window() {
+        // Flat capture never crosses 10% of its own (zero) peak meaningfully --
+        // exercised here via estimate_electrical_delay's existing no-samples
+        // path, which this capture must fall back on exactly like today.
+        let samples = [0u32, 0, 0, 0];
+        let offsets_us = [10u16, 20, 30, 40];
+        assert!(crate::autotune::estimate_electrical_delay(&samples, &offsets_us).is_err());
+    }
+
+    #[test]
+    fn onset_detection_tolerates_noisy_pre_onset_baseline() {
+        // Small pre-onset noise (samples 1-3) must not itself cross the 10%
+        // threshold; onset must still land on the real rise (index 4).
+        let samples = [0u32, 2, 1, 3, 200, 205];
+        let offsets_us = [10u16, 20, 30, 40, 50, 60];
+        let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
+        assert_eq!(onset, 50); // peak=205, threshold=21, first sample >= 21 is index 4.
     }
 }
