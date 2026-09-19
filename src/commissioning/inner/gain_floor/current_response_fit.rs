@@ -63,7 +63,7 @@ pub(crate) fn fit_current_response(
         if !(0.0..1.0).contains(&ratio) {
             continue;
         }
-        let z = (1.0 - ratio).ln();
+        let z = libm::logf(1.0 - ratio);
         let t = t as f32;
         sx += t;
         sz += z;
@@ -96,13 +96,13 @@ pub(crate) fn fit_current_response(
     let mut sum_sq_residual = 0.0f32;
     let mut sum_abs_actual = 0.0f32;
     for &(t, i_actual) in samples {
-        let predicted = f32::from(i_target) * (1.0 - (-(t as f32) / tau_current_us).exp());
+        let predicted = f32::from(i_target) * (1.0 - libm::expf(-(t as f32) / tau_current_us));
         let residual = f32::from(i_actual) - predicted;
         sum_sq_residual += residual * residual;
         sum_abs_actual += f32::from(i_actual).abs();
     }
     let n_all = samples.len() as f32;
-    let rmse = (sum_sq_residual / n_all).sqrt();
+    let rmse = libm::sqrtf(sum_sq_residual / n_all);
     let mean_abs = (sum_abs_actual / n_all).max(1.0);
     let residual_permille = (rmse / mean_abs) * 1000.0;
     if residual_permille > RESIDUAL_FAIL_PERMILLE as f32 {
