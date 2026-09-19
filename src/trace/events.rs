@@ -28,6 +28,10 @@ pub const SUBSYSTEM_COMMISSIONING: u8 = 7;
 /// One-shot event reporting trace SPI sample duration.
 pub const EVENT_SPI_SAMPLE_DURATION: u16 = 11;
 
+/// One-shot event marking an accel/cruise/decel phase-class transition,
+/// detected in the step-queue ISR from the loaded segment's `add` sign.
+pub const EVENT_PHASE_BOUNDARY: u16 = 12;
+
 /// Engine lifecycle start event.
 pub const EVENT_COMMISSION_ENGINE_START: u16 = 100;
 /// Phase lifecycle start event.
@@ -321,6 +325,7 @@ mod tests {
         assert_eq!(SUBSYSTEM_SAFETY_SHUTDOWN, 6);
         assert_eq!(SUBSYSTEM_COMMISSIONING, 7);
         assert_eq!(EVENT_SPI_SAMPLE_DURATION, 11);
+        assert_eq!(EVENT_PHASE_BOUNDARY, 12);
     }
 
     #[test]

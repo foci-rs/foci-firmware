@@ -7,7 +7,11 @@
 
 /// FTRC little-endian magic.
 pub const FRAME_MAGIC: u32 = 0x4352_5446;
-/// Firmware trace protocol version. Version 22 replaced the computed
+/// Firmware trace protocol version. Version 23 adds `EVENT_PHASE_BOUNDARY`
+/// (event id 12, subsystem `SUBSYSTEM_STEP_TIMER`): a one-shot marker for an
+/// accel/cruise/decel phase-class transition, detected in the step-queue ISR
+/// independent of the critical-frame sampler's rate. Version 22 replaced the
+/// computed
 /// critical position_error with the chip's PID_POSITION_ERROR read and
 /// appended the sampler-budget fields to the status payload. Version 21
 /// adds `stop_rung_index` to
@@ -29,7 +33,7 @@ pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// Version 16 added the measured `moving_pid_output_peak` to the breakaway
 /// raw-observation record. Version 15 published the
 /// physical-excursion upward-probe contract.
-pub const PROTOCOL_VERSION: u8 = 22;
+pub const PROTOCOL_VERSION: u8 = 23;
 /// Fixed envelope length in bytes.
 pub const HEADER_LEN: usize = 32;
 /// Maximum critical frame transport budget in bytes.
@@ -718,7 +722,7 @@ mod tests {
 
     #[test]
     fn fixed_payload_lengths_match_spec() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+        assert_eq!(PROTOCOL_VERSION, 23);
         assert_eq!(CRITICAL_PAYLOAD_LEN, 88);
         assert_eq!(CURRENT_PATH_PAYLOAD_LEN, 16);
         assert_eq!(PHASE_ADVANCE_PAYLOAD_LEN, 12);
