@@ -13,9 +13,9 @@ const MIN_SAMPLES: usize = 20;
 /// refused rather than fitted as a spring.
 const MIN_PEAK_TO_PEAK_POSITION_UNITS: i32 = 512;
 const RESIDUAL_FAIL_PERMILLE: i64 = 75;
-/// Under one encoder count at 4000 counts/rev: any registered motion ends
-/// the flat stiction/plateau stretches the fit must not see.
-const FLAT_END_THRESHOLD_UNITS: i32 = 5;
+/// Under one encoder count at 4000 counts/rev: the first registered motion
+/// ends the stiction dead zone the fit must not see.
+const BREAKAWAY_THRESHOLD_UNITS: i32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum GainFloorFitError {
@@ -44,7 +44,7 @@ pub(crate) fn fit_accel_raw(
         return Err(GainFloorFitError::InsufficientExcitation);
     }
 
-    let samples = trim_flat_ends(samples);
+    let samples = trim_leading_dead_zone(samples);
     if samples.len() < MIN_SAMPLES {
         return Err(GainFloorFitError::TooFewSamples);
     }
@@ -143,27 +143,19 @@ pub(crate) fn fit_accel_raw(
     Ok(accel_raw_q32 as i64)
 }
 
-/// Drop the leading stiction dead zone and the trailing plateau. The
-/// quadratic coefficient is invariant under a time shift, so the trimmed
-/// slice fits on its original timestamps.
-fn trim_flat_ends(samples: &[(u32, i32)]) -> &[(u32, i32)] {
-    let moved = |from: i32, p: i32| (p - from).unsigned_abs() >= FLAT_END_THRESHOLD_UNITS as u32;
+/// Drop the stiction dead zone before breakaway. The quadratic coefficient
+/// is invariant under a time shift, so the remaining slice fits on its
+/// original timestamps. Nothing is trimmed from the tail: a plateau under a
+/// still-commanded torque means the axis stopped, and the fit must fail it.
+fn trim_leading_dead_zone(samples: &[(u32, i32)]) -> &[(u32, i32)] {
     let Some(&(_, head)) = samples.first() else {
         return samples;
     };
     let start = samples
         .iter()
-        .position(|&(_, p)| moved(head, p))
+        .position(|&(_, p)| (p - head).unsigned_abs() >= BREAKAWAY_THRESHOLD_UNITS as u32)
         .unwrap_or(0);
-    let samples = &samples[start..];
-    let Some(&(_, tail)) = samples.last() else {
-        return samples;
-    };
-    let end = samples
-        .iter()
-        .rposition(|&(_, p)| moved(tail, p))
-        .map_or(1, |idx| idx + 1);
-    &samples[..end]
+    &samples[start..]
 }
 
 #[cfg(test)]
@@ -256,6 +248,22 @@ mod tests {
             fit_accel_raw(&v, 1),
             Err(GainFloorFitError::InsufficientExcitation)
         );
+    }
+
+    #[test]
+    fn rise_then_plateau_under_torque_is_rejected_not_trimmed() {
+        // Enough travel to pass the excitation floor, then flat for the rest
+        // of the window while torque is still commanded.
+        let mut v: heapless::Vec<(u32, i32), 200> = heapless::Vec::new();
+        for i in 0..84u32 {
+            let t = i * 60;
+            let pos = if i < 30 { (i * i) as i32 } else { 29 * 29 };
+            v.push((t, pos)).unwrap();
+        }
+        assert!(matches!(
+            fit_accel_raw(&v, 1),
+            Err(GainFloorFitError::HighResidual | GainFloorFitError::WrongSign)
+        ));
     }
 
     #[test]
