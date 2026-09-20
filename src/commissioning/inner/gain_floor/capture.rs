@@ -1,5 +1,5 @@
 //! Per-slot capture primitive for the commissioning fallback gain-floor
-//! measurement: two register reads per 30us slot (PID_TORQUE_FLUX_ACTUAL,
+//! measurement: two register reads per 60us slot (PID_TORQUE_FLUX_ACTUAL,
 //! PID_POSITION_ACTUAL), with actual-current containment and motion-abort
 //! safety checks evaluated on every slot, and an immediate
 //! de-energize-and-fail on any missed slot deadline.
@@ -9,17 +9,10 @@ use foci_tmc4671::registers::{PID_POSITION_ACTUAL, PID_TORQUE_FLUX_ACTUAL, PidTo
 use crate::autotune::CommissionError;
 use crate::commissioning::backend::CommissioningBackend;
 
-// Widened from the design's originally specified 30us after hardware
-// validation measured ~44us for the two real TMC4671 SPI register reads
-// this loop performs per slot (SPI2 already runs at the chip's protocol
-// maximum, 8MHz -- see board_config.rs -- so the overrun is software/DMA
-// overhead on top of the SPI transfer itself, not a clock-speed shortfall).
-// 60us gives ~35% margin over that single measurement. This narrows the
-// design's documented supported bandwidth range at its fast edge (the
-// coverage check's 20-samples-within-3*tau_current floor is only met down
-// to roughly tau_current >= 400us at this period, versus 200us at 30us),
-// which affects only a hypothetical future board/motor near the range's
-// upper bound -- neither board in this codebase operates there today.
+/// Two TMC4671 register reads per slot take about 44 us on the real SPI
+/// path (SPI2 already runs at the chip's 8 MHz maximum; the rest is
+/// DMA/async dispatch), so the design's 30 us budget tripped the slot
+/// deadline on every slot. 60 us leaves about 35% margin.
 const SAMPLE_PERIOD_US: u32 = 60;
 const CAPTURE_DURATION_US: u32 = 5_000;
 const MAX_SAMPLES: usize = 200;

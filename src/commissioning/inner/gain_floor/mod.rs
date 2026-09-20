@@ -555,9 +555,9 @@ mod tests {
                     // give accel_raw 1e-3 and 2e-3 units/us^2: ~97 rad/s^2
                     // per measured count; InnerResult's 600 Hz current loop
                     // targets 10 Hz, velocity_p = ceil(256*62.8*2pi/(60*97))
-                    // = 18, position_p = ceil(37.7*60*256/65536) = 9.
+                    // = 18, position_p = ceil(418.9*60*256/65536) = 99.
                     assert_eq!(velocity_p.raw(), 18);
-                    assert_eq!(position_p.raw(), 9);
+                    assert_eq!(position_p.raw(), 99);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
@@ -976,6 +976,26 @@ mod tests {
             &mut phase,
             &mut backend,
             CommissionError::GainFloorInsufficientLinearPoints,
+        );
+    }
+
+    #[test]
+    fn missing_current_bandwidth_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4_000);
+        if let InnerPhase::GainFloorMeasurement {
+            inner_result: Some(result),
+            ..
+        } = &mut phase
+        {
+            result.bandwidth_hz = 0;
+        }
+        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        backend.advance_elapsed_on_delay = true;
+        backend.script_gain_floor_capture = Some(ideal_plant());
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorCurrentFitRejected,
         );
     }
 
