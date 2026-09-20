@@ -25,7 +25,7 @@
 //! | `CommissionDone` (invalid fallback outer gains)     | `disarm_motor`                                                                             | `CurrentValidationFailed`                                  | `CommissionResult`           | always           | never |
 //! | `CommissionDone` (current-limit restore SPI failure) | `disarm_motor`                                                                            | `Spi`                                                      | `CommissionResult`           | always           | never |
 //! | `CommissionDone` (`arm_motor_electrical` failure)   | `disarm_motor`                                                                             | error's status code                                        | `CommissionResult`           | always           | never |
-//! | `CommissionDone` (success)                          | none                                                                                       | `inner.status`'s code (0/1/2)                              | `CommissionResult`           | always           | **yes** (`ArmZeroPosition`) |
+//! | `CommissionDone` (success)                          | none                                                                                       | `inner.status`'s code (0/1/2)                              | `CommissionResult`           | always           | **yes** (`ArmPreservePosition`) |
 //! | `OuterDone` (position-mode restore failure)         | `disarm_motor`                                                                             | mapped from `PositionModeRestoreErrorKind`                  | `TuneResult`                 | always           | never |
 //! | `OuterDone` (filter-apply SPI failure)              | `disarm_motor`                                                                             | `Spi`                                                       | `TuneResult`                 | always           | never |
 //! | `OuterDone` (`arm_motor_electrical` failure)        | `disarm_motor`                                                                             | error's status code                                          | `TuneResult`                 | always           | never |
@@ -48,7 +48,7 @@
 //! `arm_motor_for_steps` is never called from inside `drive_commission_result`
 //! itself. It runs from the board's separate `apply_stepper_post_action_state`
 //! call, driven by the `PostActions::stepper` this function returns
-//! (`ArmZeroPosition`/`ArmPreservePosition`). `run_variant` below simulates
+//! (`ArmPreservePosition`). `run_variant` below simulates
 //! that second call so the full arm-electrical-before-arm-for-steps ordering
 //! is observable in one trace.
 
@@ -244,10 +244,7 @@ async fn drive_and_trace(
 
     if let CommissionOutcome::Terminal { actions, .. } = &outcome {
         let _ = apply_stepper_post_action_state(actions.stepper, state);
-        if matches!(
-            actions.stepper,
-            StepperPostAction::ArmZeroPosition | StepperPostAction::ArmPreservePosition
-        ) {
+        if actions.stepper == StepperPostAction::ArmPreservePosition {
             backend.record_lifecycle(LifecycleFlag::MotorArmed, true);
         }
     }
@@ -590,7 +587,7 @@ async fn selftest_done_restores_gains_without_lifecycle_events() {
 // --- commission (Stage 1) ------------------------------------------------
 
 #[fixture_test]
-async fn commission_done_success_arms_electrical_before_zero_position_arm() {
+async fn commission_done_success_arms_electrical_before_preserve_position_arm() {
     let mut backend = MockBackend::new();
     let (mut cal, mut en, mut gains) = fresh_state_locals();
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
@@ -613,7 +610,7 @@ async fn commission_done_success_arms_electrical_before_zero_position_arm() {
         trace.outcome_tag,
         OutcomeTag::Terminal {
             stop_trace: true,
-            stepper: StepperPostAction::ArmZeroPosition,
+            stepper: StepperPostAction::ArmPreservePosition,
             outcome_class: None,
         }
     );
@@ -1505,10 +1502,7 @@ fn apply_post_actions(
 ) {
     if let CommissionOutcome::Terminal { actions, .. } = outcome {
         let _ = apply_stepper_post_action_state(actions.stepper, state);
-        if matches!(
-            actions.stepper,
-            StepperPostAction::ArmZeroPosition | StepperPostAction::ArmPreservePosition
-        ) {
+        if actions.stepper == StepperPostAction::ArmPreservePosition {
             backend.record_lifecycle(LifecycleFlag::MotorArmed, true);
         }
     }

@@ -153,8 +153,6 @@ pub enum CommissionOutcome {
 pub enum StepperPostAction {
     /// Leave the stepper runtime unchanged.
     None,
-    /// Zero the firmware step epoch, then arm step-timer processing.
-    ArmZeroPosition,
     /// Preserve the firmware step epoch, then arm step-timer processing.
     ArmPreservePosition,
     /// Stop and drain step-timer processing.

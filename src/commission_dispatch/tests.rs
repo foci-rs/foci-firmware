@@ -1893,7 +1893,7 @@ async fn commission_done_finalize_path() {
             assert_eq!(reply_result.inner.r_count_milli, 1706);
             assert_eq!(reply_result.inner.l_count_micro, 1245);
             assert!(actions.stop_trace);
-            assert_eq!(actions.stepper, StepperPostAction::ArmZeroPosition);
+            assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
         }
         _ => panic!("expected CommissionResult"),
     }

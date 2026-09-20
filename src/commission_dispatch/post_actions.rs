@@ -31,14 +31,6 @@ pub fn apply_stepper_post_action_state(
                 .store(false, core::sync::atomic::Ordering::Relaxed);
             StepperTaskDirective::StopCheck
         }
-        StepperPostAction::ArmZeroPosition => {
-            state
-                .stepper
-                .position
-                .store(0, core::sync::atomic::Ordering::Relaxed);
-            crate::tmc_control::lifecycle::arm_motor_for_steps(state);
-            StepperTaskDirective::ArmCheck
-        }
         StepperPostAction::ArmPreservePosition => {
             crate::tmc_control::lifecycle::arm_motor_for_steps(state);
             StepperTaskDirective::ArmCheck
@@ -76,7 +68,7 @@ mod tests {
     }
 
     #[fixture_test]
-    fn stepper_post_action_zeroes_before_arm_check_directive() {
+    fn stepper_post_action_arm_preserves_position_before_arm_check_directive() {
         use core::sync::atomic::Ordering;
         let (mut cal, _, mut gains) = fresh_state_locals();
         let mut en = true;
@@ -85,12 +77,13 @@ mod tests {
         let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
 
         let directive =
-            apply_stepper_post_action_state(StepperPostAction::ArmZeroPosition, &mut state);
+            apply_stepper_post_action_state(StepperPostAction::ArmPreservePosition, &mut state);
 
         assert_eq!(directive, StepperTaskDirective::ArmCheck);
-        assert_eq!(stepper_state().position.load(Ordering::Relaxed), 0);
+        assert_eq!(stepper_state().position.load(Ordering::Relaxed), 123);
         assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
+        stepper_state().position.store(0, Ordering::Relaxed);
     }
 
     #[fixture_test]

@@ -734,7 +734,7 @@ impl TerminalRestoreMachine {
                                 },
                                 actions: PostActions {
                                     stop_trace: true,
-                                    stepper: StepperPostAction::ArmZeroPosition,
+                                    stepper: StepperPostAction::ArmPreservePosition,
                                 },
                             });
                         }
@@ -1625,10 +1625,9 @@ impl TerminalRestoreMachine {
             .outer_restore_failure
             .map_or(0, |fault| fault.status_code());
         let disposition = match actions.stepper {
-            StepperPostAction::ArmPreservePosition => 0,
+            StepperPostAction::ArmPreservePosition | StepperPostAction::None => 0,
             StepperPostAction::Stop if self.terminal.is_safety_fault => 2,
             StepperPostAction::Stop => 1,
-            StepperPostAction::ArmZeroPosition | StepperPostAction::None => 0,
         };
         let restore_level = if restore_status == 0 {
             crate::trace::events::TraceEventLevel::Warn
