@@ -8,15 +8,15 @@
 use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CommissionPhase};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
-    AdcCalResult, AdcResidualEvidence, CommissionResult, CurrentValidationAxisEvidence,
-    INDUCTANCE_SOURCE_NONE, InnerResult, OuterResult, OuterSafetyFault,
+    AdcCalResult, CommissionResult, CurrentValidationAxisEvidence, INDUCTANCE_SOURCE_NONE,
+    InnerResult, OuterResult, OuterSafetyFault,
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
-    AdcResidualReport, ClosedLoopActivationReport, CommissionTimingReport,
-    CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
-    CurrentValidationAxisReport, EncoderAlignmentReport, InductanceEstimateReport,
-    InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
+    ClosedLoopActivationReport, CommissionTimingReport, CurrentLoopFiltersReport,
+    CurrentLoopHoldReport, CurrentLoopRunReport, CurrentValidationAxisReport,
+    InductanceEstimateReport, InductanceFrameReport, InductanceRunReport, ResistanceAxisReport,
+    ResistanceRunReport,
 };
 
 /// TMC4671 external electrical angle for electrical axis 0 (PHASE0).
@@ -241,16 +241,6 @@ pub trait CommissionReplySink {
     /// during commissioning. Reuses the `foci_resistance_axis` reply
     /// (Task 6) for the same reason as [`Self::foci_resistance_run`].
     fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
-
-    /// Emit encoder D-axis alignment evidence captured during
-    /// commissioning. This makes settled current-validation cross-axis tails
-    /// correlatable with the alignment residual without expanding the
-    /// size-capped terminal commission result.
-    fn foci_encoder_alignment(&mut self, report: EncoderAlignmentReport);
-
-    /// Emit post-ADC-calibration zero-current residual evidence captured
-    /// before the terminal commissioning result.
-    fn foci_adc_residual(&mut self, report: AdcResidualReport);
 
     /// Emit run-level production inductance evidence captured during
     /// commissioning.
@@ -907,7 +897,6 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             // Resistance axes stay before the resistance run, mirroring the
             // diagnostic path's axes-then-run ordering (`emit_diagnostic_report`).
             let inner = &result.inner;
-            emit_adc_residual_evidence(sink, oid, inner);
             sink.foci_resistance_axis(commission_resistance_axis_report(
                 oid,
                 0,
@@ -921,7 +910,6 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
                 inner,
             ));
             sink.foci_resistance_run(commission_resistance_run_report(oid, inner));
-            sink.foci_encoder_alignment(commission_encoder_alignment_report(oid, inner));
             emit_inductance_evidence(sink, oid, inner);
             emit_current_loop_evidence(sink, oid, status, &result);
             for (method, summary) in inner.timing.iter().copied().enumerate() {
@@ -1040,27 +1028,6 @@ fn emit_commission_diagnostics<S: CommissionReplySink>(
     }
 }
 
-fn emit_adc_residual_evidence<S: CommissionReplySink>(sink: &mut S, oid: u8, inner: &InnerResult) {
-    sink.foci_adc_residual(adc_residual_report(oid, inner.adc_residual_chop0));
-    sink.foci_adc_residual(adc_residual_report(oid, inner.adc_residual_chop7));
-}
-
-fn adc_residual_report(oid: u8, evidence: AdcResidualEvidence) -> AdcResidualReport {
-    AdcResidualReport {
-        oid,
-        stage: evidence.stage,
-        sample_count: evidence.sample_count,
-        pwm_sv_chop: evidence.pwm_sv_chop,
-        pwm_bbm: evidence.pwm_bbm,
-        adc_i0_scale_offset: evidence.adc_i0_scale_offset,
-        adc_i1_scale_offset: evidence.adc_i1_scale_offset,
-        adc_iux_mean_count: evidence.adc_iux_mean_count,
-        adc_iwy_mean_count: evidence.adc_iwy_mean_count,
-        pid_flux_mean_count: evidence.pid_flux_mean_count,
-        pid_torque_mean_count: evidence.pid_torque_mean_count,
-    }
-}
-
 /// Build the resistance-identification run report carried by the
 /// commission flow's `foci_resistance_run` emission.
 ///
@@ -1145,18 +1112,6 @@ fn commission_resistance_axis_report(
         signed_asymmetry_permille,
         drift_permille,
         warning_flags: 0,
-    }
-}
-
-fn commission_encoder_alignment_report(oid: u8, inner: &InnerResult) -> EncoderAlignmentReport {
-    EncoderAlignmentReport {
-        oid,
-        encoder_count: inner.encoder_alignment_count,
-        electrical_residual_counts: inner.encoder_alignment_electrical_residual_counts,
-        stability_counts: inner.encoder_alignment_stability_counts,
-        movement_counts: inner.encoder_alignment_movement_counts,
-        min_movement_counts: inner.encoder_alignment_min_movement_counts,
-        counts_per_electrical_rev: inner.encoder_alignment_counts_per_electrical_rev,
     }
 }
 
@@ -1468,15 +1423,6 @@ mod tests {
             signed_asymmetry_permille: u16,
             drift_permille: u16,
         },
-        EncoderAlignment {
-            oid: u8,
-            encoder_count: u32,
-            electrical_residual_counts: u16,
-            stability_counts: u16,
-            movement_counts: u16,
-            min_movement_counts: u16,
-            counts_per_electrical_rev: u16,
-        },
         InductanceRun {
             oid: u8,
             source: u8,
@@ -1700,23 +1646,6 @@ mod tests {
                 drift_permille: report.drift_permille,
             });
         }
-
-        fn foci_encoder_alignment(
-            &mut self,
-            report: crate::tmc_diagnostics::EncoderAlignmentReport,
-        ) {
-            self.events.push(Event::EncoderAlignment {
-                oid: report.oid,
-                encoder_count: report.encoder_count,
-                electrical_residual_counts: report.electrical_residual_counts,
-                stability_counts: report.stability_counts,
-                movement_counts: report.movement_counts,
-                min_movement_counts: report.min_movement_counts,
-                counts_per_electrical_rev: report.counts_per_electrical_rev,
-            });
-        }
-
-        fn foci_adc_residual(&mut self, _report: crate::tmc_diagnostics::AdcResidualReport) {}
 
         fn foci_inductance_run(&mut self, report: crate::tmc_diagnostics::InductanceRunReport) {
             self.events.push(Event::InductanceRun {
@@ -2393,15 +2322,6 @@ mod tests {
                 current_ceiling_count: 1_600,
                 power_stage_tripped: false,
             },
-            Event::EncoderAlignment {
-                oid: 6,
-                encoder_count: 163,
-                electrical_residual_counts: 3,
-                stability_counts: 1,
-                movement_counts: 37,
-                min_movement_counts: 2,
-                counts_per_electrical_rev: 80,
-            },
         ];
         expected.extend(inductance_events(6));
         expected.extend(current_loop_events(6, 7));
@@ -2521,11 +2441,6 @@ mod tests {
             },
         );
 
-        let alignment_index = sink
-            .events
-            .iter()
-            .position(|e| matches!(e, Event::EncoderAlignment { .. }))
-            .expect("encoder alignment event");
         let run_index = sink
             .events
             .iter()
@@ -2551,7 +2466,6 @@ mod tests {
             .iter()
             .position(|e| matches!(e, Event::Commission { .. }))
             .expect("terminal commission event");
-        assert!(alignment_index < run_index);
         assert!(run_index < frame_index);
         assert!(frame_index < estimate_index);
         assert!(estimate_index < current_loop_index);
@@ -2992,15 +2906,6 @@ mod tests {
                 max_abs_steady_mean_current_count: 1_280,
                 current_ceiling_count: 1_600,
                 power_stage_tripped: false,
-            },
-            Event::EncoderAlignment {
-                oid: 6,
-                encoder_count: 163,
-                electrical_residual_counts: 3,
-                stability_counts: 1,
-                movement_counts: 37,
-                min_movement_counts: 2,
-                counts_per_electrical_rev: 80,
             },
         ];
         expected.extend(inductance_events(6));

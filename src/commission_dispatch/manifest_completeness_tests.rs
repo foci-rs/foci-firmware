@@ -98,8 +98,8 @@ fn hand_written_region_has_no_default_bodied_methods() {
     let methods = trait_method_terminators(TRAIT_SOURCE);
     assert_eq!(
         methods.len(),
-        20,
-        "expected exactly the 20 bespoke required methods in the trait's \
+        18,
+        "expected exactly the 18 bespoke required methods in the trait's \
          hand-written region; found {}: {methods:?}. If this changed on \
          purpose, update this count -- otherwise something didn't migrate \
          into __commission_reply_manifest! as expected.",

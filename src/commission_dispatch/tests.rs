@@ -233,10 +233,6 @@ impl CommissionReplySink for ReplyRecorder {
         });
     }
 
-    fn foci_encoder_alignment(&mut self, _report: crate::tmc_diagnostics::EncoderAlignmentReport) {}
-
-    fn foci_adc_residual(&mut self, _report: crate::tmc_diagnostics::AdcResidualReport) {}
-
     fn foci_inductance_run(&mut self, _report: crate::tmc_diagnostics::InductanceRunReport) {}
 
     fn foci_inductance_frame(&mut self, _report: crate::tmc_diagnostics::InductanceFrameReport) {}
