@@ -1,15 +1,16 @@
 //! Commissioning fallback gain-floor measurement.
 //!
-//! Runs two fixed-grid current-step captures (`capture::run_capture`) at a
-//! low and a high torque amplitude, fits each position response
+//! Runs a discarded low-amplitude seating step, then two fixed-grid
+//! current-step captures (`capture::run_capture`) at a low and a high
+//! torque amplitude, fits each measured position response
 //! (`quadratic_fit::fit_accel_raw`), takes the differential acceleration
 //! per measured torque count between them, then derives
 //! `velocity_p`/`position_p` (`gains::compute_velocity_p`/
 //! `compute_position_p`) from it and the current-loop bandwidth CurrentTune
 //! already measured, and hands off to `InnerPhase::ClosedLoopActivation`.
 //! Reached only when `current_loop.rs`'s bandwidth gate has already
-//! confirmed the board's current-loop bandwidth is inside the supported
-//! range; a measurement failure here fails commissioning outright (no
+//! confirmed the board's current-loop bandwidth is above the floor the
+//! capture can settle in; a measurement failure here fails commissioning outright (no
 //! fallback substitution -- that only happens for the static
 //! bandwidth-out-of-range case, handled before this phase is ever entered).
 //!
@@ -30,13 +31,17 @@ use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::StepResult;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
-/// Coast time so the high step starts from rest with the same stiction
-/// history as the low one.
+/// Coast time after each step so the next one starts from rest with the
+/// same stiction history.
 const INTER_STEP_SETTLE_US: u64 = 100_000;
 
 /// `step_gain_floor_measurement` sub-state.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) enum GainFloorState {
+    /// A discarded low-amplitude step so both measured steps start from the
+    /// same just-moved friction state; the first motion after rest breaks
+    /// away differently from the ones that follow it.
+    Seat,
     Start,
     HighStep {
         low_accel_raw_q32: i64,
@@ -69,6 +74,25 @@ where
     };
 
     let (low_accel_raw_q32, low_mean_torque_actual) = match state {
+        GainFloorState::Seat => {
+            let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
+                return StepResult::ReadyNow;
+            };
+            if let Err(e) = run_torque_step(
+                backend,
+                capture,
+                i_target_low,
+                resistance_current_ceiling_count,
+            )
+            .await
+            {
+                return super::fail_inner(phase, e);
+            }
+            if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
+                *state = GainFloorState::Start;
+            }
+            return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
+        }
         GainFloorState::Start => {
             let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
                 return StepResult::ReadyNow;
@@ -549,7 +573,7 @@ mod tests {
 
     fn gain_floor_phase(i_target_high: i16, resistance_current_ceiling_count: u16) -> InnerPhase {
         InnerPhase::GainFloorMeasurement {
-            state: GainFloorState::Start,
+            state: GainFloorState::Seat,
             i_target_low: i_target_high / 2,
             i_target_high,
             resistance_current_ceiling_count,
@@ -619,6 +643,49 @@ mod tests {
     }
 
     #[test]
+    fn seating_stroke_precedes_the_measured_low_and_high_steps() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(ideal_plant());
+
+            let result = drive_to_completion(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+            ));
+            let target_addr = foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr();
+            let targets: heapless::Vec<u32, 8> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| match op {
+                    SpiOp::Write(a, v) if *a == target_addr && *v != 0 => Some(*v),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(targets.len(), 3, "seating stroke, low step, high step");
+            assert_eq!(
+                targets[0], targets[1],
+                "the seating stroke repeats the low step"
+            );
+            assert_ne!(targets[1], targets[2]);
+            match phase {
+                InnerPhase::ClosedLoopActivation {
+                    velocity_p,
+                    position_p,
+                    ..
+                } => {
+                    assert_eq!(velocity_p.raw(), 63);
+                    assert_eq!(position_p.raw(), 99);
+                }
+                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
     fn torque_step_runs_under_the_operational_voltage_limit_and_restores_the_safe_one() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
@@ -672,27 +739,29 @@ mod tests {
     }
 
     #[test]
-    fn low_and_high_steps_are_commanded_in_order_with_a_settle_between() {
+    fn seat_low_and_high_steps_are_commanded_in_order_with_a_settle_between() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
             let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
 
-            let first = step_gain_floor_measurement(&mut phase, &mut backend).await;
-            let settle_deadline = match first {
-                StepResult::At(deadline) => deadline,
-                other => panic!("expected At(_) after the low step, got {other:?}"),
-            };
-            assert!(
-                settle_deadline >= backend.elapsed_us() + INTER_STEP_SETTLE_US,
-                "high step must wait for the axis to settle"
-            );
-            assert!(!backend.enable_pin, "must be de-energized while settling");
+            for step in ["seating stroke", "low step"] {
+                let result = step_gain_floor_measurement(&mut phase, &mut backend).await;
+                let settle_deadline = match result {
+                    StepResult::At(deadline) => deadline,
+                    other => panic!("expected At(_) after the {step}, got {other:?}"),
+                };
+                assert!(
+                    settle_deadline >= backend.elapsed_us() + INTER_STEP_SETTLE_US,
+                    "the next step must wait for the axis to settle after the {step}"
+                );
+                assert!(!backend.enable_pin, "must be de-energized while settling");
+            }
 
-            let second = step_gain_floor_measurement(&mut phase, &mut backend).await;
+            let last = step_gain_floor_measurement(&mut phase, &mut backend).await;
             assert!(matches!(
-                second,
+                last,
                 StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
             ));
 
@@ -707,7 +776,7 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(commanded, std::vec![1000, 2000]);
+            assert_eq!(commanded, std::vec![1000, 1000, 2000]);
         });
     }
 

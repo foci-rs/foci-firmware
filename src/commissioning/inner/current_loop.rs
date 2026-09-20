@@ -2222,7 +2222,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     let (i_target_low, i_target_high) =
                         gain_floor_torque_step_amplitudes(resistance_current_ceiling_count);
                     *phase = InnerPhase::GainFloorMeasurement {
-                        state: super::gain_floor::GainFloorState::Start,
+                        state: super::gain_floor::GainFloorState::Seat,
                         i_target_low,
                         i_target_high,
                         resistance_current_ceiling_count,
