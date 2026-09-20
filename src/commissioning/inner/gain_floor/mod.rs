@@ -146,15 +146,20 @@ where
         Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
+    let velocity_i = match gains::compute_velocity_i(velocity_p) {
+        Ok(v) => v,
+        Err(e) => return super::fail_inner(phase, e),
+    };
     let position_p = match gains::compute_position_p(bw_current_hz) {
         Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
     defmt::info!(
-        "gain-floor: accel_per_count_milli={} bw_current_hz={} velocity_p={} position_p={}",
+        "gain-floor: accel_per_count_milli={} bw_current_hz={} velocity_p={} velocity_i={} position_p={}",
         (accel_per_count * 1000.0) as i32,
         bw_current_hz,
         velocity_p.raw(),
+        velocity_i.raw(),
         position_p.raw()
     );
 
@@ -193,7 +198,7 @@ where
         torque_p,
         torque_i,
         velocity_p,
-        velocity_i: PidIGain::ZERO,
+        velocity_i,
         position_p,
         position_i: PidIGain::ZERO,
         velocity_limit: vel_limit,
@@ -543,7 +548,7 @@ mod tests {
                         position_p.raw(),
                         crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()
                     );
-                    assert_eq!(velocity_i, PidIGain::ZERO);
+                    assert_eq!(velocity_i.raw(), 12);
                     assert_eq!(position_i, PidIGain::ZERO);
                     // Steps at 1000 and 2000 counts give accel_raw 1e-3 and
                     // 2e-3 units/us^2: 1e-6 per count = 95.9 rad/s^2 per

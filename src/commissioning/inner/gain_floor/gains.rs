@@ -6,6 +6,14 @@
 /// homing; on the live CoreXY a ratio of 10 landed velocity_p an order of
 /// magnitude above the autotuned range, 60 lands inside it.
 const CURRENT_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 60.0;
+/// Velocity integral gain as a fraction of velocity_p, numerator over
+/// denominator. Without an integrator the steady velocity lag at homing
+/// speed lands in position error and trips the stall detector (0.53 mm
+/// against a 0.5 mm stall_distance on the live CoreXY); autotune settles
+/// near two thirds (512 at 755 and 812), the hand tune far above it.
+const VELOCITY_I_TO_P_NUMERATOR: u32 = 2;
+const VELOCITY_I_TO_P_DENOMINATOR: u32 = 3;
+
 /// Position-loop target as a fraction of the current-loop bandwidth. The
 /// register-scaling formula below labels this a bandwidth, but on the live
 /// CoreXY a ratio of 100 (position_p 9) let the axis lag 2.2 mm at homing
@@ -34,6 +42,15 @@ pub(crate) fn compute_velocity_p(
         return Err(crate::autotune::CommissionError::GainFloorVelocityGainUnrepresentable);
     }
     Ok(gain)
+}
+
+pub(crate) fn compute_velocity_i(
+    velocity_p: foci_tmc4671::pid::PidPGain,
+) -> Result<foci_tmc4671::pid::PidIGain, crate::autotune::CommissionError> {
+    let raw = (u32::from(velocity_p.raw()) * VELOCITY_I_TO_P_NUMERATOR)
+        .div_ceil(VELOCITY_I_TO_P_DENOMINATOR);
+    foci_tmc4671::pid::PidIGain::new(raw.min(u16::MAX as u32) as u16)
+        .map_err(|_| crate::autotune::CommissionError::GainFloorVelocityGainUnrepresentable)
 }
 
 pub(crate) fn compute_position_p(
@@ -97,6 +114,15 @@ mod tests {
             (350..=900).contains(&velocity_p.raw()),
             "{}",
             velocity_p.raw()
+        );
+    }
+
+    #[test]
+    fn velocity_i_is_two_thirds_of_velocity_p_rounded_up() {
+        let velocity_p = foci_tmc4671::pid::PidPGain::new(389).expect("valid");
+        assert_eq!(
+            compute_velocity_i(velocity_p).expect("representable").raw(),
+            260
         );
     }
 
