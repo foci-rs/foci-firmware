@@ -1,8 +1,10 @@
 //! Commissioning fallback gain-floor measurement.
 //!
-//! Runs the fixed-grid current-step capture (`capture::run_capture`), fits
-//! the position response (`quadratic_fit::fit_accel_raw`) and the current
-//! response (`current_response_fit::fit_current_response`), then derives
+//! Runs two fixed-grid current-step captures (`capture::run_capture`) at a
+//! low and a high torque amplitude, fits each position response
+//! (`quadratic_fit::fit_accel_raw`), takes the differential acceleration
+//! per torque count between them, fits the current response of the high
+//! step (`current_response_fit::fit_current_response`), then derives
 //! `velocity_p`/`position_p` (`gains::compute_velocity_p`/
 //! `compute_position_p`) and hands off to `InnerPhase::ClosedLoopActivation`.
 //! Reached only when `current_loop.rs`'s bandwidth gate has already
@@ -10,6 +12,13 @@
 //! range; a measurement failure here fails commissioning outright (no
 //! fallback substitution -- that only happens for the static
 //! bandwidth-out-of-range case, handled before this phase is ever entered).
+//!
+//! Two amplitudes rather than one because on a real axis a single torque
+//! step measures `(T - T_friction) / J`, not `T / J`: Coulomb friction and
+//! breakaway shift every fitted acceleration by the same current-independent
+//! amount, which biases a single-step `accel_per_count` low and therefore the
+//! derived `velocity_p` high. The difference between two steps cancels that
+//! offset.
 
 pub(crate) mod capture;
 pub(crate) mod current_response_fit;
@@ -22,37 +31,18 @@ use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::StepResult;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
+/// Coast time so the high step starts from rest with the same stiction
+/// history as the low one.
+const INTER_STEP_SETTLE_US: u64 = 100_000;
+
 /// `step_gain_floor_measurement` sub-state.
-///
-/// Unlike `CurrentValidate`'s `AxisSampleDelay`/`AxisSampleSettle` states
-/// (which return `StepResult::At(deadline_us)` so the outer dispatcher
-/// re-drives them across a multi-millisecond mechanical settle),
-/// `capture::run_capture` awaits its own fixed-grid slot delays directly via
-/// `backend.delay_us().await` -- the same cooperative-yield primitive
-/// `current_loop.rs`'s `read_axis_directional_evidence_for_gate` already
-/// uses for its own multi-sample loop, per `CommissionTiming::delay_us`'s
-/// own doc comment ("used by ... any other firmware-side wait that must
-/// yield to higher-priority RTIC tasks"). A single dispatcher tick can
-/// therefore run the whole safety sequence, capture, and fit pipeline to
-/// completion in one `step_gain_floor_measurement` call, so this phase needs
-/// no additional per-tick polling state of its own.
-#[derive(Debug, defmt::Format)]
+#[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) enum GainFloorState {
     Start,
+    HighStep { low_accel_raw_q32: i64 },
 }
 
 /// Drive the commissioning fallback gain-floor measurement phase.
-///
-/// Safety sequence (mirrors `current_loop.rs`'s `AxisStepSetup` and
-/// `electrical_identification.rs`'s inductance open-loop-ramp arming for the
-/// interlock-check/enable ordering, and
-/// `closed_loop_activation.rs`'s `ZeroAndClear` for the
-/// `write_sub_register_checked` integrator-clear pattern): zero the
-/// torque/flux target, clear STATUS_FLAGS via the race-safe helper, clear
-/// the torque/flux PID integrators, a final `interlock_tripped()` check with
-/// no await before `set_enable_pin(true)`, command the bounded torque step,
-/// run the capture, then unconditionally re-zero the target and de-energize
-/// on every exit path before mapping the outcome.
 pub(crate) async fn step_gain_floor_measurement<B>(
     phase: &mut InnerPhase,
     backend: &mut B,
@@ -60,167 +50,68 @@ pub(crate) async fn step_gain_floor_measurement<B>(
 where
     B: CommissioningBackend,
 {
-    let (i_target, resistance_current_ceiling_count, inner_result) = match phase {
+    let (state, i_target_low, i_target_high, resistance_current_ceiling_count) = match phase {
         InnerPhase::GainFloorMeasurement {
-            i_target,
+            state,
+            i_target_low,
+            i_target_high,
             resistance_current_ceiling_count,
-            inner_result,
             ..
         } => (
-            *i_target,
+            *state,
+            *i_target_low,
+            *i_target_high,
             *resistance_current_ceiling_count,
-            inner_result.take(),
         ),
         _ => return StepResult::ReadyNow,
     };
 
-    // Zero the torque/flux target first -- no interlock guard needed, since
-    // this write does not clear a fault or enable the motor and so carries
-    // none of the race the interlock check below exists to prevent.
-    let zero_target = foci_tmc4671::registers::PidTorqueFluxTarget::new()
-        .with_pid_flux_target(0)
-        .with_pid_torque_target(0);
-    if backend
-        .write_register(
-            foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET,
-            zero_target.into(),
-        )
-        .await
-        .is_err()
-    {
-        return super::fail_inner(phase, CommissionError::Spi);
-    }
+    let low_accel_raw_q32 =
+        match state {
+            GainFloorState::Start => {
+                let capture =
+                    match run_torque_step(backend, i_target_low, resistance_current_ceiling_count)
+                        .await
+                    {
+                        Ok(buf) => buf,
+                        Err(e) => return super::fail_inner(phase, e),
+                    };
+                let accel_raw_q32 = match fit_capture_accel(&capture, i_target_low) {
+                    Ok(v) => v,
+                    Err(e) => return super::fail_inner(phase, e),
+                };
+                if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
+                    *state = GainFloorState::HighStep {
+                        low_accel_raw_q32: accel_raw_q32,
+                    };
+                }
+                return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
+            }
+            GainFloorState::HighStep { low_accel_raw_q32 } => low_accel_raw_q32,
+        };
 
-    // Clear STATUS_FLAGS via the race-safe helper -- not a direct write --
-    // because a fault can latch during any awaited operation, and this is
-    // the codebase's one designated place that check-and-clear happens
-    // atomically with respect to that race.
-    if let Err(e) = crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await {
-        return super::fail_inner(phase, e);
-    }
-
-    // Clear the torque/flux PID integrators before enabling, the same
-    // `write_sub_register_checked` pattern `ClosedLoopActivationState::ZeroAndClear`
-    // uses for its own (different) closed-position-loop entry. This phase
-    // never enters velocity or position mode, so only the torque/flux sums
-    // are cleared here.
-    if crate::commissioning::helpers::write_sub_register_checked(
-        backend,
-        foci_tmc4671::registers::PID_ERROR_PID_TORQUE_ERROR_SUM,
-        0,
-    )
-    .await
-    .is_err()
-        || crate::commissioning::helpers::write_sub_register_checked(
-            backend,
-            foci_tmc4671::registers::PID_ERROR_PID_FLUX_ERROR_SUM,
-            0,
-        )
-        .await
-        .is_err()
-    {
-        return super::fail_inner(phase, CommissionError::Spi);
-    }
-
-    // Enter torque mode -- the same advanced PI controller structure
-    // `current_loop.rs`'s own `AxisStepSetup` uses before its torque step.
-    // `CurrentValidate`'s teardown (`restore_current_validation_safe_state`)
-    // leaves `MODE_RAMP_MODE_MOTION` at 0 (stopped) on the way into this
-    // phase; without re-entering torque mode here, the commanded target
-    // below has no effect on the real chip -- confirmed live on Ouroboros
-    // hardware, where `PID_TORQUE_FLUX_ACTUAL` stayed noise-level regardless
-    // of the commanded target and the rotor never moved.
-    if backend
-        .write_register(
-            foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-            super::current_loop::CURRENT_TORQUE_MODE,
-        )
-        .await
-        .is_err()
-    {
-        return super::fail_inner(phase, CommissionError::Spi);
-    }
-
-    // Final interlock check immediately before enabling -- a fault can have
-    // latched during either awaited integrator-clear write above or the
-    // mode write just above, and this is the last point before the motor is
-    // actually energized. No await between this check and `set_enable_pin`.
-    if backend.interlock_tripped() {
-        return super::fail_inner(phase, CommissionError::FaultInterlock);
-    }
-    backend.set_enable_pin(true);
-
-    // Command the torque step: flux target held at zero, torque target set
-    // to i_target -- already bounded to the resistance current ceiling by
-    // the caller in current_loop.rs's bandwidth-gate transition.
-    let torque_step = foci_tmc4671::registers::PidTorqueFluxTarget::new()
-        .with_pid_flux_target(0)
-        .with_pid_torque_target(i_target);
-    if backend
-        .write_register(
-            foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET,
-            torque_step.into(),
-        )
-        .await
-        .is_err()
-    {
-        backend.set_enable_pin(false);
-        return super::fail_inner(phase, CommissionError::Spi);
-    }
-
-    // Run the capture, then unconditionally zero the target and de-energize
-    // on every exit path -- success or failure -- before mapping the
-    // capture's own result. `run_capture` already de-energizes on its own
-    // exit; this additionally re-zeroes the target so ClosedLoopActivation's
-    // entry never inherits a nonzero torque command left over from here --
-    // ClosedLoopActivation never re-zeroes this register itself, so a
-    // silently-dropped failure on this write would otherwise leak a stale
-    // nonzero torque command into the next phase.
-    let capture_result =
-        capture::run_capture(backend, i_target, resistance_current_ceiling_count).await;
-    let zero_target_result = backend
-        .write_register(foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET, 0)
-        .await;
-    backend.set_enable_pin(false);
-
-    let capture = match capture_result {
-        Ok(buf) => buf,
+    let capture =
+        match run_torque_step(backend, i_target_high, resistance_current_ceiling_count).await {
+            Ok(buf) => buf,
+            Err(e) => return super::fail_inner(phase, e),
+        };
+    let high_accel_raw_q32 = match fit_capture_accel(&capture, i_target_high) {
+        Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
-    if zero_target_result.is_err() {
-        return super::fail_inner(phase, CommissionError::Spi);
+    if high_accel_raw_q32 <= low_accel_raw_q32 {
+        defmt::warn!(
+            "gain-floor: high step did not accelerate faster than low step ({} <= {})",
+            high_accel_raw_q32,
+            low_accel_raw_q32
+        );
+        return super::fail_inner(phase, CommissionError::GainFloorNonPositiveSlope);
     }
 
-    let commanded_sign: i8 = if i_target >= 0 { 1 } else { -1 };
-    // fit_accel_raw requires centered_position (wrapping_sub against the
-    // first sample), not the raw register value, so a signed
-    // position-register wrap does not appear as a large discontinuity in
-    // the fitted trace.
-    let position_0 = capture.first().map(|s| s.position).unwrap_or(0);
-    let position_samples: heapless::Vec<(u32, i32), 200> = capture
-        .iter()
-        .map(|s| (s.t_us, s.position.wrapping_sub(position_0)))
-        .collect();
-    let accel_raw_q32 = match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
-        Ok(v) => v,
-        Err(quadratic_fit::GainFloorFitError::WrongSign) => {
-            return super::fail_inner(phase, CommissionError::GainFloorNonPositiveSlope);
-        }
-        Err(_) => {
-            return super::fail_inner(phase, CommissionError::GainFloorInsufficientLinearPoints);
-        }
-    };
-
-    // Convert accel_raw (Q32-scaled) to accel_per_count. The
-    // counts-per-revolution input is
-    // `mechanical_encoder_quadrature_counts_per_rev()`, the same ABN-encoder
-    // resolution value `closed_loop_activation.rs` already uses.
-    let encoder_counts_per_rev: f64 =
-        f64::from(backend.mechanical_encoder_quadrature_counts_per_rev());
     let accel_per_count: f32 = match gains::accel_raw_q32_to_accel_per_count(
-        accel_raw_q32,
-        encoder_counts_per_rev,
-        i_target,
+        high_accel_raw_q32 - low_accel_raw_q32,
+        crate::motion_scale::POSITION_UNITS_PER_REV as f64,
+        i_target_high - i_target_low,
     ) {
         Some(v) => v,
         None => {
@@ -231,7 +122,7 @@ where
     let torque_samples: heapless::Vec<(u32, i16), 200> =
         capture.iter().map(|s| (s.t_us, s.torque_actual)).collect();
     let bw_current_floor_hz =
-        match current_response_fit::fit_current_response(&torque_samples, i_target) {
+        match current_response_fit::fit_current_response(&torque_samples, i_target_high) {
             Ok(v) => v,
             Err(current_response_fit::CurrentFitError::HighResidual) => {
                 return super::fail_inner(phase, CommissionError::GainFloorCurrentFitRejected);
@@ -259,9 +150,14 @@ where
     let flux_filter_hz = backend
         .configured_flux_filter_hz()
         .unwrap_or(default_current_filter_hz);
+    let inner_result = match phase {
+        InnerPhase::GainFloorMeasurement { inner_result, .. } => inner_result.take(),
+        _ => None,
+    };
     let Some(inner_result) = inner_result else {
         return super::fail_inner(phase, CommissionError::Spi);
     };
+
     // The current-loop flux/torque gains only survive into this phase as
     // InnerResult's raw register values (Finalize already validated them as
     // PidPGain/PidIGain before writing InnerResult); re-validating here
@@ -295,11 +191,157 @@ where
     StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
 }
 
+async fn run_torque_step<B>(
+    backend: &mut B,
+    i_target: i16,
+    resistance_current_ceiling_count: u16,
+) -> Result<capture::CaptureBuffer, CommissionError>
+where
+    B: CommissioningBackend,
+{
+    use foci_tmc4671::registers::{
+        MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_TORQUE_ERROR_SUM,
+        PID_TORQUE_FLUX_TARGET, PIDOUT_UQ_UD_LIMITS, PidTorqueFluxTarget,
+    };
+
+    let zero_target = PidTorqueFluxTarget::new()
+        .with_pid_flux_target(0)
+        .with_pid_torque_target(0);
+    backend
+        .write_register(PID_TORQUE_FLUX_TARGET, zero_target.into())
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+
+    crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await?;
+
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        PID_ERROR_PID_TORQUE_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| CommissionError::Spi)?;
+    crate::commissioning::helpers::write_sub_register_checked(
+        backend,
+        PID_ERROR_PID_FLUX_ERROR_SUM,
+        0,
+    )
+    .await
+    .map_err(|_| CommissionError::Spi)?;
+
+    // Current-validate teardown leaves the chip stopped under the safe
+    // voltage limit; the first ignores the torque target and the second
+    // clips the current loop below anything that moves a loaded axis.
+    backend
+        .write_register(
+            MODE_RAMP_MODE_MOTION,
+            super::current_loop::CURRENT_TORQUE_MODE,
+        )
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+    backend
+        .write_register(PIDOUT_UQ_UD_LIMITS, backend.operational_voltage_limit())
+        .await
+        .map_err(|_| CommissionError::Spi)?;
+
+    enable_if_interlock_clear(backend)?;
+
+    let torque_step = PidTorqueFluxTarget::new()
+        .with_pid_flux_target(0)
+        .with_pid_torque_target(i_target);
+    if backend
+        .write_register(PID_TORQUE_FLUX_TARGET, torque_step.into())
+        .await
+        .is_err()
+    {
+        backend.set_enable_pin(false);
+        return Err(CommissionError::Spi);
+    }
+
+    // ClosedLoopActivation never re-zeroes the target itself.
+    let capture_result =
+        capture::run_capture(backend, i_target, resistance_current_ceiling_count).await;
+    let zero_target_result = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
+    let limit_result = backend
+        .write_register(
+            PIDOUT_UQ_UD_LIMITS,
+            super::current_loop::CURRENT_SAFE_PIDOUT_LIMIT,
+        )
+        .await;
+    backend.set_enable_pin(false);
+
+    let capture = capture_result?;
+    if zero_target_result.is_err() || limit_result.is_err() {
+        return Err(CommissionError::Spi);
+    }
+    Ok(capture)
+}
+
+/// Synchronous so no fault can latch between the interlock check and the
+/// enable-pin assertion.
+fn enable_if_interlock_clear<B>(backend: &mut B) -> Result<(), CommissionError>
+where
+    B: CommissioningBackend,
+{
+    if backend.interlock_tripped() {
+        return Err(CommissionError::FaultInterlock);
+    }
+    backend.set_enable_pin(true);
+    Ok(())
+}
+
+fn fit_capture_accel(
+    capture: &capture::CaptureBuffer,
+    i_target: i16,
+) -> Result<i64, CommissionError> {
+    let position_0 = capture.first().map_or(0, |s| s.position);
+    let position_samples: heapless::Vec<(u32, i32), 200> = capture
+        .iter()
+        .map(|s| (s.t_us, s.position.wrapping_sub(position_0)))
+        .collect();
+    let commanded_sign: i8 = if i_target >= 0 { 1 } else { -1 };
+    let peak_to_peak = position_samples.iter().map(|(_, p)| *p).max().unwrap_or(0)
+        - position_samples.iter().map(|(_, p)| *p).min().unwrap_or(0);
+    let torque_peak = capture.iter().map(|s| s.torque_actual).max().unwrap_or(0);
+    match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
+        Ok(accel_raw_q32) => {
+            defmt::info!(
+                "gain-floor step: i_target={} torque_peak={} p2p={} accel_raw_q32={}",
+                i_target,
+                torque_peak,
+                peak_to_peak,
+                accel_raw_q32
+            );
+            Ok(accel_raw_q32)
+        }
+        Err(e) => {
+            defmt::warn!(
+                "gain-floor step rejected: i_target={} torque_peak={} p2p={} reason={}",
+                i_target,
+                torque_peak,
+                peak_to_peak,
+                e
+            );
+            Err(match e {
+                quadratic_fit::GainFloorFitError::WrongSign => {
+                    CommissionError::GainFloorNonPositiveSlope
+                }
+                quadratic_fit::GainFloorFitError::TooFewSamples
+                | quadratic_fit::GainFloorFitError::InsufficientExcitation
+                | quadratic_fit::GainFloorFitError::HighResidual => {
+                    CommissionError::GainFloorInsufficientLinearPoints
+                }
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::autotune::{CommissionProfile, CommissionStatus, InnerSequence, TransientBuffer};
     use crate::commission_dispatch::test_support::{GainFloorCaptureScript, MockBackend, SpiOp};
+    use crate::commissioning::backend::{CommissionBoardConfig, CommissionTiming};
     use crate::commissioning::types::{
         AdcResidualEvidence, CommissionTimingSummary, CurrentValidationAxisEvidence,
         InductanceEvidence, InnerResult,
@@ -419,43 +461,41 @@ mod tests {
         }
     }
 
-    fn gain_floor_phase(i_target: i16, resistance_current_ceiling_count: u16) -> InnerPhase {
+    fn gain_floor_phase(i_target_high: i16, resistance_current_ceiling_count: u16) -> InnerPhase {
         InnerPhase::GainFloorMeasurement {
             state: GainFloorState::Start,
-            i_target,
+            i_target_low: i_target_high / 2,
+            i_target_high,
             resistance_current_ceiling_count,
             inner_result: Some(sample_inner_result(resistance_current_ceiling_count)),
         }
     }
 
+    fn ideal_plant() -> GainFloorCaptureScript {
+        GainFloorCaptureScript {
+            accel_raw_per_us2_per_count: 1e-6,
+            accel_raw_offset_per_us2: 0.0,
+            tau_current_us: 1000.0,
+        }
+    }
+
+    async fn drive_to_completion(phase: &mut InnerPhase, backend: &mut MockBackend) -> StepResult {
+        let mut result = step_gain_floor_measurement(phase, backend).await;
+        while matches!(result, StepResult::At(_)) {
+            result = step_gain_floor_measurement(phase, backend).await;
+        }
+        result
+    }
+
     #[test]
     fn gain_floor_measurement_success_writes_computed_gains() {
         pollster::block_on(async {
-            let i_target: i16 = 2000;
-            let ceiling = 4_000u16;
-            let mut phase = gain_floor_phase(i_target, ceiling);
+            let mut phase = gain_floor_phase(2000, 4_000);
             let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
             backend.advance_elapsed_on_delay = true;
-            // Synthetic accel_raw=0.002 counts/us^2 (the same fixture
-            // `quadratic_fit`'s own unit tests validate independently) and
-            // tau_current=1000us, so both fits are exercised end to end
-            // through the real `run_capture` primitive. A shorter tau (e.g.
-            // the 265us Ouroboros bandwidth-derived value used in isolation
-            // by `current_response_fit`'s own unit tests, which only sample
-            // out to ~4.4*tau) saturates for most of this capture's full
-            // ~5ms/166-sample window: with a perfectly noiseless synthetic
-            // trace, the many identical near-saturated integer-truncated
-            // samples dominate the log-linear regression and blow the
-            // residual past its threshold. 1000us keeps the fit inside its
-            // residual bound across the whole window while still exercising
-            // the same code path a real (noisy) capture would take.
-            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-                accel_raw_per_us2: 0.002,
-                tau_current_us: 1000.0,
-                i_target,
-            });
+            backend.script_gain_floor_capture = Some(ideal_plant());
 
-            let result = step_gain_floor_measurement(&mut phase, &mut backend).await;
+            let result = drive_to_completion(&mut phase, &mut backend).await;
 
             assert!(matches!(
                 result,
@@ -483,10 +523,12 @@ mod tests {
                     );
                     assert_eq!(velocity_i, PidIGain::ZERO);
                     assert_eq!(position_i, PidIGain::ZERO);
-                    // Worked by hand from the fixture above: accel_per_count
-                    // ~= 1570.8 rad/s^2 per count, bw_current_floor_hz ~= 158
-                    // Hz -> velocity_p_raw = 2, position_p_raw = 3.
-                    assert_eq!(velocity_p.raw(), 2);
+                    // Steps at 1000 and 2000 counts give accel_raw 1e-3 and
+                    // 2e-3 units/us^2: 1e-6 per count = 95.9 rad/s^2 per
+                    // count; tau 1000us gives ~158 Hz, omega_target ~99.3
+                    // rad/s; velocity_p = ceil(256*99.3*2pi/(60*95.9)) = 28,
+                    // position_p = ceil(9.93*60*256/65536) = 3.
+                    assert_eq!(velocity_p.raw(), 28);
                     assert_eq!(position_p.raw(), 3);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
@@ -495,18 +537,168 @@ mod tests {
     }
 
     #[test]
-    fn step_gain_floor_measurement_enters_torque_mode_before_commanding_the_step() {
+    fn torque_step_runs_under_the_operational_voltage_limit_and_restores_the_safe_one() {
         pollster::block_on(async {
-            let i_target: i16 = 2000;
-            let ceiling = 4_000u16;
-            let mut phase = gain_floor_phase(i_target, ceiling);
+            let mut phase = gain_floor_phase(2000, 4_000);
             let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
             backend.advance_elapsed_on_delay = true;
-            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-                accel_raw_per_us2: 0.002,
-                tau_current_us: 1000.0,
-                i_target,
-            });
+            backend.script_gain_floor_capture = Some(ideal_plant());
+            let operational = backend.operational_voltage_limit();
+            assert_ne!(
+                operational,
+                super::super::current_loop::CURRENT_SAFE_PIDOUT_LIMIT
+            );
+
+            let result = step_gain_floor_measurement(&mut phase, &mut backend).await;
+            assert!(matches!(result, StepResult::At(_)), "got {result:?}");
+
+            let limit_addr = foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr();
+            let target_addr = foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr();
+            let operational_write = backend
+                .spi_log
+                .iter()
+                .position(
+                    |op| matches!(op, SpiOp::Write(a, v) if *a == limit_addr && *v == operational),
+                )
+                .expect("operational voltage limit must be written for the step");
+            let step_write = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::Write(a, v) if *a == target_addr && *v != 0))
+                .expect("torque step must be commanded");
+            let safe_restore = backend
+                .spi_log
+                .iter()
+                .rposition(|op| {
+                    matches!(
+                        op,
+                        SpiOp::Write(a, v)
+                            if *a == limit_addr
+                                && *v == super::super::current_loop::CURRENT_SAFE_PIDOUT_LIMIT
+                    )
+                })
+                .expect("safe voltage limit must be restored after the capture");
+            let disable = backend
+                .spi_log
+                .iter()
+                .rposition(|op| matches!(op, SpiOp::EnablePin(false)))
+                .expect("must de-energize after the capture");
+            assert!(operational_write < step_write);
+            assert!(step_write < safe_restore);
+            assert!(safe_restore < disable);
+        });
+    }
+
+    #[test]
+    fn low_and_high_steps_are_commanded_in_order_with_a_settle_between() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(ideal_plant());
+
+            let first = step_gain_floor_measurement(&mut phase, &mut backend).await;
+            let settle_deadline = match first {
+                StepResult::At(deadline) => deadline,
+                other => panic!("expected At(_) after the low step, got {other:?}"),
+            };
+            assert!(
+                settle_deadline >= backend.elapsed_us() + INTER_STEP_SETTLE_US,
+                "high step must wait for the axis to settle"
+            );
+            assert!(!backend.enable_pin, "must be de-energized while settling");
+
+            let second = step_gain_floor_measurement(&mut phase, &mut backend).await;
+            assert!(matches!(
+                second,
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+            ));
+
+            let target_addr = foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr();
+            let commanded: std::vec::Vec<i16> = backend
+                .spi_log
+                .iter()
+                .filter_map(|op| match op {
+                    SpiOp::Write(a, v) if *a == target_addr && *v != 0 => {
+                        Some((*v >> 16) as u16 as i16)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(commanded, std::vec![1000, 2000]);
+        });
+    }
+
+    #[test]
+    fn current_independent_acceleration_offset_cancels_in_the_differential() {
+        let run = |script: GainFloorCaptureScript| {
+            pollster::block_on(async {
+                let mut phase = gain_floor_phase(2000, 4_000);
+                let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+                backend.advance_elapsed_on_delay = true;
+                backend.script_gain_floor_capture = Some(script);
+                let result = drive_to_completion(&mut phase, &mut backend).await;
+                assert!(matches!(
+                    result,
+                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+                ));
+                match phase {
+                    InnerPhase::ClosedLoopActivation { velocity_p, .. } => velocity_p.raw(),
+                    other => panic!("expected ClosedLoopActivation, got {other:?}"),
+                }
+            })
+        };
+        let ideal = run(ideal_plant());
+        let with_offset = run(GainFloorCaptureScript {
+            accel_raw_offset_per_us2: -4e-4,
+            ..ideal_plant()
+        });
+        assert_eq!(with_offset, ideal);
+    }
+
+    #[test]
+    fn equal_acceleration_at_both_amplitudes_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4000);
+        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        backend.advance_elapsed_on_delay = true;
+        backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+            accel_raw_per_us2_per_count: 0.0,
+            accel_raw_offset_per_us2: 2e-3,
+            ..ideal_plant()
+        });
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorNonPositiveSlope,
+        );
+    }
+
+    #[test]
+    fn computed_gains_do_not_depend_on_the_encoder_resolution() {
+        let run = |counts_per_rev: u32| {
+            pollster::block_on(async {
+                let mut phase = gain_floor_phase(2000, 4_000);
+                let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+                backend.advance_elapsed_on_delay = true;
+                backend.mechanical_encoder_quadrature_counts_per_rev_value = counts_per_rev;
+                backend.script_gain_floor_capture = Some(ideal_plant());
+                let _ = drive_to_completion(&mut phase, &mut backend).await;
+                match phase {
+                    InnerPhase::ClosedLoopActivation { velocity_p, .. } => velocity_p.raw(),
+                    other => panic!("expected ClosedLoopActivation, got {other:?}"),
+                }
+            })
+        };
+        assert_eq!(run(4000), run(1000));
+    }
+
+    #[test]
+    fn step_gain_floor_measurement_enters_torque_mode_before_commanding_the_step() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(ideal_plant());
 
             let _ = step_gain_floor_measurement(&mut phase, &mut backend).await;
 
@@ -548,16 +740,10 @@ mod tests {
     #[test]
     fn gain_floor_measurement_cleanup_zero_write_failure_fails_commissioning() {
         pollster::block_on(async {
-            let i_target: i16 = 2000;
-            let ceiling = 4_000u16;
-            let mut phase = gain_floor_phase(i_target, ceiling);
+            let mut phase = gain_floor_phase(2000, 4_000);
             let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
             backend.advance_elapsed_on_delay = true;
-            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-                accel_raw_per_us2: 0.002,
-                tau_current_us: 1000.0,
-                i_target,
-            });
+            backend.script_gain_floor_capture = Some(ideal_plant());
             // PID_TORQUE_FLUX_TARGET is written twice before the post-capture
             // cleanup write (the initial zero, then the commanded torque
             // step); failing the third (zero-based occurrence 2) targets
@@ -640,17 +826,20 @@ mod tests {
         let mut adc_cal = None;
         let mut selftest_results = SelftestResults::default();
         let mut diagnostics = CommissionDiagnostics::default();
-        let result = pollster::block_on(super::super::step_inner(
-            phase,
-            &mut buf,
-            CommissionProfile::Balanced,
-            InnerSequence::Commission,
-            &mut adc_cal,
-            None,
-            &mut selftest_results,
-            &mut diagnostics,
-            backend,
-        ));
+        let mut result = StepResult::At(0);
+        while matches!(result, StepResult::At(_)) {
+            result = pollster::block_on(super::super::step_inner(
+                phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &mut adc_cal,
+                None,
+                &mut selftest_results,
+                &mut diagnostics,
+                backend,
+            ));
+        }
         assert!(
             matches!(result, StepResult::InnerFailed(e) if e == expected),
             "expected InnerFailed({expected:?}), got {result:?}"
@@ -663,15 +852,22 @@ mod tests {
             !backend.enable_pin,
             "{expected:?} must de-energize on measurement failure"
         );
+        // The phase's own safe-limit restore precedes its enable-pin drop;
+        // only the wrapper's restore machine writes the limit after it.
+        let last_disable = backend
+            .spi_log
+            .iter()
+            .rposition(|op| matches!(op, SpiOp::EnablePin(false)))
+            .expect("must de-energize");
         assert!(
-            backend.spi_log.iter().any(|op| matches!(
+            backend.spi_log[last_disable..].iter().any(|op| matches!(
                 op,
                 SpiOp::Write(addr, val)
                     if *addr == foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr()
                         && *val == 1024
             )),
             "{expected:?} must route through restore_safe_state_via_backend \
-             (no PIDOUT_UQ_UD_LIMITS=1024 write observed)"
+             (no PIDOUT_UQ_UD_LIMITS=1024 write after the last enable-pin drop)"
         );
     }
 
@@ -740,9 +936,8 @@ mod tests {
         let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-            accel_raw_per_us2: -0.002,
-            tau_current_us: 1000.0,
-            i_target: 2000,
+            accel_raw_per_us2_per_count: -1e-6,
+            ..ideal_plant()
         });
         assert_routes_through_restore_machine(
             &mut phase,
@@ -757,9 +952,8 @@ mod tests {
         let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-            accel_raw_per_us2: 0.0,
-            tau_current_us: 1000.0,
-            i_target: 2000,
+            accel_raw_per_us2_per_count: 0.0,
+            ..ideal_plant()
         });
         assert_routes_through_restore_machine(
             &mut phase,
@@ -776,9 +970,8 @@ mod tests {
         // tau_current_us=1.0 saturates almost the whole capture at i_target,
         // tripping the current-response fit's saturated-trace rejection.
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-            accel_raw_per_us2: 0.002,
             tau_current_us: 1.0,
-            i_target: 2000,
+            ..ideal_plant()
         });
         assert_routes_through_restore_machine(
             &mut phase,
@@ -794,15 +987,13 @@ mod tests {
         // enough that velocity_p_raw overflows PidPGain::MAX, without touching
         // the position/current fits' own excitation or residual checks (both
         // depend only on the dimensionless current ratio, not on these scales).
-        let i_target = i16::MAX;
-        let mut phase = gain_floor_phase(i_target, 40_000);
+        let mut phase = gain_floor_phase(2000, 4_000);
         let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
         backend.advance_elapsed_on_delay = true;
-        backend.mechanical_encoder_quadrature_counts_per_rev_value = u32::MAX;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-            accel_raw_per_us2: 0.002,
-            tau_current_us: 1000.0,
-            i_target,
+            accel_raw_per_us2_per_count: 3e-10,
+            accel_raw_offset_per_us2: 1e-4,
+            ..ideal_plant()
         });
         assert_routes_through_restore_machine(
             &mut phase,

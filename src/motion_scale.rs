@@ -3,7 +3,8 @@
 use foci_klipper::pulse_mapper::{PulseMapperConfig, PulseMapperConfigError};
 
 const QUADRATURE_COUNTS_PER_PULSE: u32 = 4;
-const POSITION_UNITS_PER_REV: u64 = 65_536;
+/// `PID_POSITION_ACTUAL` units per mechanical revolution (phi_m format).
+pub(crate) const POSITION_UNITS_PER_REV: u64 = 65_536;
 
 /// Errors returned when constructing a [`MotionScale`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

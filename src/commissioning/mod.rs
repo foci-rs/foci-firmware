@@ -1977,20 +1977,24 @@ mod tests {
         // stay live. Both futures are now well past the ~4 KB per-future
         // guideline noted below; flagged for the operator rather than
         // silently accepted.
-        assert_eq!(engine_step, 7_024);
-        assert!(engine_step <= 7_024);
-        assert_eq!(step_inner, 6_976);
-        assert!(step_inner <= 6_976);
+        // 7_024 -> 6_144 and 6_976 -> 6_096: the gain-floor phase fits each
+        // capture in a synchronous helper, so the fit inputs are no longer
+        // live across the capture awaits.
+        assert_eq!(engine_step, 6_144);
+        assert!(engine_step <= 6_144);
+        assert_eq!(step_inner, 6_096);
+        assert!(step_inner <= 6_096);
         assert_eq!(electrical_id, 3_248);
         assert!(electrical_id <= 3_248);
         assert!(electrical_id <= 3_328);
         // 4_496 -> 7_104: same GainFloorMeasurement/`run_capture` growth as
         // `engine_step`/`step_inner` above, reached through the scheduled
         // commissioning-step path.
-        assert_eq!(scheduled_step, 7_104);
+        // 7_104 -> 6_224: same gain-floor fit-input change as above.
+        assert_eq!(scheduled_step, 6_224);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
-        assert!(scheduled_step <= 7_104);
+        assert!(scheduled_step <= 6_224);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {

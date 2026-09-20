@@ -21,12 +21,14 @@ pub struct MockSpiError;
 /// quadratic position / exponential current response.
 #[derive(Debug, Clone, Copy)]
 pub struct GainFloorCaptureScript {
-    /// Raw position counts per microsecond^2 (accel_raw in the fit's own units).
-    pub accel_raw_per_us2: f64,
+    /// Position units per microsecond^2 produced per commanded torque count
+    /// (the plant's true accel-per-count in the fit's own raw units).
+    pub accel_raw_per_us2_per_count: f64,
+    /// Position units per microsecond^2 added regardless of the commanded
+    /// torque (a current-independent offset such as gravity or an assist).
+    pub accel_raw_offset_per_us2: f64,
     /// First-order current-response time constant, in microseconds.
     pub tau_current_us: f64,
-    /// Commanded torque target the exponential response asymptotes toward.
-    pub i_target: i16,
 }
 
 /// Construct a validated current limit for test fixtures.
@@ -419,6 +421,12 @@ pub struct MockBackend {
     /// `advance_elapsed_on_delay = true` and a capture starting at
     /// `elapsed_us_value == 0` so `elapsed_us()` reads as time-since-capture-start.
     pub script_gain_floor_capture: Option<GainFloorCaptureScript>,
+    /// `elapsed_us` at the most recent nonzero `PID_TORQUE_FLUX_TARGET`
+    /// write; the scripted capture response starts from this instant.
+    pub gain_floor_step_start_us: u64,
+    /// Torque target of the most recent nonzero `PID_TORQUE_FLUX_TARGET`
+    /// write; the scripted response scales with and asymptotes toward it.
+    pub gain_floor_commanded_target: i16,
     /// Set by every `record_safe_state_report` call, mirroring
     /// `TmcChannelState::safe_state_incomplete`: a clean pass alone does not
     /// clear this, only a caller explicitly confirming a fresh sentinel pass
@@ -540,6 +548,8 @@ impl MockBackend {
             script_resistance_current_proportional_to_ud: false,
             last_uq_ud_ext_write: 0,
             script_gain_floor_capture: None,
+            gain_floor_step_start_us: 0,
+            gain_floor_commanded_target: 0,
             safe_state_incomplete: false,
             safe_state_last_pass_failed: false,
             safe_state_report: None,
@@ -779,13 +789,18 @@ impl CommissionRegisterIo for MockBackend {
             return Ok(val);
         }
         if let Some(script) = self.script_gain_floor_capture {
-            let t = self.elapsed_us_value as f64;
+            let t = self
+                .elapsed_us_value
+                .saturating_sub(self.gain_floor_step_start_us) as f64;
+            let target = f64::from(self.gain_floor_commanded_target);
             if addr == foci_tmc4671::registers::PID_POSITION_ACTUAL.addr() {
-                let position = (0.5 * script.accel_raw_per_us2 * t * t) as i32;
+                let accel =
+                    script.accel_raw_per_us2_per_count * target + script.accel_raw_offset_per_us2;
+                let position = (0.5 * accel * t * t) as i32;
                 return Ok(position as u32);
             }
             if addr == foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL.addr() {
-                let value = f64::from(script.i_target) * (1.0 - (-t / script.tau_current_us).exp());
+                let value = target * (1.0 - (-t / script.tau_current_us).exp());
                 let torque_actual = value as i16;
                 let packed = foci_tmc4671::registers::PidTorqueFluxActual::new()
                     .with_pid_flux_actual(0)
@@ -840,6 +855,13 @@ impl CommissionRegisterIo for MockBackend {
             && val == 0
         {
             self.pid_velocity_error_sum_clears += 1;
+        }
+        if addr == foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr() {
+            let target = (val >> 16) as u16 as i16;
+            if target != 0 {
+                self.gain_floor_step_start_us = self.elapsed_us_value;
+                self.gain_floor_commanded_target = target;
+            }
         }
         self.elapsed_us_value = self
             .elapsed_us_value

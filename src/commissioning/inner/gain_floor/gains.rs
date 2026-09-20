@@ -57,17 +57,17 @@ pub(crate) fn compute_position_p(
 /// if none exists, not a placeholder to leave in place regardless.
 pub(crate) fn accel_raw_q32_to_accel_per_count(
     accel_raw_q32: i64,
-    encoder_counts_per_rev: f64,
+    position_units_per_rev: f64,
     i_target: i16,
 ) -> Option<f32> {
     const ACCEL_RAW_Q32_SHIFT: f64 = 4_294_967_296.0; // 2^32, must match Task 3
     const US_TO_S_SQUARED: f64 = 1_000_000.0 * 1_000_000.0; // (1e6)^2: counts/us^2 -> counts/s^2
-    if encoder_counts_per_rev <= 0.0 || i_target == 0 {
+    if position_units_per_rev <= 0.0 || i_target == 0 {
         return None;
     }
     let accel_raw_true = accel_raw_q32 as f64 / ACCEL_RAW_Q32_SHIFT;
     let accel_per_count =
-        accel_raw_true * US_TO_S_SQUARED * (2.0 * core::f64::consts::PI / encoder_counts_per_rev)
+        accel_raw_true * US_TO_S_SQUARED * (2.0 * core::f64::consts::PI / position_units_per_rev)
             / f64::from(i_target);
     if !accel_per_count.is_finite() {
         return None;

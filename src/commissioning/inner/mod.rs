@@ -507,7 +507,8 @@ pub(crate) enum InnerPhase {
     /// fresh-commission path only.
     GainFloorMeasurement {
         state: gain_floor::GainFloorState,
-        i_target: i16,
+        i_target_low: i16,
+        i_target_high: i16,
         resistance_current_ceiling_count: u16,
         inner_result: Option<InnerResult>,
     },
