@@ -1999,9 +1999,10 @@ pub struct InnerResult {
     pub inductance: InductanceEvidence,
     /// Warning bitfield.
     ///
-    /// Bits 0 and 3 report model warnings; bits 1 and 2 are unused. Bit 5 reports
-    /// fallback gains, bit 6 reports host-default confidence, and bit 7 is
-    /// reserved.
+    /// Bits 0, 1 and 3 report model warnings; bit 2 is unused. Bit 5 reports
+    /// fallback current gains, bit 6 reports host-default confidence, and bit 7
+    /// reports that the gain floor was skipped and the outer gains are the
+    /// built-in defaults.
     pub inner_warning_flags: u8,
     /// Per-method timing summaries in resistance, inductance, delay order.
     pub timing: [CommissionTimingSummary; 3],

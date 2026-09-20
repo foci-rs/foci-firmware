@@ -50,10 +50,10 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
 };
 
 /// Fresh-commission fallback outer-loop gains for boards whose configured
-/// current-loop bandwidth (`TmcConfig::bandwidth_hz`) falls outside the
-/// gain-floor measurement's supported `[95.5 Hz, 796 Hz]` range (Task 7).
-/// Not tuned to be "conservative" for any specific motor — historical value,
-/// left unchanged so boards outside that range keep their current behavior.
+/// current-loop bandwidth (`TmcConfig::bandwidth_hz`) is too low for the
+/// gain-floor measurement to run. Not tuned to be "conservative" for any
+/// specific motor — historical value, left unchanged so such boards keep
+/// their current behavior; the commission result flags the fallback.
 pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
     position_p: match PidPGain::new(640) {
         Ok(gain) => gain,
@@ -244,8 +244,8 @@ mod tests {
     #[test]
     fn default_outer_gains_value_is_unchanged() {
         // DEFAULT_OUTER_GAINS keeps its historical value: it is now the
-        // fresh-commission fallback for boards outside the gain-floor
-        // measurement's supported bandwidth range, not an inert placeholder.
+        // fresh-commission fallback for boards below the gain-floor
+        // measurement's bandwidth floor, not an inert placeholder.
         assert_eq!(DEFAULT_OUTER_GAINS.velocity_p.raw(), 1152);
         assert_eq!(DEFAULT_OUTER_GAINS.position_p.raw(), 640);
     }

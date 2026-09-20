@@ -174,6 +174,15 @@ struct AxisSampleRegisters {
     status_flags: u32,
 }
 
+/// Set in `inner_warning_flags` when the outer gains are the hardcoded
+/// defaults because the gain floor did not run.
+pub(crate) const INNER_WARN_BIT_GAIN_FLOOR_SKIPPED: u8 = 1 << 7;
+/// Slowest current loop whose torque step settles (three time constants)
+/// inside the gain-floor capture.
+const GAIN_FLOOR_MIN_BANDWIDTH_HZ: f32 = 3.0
+    / (2.0
+        * core::f32::consts::PI
+        * (super::gain_floor::capture::CAPTURE_DURATION_US as f32 / 1_000_000.0));
 /// Step amplitude as a fraction of run_current (15% = 15/100).
 const VALIDATION_STEP_PERCENT: u32 = 15;
 /// Keep validation proportional output below the PIDOUT clamp.
@@ -2183,15 +2192,10 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         .configured_flux_filter_hz()
                         .unwrap_or(default_current_filter_hz);
 
-                    // Gain-floor measurement (spec, "Bandwidth-gated fresh
-                    // commissioning path") only applies inside the current
-                    // loop's supported bandwidth range; a board configured
-                    // outside it keeps writing DEFAULT_OUTER_GAINS unchanged,
-                    // exactly as before this gate existed.
-                    const SUPPORTED_BW_MIN_HZ: f32 = 95.5;
-                    const SUPPORTED_BW_MAX_HZ: f32 = 796.0;
                     let bandwidth_hz = backend.tmc_config().bandwidth_hz;
-                    if !(SUPPORTED_BW_MIN_HZ..=SUPPORTED_BW_MAX_HZ).contains(&bandwidth_hz) {
+                    if bandwidth_hz < GAIN_FLOOR_MIN_BANDWIDTH_HZ {
+                        let mut result = result;
+                        result.inner_warning_flags |= INNER_WARN_BIT_GAIN_FLOOR_SKIPPED;
                         *phase = InnerPhase::ClosedLoopActivation {
                             state: ClosedLoopActivationState::WriteGains,
                             flux_p: data.gains.flux_p,
@@ -3095,7 +3099,7 @@ mod tests {
             // Deliberately different from effective_bandwidth_hz above -- the
             // default filter is 0.4 * fPWM (FOCI-162) and must not vary with
             // either bandwidth value.
-            backend.tmc_config.bandwidth_hz = 1600.0;
+            backend.tmc_config.bandwidth_hz = GAIN_FLOOR_MIN_BANDWIDTH_HZ / 2.0;
 
             let result = step_current_validate(
                 &mut phase,
@@ -3138,7 +3142,7 @@ mod tests {
             }
             let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
-            backend.tmc_config.bandwidth_hz = 1600.0;
+            backend.tmc_config.bandwidth_hz = GAIN_FLOOR_MIN_BANDWIDTH_HZ / 2.0;
             backend.configured_torque_filter_hz = Some(0);
             backend.configured_flux_filter_hz = Some(3000);
 
@@ -3178,7 +3182,6 @@ mod tests {
                 *state = CurrentValidateState::Finalize;
             }
             let mut buf = TransientBuffer::new();
-            // 600 Hz (Ouroboros) is inside [95.5, 796] Hz.
             let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
 
             let result = step_current_validate(
@@ -3203,15 +3206,39 @@ mod tests {
     }
 
     #[test]
-    fn bandwidth_out_of_range_skips_to_default_outer_gains() {
+    fn high_bandwidth_enters_gain_floor_measurement() {
         pollster::block_on(async {
             let mut phase = current_validate_phase();
             if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
                 *state = CurrentValidateState::Finalize;
             }
             let mut buf = TransientBuffer::new();
-            // 1600 Hz (OpenFFBoard) is outside [95.5, 796] Hz.
             let mut backend = MockBackend::new_with_bandwidth_hz(1600.0);
+            let result = step_current_validate(
+                &mut phase,
+                &mut buf,
+                CommissionProfile::Balanced,
+                InnerSequence::Commission,
+                &None,
+                &mut backend,
+            )
+            .await;
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::GainFloorMeasurement)
+            ));
+        });
+    }
+
+    #[test]
+    fn bandwidth_below_the_floor_skips_to_default_outer_gains_and_flags_it() {
+        pollster::block_on(async {
+            let mut phase = current_validate_phase();
+            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
+                *state = CurrentValidateState::Finalize;
+            }
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new_with_bandwidth_hz(GAIN_FLOOR_MIN_BANDWIDTH_HZ / 2.0);
 
             let result = step_current_validate(
                 &mut phase,
@@ -3233,12 +3260,17 @@ mod tests {
                     velocity_i,
                     position_p,
                     position_i,
+                    inner_result,
                     ..
                 } => {
                     assert_eq!(velocity_p, crate::pid::DEFAULT_OUTER_GAINS.velocity_p);
                     assert_eq!(velocity_i, crate::pid::DEFAULT_OUTER_GAINS.velocity_i);
                     assert_eq!(position_p, crate::pid::DEFAULT_OUTER_GAINS.position_p);
                     assert_eq!(position_i, crate::pid::DEFAULT_OUTER_GAINS.position_i);
+                    let flags = inner_result
+                        .expect("inner result carried")
+                        .inner_warning_flags;
+                    assert_ne!(flags & INNER_WARN_BIT_GAIN_FLOOR_SKIPPED, 0);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }

@@ -15,7 +15,9 @@ use crate::commissioning::backend::CommissioningBackend;
 /// DMA/async dispatch), so the design's 30 us budget tripped the slot
 /// deadline on every slot. 60 us leaves about 35% margin.
 const SAMPLE_PERIOD_US: u32 = 60;
-const CAPTURE_DURATION_US: u32 = 5_000;
+/// Fixed capture window per torque step; the current-loop bandwidth floor
+/// for running the measurement at all is derived from it.
+pub(crate) const CAPTURE_DURATION_US: u32 = 5_000;
 const MAX_SAMPLES: usize = 200;
 const MOTION_ABORT_THRESHOLD: u32 = 32_760;
 /// Slots allowed to overrun their budget before the capture fails. A stray
