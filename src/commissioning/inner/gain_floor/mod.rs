@@ -331,10 +331,22 @@ where
     Ok(())
 }
 
+/// Samples per dump line. A full 84-sample capture is about 1 KB on the defmt
+/// wire, so one line would overflow the default 1 KB RTT buffer; three lines
+/// of 28 stay under it even before the host drains.
+const CAPTURE_LOG_CHUNK: usize = 28;
+
 fn fit_capture_accel(
     capture: &capture::CaptureBuffer,
     i_target: i16,
 ) -> Result<(i64, i32), CommissionError> {
+    for chunk in capture.chunks(CAPTURE_LOG_CHUNK) {
+        defmt::info!(
+            "gain-floor capture: i_target={} samples={=[?]}",
+            i_target,
+            chunk
+        );
+    }
     let position_0 = capture.first().map_or(0, |s| s.position);
     let position_samples: heapless::Vec<(u32, i32), 200> = capture
         .iter()
