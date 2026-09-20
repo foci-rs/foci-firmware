@@ -35,7 +35,8 @@ pub(crate) struct CaptureSample {
 
 pub(crate) type CaptureBuffer = heapless::Vec<CaptureSample, MAX_SAMPLES>;
 
-/// Run the fixed-grid capture window, de-energizing on every exit path.
+/// Run the fixed-grid capture window into `buffer`, de-energizing on every
+/// exit path.
 ///
 /// Reads `PID_TORQUE_FLUX_ACTUAL` and `PID_POSITION_ACTUAL` once per 30us
 /// slot anchored to the capture start, containing actual current on both
@@ -44,15 +45,20 @@ pub(crate) type CaptureBuffer = heapless::Vec<CaptureSample, MAX_SAMPLES>;
 /// sample. A slot whose reads do not finish inside its budget records no
 /// sample, so timestamps stay on the grid; more than `MAX_OVERRUN_SLOTS`
 /// such slots fail the capture as insufficient coverage.
+///
+/// `buffer` is cleared first. It belongs to the phase state rather than to
+/// this future so the samples are neither carried across every slot's await
+/// nor copied on the way back to the fits.
 pub(crate) async fn run_capture<B>(
     backend: &mut B,
+    buffer: &mut CaptureBuffer,
     _i_target: i16,
     resistance_current_ceiling_count: u16,
-) -> Result<CaptureBuffer, CommissionError>
+) -> Result<(), CommissionError>
 where
     B: CommissioningBackend,
 {
-    let mut buffer = CaptureBuffer::new();
+    buffer.clear();
     // Fixed grid anchored at capture start: slot n's deadline is
     // capture_start + n * 30 us, not "30 us after the previous pair of reads
     // finished" -- that formulation lets the loop drift and derives t_us
@@ -135,7 +141,7 @@ where
 
     backend.set_enable_pin(false);
 
-    result.map(|()| buffer)
+    result
 }
 
 #[cfg(test)]
@@ -156,11 +162,42 @@ mod tests {
         // Defaults (zero torque/flux/position) satisfy every safety bound
         // for the whole window, so the happy path needs no per-slot
         // scripting.
-        let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
-        let buffer = result.expect("capture should complete cleanly");
+        let mut buffer = CaptureBuffer::new();
+        pollster::block_on(run_capture(&mut backend, &mut buffer, 2000, 4000))
+            .expect("capture should complete cleanly");
         // CAPTURE_DURATION_US=5000 / SAMPLE_PERIOD_US=60: slots 0..83 (83*60=4980
         // < 5000; 84*60=5040 does not), so 84 samples.
         assert_eq!(buffer.len(), 84);
+    }
+
+    #[test]
+    fn capture_future_does_not_carry_the_sample_buffer() {
+        let mut backend = MockBackend::new();
+        let mut buffer = CaptureBuffer::new();
+        let future = run_capture(&mut backend, &mut buffer, 2000, 4000);
+        assert!(
+            core::mem::size_of_val(&future) < core::mem::size_of::<CaptureBuffer>(),
+            "capture future is {} bytes; the buffer must live in the phase state, not the future",
+            core::mem::size_of_val(&future)
+        );
+    }
+
+    #[test]
+    fn reused_buffer_is_cleared_before_the_capture_starts() {
+        let mut backend = MockBackend::new();
+        let mut buffer = CaptureBuffer::new();
+        buffer
+            .push(CaptureSample {
+                t_us: 999,
+                torque_actual: 0,
+                flux_actual: 0,
+                position: 0,
+            })
+            .unwrap();
+        pollster::block_on(run_capture(&mut backend, &mut buffer, 2000, 4000))
+            .expect("capture should complete cleanly");
+        assert_eq!(buffer.len(), 84);
+        assert_eq!(buffer[0].t_us, 0);
     }
 
     #[test]
@@ -169,7 +206,12 @@ mod tests {
         let _ = backend
             .registers
             .insert(PID_TORQUE_FLUX_ACTUAL.addr(), pack_torque_flux(0, 200));
-        let result = pollster::block_on(run_capture(&mut backend, 2000, 100));
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            2000,
+            100,
+        ));
         assert_eq!(result, Err(CommissionError::GainFloorPeakCurrentExceeded));
         assert!(!backend.enable_pin, "must de-energize on trip");
     }
@@ -180,7 +222,12 @@ mod tests {
         let _ = backend
             .registers
             .insert(PID_TORQUE_FLUX_ACTUAL.addr(), pack_torque_flux(200, 0));
-        let result = pollster::block_on(run_capture(&mut backend, 2000, 100));
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            2000,
+            100,
+        ));
         assert_eq!(result, Err(CommissionError::GainFloorPeakCurrentExceeded));
     }
 
@@ -189,7 +236,12 @@ mod tests {
         let mut backend = MockBackend::new();
         backend.read_position_actual_sequence.push(0).unwrap();
         backend.read_position_actual_sequence.push(40_000).unwrap();
-        let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            2000,
+            4000,
+        ));
         assert_eq!(
             result,
             Err(CommissionError::GainFloorMotionEnvelopeExceeded)
@@ -199,7 +251,12 @@ mod tests {
     #[test]
     fn de_energizes_on_every_exit_path() {
         let mut backend = MockBackend::new();
-        let _ = pollster::block_on(run_capture(&mut backend, 2000, 4000));
+        let _ = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            2000,
+            4000,
+        ));
         assert!(!backend.enable_pin);
     }
 
@@ -216,9 +273,10 @@ mod tests {
         // deadline, and the immediate-trip re-checks would falsely accept
         // every slot while `delay_us_log` stayed empty.
         backend.advance_elapsed_on_delay = true;
-        let result =
-            pollster::block_on(run_capture(&mut backend, 2000, 4000)).expect("valid capture");
-        for (i, sample) in result.iter().enumerate() {
+        let mut buffer = CaptureBuffer::new();
+        pollster::block_on(run_capture(&mut backend, &mut buffer, 2000, 4000))
+            .expect("valid capture");
+        for (i, sample) in buffer.iter().enumerate() {
             assert_eq!(sample.t_us, i as u32 * 60);
         }
         // `MockBackend::delay_us_log` caps at 32 entries; the capture window
@@ -245,7 +303,12 @@ mod tests {
         // trip: only failing to complete the reads in time does (see the
         // post-read deadline check below).
         backend.set_elapsed_us_sequence(&[0, 25, 28]);
-        let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            2000,
+            4000,
+        ));
         assert!(
             result.is_ok(),
             "late arrival alone must not trip when reads still complete in time: {result:?}"
@@ -261,8 +324,9 @@ mod tests {
         // budget. That slot's sample is dropped and the capture continues on
         // the fixed grid, so slot 1 still lands at t_us = 60.
         backend.set_elapsed_us_sequence(&[0, 0, 70]);
-        let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
-        let buffer = result.expect("one overrun slot must not fail the capture");
+        let mut buffer = CaptureBuffer::new();
+        pollster::block_on(run_capture(&mut backend, &mut buffer, 2000, 4000))
+            .expect("one overrun slot must not fail the capture");
         assert_eq!(buffer.len(), 83);
         assert_eq!(buffer[0].t_us, 60);
         assert!(!backend.enable_pin);
@@ -277,7 +341,12 @@ mod tests {
         // systematic dispatch overrun, not a stray interrupt, and must still
         // fail as insufficient coverage.
         backend.spi_elapsed_step_us = 35;
-        let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            2000,
+            4000,
+        ));
         assert_eq!(result, Err(CommissionError::GainFloorInsufficientCoverage));
         assert!(!backend.enable_pin, "must de-energize on trip");
     }

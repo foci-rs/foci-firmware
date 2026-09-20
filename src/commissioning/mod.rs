@@ -1937,6 +1937,11 @@ mod tests {
             129
         );
         assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
+        assert_eq!(
+            size_of::<inner::InnerPhase>(),
+            3_456,
+            "the gain-floor capture buffer must stay inside the existing variant slack"
+        );
         // The breakaway campaign is the largest outer payload: its
         // probe/discovery/confirmation state machine and borrowed workspace
         // outweigh the classic VelocitySweep variant. Exact, so retained
@@ -1967,37 +1972,22 @@ mod tests {
         // the electrical-ID future carries both (656 -> 3_248). The futures
         // that are actually polled on the interrupt stack already reserved
         // space for wider branches and absorb all but 16 bytes of that.
-        // 4_416 -> 7_024 and 4_368 -> 6_976: the new GainFloorMeasurement
-        // phase's dispatch arm awaits `gain_floor::capture::run_capture`,
-        // whose future holds a 200-sample `CaptureBuffer` (~2.4 KB) live
-        // across every fixed-grid slot's `delay_us` await for the whole
-        // ~5 ms capture window. That buffer is real captured evidence
-        // needed by the position/current fits afterward, not incidental
-        // state, so it cannot be dropped before the awaits that need it
-        // stay live. Both futures are now well past the ~4 KB per-future
-        // guideline noted below; flagged for the operator rather than
-        // silently accepted.
-        // 7_024 -> 6_144 and 6_976 -> 6_096: the gain-floor phase fits each
-        // capture in a synchronous helper, so the fit inputs are no longer
-        // live across the capture awaits.
-        // 6_144 -> 6_160 and 6_096 -> 6_112: the gain-floor settle state
-        // carries the low step's mean current alongside its acceleration.
-        assert_eq!(engine_step, 6_160);
-        assert!(engine_step <= 6_160);
-        assert_eq!(step_inner, 6_112);
-        assert!(step_inner <= 6_112);
+        // The GainFloorMeasurement phase keeps its 200-sample capture
+        // workspace in `InnerPhase` (pinned above) and fits each capture in
+        // a synchronous helper, so neither the samples nor the fit inputs
+        // are live across the capture awaits, and these futures are the
+        // same size as before that phase existed.
+        assert_eq!(engine_step, 4_416);
+        assert!(engine_step <= 4_416);
+        assert_eq!(step_inner, 4_368);
+        assert!(step_inner <= 4_368);
         assert_eq!(electrical_id, 3_248);
         assert!(electrical_id <= 3_248);
         assert!(electrical_id <= 3_328);
-        // 4_496 -> 7_104: same GainFloorMeasurement/`run_capture` growth as
-        // `engine_step`/`step_inner` above, reached through the scheduled
-        // commissioning-step path.
-        // 7_104 -> 6_224: same gain-floor fit-input change as above.
-        // 6_224 -> 6_240: same settle-state field as above.
-        assert_eq!(scheduled_step, 6_240);
+        assert_eq!(scheduled_step, 4_496);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
-        assert!(scheduled_step <= 6_240);
+        assert!(scheduled_step <= 4_496);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {

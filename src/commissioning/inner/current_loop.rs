@@ -2193,6 +2193,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         i_target_high,
                         resistance_current_ceiling_count,
                         inner_result: Some(result),
+                        capture: super::gain_floor::capture::CaptureBuffer::new(),
                     };
                     StepResult::PhaseChanged(CommissionPhase::GainFloorMeasurement)
                 }

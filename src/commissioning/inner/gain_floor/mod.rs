@@ -68,45 +68,50 @@ where
         _ => return StepResult::ReadyNow,
     };
 
-    let (low_accel_raw_q32, low_mean_torque_actual) =
-        match state {
-            GainFloorState::Start => {
-                let capture =
-                    match run_torque_step(backend, i_target_low, resistance_current_ceiling_count)
-                        .await
-                    {
-                        Ok(buf) => buf,
-                        Err(e) => return super::fail_inner(phase, e),
-                    };
-                let (accel_raw_q32, mean_torque_actual) =
-                    match fit_capture_accel(&capture, i_target_low) {
-                        Ok(v) => v,
-                        Err(e) => return super::fail_inner(phase, e),
-                    };
-                if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
-                    *state = GainFloorState::HighStep {
-                        low_accel_raw_q32: accel_raw_q32,
-                        low_mean_torque_actual: mean_torque_actual,
-                    };
-                }
-                return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
+    let (low_accel_raw_q32, low_mean_torque_actual) = match state {
+        GainFloorState::Start => {
+            let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
+                return StepResult::ReadyNow;
+            };
+            let (accel_raw_q32, mean_torque_actual) = match capture_and_fit(
+                backend,
+                capture,
+                i_target_low,
+                resistance_current_ceiling_count,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return super::fail_inner(phase, e),
+            };
+            if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
+                *state = GainFloorState::HighStep {
+                    low_accel_raw_q32: accel_raw_q32,
+                    low_mean_torque_actual: mean_torque_actual,
+                };
             }
-            GainFloorState::HighStep {
-                low_accel_raw_q32,
-                low_mean_torque_actual,
-            } => (low_accel_raw_q32, low_mean_torque_actual),
-        };
+            return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
+        }
+        GainFloorState::HighStep {
+            low_accel_raw_q32,
+            low_mean_torque_actual,
+        } => (low_accel_raw_q32, low_mean_torque_actual),
+    };
 
-    let capture =
-        match run_torque_step(backend, i_target_high, resistance_current_ceiling_count).await {
-            Ok(buf) => buf,
-            Err(e) => return super::fail_inner(phase, e),
-        };
-    let (high_accel_raw_q32, high_mean_torque_actual) =
-        match fit_capture_accel(&capture, i_target_high) {
-            Ok(v) => v,
-            Err(e) => return super::fail_inner(phase, e),
-        };
+    let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
+        return StepResult::ReadyNow;
+    };
+    let (high_accel_raw_q32, high_mean_torque_actual) = match capture_and_fit(
+        backend,
+        capture,
+        i_target_high,
+        resistance_current_ceiling_count,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return super::fail_inner(phase, e),
+    };
     // The current loop does not hold the commanded target while the rotor
     // moves, so the differential divides by the current the motor actually
     // saw, not by the command.
@@ -212,11 +217,26 @@ where
     StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
 }
 
-async fn run_torque_step<B>(
+/// Run one torque step into the phase's capture buffer and fit it.
+async fn capture_and_fit<B>(
     backend: &mut B,
+    capture: &mut capture::CaptureBuffer,
     i_target: i16,
     resistance_current_ceiling_count: u16,
-) -> Result<capture::CaptureBuffer, CommissionError>
+) -> Result<(i64, i32), CommissionError>
+where
+    B: CommissioningBackend,
+{
+    run_torque_step(backend, capture, i_target, resistance_current_ceiling_count).await?;
+    fit_capture_accel(capture, i_target)
+}
+
+async fn run_torque_step<B>(
+    backend: &mut B,
+    capture: &mut capture::CaptureBuffer,
+    i_target: i16,
+    resistance_current_ceiling_count: u16,
+) -> Result<(), CommissionError>
 where
     B: CommissioningBackend,
 {
@@ -281,7 +301,7 @@ where
 
     // ClosedLoopActivation never re-zeroes the target itself.
     let capture_result =
-        capture::run_capture(backend, i_target, resistance_current_ceiling_count).await;
+        capture::run_capture(backend, capture, i_target, resistance_current_ceiling_count).await;
     let zero_target_result = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
     let limit_result = backend
         .write_register(
@@ -291,11 +311,11 @@ where
         .await;
     backend.set_enable_pin(false);
 
-    let capture = capture_result?;
+    capture_result?;
     if zero_target_result.is_err() || limit_result.is_err() {
         return Err(CommissionError::Spi);
     }
-    Ok(capture)
+    Ok(())
 }
 
 /// Synchronous so no fault can latch between the interlock check and the
@@ -495,6 +515,7 @@ mod tests {
             i_target_high,
             resistance_current_ceiling_count,
             inner_result: Some(sample_inner_result(resistance_current_ceiling_count)),
+            capture: capture::CaptureBuffer::new(),
         }
     }
 

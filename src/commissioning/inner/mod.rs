@@ -511,6 +511,10 @@ pub(crate) enum InnerPhase {
         i_target_high: i16,
         resistance_current_ceiling_count: u16,
         inner_result: Option<InnerResult>,
+        /// Sample workspace for both torque-step captures. Owned here rather
+        /// than by the capture future so the samples are neither carried
+        /// across every slot await nor copied back for the fits.
+        capture: gain_floor::capture::CaptureBuffer,
     },
     /// Closed-loop position mode entry with PID gains, filters, and stability check.
     ClosedLoopActivation {
