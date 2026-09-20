@@ -506,11 +506,11 @@ pub(crate) enum InnerPhase {
     /// ClosedLoopActivation on the fresh-commission path.
     GainFloorMeasurement {
         state: gain_floor::GainFloorState,
-        i_target_low: i16,
-        i_target_high: i16,
+        /// Measured torque-step amplitudes, ascending.
+        i_targets: [i16; 3],
         resistance_current_ceiling_count: u16,
         inner_result: Option<InnerResult>,
-        /// Sample workspace for both torque-step captures. Owned here rather
+        /// Sample workspace for every torque-step capture. Owned here rather
         /// than by the capture future so the samples are neither carried
         /// across every slot await nor copied back for the fits.
         capture: gain_floor::capture::CaptureBuffer,

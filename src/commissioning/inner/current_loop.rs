@@ -224,29 +224,30 @@ pub(crate) const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
 const CURRENT_VALIDATE_PWM_SV_CHOP: u32 = 7;
 const CURRENT_VALIDATE_PHI_E_SELECTION: u32 = 3;
 
-/// Current-loop step overshoot the high gain-floor step must fit under the
-/// resistance ceiling, since `run_capture` trips on any sample above it.
+/// Current-loop step overshoot the highest gain-floor step must fit under
+/// the resistance ceiling, since `run_capture` trips on any sample above it.
 const GAIN_FLOOR_TORQUE_STEP_OVERSHOOT_MARGIN_PERMILLE: u32 = 200;
 const GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE: u32 =
     1000 - GAIN_FLOOR_TORQUE_STEP_OVERSHOOT_MARGIN_PERMILLE;
-const GAIN_FLOOR_TORQUE_STEP_LOW_PERMILLE: u32 = GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE / 2;
+/// Spacing between the three measured amplitudes. Below the lowest the axis
+/// is still in breakaway creep, whose fitted acceleration does not scale with
+/// current and bends the line.
+const GAIN_FLOOR_TORQUE_STEP_SPACING_PERMILLE: u32 = 100;
+const GAIN_FLOOR_TORQUE_STEP_PERMILLE: [u32; 3] = [
+    GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE - 2 * GAIN_FLOOR_TORQUE_STEP_SPACING_PERMILLE,
+    GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE - GAIN_FLOOR_TORQUE_STEP_SPACING_PERMILLE,
+    GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE,
+];
 
 fn gain_floor_torque_step_amplitude(resistance_current_ceiling_count: u16, permille: u32) -> i16 {
     let scaled = u32::from(resistance_current_ceiling_count) * permille / 1000;
     scaled.min(i16::MAX as u32) as i16
 }
 
-fn gain_floor_torque_step_amplitudes(resistance_current_ceiling_count: u16) -> (i16, i16) {
-    (
-        gain_floor_torque_step_amplitude(
-            resistance_current_ceiling_count,
-            GAIN_FLOOR_TORQUE_STEP_LOW_PERMILLE,
-        ),
-        gain_floor_torque_step_amplitude(
-            resistance_current_ceiling_count,
-            GAIN_FLOOR_TORQUE_STEP_HIGH_PERMILLE,
-        ),
-    )
+fn gain_floor_torque_step_amplitudes(resistance_current_ceiling_count: u16) -> [i16; 3] {
+    GAIN_FLOOR_TORQUE_STEP_PERMILLE.map(|permille| {
+        gain_floor_torque_step_amplitude(resistance_current_ceiling_count, permille)
+    })
 }
 
 fn validation_target_register(axis: CurrentValidationAxis, target: i16) -> u32 {
@@ -2166,12 +2167,11 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     }
 
                     let resistance_current_ceiling_count = result.resistance_current_ceiling_count;
-                    let (i_target_low, i_target_high) =
+                    let i_targets =
                         gain_floor_torque_step_amplitudes(resistance_current_ceiling_count);
                     *phase = InnerPhase::GainFloorMeasurement {
                         state: super::gain_floor::GainFloorState::Seat,
-                        i_target_low,
-                        i_target_high,
+                        i_targets,
                         resistance_current_ceiling_count,
                         inner_result: Some(result),
                         capture: super::gain_floor::capture::CaptureBuffer::new(),
@@ -2189,16 +2189,18 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn gain_floor_torque_step_amplitudes_are_40_and_80_percent_of_the_ceiling() {
-        assert_eq!(gain_floor_torque_step_amplitudes(1_600), (640, 1_280));
+    fn gain_floor_torque_step_amplitudes_are_60_70_and_80_percent_of_the_ceiling() {
+        assert_eq!(
+            gain_floor_torque_step_amplitudes(1_600),
+            [960, 1_120, 1_280]
+        );
     }
 
     #[test]
     fn gain_floor_torque_step_amplitudes_stay_within_i16_range_at_max_ceiling() {
-        let (low, high) = gain_floor_torque_step_amplitudes(u16::MAX);
-        assert!(low > 0);
-        assert!(high > low);
-        assert!(i32::from(high) <= i32::from(i16::MAX));
+        for amplitude in gain_floor_torque_step_amplitudes(u16::MAX) {
+            assert!(amplitude > 0);
+        }
     }
 
     use crate::autotune::{

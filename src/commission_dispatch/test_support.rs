@@ -32,6 +32,11 @@ pub struct GainFloorCaptureScript {
     /// Peak-to-target ratio of the synthesized current step: 1.0 is the plain
     /// first-order rise, above it a decaying ring is added.
     pub overshoot_ratio: f64,
+    /// Steps commanded at or below this target get `creep_excess_accel_per_us2`
+    /// added to their acceleration.
+    pub creep_below_target: i16,
+    /// Position units per microsecond^2 added to those steps.
+    pub creep_excess_accel_per_us2: f64,
 }
 
 /// Time after the step at which `GainFloorCaptureScript::overshoot_ratio`'s
@@ -795,8 +800,14 @@ impl CommissionRegisterIo for MockBackend {
                 .saturating_sub(self.gain_floor_step_start_us) as f64;
             let target = f64::from(self.gain_floor_commanded_target);
             if addr == foci_tmc4671::registers::PID_POSITION_ACTUAL.addr() {
-                let accel =
-                    script.accel_raw_per_us2_per_count * target + script.accel_raw_offset_per_us2;
+                let creep = if self.gain_floor_commanded_target <= script.creep_below_target {
+                    script.creep_excess_accel_per_us2
+                } else {
+                    0.0
+                };
+                let accel = script.accel_raw_per_us2_per_count * target
+                    + script.accel_raw_offset_per_us2
+                    + creep;
                 let position = (0.5 * accel * t * t) as i32;
                 return Ok(position as u32);
             }

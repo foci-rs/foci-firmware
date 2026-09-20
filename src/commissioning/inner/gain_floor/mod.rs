@@ -1,22 +1,16 @@
-//! Commissioning fallback gain-floor measurement.
+//! Commissioning fallback gain-floor measurement: derives `velocity_p` and
+//! `position_p` from the slope of acceleration against measured torque over
+//! three torque steps. Reached from every accepted current validation; a
+//! measurement failure here fails commissioning outright.
 //!
-//! Runs a discarded low-amplitude seating step, then two fixed-grid
-//! current-step captures (`capture::run_capture`) at a low and a high
-//! torque amplitude, fits each measured position response
-//! (`quadratic_fit::fit_accel_raw`), takes the differential acceleration
-//! per measured torque count between them, then derives
-//! `velocity_p`/`position_p` (`gains::compute_velocity_p`/
-//! `compute_position_p`) from it and the current-loop bandwidth CurrentTune
-//! already measured, and hands off to `InnerPhase::ClosedLoopActivation`.
-//! Reached from every accepted current validation; a measurement failure
-//! here fails commissioning outright.
-//!
-//! Two amplitudes rather than one because on a real axis a single torque
-//! step measures `(T - T_friction) / J`, not `T / J`: Coulomb friction and
-//! breakaway shift every fitted acceleration by the same current-independent
-//! amount, which biases a single-step `accel_per_count` low and therefore the
-//! derived `velocity_p` high. The difference between two steps cancels that
-//! offset.
+//! A line rather than a single step because on a real axis one torque step
+//! measures `(T - T_friction) / J`, not `T / J`: Coulomb friction shifts
+//! every fitted acceleration by the same current-independent amount, which
+//! biases a single-step `accel_per_count` low and the derived `velocity_p`
+//! high. The slope is free of that intercept. Three points rather than two
+//! because a two-point differential cannot tell a step that left the
+//! inertial regime (breakaway creep at low amplitude) from a real slope; the
+//! third point makes that visible as a departure from the chord.
 
 pub(crate) mod capture;
 pub(crate) mod gains;
@@ -32,6 +26,18 @@ use foci_tmc4671::pid::{PidIGain, PidPGain};
 /// same stiction history.
 const INTER_STEP_SETTLE_US: u64 = 100_000;
 
+/// How far the middle step's acceleration may sit off the chord between the
+/// outer two, as a fraction of the chord's rise, before the three are not one
+/// inertial line.
+const LINE_CHORD_DEVIATION_FAIL_PERMILLE: i64 = 400;
+
+/// One measured torque step's contribution to the acceleration line.
+#[derive(Debug, Clone, Copy, Default, defmt::Format)]
+pub(crate) struct GainFloorPoint {
+    pub(crate) mean_torque_actual: i32,
+    pub(crate) accel_raw_q32: i64,
+}
+
 /// `step_gain_floor_measurement` sub-state.
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) enum GainFloorState {
@@ -39,10 +45,9 @@ pub(crate) enum GainFloorState {
     /// same just-moved friction state; the first motion after rest breaks
     /// away differently from the ones that follow it.
     Seat,
-    Start,
-    HighStep {
-        low_accel_raw_q32: i64,
-        low_mean_torque_actual: i32,
+    Step {
+        index: usize,
+        points: [GainFloorPoint; 3],
     },
 }
 
@@ -54,23 +59,17 @@ pub(crate) async fn step_gain_floor_measurement<B>(
 where
     B: CommissioningBackend,
 {
-    let (state, i_target_low, i_target_high, resistance_current_ceiling_count) = match phase {
+    let (state, i_targets, resistance_current_ceiling_count) = match phase {
         InnerPhase::GainFloorMeasurement {
             state,
-            i_target_low,
-            i_target_high,
+            i_targets,
             resistance_current_ceiling_count,
             ..
-        } => (
-            *state,
-            *i_target_low,
-            *i_target_high,
-            *resistance_current_ceiling_count,
-        ),
+        } => (*state, *i_targets, *resistance_current_ceiling_count),
         _ => return StepResult::ReadyNow,
     };
 
-    let (low_accel_raw_q32, low_mean_torque_actual) = match state {
+    let points = match state {
         GainFloorState::Seat => {
             let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
                 return StepResult::ReadyNow;
@@ -78,7 +77,7 @@ where
             if let Err(e) = run_torque_step(
                 backend,
                 capture,
-                i_target_low,
+                i_targets[0],
                 resistance_current_ceiling_count,
             )
             .await
@@ -86,18 +85,21 @@ where
                 return super::fail_inner(phase, e);
             }
             if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
-                *state = GainFloorState::Start;
+                *state = GainFloorState::Step {
+                    index: 0,
+                    points: [GainFloorPoint::default(); 3],
+                };
             }
             return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
         }
-        GainFloorState::Start => {
+        GainFloorState::Step { index, mut points } => {
             let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
                 return StepResult::ReadyNow;
             };
             let (accel_raw_q32, mean_torque_actual) = match capture_and_fit(
                 backend,
                 capture,
-                i_target_low,
+                i_targets[index],
                 resistance_current_ceiling_count,
             )
             .await
@@ -105,52 +107,30 @@ where
                 Ok(v) => v,
                 Err(e) => return super::fail_inner(phase, e),
             };
-            if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
-                *state = GainFloorState::HighStep {
-                    low_accel_raw_q32: accel_raw_q32,
-                    low_mean_torque_actual: mean_torque_actual,
-                };
+            points[index] = GainFloorPoint {
+                mean_torque_actual,
+                accel_raw_q32,
+            };
+            if index + 1 < i_targets.len() {
+                if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
+                    *state = GainFloorState::Step {
+                        index: index + 1,
+                        points,
+                    };
+                }
+                return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
             }
-            return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
+            points
         }
-        GainFloorState::HighStep {
-            low_accel_raw_q32,
-            low_mean_torque_actual,
-        } => (low_accel_raw_q32, low_mean_torque_actual),
     };
 
-    let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
-        return StepResult::ReadyNow;
-    };
-    let (high_accel_raw_q32, high_mean_torque_actual) = match capture_and_fit(
-        backend,
-        capture,
-        i_target_high,
-        resistance_current_ceiling_count,
-    )
-    .await
-    {
+    let slope_q32_per_count = match fit_accel_per_count_line(&points) {
         Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
-    // The current loop does not hold the commanded target while the rotor
-    // moves, so the differential divides by the current the motor actually
-    // saw, not by the command.
-    let mean_torque_delta = high_mean_torque_actual - low_mean_torque_actual;
-    if high_accel_raw_q32 <= low_accel_raw_q32 || mean_torque_delta <= 0 {
-        defmt::warn!(
-            "gain-floor: high step did not out-accelerate low step (accel {} <= {}, current delta {})",
-            high_accel_raw_q32,
-            low_accel_raw_q32,
-            mean_torque_delta
-        );
-        return super::fail_inner(phase, CommissionError::GainFloorNonPositiveSlope);
-    }
-
-    let accel_per_count: f32 = match gains::accel_raw_q32_to_accel_per_count(
-        high_accel_raw_q32 - low_accel_raw_q32,
+    let accel_per_count: f32 = match gains::accel_raw_q32_per_count_to_accel_per_count(
+        slope_q32_per_count,
         crate::motion_scale::POSITION_UNITS_PER_REV as f64,
-        mean_torque_delta.min(i32::from(i16::MAX)) as i16,
     ) {
         Some(v) => v,
         None => {
@@ -224,6 +204,48 @@ where
         attempt: 0,
     };
     StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+}
+
+/// Least-squares slope of `accel_raw_q32` against mean `torque_actual`, in
+/// Q32 position units per microsecond^2 per torque count. The current loop
+/// does not hold the commanded target while the rotor moves, so the line
+/// runs over the current the motor actually saw, not the commands.
+fn fit_accel_per_count_line(points: &[GainFloorPoint; 3]) -> Result<f64, CommissionError> {
+    let [m0, m1, m2] = points.map(|p| p.mean_torque_actual);
+    let [a0, a1, a2] = points.map(|p| p.accel_raw_q32);
+    if m0 >= m1 || m1 >= m2 || a0 >= a1 || a1 >= a2 {
+        defmt::warn!(
+            "gain-floor: acceleration did not grow with current: means {} {} {}, accel {} {} {}",
+            m0,
+            m1,
+            m2,
+            a0,
+            a1,
+            a2
+        );
+        return Err(CommissionError::GainFloorNonPositiveSlope);
+    }
+    let rise = a2 - a0;
+    let chord_at_m1 = a0 + rise * i64::from(m1 - m0) / i64::from(m2 - m0);
+    let deviation = (a1 - chord_at_m1).abs();
+    if deviation * 1000 > rise * LINE_CHORD_DEVIATION_FAIL_PERMILLE {
+        defmt::warn!(
+            "gain-floor: middle step off the line: accel {} against chord {}, rise {}",
+            a1,
+            chord_at_m1,
+            rise
+        );
+        return Err(CommissionError::GainFloorInsufficientLinearPoints);
+    }
+    let mean_m = f64::from(m0 + m1 + m2) / 3.0;
+    let mean_a = (a0 + a1 + a2) as f64 / 3.0;
+    let (mut sxy, mut sxx) = (0.0f64, 0.0f64);
+    for (m, a) in [(m0, a0), (m1, a1), (m2, a2)] {
+        let dx = f64::from(m) - mean_m;
+        sxy += dx * (a as f64 - mean_a);
+        sxx += dx * dx;
+    }
+    Ok(sxy / sxx)
 }
 
 /// Run one torque step into the phase's capture buffer and fit it.
@@ -559,8 +581,7 @@ mod tests {
     fn gain_floor_phase(i_target_high: i16, resistance_current_ceiling_count: u16) -> InnerPhase {
         InnerPhase::GainFloorMeasurement {
             state: GainFloorState::Seat,
-            i_target_low: i_target_high / 2,
-            i_target_high,
+            i_targets: [i_target_high / 4 * 3, i_target_high / 8 * 7, i_target_high],
             resistance_current_ceiling_count,
             inner_result: Some(sample_inner_result(resistance_current_ceiling_count)),
             capture: capture::CaptureBuffer::new(),
@@ -573,7 +594,68 @@ mod tests {
             accel_raw_offset_per_us2: 0.0,
             tau_current_us: 1.0,
             overshoot_ratio: 1.0,
+            creep_below_target: 0,
+            creep_excess_accel_per_us2: 0.0,
         }
+    }
+
+    fn points(raw: [(i32, i64); 3]) -> [GainFloorPoint; 3] {
+        raw.map(|(mean_torque_actual, accel_raw_q32)| GainFloorPoint {
+            mean_torque_actual,
+            accel_raw_q32,
+        })
+    }
+
+    #[test]
+    fn three_point_slope_ignores_the_friction_intercept() {
+        let slope = fit_accel_per_count_line(&points([(700, 3000), (800, 4000), (900, 5000)]))
+            .expect("collinear points fit");
+        assert!((slope - 10.0).abs() < 1e-9, "{slope}");
+    }
+
+    #[test]
+    fn middle_point_off_the_chord_fails_as_insufficient_linear_points() {
+        assert_eq!(
+            fit_accel_per_count_line(&points([(700, 3000), (800, 4900), (900, 5000)])),
+            Err(CommissionError::GainFloorInsufficientLinearPoints)
+        );
+    }
+
+    #[test]
+    fn acceleration_that_does_not_grow_with_current_fails_as_non_positive_slope() {
+        assert_eq!(
+            fit_accel_per_count_line(&points([(700, 3000), (800, 2900), (900, 5000)])),
+            Err(CommissionError::GainFloorNonPositiveSlope)
+        );
+        assert_eq!(
+            fit_accel_per_count_line(&points([(700, 3000), (700, 4000), (900, 5000)])),
+            Err(CommissionError::GainFloorNonPositiveSlope)
+        );
+    }
+
+    #[test]
+    fn a_creep_regime_lowest_step_fails_the_run_instead_of_bending_the_floor() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+                creep_below_target: 1500,
+                creep_excess_accel_per_us2: 2.4e-4,
+                ..ideal_plant()
+            });
+
+            let result = drive_to_completion(&mut phase, &mut backend).await;
+
+            assert!(
+                matches!(
+                    result,
+                    StepResult::InnerFailed(CommissionError::GainFloorInsufficientLinearPoints)
+                ),
+                "{result:?}"
+            );
+            assert!(!backend.enable_pin);
+        });
     }
 
     #[test]
@@ -777,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn seating_stroke_precedes_the_measured_low_and_high_steps() {
+    fn seating_stroke_precedes_the_three_measured_steps() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
             let mut backend = MockBackend::new();
@@ -799,12 +881,16 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(targets.len(), 3, "seating stroke, low step, high step");
+            assert_eq!(
+                targets.len(),
+                4,
+                "seating stroke, then three measured steps"
+            );
             assert_eq!(
                 targets[0], targets[1],
-                "the seating stroke repeats the low step"
+                "the seating stroke repeats the lowest step"
             );
-            assert_ne!(targets[1], targets[2]);
+            assert!(targets[1] < targets[2] && targets[2] < targets[3]);
             match phase {
                 InnerPhase::ClosedLoopActivation {
                     velocity_p,
@@ -873,14 +959,14 @@ mod tests {
     }
 
     #[test]
-    fn seat_low_and_high_steps_are_commanded_in_order_with_a_settle_between() {
+    fn seat_and_three_steps_are_commanded_in_order_with_a_settle_between() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
             let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
 
-            for step in ["seating stroke", "low step"] {
+            for step in ["seating stroke", "first step", "second step"] {
                 let result = step_gain_floor_measurement(&mut phase, &mut backend).await;
                 let settle_deadline = match result {
                     StepResult::At(deadline) => deadline,
@@ -910,12 +996,12 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(commanded, std::vec![1000, 1000, 2000]);
+            assert_eq!(commanded, std::vec![1500, 1500, 1750, 2000]);
         });
     }
 
     #[test]
-    fn current_independent_acceleration_offset_cancels_in_the_differential() {
+    fn current_independent_acceleration_offset_does_not_reach_the_line_slope() {
         let run = |script: GainFloorCaptureScript| {
             pollster::block_on(async {
                 let mut phase = gain_floor_phase(2000, 4_000);
@@ -1239,16 +1325,11 @@ mod tests {
 
     #[test]
     fn gain_floor_velocity_gain_unrepresentable_routes_through_restore_machine() {
-        // accel_per_count is divided by both i_target and encoder counts-per-rev
-        // (`accel_raw_q32_to_accel_per_count`); maxing both out shrinks it far
-        // enough that velocity_p_raw overflows PidPGain::MAX, without touching
-        // the position/current fits' own excitation or residual checks (both
-        // depend only on the dimensionless current ratio, not on these scales).
         let mut phase = gain_floor_phase(2000, 4_000);
         let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-            accel_raw_per_us2_per_count: 3e-10,
+            accel_raw_per_us2_per_count: 3e-9,
             accel_raw_offset_per_us2: 1e-4,
             ..ideal_plant()
         });

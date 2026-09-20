@@ -76,27 +76,21 @@ pub(crate) fn compute_position_p(
     Ok(gain)
 }
 
-/// Convert Task 3's Q32-scaled `accel_raw` (raw position counts per
-/// microsecond^2, fixed-point scaled by 2^32) to `accel_per_count` (rad/s^2
-/// per raw torque-register count). Before calling this from Task 7, check
-/// `autotune/velocity_units.rs` and `autotune/models.rs` for an existing
-/// counts-to-physical-units conversion this measurement could reuse
-/// instead — this function is the explicit, dimensionally-checked fallback
-/// if none exists, not a placeholder to leave in place regardless.
-pub(crate) fn accel_raw_q32_to_accel_per_count(
-    accel_raw_q32: i64,
+/// Convert a fitted slope of Q32-scaled `accel_raw` (raw position units per
+/// microsecond^2, fixed-point scaled by 2^32) per torque-register count to
+/// `accel_per_count` (rad/s^2 per count).
+pub(crate) fn accel_raw_q32_per_count_to_accel_per_count(
+    accel_raw_q32_per_count: f64,
     position_units_per_rev: f64,
-    i_target: i16,
 ) -> Option<f32> {
-    const ACCEL_RAW_Q32_SHIFT: f64 = 4_294_967_296.0; // 2^32, must match Task 3
-    const US_TO_S_SQUARED: f64 = 1_000_000.0 * 1_000_000.0; // (1e6)^2: counts/us^2 -> counts/s^2
-    if position_units_per_rev <= 0.0 || i_target == 0 {
+    const ACCEL_RAW_Q32_SHIFT: f64 = 4_294_967_296.0;
+    const US_TO_S_SQUARED: f64 = 1_000_000.0 * 1_000_000.0;
+    if position_units_per_rev <= 0.0 {
         return None;
     }
-    let accel_raw_true = accel_raw_q32 as f64 / ACCEL_RAW_Q32_SHIFT;
-    let accel_per_count =
-        accel_raw_true * US_TO_S_SQUARED * (2.0 * core::f64::consts::PI / position_units_per_rev)
-            / f64::from(i_target);
+    let accel_per_count = accel_raw_q32_per_count / ACCEL_RAW_Q32_SHIFT
+        * US_TO_S_SQUARED
+        * (2.0 * core::f64::consts::PI / position_units_per_rev);
     if !accel_per_count.is_finite() {
         return None;
     }
@@ -169,8 +163,9 @@ mod tests {
         // would be ~7.85e-5, off by 12 orders of magnitude) or duplicated
         // (result would be ~7.85e13).
         let accel_raw_q32 = (0.0001 * 4_294_967_296.0) as i64;
-        let result = accel_raw_q32_to_accel_per_count(accel_raw_q32, 4000.0, 2000)
-            .expect("valid conversion");
+        let result =
+            accel_raw_q32_per_count_to_accel_per_count(accel_raw_q32 as f64 / 2000.0, 4000.0)
+                .expect("valid conversion");
         assert!(
             (result - 78.54).abs() < 0.01,
             "expected ~78.54, got {result}"
@@ -179,7 +174,13 @@ mod tests {
 
     #[test]
     fn accel_raw_q32_conversion_rejects_zero_ppr_or_target() {
-        assert_eq!(accel_raw_q32_to_accel_per_count(1000, 0.0, 2000), None);
-        assert_eq!(accel_raw_q32_to_accel_per_count(1000, 4000.0, 0), None);
+        assert_eq!(
+            accel_raw_q32_per_count_to_accel_per_count(1000.0, 0.0),
+            None
+        );
+        assert_eq!(
+            accel_raw_q32_per_count_to_accel_per_count(f64::NAN, 4000.0),
+            None
+        );
     }
 }
