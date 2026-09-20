@@ -5,6 +5,16 @@
 //! in `no_std`.
 
 const MIN_SAMPLES: usize = 20;
+/// At the capture's 60 us cadence (two SPI register reads per slot take about
+/// 44 us, so 30 us is not reachable), the slowest supported current loop
+/// (tau = 200 us, 796 Hz) puts 11 samples inside 3 * tau; 20 would silently
+/// exclude every board the bandwidth gate admits above 398 Hz.
+const MIN_SAMPLES_WITHIN_3_TAU: usize = 10;
+/// Samples past this fraction of the target are left out of the log-linear
+/// regression: `ln(1 - ratio)` amplifies one count of ADC noise or i16
+/// truncation into a large error there, and over a 5 ms window at a fast
+/// current loop those near-saturated samples outnumber the rising edge.
+const LINEARIZABLE_RATIO_MAX: f32 = 0.95;
 const RESIDUAL_FAIL_PERMILLE: i64 = 75;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -60,7 +70,7 @@ pub(crate) fn fit_current_response(
     let mut usable = 0usize;
     for &(t, i_actual) in samples {
         let ratio = f32::from(i_actual) / f32::from(i_target);
-        if !(0.0..1.0).contains(&ratio) {
+        if !(0.0..LINEARIZABLE_RATIO_MAX).contains(&ratio) {
             continue;
         }
         let z = libm::logf(1.0 - ratio);
@@ -71,8 +81,8 @@ pub(crate) fn fit_current_response(
         sxx += t * t;
         usable += 1;
     }
-    if usable < MIN_SAMPLES {
-        return Err(CurrentFitError::TooFewSamples);
+    if usable < MIN_SAMPLES_WITHIN_3_TAU {
+        return Err(CurrentFitError::InsufficientCoverage);
     }
     let n = usable as f32;
     let denom = n * sxx - sx * sx;
@@ -103,7 +113,7 @@ pub(crate) fn fit_current_response(
             (0.0..1.0).contains(&ratio) && (t as f32) <= window_end_us
         })
         .count();
-    if usable_within_window < MIN_SAMPLES {
+    if usable_within_window < MIN_SAMPLES_WITHIN_3_TAU {
         return Err(CurrentFitError::InsufficientCoverage);
     }
 
@@ -180,16 +190,27 @@ mod tests {
     }
 
     #[test]
+    fn valid_response_at_ouroboros_tau_fits_at_the_capture_cadence() {
+        let samples = synthetic_exponential(2000, 265.0, 84, 60);
+        let bw = fit_current_response(&samples, 2000).expect("valid fit");
+        assert!((550..=650).contains(&bw));
+    }
+
+    #[test]
+    fn slowest_supported_bandwidth_meets_coverage_at_the_capture_cadence() {
+        let samples = synthetic_exponential(2000, 200.0, 84, 60);
+        let bw = fit_current_response(&samples, 2000).expect("valid fit");
+        assert!((750..=850).contains(&bw));
+    }
+
+    #[test]
     fn insufficient_coverage_rejected_when_too_few_samples_within_3_tau_window() {
-        // tau_current=60us -> 3*tau=180us, containing only 13 of the
-        // 15us-period samples, even though the capture continues on to
-        // t=345us (5.75*tau) and racks up 24 total usable samples past
-        // MIN_SAMPLES. The old check only verified the window reached
-        // 3*tau (last_t=345 >> 180), which this trace trivially satisfies
-        // -- it must be rejected on the separate in-window density check
-        // instead. i_target is large (20000) to keep i16 quantization noise
-        // small relative to the signal all the way out to 5.75*tau.
-        let samples = synthetic_exponential(20000, 60.0, 24, 15);
+        // tau_current=60us -> 3*tau=180us, containing only 7 of the
+        // 30us-period samples, even though the capture continues on to
+        // t=690us and racks up 24 total usable samples past MIN_SAMPLES, so
+        // only the in-window density check can reject it. i_target is large
+        // (20000) to keep i16 quantization noise small out to 11.5*tau.
+        let samples = synthetic_exponential(20000, 60.0, 24, 30);
         assert_eq!(
             fit_current_response(&samples, 20000),
             Err(CurrentFitError::InsufficientCoverage)
