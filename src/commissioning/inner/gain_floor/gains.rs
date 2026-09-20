@@ -6,9 +6,12 @@
 /// homing; on the live CoreXY a ratio of 10 landed velocity_p an order of
 /// magnitude above the autotuned range, 60 lands inside it.
 const CURRENT_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 60.0;
-/// Position-loop target bandwidth as a fraction of the current-loop
-/// bandwidth.
-const CURRENT_TO_POSITION_BANDWIDTH_RATIO: f32 = 100.0;
+/// Position-loop target as a fraction of the current-loop bandwidth. The
+/// register-scaling formula below labels this a bandwidth, but on the live
+/// CoreXY a ratio of 100 (position_p 9) let the axis lag 2.2 mm at homing
+/// speed and trip the position-error stall detector; 9 reproduces the hand
+/// tune (99 against 100), which holds it under 0.1 mm.
+const CURRENT_TO_POSITION_BANDWIDTH_RATIO: f32 = 9.0;
 
 pub(crate) fn compute_velocity_p(
     accel_per_count: f32,
@@ -105,9 +108,10 @@ mod tests {
     }
 
     #[test]
-    fn position_p_follows_the_current_bandwidth_alone() {
-        // 2pi*600/100 rad/s * 60 * 256 / 65536 = 8.84 -> 9.
-        assert_eq!(compute_position_p(600).expect("representable").raw(), 9);
+    fn position_p_reproduces_the_hand_tune_at_the_live_rig_bandwidth() {
+        // 2pi*600/9 rad/s * 60 * 256 / 65536 = 98.2 -> 99, against a hand
+        // tune of 100 that homes with under 0.1 mm of following error.
+        assert_eq!(compute_position_p(600).expect("representable").raw(), 99);
     }
 
     #[test]
