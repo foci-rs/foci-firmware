@@ -356,11 +356,13 @@ fn fit_capture_accel(
     let peak_to_peak = position_samples.iter().map(|(_, p)| *p).max().unwrap_or(0)
         - position_samples.iter().map(|(_, p)| *p).min().unwrap_or(0);
     let torque_peak = capture.iter().map(|s| s.torque_actual).max().unwrap_or(0);
-    let mean_torque_actual = capture
+    let window = quadratic_fit::fit_window(&position_samples);
+    let fitted = &capture[window.start.min(capture.len())..window.end.min(capture.len())];
+    let mean_torque_actual = fitted
         .iter()
         .map(|s| i32::from(s.torque_actual))
         .sum::<i32>()
-        / capture.len().max(1) as i32;
+        / fitted.len().max(1) as i32;
     match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
         Ok(accel_raw_q32) => {
             defmt::info!(
@@ -406,6 +408,31 @@ mod tests {
         InductanceEvidence, InnerResult,
     };
     use crate::selftest::{CommissionDiagnostics, SelftestResults};
+
+    #[test]
+    fn capture_mean_current_covers_only_the_fitted_window() {
+        let mut capture: capture::CaptureBuffer = heapless::Vec::new();
+        let breakaway_t_us = (0..84u32)
+            .find(|i| (i * i) as i32 >= quadratic_fit::BREAKAWAY_THRESHOLD_UNITS)
+            .expect("trace breaks away")
+            * 60;
+        let window_end_us = breakaway_t_us + quadratic_fit::CONSTANT_ACCELERATION_SPAN_US;
+        for i in 0..84u32 {
+            let t_us = i * 60;
+            let torque = if t_us <= window_end_us { 1000 } else { 500 };
+            let position = (i * i) as i32;
+            capture
+                .push(capture::CaptureSample {
+                    t_us,
+                    torque_actual: torque,
+                    flux_actual: 0,
+                    position,
+                })
+                .unwrap();
+        }
+        let (_, mean) = fit_capture_accel(&capture, 1280).expect("fits");
+        assert_eq!(mean, 1000);
+    }
 
     fn sample_inner_result(resistance_current_ceiling_count: u16) -> InnerResult {
         InnerResult {
@@ -581,20 +608,9 @@ mod tests {
                         position_p.raw(),
                         crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()
                     );
-                    assert_eq!(velocity_i.raw(), 54);
+                    assert_eq!(velocity_i.raw(), 189);
                     assert_eq!(position_i, PidIGain::ZERO);
-                    // Steps at 1000 and 2000 counts give accel_raw 1e-3 and
-                    // 2e-3 units/us^2: 1e-6 per count = 95.9 rad/s^2 per
-                    // count; tau 1000us gives ~158 Hz, omega_target ~99.3
-                    // rad/s; velocity_p = ceil(256*99.3*2pi/(60*95.9)) = 28,
-                    // position_p = ceil(9.93*60*256/65536) = 3.
-                    // Steps at 1000 and 2000 counts (the mock's current
-                    // reaches target on the second sample, mean ~988/1976)
-                    // give accel_raw 1e-3 and 2e-3 units/us^2: ~97 rad/s^2
-                    // per measured count; InnerResult's 600 Hz current loop
-                    // targets 10 Hz, velocity_p = ceil(256*62.8*2pi/(60*97))
-                    // = 18, position_p = ceil(418.9*60*256/65536) = 99.
-                    assert_eq!(velocity_p.raw(), 18);
+                    assert_eq!(velocity_p.raw(), 63);
                     assert_eq!(position_p.raw(), 99);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),

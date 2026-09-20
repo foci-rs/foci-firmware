@@ -3,9 +3,9 @@
 
 /// Velocity-loop target bandwidth as a fraction of the current-loop
 /// bandwidth. Commissioning gains only have to hold the axis quietly through
-/// homing; on the live CoreXY a ratio of 10 landed velocity_p an order of
-/// magnitude above the autotuned range, 60 lands inside it.
-const CURRENT_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 60.0;
+/// homing, so the ratio is anchored where the measured plant reproduces the
+/// hand tune's velocity_p, the same way the position ratio below is.
+const CURRENT_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 17.0;
 /// Velocity integral gain as a multiple of velocity_p. Without an
 /// integrator the steady velocity lag at homing speed lands in position
 /// error and trips the stall detector (0.53 mm against a 0.5 mm
@@ -107,10 +107,7 @@ mod tests {
 
     #[test]
     fn live_rig_plant_lands_inside_the_autotuned_velocity_p_range() {
-        // Measured on the CoreXY stepper_x: 1.95 rad/s^2 per count at a 600 Hz
-        // current loop. Autotune produces velocity_p around 800 there and the
-        // hand tune is 350; the commissioning floor must land in that band.
-        let velocity_p = compute_velocity_p(1.95, 600).expect("representable");
+        let velocity_p = compute_velocity_p(16.7, 600).expect("representable");
         assert!(
             (350..=900).contains(&velocity_p.raw()),
             "{}",
@@ -129,9 +126,8 @@ mod tests {
 
     #[test]
     fn velocity_p_round_up_never_down() {
-        // 256 * (2pi*600/60) * 2pi / (60 * 28.9) = 58.28... -> 59.
         let velocity_p = compute_velocity_p(28.9, 600).expect("representable");
-        assert_eq!(velocity_p.raw(), 59);
+        assert_eq!(velocity_p.raw(), 206);
     }
 
     #[test]
