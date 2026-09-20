@@ -206,9 +206,10 @@ const SETTLED_FLUX_VALIDATION_STEP_AMPLITUDE: u32 = 224;
 /// reaching the current target. 2000 matches the bounded encoder-alignment
 /// limit and remains well below the operational closed-loop limit.
 const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
-/// Highest validation PIDOUT limit the tune phase may request to keep the
-/// minimum current signal above the quantization floor at high physical P.
-const CURRENT_VALIDATE_PIDOUT_MAX_LIMIT: u32 = 5000;
+/// Validation runs unproven gains, and the TMC4671 has no backstop on actual
+/// phase current below `PIDOUT_UQ_UD_LIMITS`, so the rail is bounded by
+/// current: this multiple of the run-current peak through the identified R.
+const VALIDATION_RAIL_CURRENT_MULTIPLE: u32 = 3;
 pub(crate) const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 
 /// `MODE_RAMP_MODE_MOTION` value for advanced PI torque mode.
@@ -283,7 +284,24 @@ fn required_pidout_limit_for_validation_target(target: u32, max_p: u32) -> Optio
     u32::try_from(required).ok()
 }
 
-fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<ValidationEnvelope> {
+fn validation_pidout_ceiling(
+    current_limit: u32,
+    r_count_milli: u32,
+    operational_limit: u32,
+) -> Option<u32> {
+    let rail = current_limit
+        .saturating_mul(r_count_milli)
+        .saturating_mul(VALIDATION_RAIL_CURRENT_MULTIPLE)
+        / 1000;
+    let ceiling = rail.min(operational_limit);
+    (ceiling >= CURRENT_VALIDATE_PIDOUT_LIMIT).then_some(ceiling)
+}
+
+fn validation_envelope(
+    current_limit: u32,
+    gains: CurrentGains,
+    pidout_ceiling: u32,
+) -> Option<ValidationEnvelope> {
     let current_limited = (current_limit * VALIDATION_STEP_PERCENT / 100).max(1);
     let max_p = u32::from(gains.flux_p.raw().max(gains.torque_p.raw()));
     if current_limit == 0 || max_p == 0 {
@@ -302,7 +320,7 @@ fn validation_envelope(current_limit: u32, gains: CurrentGains) -> Option<Valida
     if voltage_limited < required_target {
         pidout_limit = required_pidout_limit_for_validation_target(required_target, max_p)?
             .max(CURRENT_VALIDATE_PIDOUT_LIMIT);
-        if pidout_limit > CURRENT_VALIDATE_PIDOUT_MAX_LIMIT {
+        if pidout_limit > pidout_ceiling {
             return None;
         }
         voltage_limited = voltage_limited_validation_target(pidout_limit, max_p);
@@ -1431,7 +1449,13 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     // Compute step amplitude: 15% of run_current, capped so validation does
     // not saturate PIDOUT before the current-loop response can be measured.
     let current_limit = u32::from(backend.current_limit());
-    let validation = match validation_envelope(current_limit, gains) {
+    let validation = validation_pidout_ceiling(
+        current_limit,
+        model.r_count_milli,
+        backend.operational_voltage_limit(),
+    )
+    .and_then(|pidout_ceiling| validation_envelope(current_limit, gains, pidout_ceiling));
+    let validation = match validation {
         Some(validation) => validation,
         None => return super::fail_inner(phase, CommissionError::CurrentValidationFailed),
     };
@@ -1881,9 +1905,15 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                             Ok(gains) => {
                                 data.gains = gains;
                                 let current_limit = u32::from(backend.current_limit());
-                                if let Some(validation) =
-                                    validation_envelope(current_limit, data.gains)
-                                {
+                                let validation = validation_pidout_ceiling(
+                                    current_limit,
+                                    data.model.r_count_milli,
+                                    backend.operational_voltage_limit(),
+                                )
+                                .and_then(|pidout_ceiling| {
+                                    validation_envelope(current_limit, data.gains, pidout_ceiling)
+                                });
+                                if let Some(validation) = validation {
                                     apply_validation_envelope(data, validation);
                                     let next_attempt = axis_attempt(data, axis).saturating_add(1);
                                     data.candidate_gains = data.gains;
@@ -2427,6 +2457,175 @@ mod tests {
                 }
                 other => panic!("expected CurrentValidate phase, got {other:?}"),
             }
+        });
+    }
+
+    #[test]
+    fn validation_pidout_ceiling_follows_run_current_and_resistance() {
+        assert_eq!(validation_pidout_ceiling(2816, 959, 29_000), Some(8_101));
+        assert_eq!(validation_pidout_ceiling(2816, 1163, 29_000), Some(9_825));
+        assert_eq!(
+            validation_pidout_ceiling(20_000, 2_000, 29_000),
+            Some(29_000)
+        );
+        assert_eq!(validation_pidout_ceiling(2816, 959, 1_999), None);
+        assert_eq!(validation_pidout_ceiling(1_000, 500, 29_000), None);
+    }
+
+    #[test]
+    fn current_tune_refuses_a_motor_whose_rail_bound_is_below_the_validation_base() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_count_milli: 500,
+                    l_count_micro: 1000,
+                    tau_e_us: 2000,
+                    theta_e_us: 160,
+                    theta_source: 0,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(1_000);
+            backend.operational_voltage_limit_value = 29_000;
+            backend.tmc_config.bandwidth_hz = 600.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+            ));
+            let limit_addr = foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr();
+            assert!(!backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, value) if *addr == limit_addr && *value > 1_500
+            )));
+            assert!(
+                !backend
+                    .spi_log
+                    .iter()
+                    .any(|op| matches!(op, SpiOp::EnablePin(true)))
+            );
+        });
+    }
+
+    #[test]
+    fn current_tune_refuses_operational_limit_below_the_validation_base() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_count_milli: 959,
+                    l_count_micro: 2183,
+                    tau_e_us: 2276,
+                    theta_e_us: 160,
+                    theta_source: 0,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(2816);
+            backend.operational_voltage_limit_value = 1_999;
+            backend.tmc_config.bandwidth_hz = 600.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+            ));
+            let limit_addr = foci_tmc4671::registers::PIDOUT_UQ_UD_LIMITS.addr();
+            assert!(!backend.spi_log.iter().any(|op| matches!(
+                op,
+                SpiOp::Write(addr, value) if *addr == limit_addr && *value > 1_999
+            )));
+            assert!(
+                !backend
+                    .spi_log
+                    .iter()
+                    .any(|op| matches!(op, SpiOp::EnablePin(true)))
+            );
+        });
+    }
+
+    #[test]
+    fn current_tune_accepts_ouroboros_1600hz_validation_envelope() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_count_milli: 959,
+                    l_count_micro: 2183,
+                    tau_e_us: 2276,
+                    theta_e_us: 160,
+                    theta_source: 0,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(2816);
+            backend.operational_voltage_limit_value = 29_000;
+            backend.tmc_config.bandwidth_hz = 1600.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::CurrentValidate)
+            ));
+            match phase {
+                InnerPhase::CurrentValidate { data, .. } => {
+                    assert_eq!(data.gains.flux_p.raw(), 5618);
+                    assert_eq!(data.pidout_limit, 6145);
+                    assert!(
+                        u32::from(data.gains.flux_p) * data.flux_step_amplitude as u32
+                            <= data.pidout_limit * 256 * VALIDATION_PIDOUT_HEADROOM_PERMILLE / 1000
+                    );
+                }
+                other => panic!("expected CurrentValidate phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn current_tune_refuses_p_whose_validation_rail_exceeds_the_motor_bound() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::CurrentTune {
+                model: ElectricalModel {
+                    r_count_milli: 959,
+                    l_count_micro: 2183,
+                    tau_e_us: 2276,
+                    theta_e_us: 160,
+                    theta_source: 0,
+                },
+                inner_warning_flags: 0,
+                resistance_result: resistance_result(),
+                inductance: InductanceEvidence::test_fixture(),
+                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
+            };
+            let mut backend = MockBackend::new();
+            backend.current_limit_value = current_limit(1000);
+            backend.operational_voltage_limit_value = 29_000;
+            backend.tmc_config.bandwidth_hz = 1600.0;
+
+            let result =
+                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
+            ));
         });
     }
 
