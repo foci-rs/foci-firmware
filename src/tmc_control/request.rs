@@ -764,28 +764,26 @@ where
                 },
             ..
         } => {
-            if board.commissioning_blocked(runtime) {
-                board
-                    .tmc_state()
-                    .commission_in_flight
-                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                emit_commission_phase_failure::<Board, Spi>(
-                    board,
-                    oid,
-                    CommissionError::AlreadyRunning.status_code(),
-                );
-                return TmcControlRequestOutcome::skip_tick_tail();
-            }
-            if !runtime.is_motor_enabled() || !runtime.is_calibrated() {
-                board
-                    .tmc_state()
-                    .commission_in_flight
-                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                emit_commission_phase_failure::<Board, Spi>(
-                    board,
-                    oid,
-                    CommissionError::EncoderNotAligned.status_code(),
-                );
+            let fields = TuneRequestFields {
+                oid,
+                profile,
+                mode,
+                inner_lambda_us,
+                theta_e_us,
+                current_ringing_count,
+                current_bandwidth_hz,
+                inner_warning_flags,
+                requested_velocity_mrev_s,
+                machine_velocity_ceiling_mrev_s,
+                requested_velocity_source,
+                max_stroke_travel_mrev,
+                settle_travel_reserve_mrev,
+                negative_position_headroom_mrev,
+                positive_position_headroom_mrev,
+                max_duration_ms,
+            };
+            if let Some(status) = tune_reject_reason(board, runtime) {
+                emit_commission_phase_failure::<Board, Spi>(board, oid, status);
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
             if !pi_representation_available(tmc, board.tmc_state()).await {
@@ -800,254 +798,11 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            let current_limit = board
-                .tmc_state()
-                .load_current_limit(core::sync::atomic::Ordering::Relaxed);
-            if current_limit.raw() == 0 {
-                board
-                    .tmc_state()
-                    .commission_in_flight
-                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                emit_commission_phase_failure::<Board, Spi>(
-                    board,
-                    oid,
-                    CommissionError::NoCurrent.status_code(),
-                );
-                return TmcControlRequestOutcome::skip_tick_tail();
-            }
-            let run_sequence = board.next_commission_trace_seq();
-            let Some(encoder_counts_per_rev) = board.tmc_state().encoder_counts_per_rev() else {
-                board
-                    .tmc_state()
-                    .commission_in_flight
-                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                emit_commission_phase_failure::<Board, Spi>(
-                    board,
-                    oid,
-                    CommissionError::InvalidSchedule.status_code(),
-                );
-                return TmcControlRequestOutcome::skip_tick_tail();
-            };
-            let request = crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
-                requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s,
-                requested_velocity_source,
-                max_stroke_travel_mrev,
-                settle_travel_reserve_mrev,
-                negative_position_headroom_mrev,
-                positive_position_headroom_mrev,
-                max_duration_ms,
-            };
-            let tune_route = match autotune_action {
-                action @ (crate::tmc::AutotuneAction::FixedGainAmplitudeAscending
-                | crate::tmc::AutotuneAction::FixedGainAmplitudeDescending) => {
-                    let amplitude_config =
-                        crate::commission_dispatch::integral::IntegralPreflightConfig {
-                            encoder_counts_per_rev,
-                            torque_limit: current_limit.raw(),
-                            limit_evidence_capability: board.velocity_limit_evidence_capability(),
-                            channel: board.channel(),
-                            pwm_hz: board.pwm_freq_hz(),
-                        };
-                    let result =
-                        crate::commission_dispatch::fixed_gain_amplitude::preflight_fixed_gain_amplitude(
-                            action,
-                            request,
-                            &amplitude_config,
-                            run_sequence,
-                            integral_candidate,
-                        );
-                    let preflight = match result {
-                        Ok(preflight) => preflight,
-                        Err(rejection) => {
-                            let terminal = crate::commission_dispatch::fixed_gain_amplitude::
-                                failed_fixed_gain_amplitude_terminal(
-                                    run_sequence,
-                                    rejection,
-                                    integral_candidate,
-                                );
-                            board.record_velocity_sweep_trace_record(
-                                crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                                    encode_fixed_gain_amplitude_terminal(&terminal),
-                            );
-                            board.emit_reply(ReplyPayload::FixedGainAmplitudeTerminal {
-                                oid,
-                                terminal,
-                            });
-                            board
-                                .tmc_state()
-                                .commission_in_flight
-                                .store(false, core::sync::atomic::Ordering::Relaxed);
-                            return TmcControlRequestOutcome::skip_tick_tail();
-                        }
-                    };
-                    let workflow = crate::commissioning::outer::velocity::workflow_plan::
-                        CommissioningWorkflowPlan::new_fixed_gain_amplitude(
-                            run_sequence,
-                            preflight.plan.order,
-                            preflight.plan.nominal_workflow_ms,
-                            preflight.plan.maximum_workflow_ms,
-                        )
-                        .expect("a valid amplitude plan has a valid workflow envelope");
-                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                        oid,
-                        plan: workflow,
-                    });
-                    for record in crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
-                        encode_fixed_gain_amplitude_plan(run_sequence, preflight.plan)
-                    {
-                        board.record_velocity_sweep_trace_record(record);
-                    }
-                    board.emit_reply(ReplyPayload::FixedGainAmplitudePlan {
-                        oid,
-                        run_sequence,
-                        plan: preflight.plan,
-                    });
-                    TuneRoute::FixedGainAmplitude(preflight)
-                }
-                crate::tmc::AutotuneAction::IntegralResume => {
-                    let config = crate::commission_dispatch::integral::IntegralPreflightConfig {
-                        encoder_counts_per_rev,
-                        torque_limit: current_limit.raw(),
-                        limit_evidence_capability: board.velocity_limit_evidence_capability(),
-                        channel: board.channel(),
-                        pwm_hz: board.pwm_freq_hz(),
-                    };
-                    // `Ok(None)` is the admission path's "proceed to Proportional"
-                    // signal. A resume has no Proportional to fall back to, and
-                    // running a campaign here would actuate the motor for
-                    // minutes when the operator asked to reproduce a plan that
-                    // does not exist. Translate it here rather than changing
-                    // what the shared preflight means.
-                    let refusal = match crate::commission_dispatch::integral::
-                        preflight_integral_request(request, &config, run_sequence, integral_candidate)
-                    {
-                        Ok(Some(preflight)) => Ok(preflight),
-                        Ok(None) => Err(crate::commission_dispatch::integral::
-                            missing_authority_integral_terminal(run_sequence)),
-                        Err(rejection) => Err(integral_resume_rejection_terminal(
-                            run_sequence,
-                            rejection,
-                            integral_candidate
-                                .authority()
-                                .map_or(0, |authority| authority.identity.plan_digest),
-                        )),
-                    };
-                    let preflight = match refusal {
-                        Ok(preflight) => preflight,
-                        Err(terminal) => {
-                            board.record_velocity_sweep_trace_record(
-                                crate::commissioning::outer::velocity::integral_reporting::
-                                    encode_velocity_integral_terminal(&terminal),
-                            );
-                            board.emit_reply(ReplyPayload::VelocityIntegralRefusal {
-                                oid,
-                                terminal,
-                            });
-                            board
-                                .tmc_state()
-                                .commission_in_flight
-                                .store(false, core::sync::atomic::Ordering::Relaxed);
-                            return TmcControlRequestOutcome::skip_tick_tail();
-                        }
-                    };
-                    let workflow = build_integral_resume_workflow_plan(
-                        run_sequence,
-                        preflight.plan.maximum_workflow_ms,
-                        preflight.plan.recovery_maximum_slot_us,
-                    );
-                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                        oid,
-                        plan: workflow,
-                    });
-                    // The workflow envelope only discloses the shape and its
-                    // durations. The exact plan is a separate reply, and the
-                    // host refuses Stage-C evidence that arrives before it, so
-                    // it has to be on the wire before the engine takes a stroke.
-                    for record in crate::commissioning::outer::velocity::integral_reporting::
-                        encode_velocity_integral_plan_trace(run_sequence, preflight.plan)
-                    {
-                        board.record_velocity_sweep_trace_record(record);
-                    }
-                    board.emit_reply(ReplyPayload::VelocityIntegralPlan {
-                        oid,
-                        run_sequence,
-                        plan: preflight.plan,
-                    });
-                    TuneRoute::IntegralResume(preflight)
-                }
-                crate::tmc::AutotuneAction::BreakawaySeeded => {
-                    let (campaign, workflow) = match crate::commissioning::outer::velocity::
-                        breakaway_campaign::plan_breakaway_campaign_command(
-                            request,
-                            encoder_counts_per_rev,
-                            current_limit.raw(),
-                            board.velocity_limit_evidence_capability(),
-                            board.pwm_freq_hz(),
-                            board.channel(),
-                            run_sequence,
-                        ) {
-                            Ok(planned) => planned,
-                            Err(error) => {
-                                board.tmc_state().commission_in_flight.store(
-                                    false,
-                                    core::sync::atomic::Ordering::Relaxed,
-                                );
-                                emit_commission_phase_failure::<Board, Spi>(
-                                    board,
-                                    oid,
-                                    error.status_code(),
-                                );
-                                return TmcControlRequestOutcome::skip_tick_tail();
-                            }
-                        };
-                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                        oid,
-                        plan: workflow,
-                    });
-                    TuneRoute::Breakaway(campaign)
-                }
-                crate::tmc::AutotuneAction::RobustnessReversal => {
-                    let preflight =
-                        match crate::commission_dispatch::robustness::preflight_robustness_reversal(
-                            run_sequence,
-                            integral_candidate,
-                        ) {
-                            Ok(preflight) => preflight,
-                            Err(rejection) => {
-                                let terminal = crate::commission_dispatch::robustness::
-                                failed_robustness_terminal(run_sequence, rejection);
-                                board.emit_reply(ReplyPayload::RobustnessReversalTerminal {
-                                    oid,
-                                    terminal,
-                                });
-                                board
-                                    .tmc_state()
-                                    .commission_in_flight
-                                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                                return TmcControlRequestOutcome::skip_tick_tail();
-                            }
-                        };
-                    // Disclose the run's worst-case duration before any motion
-                    // so the host arms its extended run timeout: the K-cycle
-                    // probe runs far longer than the host's 5 s initial plan
-                    // window, which caps the run when no workflow plan arrives.
-                    let workflow = crate::commissioning::outer::velocity::workflow_plan::
-                        CommissioningWorkflowPlan::new_robustness(
-                            run_sequence,
-                            crate::commission_dispatch::robustness::robustness_nominal_duration_ms(),
-                            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
-                                u32::from(request.max_duration_ms).saturating_mul(1_000),
-                            ),
-                        )
-                        .expect("robustness workflow envelope is always valid");
-                    board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                        oid,
-                        plan: workflow,
-                    });
-                    TuneRoute::Robustness(preflight)
-                }
-            };
+            let (tune_route, encoder_counts_per_rev) =
+                match compute_tune_route(board, integral_candidate, autotune_action, fields) {
+                    Ok(v) => v,
+                    Err(outcome) => return outcome,
+                };
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before tune");
                 board
@@ -1061,40 +816,9 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            let tmc_state = board.tmc_state();
-            let entry_snapshot = {
-                use core::sync::atomic::Ordering::Relaxed;
-                let default_current_filter_hz = board.default_current_filter_hz();
-                let outer_gains = match tmc_state.load_outer_gains(Relaxed) {
-                    Ok(gains) => gains,
-                    Err(_) => {
-                        tmc_state.commission_in_flight.store(false, Relaxed);
-                        emit_commission_phase_failure::<Board, Spi>(
-                            board,
-                            oid,
-                            CommissionError::CurrentValidationFailed.status_code(),
-                        );
-                        return TmcControlRequestOutcome::skip_tick_tail();
-                    }
-                };
-                OuterGainRollbackSnapshot {
-                    velocity_p: outer_gains.velocity_p,
-                    velocity_i: outer_gains.velocity_i,
-                    position_p: outer_gains.position_p,
-                    position_i: outer_gains.position_i,
-                    velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
-                    voltage_limit: tmc_state.voltage_limit_cfg.load(Relaxed),
-                    velocity_filter_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
-                    torque_filter_hz: tmc_state
-                        .torque_filter_hz
-                        .load(Relaxed)
-                        .unwrap_or(default_current_filter_hz),
-                    position_filter_hz: tmc_state.position_filter_hz.load_or_zero(Relaxed),
-                    flux_filter_hz: tmc_state
-                        .flux_filter_hz
-                        .load(Relaxed)
-                        .unwrap_or(default_current_filter_hz),
-                }
+            let entry_snapshot = match build_entry_snapshot::<Spi, Board>(board, oid) {
+                Ok(snapshot) => snapshot,
+                Err(outcome) => return outcome,
             };
             // Measurement runs filter-free regardless of `printer.cfg`;
             // `entry_snapshot` above already captured the operator's real
@@ -1104,7 +828,8 @@ where
                 .await
                 .is_err()
             {
-                tmc_state
+                board
+                    .tmc_state()
                     .commission_in_flight
                     .store(false, core::sync::atomic::Ordering::Relaxed);
                 emit_commission_phase_failure::<Board, Spi>(
@@ -1114,104 +839,15 @@ where
                 );
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            tmc_state
-                .cancel_requested
-                .store(false, core::sync::atomic::Ordering::Relaxed);
-            let outer_params = OuterAutotuneInputs {
-                slot_order: req.autotune_action.slot_order(),
-                profile: CommissionProfile::from_u8(profile),
-                mode: OperatingMode::from_u8(mode),
-                inner_lambda_us,
-                theta_e_us,
-                current_ringing: current_ringing_count > 1,
-                current_bandwidth_hz,
-                inner_warning_flags,
-                requested_velocity_mrev_s,
-                machine_velocity_ceiling_mrev_s,
-                requested_velocity_source,
-                max_stroke_travel_mrev,
-                settle_travel_reserve_mrev,
-                negative_position_headroom_mrev,
-                positive_position_headroom_mrev,
-                max_duration_ms,
-            };
-            {
-                match tune_route {
-                    TuneRoute::FixedGainAmplitude(preflight) => {
-                        runtime.set_commission_engine(
-                            CommissioningEngine::new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
-                                oid,
-                                tmc_state,
-                                outer_params,
-                                entry_snapshot,
-                                preflight,
-                            ),
-                        );
-                    }
-                    TuneRoute::IntegralResume(preflight) => {
-                        runtime.set_commission_engine(
-                            CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
-                                oid,
-                                tmc_state,
-                                outer_params,
-                                entry_snapshot,
-                                preflight,
-                            ),
-                        );
-                    }
-                    TuneRoute::Breakaway(campaign) => {
-                        let engine =
-                            match CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
-                                oid,
-                                tmc_state,
-                                outer_params,
-                                entry_snapshot,
-                                campaign,
-                            ) {
-                                Ok(engine) => engine,
-                                Err(error) => {
-                                    board
-                                        .tmc_state()
-                                        .commission_in_flight
-                                        .store(false, core::sync::atomic::Ordering::Relaxed);
-                                    emit_commission_phase_failure::<Board, Spi>(
-                                        board,
-                                        oid,
-                                        error.status_code(),
-                                    );
-                                    return TmcControlRequestOutcome::skip_tick_tail();
-                                }
-                            };
-                        runtime.set_commission_engine(engine);
-                        crate::diagnostic::begin_breakaway_campaign();
-                    }
-                    TuneRoute::Robustness(preflight) => {
-                        let engine = match CommissioningEngine::new_outer_for_tmc_with_robustness(
-                            oid,
-                            tmc_state,
-                            outer_params,
-                            entry_snapshot,
-                            preflight,
-                            encoder_counts_per_rev,
-                        ) {
-                            Ok(engine) => engine,
-                            Err(error) => {
-                                board
-                                    .tmc_state()
-                                    .commission_in_flight
-                                    .store(false, core::sync::atomic::Ordering::Relaxed);
-                                emit_commission_phase_failure::<Board, Spi>(
-                                    board,
-                                    oid,
-                                    error.status_code(),
-                                );
-                                return TmcControlRequestOutcome::skip_tick_tail();
-                            }
-                        };
-                        runtime.set_commission_engine(engine);
-                    }
-                }
-            }
+            return apply_tune_route(
+                board,
+                runtime,
+                autotune_action,
+                fields,
+                tune_route,
+                entry_snapshot,
+                encoder_counts_per_rev,
+            );
         }
         TmcRequest {
             kind: TmcRequestKind::SelfTest { oid },
@@ -1357,6 +993,485 @@ where
         }
     }
 
+    normal_outcome(board.normal_tail())
+}
+
+#[derive(Clone, Copy)]
+struct TuneRequestFields {
+    oid: u8,
+    profile: u8,
+    mode: u8,
+    inner_lambda_us: u32,
+    theta_e_us: u32,
+    current_ringing_count: u8,
+    current_bandwidth_hz: u32,
+    inner_warning_flags: u8,
+    requested_velocity_mrev_s: u32,
+    machine_velocity_ceiling_mrev_s: u32,
+    requested_velocity_source:
+        crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
+    max_stroke_travel_mrev: u32,
+    settle_travel_reserve_mrev: u32,
+    negative_position_headroom_mrev: u32,
+    positive_position_headroom_mrev: u32,
+    max_duration_ms: u16,
+}
+
+#[inline(never)]
+fn tune_reject_reason<Spi, Board>(board: &mut Board, runtime: &TmcControlRuntime) -> Option<u8>
+where
+    Spi: SpiDevice<u8>,
+    Board: TmcRequestBoard<Spi>,
+{
+    if board.commissioning_blocked(runtime) {
+        board
+            .tmc_state()
+            .commission_in_flight
+            .store(false, core::sync::atomic::Ordering::Relaxed);
+        return Some(CommissionError::AlreadyRunning.status_code());
+    }
+    if !runtime.is_motor_enabled() || !runtime.is_calibrated() {
+        board
+            .tmc_state()
+            .commission_in_flight
+            .store(false, core::sync::atomic::Ordering::Relaxed);
+        return Some(CommissionError::EncoderNotAligned.status_code());
+    }
+    None
+}
+
+#[inline(never)]
+fn compute_tune_route<Spi, Board>(
+    board: &mut Board,
+    integral_candidate: &mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
+    autotune_action: crate::tmc::AutotuneAction,
+    fields: TuneRequestFields,
+) -> Result<(TuneRoute, u32), TmcControlRequestOutcome>
+where
+    Spi: SpiDevice<u8>,
+    Board: TmcRequestBoard<Spi>,
+{
+    let TuneRequestFields {
+        oid,
+        requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s,
+        requested_velocity_source,
+        max_stroke_travel_mrev,
+        settle_travel_reserve_mrev,
+        negative_position_headroom_mrev,
+        positive_position_headroom_mrev,
+        max_duration_ms,
+        ..
+    } = fields;
+    let current_limit = board
+        .tmc_state()
+        .load_current_limit(core::sync::atomic::Ordering::Relaxed);
+    if current_limit.raw() == 0 {
+        board
+            .tmc_state()
+            .commission_in_flight
+            .store(false, core::sync::atomic::Ordering::Relaxed);
+        emit_commission_phase_failure::<Board, Spi>(
+            board,
+            oid,
+            CommissionError::NoCurrent.status_code(),
+        );
+        return Err(TmcControlRequestOutcome::skip_tick_tail());
+    }
+    let run_sequence = board.next_commission_trace_seq();
+    let Some(encoder_counts_per_rev) = board.tmc_state().encoder_counts_per_rev() else {
+        board
+            .tmc_state()
+            .commission_in_flight
+            .store(false, core::sync::atomic::Ordering::Relaxed);
+        emit_commission_phase_failure::<Board, Spi>(
+            board,
+            oid,
+            CommissionError::InvalidSchedule.status_code(),
+        );
+        return Err(TmcControlRequestOutcome::skip_tick_tail());
+    };
+    let request = crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest {
+        requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s,
+        requested_velocity_source,
+        max_stroke_travel_mrev,
+        settle_travel_reserve_mrev,
+        negative_position_headroom_mrev,
+        positive_position_headroom_mrev,
+        max_duration_ms,
+    };
+    let tune_route = match autotune_action {
+        action @ (crate::tmc::AutotuneAction::FixedGainAmplitudeAscending
+        | crate::tmc::AutotuneAction::FixedGainAmplitudeDescending) => {
+            let amplitude_config = crate::commission_dispatch::integral::IntegralPreflightConfig {
+                encoder_counts_per_rev,
+                torque_limit: current_limit.raw(),
+                limit_evidence_capability: board.velocity_limit_evidence_capability(),
+                channel: board.channel(),
+                pwm_hz: board.pwm_freq_hz(),
+            };
+            let result =
+                crate::commission_dispatch::fixed_gain_amplitude::preflight_fixed_gain_amplitude(
+                    action,
+                    request,
+                    &amplitude_config,
+                    run_sequence,
+                    integral_candidate,
+                );
+            let preflight = match result {
+                Ok(preflight) => preflight,
+                Err(rejection) => {
+                    let terminal = crate::commission_dispatch::fixed_gain_amplitude::
+                                failed_fixed_gain_amplitude_terminal(
+                                    run_sequence,
+                                    rejection,
+                                    integral_candidate,
+                                );
+                    board.record_velocity_sweep_trace_record(
+                                crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
+                                    encode_fixed_gain_amplitude_terminal(&terminal),
+                            );
+                    board.emit_reply(ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal });
+                    board
+                        .tmc_state()
+                        .commission_in_flight
+                        .store(false, core::sync::atomic::Ordering::Relaxed);
+                    return Err(TmcControlRequestOutcome::skip_tick_tail());
+                }
+            };
+            let workflow = crate::commissioning::outer::velocity::workflow_plan::
+                        CommissioningWorkflowPlan::new_fixed_gain_amplitude(
+                            run_sequence,
+                            preflight.plan.order,
+                            preflight.plan.nominal_workflow_ms,
+                            preflight.plan.maximum_workflow_ms,
+                        )
+                        .expect("a valid amplitude plan has a valid workflow envelope");
+            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                oid,
+                plan: workflow,
+            });
+            for record in crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
+                        encode_fixed_gain_amplitude_plan(run_sequence, preflight.plan)
+                    {
+                        board.record_velocity_sweep_trace_record(record);
+                    }
+            board.emit_reply(ReplyPayload::FixedGainAmplitudePlan {
+                oid,
+                run_sequence,
+                plan: preflight.plan,
+            });
+            TuneRoute::FixedGainAmplitude(preflight)
+        }
+        crate::tmc::AutotuneAction::IntegralResume => {
+            let config = crate::commission_dispatch::integral::IntegralPreflightConfig {
+                encoder_counts_per_rev,
+                torque_limit: current_limit.raw(),
+                limit_evidence_capability: board.velocity_limit_evidence_capability(),
+                channel: board.channel(),
+                pwm_hz: board.pwm_freq_hz(),
+            };
+            let refusal = match crate::commission_dispatch::integral::preflight_integral_request(
+                request,
+                &config,
+                run_sequence,
+                integral_candidate,
+            ) {
+                Ok(Some(preflight)) => Ok(preflight),
+                Ok(None) => Err(
+                    crate::commission_dispatch::integral::missing_authority_integral_terminal(
+                        run_sequence,
+                    ),
+                ),
+                Err(rejection) => Err(integral_resume_rejection_terminal(
+                    run_sequence,
+                    rejection,
+                    integral_candidate
+                        .authority()
+                        .map_or(0, |authority| authority.identity.plan_digest),
+                )),
+            };
+            let preflight = match refusal {
+                Ok(preflight) => preflight,
+                Err(terminal) => {
+                    board.record_velocity_sweep_trace_record(
+                                crate::commissioning::outer::velocity::integral_reporting::
+                                    encode_velocity_integral_terminal(&terminal),
+                            );
+                    board.emit_reply(ReplyPayload::VelocityIntegralRefusal { oid, terminal });
+                    board
+                        .tmc_state()
+                        .commission_in_flight
+                        .store(false, core::sync::atomic::Ordering::Relaxed);
+                    return Err(TmcControlRequestOutcome::skip_tick_tail());
+                }
+            };
+            let workflow = build_integral_resume_workflow_plan(
+                run_sequence,
+                preflight.plan.maximum_workflow_ms,
+                preflight.plan.recovery_maximum_slot_us,
+            );
+            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                oid,
+                plan: workflow,
+            });
+            // The workflow envelope only discloses the shape and its
+            // durations. The exact plan is a separate reply, and the
+            // host refuses Stage-C evidence that arrives before it, so
+            // it has to be on the wire before the engine takes a stroke.
+            for record in crate::commissioning::outer::velocity::integral_reporting::
+                        encode_velocity_integral_plan_trace(run_sequence, preflight.plan)
+                    {
+                        board.record_velocity_sweep_trace_record(record);
+                    }
+            board.emit_reply(ReplyPayload::VelocityIntegralPlan {
+                oid,
+                run_sequence,
+                plan: preflight.plan,
+            });
+            TuneRoute::IntegralResume(preflight)
+        }
+        crate::tmc::AutotuneAction::BreakawaySeeded => {
+            let (campaign, workflow) = match crate::commissioning::outer::velocity::
+                        breakaway_campaign::plan_breakaway_campaign_command(
+                            request,
+                            encoder_counts_per_rev,
+                            current_limit.raw(),
+                            board.velocity_limit_evidence_capability(),
+                            board.pwm_freq_hz(),
+                            board.channel(),
+                            run_sequence,
+                        ) {
+                            Ok(planned) => planned,
+                            Err(error) => {
+                                board.tmc_state().commission_in_flight.store(
+                                    false,
+                                    core::sync::atomic::Ordering::Relaxed,
+                                );
+                                emit_commission_phase_failure::<Board, Spi>(
+                                    board,
+                                    oid,
+                                    error.status_code(),
+                                );
+                                return Err(TmcControlRequestOutcome::skip_tick_tail());
+                            }
+                        };
+            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                oid,
+                plan: workflow,
+            });
+            TuneRoute::Breakaway(campaign)
+        }
+        crate::tmc::AutotuneAction::RobustnessReversal => {
+            let preflight =
+                match crate::commission_dispatch::robustness::preflight_robustness_reversal(
+                    run_sequence,
+                    integral_candidate,
+                ) {
+                    Ok(preflight) => preflight,
+                    Err(rejection) => {
+                        let terminal =
+                            crate::commission_dispatch::robustness::failed_robustness_terminal(
+                                run_sequence,
+                                rejection,
+                            );
+                        board
+                            .emit_reply(ReplyPayload::RobustnessReversalTerminal { oid, terminal });
+                        board
+                            .tmc_state()
+                            .commission_in_flight
+                            .store(false, core::sync::atomic::Ordering::Relaxed);
+                        return Err(TmcControlRequestOutcome::skip_tick_tail());
+                    }
+                };
+            // Disclose the run's worst-case duration before any motion
+            // so the host arms its extended run timeout: the K-cycle
+            // probe runs far longer than the host's 5 s initial plan
+            // window, which caps the run when no workflow plan arrives.
+            let workflow = crate::commissioning::outer::velocity::workflow_plan::
+                        CommissioningWorkflowPlan::new_robustness(
+                            run_sequence,
+                            crate::commission_dispatch::robustness::robustness_nominal_duration_ms(),
+                            crate::commission_dispatch::robustness::robustness_worst_case_duration_ms(
+                                u32::from(request.max_duration_ms).saturating_mul(1_000),
+                            ),
+                        )
+                        .expect("robustness workflow envelope is always valid");
+            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
+                oid,
+                plan: workflow,
+            });
+            TuneRoute::Robustness(preflight)
+        }
+    };
+    Ok((tune_route, encoder_counts_per_rev))
+}
+
+#[inline(never)]
+fn build_entry_snapshot<Spi, Board>(
+    board: &mut Board,
+    oid: u8,
+) -> Result<OuterGainRollbackSnapshot, TmcControlRequestOutcome>
+where
+    Spi: SpiDevice<u8>,
+    Board: TmcRequestBoard<Spi>,
+{
+    use core::sync::atomic::Ordering::Relaxed;
+    let default_current_filter_hz = board.default_current_filter_hz();
+    let tmc_state = board.tmc_state();
+    let outer_gains = match tmc_state.load_outer_gains(Relaxed) {
+        Ok(gains) => gains,
+        Err(_) => {
+            tmc_state.commission_in_flight.store(false, Relaxed);
+            emit_commission_phase_failure::<Board, Spi>(
+                board,
+                oid,
+                CommissionError::CurrentValidationFailed.status_code(),
+            );
+            return Err(TmcControlRequestOutcome::skip_tick_tail());
+        }
+    };
+    Ok(OuterGainRollbackSnapshot {
+        velocity_p: outer_gains.velocity_p,
+        velocity_i: outer_gains.velocity_i,
+        position_p: outer_gains.position_p,
+        position_i: outer_gains.position_i,
+        velocity_limit: tmc_state.velocity_limit_cfg.load(Relaxed),
+        voltage_limit: tmc_state.voltage_limit_cfg.load(Relaxed),
+        velocity_filter_hz: tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
+        torque_filter_hz: tmc_state
+            .torque_filter_hz
+            .load(Relaxed)
+            .unwrap_or(default_current_filter_hz),
+        position_filter_hz: tmc_state.position_filter_hz.load_or_zero(Relaxed),
+        flux_filter_hz: tmc_state
+            .flux_filter_hz
+            .load(Relaxed)
+            .unwrap_or(default_current_filter_hz),
+    })
+}
+
+#[inline(never)]
+fn apply_tune_route<Spi, Board>(
+    board: &mut Board,
+    runtime: &mut TmcControlRuntime,
+    autotune_action: crate::tmc::AutotuneAction,
+    fields: TuneRequestFields,
+    tune_route: TuneRoute,
+    entry_snapshot: OuterGainRollbackSnapshot,
+    encoder_counts_per_rev: u32,
+) -> TmcControlRequestOutcome
+where
+    Spi: SpiDevice<u8>,
+    Board: TmcRequestBoard<Spi>,
+{
+    let TuneRequestFields {
+        oid,
+        profile,
+        mode,
+        inner_lambda_us,
+        theta_e_us,
+        current_ringing_count,
+        current_bandwidth_hz,
+        inner_warning_flags,
+        requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s,
+        requested_velocity_source,
+        max_stroke_travel_mrev,
+        settle_travel_reserve_mrev,
+        negative_position_headroom_mrev,
+        positive_position_headroom_mrev,
+        max_duration_ms,
+    } = fields;
+    let tmc_state = board.tmc_state();
+    tmc_state
+        .cancel_requested
+        .store(false, core::sync::atomic::Ordering::Relaxed);
+    let outer_params = OuterAutotuneInputs {
+        slot_order: autotune_action.slot_order(),
+        profile: CommissionProfile::from_u8(profile),
+        mode: OperatingMode::from_u8(mode),
+        inner_lambda_us,
+        theta_e_us,
+        current_ringing: current_ringing_count > 1,
+        current_bandwidth_hz,
+        inner_warning_flags,
+        requested_velocity_mrev_s,
+        machine_velocity_ceiling_mrev_s,
+        requested_velocity_source,
+        max_stroke_travel_mrev,
+        settle_travel_reserve_mrev,
+        negative_position_headroom_mrev,
+        positive_position_headroom_mrev,
+        max_duration_ms,
+    };
+    match tune_route {
+        TuneRoute::FixedGainAmplitude(preflight) => {
+            runtime.set_commission_engine(
+                CommissioningEngine::new_outer_for_tmc_with_fixed_gain_amplitude_preflight(
+                    oid,
+                    tmc_state,
+                    outer_params,
+                    entry_snapshot,
+                    preflight,
+                ),
+            );
+        }
+        TuneRoute::IntegralResume(preflight) => {
+            runtime.set_commission_engine(
+                CommissioningEngine::new_outer_for_tmc_with_integral_preflight(
+                    oid,
+                    tmc_state,
+                    outer_params,
+                    entry_snapshot,
+                    preflight,
+                ),
+            );
+        }
+        TuneRoute::Breakaway(campaign) => {
+            let engine = match CommissioningEngine::new_outer_for_tmc_with_breakaway_campaign(
+                oid,
+                tmc_state,
+                outer_params,
+                entry_snapshot,
+                campaign,
+            ) {
+                Ok(engine) => engine,
+                Err(error) => {
+                    board
+                        .tmc_state()
+                        .commission_in_flight
+                        .store(false, core::sync::atomic::Ordering::Relaxed);
+                    emit_commission_phase_failure::<Board, Spi>(board, oid, error.status_code());
+                    return TmcControlRequestOutcome::skip_tick_tail();
+                }
+            };
+            runtime.set_commission_engine(engine);
+            crate::diagnostic::begin_breakaway_campaign();
+        }
+        TuneRoute::Robustness(preflight) => {
+            let engine = match CommissioningEngine::new_outer_for_tmc_with_robustness(
+                oid,
+                tmc_state,
+                outer_params,
+                entry_snapshot,
+                preflight,
+                encoder_counts_per_rev,
+            ) {
+                Ok(engine) => engine,
+                Err(error) => {
+                    board
+                        .tmc_state()
+                        .commission_in_flight
+                        .store(false, core::sync::atomic::Ordering::Relaxed);
+                    emit_commission_phase_failure::<Board, Spi>(board, oid, error.status_code());
+                    return TmcControlRequestOutcome::skip_tick_tail();
+                }
+            };
+            runtime.set_commission_engine(engine);
+        }
+    }
     normal_outcome(board.normal_tail())
 }
 
