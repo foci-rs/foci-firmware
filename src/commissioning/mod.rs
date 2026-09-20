@@ -1980,10 +1980,12 @@ mod tests {
         // 7_024 -> 6_144 and 6_976 -> 6_096: the gain-floor phase fits each
         // capture in a synchronous helper, so the fit inputs are no longer
         // live across the capture awaits.
-        assert_eq!(engine_step, 6_144);
-        assert!(engine_step <= 6_144);
-        assert_eq!(step_inner, 6_096);
-        assert!(step_inner <= 6_096);
+        // 6_144 -> 6_160 and 6_096 -> 6_112: the gain-floor settle state
+        // carries the low step's mean current alongside its acceleration.
+        assert_eq!(engine_step, 6_160);
+        assert!(engine_step <= 6_160);
+        assert_eq!(step_inner, 6_112);
+        assert!(step_inner <= 6_112);
         assert_eq!(electrical_id, 3_248);
         assert!(electrical_id <= 3_248);
         assert!(electrical_id <= 3_328);
@@ -1991,10 +1993,11 @@ mod tests {
         // `engine_step`/`step_inner` above, reached through the scheduled
         // commissioning-step path.
         // 7_104 -> 6_224: same gain-floor fit-input change as above.
-        assert_eq!(scheduled_step, 6_224);
+        // 6_224 -> 6_240: same settle-state field as above.
+        assert_eq!(scheduled_step, 6_240);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
-        assert!(scheduled_step <= 6_224);
+        assert!(scheduled_step <= 6_240);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {

@@ -438,13 +438,11 @@ pub enum CommissionError {
     /// `accel_per_count` quadratic fit: fitted `accel_raw` is zero, negative,
     /// or disagrees in sign with the commanded torque step direction. Code 111.
     GainFloorNonPositiveSlope,
-    /// Current-response exponential fit: non-monotonic, saturated, or
-    /// residual exceeds `residual_fail_permille = 75`. Code 112.
+    /// No usable current-loop bandwidth in the CurrentTune result to derive
+    /// the target bandwidths from. Code 112.
     GainFloorCurrentFitRejected,
-    /// Current-response fit: captured window did not reach `3 *
-    /// tau_current`, fewer than 20 independently-timed samples fall within
-    /// it, or a per-slot sample deadline was missed (immediate trip, not
-    /// deferred to end-of-capture). Code 113.
+    /// A per-slot sample deadline was missed during the gain-floor capture
+    /// (immediate trip, not deferred to end-of-capture). Code 113.
     GainFloorInsufficientCoverage,
     /// Actual-current containment tripped: `abs(pid_torque_actual)` or
     /// `abs(pid_flux_actual)` exceeded `resistance_current_ceiling_count`

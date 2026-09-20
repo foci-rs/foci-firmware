@@ -3,10 +3,10 @@
 //! Runs two fixed-grid current-step captures (`capture::run_capture`) at a
 //! low and a high torque amplitude, fits each position response
 //! (`quadratic_fit::fit_accel_raw`), takes the differential acceleration
-//! per torque count between them, fits the current response of the high
-//! step (`current_response_fit::fit_current_response`), then derives
+//! per measured torque count between them, then derives
 //! `velocity_p`/`position_p` (`gains::compute_velocity_p`/
-//! `compute_position_p`) and hands off to `InnerPhase::ClosedLoopActivation`.
+//! `compute_position_p`) from it and the current-loop bandwidth CurrentTune
+//! already measured, and hands off to `InnerPhase::ClosedLoopActivation`.
 //! Reached only when `current_loop.rs`'s bandwidth gate has already
 //! confirmed the board's current-loop bandwidth is inside the supported
 //! range; a measurement failure here fails commissioning outright (no
@@ -21,7 +21,6 @@
 //! offset.
 
 pub(crate) mod capture;
-pub(crate) mod current_response_fit;
 pub(crate) mod gains;
 pub(crate) mod quadratic_fit;
 
@@ -39,7 +38,10 @@ const INTER_STEP_SETTLE_US: u64 = 100_000;
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub(crate) enum GainFloorState {
     Start,
-    HighStep { low_accel_raw_q32: i64 },
+    HighStep {
+        low_accel_raw_q32: i64,
+        low_mean_torque_actual: i32,
+    },
 }
 
 /// Drive the commissioning fallback gain-floor measurement phase.
@@ -66,7 +68,7 @@ where
         _ => return StepResult::ReadyNow,
     };
 
-    let low_accel_raw_q32 =
+    let (low_accel_raw_q32, low_mean_torque_actual) =
         match state {
             GainFloorState::Start => {
                 let capture =
@@ -76,18 +78,23 @@ where
                         Ok(buf) => buf,
                         Err(e) => return super::fail_inner(phase, e),
                     };
-                let accel_raw_q32 = match fit_capture_accel(&capture, i_target_low) {
-                    Ok(v) => v,
-                    Err(e) => return super::fail_inner(phase, e),
-                };
+                let (accel_raw_q32, mean_torque_actual) =
+                    match fit_capture_accel(&capture, i_target_low) {
+                        Ok(v) => v,
+                        Err(e) => return super::fail_inner(phase, e),
+                    };
                 if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
                     *state = GainFloorState::HighStep {
                         low_accel_raw_q32: accel_raw_q32,
+                        low_mean_torque_actual: mean_torque_actual,
                     };
                 }
                 return StepResult::At(backend.elapsed_us() + INTER_STEP_SETTLE_US);
             }
-            GainFloorState::HighStep { low_accel_raw_q32 } => low_accel_raw_q32,
+            GainFloorState::HighStep {
+                low_accel_raw_q32,
+                low_mean_torque_actual,
+            } => (low_accel_raw_q32, low_mean_torque_actual),
         };
 
     let capture =
@@ -95,15 +102,21 @@ where
             Ok(buf) => buf,
             Err(e) => return super::fail_inner(phase, e),
         };
-    let high_accel_raw_q32 = match fit_capture_accel(&capture, i_target_high) {
-        Ok(v) => v,
-        Err(e) => return super::fail_inner(phase, e),
-    };
-    if high_accel_raw_q32 <= low_accel_raw_q32 {
+    let (high_accel_raw_q32, high_mean_torque_actual) =
+        match fit_capture_accel(&capture, i_target_high) {
+            Ok(v) => v,
+            Err(e) => return super::fail_inner(phase, e),
+        };
+    // The current loop does not hold the commanded target while the rotor
+    // moves, so the differential divides by the current the motor actually
+    // saw, not by the command.
+    let mean_torque_delta = high_mean_torque_actual - low_mean_torque_actual;
+    if high_accel_raw_q32 <= low_accel_raw_q32 || mean_torque_delta <= 0 {
         defmt::warn!(
-            "gain-floor: high step did not accelerate faster than low step ({} <= {})",
+            "gain-floor: high step did not out-accelerate low step (accel {} <= {}, current delta {})",
             high_accel_raw_q32,
-            low_accel_raw_q32
+            low_accel_raw_q32,
+            mean_torque_delta
         );
         return super::fail_inner(phase, CommissionError::GainFloorNonPositiveSlope);
     }
@@ -111,7 +124,7 @@ where
     let accel_per_count: f32 = match gains::accel_raw_q32_to_accel_per_count(
         high_accel_raw_q32 - low_accel_raw_q32,
         crate::motion_scale::POSITION_UNITS_PER_REV as f64,
-        i_target_high - i_target_low,
+        mean_torque_delta.min(i32::from(i16::MAX)) as i16,
     ) {
         Some(v) => v,
         None => {
@@ -119,44 +132,31 @@ where
         }
     };
 
-    let torque_samples: heapless::Vec<(u32, i16), 200> =
-        capture.iter().map(|s| (s.t_us, s.torque_actual)).collect();
-    let bw_current_floor_hz =
-        match current_response_fit::fit_current_response(&torque_samples, i_target_high) {
-            Ok(v) => v,
-            Err(e) => {
-                let trace: heapless::Vec<i16, 200> =
-                    capture.iter().map(|s| s.torque_actual).collect();
-                defmt::warn!(
-                    "gain-floor current fit rejected: i_target={} reason={} torque_actual={=[?]}",
-                    i_target_high,
-                    e,
-                    trace.as_slice()
-                );
-                return super::fail_inner(
-                    phase,
-                    match e {
-                        current_response_fit::CurrentFitError::HighResidual => {
-                            CommissionError::GainFloorCurrentFitRejected
-                        }
-                        current_response_fit::CurrentFitError::TooFewSamples
-                        | current_response_fit::CurrentFitError::InsufficientCoverage => {
-                            CommissionError::GainFloorInsufficientCoverage
-                        }
-                    },
-                );
-            }
-        };
-
-    let (velocity_p, omega_target) =
-        match gains::compute_velocity_p(accel_per_count, bw_current_floor_hz) {
-            Ok(v) => v,
-            Err(e) => return super::fail_inner(phase, e),
-        };
-    let position_p = match gains::compute_position_p(omega_target) {
+    let bw_current_hz = match phase {
+        InnerPhase::GainFloorMeasurement {
+            inner_result: Some(result),
+            ..
+        } => result.bandwidth_hz,
+        _ => 0,
+    };
+    if bw_current_hz == 0 {
+        return super::fail_inner(phase, CommissionError::GainFloorCurrentFitRejected);
+    }
+    let velocity_p = match gains::compute_velocity_p(accel_per_count, bw_current_hz) {
         Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
+    let position_p = match gains::compute_position_p(bw_current_hz) {
+        Ok(v) => v,
+        Err(e) => return super::fail_inner(phase, e),
+    };
+    defmt::info!(
+        "gain-floor: accel_per_count_milli={} bw_current_hz={} velocity_p={} position_p={}",
+        (accel_per_count * 1000.0) as i32,
+        bw_current_hz,
+        velocity_p.raw(),
+        position_p.raw()
+    );
 
     let vel_limit = backend.operational_velocity_limit();
     let default_current_filter_hz = backend.tmc_config().default_current_filter_hz();
@@ -309,7 +309,7 @@ where
 fn fit_capture_accel(
     capture: &capture::CaptureBuffer,
     i_target: i16,
-) -> Result<i64, CommissionError> {
+) -> Result<(i64, i32), CommissionError> {
     let position_0 = capture.first().map_or(0, |s| s.position);
     let position_samples: heapless::Vec<(u32, i32), 200> = capture
         .iter()
@@ -319,16 +319,22 @@ fn fit_capture_accel(
     let peak_to_peak = position_samples.iter().map(|(_, p)| *p).max().unwrap_or(0)
         - position_samples.iter().map(|(_, p)| *p).min().unwrap_or(0);
     let torque_peak = capture.iter().map(|s| s.torque_actual).max().unwrap_or(0);
+    let mean_torque_actual = capture
+        .iter()
+        .map(|s| i32::from(s.torque_actual))
+        .sum::<i32>()
+        / capture.len().max(1) as i32;
     match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
         Ok(accel_raw_q32) => {
             defmt::info!(
-                "gain-floor step: i_target={} torque_peak={} p2p={} accel_raw_q32={}",
+                "gain-floor step: i_target={} torque_peak={} torque_mean={} p2p={} accel_raw_q32={}",
                 i_target,
                 torque_peak,
+                mean_torque_actual,
                 peak_to_peak,
                 accel_raw_q32
             );
-            Ok(accel_raw_q32)
+            Ok((accel_raw_q32, mean_torque_actual))
         }
         Err(e) => {
             defmt::warn!(
@@ -491,7 +497,7 @@ mod tests {
         GainFloorCaptureScript {
             accel_raw_per_us2_per_count: 1e-6,
             accel_raw_offset_per_us2: 0.0,
-            tau_current_us: 1000.0,
+            tau_current_us: 1.0,
         }
     }
 
@@ -544,8 +550,14 @@ mod tests {
                     // count; tau 1000us gives ~158 Hz, omega_target ~99.3
                     // rad/s; velocity_p = ceil(256*99.3*2pi/(60*95.9)) = 28,
                     // position_p = ceil(9.93*60*256/65536) = 3.
-                    assert_eq!(velocity_p.raw(), 28);
-                    assert_eq!(position_p.raw(), 3);
+                    // Steps at 1000 and 2000 counts (the mock's current
+                    // reaches target on the second sample, mean ~988/1976)
+                    // give accel_raw 1e-3 and 2e-3 units/us^2: ~97 rad/s^2
+                    // per measured count; InnerResult's 600 Hz current loop
+                    // targets 10 Hz, velocity_p = ceil(256*62.8*2pi/(60*97))
+                    // = 18, position_p = ceil(37.7*60*256/65536) = 9.
+                    assert_eq!(velocity_p.raw(), 18);
+                    assert_eq!(position_p.raw(), 9);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
@@ -887,17 +899,6 @@ mod tests {
         );
     }
 
-    // `GainFloorPositionGainUnrepresentable` has no test here: its only
-    // input, omega_target, is derived from bw_current_floor_hz, which the
-    // current-response fit's own coverage/sample-count gates keep inside
-    // [95.5 Hz, 796 Hz] for any capture that reaches a successful fit --
-    // across that whole range position_p_raw stays near [2, 12], nowhere
-    // near PidPGain::ZERO or MAX. `gains::position_p_max_overflow_rejected`
-    // covers its trigger condition directly; its fail_inner call site in
-    // this file is the same arm used for compute_velocity_p just above it,
-    // exercised by `gain_floor_velocity_gain_unrepresentable_routes_through_restore_machine`
-    // below.
-
     #[test]
     fn gain_floor_insufficient_coverage_routes_through_restore_machine() {
         let mut phase = gain_floor_phase(2000, 4000);
@@ -975,24 +976,6 @@ mod tests {
             &mut phase,
             &mut backend,
             CommissionError::GainFloorInsufficientLinearPoints,
-        );
-    }
-
-    #[test]
-    fn gain_floor_current_fit_rejected_routes_through_restore_machine() {
-        let mut phase = gain_floor_phase(2000, 4000);
-        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
-        backend.advance_elapsed_on_delay = true;
-        // tau_current_us=1.0 saturates almost the whole capture at i_target,
-        // tripping the current-response fit's saturated-trace rejection.
-        backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
-            tau_current_us: 1.0,
-            ..ideal_plant()
-        });
-        assert_routes_through_restore_machine(
-            &mut phase,
-            &mut backend,
-            CommissionError::GainFloorCurrentFitRejected,
         );
     }
 
