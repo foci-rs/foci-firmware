@@ -258,9 +258,8 @@ pub struct FociCommissionResult {
     ///
     /// Bits 0, 1, and 3 report model warnings; bit 2 is reserved for tau
     /// residual telemetry and is not emitted as a warning. Bit 5 reports
-    /// fallback current gains, bit 6 reports host-default confidence, and bit 7
-    /// reports that the gain floor was skipped and the outer gains are the
-    /// built-in defaults.
+    /// fallback current gains, bit 6 reports host-default confidence, and bit 7 is
+    /// reserved (older firmware used it for a skipped gain floor).
     pub inner_warning_flags: u8,
     /// Packed R/L/delay timing states and worst-case metrics.
     pub timing_summary: u32,

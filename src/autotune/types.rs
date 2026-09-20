@@ -2,11 +2,11 @@ use super::HoldGateAccumulator;
 
 /// Tuning aggressiveness profile for commissioning gain synthesis.
 ///
-/// Current-loop P synthesis uses the configured physical bandwidth directly;
-/// retained SIMC helpers and outer-loop synthesis use this profile to select
-/// their closed-loop time scale. A more aggressive profile yields faster
-/// response but requires a more accurate plant model and leaves less stability
-/// margin.
+/// The profile selects the current-loop bandwidth
+/// ([`Self::current_loop_bandwidth_hz`]); the outer-loop floor is derived
+/// from a fixed reference bandwidth and does not change with it. A more
+/// aggressive profile yields faster current response but leaves less
+/// stability margin against the loop delay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CommissionProfile {
     /// Slow, very robust, minimal audible noise.
@@ -18,6 +18,15 @@ pub enum CommissionProfile {
 }
 
 impl CommissionProfile {
+    /// Current-loop bandwidth this profile commissions at.
+    pub const fn current_loop_bandwidth_hz(self) -> f32 {
+        match self {
+            Self::Conservative => 600.0,
+            Self::Balanced => 1000.0,
+            Self::Stiff => 1600.0,
+        }
+    }
+
     /// Decode from the wire representation used in the Klipper command.
     ///
     /// | Value | Profile |

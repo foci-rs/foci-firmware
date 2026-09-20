@@ -42,8 +42,6 @@ pub struct TmcConfig {
     pub adc_i_select: u32,
     /// Excitation voltage for R/L measurement (PIDOUT units).
     pub excitation_voltage: u16,
-    /// Current loop bandwidth in Hz (empirically validated per PWM frequency).
-    pub bandwidth_hz: f32,
     /// Board-derived effective electrical delay for current-loop synthesis.
     pub electrical_model_theta_e_us: u32,
     /// High-rate electrical-delay capture period in microseconds.
@@ -113,13 +111,6 @@ impl TmcConfig {
     /// to Nyquist by construction
     /// (`docs/validation/foci-162-2026-09-19-target-filter-cutoff/`).
     pub fn default_current_filter_hz(&self) -> u16 {
-        self.default_current_filter_hz_for_bandwidth(self.bandwidth_hz)
-    }
-
-    /// Default torque/flux target-path filter cutoff. `bandwidth_hz` is
-    /// accepted for call-site compatibility but no longer affects the
-    /// result -- see [`Self::default_current_filter_hz`].
-    pub fn default_current_filter_hz_for_bandwidth(&self, _bandwidth_hz: f32) -> u16 {
         ((self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u16)
             .min(crate::biquad::CURRENT_CUTOFF_MAX_HZ)
     }
@@ -168,7 +159,6 @@ impl TmcConfig {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             high_rate_delay_period_us: 20,
             high_rate_delay_cycles_per_us: 520,
@@ -206,7 +196,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             high_rate_delay_period_us: 20,
             high_rate_delay_cycles_per_us: 520,
@@ -225,14 +214,8 @@ mod tests {
     }
 
     #[test]
-    fn current_filter_default_is_0_4_times_pwm_freq_independent_of_bandwidth() {
-        let mut cfg = test_config();
-
-        cfg.bandwidth_hz = 50.0;
-        assert_eq!(cfg.default_current_filter_hz(), 10_000);
-
-        cfg.bandwidth_hz = 2000.0;
-        assert_eq!(cfg.default_current_filter_hz(), 10_000);
+    fn current_filter_default_is_0_4_times_pwm_freq() {
+        assert_eq!(test_config().default_current_filter_hz(), 10_000);
     }
 
     #[test]
@@ -291,7 +274,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            bandwidth_hz: 150.0,
             electrical_model_theta_e_us: 160,
             high_rate_delay_period_us: 20,
             high_rate_delay_cycles_per_us: 520,
@@ -315,7 +297,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             high_rate_delay_period_us: 20,
             high_rate_delay_cycles_per_us: 520,
@@ -339,7 +320,6 @@ mod tests {
             dsadc_mdec_b: 331,
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
-            bandwidth_hz: 50.0,
             electrical_model_theta_e_us: 160,
             high_rate_delay_period_us: 20,
             high_rate_delay_cycles_per_us: 520,

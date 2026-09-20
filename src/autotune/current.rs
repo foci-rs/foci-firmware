@@ -416,7 +416,11 @@ pub fn synthesize_current_gains(
 
     match input.axis_split_source {
         AXIS_SPLIT_SOURCE_NONE => {
-            let gains = physical_current_gains_checked(&input.model, config.bandwidth_hz, config)?;
+            let gains = physical_current_gains_checked(
+                &input.model,
+                input.profile.current_loop_bandwidth_hz(),
+                config,
+            )?;
             Ok(CurrentGainSynthesis {
                 gains,
                 evidence: CurrentLoopEvidence {
@@ -987,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_synthesis_uses_configured_bandwidth_for_symmetric_p() {
+    fn physical_synthesis_uses_the_profile_bandwidth_for_symmetric_p() {
         let model = ElectricalModel {
             r_count_milli: 888,
             l_count_micro: 1_346,
@@ -995,9 +999,8 @@ mod tests {
             theta_e_us: 160,
             theta_source: 0,
         };
-        let mut config = autotune_test_config();
-        config.bandwidth_hz = 600.0;
-        let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
+        let config = autotune_test_config();
+        let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Conservative);
 
         let output = synthesize_current_gains(&input, &config).expect("physical gains");
 
@@ -1025,8 +1028,7 @@ mod tests {
             theta_e_us: 160,
             theta_source: 0,
         };
-        let mut config = autotune_test_config();
-        config.bandwidth_hz = 650.0;
+        let config = autotune_test_config();
         let input = CurrentGainSynthesisInput::symmetric(model, CommissionProfile::Balanced);
 
         let output = synthesize_current_gains(&input, &config).expect("physical gains");
@@ -1041,7 +1043,7 @@ mod tests {
 
         assert_eq!(output.gains.flux_i.raw(), expected_i);
         assert_eq!(output.gains.torque_i.raw(), expected_i);
-        assert_eq!(output.gains.flux_p.raw(), 1_428);
+        assert_eq!(output.gains.flux_p.raw(), 2_197);
     }
 
     #[test]

@@ -49,11 +49,8 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     },
 };
 
-/// Fresh-commission fallback outer-loop gains for boards whose configured
-/// current-loop bandwidth (`TmcConfig::bandwidth_hz`) is too low for the
-/// gain-floor measurement to run. Not tuned to be "conservative" for any
-/// specific motor — historical value, left unchanged so such boards keep
-/// their current behavior; the commission result flags the fallback.
+/// Outer-loop gains applied before any measured floor exists. Not tuned for
+/// any specific motor.
 pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
     position_p: match PidPGain::new(640) {
         Ok(gain) => gain,
@@ -71,9 +68,8 @@ pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
 /// a config reset. Never applied to hardware while armed:
 /// `arm_motor_electrical`'s calibration assert refuses to arm before a
 /// commissioning result exists, and by the time any fresh commission reaches
-/// `ClosedLoopActivation`, the gains actually written come from either the
-/// gain-floor measurement (Task 7) or `DEFAULT_OUTER_GAINS` (below) — never
-/// this value.
+/// `ClosedLoopActivation`, the gains actually written come from the
+/// gain-floor measurement — never this value.
 pub const CONFIG_RESET_PLACEHOLDER_GAINS: OuterLoopGains = OuterLoopGains {
     position_p: PidPGain::ZERO,
     position_i: PidIGain::ZERO,
@@ -243,9 +239,6 @@ mod tests {
 
     #[test]
     fn default_outer_gains_value_is_unchanged() {
-        // DEFAULT_OUTER_GAINS keeps its historical value: it is now the
-        // fresh-commission fallback for boards below the gain-floor
-        // measurement's bandwidth floor, not an inert placeholder.
         assert_eq!(DEFAULT_OUTER_GAINS.velocity_p.raw(), 1152);
         assert_eq!(DEFAULT_OUTER_GAINS.position_p.raw(), 640);
     }

@@ -502,9 +502,8 @@ pub(crate) enum InnerPhase {
         state: CurrentValidateState,
         data: CurrentValidateData,
     },
-    /// Commissioning fallback gain-floor measurement, inserted between
-    /// current-loop validation finalize and ClosedLoopActivation on the
-    /// fresh-commission path only.
+    /// Gain-floor measurement, between current-loop validation finalize and
+    /// ClosedLoopActivation on the fresh-commission path.
     GainFloorMeasurement {
         state: gain_floor::GainFloorState,
         i_target_low: i16,

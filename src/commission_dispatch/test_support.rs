@@ -564,14 +564,6 @@ impl MockBackend {
         }
     }
 
-    /// Construct a `MockBackend` with a specific board current-loop
-    /// bandwidth, for tests exercising bandwidth-gated behavior.
-    pub fn new_with_bandwidth_hz(bandwidth_hz: f32) -> Self {
-        let mut backend = Self::new();
-        backend.tmc_config.bandwidth_hz = bandwidth_hz;
-        backend
-    }
-
     /// Set sequential `ABN_DECODER_COUNT` values for read-register tests.
     pub fn set_abn_decoder_count_sequence(&mut self, values: &[u32]) {
         self.abn_decoder_count_sequence.clear();

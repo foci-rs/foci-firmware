@@ -8,11 +8,8 @@
 //! `velocity_p`/`position_p` (`gains::compute_velocity_p`/
 //! `compute_position_p`) from it and the current-loop bandwidth CurrentTune
 //! already measured, and hands off to `InnerPhase::ClosedLoopActivation`.
-//! Reached only when `current_loop.rs`'s bandwidth gate has already
-//! confirmed the board's current-loop bandwidth is above the floor the
-//! capture can settle in; a measurement failure here fails commissioning outright (no
-//! fallback substitution -- that only happens for the static
-//! bandwidth-out-of-range case, handled before this phase is ever entered).
+//! Reached from every accepted current validation; a measurement failure
+//! here fails commissioning outright.
 //!
 //! Two amplitudes rather than one because on a real axis a single torque
 //! step measures `(T - T_friction) / J`, not `T / J`: Coulomb friction and
@@ -201,11 +198,8 @@ where
 
     // The current-loop flux/torque gains only survive into this phase as
     // InnerResult's raw register values (Finalize already validated them as
-    // PidPGain/PidIGain before writing InnerResult); re-validating here
-    // instead of threading the CurrentGains struct through the phase avoids
-    // widening InnerPhase::GainFloorMeasurement beyond what the bandwidth
-    // gate needs, and a previously-valid raw value can never fail this
-    // re-check.
+    // PidPGain/PidIGain before writing InnerResult); a previously-valid raw
+    // value can never fail this re-check.
     let flux_p = PidPGain::new(inner_result.flux_p).unwrap_or(PidPGain::ZERO);
     let flux_i = PidIGain::new(inner_result.flux_i).unwrap_or(PidIGain::ZERO);
     let torque_p = PidPGain::new(inner_result.torque_p).unwrap_or(PidPGain::ZERO);
@@ -593,7 +587,7 @@ mod tests {
     fn gain_floor_measurement_success_writes_computed_gains() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
 
@@ -646,7 +640,7 @@ mod tests {
                 {
                     result.bandwidth_hz = bandwidth_hz as u32;
                 }
-                let mut backend = MockBackend::new_with_bandwidth_hz(bandwidth_hz);
+                let mut backend = MockBackend::new();
                 backend.advance_elapsed_on_delay = true;
                 backend.script_gain_floor_capture = Some(ideal_plant());
                 let result = drive_to_completion(&mut phase, &mut backend).await;
@@ -669,10 +663,68 @@ mod tests {
     }
 
     #[test]
+    fn floor_applies_the_pwm_relative_default_current_filters() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(ideal_plant());
+            let result = drive_to_completion(&mut phase, &mut backend).await;
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+            ));
+            match phase {
+                InnerPhase::ClosedLoopActivation {
+                    velocity_filter_hz,
+                    torque_filter_hz,
+                    position_filter_hz,
+                    flux_filter_hz,
+                    ..
+                } => {
+                    assert_eq!(velocity_filter_hz, 0);
+                    assert_eq!(torque_filter_hz, 10_000);
+                    assert_eq!(position_filter_hz, 0);
+                    assert_eq!(flux_filter_hz, 10_000);
+                }
+                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn floor_honors_configured_current_filter_overrides() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(ideal_plant());
+            backend.configured_torque_filter_hz = Some(0);
+            backend.configured_flux_filter_hz = Some(3000);
+            let result = drive_to_completion(&mut phase, &mut backend).await;
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+            ));
+            match phase {
+                InnerPhase::ClosedLoopActivation {
+                    torque_filter_hz,
+                    flux_filter_hz,
+                    ..
+                } => {
+                    assert_eq!(torque_filter_hz, 0);
+                    assert_eq!(flux_filter_hz, 3000);
+                }
+                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
     fn seating_stroke_precedes_the_measured_low_and_high_steps() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
 
@@ -715,7 +767,7 @@ mod tests {
     fn torque_step_runs_under_the_operational_voltage_limit_and_restores_the_safe_one() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
             let operational = backend.operational_voltage_limit();
@@ -768,7 +820,7 @@ mod tests {
     fn seat_low_and_high_steps_are_commanded_in_order_with_a_settle_between() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
 
@@ -811,7 +863,7 @@ mod tests {
         let run = |script: GainFloorCaptureScript| {
             pollster::block_on(async {
                 let mut phase = gain_floor_phase(2000, 4_000);
-                let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+                let mut backend = MockBackend::new();
                 backend.advance_elapsed_on_delay = true;
                 backend.script_gain_floor_capture = Some(script);
                 let result = drive_to_completion(&mut phase, &mut backend).await;
@@ -836,7 +888,7 @@ mod tests {
     #[test]
     fn equal_acceleration_at_both_amplitudes_routes_through_restore_machine() {
         let mut phase = gain_floor_phase(2000, 4000);
-        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
             accel_raw_per_us2_per_count: 0.0,
@@ -855,7 +907,7 @@ mod tests {
         let run = |counts_per_rev: u32| {
             pollster::block_on(async {
                 let mut phase = gain_floor_phase(2000, 4_000);
-                let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+                let mut backend = MockBackend::new();
                 backend.advance_elapsed_on_delay = true;
                 backend.mechanical_encoder_quadrature_counts_per_rev_value = counts_per_rev;
                 backend.script_gain_floor_capture = Some(ideal_plant());
@@ -873,7 +925,7 @@ mod tests {
     fn step_gain_floor_measurement_enters_torque_mode_before_commanding_the_step() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
 
@@ -918,7 +970,7 @@ mod tests {
     fn gain_floor_measurement_cleanup_zero_write_failure_fails_commissioning() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(ideal_plant());
             // PID_TORQUE_FLUX_TARGET is written twice before the post-capture
@@ -950,7 +1002,7 @@ mod tests {
             // `GainFloorPeakCurrentExceeded` on its very first slot.
             let ceiling = 100u16;
             let mut phase = gain_floor_phase(i_target, ceiling);
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
             let overcurrent = foci_tmc4671::registers::PidTorqueFluxActual::new()
                 .with_pid_flux_actual(0)
                 .with_pid_torque_actual(200);
@@ -1069,7 +1121,7 @@ mod tests {
     #[test]
     fn gain_floor_peak_current_exceeded_routes_through_restore_machine() {
         let mut phase = gain_floor_phase(2000, 100);
-        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        let mut backend = MockBackend::new();
         let overcurrent = foci_tmc4671::registers::PidTorqueFluxActual::new()
             .with_pid_flux_actual(0)
             .with_pid_torque_actual(200);
@@ -1100,7 +1152,7 @@ mod tests {
     #[test]
     fn gain_floor_non_positive_slope_routes_through_restore_machine() {
         let mut phase = gain_floor_phase(2000, 4000);
-        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
             accel_raw_per_us2_per_count: -1e-6,
@@ -1116,7 +1168,7 @@ mod tests {
     #[test]
     fn gain_floor_insufficient_linear_points_routes_through_restore_machine() {
         let mut phase = gain_floor_phase(2000, 4000);
-        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
             accel_raw_per_us2_per_count: 0.0,
@@ -1137,7 +1189,7 @@ mod tests {
         // the position/current fits' own excitation or residual checks (both
         // depend only on the dimensionless current ratio, not on these scales).
         let mut phase = gain_floor_phase(2000, 4_000);
-        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+        let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
             accel_raw_per_us2_per_count: 3e-10,

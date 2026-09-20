@@ -9,12 +9,11 @@
 //! current gains.
 
 use crate::autotune::{
-    CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, ClosedLoopActivationState,
-    CommissionError, CommissionPhase, CommissionProfile, CommissionStatus,
-    CurrentAxisRetryDecision, CurrentAxisSample, CurrentAxisSampleClassification,
-    CurrentAxisSampleCriteria, CurrentGainSynthesisInput, CurrentGains, CurrentLoopEvidence,
-    ElectricalModel, InnerSequence, Permille, TransientBuffer, classify_current_axis_sample,
-    current_axis_retry_decision, retry_current_loop_gains,
+    CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CaptureDirection, CommissionError, CommissionPhase,
+    CommissionProfile, CommissionStatus, CurrentAxisRetryDecision, CurrentAxisSample,
+    CurrentAxisSampleClassification, CurrentAxisSampleCriteria, CurrentGainSynthesisInput,
+    CurrentGains, CurrentLoopEvidence, ElectricalModel, InnerSequence, Permille, TransientBuffer,
+    classify_current_axis_sample, current_axis_retry_decision, retry_current_loop_gains,
 };
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::inner::InnerPhase;
@@ -174,15 +173,6 @@ struct AxisSampleRegisters {
     status_flags: u32,
 }
 
-/// Set in `inner_warning_flags` when the outer gains are the hardcoded
-/// defaults because the gain floor did not run.
-pub(crate) const INNER_WARN_BIT_GAIN_FLOOR_SKIPPED: u8 = 1 << 7;
-/// Slowest current loop whose torque step settles (three time constants)
-/// inside the gain-floor capture.
-const GAIN_FLOOR_MIN_BANDWIDTH_HZ: f32 = 3.0
-    / (2.0
-        * core::f32::consts::PI
-        * (super::gain_floor::capture::CAPTURE_DURATION_US as f32 / 1_000_000.0));
 /// Step amplitude as a fraction of run_current (15% = 15/100).
 const VALIDATION_STEP_PERCENT: u32 = 15;
 /// Keep validation proportional output below the PIDOUT clamp.
@@ -2175,49 +2165,6 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                         });
                     }
 
-                    let vel_limit = backend.operational_velocity_limit();
-                    let default_current_filter_hz = if data.gains.effective_bandwidth_hz > 0 {
-                        backend
-                            .tmc_config()
-                            .default_current_filter_hz_for_bandwidth(
-                                data.gains.effective_bandwidth_hz as f32,
-                            )
-                    } else {
-                        backend.tmc_config().default_current_filter_hz()
-                    };
-                    let torque_filter_hz = backend
-                        .configured_torque_filter_hz()
-                        .unwrap_or(default_current_filter_hz);
-                    let flux_filter_hz = backend
-                        .configured_flux_filter_hz()
-                        .unwrap_or(default_current_filter_hz);
-
-                    let bandwidth_hz = backend.tmc_config().bandwidth_hz;
-                    if bandwidth_hz < GAIN_FLOOR_MIN_BANDWIDTH_HZ {
-                        let mut result = result;
-                        result.inner_warning_flags |= INNER_WARN_BIT_GAIN_FLOOR_SKIPPED;
-                        *phase = InnerPhase::ClosedLoopActivation {
-                            state: ClosedLoopActivationState::WriteGains,
-                            flux_p: data.gains.flux_p,
-                            flux_i: data.gains.flux_i,
-                            torque_p: data.gains.torque_p,
-                            torque_i: data.gains.torque_i,
-                            // Conservative fallback outer gains.
-                            velocity_p: crate::pid::DEFAULT_OUTER_GAINS.velocity_p,
-                            velocity_i: crate::pid::DEFAULT_OUTER_GAINS.velocity_i,
-                            position_p: crate::pid::DEFAULT_OUTER_GAINS.position_p,
-                            position_i: crate::pid::DEFAULT_OUTER_GAINS.position_i,
-                            velocity_limit: vel_limit,
-                            velocity_filter_hz: 0,
-                            torque_filter_hz,
-                            position_filter_hz: 0,
-                            flux_filter_hz,
-                            inner_result: Some(result),
-                            attempt: 0,
-                        };
-                        return StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation);
-                    }
-
                     let resistance_current_ceiling_count = result.resistance_current_ceiling_count;
                     let (i_target_low, i_target_high) =
                         gain_floor_torque_step_amplitudes(resistance_current_ceiling_count);
@@ -2386,10 +2333,9 @@ mod tests {
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = current_limit(2816);
-            backend.tmc_config.bandwidth_hz = 600.0;
 
             let result =
-                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+                step_current_tune(&mut phase, CommissionProfile::Conservative, &mut backend).await;
 
             assert!(matches!(
                 result,
@@ -2432,10 +2378,9 @@ mod tests {
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = current_limit(2816);
-            backend.tmc_config.bandwidth_hz = 1600.0;
 
             let result =
-                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+                step_current_tune(&mut phase, CommissionProfile::Stiff, &mut backend).await;
 
             assert!(matches!(
                 result,
@@ -2495,7 +2440,6 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.current_limit_value = current_limit(1_000);
             backend.operational_voltage_limit_value = 29_000;
-            backend.tmc_config.bandwidth_hz = 600.0;
 
             let result =
                 step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
@@ -2537,7 +2481,6 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.current_limit_value = current_limit(2816);
             backend.operational_voltage_limit_value = 1_999;
-            backend.tmc_config.bandwidth_hz = 600.0;
 
             let result =
                 step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
@@ -2579,10 +2522,9 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.current_limit_value = current_limit(2816);
             backend.operational_voltage_limit_value = 29_000;
-            backend.tmc_config.bandwidth_hz = 1600.0;
 
             let result =
-                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+                step_current_tune(&mut phase, CommissionProfile::Stiff, &mut backend).await;
 
             assert!(matches!(
                 result,
@@ -2621,10 +2563,9 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.current_limit_value = current_limit(1000);
             backend.operational_voltage_limit_value = 29_000;
-            backend.tmc_config.bandwidth_hz = 1600.0;
 
             let result =
-                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
+                step_current_tune(&mut phase, CommissionProfile::Stiff, &mut backend).await;
 
             assert!(matches!(
                 result,
@@ -2677,44 +2618,6 @@ mod tests {
     }
 
     #[test]
-    fn current_tune_rejects_invalid_physical_bandwidth_without_default_gains() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::CurrentTune {
-                model: ElectricalModel {
-                    r_count_milli: 1000,
-                    l_count_micro: 2000,
-                    tau_e_us: 2000,
-                    theta_e_us: 100,
-                    theta_source: 0,
-                },
-                inner_warning_flags: 0,
-                resistance_result: resistance_result(),
-                inductance: InductanceEvidence::test_fixture(),
-                timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],
-            };
-            let mut backend = MockBackend::new();
-            backend.current_limit_value = current_limit(4000);
-            backend.tmc_config.bandwidth_hz = 12_000.0;
-
-            let result =
-                step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
-
-            assert!(matches!(
-                result,
-                StepResult::InnerFailed(CommissionError::CurrentValidationFailed)
-            ));
-            assert!(matches!(
-                phase,
-                InnerPhase::Failed(CommissionError::CurrentValidationFailed)
-            ));
-            assert!(
-                backend.spi_log.iter().all(|op| matches!(op, SpiOp::Read)),
-                "invalid physical bandwidth must fail before writing default gains"
-            );
-        });
-    }
-
-    #[test]
     fn current_tune_rejects_out_of_range_gain_before_register_write() {
         pollster::block_on(async {
             let mut phase = InnerPhase::CurrentTune {
@@ -2732,7 +2635,6 @@ mod tests {
             };
             let mut backend = MockBackend::new();
             backend.current_limit_value = current_limit(4000);
-            backend.tmc_config.bandwidth_hz = 2_000.0;
 
             let result =
                 step_current_tune(&mut phase, CommissionProfile::Balanced, &mut backend).await;
@@ -3086,95 +2988,6 @@ mod tests {
     }
 
     #[test]
-    fn accepted_current_validation_sets_pwm_relative_default_current_filters_regardless_of_bandwidth()
-     {
-        pollster::block_on(async {
-            let mut phase = current_validate_phase();
-            if let InnerPhase::CurrentValidate { state, data } = &mut phase {
-                *state = CurrentValidateState::Finalize;
-                data.gains.effective_bandwidth_hz = 800;
-            }
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            // Deliberately different from effective_bandwidth_hz above -- the
-            // default filter is 0.4 * fPWM (FOCI-162) and must not vary with
-            // either bandwidth value.
-            backend.tmc_config.bandwidth_hz = GAIN_FLOOR_MIN_BANDWIDTH_HZ / 2.0;
-
-            let result = step_current_validate(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                InnerSequence::Commission,
-                &None,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
-            ));
-            match phase {
-                InnerPhase::ClosedLoopActivation {
-                    velocity_filter_hz,
-                    torque_filter_hz,
-                    position_filter_hz,
-                    flux_filter_hz,
-                    ..
-                } => {
-                    assert_eq!(velocity_filter_hz, 0);
-                    assert_eq!(torque_filter_hz, 10_000);
-                    assert_eq!(position_filter_hz, 0);
-                    assert_eq!(flux_filter_hz, 10_000);
-                }
-                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
-    fn accepted_current_validation_honors_configured_current_filter_overrides() {
-        pollster::block_on(async {
-            let mut phase = current_validate_phase();
-            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
-                *state = CurrentValidateState::Finalize;
-            }
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.tmc_config.bandwidth_hz = GAIN_FLOOR_MIN_BANDWIDTH_HZ / 2.0;
-            backend.configured_torque_filter_hz = Some(0);
-            backend.configured_flux_filter_hz = Some(3000);
-
-            let result = step_current_validate(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                InnerSequence::Commission,
-                &None,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
-            ));
-            match phase {
-                InnerPhase::ClosedLoopActivation {
-                    torque_filter_hz,
-                    flux_filter_hz,
-                    ..
-                } => {
-                    assert_eq!(torque_filter_hz, 0);
-                    assert_eq!(flux_filter_hz, 3000);
-                }
-                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
-            }
-        });
-    }
-
-    #[test]
     fn bandwidth_in_range_attempts_gain_floor_phase() {
         pollster::block_on(async {
             let mut phase = current_validate_phase();
@@ -3182,7 +2995,7 @@ mod tests {
                 *state = CurrentValidateState::Finalize;
             }
             let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
+            let mut backend = MockBackend::new();
 
             let result = step_current_validate(
                 &mut phase,
@@ -3202,82 +3015,6 @@ mod tests {
                 InnerPhase::GainFloorMeasurement { .. } => {}
                 other => panic!("expected GainFloorMeasurement phase, got {other:?}"),
             }
-        });
-    }
-
-    #[test]
-    fn high_bandwidth_enters_gain_floor_measurement() {
-        pollster::block_on(async {
-            let mut phase = current_validate_phase();
-            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
-                *state = CurrentValidateState::Finalize;
-            }
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new_with_bandwidth_hz(1600.0);
-            let result = step_current_validate(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                InnerSequence::Commission,
-                &None,
-                &mut backend,
-            )
-            .await;
-            assert!(matches!(
-                result,
-                StepResult::PhaseChanged(CommissionPhase::GainFloorMeasurement)
-            ));
-        });
-    }
-
-    #[test]
-    fn bandwidth_below_the_floor_skips_to_default_outer_gains_and_flags_it() {
-        pollster::block_on(async {
-            let mut phase = current_validate_phase();
-            if let InnerPhase::CurrentValidate { state, .. } = &mut phase {
-                *state = CurrentValidateState::Finalize;
-            }
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new_with_bandwidth_hz(GAIN_FLOOR_MIN_BANDWIDTH_HZ / 2.0);
-
-            let result = step_current_validate(
-                &mut phase,
-                &mut buf,
-                CommissionProfile::Balanced,
-                InnerSequence::Commission,
-                &None,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(
-                result,
-                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
-            ));
-            match phase {
-                InnerPhase::ClosedLoopActivation {
-                    velocity_p,
-                    velocity_i,
-                    position_p,
-                    position_i,
-                    inner_result,
-                    ..
-                } => {
-                    assert_eq!(velocity_p, crate::pid::DEFAULT_OUTER_GAINS.velocity_p);
-                    assert_eq!(velocity_i, crate::pid::DEFAULT_OUTER_GAINS.velocity_i);
-                    assert_eq!(position_p, crate::pid::DEFAULT_OUTER_GAINS.position_p);
-                    assert_eq!(position_i, crate::pid::DEFAULT_OUTER_GAINS.position_i);
-                    let flags = inner_result
-                        .expect("inner result carried")
-                        .inner_warning_flags;
-                    assert_ne!(flags & INNER_WARN_BIT_GAIN_FLOOR_SKIPPED, 0);
-                }
-                other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
-            }
-            assert!(
-                backend.spi_log.is_empty(),
-                "no torque step should ever be commanded on the out-of-range fallback path"
-            );
         });
     }
 

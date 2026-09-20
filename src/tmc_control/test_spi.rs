@@ -223,7 +223,6 @@ pub(crate) static TEST_CONFIG: TmcConfig = TmcConfig {
     dsadc_mdec_b: 331,
     adc_i_select: 0x1800_0100,
     excitation_voltage: 512,
-    bandwidth_hz: 50.0,
     electrical_model_theta_e_us: 160,
     high_rate_delay_period_us: 20,
     high_rate_delay_cycles_per_us: 520,
