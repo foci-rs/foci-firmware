@@ -108,8 +108,9 @@ impl TmcConfig {
     /// FOCI-162's hardware comparison ladder found no measurable difference
     /// in current-step tracking, saturation, or coefficient quantization
     /// across 6-10 kHz on the current-loop bandwidths tested, so the cutoff
-    /// no longer tracks bandwidth: it is `0.4 * fPWM`, a PWM-relative
-    /// constant that is self-limiting relative to Nyquist by construction
+    /// no longer tracks bandwidth: it is `0.4 * fPWM`, capped at the torque/flux
+    /// biquad ceiling, a PWM-relative constant that is self-limiting relative
+    /// to Nyquist by construction
     /// (`docs/validation/foci-162-2026-09-19-target-filter-cutoff/`).
     pub fn default_current_filter_hz(&self) -> u16 {
         self.default_current_filter_hz_for_bandwidth(self.bandwidth_hz)
@@ -119,7 +120,8 @@ impl TmcConfig {
     /// accepted for call-site compatibility but no longer affects the
     /// result -- see [`Self::default_current_filter_hz`].
     pub fn default_current_filter_hz_for_bandwidth(&self, _bandwidth_hz: f32) -> u16 {
-        (self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u16
+        ((self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u16)
+            .min(crate::biquad::CURRENT_CUTOFF_MAX_HZ)
     }
 
     /// BBM register value: `(bbm_h << 8) | bbm_l`.
@@ -238,6 +240,16 @@ mod tests {
         let mut cfg = test_config();
         cfg.pwm_maxcnt = 9999;
         assert_eq!(cfg.default_current_filter_hz(), 4_000);
+    }
+
+    #[test]
+    fn current_filter_default_is_capped_at_the_biquad_ceiling() {
+        let mut cfg = test_config();
+        cfg.pwm_maxcnt = 1999;
+        assert_eq!(
+            cfg.default_current_filter_hz(),
+            crate::biquad::CURRENT_CUTOFF_MAX_HZ
+        );
     }
 
     #[test]

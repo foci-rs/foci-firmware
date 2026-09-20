@@ -438,8 +438,9 @@ pub enum CommissionError {
     /// `accel_per_count` quadratic fit: fitted `accel_raw` is zero, negative,
     /// or disagrees in sign with the commanded torque step direction. Code 111.
     GainFloorNonPositiveSlope,
-    /// No usable current-loop bandwidth in the CurrentTune result to derive
-    /// the target bandwidths from. Code 112.
+    /// Reserved. Formerly "no usable current-loop bandwidth for the gain
+    /// floor"; the floor no longer reads that value, so current firmware never
+    /// produces this code. Kept so the wire vocabulary stays stable. Code 112.
     GainFloorCurrentFitRejected,
     /// A per-slot sample deadline was missed during the gain-floor capture
     /// (immediate trip, not deferred to end-of-capture). Code 113.

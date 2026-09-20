@@ -1,11 +1,13 @@
-//! velocity_p / position_p derivation from measured accel_per_count and the
-//! current-loop bandwidth CurrentTune already measured.
+//! velocity_p / position_p derivation from measured accel_per_count and a
+//! fixed reference bandwidth.
 
-/// Velocity-loop target bandwidth as a fraction of the current-loop
-/// bandwidth. Commissioning gains only have to hold the axis quietly through
-/// homing, so the ratio is anchored where the measured plant reproduces the
-/// hand tune's velocity_p, the same way the position ratio below is.
-const CURRENT_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 17.0;
+/// Bandwidth the outer-loop floor is derived from. The outer loops are bounded
+/// by the mechanics and the torque limit, not by the current loop, so this
+/// does not track the measured current-loop bandwidth.
+pub(crate) const OUTER_FLOOR_REFERENCE_BANDWIDTH_HZ: u32 = 1000;
+
+/// Velocity-loop target bandwidth as a fraction of the reference bandwidth.
+const REFERENCE_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 17.0;
 /// Velocity integral gain as a multiple of velocity_p. Without an
 /// integrator the steady velocity lag at homing speed lands in position
 /// error and trips the stall detector (0.53 mm against a 0.5 mm
@@ -15,19 +17,19 @@ const CURRENT_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 17.0;
 const VELOCITY_I_TO_P_NUMERATOR: u32 = 3;
 const VELOCITY_I_TO_P_DENOMINATOR: u32 = 1;
 
-/// Position-loop target as a fraction of the current-loop bandwidth. The
-/// register-scaling formula below labels this a bandwidth, but on the live
-/// CoreXY a ratio of 100 (position_p 9) let the axis lag 2.2 mm at homing
-/// speed and trip the position-error stall detector; 9 reproduces the hand
-/// tune (99 against 100), which holds it under 0.1 mm.
-const CURRENT_TO_POSITION_BANDWIDTH_RATIO: f32 = 9.0;
+/// Position-loop target as a fraction of the reference bandwidth. The
+/// register-scaling formula below labels this a bandwidth, but a much larger
+/// ratio let the axis lag enough at homing speed to trip the position-error
+/// stall detector; this one holds the homing error well inside the stall
+/// distance.
+const REFERENCE_TO_POSITION_BANDWIDTH_RATIO: f32 = 9.0;
 
 pub(crate) fn compute_velocity_p(
     accel_per_count: f32,
-    bw_current_hz: u32,
+    reference_bw_hz: u32,
 ) -> Result<foci_tmc4671::pid::PidPGain, crate::autotune::CommissionError> {
-    let omega_target_rad_s =
-        2.0 * core::f32::consts::PI * bw_current_hz as f32 / CURRENT_TO_VELOCITY_BANDWIDTH_RATIO;
+    let omega_target_rad_s = 2.0 * core::f32::consts::PI * reference_bw_hz as f32
+        / REFERENCE_TO_VELOCITY_BANDWIDTH_RATIO;
     let velocity_p_raw = libm::ceilf(
         256.0 * omega_target_rad_s * 2.0 * core::f32::consts::PI / (60.0 * accel_per_count),
     );
@@ -55,10 +57,10 @@ pub(crate) fn compute_velocity_i(
 }
 
 pub(crate) fn compute_position_p(
-    bw_current_hz: u32,
+    reference_bw_hz: u32,
 ) -> Result<foci_tmc4671::pid::PidPGain, crate::autotune::CommissionError> {
-    let bw_position_target_rad_s =
-        2.0 * core::f32::consts::PI * bw_current_hz as f32 / CURRENT_TO_POSITION_BANDWIDTH_RATIO;
+    let bw_position_target_rad_s = 2.0 * core::f32::consts::PI * reference_bw_hz as f32
+        / REFERENCE_TO_POSITION_BANDWIDTH_RATIO;
     let position_p_raw = libm::ceilf(bw_position_target_rad_s * 60.0 * 256.0 / 65536.0);
     if position_p_raw <= 0.0 {
         return Err(crate::autotune::CommissionError::GainFloorPositionGainUnrepresentable);
@@ -107,7 +109,8 @@ mod tests {
 
     #[test]
     fn live_rig_plant_lands_inside_the_autotuned_velocity_p_range() {
-        let velocity_p = compute_velocity_p(16.7, 600).expect("representable");
+        let velocity_p =
+            compute_velocity_p(16.7, OUTER_FLOOR_REFERENCE_BANDWIDTH_HZ).expect("representable");
         assert!(
             (350..=900).contains(&velocity_p.raw()),
             "{}",

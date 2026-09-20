@@ -353,6 +353,13 @@ fn assemble_electrical_model(
 
     let (theta_e_us_input, theta_source) =
         resolve_theta_e_us_input(data.delay_estimate_us, tau_e_us, configured_theta_e_us);
+    defmt::info!(
+        "electrical id: theta_e input={}us measured={:?}us configured={}us source={:?}",
+        theta_e_us_input,
+        data.delay_estimate_us,
+        configured_theta_e_us,
+        theta_source
+    );
     let theta_source_wire: u8 = match theta_source {
         ThetaSource::Measured => 0,
         ThetaSource::ConfigFallback => 1,
@@ -2506,16 +2513,24 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             // bias is removed here, not inside the shared threshold
             // estimator, using the same tau the sizing step already derived.
             let tau_e_us = compute_tau_e_us(data).unwrap_or(0);
-            let measured = if completed.timing_ok {
+            let crossing = if completed.timing_ok {
                 crate::autotune::estimate_electrical_delay(
                     completed.samples.samples(),
                     completed.offsets.offsets_us(),
                 )
                 .ok()
-                .map(|crossing_us| crate::autotune::correct_onset_bias(crossing_us, tau_e_us))
             } else {
                 None
             };
+            let measured = crossing
+                .map(|crossing_us| crate::autotune::correct_onset_bias(crossing_us, tau_e_us));
+            defmt::info!(
+                "electrical id: onset crossing={:?}us corrected delay={:?}us timing_ok={} tau_e={}us",
+                crossing,
+                measured,
+                completed.timing_ok,
+                tau_e_us
+            );
             data.delay_estimate_us = measured;
             if let Some(amplitude) = settled_amplitude_counts(completed.samples.samples()) {
                 defmt::info!(

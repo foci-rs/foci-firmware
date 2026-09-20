@@ -161,32 +161,23 @@ where
         }
     };
 
-    let bw_current_hz = match phase {
-        InnerPhase::GainFloorMeasurement {
-            inner_result: Some(result),
-            ..
-        } => result.bandwidth_hz,
-        _ => 0,
-    };
-    if bw_current_hz == 0 {
-        return super::fail_inner(phase, CommissionError::GainFloorCurrentFitRejected);
-    }
-    let velocity_p = match gains::compute_velocity_p(accel_per_count, bw_current_hz) {
-        Ok(v) => v,
-        Err(e) => return super::fail_inner(phase, e),
-    };
+    let velocity_p =
+        match gains::compute_velocity_p(accel_per_count, gains::OUTER_FLOOR_REFERENCE_BANDWIDTH_HZ)
+        {
+            Ok(v) => v,
+            Err(e) => return super::fail_inner(phase, e),
+        };
     let velocity_i = match gains::compute_velocity_i(velocity_p) {
         Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
-    let position_p = match gains::compute_position_p(bw_current_hz) {
+    let position_p = match gains::compute_position_p(gains::OUTER_FLOOR_REFERENCE_BANDWIDTH_HZ) {
         Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
     defmt::info!(
-        "gain-floor: accel_per_count_milli={} bw_current_hz={} velocity_p={} velocity_i={} position_p={}",
+        "gain-floor: accel_per_count_milli={} velocity_p={} velocity_i={} position_p={}",
         (accel_per_count * 1000.0) as i32,
-        bw_current_hz,
         velocity_p.raw(),
         velocity_i.raw(),
         position_p.raw()
@@ -632,14 +623,49 @@ mod tests {
                         position_p.raw(),
                         crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()
                     );
-                    assert_eq!(velocity_i.raw(), 189);
+                    assert_eq!(velocity_i.raw(), 312);
                     assert_eq!(position_i, PidIGain::ZERO);
-                    assert_eq!(velocity_p.raw(), 63);
-                    assert_eq!(position_p.raw(), 99);
+                    assert_eq!(velocity_p.raw(), 104);
+                    assert_eq!(position_p.raw(), 164);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
         });
+    }
+
+    #[test]
+    fn outer_floor_does_not_scale_with_the_current_loop_bandwidth() {
+        let mut floors = std::vec::Vec::new();
+        for bandwidth_hz in [600.0, 1000.0, 1600.0] {
+            pollster::block_on(async {
+                let mut phase = gain_floor_phase(2000, 4_000);
+                if let InnerPhase::GainFloorMeasurement {
+                    inner_result: Some(result),
+                    ..
+                } = &mut phase
+                {
+                    result.bandwidth_hz = bandwidth_hz as u32;
+                }
+                let mut backend = MockBackend::new_with_bandwidth_hz(bandwidth_hz);
+                backend.advance_elapsed_on_delay = true;
+                backend.script_gain_floor_capture = Some(ideal_plant());
+                let result = drive_to_completion(&mut phase, &mut backend).await;
+                assert!(matches!(
+                    result,
+                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+                ));
+                match phase {
+                    InnerPhase::ClosedLoopActivation {
+                        velocity_p,
+                        position_p,
+                        ..
+                    } => floors.push((velocity_p.raw(), position_p.raw())),
+                    other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
+                }
+            });
+        }
+        assert_eq!(floors[0], floors[1]);
+        assert_eq!(floors[1], floors[2]);
     }
 
     #[test]
@@ -677,8 +703,8 @@ mod tests {
                     position_p,
                     ..
                 } => {
-                    assert_eq!(velocity_p.raw(), 63);
-                    assert_eq!(position_p.raw(), 99);
+                    assert_eq!(velocity_p.raw(), 104);
+                    assert_eq!(position_p.raw(), 164);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
             }
@@ -1100,26 +1126,6 @@ mod tests {
             &mut phase,
             &mut backend,
             CommissionError::GainFloorInsufficientLinearPoints,
-        );
-    }
-
-    #[test]
-    fn missing_current_bandwidth_routes_through_restore_machine() {
-        let mut phase = gain_floor_phase(2000, 4_000);
-        if let InnerPhase::GainFloorMeasurement {
-            inner_result: Some(result),
-            ..
-        } = &mut phase
-        {
-            result.bandwidth_hz = 0;
-        }
-        let mut backend = MockBackend::new_with_bandwidth_hz(600.0);
-        backend.advance_elapsed_on_delay = true;
-        backend.script_gain_floor_capture = Some(ideal_plant());
-        assert_routes_through_restore_machine(
-            &mut phase,
-            &mut backend,
-            CommissionError::GainFloorCurrentFitRejected,
         );
     }
 
