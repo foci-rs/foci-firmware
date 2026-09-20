@@ -1864,8 +1864,8 @@ async fn commission_done_finalize_path() {
     assert!(*state.calibrated);
     assert!(backend.enable_pin);
     assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    // Dispatch must not mutate the firmware step epoch directly; the
-    // returned board action owns the zero-before-arm ordering.
+    // Dispatch must not mutate the firmware step epoch; the returned board
+    // action arms for steps and preserves the host-visible count.
     assert_eq!(stepper_state().position.load(Ordering::Relaxed), 99);
     // PID_TORQUE_FLUX_LIMITS write expected: current limit re-apply.
     let writes: heapless::Vec<u8, 32> = backend
