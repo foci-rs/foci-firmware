@@ -1,8 +1,9 @@
 //! Per-slot capture primitive for the commissioning fallback gain-floor
 //! measurement: two register reads per 60us slot (PID_TORQUE_FLUX_ACTUAL,
 //! PID_POSITION_ACTUAL), with actual-current containment and motion-abort
-//! safety checks evaluated on every slot, and an immediate
-//! de-energize-and-fail on any missed slot deadline.
+//! safety checks evaluated on every slot. A slot whose reads overrun its
+//! budget is dropped from the sample set; the capture fails only when more
+//! slots overrun than the coverage bound allows.
 
 use foci_tmc4671::registers::{PID_POSITION_ACTUAL, PID_TORQUE_FLUX_ACTUAL, PidTorqueFluxActual};
 
@@ -17,6 +18,11 @@ const SAMPLE_PERIOD_US: u32 = 60;
 const CAPTURE_DURATION_US: u32 = 5_000;
 const MAX_SAMPLES: usize = 200;
 const MOTION_ABORT_THRESHOLD: u32 = 32_760;
+/// Slots allowed to overrun their budget before the capture fails. A stray
+/// interrupt landing inside a slot costs that slot's sample, not the
+/// commission; a tenth of the grid overrunning means the dispatch path
+/// itself is over budget.
+const MAX_OVERRUN_SLOTS: u32 = 8;
 
 /// One capture slot's timestamp and register readings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -35,9 +41,9 @@ pub(crate) type CaptureBuffer = heapless::Vec<CaptureSample, MAX_SAMPLES>;
 /// slot anchored to the capture start, containing actual current on both
 /// axes against `resistance_current_ceiling_count` and aborting on
 /// displacement beyond `MOTION_ABORT_THRESHOLD` counts from the first
-/// sample. A slot whose scheduled start has already passed -- before or
-/// after its wait -- trips immediately rather than recording a late sample
-/// or continuing to the duration bound.
+/// sample. A slot whose reads do not finish inside its budget records no
+/// sample, so timestamps stay on the grid; more than `MAX_OVERRUN_SLOTS`
+/// such slots fail the capture as insufficient coverage.
 pub(crate) async fn run_capture<B>(
     backend: &mut B,
     _i_target: i16,
@@ -54,9 +60,12 @@ where
     let capture_start = backend.elapsed_us();
     let capture_deadline = capture_start + u64::from(CAPTURE_DURATION_US);
     let mut position_0: Option<i32> = None;
+    let mut overrun_slots: u32 = 0;
 
     let result = loop {
-        let slot_index = buffer.len() as u64;
+        // Dropped slots still advance the grid, so the slot index counts
+        // them alongside the recorded samples.
+        let slot_index = buffer.len() as u64 + u64::from(overrun_slots);
         let slot_start = capture_start + slot_index * u64::from(SAMPLE_PERIOD_US);
         if slot_start >= capture_deadline || buffer.len() >= MAX_SAMPLES {
             break Ok(());
@@ -88,12 +97,7 @@ where
         };
 
         let slot_deadline = slot_start + u64::from(SAMPLE_PERIOD_US);
-        if backend.elapsed_us() > slot_deadline {
-            // Immediate trip: this slot's two reads did not both complete
-            // within their scheduled 30us window while energized -- a safety
-            // event, not a deferred data-quality one.
-            break Err(CommissionError::GainFloorInsufficientCoverage);
-        }
+        let overran = backend.elapsed_us() > slot_deadline;
 
         let packed = PidTorqueFluxActual::from(torque_flux_raw);
         let torque_actual = packed.pid_torque_actual();
@@ -110,11 +114,16 @@ where
         if displacement > MOTION_ABORT_THRESHOLD {
             break Err(CommissionError::GainFloorMotionEnvelopeExceeded);
         }
+        if overran {
+            overrun_slots += 1;
+            if overrun_slots > MAX_OVERRUN_SLOTS {
+                break Err(CommissionError::GainFloorInsufficientCoverage);
+            }
+            continue;
+        }
 
-        // Timestamp from the slot's scheduled time, not a re-derived sample
-        // count -- the two are equal only when every slot has been on-grid,
-        // which the immediate-trip checks above already guarantee for any
-        // sample that reaches this point.
+        // Timestamp from the slot's scheduled time, not from the sample
+        // count, which falls behind the grid by every dropped slot.
         let t_us = (slot_start - capture_start) as u32;
         let _ = buffer.push(CaptureSample {
             t_us,
@@ -244,16 +253,32 @@ mod tests {
     }
 
     #[test]
-    fn slot_deadline_exceeded_trips_immediately_instead_of_finishing_the_capture() {
+    fn slot_overrun_drops_that_sample_and_keeps_the_grid() {
         let mut backend = MockBackend::new();
-        // capture_start = 0, slot 0 arrives on time (now = 0), but the
-        // post-read check reports elapsed time past slot 0's 60us budget --
-        // the two reads did not complete in time. This is the actual
-        // safety-relevant timing violation the spec requires: a slot's
-        // reads not completing within SAMPLE_PERIOD_US of its scheduled
-        // start, evaluated immediately rather than deferred to end-of-capture.
+        backend.advance_elapsed_on_delay = true;
+        // capture_start = 0, slot 0 arrives on time, but its post-read check
+        // reports 70us: the two reads did not finish inside slot 0's 60us
+        // budget. That slot's sample is dropped and the capture continues on
+        // the fixed grid, so slot 1 still lands at t_us = 60.
         backend.set_elapsed_us_sequence(&[0, 0, 70]);
         let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
+        let buffer = result.expect("one overrun slot must not fail the capture");
+        assert_eq!(buffer.len(), 83);
+        assert_eq!(buffer[0].t_us, 60);
+        assert!(!backend.enable_pin);
+    }
+
+    #[test]
+    fn overruns_beyond_the_coverage_bound_fail_the_capture() {
+        let mut backend = MockBackend::new();
+        backend.advance_elapsed_on_delay = true;
+        // Every register read costs 35us, so each slot's pair of reads takes
+        // 70us against a 60us budget: every slot overruns. This is a
+        // systematic dispatch overrun, not a stray interrupt, and must still
+        // fail as insufficient coverage.
+        backend.spi_elapsed_step_us = 35;
+        let result = pollster::block_on(run_capture(&mut backend, 2000, 4000));
         assert_eq!(result, Err(CommissionError::GainFloorInsufficientCoverage));
+        assert!(!backend.enable_pin, "must de-energize on trip");
     }
 }

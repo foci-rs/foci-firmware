@@ -908,12 +908,13 @@ mod tests {
     fn gain_floor_insufficient_coverage_routes_through_restore_machine() {
         let mut phase = gain_floor_phase(2000, 4000);
         let mut backend = MockBackend::new();
-        // Slot 0 arrives on time (now = 0) but its two reads do not
-        // complete within the 60us slot budget (post-read elapsed = 70) --
-        // the actual safety-relevant timing violation, not mere arrival
-        // lateness (which alone is not a trip condition; see capture.rs's
-        // own `late_arrival_that_still_completes_within_budget_does_not_trip`).
-        backend.set_elapsed_us_sequence(&[0, 0, 70]);
+        // Every register read costs 35us, so each capture slot's two reads
+        // take 70us against the 60us budget: every slot overruns, which
+        // exceeds the coverage bound (a single overrun only drops that
+        // slot's sample; see capture.rs's own
+        // `slot_overrun_drops_that_sample_and_keeps_the_grid`).
+        backend.advance_elapsed_on_delay = true;
+        backend.spi_elapsed_step_us = 35;
         assert_routes_through_restore_machine(
             &mut phase,
             &mut backend,
