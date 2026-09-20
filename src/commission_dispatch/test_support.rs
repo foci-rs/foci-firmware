@@ -29,7 +29,16 @@ pub struct GainFloorCaptureScript {
     pub accel_raw_offset_per_us2: f64,
     /// First-order current-response time constant, in microseconds.
     pub tau_current_us: f64,
+    /// Peak-to-target ratio of the synthesized current step: 1.0 is the plain
+    /// first-order rise, above it a decaying ring is added.
+    pub overshoot_ratio: f64,
 }
+
+/// Time after the step at which `GainFloorCaptureScript::overshoot_ratio`'s
+/// ring peaks: the first capture slot after the zero-time sample.
+const GAIN_FLOOR_RING_ONSET_US: f64 = 60.0;
+/// Decay time constant of that ring.
+const GAIN_FLOOR_RING_DECAY_US: f64 = 300.0;
 
 /// Construct a validated current limit for test fixtures.
 pub fn current_limit(raw: u32) -> PidTorqueFluxLimit {
@@ -792,8 +801,15 @@ impl CommissionRegisterIo for MockBackend {
                 return Ok(position as u32);
             }
             if addr == foci_tmc4671::registers::PID_TORQUE_FLUX_ACTUAL.addr() {
-                let value = target * (1.0 - (-t / script.tau_current_us).exp());
-                let torque_actual = value as i16;
+                let rise = target * (1.0 - (-t / script.tau_current_us).exp());
+                let ring = if t >= GAIN_FLOOR_RING_ONSET_US {
+                    target
+                        * (script.overshoot_ratio - 1.0)
+                        * (-(t - GAIN_FLOOR_RING_ONSET_US) / GAIN_FLOOR_RING_DECAY_US).exp()
+                } else {
+                    0.0
+                };
+                let torque_actual = (rise + ring) as i16;
                 let packed = foci_tmc4671::registers::PidTorqueFluxActual::new()
                     .with_pid_flux_actual(0)
                     .with_pid_torque_actual(torque_actual);

@@ -572,7 +572,63 @@ mod tests {
             accel_raw_per_us2_per_count: 1e-6,
             accel_raw_offset_per_us2: 0.0,
             tau_current_us: 1.0,
+            overshoot_ratio: 1.0,
         }
+    }
+
+    #[test]
+    fn ringing_torque_step_fails_with_the_overshoot_reason_below_the_current_ceiling() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+                overshoot_ratio: 1.22,
+                ..ideal_plant()
+            });
+
+            let result = drive_to_completion(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::InnerFailed(CommissionError::GainFloorStepOvershoot)
+            ));
+            assert!(matches!(
+                phase,
+                InnerPhase::Failed(CommissionError::GainFloorStepOvershoot)
+            ));
+            assert!(!backend.enable_pin, "must de-energize on the overshoot");
+            let steps_commanded = backend
+                .spi_log
+                .iter()
+                .filter(|op| {
+                    matches!(op, SpiOp::Write(addr, val)
+                    if *addr == foci_tmc4671::registers::PID_TORQUE_FLUX_TARGET.addr()
+                        && (*val >> 16) != 0)
+                })
+                .count();
+            assert_eq!(steps_commanded, 1, "the first ringing step already fails");
+        });
+    }
+
+    #[test]
+    fn mild_overshoot_within_the_gate_still_commissions() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+                overshoot_ratio: 1.10,
+                ..ideal_plant()
+            });
+
+            let result = drive_to_completion(&mut phase, &mut backend).await;
+
+            assert!(matches!(
+                result,
+                StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
+            ));
+        });
     }
 
     async fn drive_to_completion(phase: &mut InnerPhase, backend: &mut MockBackend) -> StepResult {
@@ -1200,6 +1256,22 @@ mod tests {
             &mut phase,
             &mut backend,
             CommissionError::GainFloorVelocityGainUnrepresentable,
+        );
+    }
+
+    #[test]
+    fn gain_floor_step_overshoot_routes_through_restore_machine() {
+        let mut phase = gain_floor_phase(2000, 4_000);
+        let mut backend = MockBackend::new();
+        backend.advance_elapsed_on_delay = true;
+        backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+            overshoot_ratio: 1.35,
+            ..ideal_plant()
+        });
+        assert_routes_through_restore_machine(
+            &mut phase,
+            &mut backend,
+            CommissionError::GainFloorStepOvershoot,
         );
     }
 }

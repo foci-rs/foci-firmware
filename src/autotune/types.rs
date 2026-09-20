@@ -468,6 +468,10 @@ pub enum CommissionError {
     /// Computed `position_p_raw` rounds to `PidPGain::ZERO` or exceeds
     /// `PidPGain::MAX`. Code 117.
     GainFloorPositionGainUnrepresentable,
+    /// A gain-floor torque step overshot its target by more than the current
+    /// loop is allowed to ring: the profile's current-loop bandwidth is too
+    /// high for this motor and PWM rate. Code 118.
+    GainFloorStepOvershoot,
 }
 
 impl From<crate::commissioning::capture_timing::TimingReject> for CommissionError {
@@ -611,6 +615,7 @@ impl CommissionError {
             Self::GainFloorMotionEnvelopeExceeded => 115,
             Self::GainFloorVelocityGainUnrepresentable => 116,
             Self::GainFloorPositionGainUnrepresentable => 117,
+            Self::GainFloorStepOvershoot => 118,
         }
     }
 }
@@ -906,6 +911,7 @@ mod tests {
             CommissionError::GainFloorMotionEnvelopeExceeded,
             CommissionError::GainFloorVelocityGainUnrepresentable,
             CommissionError::GainFloorPositionGainUnrepresentable,
+            CommissionError::GainFloorStepOvershoot,
         ];
         let mut seen = [false; 256];
         for e in errors {
@@ -1020,6 +1026,7 @@ mod tests {
             CommissionError::GainFloorPositionGainUnrepresentable.status_code(),
             117
         );
+        assert_eq!(CommissionError::GainFloorStepOvershoot.status_code(), 118);
     }
 
     /// Inner codes 1-8, 16, 17 are unchanged by the velocity-vocabulary

@@ -25,6 +25,7 @@ const MOTION_ABORT_THRESHOLD: u32 = 32_760;
 /// commission; a tenth of the grid overrunning means the dispatch path
 /// itself is over budget.
 const MAX_OVERRUN_SLOTS: u32 = 8;
+const STEP_OVERSHOOT_MAX_PERMILLE: i32 = 1150;
 
 /// One capture slot's timestamp and register readings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -40,11 +41,14 @@ pub(crate) type CaptureBuffer = heapless::Vec<CaptureSample, MAX_SAMPLES>;
 /// Run the fixed-grid capture window into `buffer`, de-energizing on every
 /// exit path.
 ///
-/// Reads `PID_TORQUE_FLUX_ACTUAL` and `PID_POSITION_ACTUAL` once per 30us
+/// Reads `PID_TORQUE_FLUX_ACTUAL` and `PID_POSITION_ACTUAL` once per 60us
 /// slot anchored to the capture start, containing actual current on both
-/// axes against `resistance_current_ceiling_count` and aborting on
-/// displacement beyond `MOTION_ABORT_THRESHOLD` counts from the first
-/// sample. A slot whose reads do not finish inside its budget records no
+/// axes against `resistance_current_ceiling_count`, failing a torque read
+/// that overshoots `i_target` by more than `STEP_OVERSHOOT_MAX_PERMILLE`,
+/// and aborting on displacement beyond `MOTION_ABORT_THRESHOLD` counts from
+/// the first sample. The two current checks run on the torque read before
+/// the position read is issued; all three trip before the slot is judged
+/// for overrun. A slot whose reads do not finish inside its budget records no
 /// sample, so timestamps stay on the grid; more than `MAX_OVERRUN_SLOTS`
 /// such slots fail the capture as insufficient coverage.
 ///
@@ -54,7 +58,7 @@ pub(crate) type CaptureBuffer = heapless::Vec<CaptureSample, MAX_SAMPLES>;
 pub(crate) async fn run_capture<B>(
     backend: &mut B,
     buffer: &mut CaptureBuffer,
-    _i_target: i16,
+    i_target: i16,
     resistance_current_ceiling_count: u16,
 ) -> Result<(), CommissionError>
 where
@@ -99,14 +103,6 @@ where
             Ok(v) => v,
             Err(_) => break Err(CommissionError::GainFloorInsufficientCoverage),
         };
-        let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
-            Ok(v) => v,
-            Err(_) => break Err(CommissionError::GainFloorInsufficientCoverage),
-        };
-
-        let slot_deadline = slot_start + u64::from(SAMPLE_PERIOD_US);
-        let overran = backend.elapsed_us() > slot_deadline;
-
         let packed = PidTorqueFluxActual::from(torque_flux_raw);
         let torque_actual = packed.pid_torque_actual();
         let flux_actual = packed.pid_flux_actual();
@@ -115,6 +111,20 @@ where
         {
             break Err(CommissionError::GainFloorPeakCurrentExceeded);
         }
+        if let Err(e) = check_step_overshoot(
+            i32::from(torque_actual) * i32::from(i_target.signum()),
+            i32::from(i_target.abs()),
+        ) {
+            break Err(e);
+        }
+
+        let position_raw = match backend.read_register(PID_POSITION_ACTUAL).await {
+            Ok(v) => v,
+            Err(_) => break Err(CommissionError::GainFloorInsufficientCoverage),
+        };
+
+        let slot_deadline = slot_start + u64::from(SAMPLE_PERIOD_US);
+        let overran = backend.elapsed_us() > slot_deadline;
 
         let position = position_raw as i32;
         let position_0 = *position_0.get_or_insert(position);
@@ -146,10 +156,39 @@ where
     result
 }
 
+fn check_step_overshoot(
+    peak_along_command: i32,
+    target_magnitude: i32,
+) -> Result<(), CommissionError> {
+    if peak_along_command * 1000 > target_magnitude * STEP_OVERSHOOT_MAX_PERMILLE {
+        defmt::warn!(
+            "gain-floor step overshoot: torque_actual={} i_target={}",
+            peak_along_command,
+            target_magnitude
+        );
+        return Err(CommissionError::GainFloorStepOvershoot);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commission_dispatch::test_support::MockBackend;
+
+    #[test]
+    fn step_overshoot_gate_separates_the_ringing_ladder_runs_from_the_usable_ones() {
+        assert_eq!(
+            check_step_overshoot(1562, 1280),
+            Err(CommissionError::GainFloorStepOvershoot)
+        );
+        assert_eq!(
+            check_step_overshoot(864, 640),
+            Err(CommissionError::GainFloorStepOvershoot)
+        );
+        assert_eq!(check_step_overshoot(1223, 1280), Ok(()));
+        assert_eq!(check_step_overshoot(1310, 1280), Ok(()));
+    }
 
     fn pack_torque_flux(flux: i16, torque: i16) -> u32 {
         PidTorqueFluxActual::new()
@@ -351,5 +390,55 @@ mod tests {
         ));
         assert_eq!(result, Err(CommissionError::GainFloorInsufficientCoverage));
         assert!(!backend.enable_pin, "must de-energize on trip");
+    }
+
+    #[test]
+    fn overshoot_trips_on_the_slot_that_peaks() {
+        let mut backend = MockBackend::new();
+        let _ = backend
+            .registers
+            .insert(PID_TORQUE_FLUX_ACTUAL.addr(), pack_torque_flux(0, 1562));
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            1280,
+            4000,
+        ));
+        assert_eq!(result, Err(CommissionError::GainFloorStepOvershoot));
+        assert!(!backend.enable_pin, "must de-energize on trip");
+    }
+
+    #[test]
+    fn overshoot_in_a_dropped_overrun_slot_still_trips() {
+        let mut backend = MockBackend::new();
+        backend.advance_elapsed_on_delay = true;
+        backend.set_elapsed_us_sequence(&[0, 0, 70]);
+        backend
+            .pid_torque_flux_actual_sequence
+            .push(pack_torque_flux(0, 1562))
+            .unwrap();
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            1280,
+            4000,
+        ));
+        assert_eq!(result, Err(CommissionError::GainFloorStepOvershoot));
+    }
+
+    #[test]
+    fn overshooting_torque_read_trips_before_the_position_read_can_fail() {
+        let mut backend = MockBackend::new();
+        let _ = backend
+            .registers
+            .insert(PID_TORQUE_FLUX_ACTUAL.addr(), pack_torque_flux(0, 1562));
+        backend.fail_on_read = Some(PID_POSITION_ACTUAL.addr());
+        let result = pollster::block_on(run_capture(
+            &mut backend,
+            &mut CaptureBuffer::new(),
+            1280,
+            4000,
+        ));
+        assert_eq!(result, Err(CommissionError::GainFloorStepOvershoot));
     }
 }
