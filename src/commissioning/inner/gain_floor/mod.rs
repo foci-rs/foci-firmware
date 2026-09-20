@@ -124,11 +124,27 @@ where
     let bw_current_floor_hz =
         match current_response_fit::fit_current_response(&torque_samples, i_target_high) {
             Ok(v) => v,
-            Err(current_response_fit::CurrentFitError::HighResidual) => {
-                return super::fail_inner(phase, CommissionError::GainFloorCurrentFitRejected);
-            }
-            Err(_) => {
-                return super::fail_inner(phase, CommissionError::GainFloorInsufficientCoverage);
+            Err(e) => {
+                let trace: heapless::Vec<i16, 200> =
+                    capture.iter().map(|s| s.torque_actual).collect();
+                defmt::warn!(
+                    "gain-floor current fit rejected: i_target={} reason={} torque_actual={=[?]}",
+                    i_target_high,
+                    e,
+                    trace.as_slice()
+                );
+                return super::fail_inner(
+                    phase,
+                    match e {
+                        current_response_fit::CurrentFitError::HighResidual => {
+                            CommissionError::GainFloorCurrentFitRejected
+                        }
+                        current_response_fit::CurrentFitError::TooFewSamples
+                        | current_response_fit::CurrentFitError::InsufficientCoverage => {
+                            CommissionError::GainFloorInsufficientCoverage
+                        }
+                    },
+                );
             }
         };
 
