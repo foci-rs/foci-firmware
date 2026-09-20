@@ -548,7 +548,7 @@ mod tests {
                         position_p.raw(),
                         crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()
                     );
-                    assert_eq!(velocity_i.raw(), 12);
+                    assert_eq!(velocity_i.raw(), 54);
                     assert_eq!(position_i, PidIGain::ZERO);
                     // Steps at 1000 and 2000 counts give accel_raw 1e-3 and
                     // 2e-3 units/us^2: 1e-6 per count = 95.9 rad/s^2 per

@@ -6,13 +6,14 @@
 /// homing; on the live CoreXY a ratio of 10 landed velocity_p an order of
 /// magnitude above the autotuned range, 60 lands inside it.
 const CURRENT_TO_VELOCITY_BANDWIDTH_RATIO: f32 = 60.0;
-/// Velocity integral gain as a fraction of velocity_p, numerator over
-/// denominator. Without an integrator the steady velocity lag at homing
-/// speed lands in position error and trips the stall detector (0.53 mm
-/// against a 0.5 mm stall_distance on the live CoreXY); autotune settles
-/// near two thirds (512 at 755 and 812), the hand tune far above it.
-const VELOCITY_I_TO_P_NUMERATOR: u32 = 2;
-const VELOCITY_I_TO_P_DENOMINATOR: u32 = 3;
+/// Velocity integral gain as a multiple of velocity_p. Without an
+/// integrator the steady velocity lag at homing speed lands in position
+/// error and trips the stall detector (0.53 mm against a 0.5 mm
+/// stall_distance on the live CoreXY); at two thirds of P it winds up too
+/// slowly to matter inside the first homing stage (0.51 mm). The hand tune
+/// that homes reliably runs 1280 at P 350, so the floor uses that ratio.
+const VELOCITY_I_TO_P_NUMERATOR: u32 = 3;
+const VELOCITY_I_TO_P_DENOMINATOR: u32 = 1;
 
 /// Position-loop target as a fraction of the current-loop bandwidth. The
 /// register-scaling formula below labels this a bandwidth, but on the live
@@ -118,11 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn velocity_i_is_two_thirds_of_velocity_p_rounded_up() {
-        let velocity_p = foci_tmc4671::pid::PidPGain::new(389).expect("valid");
+    fn velocity_i_is_three_times_velocity_p() {
+        let velocity_p = foci_tmc4671::pid::PidPGain::new(441).expect("valid");
         assert_eq!(
             compute_velocity_i(velocity_p).expect("representable").raw(),
-            260
+            1323
         );
     }
 
