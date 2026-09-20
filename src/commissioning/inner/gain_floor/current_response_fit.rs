@@ -81,7 +81,7 @@ pub(crate) fn fit_current_response(
         sxx += t * t;
         usable += 1;
     }
-    if usable < MIN_SAMPLES_WITHIN_3_TAU {
+    if usable < 2 {
         return Err(CurrentFitError::InsufficientCoverage);
     }
     let n = usable as f32;
@@ -110,7 +110,7 @@ pub(crate) fn fit_current_response(
         .iter()
         .filter(|&&(t, i_actual)| {
             let ratio = f32::from(i_actual) / f32::from(i_target);
-            (0.0..1.0).contains(&ratio) && (t as f32) <= window_end_us
+            (0.0..LINEARIZABLE_RATIO_MAX).contains(&ratio) && (t as f32) <= window_end_us
         })
         .count();
     if usable_within_window < MIN_SAMPLES_WITHIN_3_TAU {
@@ -201,6 +201,29 @@ mod tests {
         let samples = synthetic_exponential(2000, 200.0, 84, 60);
         let bw = fit_current_response(&samples, 2000).expect("valid fit");
         assert!((750..=850).contains(&bw));
+    }
+
+    #[test]
+    fn near_saturated_samples_do_not_count_toward_coverage() {
+        // Six rising samples the regression can use (tau fits near 93 us,
+        // so 3 * tau reaches about 280 us), then a monotone creep between
+        // 96% and 99% of the target. Counting every sample under the target
+        // would find ten inside the window; only the six below 95% may.
+        let target: i16 = 20000;
+        let mut v: heapless::Vec<(u32, i16), 200> = heapless::Vec::new();
+        for (i, ratio) in [0.0, 0.2, 0.4, 0.55, 0.7, 0.8].iter().enumerate() {
+            v.push((i as u32 * 30, (f64::from(target) * ratio) as i16))
+                .unwrap();
+        }
+        for k in 0..18u32 {
+            let ratio = 0.96 + 0.0015 * f64::from(k);
+            v.push(((6 + k) * 30, (f64::from(target) * ratio) as i16))
+                .unwrap();
+        }
+        assert_eq!(
+            fit_current_response(&v, target),
+            Err(CurrentFitError::InsufficientCoverage)
+        );
     }
 
     #[test]
