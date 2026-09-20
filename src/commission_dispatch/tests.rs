@@ -292,18 +292,6 @@ impl CommissionReplySink for ReplyRecorder {
         });
     }
 
-    fn foci_current_validation_settled_sample(
-        &mut self,
-        _report: crate::tmc_diagnostics::CurrentValidationSettledSampleReport,
-    ) {
-    }
-
-    fn foci_current_validation_envelope(
-        &mut self,
-        _report: crate::tmc_diagnostics::CurrentValidationEnvelopeReport,
-    ) {
-    }
-
     fn foci_tune_result(
         &mut self,
         _oid: u8,

@@ -9,15 +9,13 @@ use crate::autotune::{CURRENT_AXIS_FLUX, CURRENT_AXIS_TORQUE, CommissionPhase};
 use crate::commission_dispatch::ReplyPayload;
 use crate::commissioning::types::{
     AdcCalResult, AdcResidualEvidence, CommissionResult, CurrentValidationAxisEvidence,
-    CurrentValidationSettledSampleEvidence, INDUCTANCE_SOURCE_NONE, InnerResult, OuterResult,
-    OuterSafetyFault,
+    INDUCTANCE_SOURCE_NONE, InnerResult, OuterResult, OuterSafetyFault,
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics, SelftestStageValue};
 use crate::tmc_diagnostics::{
     AdcResidualReport, ClosedLoopActivationReport, CommissionTimingReport,
     CurrentLoopFiltersReport, CurrentLoopHoldReport, CurrentLoopRunReport,
-    CurrentValidationAxisReport, CurrentValidationEnvelopeReport,
-    CurrentValidationSettledSampleReport, EncoderAlignmentReport, InductanceEstimateReport,
+    CurrentValidationAxisReport, EncoderAlignmentReport, InductanceEstimateReport,
     InductanceFrameReport, InductanceRunReport, ResistanceAxisReport, ResistanceRunReport,
 };
 
@@ -286,17 +284,6 @@ pub trait CommissionReplySink {
     /// Emit one per-axis, per-delay current validation evidence sample
     /// captured during commissioning.
     fn foci_current_validation_axis(&mut self, report: CurrentValidationAxisReport);
-
-    /// Emit one raw settled-flux current validation read captured during
-    /// commissioning.
-    fn foci_current_validation_settled_sample(
-        &mut self,
-        report: CurrentValidationSettledSampleReport,
-    );
-
-    /// Emit the current-validation target envelope captured during
-    /// commissioning.
-    fn foci_current_validation_envelope(&mut self, report: CurrentValidationEnvelopeReport);
 
     /// Emit the installed-tuning result.
     fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult);
@@ -1223,16 +1210,6 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
     result: &CommissionResult,
 ) {
     let inner = &result.inner;
-    sink.foci_current_validation_envelope(current_validation_envelope_report(oid, inner));
-    for evidence in inner
-        .current_settled_validation
-        .iter()
-        .take(inner.current_settled_validation_count as usize)
-    {
-        sink.foci_current_validation_settled_sample(current_validation_settled_sample_report(
-            oid, evidence,
-        ));
-    }
     for (sample_index, evidence) in inner
         .current_flux_validation
         .iter()
@@ -1265,22 +1242,6 @@ fn emit_current_loop_evidence<S: CommissionReplySink>(
     sink.foci_current_loop_run(commission_current_loop_run_report(oid, status, inner));
 }
 
-fn current_validation_envelope_report(
-    oid: u8,
-    inner: &InnerResult,
-) -> CurrentValidationEnvelopeReport {
-    CurrentValidationEnvelopeReport {
-        oid,
-        step_amplitude: inner.current_validation_step_amplitude,
-        flux_step_amplitude: inner.current_validation_flux_step_amplitude,
-        torque_step_amplitude: inner.current_validation_torque_step_amplitude,
-        pidout_limit: inner.current_validation_pidout_limit,
-        current_limited: inner.current_validation_current_limited,
-        voltage_limited: inner.current_validation_voltage_limited,
-        max_p: inner.current_validation_max_p,
-    }
-}
-
 fn current_validation_axis_report(
     oid: u8,
     axis: u8,
@@ -1304,28 +1265,6 @@ fn current_validation_axis_report(
         positive_encoder_delta_counts: evidence.positive_encoder_delta_counts,
         negative_encoder_delta_counts: evidence.negative_encoder_delta_counts,
         status_flags_or: evidence.status_flags_or,
-    }
-}
-
-fn current_validation_settled_sample_report(
-    oid: u8,
-    evidence: &CurrentValidationSettledSampleEvidence,
-) -> CurrentValidationSettledSampleReport {
-    CurrentValidationSettledSampleReport {
-        oid,
-        axis: evidence.axis,
-        sample_index: evidence.sample_index,
-        direction: evidence.direction,
-        raw_index: evidence.raw_index,
-        attempt: evidence.attempt,
-        target: evidence.target,
-        sample_delay_ms: evidence.sample_delay_ms,
-        same_axis_count: evidence.same_axis_count,
-        cross_axis_count: evidence.cross_axis_count,
-        cross_axis_permille: evidence.cross_axis_permille,
-        voltage_output_permille: evidence.voltage_output_permille,
-        encoder_delta_counts: evidence.encoder_delta_counts,
-        status_flags: evidence.status_flags,
     }
 }
 
@@ -1590,32 +1529,6 @@ mod tests {
             positive_encoder_delta_counts: i32,
             negative_encoder_delta_counts: i32,
             status_flags_or: u32,
-        },
-        CurrentValidationSettledSample {
-            oid: u8,
-            axis: u8,
-            sample_index: u8,
-            direction: u8,
-            raw_index: u8,
-            attempt: u8,
-            target: i16,
-            sample_delay_ms: u16,
-            same_axis_count: i16,
-            cross_axis_count: i16,
-            cross_axis_permille: u16,
-            voltage_output_permille: u16,
-            encoder_delta_counts: i32,
-            status_flags: u32,
-        },
-        CurrentValidationEnvelope {
-            oid: u8,
-            step_amplitude: u16,
-            flux_step_amplitude: u16,
-            torque_step_amplitude: u16,
-            pidout_limit: u16,
-            current_limited: u16,
-            voltage_limited: u16,
-            max_p: u16,
         },
         CurrentLoopHold {
             oid: u8,
@@ -1944,44 +1857,6 @@ mod tests {
                 positive_encoder_delta_counts: report.positive_encoder_delta_counts,
                 negative_encoder_delta_counts: report.negative_encoder_delta_counts,
                 status_flags_or: report.status_flags_or,
-            });
-        }
-
-        fn foci_current_validation_settled_sample(
-            &mut self,
-            report: crate::tmc_diagnostics::CurrentValidationSettledSampleReport,
-        ) {
-            self.events.push(Event::CurrentValidationSettledSample {
-                oid: report.oid,
-                axis: report.axis,
-                sample_index: report.sample_index,
-                direction: report.direction,
-                raw_index: report.raw_index,
-                attempt: report.attempt,
-                target: report.target,
-                sample_delay_ms: report.sample_delay_ms,
-                same_axis_count: report.same_axis_count,
-                cross_axis_count: report.cross_axis_count,
-                cross_axis_permille: report.cross_axis_permille,
-                voltage_output_permille: report.voltage_output_permille,
-                encoder_delta_counts: report.encoder_delta_counts,
-                status_flags: report.status_flags,
-            });
-        }
-
-        fn foci_current_validation_envelope(
-            &mut self,
-            report: crate::tmc_diagnostics::CurrentValidationEnvelopeReport,
-        ) {
-            self.events.push(Event::CurrentValidationEnvelope {
-                oid: report.oid,
-                step_amplitude: report.step_amplitude,
-                flux_step_amplitude: report.flux_step_amplitude,
-                torque_step_amplitude: report.torque_step_amplitude,
-                pidout_limit: report.pidout_limit,
-                current_limited: report.current_limited,
-                voltage_limited: report.voltage_limited,
-                max_p: report.max_p,
             });
         }
 
@@ -2335,32 +2210,6 @@ mod tests {
 
     fn current_loop_events(oid: u8, status: u8) -> Vec<Event> {
         vec![
-            Event::CurrentValidationEnvelope {
-                oid,
-                step_amplitude: 128,
-                flux_step_amplitude: 128,
-                torque_step_amplitude: 128,
-                pidout_limit: 2400,
-                current_limited: 422,
-                voltage_limited: 128,
-                max_p: 3474,
-            },
-            Event::CurrentValidationSettledSample {
-                oid,
-                axis: CURRENT_AXIS_FLUX,
-                sample_index: 3,
-                direction: 0,
-                raw_index: 0,
-                attempt: 0,
-                target: 128,
-                sample_delay_ms: 100,
-                same_axis_count: 120,
-                cross_axis_count: 45,
-                cross_axis_permille: 351,
-                voltage_output_permille: 410,
-                encoder_delta_counts: 1,
-                status_flags: 0x40,
-            },
             current_validation_event(
                 oid,
                 CURRENT_AXIS_FLUX,
