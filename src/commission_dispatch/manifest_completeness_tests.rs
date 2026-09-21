@@ -209,7 +209,7 @@ fn manifest_entry_fields(source: &str, method: &str) -> (String, Vec<(String, St
         .unwrap_or_else(|| panic!("{method} manifest entry has no reply: field"));
     let reply_rest = &entry[reply_start..];
     let reply_end = reply_rest
-        .find(|c: char| c == ',' || c == '<')
+        .find([',', '<'])
         .unwrap_or_else(|| panic!("{method} manifest entry's reply: field is malformed"));
     let struct_name = reply_rest[..reply_end].trim().to_string();
 

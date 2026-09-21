@@ -980,7 +980,7 @@ mod tests {
                 after - before
             );
             ticks += 1;
-            if !matches!(result, None) {
+            if result.is_some() {
                 break;
             }
         }

@@ -307,7 +307,7 @@ mod loop_tests {
             }
         }
         fn report_pending(&self) -> bool {
-            self.report_after.map_or(false, |n| self.dispatches >= n)
+            self.report_after.is_some_and(|n| self.dispatches >= n)
         }
         fn wake(&mut self) {
             self.woke.set(true);

@@ -853,11 +853,13 @@ mod tests {
         // a conclusive leg slower than the budget cannot reach this threshold and
         // reads as inconclusive instead, so the catch is deliberately coarse.
         assert_eq!(ROBUSTNESS_THRESHOLDS.t_max_us, 430_000);
-        assert!(ROBUSTNESS_THRESHOLDS.t_max_us > 388_000);
-        assert!(
-            ROBUSTNESS_THRESHOLDS.t_max_us
-                < ROBUSTNESS_MEASUREMENT_BUDGET_US - ROBUSTNESS_BAND_DWELL_US
-        );
+        const { assert!(ROBUSTNESS_THRESHOLDS.t_max_us > 388_000) };
+        const {
+            assert!(
+                ROBUSTNESS_THRESHOLDS.t_max_us
+                    < ROBUSTNESS_MEASUREMENT_BUDGET_US - ROBUSTNESS_BAND_DWELL_US
+            )
+        };
     }
 
     #[test]
@@ -865,7 +867,7 @@ mod tests {
         // 2 * t_max exceeds the measurement budget, so a conclusive tail cycle
         // cannot be measured (band entry past budget reads inconclusive). The
         // cause-10 tail-latch path stays dormant, unchanged by the t_max move.
-        assert!(2 * ROBUSTNESS_THRESHOLDS.t_max_us > ROBUSTNESS_MEASUREMENT_BUDGET_US);
+        const { assert!(2 * ROBUSTNESS_THRESHOLDS.t_max_us > ROBUSTNESS_MEASUREMENT_BUDGET_US) };
     }
 
     #[test]

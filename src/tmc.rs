@@ -1475,14 +1475,6 @@ pub fn tmc_test_spin(channel: u8, revolutions: u8) -> TmcRequest {
 mod tests {
     use super::*;
 
-    fn p_gain(raw: u16) -> foci_tmc4671::pid::PidPGain {
-        foci_tmc4671::pid::PidPGain::new(raw).expect("test gain must be in range")
-    }
-
-    fn i_gain(raw: u16) -> foci_tmc4671::pid::PidIGain {
-        foci_tmc4671::pid::PidIGain::new(raw).expect("test gain must be in range")
-    }
-
     #[test]
     fn autotune_action_admission_is_frozen() {
         for code in [0u8, 3, 4, 5, 6] {

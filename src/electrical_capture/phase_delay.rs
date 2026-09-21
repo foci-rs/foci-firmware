@@ -253,6 +253,6 @@ mod tests {
         let s2 = estimate_phase_delay(&quadrupled_n).unwrap().sigma_us;
         // psi is near -101 degrees, so id_rms dominates: doubling it nearly doubles sigma.
         assert!(s1 >= 2 * s0 - 1 && s1 <= 2 * s0 + 1, "s0 {s0} s1 {s1}");
-        assert_eq!(s2, (s0 + 1) / 2, "s0 {s0} s2 {s2}");
+        assert_eq!(s2, s0.div_ceil(2), "s0 {s0} s2 {s2}");
     }
 }

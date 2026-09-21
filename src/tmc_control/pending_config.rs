@@ -290,7 +290,7 @@ mod tests {
             let has_voltage_limit_write = raw_spi
                 .writes
                 .iter()
-                .any(|w| w.len() >= 1 && w[0] == (PIDOUT_UQ_UD_LIMITS.addr() | 0x80));
+                .any(|w| !w.is_empty() && w[0] == (PIDOUT_UQ_UD_LIMITS.addr() | 0x80));
 
             assert!(
                 !has_voltage_limit_write,

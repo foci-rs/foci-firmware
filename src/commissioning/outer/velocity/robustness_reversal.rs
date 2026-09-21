@@ -2051,7 +2051,7 @@ mod tests {
         safety
             .arm_safety_observation(0)
             .expect("safety observation armed");
-        safety.torque_cap = current_limit(2_448).raw() as u16;
+        safety.torque_cap = current_limit(2_448).raw();
         safety
     }
 

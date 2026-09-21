@@ -4391,22 +4391,9 @@ fn assert_dropped_mid_operation(backend: &MockBackend, ops_before: usize) {
     );
 }
 
-/// A waker that does nothing; the tests below poll a future by hand exactly
-/// once and never wait for a wake-up.
-struct NoopWake;
-
-impl std::task::Wake for NoopWake {
-    fn wake(self: std::sync::Arc<Self>) {}
-}
-
-fn noop_waker() -> std::task::Waker {
-    std::task::Waker::from(std::sync::Arc::new(NoopWake))
-}
-
 /// Acquire the shared-state guard and reset the channel atomics without an
 /// enclosing `block_on`, so the caller can poll futures by hand afterwards.
-fn lock_and_reset_shared_state()
--> impl core::ops::Deref<Target = ()> + core::ops::DerefMut + 'static {
+fn lock_and_reset_shared_state() -> impl core::ops::DerefMut<Target = ()> + 'static {
     let guard =
         pollster::block_on(crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.lock());
     crate::state::tmc::reset_all_tmc_channels();
@@ -4456,8 +4443,7 @@ fn a_torn_down_restore_poll_keeps_both_slots_installed() {
             tmc,
             stepper,
         ));
-        let waker = noop_waker();
-        let mut context = std::task::Context::from_waker(&waker);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         matches!(future.as_mut().poll(&mut context), std::task::Poll::Pending)
         // The future is dropped here, mid-await.
     };
@@ -4505,8 +4491,7 @@ fn a_torn_down_restore_cancel_keeps_the_slots_and_latch_and_stays_resumable() {
             stepper,
             crate::autotune::CommissionError::Shutdown,
         ));
-        let waker = noop_waker();
-        let mut context = std::task::Context::from_waker(&waker);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         matches!(future.as_mut().poll(&mut context), std::task::Poll::Pending)
     };
 

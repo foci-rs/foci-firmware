@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn terminal_fits_a_single_klipper_frame_at_any_oid() {
-        assert!(ROBUSTNESS_TERMINAL_REPLY_BYTES <= 54);
+        const { assert!(ROBUSTNESS_TERMINAL_REPLY_BYTES <= 54) };
     }
 
     /// Every schema-4 per-direction field is already wire-narrow, so nothing
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn robustness_cycle_evidence_fits_a_single_klipper_frame_at_any_oid() {
-        assert!(ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES <= 54);
+        const { assert!(ROBUSTNESS_CYCLE_EVIDENCE_REPLY_BYTES <= 54) };
     }
 
     #[test]
