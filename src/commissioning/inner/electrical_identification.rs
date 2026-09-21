@@ -384,7 +384,8 @@ fn assemble_electrical_model(
     let id_mean = inductance.frame.id_mean_milli_count;
     let iq_mean = inductance.frame.iq_mean_milli_count;
     defmt::info!(
-        "electrical id: theta_e={}us sigma={:?}us measured={:?}us configured={}us source={:?} id={} iq={} excess_centideg={:?} reject={:?}",
+        "electrical id: theta_e={}us sigma={:?}us measured={:?}us configured={}us source={:?} \
+         id={} iq={} excess_centideg={:?} reject={:?}",
         theta_e_us_input,
         phase.as_ref().ok().map(|e| e.sigma_us),
         phase.as_ref().ok().map(|e| e.theta_e_us),
