@@ -1,7 +1,7 @@
-//! Phase 5: Electrical identification (R, L, transport delay).
+//! Phase 5: Electrical identification (resistance and inductance).
 //!
-//! Shared resistance identification, rotating-field inductance measurement,
-//! and electrical transport delay from a 256-sample current transient.
+//! Shared resistance identification and rotating-field inductance
+//! measurement, with theta sourced from the inductance excitation phase.
 //! Assembles an `ElectricalModel` and validates it before transitioning to
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
@@ -1469,8 +1469,8 @@ fn fail_electrical_id(
 /// Advance electrical identification sub-state.
 ///
 /// Runs shared multi-point resistance identification, then per-coil
-/// rotating-field inductance and delay (transient capture with a two-point
-/// fit). Assembles an `ElectricalModel` and validates before
+/// rotating-field inductance, deriving theta from the inductance
+/// excitation phase. Assembles an `ElectricalModel` and validates before
 /// transitioning.
 pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     phase: &mut InnerPhase,
@@ -2581,22 +2581,53 @@ mod tests {
     #[test]
     fn timing_summaries_keep_the_delay_slot_reserved() {
         use crate::commissioning::types::{
-            CommissionTimingSummary, pack_commission_timing_summary,
+            COMMISSION_TIMING_ACCEPTED, COMMISSION_TIMING_REJECTED, CommissionTimingSummary,
+            pack_commission_timing_summary,
         };
-        let data = representative_data();
+        let mut data = representative_data();
+        let resistance_evidence = CaptureTimingEvidence {
+            requested_period_us: 200,
+            valid_samples: 40,
+            missed_samples: 0,
+            max_consecutive_misses: 0,
+            max_lateness_us: 5,
+            max_interval_us: 205,
+            max_poll_wall_us: 12,
+            max_spi_wall_us: 8,
+        };
+        let inductance_evidence = CaptureTimingEvidence {
+            requested_period_us: 100,
+            valid_samples: 64,
+            missed_samples: 3,
+            max_consecutive_misses: 1,
+            max_lateness_us: 40,
+            max_interval_us: 140,
+            max_poll_wall_us: 20,
+            max_spi_wall_us: 15,
+        };
+        data.resistance_timing = Some(resistance_evidence);
+        data.inductance_timing = Some(inductance_evidence);
+        set_timing_state(&mut data, 0, COMMISSION_TIMING_ACCEPTED);
+        set_timing_state(&mut data, 1, COMMISSION_TIMING_REJECTED);
+        // Stale bits left in the retired delay slot: a correct implementation
+        // must never read them back.
+        data.timing_states |= COMMISSION_TIMING_REJECTED << 4;
+
         let summaries = electrical_timing_summaries(&data);
+
+        assert_eq!(summaries[0].status, COMMISSION_TIMING_ACCEPTED);
+        assert_eq!(summaries[0].evidence, resistance_evidence);
+        assert_eq!(summaries[1].status, COMMISSION_TIMING_REJECTED);
+        assert_eq!(summaries[1].evidence, inductance_evidence);
         assert_eq!(summaries[2], CommissionTimingSummary::NOT_RUN);
-        let packed = pack_commission_timing_summary(summaries);
-        let slot_2 = pack_commission_timing_summary([
-            CommissionTimingSummary::NOT_RUN,
-            CommissionTimingSummary::NOT_RUN,
-            summaries[2],
-        ]);
         assert_eq!(
-            slot_2,
-            pack_commission_timing_summary([CommissionTimingSummary::NOT_RUN; 3])
+            pack_commission_timing_summary(summaries),
+            pack_commission_timing_summary([
+                summaries[0],
+                summaries[1],
+                CommissionTimingSummary::NOT_RUN
+            ])
         );
-        let _ = packed;
     }
 
     /// Pack a `MOTOR_TYPE_N_POLE_PAIRS` value reporting a two-phase stepper,

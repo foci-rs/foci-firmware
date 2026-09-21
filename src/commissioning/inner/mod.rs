@@ -220,7 +220,9 @@ pub(crate) struct ElectricalIdentificationData {
     /// Accepted timing evidence for the rotating-field capture.
     pub(crate) inductance_timing:
         Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
-    /// Packed two-bit timing lifecycle state for resistance, inductance, and delay.
+    /// Packed two-bit timing lifecycle state for resistance and inductance;
+    /// the third slot is reserved for the retired delay capture and is
+    /// never written.
     pub(crate) timing_states: u8,
     /// Bit per method indicating saturated timing telemetry.
     pub(crate) timing_overflow_mask: u8,
