@@ -129,8 +129,8 @@ mod tests {
         }
     }
 
-    // (id_mean, iq_mean, id_rms, iq_rms, r_count_milli, theta_us, sigma_us): the seven
-    // 2026-09-21 runs, four at 50 kHz PWM then three at 25 kHz.
+    // (id_mean, iq_mean, id_rms, iq_rms, r_count_milli, theta_us, sigma_us): seven
+    // recorded runs, four at 50 kHz PWM then three at 25 kHz.
     const RECORDED_RUNS: [(i32, i32, u32, u32, u32, u32, u32); 7] = [
         (-3540, -52671, 21588, 19848, 997, 22, 7),
         (-4071, -54311, 10105, 12198, 951, 23, 3),

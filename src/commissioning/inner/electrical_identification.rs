@@ -4936,7 +4936,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Phase 1 model-assembly gates (inductance / delay)
+    // Phase 1 model-assembly gates (inductance / theta)
     // -----------------------------------------------------------------
 
     /// Build model data for per-coil resistance currents `c0`/`c1` (counts).
