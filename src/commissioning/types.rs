@@ -1987,8 +1987,8 @@ pub struct InnerResult {
     pub lambda_us: u32,
     /// Electrical transport delay in microseconds.
     pub theta_e_us: u32,
-    /// Source of `theta_e_us`: 0 = high-rate measurement, 1 =
-    /// board-configured fallback.
+    /// Source of `theta_e_us`: 0 = the accepted inductance run's
+    /// phase-delay estimate, 1 = board-configured fallback.
     pub theta_source: u8,
     /// Max ringing count from forward/reverse current validation.
     pub ringing_count: u8,

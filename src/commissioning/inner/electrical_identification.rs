@@ -274,10 +274,10 @@ fn record_electrical_id_measurement_diagnostics(
 }
 
 /// Compute `tau_e_us` from the resistance/inductance evidence already
-/// gathered earlier in Phase 5. Shared by the high-rate capture's sizing
-/// step (which needs `tau_e_us` before `Validate` runs) and
+/// gathered earlier in Phase 5. Shared by the phase-delay estimate's gate
+/// (which needs `tau_e_us` before accepting a measured `theta_e_us`) and
 /// `assemble_electrical_model` (which needs the identical value for its
-/// gates), so the two can never silently diverge.
+/// own gates), so the two can never silently diverge.
 fn compute_tau_e_us(data: &ElectricalIdentificationData) -> Result<u32, ModelAssemblyError> {
     let result = data
         .resistance_result
@@ -426,27 +426,28 @@ fn assemble_electrical_model(
 }
 
 /// Where the accepted `theta_e_us` input to `assemble_electrical_model` came
-/// from: an accepted high-rate measurement, or the board-configured
-/// fallback value.
+/// from: the accepted inductance run's phase-delay estimate, or the
+/// board-configured fallback value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum ThetaSource {
-    /// The high-rate capture produced an accepted measurement.
+    /// The inductance run's excitation phase produced an accepted estimate.
     Measured,
-    /// No accepted measurement was available; the configured value was used.
+    /// No accepted estimate was available; the configured value was used.
     ConfigFallback,
 }
 
 /// Decide which `theta_e_us` value to feed into `assemble_electrical_model`.
 ///
-/// `measured` is `None` whenever the high-rate capture was timing-rejected,
-/// found no onset, or was never run; `Some(value)` only for a value that
-/// passed onset detection. This function additionally checks the measured
-/// value's own `tau_e_us / 2` gate *before* selecting it -- a measured value
-/// that fails that gate falls back to `configured_theta_e_us`, which is
-/// then itself passed to `assemble_electrical_model`, which applies the
-/// same gate again to whichever value was selected (see spec's Estimate and
-/// gate section: "Fallback changes the input to the existing gate, never
-/// the gate's behavior").
+/// `measured` is `None` whenever the inductance run's phase-delay estimate
+/// was rejected (see [`PhaseDelayRejection`]) or the run itself was never
+/// completed; `Some(value)` only for an estimate that cleared rejection.
+/// This function additionally checks the measured value's own `tau_e_us / 2`
+/// gate *before* selecting it -- a measured value that fails that gate falls
+/// back to `configured_theta_e_us`, which is then itself passed to
+/// `assemble_electrical_model`, which applies the same gate again to
+/// whichever value was selected (see spec's Estimate and gate section:
+/// "Fallback changes the input to the existing gate, never the gate's
+/// behavior").
 pub(crate) fn resolve_theta_e_us_input(
     measured: Option<u32>,
     tau_e_us: u32,
