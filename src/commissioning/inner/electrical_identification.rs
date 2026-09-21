@@ -24,6 +24,9 @@ use crate::commissioning::types::{
     InductanceEstimateEvidence, InductanceEvidence, InductanceFrameEvidence, InductanceRunEvidence,
     StepResult,
 };
+use crate::electrical_capture::{
+    PhaseDelayEstimate, PhaseDelayInput, PhaseDelayRejection, estimate_phase_delay,
+};
 use foci_tmc4671::registers::Register;
 
 /// Validated delay-transient sampling interval in microseconds.
@@ -304,6 +307,27 @@ fn compute_tau_e_us(data: &ElectricalIdentificationData) -> Result<u32, ModelAss
     )
 }
 
+/// The phase-delay estimate for an accepted inductance run, or why there is none.
+fn phase_delay_from_evidence(
+    data: &ElectricalIdentificationData,
+) -> Result<PhaseDelayEstimate, PhaseDelayRejection> {
+    let inductance = data.inductance.ok_or(PhaseDelayRejection::NoSamples)?;
+    let r_count_milli = data
+        .resistance_result
+        .map(|result| result.selected_r_count_slope_milli.max(0) as u32)
+        .unwrap_or(0);
+    estimate_phase_delay(&PhaseDelayInput {
+        id_mean_milli_count: inductance.frame.id_mean_milli_count,
+        iq_mean_milli_count: inductance.frame.iq_mean_milli_count,
+        id_rms_milli_count: inductance.frame.id_rms_milli_count,
+        iq_rms_milli_count: inductance.frame.iq_rms_milli_count,
+        sample_count: inductance.run.sample_count,
+        r_count_milli,
+        ud_count: inductance.run.ud_count.max(0) as u16,
+        realized_frequency_millihz: inductance.run.realized_frequency_millihz,
+    })
+}
+
 fn assemble_electrical_model(
     data: &ElectricalIdentificationData,
     configured_theta_e_us: u32,
@@ -351,14 +375,25 @@ fn assemble_electrical_model(
         return Err(ModelAssemblyError::ModelScaleZero { l_count_micro });
     }
 
-    let (theta_e_us_input, theta_source) =
-        resolve_theta_e_us_input(data.delay_estimate_us, tau_e_us, configured_theta_e_us);
-    defmt::info!(
-        "electrical id: theta_e input={}us measured={:?}us configured={}us source={:?}",
-        theta_e_us_input,
-        data.delay_estimate_us,
+    let phase = phase_delay_from_evidence(data);
+    let (theta_e_us_input, theta_source) = resolve_theta_e_us_input(
+        phase.as_ref().ok().map(|e| e.theta_e_us),
+        tau_e_us,
         configured_theta_e_us,
-        theta_source
+    );
+    let id_mean = inductance.frame.id_mean_milli_count;
+    let iq_mean = inductance.frame.iq_mean_milli_count;
+    defmt::info!(
+        "electrical id: theta_e={}us sigma={:?}us measured={:?}us configured={}us source={:?} id={} iq={} excess_centideg={:?} reject={:?}",
+        theta_e_us_input,
+        phase.as_ref().ok().map(|e| e.sigma_us),
+        phase.as_ref().ok().map(|e| e.theta_e_us),
+        configured_theta_e_us,
+        theta_source,
+        id_mean,
+        iq_mean,
+        phase.as_ref().ok().map(|e| e.excess_centideg),
+        phase.as_ref().err(),
     );
     let theta_source_wire: u8 = match theta_source {
         ThetaSource::Measured => 0,
@@ -6086,13 +6121,61 @@ mod tests {
         );
     }
 
+    fn with_recorded_phase_evidence(
+        mut data: ElectricalIdentificationData,
+    ) -> ElectricalIdentificationData {
+        let inductance = data
+            .inductance
+            .as_mut()
+            .expect("representative data carries inductance evidence");
+        inductance.frame.id_mean_milli_count = -10_657;
+        inductance.frame.iq_mean_milli_count = -52_615;
+        inductance.frame.id_rms_milli_count = 11_909;
+        inductance.frame.iq_rms_milli_count = 11_265;
+        inductance.run.sample_count = 100;
+        inductance.run.realized_frequency_millihz = 1_000_000;
+        if let Some(result) = data.resistance_result.as_mut() {
+            result.selected_r_count_slope_milli = 938;
+        }
+        data
+    }
+
+    #[test]
+    fn assemble_uses_the_phase_delay_when_the_run_lags() {
+        let data = with_recorded_phase_evidence(representative_data());
+        let assembly = assemble_electrical_model(&data, 160).unwrap();
+        assert_eq!(assembly.model.theta_e_us, 42);
+        assert_eq!(assembly.model.theta_source, ThetaSource::Measured as u8);
+    }
+
+    #[test]
+    fn assemble_falls_back_when_the_current_leads() {
+        let mut data = with_recorded_phase_evidence(representative_data());
+        data.inductance.as_mut().unwrap().frame.iq_mean_milli_count = 52_615;
+        let assembly = assemble_electrical_model(&data, 160).unwrap();
+        assert_eq!(assembly.model.theta_e_us, 160);
+        assert_eq!(
+            assembly.model.theta_source,
+            ThetaSource::ConfigFallback as u8
+        );
+    }
+
+    #[test]
+    fn phase_delay_from_evidence_rejects_without_inductance() {
+        let mut data = with_recorded_phase_evidence(representative_data());
+        data.inductance = None;
+        assert_eq!(
+            phase_delay_from_evidence(&data),
+            Err(PhaseDelayRejection::NoSamples)
+        );
+    }
+
     #[test]
     fn validate_uses_measured_theta_when_available_and_accepted() {
-        let mut data = representative_data();
-        data.delay_estimate_us = Some(200); // well under tau_e_us / 2 (801 / 2 = 400) for this fixture
+        let data = with_recorded_phase_evidence(representative_data());
         let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
         assert_eq!(assembly.model.theta_source, 0); // 0 = measured
-        assert_eq!(assembly.model.theta_e_us, 200);
+        assert_eq!(assembly.model.theta_e_us, 42);
     }
 
     #[test]

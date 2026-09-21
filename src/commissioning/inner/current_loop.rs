@@ -1435,11 +1435,10 @@ pub(crate) async fn step_current_tune<B: CommissioningBackend>(
     current_loop_evidence.current_validation_axes = 0;
 
     defmt::info!(
-        "physical-p: R={} L={} tau_e={}us theta_e={}us lambda={}us -> P={} I={} bw={}Hz",
+        "physical-p: R={} L={} tau_e={}us lambda={}us -> P={} I={} bw={}Hz",
         model.r_count_milli,
         model.l_count_micro,
         model.tau_e_us,
-        model.theta_e_us,
         gains.lambda_us,
         gains.flux_p,
         gains.flux_i,
