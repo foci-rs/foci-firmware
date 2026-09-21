@@ -351,12 +351,6 @@ pub struct MockBackend {
     elapsed_us_sequence: Vec<u64, 16>,
     /// Current index into `elapsed_us_sequence`.
     elapsed_us_pos: core::cell::Cell<usize>,
-    /// Value returned by `cycle_count()` once `cycle_count_sequence` is exhausted.
-    pub cycle_count_value: u32,
-    /// Sequential values returned by `cycle_count()` before the fallback value.
-    cycle_count_sequence: Vec<u32, 4096>,
-    /// Current index into `cycle_count_sequence`.
-    cycle_count_pos: core::cell::Cell<usize>,
     /// Whether cooperative test delays advance the mock monotonic.
     pub advance_elapsed_on_delay: bool,
     /// Elapsed-time increment applied by each mock register read or write.
@@ -527,9 +521,6 @@ impl MockBackend {
             elapsed_us_value: 0,
             elapsed_us_sequence: Vec::new(),
             elapsed_us_pos: core::cell::Cell::new(0),
-            cycle_count_value: 0,
-            cycle_count_sequence: Vec::new(),
-            cycle_count_pos: core::cell::Cell::new(0),
             advance_elapsed_on_delay: false,
             spi_elapsed_step_us: 0,
             shutdown_requested: false,
@@ -602,15 +593,6 @@ impl MockBackend {
             let _ = self.elapsed_us_sequence.push(value);
         }
         self.elapsed_us_pos.set(0);
-    }
-
-    /// Set sequential values for cycle-count observations.
-    pub fn set_cycle_count_sequence(&mut self, values: &[u32]) {
-        self.cycle_count_sequence.clear();
-        for &value in values {
-            let _ = self.cycle_count_sequence.push(value);
-        }
-        self.cycle_count_pos.set(0);
     }
 
     /// Set sequential `PID_TORQUE_FLUX_ACTUAL` values for read-register tests.
@@ -1058,15 +1040,6 @@ impl CommissionTiming for MockBackend {
 
     fn is_shutdown_requested(&self) -> bool {
         self.shutdown_requested
-    }
-
-    fn cycle_count(&self) -> u32 {
-        let position = self.cycle_count_pos.get();
-        if position < self.cycle_count_sequence.len() {
-            self.cycle_count_pos.set(position + 1);
-            return self.cycle_count_sequence[position];
-        }
-        self.cycle_count_value
     }
 
     async fn delay_us(&mut self, us: u32) {

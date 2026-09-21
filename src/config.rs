@@ -44,14 +44,6 @@ pub struct TmcConfig {
     pub excitation_voltage: u16,
     /// Board-derived effective electrical delay for current-loop synthesis.
     pub electrical_model_theta_e_us: u32,
-    /// High-rate electrical-delay capture period in microseconds.
-    /// Ouroboros: 20 (spike-validated). OpenFFBoard: 200 (unchanged from
-    /// the prior low-rate default, pending its own timing validation).
-    pub high_rate_delay_period_us: u16,
-    /// DWT cycles per microsecond at this board's core clock, for pacing
-    /// the high-rate capture. Must match `app_types::CycleDelay`'s existing
-    /// per-board ratio (Ouroboros: 520, OpenFFBoard: 168).
-    pub high_rate_delay_cycles_per_us: u32,
     /// Maximum encoder movement allowed during flux-axis current validation.
     pub current_validation_flux_max_encoder_delta_counts: u16,
     /// Maximum encoder movement allowed during torque-axis current validation.
@@ -160,8 +152,6 @@ impl TmcConfig {
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
-            high_rate_delay_period_us: 20,
-            high_rate_delay_cycles_per_us: 520,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -197,8 +187,6 @@ mod tests {
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
-            high_rate_delay_period_us: 20,
-            high_rate_delay_cycles_per_us: 520,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -275,8 +263,6 @@ mod tests {
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
-            high_rate_delay_period_us: 20,
-            high_rate_delay_cycles_per_us: 520,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -298,8 +284,6 @@ mod tests {
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
-            high_rate_delay_period_us: 20,
-            high_rate_delay_cycles_per_us: 520,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -321,8 +305,6 @@ mod tests {
             adc_i_select: 0x1800_0100,
             excitation_voltage: 512,
             electrical_model_theta_e_us: 160,
-            high_rate_delay_period_us: 20,
-            high_rate_delay_cycles_per_us: 520,
             current_validation_flux_max_encoder_delta_counts: 4,
             current_validation_torque_max_encoder_delta_counts: 16,
             resistance_max_expected_current_count: 1600,
@@ -356,16 +338,5 @@ mod tests {
         let config = FeedbackConfig::abn_abn();
         assert_eq!(config.phi_e_source, FeedbackSource::Abn);
         assert_eq!(config.position_source, FeedbackSource::Abn);
-    }
-
-    #[test]
-    fn high_rate_delay_fields_are_present_and_nonzero() {
-        let config = TmcConfig {
-            high_rate_delay_period_us: 20,
-            high_rate_delay_cycles_per_us: 520,
-            ..test_config()
-        };
-        assert_eq!(config.high_rate_delay_period_us, 20);
-        assert_eq!(config.high_rate_delay_cycles_per_us, 520);
     }
 }
