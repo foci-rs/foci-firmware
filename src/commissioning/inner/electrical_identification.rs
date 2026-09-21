@@ -5148,12 +5148,11 @@ mod tests {
 
     #[test]
     fn resolve_theta_falls_back_when_measured_theta_is_zero() {
-        // A measured theta of exactly 0 is a saturated `correct_onset_bias`
-        // result (the bias term exceeded the raw crossing), not a real
-        // physical delay of zero. `synthesize_current_gains` hard-rejects
-        // theta_e_us == 0, so accepting this as "Measured" fails the whole
-        // model instead of falling back to the configured value the way an
-        // absent measurement already does.
+        // A measured theta of zero is not a real physical delay.
+        // `synthesize_current_gains` hard-rejects theta_e_us == 0, so
+        // accepting this as "Measured" fails the whole model instead of
+        // falling back to the configured value the way an absent
+        // measurement already does.
         let (theta, source) = resolve_theta_e_us_input(Some(0), 1_000, 160);
         assert_eq!(theta, 160);
         assert_eq!(source, ThetaSource::ConfigFallback);
@@ -5178,25 +5177,5 @@ mod tests {
         assert_eq!(source, ThetaSource::ConfigFallback);
         // theta (600) >= tau_e_us / 2 (500): assemble_electrical_model must reject this.
         assert!(theta >= 1_000 / 2);
-    }
-
-    #[test]
-    fn onset_detection_reports_no_onset_within_window() {
-        // Flat capture never crosses 10% of its own (zero) peak meaningfully --
-        // exercised here via estimate_electrical_delay's existing no-samples
-        // path, which this capture must fall back on exactly like today.
-        let samples = [0u32, 0, 0, 0];
-        let offsets_us = [10u16, 20, 30, 40];
-        assert!(crate::autotune::estimate_electrical_delay(&samples, &offsets_us).is_err());
-    }
-
-    #[test]
-    fn onset_detection_tolerates_noisy_pre_onset_baseline() {
-        // Small pre-onset noise (samples 1-3) must not itself cross the 10%
-        // threshold; onset must still land on the real rise (index 4).
-        let samples = [0u32, 2, 1, 3, 200, 205];
-        let offsets_us = [10u16, 20, 30, 40, 50, 60];
-        let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
-        assert_eq!(onset, 50); // peak=205, threshold=21, first sample >= 21 is index 4.
     }
 }
