@@ -1786,7 +1786,6 @@ impl CommissioningEngine {
                 EngineMode::Inner { phase, .. } => {
                     inner::electrical_identification::drive_deadline_capture(
                         phase,
-                        &mut self.buf,
                         &mut self.diagnostics,
                         backend,
                     )
@@ -1865,13 +1864,11 @@ mod tests {
                 crate::commission_dispatch::test_support::current_limit(2816),
             ),
         };
-        let mut buf = crate::autotune::TransientBuffer::new();
         let mut selftest_results = crate::selftest::SelftestResults::default();
         let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
         let electrical_id = size_of_val(
             &inner::electrical_identification::step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 crate::autotune::InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,

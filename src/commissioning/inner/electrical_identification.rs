@@ -11,7 +11,7 @@ use super::{
 };
 use crate::autotune::{
     CommissionError, CommissionPhase, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
-    InnerSequence, Permille, TransientBuffer,
+    InnerSequence, Permille,
 };
 use crate::commissioning::backend::timed_read_register_pair;
 use crate::commissioning::capture_timing::{
@@ -1042,7 +1042,6 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
 /// when shutdown must fall back to the engine's canonical safe-state path.
 pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
     phase: &mut InnerPhase,
-    _buf: &mut TransientBuffer,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
     backend: &mut B,
 ) -> Option<StepResult> {
@@ -1474,7 +1473,6 @@ fn fail_electrical_id(
 /// transitioning.
 pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     phase: &mut InnerPhase,
-    _buf: &mut TransientBuffer,
     sequence: InnerSequence,
     selftest_results: &mut crate::selftest::SelftestResults,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
@@ -2237,7 +2235,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::autotune::{Permille, TransientBuffer};
+    use crate::autotune::Permille;
     use crate::commission_dispatch::test_support::{MockBackend, SpiOp, current_limit};
     use crate::commissioning::backend::CommissionBoardConfig;
     use crate::commissioning::inner::ElectricalIdentificationData;
@@ -2490,14 +2488,12 @@ mod tests {
                 state: ElectricalIdentificationState::Validate,
                 data,
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -2547,7 +2543,6 @@ mod tests {
                 state: ElectricalIdentificationState::InductanceDisable { deadline_us: 1_000 },
                 data: ElectricalIdentificationData::new(512, current_limit(2816)),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 1_000;
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -2555,7 +2550,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -2722,7 +2716,6 @@ mod tests {
 
     async fn finish_inductance_restore(
         phase: &mut InnerPhase,
-        buf: &mut TransientBuffer,
         selftest_results: &mut crate::selftest::SelftestResults,
         diagnostics: &mut crate::selftest::CommissionDiagnostics,
         backend: &mut MockBackend,
@@ -2730,7 +2723,6 @@ mod tests {
         for _ in 0..21 {
             let result = step_electrical_identification(
                 phase,
-                buf,
                 InnerSequence::Commission,
                 selftest_results,
                 diagnostics,
@@ -2785,7 +2777,6 @@ mod tests {
         phase: &mut InnerPhase,
         backend: &mut MockBackend,
     ) -> StepResult {
-        let mut buf = TransientBuffer::new();
         let mut selftest_results = crate::selftest::SelftestResults::default();
         let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
         for operation in 0..20 {
@@ -2796,7 +2787,6 @@ mod tests {
                 .count();
             let result = step_electrical_identification(
                 phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -2924,7 +2914,6 @@ mod tests {
 
     async fn drive_inductance_schedule(
         phase: &mut InnerPhase,
-        buf: &mut TransientBuffer,
         selftest_results: &mut crate::selftest::SelftestResults,
         diagnostics: &mut crate::selftest::CommissionDiagnostics,
         backend: &mut MockBackend,
@@ -2932,7 +2921,6 @@ mod tests {
         for _ in 0..512 {
             let result = step_electrical_identification(
                 phase,
-                buf,
                 InnerSequence::Commission,
                 selftest_results,
                 diagnostics,
@@ -3111,14 +3099,12 @@ mod tests {
                 state: ElectricalIdentificationState::InductanceSetup,
                 data,
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3133,7 +3119,6 @@ mod tests {
             for _ in 0..10 {
                 let result = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest_results,
                     &mut diagnostics,
@@ -3186,7 +3171,6 @@ mod tests {
                 state: ElectricalIdentificationState::InductanceSetup,
                 data,
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             // The fault latches while the clear's SPI transfer is in flight, so
             // the chip's copy of STATUS_FLAGS is already gone when it lands.
@@ -3197,7 +3181,6 @@ mod tests {
             for _ in 0..11 {
                 let result = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest_results,
                     &mut diagnostics,
@@ -3234,7 +3217,6 @@ mod tests {
                 state: ElectricalIdentificationState::InductanceWaitVelocity { deadline_us: 10 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.elapsed_us_value = 20;
@@ -3243,7 +3225,6 @@ mod tests {
 
             let start_restore = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3253,7 +3234,6 @@ mod tests {
             assert!(matches!(start_restore, StepResult::ReadyNow));
             let result = finish_inductance_restore(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -3277,7 +3257,6 @@ mod tests {
                 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend
                 .registers
@@ -3288,7 +3267,6 @@ mod tests {
 
             let waiting = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3313,7 +3291,6 @@ mod tests {
                 .ok();
             let ready = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3346,7 +3323,6 @@ mod tests {
                 state: ElectricalIdentificationState::InductanceSample { capture },
                 data,
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
@@ -3356,7 +3332,6 @@ mod tests {
 
             let start_restore = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3366,7 +3341,6 @@ mod tests {
             assert!(matches!(start_restore, StepResult::ReadyNow));
             let result = finish_inductance_restore(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -3395,7 +3369,6 @@ mod tests {
                 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.set_openloop_phi_sequence(&[1_000], 0);
@@ -3405,7 +3378,6 @@ mod tests {
 
             let start_restore = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3415,7 +3387,6 @@ mod tests {
             assert!(matches!(start_restore, StepResult::ReadyNow));
             let result = finish_inductance_restore(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -3443,7 +3414,6 @@ mod tests {
                 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.set_openloop_phi_sequence(&[6_554], 0);
@@ -3453,7 +3423,6 @@ mod tests {
 
             let start_restore = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3463,7 +3432,6 @@ mod tests {
             assert!(matches!(start_restore, StepResult::ReadyNow));
             let result = finish_inductance_restore(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -3496,7 +3464,6 @@ mod tests {
                 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.elapsed_us_value = u64::from(INDUCTANCE_AC_SAMPLE_PERIOD_US);
@@ -3507,7 +3474,6 @@ mod tests {
 
             let start_restore = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3517,7 +3483,6 @@ mod tests {
             assert!(matches!(start_restore, StepResult::ReadyNow));
             let result = finish_inductance_restore(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -3548,7 +3513,6 @@ mod tests {
                 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend
@@ -3571,7 +3535,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -3601,7 +3564,6 @@ mod tests {
                 state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.set_elapsed_us_sequence(&[1_000, 1_000, 1_080, 1_080, 1_090]);
             backend.set_openloop_phi_sequence(&[1_000], 0);
@@ -3611,7 +3573,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest,
                 &mut diagnostics,
@@ -3642,7 +3603,6 @@ mod tests {
                 state: ElectricalIdentificationState::InductanceSample { capture },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.elapsed_us_value = 10_020;
             backend.set_elapsed_us_sequence(&[10_000, 10_000, 10_020, 10_020, 10_100]);
@@ -3653,7 +3613,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest,
                 &mut diagnostics,
@@ -3692,7 +3651,6 @@ mod tests {
             backend.set_openloop_phi_sequence(&[1_000, 2_000, 3_000, 4_000], 0);
             let actual = ((-84i16 as u16 as u32) << 16) | 20;
             backend.set_pid_torque_flux_actual_sequence(&[actual; 4]);
-            let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
@@ -3701,7 +3659,6 @@ mod tests {
                 let before = register_operation_count(&backend.spi_log);
                 let result = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest,
                     &mut diagnostics,
@@ -3739,14 +3696,12 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.elapsed_us_value = 292;
-            let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let before = register_operation_count(&backend.spi_log);
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest,
                 &mut diagnostics,
@@ -3783,14 +3738,12 @@ mod tests {
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.elapsed_us_value = 468;
-            let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let before = register_operation_count(&backend.spi_log);
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest,
                 &mut diagnostics,
@@ -3829,7 +3782,6 @@ mod tests {
             backend.set_openloop_phi_sequence(&[26_214, 39_321, 13_107, 26_214, 0, 13_107], 0);
             let actual = ((-84i16 as u16 as u32) << 16) | 20;
             backend.set_pid_torque_flux_actual_sequence(&[actual; 6]);
-            let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
@@ -3837,7 +3789,6 @@ mod tests {
                 backend.elapsed_us_value = now;
                 let _ = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest,
                     &mut diagnostics,
@@ -3849,7 +3800,6 @@ mod tests {
             let before = register_operation_count(&backend.spi_log);
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest,
                 &mut diagnostics,
@@ -3897,13 +3847,11 @@ mod tests {
             backend.elapsed_us_value = 100;
             backend.set_openloop_phi_sequence(&[1_000], 0);
             backend.set_pid_torque_flux_actual_sequence(&[((-84i16 as u16 as u32) << 16) | 20]);
-            let mut buf = TransientBuffer::new();
             let mut selftest = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let sample = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest,
                 &mut diagnostics,
@@ -3921,7 +3869,6 @@ mod tests {
             let before_status = register_operation_count(&backend.spi_log);
             let _ = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest,
                 &mut diagnostics,
@@ -3953,7 +3900,6 @@ mod tests {
                 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend.elapsed_us_value = 1_046;
@@ -3979,7 +3925,6 @@ mod tests {
 
             let result = drive_inductance_schedule(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -4018,7 +3963,6 @@ mod tests {
                 },
                 data: representative_data(),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             backend
@@ -4043,7 +3987,6 @@ mod tests {
 
             let result = drive_inductance_schedule(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -4193,7 +4136,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             let _ = backend.registers.insert(
                 foci_tmc4671::registers::STATUS_FLAGS.addr(),
@@ -4204,7 +4146,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -4265,7 +4206,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             let _ = backend.registers.insert(
                 foci_tmc4671::registers::STATUS_FLAGS.addr(),
@@ -4276,7 +4216,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -4308,7 +4247,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.mechanical_encoder_quadrature_counts_per_rev_value = 0;
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4316,7 +4254,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -4343,7 +4280,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.mechanical_encoder_quadrature_counts_per_rev_value = 0;
             let mut selftest_results = crate::selftest::SelftestResults::default();
@@ -4351,7 +4287,6 @@ mod tests {
 
             let result = step_electrical_identification(
                 &mut phase,
-                &mut buf,
                 InnerSequence::Commission,
                 &mut selftest_results,
                 &mut diagnostics,
@@ -4390,7 +4325,6 @@ mod tests {
                 },
                 data,
             };
-            let mut buf = TransientBuffer::new();
             let mut backend = MockBackend::new();
             backend.enable_pin = true;
             let _ = backend.registers.insert(STATUS_FLAGS.addr(), 0);
@@ -4413,7 +4347,6 @@ mod tests {
 
             let result = drive_inductance_schedule(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -4466,13 +4399,11 @@ mod tests {
         pollster::block_on(async {
             // id = 0, iq = 563, exactly at the envelope.
             let (mut phase, mut backend) = inductance_envelope_fixture(563u32 << 16);
-            let mut buf = TransientBuffer::new();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = drive_inductance_schedule(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -4490,13 +4421,11 @@ mod tests {
         pollster::block_on(async {
             // id = 0, iq = 564, one count over.
             let (mut phase, mut backend) = inductance_envelope_fixture(564u32 << 16);
-            let mut buf = TransientBuffer::new();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
             let result = drive_inductance_schedule(
                 &mut phase,
-                &mut buf,
                 &mut selftest_results,
                 &mut diagnostics,
                 &mut backend,
@@ -4537,7 +4466,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
@@ -4548,7 +4476,6 @@ mod tests {
                 let before = register_operation_count(&backend.spi_log);
                 let step = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest_results,
                     &mut diagnostics,
@@ -4603,7 +4530,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let critical_status = 1 << 1;
@@ -4615,7 +4541,6 @@ mod tests {
                 let before = register_operation_count(&backend.spi_log);
                 let step = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest_results,
                     &mut diagnostics,
@@ -4683,7 +4608,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             let mut saw_enabled = false;
@@ -4692,7 +4616,6 @@ mod tests {
             for _ in 0..200 {
                 let step = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest_results,
                     &mut diagnostics,
@@ -4740,7 +4663,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
             // Bit 28 (inactive-encoder) is excluded from the current-loop
@@ -4754,7 +4676,6 @@ mod tests {
                 let before = register_operation_count(&backend.spi_log);
                 let step = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest_results,
                     &mut diagnostics,
@@ -4813,7 +4734,6 @@ mod tests {
                     crate::commission_dispatch::test_support::current_limit(2816),
                 ),
             };
-            let mut buf = TransientBuffer::default();
             let mut selftest_results = crate::selftest::SelftestResults::default();
             let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
 
@@ -4823,7 +4743,6 @@ mod tests {
             for _ in 0..2_000 {
                 let step = step_electrical_identification(
                     &mut phase,
-                    &mut buf,
                     InnerSequence::Commission,
                     &mut selftest_results,
                     &mut diagnostics,

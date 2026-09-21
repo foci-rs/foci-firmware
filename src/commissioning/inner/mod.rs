@@ -616,7 +616,6 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
         InnerPhase::ElectricalIdentification { .. } => {
             electrical_identification::step_electrical_identification(
                 phase,
-                buf,
                 sequence,
                 selftest_results,
                 diagnostics,
