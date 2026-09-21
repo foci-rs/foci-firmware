@@ -1,16 +1,17 @@
 //! Commissioning fallback gain-floor measurement: derives `velocity_p` and
-//! `position_p` from the slope of acceleration against measured torque over
-//! three torque steps. Reached from every accepted current validation; a
-//! measurement failure here fails commissioning outright.
+//! `position_p` from the plant gain measured over three torque steps, each
+//! yielding the axis displacement over the fit window and the double
+//! integral of the measured torque current over the same window. Reached
+//! from every accepted current validation; a measurement failure here fails
+//! commissioning outright.
 //!
-//! A line rather than a single step because on a real axis one torque step
-//! measures `(T - T_friction) / J`, not `T / J`: Coulomb friction shifts
-//! every fitted acceleration by the same current-independent amount, which
-//! biases a single-step `accel_per_count` low and the derived `velocity_p`
-//! high. The slope is free of that intercept. Three points rather than two
-//! because a two-point differential cannot tell a step that left the
-//! inertial regime (breakaway creep at low amplitude) from a real slope; the
-//! third point makes that visible as a departure from the chord.
+//! Displacement against integrated current rather than a fitted acceleration
+//! against mean current because the current loop does not hold a step
+//! constant while the rotor moves: it rises over the first few hundred
+//! microseconds and sags with velocity, more so the softer the loop, and a
+//! constant-acceleration fit under-reads a decaying acceleration. The double
+//! integral is exact for any current shape. Three steps rather than one so a
+//! step that left the inertial regime shows as a ratio off the pooled one.
 
 pub(crate) mod capture;
 pub(crate) mod gains;
@@ -26,16 +27,15 @@ use foci_tmc4671::pid::{PidIGain, PidPGain};
 /// same stiction history.
 const INTER_STEP_SETTLE_US: u64 = 100_000;
 
-/// How far the middle step's acceleration may sit off the chord between the
-/// outer two, as a fraction of the chord's rise, before the three are not one
-/// inertial line.
-const LINE_CHORD_DEVIATION_FAIL_PERMILLE: i64 = 400;
+const PLANT_GAIN_STEP_DEVIATION_FAIL_PERMILLE: i64 = 250;
 
-/// One measured torque step's contribution to the acceleration line.
+/// One measured torque step: axis displacement over the fit window, along the
+/// commanded direction, and the double integral of the measured torque
+/// current over the same window (count-microseconds squared).
 #[derive(Debug, Clone, Copy, Default, defmt::Format)]
 pub(crate) struct GainFloorPoint {
-    pub(crate) mean_torque_actual: i32,
-    pub(crate) accel_raw_q32: i64,
+    pub(crate) displacement_units: i32,
+    pub(crate) current_impulse: i64,
 }
 
 /// `step_gain_floor_measurement` sub-state.
@@ -96,7 +96,7 @@ where
             let InnerPhase::GainFloorMeasurement { capture, .. } = phase else {
                 return StepResult::ReadyNow;
             };
-            let (accel_raw_q32, mean_torque_actual) = match capture_and_fit(
+            let point = match capture_and_measure(
                 backend,
                 capture,
                 i_targets[index],
@@ -107,10 +107,7 @@ where
                 Ok(v) => v,
                 Err(e) => return super::fail_inner(phase, e),
             };
-            points[index] = GainFloorPoint {
-                mean_torque_actual,
-                accel_raw_q32,
-            };
+            points[index] = point;
             if index + 1 < i_targets.len() {
                 if let InnerPhase::GainFloorMeasurement { state, .. } = phase {
                     *state = GainFloorState::Step {
@@ -124,12 +121,12 @@ where
         }
     };
 
-    let slope_q32_per_count = match fit_accel_per_count_line(&points) {
+    let plant_gain = match fit_plant_gain(&points) {
         Ok(v) => v,
         Err(e) => return super::fail_inner(phase, e),
     };
-    let accel_per_count: f32 = match gains::accel_raw_q32_per_count_to_accel_per_count(
-        slope_q32_per_count,
+    let accel_per_count: f32 = match gains::accel_raw_per_count_to_accel_per_count(
+        plant_gain,
         crate::motion_scale::POSITION_UNITS_PER_REV as f64,
     ) {
         Some(v) => v,
@@ -206,60 +203,48 @@ where
     StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
 }
 
-/// Least-squares slope of `accel_raw_q32` against mean `torque_actual`, in
-/// Q32 position units per microsecond^2 per torque count. The current loop
-/// does not hold the commanded target while the rotor moves, so the line
-/// runs over the current the motor actually saw, not the commands.
-fn fit_accel_per_count_line(points: &[GainFloorPoint; 3]) -> Result<f64, CommissionError> {
-    let [m0, m1, m2] = points.map(|p| p.mean_torque_actual);
-    let [a0, a1, a2] = points.map(|p| p.accel_raw_q32);
-    if m0 >= m1 || m1 >= m2 || a0 >= a1 || a1 >= a2 {
+fn fit_plant_gain(points: &[GainFloorPoint; 3]) -> Result<f64, CommissionError> {
+    let [d0, d1, d2] = points.map(|p| p.displacement_units);
+    let [i0, i1, i2] = points.map(|p| p.current_impulse);
+    if d0 <= 0 || i0 <= 0 || d0 >= d1 || d1 >= d2 || i0 >= i1 || i1 >= i2 {
         defmt::warn!(
-            "gain-floor: acceleration did not grow with current: means {} {} {}, accel {} {} {}",
-            m0,
-            m1,
-            m2,
-            a0,
-            a1,
-            a2
+            "gain-floor: displacement did not grow with current impulse: units {} {} {}, impulse {} {} {}",
+            d0,
+            d1,
+            d2,
+            i0,
+            i1,
+            i2
         );
         return Err(CommissionError::GainFloorNonPositiveSlope);
     }
-    let rise = a2 - a0;
-    let chord_at_m1 = a0 + rise * i64::from(m1 - m0) / i64::from(m2 - m0);
-    let deviation = (a1 - chord_at_m1).abs();
-    if deviation * 1000 > rise * LINE_CHORD_DEVIATION_FAIL_PERMILLE {
-        defmt::warn!(
-            "gain-floor: middle step off the line: accel {} against chord {}, rise {}",
-            a1,
-            chord_at_m1,
-            rise
-        );
-        return Err(CommissionError::GainFloorInsufficientLinearPoints);
+    let pooled = f64::from(d0 + d1 + d2) / (i0 + i1 + i2) as f64;
+    for (index, point) in points.iter().enumerate() {
+        let ratio = f64::from(point.displacement_units) / point.current_impulse as f64;
+        let deviation_permille = ((ratio / pooled - 1.0) * 1000.0).abs();
+        if deviation_permille > PLANT_GAIN_STEP_DEVIATION_FAIL_PERMILLE as f64 {
+            defmt::warn!(
+                "gain-floor: step {} off the pooled plant gain by {} permille",
+                index,
+                deviation_permille as i32
+            );
+            return Err(CommissionError::GainFloorInsufficientLinearPoints);
+        }
     }
-    let mean_m = f64::from(m0 + m1 + m2) / 3.0;
-    let mean_a = (a0 + a1 + a2) as f64 / 3.0;
-    let (mut sxy, mut sxx) = (0.0f64, 0.0f64);
-    for (m, a) in [(m0, a0), (m1, a1), (m2, a2)] {
-        let dx = f64::from(m) - mean_m;
-        sxy += dx * (a as f64 - mean_a);
-        sxx += dx * dx;
-    }
-    Ok(sxy / sxx)
+    Ok(pooled)
 }
 
-/// Run one torque step into the phase's capture buffer and fit it.
-async fn capture_and_fit<B>(
+async fn capture_and_measure<B>(
     backend: &mut B,
     capture: &mut capture::CaptureBuffer,
     i_target: i16,
     resistance_current_ceiling_count: u16,
-) -> Result<(i64, i32), CommissionError>
+) -> Result<GainFloorPoint, CommissionError>
 where
     B: CommissioningBackend,
 {
     run_torque_step(backend, capture, i_target, resistance_current_ceiling_count).await?;
-    fit_capture_accel(capture, i_target)
+    measure_step(capture, i_target)
 }
 
 async fn run_torque_step<B>(
@@ -367,10 +352,10 @@ where
 /// of 28 stay under it even before the host drains.
 const CAPTURE_LOG_CHUNK: usize = 28;
 
-fn fit_capture_accel(
+fn measure_step(
     capture: &capture::CaptureBuffer,
     i_target: i16,
-) -> Result<(i64, i32), CommissionError> {
+) -> Result<GainFloorPoint, CommissionError> {
     for chunk in capture.chunks(CAPTURE_LOG_CHUNK) {
         defmt::info!(
             "gain-floor capture: i_target={} samples={=[?]}",
@@ -387,25 +372,8 @@ fn fit_capture_accel(
     let peak_to_peak = position_samples.iter().map(|(_, p)| *p).max().unwrap_or(0)
         - position_samples.iter().map(|(_, p)| *p).min().unwrap_or(0);
     let torque_peak = capture.iter().map(|s| s.torque_actual).max().unwrap_or(0);
-    let window = quadratic_fit::fit_window(&position_samples);
-    let fitted = &capture[window.start.min(capture.len())..window.end.min(capture.len())];
-    let mean_torque_actual = fitted
-        .iter()
-        .map(|s| i32::from(s.torque_actual))
-        .sum::<i32>()
-        / fitted.len().max(1) as i32;
-    match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
-        Ok(accel_raw_q32) => {
-            defmt::info!(
-                "gain-floor step: i_target={} torque_peak={} torque_mean={} p2p={} accel_raw_q32={}",
-                i_target,
-                torque_peak,
-                mean_torque_actual,
-                peak_to_peak,
-                accel_raw_q32
-            );
-            Ok((accel_raw_q32, mean_torque_actual))
-        }
+    let accel_raw_q32 = match quadratic_fit::fit_accel_raw(&position_samples, commanded_sign) {
+        Ok(v) => v,
         Err(e) => {
             defmt::warn!(
                 "gain-floor step rejected: i_target={} torque_peak={} p2p={} reason={}",
@@ -414,7 +382,7 @@ fn fit_capture_accel(
                 peak_to_peak,
                 e
             );
-            Err(match e {
+            return Err(match e {
                 quadratic_fit::GainFloorFitError::WrongSign => {
                     CommissionError::GainFloorNonPositiveSlope
                 }
@@ -423,8 +391,48 @@ fn fit_capture_accel(
                 | quadratic_fit::GainFloorFitError::HighResidual => {
                     CommissionError::GainFloorInsufficientLinearPoints
                 }
-            })
+            });
         }
+    };
+    let window = quadratic_fit::integration_window(&position_samples);
+    let point = window_displacement_and_impulse(
+        &capture[window.start.min(capture.len())..window.end.min(capture.len())],
+        commanded_sign,
+    );
+    defmt::info!(
+        "gain-floor step: i_target={} torque_peak={} p2p={} accel_raw_q32={} displacement={} impulse={}",
+        i_target,
+        torque_peak,
+        peak_to_peak,
+        accel_raw_q32,
+        point.displacement_units,
+        point.current_impulse
+    );
+    Ok(point)
+}
+
+fn window_displacement_and_impulse(
+    window: &[capture::CaptureSample],
+    commanded_sign: i8,
+) -> GainFloorPoint {
+    let (Some(first), Some(last)) = (window.first(), window.last()) else {
+        return GainFloorPoint::default();
+    };
+    let sign = i64::from(commanded_sign);
+    let displacement_units = last.position.wrapping_sub(first.position) * i32::from(commanded_sign);
+    let mut velocity_integral: i64 = 0;
+    let mut current_impulse: i64 = 0;
+    for pair in window.windows(2) {
+        let dt = i64::from(pair[1].t_us - pair[0].t_us);
+        let i_prev = i64::from(pair[0].torque_actual) * sign;
+        let i_next = i64::from(pair[1].torque_actual) * sign;
+        let next_velocity_integral = velocity_integral + (i_prev + i_next) * dt / 2;
+        current_impulse += (velocity_integral + next_velocity_integral) * dt / 2;
+        velocity_integral = next_velocity_integral;
+    }
+    GainFloorPoint {
+        displacement_units,
+        current_impulse,
     }
 }
 
@@ -441,28 +449,28 @@ mod tests {
     use crate::selftest::{CommissionDiagnostics, SelftestResults};
 
     #[test]
-    fn capture_mean_current_covers_only_the_fitted_window() {
+    fn decaying_current_inside_the_window_does_not_bias_the_step_ratio() {
+        let k = 1e-6_f64;
         let mut capture: capture::CaptureBuffer = heapless::Vec::new();
-        let breakaway_t_us = (0..84u32)
-            .find(|i| (i * i) as i32 >= quadratic_fit::BREAKAWAY_THRESHOLD_UNITS)
-            .expect("trace breaks away")
-            * 60;
-        let window_end_us = breakaway_t_us + quadratic_fit::CONSTANT_ACCELERATION_SPAN_US;
         for i in 0..84u32 {
-            let t_us = i * 60;
-            let torque = if t_us <= window_end_us { 1000 } else { 500 };
-            let position = (i * i) as i32;
+            let t = f64::from(i * 60);
+            let current = 1000.0 - 0.1 * t;
+            let position = k * (1000.0 * t * t / 2.0 - 0.1 * t * t * t / 6.0);
             capture
                 .push(capture::CaptureSample {
-                    t_us,
-                    torque_actual: torque,
+                    t_us: i * 60,
+                    torque_actual: current as i16,
                     flux_actual: 0,
-                    position,
+                    position: position as i32,
                 })
                 .unwrap();
         }
-        let (_, mean) = fit_capture_accel(&capture, 1280).expect("fits");
-        assert_eq!(mean, 1000);
+        let point = measure_step(&capture, 1280).expect("measures");
+        let ratio = f64::from(point.displacement_units) / point.current_impulse as f64;
+        assert!(
+            ((ratio - k) / k).abs() < 0.06,
+            "ratio {ratio} against plant {k}"
+        );
     }
 
     fn sample_inner_result(resistance_current_ceiling_count: u16) -> InnerResult {
@@ -600,48 +608,113 @@ mod tests {
     }
 
     fn points(raw: [(i32, i64); 3]) -> [GainFloorPoint; 3] {
-        raw.map(|(mean_torque_actual, accel_raw_q32)| GainFloorPoint {
-            mean_torque_actual,
-            accel_raw_q32,
+        raw.map(|(displacement_units, current_impulse)| GainFloorPoint {
+            displacement_units,
+            current_impulse,
         })
     }
 
     #[test]
-    fn three_point_slope_ignores_the_friction_intercept() {
-        let slope = fit_accel_per_count_line(&points([(700, 3000), (800, 4000), (900, 5000)]))
-            .expect("collinear points fit");
-        assert!((slope - 10.0).abs() < 1e-9, "{slope}");
+    fn pooled_plant_gain_is_the_ratio_of_summed_displacement_to_summed_impulse() {
+        let k = fit_plant_gain(&points([
+            (300, 3_000_000),
+            (350, 3_500_000),
+            (400, 4_000_000),
+        ]))
+        .expect("proportional points fit");
+        assert!((k - 1e-4).abs() < 1e-12, "{k}");
     }
 
     #[test]
-    fn middle_point_off_the_chord_fails_as_insufficient_linear_points() {
+    fn a_small_friction_offset_stays_inside_the_pooled_gain_bound() {
+        let k = fit_plant_gain(&points([
+            (280, 3_000_000),
+            (330, 3_500_000),
+            (380, 4_000_000),
+        ]))
+        .expect("offset points still fit");
+        assert!((k - 0.943e-4).abs() < 0.01e-4, "{k}");
+    }
+
+    #[test]
+    fn a_step_off_the_pooled_gain_fails_as_insufficient_linear_points() {
         assert_eq!(
-            fit_accel_per_count_line(&points([(700, 3000), (800, 4900), (900, 5000)])),
+            fit_plant_gain(&points([
+                (200, 3_000_000),
+                (450, 3_500_000),
+                (460, 4_000_000)
+            ])),
             Err(CommissionError::GainFloorInsufficientLinearPoints)
         );
     }
 
     #[test]
-    fn acceleration_that_does_not_grow_with_current_fails_as_non_positive_slope() {
+    fn a_step_just_past_the_deviation_bound_is_rejected_without_truncation() {
+        // The last step's ratio is 250.9 permille above the pooled one.
         assert_eq!(
-            fit_accel_per_count_line(&points([(700, 3000), (800, 2900), (900, 5000)])),
+            fit_plant_gain(&points([
+                (1000, 1_000_000),
+                (2000, 2_000_000),
+                (5010, 3_000_000)
+            ])),
+            Err(CommissionError::GainFloorInsufficientLinearPoints)
+        );
+    }
+
+    #[test]
+    fn displacement_that_does_not_grow_with_impulse_fails_as_non_positive_slope() {
+        assert_eq!(
+            fit_plant_gain(&points([
+                (300, 3_000_000),
+                (290, 3_500_000),
+                (400, 4_000_000)
+            ])),
             Err(CommissionError::GainFloorNonPositiveSlope)
         );
         assert_eq!(
-            fit_accel_per_count_line(&points([(700, 3000), (700, 4000), (900, 5000)])),
+            fit_plant_gain(&points([
+                (300, 3_000_000),
+                (350, 3_000_000),
+                (400, 4_000_000)
+            ])),
             Err(CommissionError::GainFloorNonPositiveSlope)
         );
     }
 
     #[test]
-    fn a_creep_regime_lowest_step_fails_the_run_instead_of_bending_the_floor() {
+    fn a_lowest_step_that_out_accelerates_the_next_fails_as_non_positive_slope() {
         pollster::block_on(async {
             let mut phase = gain_floor_phase(2000, 4_000);
             let mut backend = MockBackend::new();
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
                 creep_below_target: 1500,
-                creep_excess_accel_per_us2: 2.4e-4,
+                creep_excess_accel_per_us2: 5e-4,
+                ..ideal_plant()
+            });
+
+            let result = drive_to_completion(&mut phase, &mut backend).await;
+
+            assert!(
+                matches!(
+                    result,
+                    StepResult::InnerFailed(CommissionError::GainFloorNonPositiveSlope)
+                ),
+                "{result:?}"
+            );
+            assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn two_soft_steps_under_a_stiff_one_fail_as_insufficient_linear_points() {
+        pollster::block_on(async {
+            let mut phase = gain_floor_phase(2000, 4_000);
+            let mut backend = MockBackend::new();
+            backend.advance_elapsed_on_delay = true;
+            backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
+                creep_below_target: 1750,
+                creep_excess_accel_per_us2: -6e-4,
                 ..ideal_plant()
             });
 
@@ -755,9 +828,9 @@ mod tests {
                         position_p.raw(),
                         crate::pid::DEFAULT_OUTER_GAINS.position_p.raw()
                     );
-                    assert_eq!(velocity_i.raw(), 312);
+                    assert_eq!(velocity_p.raw(), 100);
+                    assert_eq!(velocity_i.raw(), 300);
                     assert_eq!(position_i, PidIGain::ZERO);
-                    assert_eq!(velocity_p.raw(), 104);
                     assert_eq!(position_p.raw(), 164);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
@@ -897,7 +970,7 @@ mod tests {
                     position_p,
                     ..
                 } => {
-                    assert_eq!(velocity_p.raw(), 104);
+                    assert_eq!(velocity_p.raw(), 100);
                     assert_eq!(position_p.raw(), 164);
                 }
                 other => panic!("expected ClosedLoopActivation phase, got {other:?}"),
@@ -998,33 +1071,6 @@ mod tests {
                 .collect();
             assert_eq!(commanded, std::vec![1500, 1500, 1750, 2000]);
         });
-    }
-
-    #[test]
-    fn current_independent_acceleration_offset_does_not_reach_the_line_slope() {
-        let run = |script: GainFloorCaptureScript| {
-            pollster::block_on(async {
-                let mut phase = gain_floor_phase(2000, 4_000);
-                let mut backend = MockBackend::new();
-                backend.advance_elapsed_on_delay = true;
-                backend.script_gain_floor_capture = Some(script);
-                let result = drive_to_completion(&mut phase, &mut backend).await;
-                assert!(matches!(
-                    result,
-                    StepResult::PhaseChanged(CommissionPhase::ClosedLoopActivation)
-                ));
-                match phase {
-                    InnerPhase::ClosedLoopActivation { velocity_p, .. } => velocity_p.raw(),
-                    other => panic!("expected ClosedLoopActivation, got {other:?}"),
-                }
-            })
-        };
-        let ideal = run(ideal_plant());
-        let with_offset = run(GainFloorCaptureScript {
-            accel_raw_offset_per_us2: -4e-4,
-            ..ideal_plant()
-        });
-        assert_eq!(with_offset, ideal);
     }
 
     #[test]
@@ -1325,12 +1371,11 @@ mod tests {
 
     #[test]
     fn gain_floor_velocity_gain_unrepresentable_routes_through_restore_machine() {
-        let mut phase = gain_floor_phase(2000, 4_000);
+        let mut phase = gain_floor_phase(20_000, 30_000);
         let mut backend = MockBackend::new();
         backend.advance_elapsed_on_delay = true;
         backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
             accel_raw_per_us2_per_count: 3e-9,
-            accel_raw_offset_per_us2: 1e-4,
             ..ideal_plant()
         });
         assert_routes_through_restore_machine(

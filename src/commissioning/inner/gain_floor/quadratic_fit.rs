@@ -181,9 +181,27 @@ pub(crate) fn fit_window(samples: &[(u32, i32)]) -> core::ops::Range<usize> {
     start..end
 }
 
+/// Index range for integrating a step's motion: the same span as
+/// `fit_window`, opened one sample earlier so it starts on the last sample
+/// still at rest rather than the first that has already moved.
+pub(crate) fn integration_window(samples: &[(u32, i32)]) -> core::ops::Range<usize> {
+    let fit = fit_window(samples);
+    fit.start.saturating_sub(1)..fit.end
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integration_window_opens_on_the_last_sample_at_rest() {
+        let samples: heapless::Vec<(u32, i32), 8> =
+            [(0, 0), (60, 0), (120, 2), (180, 9), (240, 20), (300, 35)]
+                .into_iter()
+                .collect();
+        assert_eq!(fit_window(&samples).start, 3);
+        assert_eq!(integration_window(&samples), 2..6);
+    }
 
     fn synthetic_samples(
         accel_raw_per_us2: f64,

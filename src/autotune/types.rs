@@ -442,14 +442,14 @@ pub enum CommissionError {
     /// `accel_per_count` position-domain quadratic fit: fewer than 20
     /// samples, peak-to-peak position excitation below the 20-count
     /// anti-degeneracy floor, or residual exceeds `residual_fail_permille =
-    /// 75`; or the three steps' accelerations do not lie on one line (the
-    /// middle step sits further off the chord between the outer two than
-    /// `LINE_CHORD_DEVIATION_FAIL_PERMILLE` of the rise). Code 110.
+    /// 75`; or one of the three steps' displacement-to-impulse ratios sits
+    /// further from the pooled ratio than
+    /// `PLANT_GAIN_STEP_DEVIATION_FAIL_PERMILLE`. Code 110.
     GainFloorInsufficientLinearPoints,
     /// `accel_per_count` quadratic fit: fitted `accel_raw` is zero, negative,
     /// or disagrees in sign with the commanded torque step direction; or the
-    /// three steps' accelerations or mean currents do not strictly increase
-    /// with amplitude. Code 111.
+    /// three steps' displacements or current impulses do not strictly
+    /// increase with amplitude. Code 111.
     GainFloorNonPositiveSlope,
     /// Reserved. Formerly "no usable current-loop bandwidth for the gain
     /// floor"; the floor no longer reads that value, so current firmware never

@@ -76,19 +76,17 @@ pub(crate) fn compute_position_p(
     Ok(gain)
 }
 
-/// Convert a fitted slope of Q32-scaled `accel_raw` (raw position units per
-/// microsecond^2, fixed-point scaled by 2^32) per torque-register count to
-/// `accel_per_count` (rad/s^2 per count).
-pub(crate) fn accel_raw_q32_per_count_to_accel_per_count(
-    accel_raw_q32_per_count: f64,
+/// Convert a plant gain in raw position units per microsecond^2 per
+/// torque-register count to `accel_per_count` (rad/s^2 per count).
+pub(crate) fn accel_raw_per_count_to_accel_per_count(
+    accel_raw_per_us2_per_count: f64,
     position_units_per_rev: f64,
 ) -> Option<f32> {
-    const ACCEL_RAW_Q32_SHIFT: f64 = 4_294_967_296.0;
     const US_TO_S_SQUARED: f64 = 1_000_000.0 * 1_000_000.0;
     if position_units_per_rev <= 0.0 {
         return None;
     }
-    let accel_per_count = accel_raw_q32_per_count / ACCEL_RAW_Q32_SHIFT
+    let accel_per_count = accel_raw_per_us2_per_count
         * US_TO_S_SQUARED
         * (2.0 * core::f64::consts::PI / position_units_per_rev);
     if !accel_per_count.is_finite() {
@@ -162,10 +160,8 @@ mod tests {
         // A tight tolerance here fails if the 1e12 term is dropped (result
         // would be ~7.85e-5, off by 12 orders of magnitude) or duplicated
         // (result would be ~7.85e13).
-        let accel_raw_q32 = (0.0001 * 4_294_967_296.0) as i64;
-        let result =
-            accel_raw_q32_per_count_to_accel_per_count(accel_raw_q32 as f64 / 2000.0, 4000.0)
-                .expect("valid conversion");
+        let result = accel_raw_per_count_to_accel_per_count(0.0001 / 2000.0, 4000.0)
+            .expect("valid conversion");
         assert!(
             (result - 78.54).abs() < 0.01,
             "expected ~78.54, got {result}"
@@ -173,13 +169,10 @@ mod tests {
     }
 
     #[test]
-    fn accel_raw_q32_conversion_rejects_zero_ppr_or_target() {
+    fn accel_raw_conversion_rejects_zero_ppr_or_non_finite_gain() {
+        assert_eq!(accel_raw_per_count_to_accel_per_count(1e-6, 0.0), None);
         assert_eq!(
-            accel_raw_q32_per_count_to_accel_per_count(1000.0, 0.0),
-            None
-        );
-        assert_eq!(
-            accel_raw_q32_per_count_to_accel_per_count(f64::NAN, 4000.0),
+            accel_raw_per_count_to_accel_per_count(f64::NAN, 4000.0),
             None
         );
     }
