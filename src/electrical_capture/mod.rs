@@ -1,6 +1,7 @@
 //! Shared high-rate electrical capture primitives.
 
 mod estimate;
+mod phase_delay;
 
 pub use estimate::{
     AC_SALIENCY_DETERMINABLE, AC_SALIENCY_NOT_DETERMINABLE, AcFrameAccumulator, AcFrameEvidence,
@@ -10,6 +11,9 @@ pub use estimate::{
     extract_saliency_from_second_harmonic, fit_current_slope, inductance_sensitivity,
     interpolate_phi_window_elapsed_us, phi_delta_counts_forward, phi_locked_ac_interval,
     realized_frequency_millihz, rotating_frame_reactance,
+};
+pub use phase_delay::{
+    PhaseDelayEstimate, PhaseDelayInput, PhaseDelayRejection, estimate_phase_delay,
 };
 
 /// Nominal validation raw-sample capacity.
