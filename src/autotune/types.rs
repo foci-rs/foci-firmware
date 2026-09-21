@@ -447,9 +447,10 @@ pub enum CommissionError {
     /// `PLANT_GAIN_STEP_DEVIATION_FAIL_PERMILLE`. Code 110.
     GainFloorInsufficientLinearPoints,
     /// `accel_per_count` quadratic fit: fitted `accel_raw` is zero, negative,
-    /// or disagrees in sign with the commanded torque step direction; or the
-    /// three steps' displacements or current impulses do not strictly
-    /// increase with amplitude. Code 111.
+    /// or disagrees in sign with the commanded torque step direction; or one
+    /// of the three steps did not move, the highest did not move further than
+    /// the lowest, or their current impulses do not strictly increase with
+    /// amplitude. Code 111.
     GainFloorNonPositiveSlope,
     /// Reserved. Formerly "no usable current-loop bandwidth for the gain
     /// floor"; the floor no longer reads that value, so current firmware never

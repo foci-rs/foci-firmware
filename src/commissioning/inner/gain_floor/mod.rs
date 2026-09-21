@@ -206,9 +206,9 @@ where
 fn fit_plant_gain(points: &[GainFloorPoint; 3]) -> Result<f64, CommissionError> {
     let [d0, d1, d2] = points.map(|p| p.displacement_units);
     let [i0, i1, i2] = points.map(|p| p.current_impulse);
-    if d0 <= 0 || i0 <= 0 || d0 >= d1 || d1 >= d2 || i0 >= i1 || i1 >= i2 {
+    if d0 <= 0 || d1 <= 0 || d2 <= d0 || i0 <= 0 || i0 >= i1 || i1 >= i2 {
         defmt::warn!(
-            "gain-floor: displacement did not grow with current impulse: units {} {} {}, impulse {} {} {}",
+            "gain-floor: motion did not grow from the lowest to the highest step: units {} {} {}, impulse {} {} {}",
             d0,
             d1,
             d2,
@@ -662,11 +662,23 @@ mod tests {
     }
 
     #[test]
-    fn displacement_that_does_not_grow_with_impulse_fails_as_non_positive_slope() {
+    fn equal_quantized_displacements_on_growing_impulses_still_pool() {
+        // Two steps one encoder count apart read the same position units.
+        let k = fit_plant_gain(&points([
+            (770, 352_806_030),
+            (770, 419_474_340),
+            (1016, 469_650_000),
+        ]))
+        .expect("quantized displacements pool");
+        assert!((k - 2.058e-6).abs() < 0.01e-6, "{k}");
+    }
+
+    #[test]
+    fn a_step_without_motion_or_a_flat_impulse_fails_as_non_positive_slope() {
         assert_eq!(
             fit_plant_gain(&points([
-                (300, 3_000_000),
-                (290, 3_500_000),
+                (0, 3_000_000),
+                (350, 3_500_000),
                 (400, 4_000_000)
             ])),
             Err(CommissionError::GainFloorNonPositiveSlope)
@@ -689,7 +701,7 @@ mod tests {
             backend.advance_elapsed_on_delay = true;
             backend.script_gain_floor_capture = Some(GainFloorCaptureScript {
                 creep_below_target: 1500,
-                creep_excess_accel_per_us2: 5e-4,
+                creep_excess_accel_per_us2: 6e-4,
                 ..ideal_plant()
             });
 
