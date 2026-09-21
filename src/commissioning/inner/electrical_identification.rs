@@ -317,7 +317,7 @@ fn phase_delay_from_evidence(
         iq_rms_milli_count: inductance.frame.iq_rms_milli_count,
         sample_count: inductance.run.sample_count,
         r_count_milli,
-        ud_count: inductance.run.ud_count.max(0) as u16,
+        ud_count: INDUCTANCE_AC_UD_EXT.unsigned_abs(),
         realized_frequency_millihz: inductance.run.realized_frequency_millihz,
     })
 }
