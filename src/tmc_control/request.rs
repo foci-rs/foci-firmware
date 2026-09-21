@@ -1557,13 +1557,15 @@ where
             runtime.set_commission_engine(engine);
         }
         TuneRoute::PositionTune(run_sequence) => {
-            runtime.set_commission_engine(CommissioningEngine::new_outer_for_tmc_with_position_tune(
-                oid,
-                tmc_state,
-                outer_params,
-                entry_snapshot,
-                run_sequence,
-            ));
+            runtime.set_commission_engine(
+                CommissioningEngine::new_outer_for_tmc_with_position_tune(
+                    oid,
+                    tmc_state,
+                    outer_params,
+                    entry_snapshot,
+                    run_sequence,
+                ),
+            );
         }
     }
     normal_outcome(board.normal_tail())
