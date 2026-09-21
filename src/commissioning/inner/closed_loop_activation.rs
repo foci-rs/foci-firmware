@@ -4,7 +4,8 @@
 //! position) PID gains and velocity limit, raises the post-calibration
 //! voltage limit, locks `PHI_E_SELECTION` to the ABN encoder, zeros the
 //! position registers and PID integrators, programs `STEP_WIDTH` and
-//! biquad filters, enters position mode, and runs a 30 ms two-sample
+//! biquad filters, enters position mode, waits for the velocity meter to
+//! read quiet before raising the enable pin, and runs a 30 ms two-sample
 //! stability check that aborts on runaway or large drift.
 
 use super::InnerPhase;
@@ -63,6 +64,18 @@ const CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
 /// large and still growing -- the signature of wrong-sign feedback or genuine
 /// instability) never retry regardless of this budget.
 const CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS: u8 = 3;
+
+/// Quiet band for the pre-enable velocity settle, in the RPM units of
+/// `PID_VELOCITY_ACTUAL`.
+///
+/// The standard velocity meter differentiates phi_m through a 20 Hz low-pass
+/// that cannot be switched off (datasheet 4.8.2), so the `ABN_DECODER_COUNT`
+/// rewrite at encoder-alignment commit reads back as a decaying phantom
+/// velocity well after the rotor is already still.
+const CLOSED_LOOP_ACTIVATION_VELOCITY_QUIET_RPM: u32 = 4;
+const CLOSED_LOOP_ACTIVATION_VELOCITY_QUIET_SAMPLES: u8 = 3;
+const CLOSED_LOOP_ACTIVATION_VELOCITY_SAMPLE_PERIOD_US: u64 = 2_000;
+const CLOSED_LOOP_ACTIVATION_VELOCITY_SETTLE_CAP_US: u64 = 100_000;
 
 const DIAG_CLOSED_LOOP_ACTIVATION_RESULT: u8 = 1;
 
@@ -675,6 +688,63 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
             if verify_closed_loop_armed_state(backend).await.is_err() {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
+
+            let now = backend.elapsed_us();
+            let Some(deadline_us) = now.checked_add(CLOSED_LOOP_ACTIVATION_VELOCITY_SETTLE_CAP_US)
+            else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+            };
+            *cle_state = ClosedLoopActivationState::VelocitySettle {
+                next_sample_us: now,
+                deadline_us,
+                quiet_samples: 0,
+            };
+            StepResult::ReadyNow
+        }
+
+        ClosedLoopActivationState::VelocitySettle {
+            next_sample_us,
+            deadline_us,
+            quiet_samples,
+        } => {
+            let now = backend.elapsed_us();
+            if now < *next_sample_us {
+                return StepResult::At(*next_sample_us);
+            }
+
+            let velocity = match backend.read_register(PID_VELOCITY_ACTUAL).await {
+                Ok(value) => value as i32,
+                Err(_) => return super::fail_inner(phase, CommissionError::Spi),
+            };
+            *quiet_samples = if velocity.unsigned_abs() <= CLOSED_LOOP_ACTIVATION_VELOCITY_QUIET_RPM
+            {
+                *quiet_samples + 1
+            } else {
+                0
+            };
+
+            if *quiet_samples >= CLOSED_LOOP_ACTIVATION_VELOCITY_QUIET_SAMPLES {
+                *cle_state = ClosedLoopActivationState::AssertEnable;
+                return StepResult::ReadyNow;
+            }
+            if now >= *deadline_us {
+                defmt::warn!(
+                    "closed-loop: velocity meter still reads {} at the settle cap, enabling anyway",
+                    velocity
+                );
+                *cle_state = ClosedLoopActivationState::AssertEnable;
+                return StepResult::ReadyNow;
+            }
+
+            let Some(next) = now.checked_add(CLOSED_LOOP_ACTIVATION_VELOCITY_SAMPLE_PERIOD_US)
+            else {
+                return super::fail_inner(phase, CommissionError::InvalidSchedule);
+            };
+            *next_sample_us = next;
+            StepResult::At(next)
+        }
+
+        ClosedLoopActivationState::AssertEnable => {
             match crate::tmc_control::lifecycle::settle_closed_loop_hold_before_enable(backend)
                 .await
             {
@@ -1045,8 +1115,8 @@ mod tests {
     use foci_tmc4671::registers::{
         ABN_DECODER_PPR, ADC_I_SELECT, MODE_RAMP_MODE_MOTION, MOTOR_TYPE_N_POLE_PAIRS,
         PHI_E_SELECTION, PID_POSITION_ACTUAL, PID_TORQUE_FLUX_ACTUAL, PID_TORQUE_FLUX_LIMITS,
-        PID_VELOCITY_LIMIT, PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION, PWM_SV_CHOP, STATUS_FLAGS,
-        STEP_WIDTH, VELOCITY_SELECTION,
+        PID_VELOCITY_ACTUAL, PID_VELOCITY_LIMIT, PIDOUT_UQ_UD_LIMITS, POSITION_SELECTION,
+        PWM_SV_CHOP, STATUS_FLAGS, STEP_WIDTH, VELOCITY_SELECTION,
     };
 
     const CLOSED_LOOP_ACTIVATION_MAX_REGISTER_OPS_PER_ARM: usize = 48;
@@ -1558,22 +1628,144 @@ mod tests {
             )
             .await;
 
-            assert!(matches!(result, StepResult::At(10_000)));
+            assert!(matches!(result, StepResult::ReadyNow));
             assert!(matches!(
                 phase,
                 InnerPhase::ClosedLoopActivation {
-                    state: ClosedLoopActivationState::StabilityCheck1 { .. },
+                    state: ClosedLoopActivationState::VelocitySettle {
+                        quiet_samples: 0,
+                        ..
+                    },
                     ..
                 }
             ));
             assert!(
-                backend.enable_pin,
-                "position-mode checks must run energized"
+                !backend.enable_pin,
+                "the bridge must stay disabled until the velocity meter settles"
             );
-            assert!(
-                matches!(backend.spi_log.last(), Some(SpiOp::EnablePin(true))),
-                "enable pin must be asserted after closed-loop register verification"
-            );
+        });
+    }
+
+    fn velocity_settle_phase(next_sample_us: u64, quiet_samples: u8) -> InnerPhase {
+        closed_loop_phase_at(ClosedLoopActivationState::VelocitySettle {
+            next_sample_us,
+            deadline_us: CLOSED_LOOP_ACTIVATION_VELOCITY_SETTLE_CAP_US,
+            quiet_samples,
+        })
+    }
+
+    async fn step_calibrate(phase: &mut InnerPhase, backend: &mut MockBackend) -> StepResult {
+        step_closed_loop_activation(
+            phase,
+            InnerSequence::Calibrate,
+            &mut None,
+            &mut CommissionDiagnostics::default(),
+            backend,
+        )
+        .await
+    }
+
+    #[test]
+    fn velocity_settle_asserts_enable_only_after_consecutive_quiet_samples() {
+        pollster::block_on(async {
+            let mut phase = velocity_settle_phase(0, 0);
+            let mut backend = MockBackend::new();
+            seed_armed_state_registers(&mut backend);
+            backend.read_override_remaining = Some((PID_VELOCITY_ACTUAL.addr(), 1966, 2));
+            backend.registers.insert(PID_VELOCITY_ACTUAL.addr(), 0).ok();
+
+            let period = CLOSED_LOOP_ACTIVATION_VELOCITY_SAMPLE_PERIOD_US;
+            let mut now = 0;
+            let mut ticks = 0;
+            loop {
+                backend.elapsed_us_value = now;
+                let result = step_calibrate(&mut phase, &mut backend).await;
+                ticks += 1;
+                match result {
+                    StepResult::At(next) => {
+                        assert_eq!(next, now + period, "samples must sit on the period grid");
+                        assert!(
+                            !backend.enable_pin,
+                            "no enable while the meter is loud or unproven"
+                        );
+                        now = next;
+                    }
+                    StepResult::ReadyNow => break,
+                    other => panic!("unexpected step result {other:?}"),
+                }
+                assert!(ticks < 16, "settle never completed");
+            }
+
+            assert_eq!(ticks, 5, "two loud samples, then three quiet ones in a row");
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::AssertEnable,
+                    ..
+                }
+            ));
+            assert!(!backend.enable_pin);
+        });
+    }
+
+    #[test]
+    fn velocity_settle_resets_the_quiet_streak_on_motion() {
+        pollster::block_on(async {
+            let mut phase = velocity_settle_phase(0, 2);
+            let mut backend = MockBackend::new();
+            backend
+                .registers
+                .insert(PID_VELOCITY_ACTUAL.addr(), (-500i32) as u32)
+                .ok();
+
+            let result = step_calibrate(&mut phase, &mut backend).await;
+
+            assert!(matches!(result, StepResult::At(_)));
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::VelocitySettle {
+                        quiet_samples: 0,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn velocity_settle_proceeds_when_the_cap_expires() {
+        pollster::block_on(async {
+            let mut phase = velocity_settle_phase(0, 0);
+            let mut backend = MockBackend::new();
+            backend.read_override = Some((PID_VELOCITY_ACTUAL.addr(), 500));
+            backend.elapsed_us_value = CLOSED_LOOP_ACTIVATION_VELOCITY_SETTLE_CAP_US;
+
+            let result = step_calibrate(&mut phase, &mut backend).await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(matches!(
+                phase,
+                InnerPhase::ClosedLoopActivation {
+                    state: ClosedLoopActivationState::AssertEnable,
+                    ..
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn velocity_settle_waits_for_the_next_sample_without_reading() {
+        pollster::block_on(async {
+            let mut phase = velocity_settle_phase(4_000, 1);
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 3_999;
+
+            let result = step_calibrate(&mut phase, &mut backend).await;
+
+            assert!(matches!(result, StepResult::At(4_000)));
+            assert_eq!(register_op_count(&backend), 0);
         });
     }
 
@@ -1678,9 +1870,9 @@ mod tests {
     }
 
     #[test]
-    fn enter_position_mode_sets_hold_target_before_enable() {
+    fn assert_enable_sets_hold_target_before_enable() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::AssertEnable);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);
@@ -1760,9 +1952,9 @@ mod tests {
     }
 
     #[test]
-    fn enter_position_mode_refuses_to_enable_when_the_interlock_is_tripped() {
+    fn assert_enable_refuses_to_enable_when_the_interlock_is_tripped() {
         pollster::block_on(async {
-            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::EnterPositionMode);
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::AssertEnable);
             let mut adc_cal = None;
             let mut backend = MockBackend::new();
             seed_armed_state_registers(&mut backend);

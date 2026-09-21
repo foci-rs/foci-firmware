@@ -714,6 +714,18 @@ pub enum ClosedLoopActivationState {
     WriteFilters,
     /// Enter position mode: MODE_RAMP_MODE_MOTION = 0x8000_0003.
     EnterPositionMode,
+    /// Poll `PID_VELOCITY_ACTUAL` until it reads quiet for consecutive samples
+    /// or the cap expires, with the bridge still disabled.
+    VelocitySettle {
+        /// Next sample timestamp in microseconds.
+        next_sample_us: u64,
+        /// Cap timestamp in microseconds after which entry proceeds anyway.
+        deadline_us: u64,
+        /// Consecutive samples so far inside the quiet band.
+        quiet_samples: u8,
+    },
+    /// Re-sync the hold target, clear integrators, assert the enable pin.
+    AssertEnable,
     /// Wait 10 ms, read position, wait 20 ms, read again. Verify stable.
     StabilityCheck1 {
         /// First position reading.
