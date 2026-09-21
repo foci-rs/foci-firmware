@@ -6,8 +6,8 @@
 //! `CurrentTune` (commission flow) or emitting `SelftestDone` (selftest).
 
 use super::{
-    DelayCaptureState, DelayCompletedCapture, ElectricalIdentificationData,
-    ElectricalIdentificationState, InductanceCaptureState, InductanceRestoreOperation, InnerPhase,
+    ElectricalIdentificationData, ElectricalIdentificationState, InductanceCaptureState,
+    InductanceRestoreOperation, InnerPhase,
 };
 use crate::autotune::{
     CommissionError, CommissionPhase, ELECTRICAL_MODEL_RESISTANCE_SCALE, ElectricalModel,
@@ -29,14 +29,8 @@ use crate::electrical_capture::{
 };
 use foci_tmc4671::registers::Register;
 
-/// Validated delay-transient sampling interval in microseconds.
-pub(crate) const ELECTRICAL_SAMPLE_PERIOD_US: u64 = 200;
-
 /// Cooldown time after disabling a per-coil measurement (microseconds).
 const ELECTRICAL_COOLDOWN_US: u64 = 50_000;
-
-/// Brief zero-voltage settle before the delay step response capture.
-const DELAY_PRE_SETTLE_US: u64 = 10_000;
 
 const INDUCTANCE_AC_UD_EXT: i16 = 768;
 const INDUCTANCE_OPENLOOP_VELOCITY_TARGET_RPM: u32 = 1_200;
@@ -464,38 +458,6 @@ pub(crate) fn resolve_theta_e_us_input(
     }
 }
 
-/// Total-duration timing-quality check for the high-rate capture.
-///
-/// Accepts when the last sample's actual offset does not exceed `2x` the
-/// capture's nominal duration. This replaces `CaptureTiming`/
-/// `TimingEnvelope` for this capture -- see this plan's Global Constraints
-/// and the spec's Revision history for why that mechanism does not fit a
-/// 20-40us period. Takes the full-width elapsed microseconds (`u32`), not a
-/// pre-narrowed `u16` -- the caller must check this *before* narrowing
-/// anything for storage in a `u16` offset, so a value that would overflow
-/// that storage is correctly classified as a timing rejection rather than a
-/// silent truncation or a separate overflow error.
-pub(crate) fn high_rate_delay_timing_ok(
-    last_offset_us: u32,
-    sample_count: u16,
-    period_us: u16,
-) -> bool {
-    let bound = 2u32 * u32::from(sample_count.saturating_sub(1)) * u32::from(period_us);
-    last_offset_us <= bound
-}
-
-/// Settled (final) current amplitude in the capture window, in TMC4671
-/// current counts.
-///
-/// This is a reporting-only quantity, per the spec's Estimate and gate
-/// section: it does not feed `estimate_electrical_delay`'s onset threshold
-/// (which stays peak-based, unchanged) and does not affect accept/reject.
-/// Under overshoot or ringing, the peak sample and this settled value can
-/// differ; that is expected, not a defect.
-pub(crate) fn settled_amplitude_counts(samples: &[u32]) -> Option<u32> {
-    samples.last().copied()
-}
-
 /// Adapter that exposes a [`CommissioningBackend`] as a
 /// [`crate::resistance_identification::ResistanceBackend`] for the shared
 /// resistance runner during commissioning.
@@ -680,37 +642,6 @@ fn inductance_restore_write(
         ),
         PositionErrorClear => (PID_ERROR_PID_POSITION_ERROR_SUM.data, 0, None),
     }
-}
-
-fn begin_delay_restore<B: CommissioningBackend>(
-    state: &mut ElectricalIdentificationState,
-    backend: &mut B,
-    primary_error: Option<CommissionError>,
-    completed: Option<DelayCompletedCapture>,
-) -> StepResult {
-    backend.set_enable_pin(false);
-    *state = ElectricalIdentificationState::DelayRestore {
-        operation: InductanceRestoreOperation::CanonicalMotionStop,
-        primary_error,
-        completed,
-    };
-    StepResult::ReadyNow
-}
-
-fn begin_delay_cooldown<B: CommissioningBackend>(
-    state: &mut ElectricalIdentificationState,
-    backend: &B,
-    primary_error: Option<CommissionError>,
-) -> Result<StepResult, CommissionError> {
-    let deadline_us = backend
-        .elapsed_us()
-        .checked_add(ELECTRICAL_COOLDOWN_US)
-        .ok_or(CommissionError::InvalidSchedule)?;
-    *state = ElectricalIdentificationState::DelayCooldown {
-        deadline_us,
-        primary_error,
-    };
-    Ok(StepResult::At(deadline_us))
 }
 
 fn pack_ud_drive(ud_ext: i16) -> u32 {
@@ -1109,8 +1040,6 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
 ///
 /// Returns `None` when the electrical-ID state is not a deadline capture or
 /// when shutdown must fall back to the engine's canonical safe-state path.
-/// The high-rate delay capture is not a deadline capture: it completes inside
-/// one `DelaySample` arm, so it takes the ordinary step path.
 pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
     phase: &mut InnerPhase,
     _buf: &mut TransientBuffer,
@@ -1409,17 +1338,17 @@ fn electrical_timing_summaries(
 ) -> [crate::commissioning::types::CommissionTimingSummary; 3] {
     use crate::commissioning::types::CommissionTimingSummary;
 
-    let evidence = [
-        data.resistance_timing,
-        data.inductance_timing,
-        data.delay_timing,
-    ];
-    core::array::from_fn(|method| CommissionTimingSummary {
-        status: (data.timing_states >> (method * 2)) & 0x03,
-        overflowed: data.timing_overflow_mask & (1 << method) != 0,
-        evidence: evidence[method]
-            .unwrap_or(crate::commissioning::capture_timing::CaptureTimingEvidence::EMPTY),
-    })
+    let evidence = [data.resistance_timing, data.inductance_timing];
+    let mut summaries = [CommissionTimingSummary::NOT_RUN; 3];
+    for (method, evidence) in evidence.into_iter().enumerate() {
+        summaries[method] = CommissionTimingSummary {
+            status: (data.timing_states >> (method * 2)) & 0x03,
+            overflowed: data.timing_overflow_mask & (1 << method) != 0,
+            evidence: evidence
+                .unwrap_or(crate::commissioning::capture_timing::CaptureTimingEvidence::EMPTY),
+        };
+    }
+    summaries
 }
 
 fn set_timing_state(data: &mut ElectricalIdentificationData, method: usize, status: u8) {
@@ -1545,7 +1474,7 @@ fn fail_electrical_id(
 /// transitioning.
 pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
     phase: &mut InnerPhase,
-    buf: &mut TransientBuffer,
+    _buf: &mut TransientBuffer,
     sequence: InnerSequence,
     selftest_results: &mut crate::selftest::SelftestResults,
     diagnostics: &mut crate::selftest::CommissionDiagnostics,
@@ -2231,371 +2160,6 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if backend.elapsed_us() < *deadline_us {
                 return StepResult::At(*deadline_us);
             }
-            *electrical_identification_state = ElectricalIdentificationState::DelaySetup;
-            StepResult::ReadyNow
-        }
-
-        // ---------------------------------------------------------------
-        // Delay identification (transient capture)
-        // ---------------------------------------------------------------
-        ElectricalIdentificationState::DelaySetup => {
-            buf.reset(ELECTRICAL_SAMPLE_PERIOD_US as u16);
-            *electrical_identification_state =
-                ElectricalIdentificationState::DelaySetupOperation { operation: 0 };
-            StepResult::ReadyNow
-        }
-
-        ElectricalIdentificationState::DelaySetupOperation { operation } => {
-            let result = match *operation {
-                0 => backend.write_register(PHI_E_SELECTION, 1).await,
-                1 => backend.write_register(PHI_E_EXT, 0).await,
-                2 => backend.write_register(UQ_UD_EXT, 0).await,
-                3 => {
-                    backend
-                        .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
-                        .await
-                }
-                _ => backend
-                    .write_register_verified(PWM_SV_CHOP, 7)
-                    .await
-                    .map(|_| ()),
-            };
-            if result.is_err() {
-                return begin_delay_restore(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::Spi),
-                    None,
-                );
-            }
-            if *operation < 4 {
-                *operation += 1;
-                return StepResult::ReadyNow;
-            }
-
-            backend.set_enable_pin(true);
-            let Some(deadline_us) = backend.elapsed_us().checked_add(DELAY_PRE_SETTLE_US) else {
-                return begin_delay_restore(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::InvalidSchedule),
-                    None,
-                );
-            };
-            *electrical_identification_state =
-                ElectricalIdentificationState::DelayPreSettle { deadline_us };
-            StepResult::At(deadline_us)
-        }
-
-        ElectricalIdentificationState::DelayPreSettle { deadline_us } => {
-            if backend.is_shutdown_requested() {
-                return begin_delay_restore(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::Shutdown),
-                    None,
-                );
-            }
-            if backend.elapsed_us() < *deadline_us {
-                return StepResult::At(*deadline_us);
-            }
-            *electrical_identification_state = ElectricalIdentificationState::DelayReadBaseline;
-            StepResult::ReadyNow
-        }
-
-        ElectricalIdentificationState::DelayReadBaseline => {
-            if backend.is_shutdown_requested() {
-                return begin_delay_restore(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::Shutdown),
-                    None,
-                );
-            }
-            let baseline = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
-                Ok(actual) => (actual & 0xffff) as i16,
-                Err(_) => {
-                    return begin_delay_restore(
-                        electrical_identification_state,
-                        backend,
-                        Some(CommissionError::Spi),
-                        None,
-                    );
-                }
-            };
-            *electrical_identification_state =
-                ElectricalIdentificationState::DelayApplyStep { baseline };
-            StepResult::ReadyNow
-        }
-
-        ElectricalIdentificationState::DelayApplyStep { baseline } => {
-            if backend.is_shutdown_requested() {
-                return begin_delay_restore(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::Shutdown),
-                    None,
-                );
-            }
-            if backend
-                .write_register(UQ_UD_EXT, data.voltage & 0xffff)
-                .await
-                .is_err()
-            {
-                return begin_delay_restore(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::Spi),
-                    None,
-                );
-            }
-            let origin_cycles = backend.cycle_count();
-            let tau_e_us = compute_tau_e_us(data).unwrap_or(0);
-            let config = backend.tmc_config();
-            let period_us = config.high_rate_delay_period_us;
-            let cycles_per_us = config.high_rate_delay_cycles_per_us;
-            let sample_count = crate::autotune::high_rate_sample_count(tau_e_us, period_us);
-            set_timing_state(
-                data,
-                2,
-                crate::commissioning::types::COMMISSION_TIMING_REJECTED,
-            );
-            *electrical_identification_state = ElectricalIdentificationState::DelaySample {
-                capture: DelayCaptureState {
-                    baseline: *baseline,
-                    origin_cycles,
-                    period_us,
-                    sample_count,
-                    cycles_per_us,
-                },
-            };
-            StepResult::ReadyNow
-        }
-
-        ElectricalIdentificationState::DelaySample { capture } => {
-            let capture = *capture;
-            let mut samples = crate::autotune::HighRateSampleBuffer::new();
-            let mut offsets = crate::autotune::HighRateDelayOffsets::new();
-            samples.reset();
-
-            let period_cycles = u32::from(capture.period_us) * capture.cycles_per_us;
-            let mut deadline = capture.origin_cycles;
-            let mut timing_ok = true;
-
-            for _ in 0..capture.sample_count {
-                if backend.is_shutdown_requested() {
-                    return begin_delay_restore(
-                        electrical_identification_state,
-                        backend,
-                        Some(CommissionError::Shutdown),
-                        None,
-                    );
-                }
-                deadline = deadline.wrapping_add(period_cycles);
-                while (backend.cycle_count().wrapping_sub(deadline) as i32) < 0 {}
-
-                let value = match backend.read_capture_register(PID_TORQUE_FLUX_ACTUAL).await {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return begin_delay_restore(
-                            electrical_identification_state,
-                            backend,
-                            Some(CommissionError::Spi),
-                            None,
-                        );
-                    }
-                };
-
-                // Re-check after the read: a trip that latches during the
-                // synchronous SPI transaction itself must not be missed
-                // just because the read already completed.
-                if backend.is_shutdown_requested() {
-                    return begin_delay_restore(
-                        electrical_identification_state,
-                        backend,
-                        Some(CommissionError::Shutdown),
-                        None,
-                    );
-                }
-
-                let current = (value & 0xffff) as i16;
-                let relative = (i32::from(current) - i32::from(capture.baseline)).unsigned_abs();
-
-                let now_cycles = backend.cycle_count();
-                let elapsed_us_full =
-                    now_cycles.wrapping_sub(capture.origin_cycles) / capture.cycles_per_us;
-
-                // A capture whose elapsed time would overflow the u16 offset
-                // storage, or exceed the 2x total-duration bound, is a
-                // timing-quality rejection -- not a hard failure. Stop
-                // collecting, but still finish the state so it proceeds
-                // through the normal restore/cooldown/Validate path and falls
-                // back to configured_theta_e_us there.
-                if !high_rate_delay_timing_ok(
-                    elapsed_us_full,
-                    capture.sample_count,
-                    capture.period_us,
-                ) {
-                    timing_ok = false;
-                    break;
-                }
-
-                if !samples.push(relative) || offsets.push(elapsed_us_full).is_err() {
-                    // Genuinely full storage cannot happen given
-                    // high_rate_sample_count's own cap, but if it ever does,
-                    // partial evidence is better discarded via fallback than
-                    // treated as a capture abort.
-                    timing_ok = false;
-                    break;
-                }
-            }
-
-            *electrical_identification_state = ElectricalIdentificationState::DelayStopMotion {
-                primary_error: None,
-                completed: Some(DelayCompletedCapture {
-                    samples,
-                    offsets,
-                    timing_ok,
-                }),
-            };
-            StepResult::ReadyNow
-        }
-
-        ElectricalIdentificationState::DelayStopMotion {
-            primary_error,
-            completed,
-        } => {
-            if backend
-                .write_register_verified(MODE_RAMP_MODE_MOTION, MotionMode::Stopped as u32)
-                .await
-                .is_err()
-            {
-                let completed = completed.take();
-                return begin_delay_restore(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::Spi),
-                    completed,
-                );
-            }
-            let error = *primary_error;
-            let completed = completed.take();
-            *electrical_identification_state = ElectricalIdentificationState::DelayStopVoltage {
-                primary_error: error,
-                completed,
-            };
-            StepResult::ReadyNow
-        }
-
-        ElectricalIdentificationState::DelayStopVoltage {
-            primary_error,
-            completed,
-        } => {
-            if backend.write_register_verified(UQ_UD_EXT, 0).await.is_err() {
-                *primary_error = Some(CommissionError::Spi);
-            }
-            let error = *primary_error;
-            let completed = completed.take();
-            begin_delay_restore(electrical_identification_state, backend, error, completed)
-        }
-
-        ElectricalIdentificationState::DelayRestore {
-            operation,
-            primary_error,
-            completed,
-        } => {
-            let (register, value, next) = inductance_restore_write(*operation);
-            if backend
-                .write_register_verified(register, value)
-                .await
-                .is_err()
-            {
-                *primary_error = Some(CommissionError::Spi);
-            }
-            if let Some(next) = next {
-                *operation = next;
-                return StepResult::ReadyNow;
-            }
-
-            if let Some(error) = *primary_error {
-                return match begin_delay_cooldown(
-                    electrical_identification_state,
-                    backend,
-                    Some(error),
-                ) {
-                    Ok(result) => result,
-                    Err(error) => fail_electrical_id(phase, diagnostics, error),
-                };
-            }
-            let Some(completed) = completed.take() else {
-                return match begin_delay_cooldown(
-                    electrical_identification_state,
-                    backend,
-                    Some(CommissionError::ElectricalIdentificationFailed),
-                ) {
-                    Ok(result) => result,
-                    Err(error) => fail_electrical_id(phase, diagnostics, error),
-                };
-            };
-            *electrical_identification_state =
-                ElectricalIdentificationState::DelayEvaluate { completed };
-            StepResult::ReadyNow
-        }
-
-        ElectricalIdentificationState::DelayEvaluate { completed } => {
-            data.delay_timing = None;
-            // The raw crossing is 10% of the capture's own peak, which a
-            // first-order RL step reaches at `theta + tau * ln(10/9)`. The
-            // bias is removed here, not inside the shared threshold
-            // estimator, using the same tau the sizing step already derived.
-            let tau_e_us = compute_tau_e_us(data).unwrap_or(0);
-            let crossing = if completed.timing_ok {
-                crate::autotune::estimate_electrical_delay(
-                    completed.samples.samples(),
-                    completed.offsets.offsets_us(),
-                )
-                .ok()
-            } else {
-                None
-            };
-            let measured = crossing
-                .map(|crossing_us| crate::autotune::correct_onset_bias(crossing_us, tau_e_us));
-            defmt::info!(
-                "electrical id: onset crossing={:?}us corrected delay={:?}us timing_ok={} tau_e={}us",
-                crossing,
-                measured,
-                completed.timing_ok,
-                tau_e_us
-            );
-            data.delay_estimate_us = measured;
-            if let Some(amplitude) = settled_amplitude_counts(completed.samples.samples()) {
-                defmt::info!(
-                    "electrical id: high-rate delay settled amplitude = {} counts",
-                    amplitude
-                );
-            }
-            let result = begin_delay_cooldown(electrical_identification_state, backend, None);
-            match result {
-                Ok(result) => result,
-                Err(error) => fail_electrical_id(phase, diagnostics, error),
-            }
-        }
-
-        ElectricalIdentificationState::DelayCooldown {
-            deadline_us,
-            primary_error,
-        } => {
-            if backend.elapsed_us() < *deadline_us {
-                return StepResult::At(*deadline_us);
-            }
-            if let Some(error) = *primary_error {
-                return fail_electrical_id(phase, diagnostics, error);
-            }
-            set_timing_state(
-                data,
-                2,
-                crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
-            );
             *electrical_identification_state = ElectricalIdentificationState::Validate;
             StepResult::ReadyNow
         }
@@ -2701,7 +2265,6 @@ mod tests {
 
     #[test]
     fn electrical_capture_periods_preserve_required_windows() {
-        assert_eq!(ELECTRICAL_SAMPLE_PERIOD_US, 200);
         assert_eq!(INDUCTANCE_AC_SAMPLE_PERIOD_US, 200);
         assert_eq!(INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS, 20 * 65_536);
         assert_eq!(scheduled_samples_for_fixed_window(1_050_000), 95);
@@ -2977,6 +2540,65 @@ mod tests {
         });
     }
 
+    #[test]
+    fn inductance_disable_enters_validate_when_the_deadline_passes() {
+        pollster::block_on(async {
+            let mut phase = InnerPhase::ElectricalIdentification {
+                state: ElectricalIdentificationState::InductanceDisable { deadline_us: 1_000 },
+                data: ElectricalIdentificationData::new(512, current_limit(2816)),
+            };
+            let mut buf = TransientBuffer::new();
+            let mut backend = MockBackend::new();
+            backend.elapsed_us_value = 1_000;
+            let mut selftest_results = crate::selftest::SelftestResults::default();
+            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
+
+            let result = step_electrical_identification(
+                &mut phase,
+                &mut buf,
+                InnerSequence::Commission,
+                &mut selftest_results,
+                &mut diagnostics,
+                &mut backend,
+            )
+            .await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(
+                backend.spi_log.is_empty(),
+                "no SPI traffic on the transition"
+            );
+            let InnerPhase::ElectricalIdentification { state, .. } = &phase else {
+                unreachable!()
+            };
+            assert!(
+                matches!(state, ElectricalIdentificationState::Validate),
+                "{state:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn timing_summaries_keep_the_delay_slot_reserved() {
+        use crate::commissioning::types::{
+            CommissionTimingSummary, pack_commission_timing_summary,
+        };
+        let data = representative_data();
+        let summaries = electrical_timing_summaries(&data);
+        assert_eq!(summaries[2], CommissionTimingSummary::NOT_RUN);
+        let packed = pack_commission_timing_summary(summaries);
+        let slot_2 = pack_commission_timing_summary([
+            CommissionTimingSummary::NOT_RUN,
+            CommissionTimingSummary::NOT_RUN,
+            summaries[2],
+        ]);
+        assert_eq!(
+            slot_2,
+            pack_commission_timing_summary([CommissionTimingSummary::NOT_RUN; 3])
+        );
+        let _ = packed;
+    }
+
     /// Pack a `MOTOR_TYPE_N_POLE_PAIRS` value reporting a two-phase stepper,
     /// matching the runner's `InvalidMotorType` entry check.
     fn two_phase_motor_type_n_pole_pairs() -> u32 {
@@ -3027,43 +2649,6 @@ mod tests {
         log.iter()
             .filter(|operation| matches!(operation, SpiOp::Read | SpiOp::Write(_, _)))
             .count()
-    }
-
-    /// Capture parameters for one high-rate burst, with the cycle origin at
-    /// zero so a scripted `cycle_count()` sequence reads directly as
-    /// microseconds when `cycles_per_us` is 1.
-    fn high_rate_capture_state(
-        period_us: u16,
-        sample_count: u16,
-        cycles_per_us: u32,
-    ) -> DelayCaptureState {
-        DelayCaptureState {
-            baseline: 0,
-            origin_cycles: 0,
-            period_us,
-            sample_count,
-            cycles_per_us,
-        }
-    }
-
-    /// An accepted high-rate capture with paired samples and actual offsets.
-    fn completed_delay_capture(
-        samples_counts: &[u32],
-        offsets_us: &[u16],
-    ) -> DelayCompletedCapture {
-        let mut samples = crate::autotune::HighRateSampleBuffer::new();
-        for &sample in samples_counts {
-            assert!(samples.push(sample));
-        }
-        let mut offsets = crate::autotune::HighRateDelayOffsets::new();
-        for &offset_us in offsets_us {
-            offsets.push(u32::from(offset_us)).unwrap();
-        }
-        DelayCompletedCapture {
-            samples,
-            offsets,
-            timing_ok: true,
-        }
     }
 
     fn write_position(log: &[SpiOp], register: Register, value: u32) -> usize {
@@ -5233,210 +4818,7 @@ mod tests {
     }
 
     #[test]
-    fn delay_setup_verifies_pwm_before_enable_and_voltage_step() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelaySetup,
-                data: ElectricalIdentificationData::new(
-                    512,
-                    crate::commission_dispatch::test_support::current_limit(2816),
-                ),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 0);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            for _ in 0..16 {
-                let before = register_operation_count(&backend.spi_log);
-                let step = step_electrical_identification(
-                    &mut phase,
-                    &mut buf,
-                    InnerSequence::Commission,
-                    &mut selftest_results,
-                    &mut diagnostics,
-                    &mut backend,
-                )
-                .await;
-                assert!(
-                    register_operation_count(&backend.spi_log) - before
-                        <= ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM,
-                    "one delay setup poll performed more than one verified operation"
-                );
-                if let StepResult::At(deadline_us) = step {
-                    backend.elapsed_us_value = deadline_us;
-                }
-                if matches!(
-                    phase,
-                    InnerPhase::ElectricalIdentification {
-                        state: ElectricalIdentificationState::DelaySample { .. },
-                        ..
-                    }
-                ) {
-                    break;
-                }
-            }
-
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalIdentification {
-                    state: ElectricalIdentificationState::DelaySample { .. },
-                    ..
-                }
-            ));
-            let phi_selection = write_position(&backend.spi_log, PHI_E_SELECTION, 1);
-            let phi_ext = write_position(&backend.spi_log, PHI_E_EXT, 0);
-            let zero_voltage = write_position(&backend.spi_log, UQ_UD_EXT, 0);
-            let motion = write_position(
-                &backend.spi_log,
-                MODE_RAMP_MODE_MOTION,
-                MotionMode::UqUdExt as u32,
-            );
-            let pwm = write_position(&backend.spi_log, PWM_SV_CHOP, 7);
-            let enable_high = enable_position(&backend.spi_log, true);
-            let voltage_step = write_position(&backend.spi_log, UQ_UD_EXT, 512);
-
-            assert!(phi_selection < phi_ext);
-            assert!(phi_ext < zero_voltage);
-            assert!(zero_voltage < motion);
-            assert!(motion < pwm);
-            assert!(matches!(backend.spi_log.get(pwm + 1), Some(SpiOp::Read)));
-            assert!(pwm < enable_high);
-            assert!(enable_high < voltage_step);
-        });
-    }
-
-    #[test]
-    fn delay_setup_pwm_verification_failure_restores_without_enabling() {
-        pollster::block_on(async {
-            for transport_failure in [false, true] {
-                let mut phase = InnerPhase::ElectricalIdentification {
-                    state: ElectricalIdentificationState::DelaySetup,
-                    data: ElectricalIdentificationData::new(
-                        512,
-                        crate::commission_dispatch::test_support::current_limit(2816),
-                    ),
-                };
-                let mut buf = TransientBuffer::new();
-                let mut backend = MockBackend::new();
-                if transport_failure {
-                    backend.fail_on_read = Some(PWM_SV_CHOP.addr());
-                } else {
-                    backend.read_override = Some((PWM_SV_CHOP.addr(), 0));
-                }
-                let mut selftest_results = crate::selftest::SelftestResults::default();
-                let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-                for _ in 0..8 {
-                    let result = step_electrical_identification(
-                        &mut phase,
-                        &mut buf,
-                        InnerSequence::Commission,
-                        &mut selftest_results,
-                        &mut diagnostics,
-                        &mut backend,
-                    )
-                    .await;
-                    assert!(matches!(result, StepResult::ReadyNow));
-                    if matches!(
-                        phase,
-                        InnerPhase::ElectricalIdentification {
-                            state: ElectricalIdentificationState::DelayRestore { .. },
-                            ..
-                        }
-                    ) {
-                        break;
-                    }
-                }
-
-                assert!(!backend.enable_pin);
-                assert!(
-                    !backend
-                        .spi_log
-                        .iter()
-                        .any(|operation| matches!(operation, SpiOp::EnablePin(true)))
-                );
-                assert!(
-                    backend
-                        .spi_log
-                        .iter()
-                        .any(|operation| matches!(operation, SpiOp::EnablePin(false)))
-                );
-                assert!(matches!(
-                    phase,
-                    InnerPhase::ElectricalIdentification {
-                        state: ElectricalIdentificationState::DelayRestore {
-                            primary_error: Some(CommissionError::Spi),
-                            completed: None,
-                            ..
-                        },
-                        ..
-                    }
-                ));
-                assert!(!backend.spi_log.iter().any(|operation| {
-                    matches!(operation, SpiOp::Write(addr, 512) if *addr == UQ_UD_EXT.addr())
-                }));
-            }
-        });
-    }
-
-    #[test]
-    fn delay_voltage_step_completion_is_high_rate_capture_origin() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelayApplyStep { baseline: 0 },
-                data: ElectricalIdentificationData::new(512, current_limit(2816)),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 1_000;
-            backend.spi_elapsed_step_us = 7;
-            backend.cycle_count_value = u32::MAX / 2;
-            backend.set_cycle_count_sequence(&[4_242]);
-            let _ = backend.registers.insert(PID_TORQUE_FLUX_ACTUAL.addr(), 250);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let apply = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(apply, StepResult::ReadyNow));
-            let voltage_step = write_position(&backend.spi_log, UQ_UD_EXT, 512);
-            assert_eq!(voltage_step + 1, backend.spi_log.len());
-            let InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelaySample { capture },
-                ..
-            } = &phase
-            else {
-                panic!("expected delay sample state: {phase:?}");
-            };
-            // The first cycle_count() of the phase is taken immediately after
-            // the voltage step, so any later scheduler gap stays inside every
-            // recorded offset.
-            assert_eq!(capture.origin_cycles, 4_242);
-            let config = backend.tmc_config();
-            assert_eq!(capture.period_us, config.high_rate_delay_period_us);
-            assert_eq!(capture.cycles_per_us, config.high_rate_delay_cycles_per_us);
-            // No resistance/inductance evidence yet, so the sizing tau folds to
-            // zero and the capture still runs at the floor sample count.
-            assert_eq!(
-                capture.sample_count,
-                crate::autotune::high_rate_sample_count(0, config.high_rate_delay_period_us)
-            );
-            assert_eq!(capture.sample_count, 1);
-        });
-    }
-
-    #[test]
-    fn shutdown_snapshot_reports_active_inductance_and_delay_without_polling() {
+    fn shutdown_snapshot_reports_active_inductance_without_polling() {
         let mut inductance_capture = inductance_capture_state(0, 1_000, 0, 0);
         inductance_capture
             .timing
@@ -5460,28 +4842,6 @@ mod tests {
             .find(|event| event.code == 36)
             .expect("active inductance header");
         assert_eq!(header.value0 >> 16, 1);
-        assert_eq!((header.value1 >> 24) & 0x03, 2);
-
-        let mut delay_data = ElectricalIdentificationData::new(512, current_limit(2816));
-        delay_data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
-        let delay_phase = InnerPhase::ElectricalIdentification {
-            state: ElectricalIdentificationState::DelaySample {
-                capture: high_rate_capture_state(20, 8, 520),
-            },
-            data: delay_data,
-        };
-        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-        push_active_electrical_diagnostics(&delay_phase, &mut diagnostics);
-
-        // The high-rate burst keeps no incremental timing evidence, so an
-        // active capture reports the delay slot as rejected with no samples
-        // until cooldown accepts it.
-        let header = diagnostics
-            .iter()
-            .find(|event| event.code == 38)
-            .expect("active delay header");
-        assert_eq!(header.value1 & 0xffff, 0);
         assert_eq!((header.value1 >> 24) & 0x03, 2);
     }
 
@@ -5542,470 +4902,6 @@ mod tests {
             assert_ne!(header.value1 & (1 << 31), 0);
             assert_eq!(header.value2, 20);
         }
-    }
-
-    #[test]
-    fn delay_restore_completes_before_timestamp_estimate_is_committed() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelayStopMotion {
-                    primary_error: None,
-                    completed: Some(completed_delay_capture(&[0, 100, 1_000], &[160, 350, 515])),
-                },
-                data: ElectricalIdentificationData::new(
-                    512,
-                    crate::commission_dispatch::test_support::current_limit(2816),
-                ),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            for _ in 0..24 {
-                let before = register_operation_count(&backend.spi_log);
-                let result = step_electrical_identification(
-                    &mut phase,
-                    &mut buf,
-                    InnerSequence::Commission,
-                    &mut selftest_results,
-                    &mut diagnostics,
-                    &mut backend,
-                )
-                .await;
-                assert!(
-                    register_operation_count(&backend.spi_log) - before
-                        <= ELECTRICAL_ID_MAX_REGISTER_OPS_PER_ARM
-                );
-
-                if matches!(result, StepResult::At(_)) {
-                    let InnerPhase::ElectricalIdentification { state, data } = &phase else {
-                        panic!("expected electrical ID: {phase:?}");
-                    };
-                    assert!(matches!(
-                        state,
-                        ElectricalIdentificationState::DelayCooldown { .. }
-                    ));
-                    assert_eq!(data.delay_estimate_us, Some(350));
-                    assert!(data.delay_timing.is_none());
-                    assert!(!backend.enable_pin);
-                    let writes = backend
-                        .spi_log
-                        .iter()
-                        .filter(|operation| matches!(operation, SpiOp::Write(_, _)))
-                        .count();
-                    assert_eq!(writes, 18);
-                    return;
-                }
-                assert!(matches!(result, StepResult::ReadyNow));
-                let InnerPhase::ElectricalIdentification { data, .. } = &phase else {
-                    panic!("expected electrical ID: {phase:?}");
-                };
-                assert!(data.delay_estimate_us.is_none());
-                assert!(data.delay_timing.is_none());
-            }
-            panic!("delay restoration did not reach cooldown");
-        });
-    }
-
-    #[test]
-    fn delay_restore_failure_replaces_existing_timing_error() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelayRestore {
-                    operation: InductanceRestoreOperation::CanonicalMotionStop,
-                    primary_error: Some(CommissionError::DelayTimingRejected),
-                    completed: None,
-                },
-                data: ElectricalIdentificationData::new(
-                    512,
-                    crate::commission_dispatch::test_support::current_limit(2816),
-                ),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.read_override = Some((MODE_RAMP_MODE_MOTION.addr(), 999));
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            for _ in 0..20 {
-                let result = step_electrical_identification(
-                    &mut phase,
-                    &mut buf,
-                    InnerSequence::Commission,
-                    &mut selftest_results,
-                    &mut diagnostics,
-                    &mut backend,
-                )
-                .await;
-                match result {
-                    StepResult::ReadyNow => {}
-                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
-                    StepResult::InnerFailed(error) => {
-                        assert_eq!(error, CommissionError::Spi);
-                        return;
-                    }
-                    other => panic!("unexpected restore result: {other:?}"),
-                }
-            }
-            panic!("delay restore failure did not become terminal");
-        });
-    }
-
-    #[test]
-    fn delay_stop_failure_lowers_gpio_before_next_restore_operation() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelayStopMotion {
-                    primary_error: None,
-                    completed: Some(completed_delay_capture(&[100, 900], &[160, 320])),
-                },
-                data: ElectricalIdentificationData::new(
-                    512,
-                    crate::commission_dispatch::test_support::current_limit(2816),
-                ),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.read_override = Some((MODE_RAMP_MODE_MOTION.addr(), 999));
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::ReadyNow));
-            assert!(!backend.enable_pin);
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalIdentification {
-                    state: ElectricalIdentificationState::DelayRestore {
-                        primary_error: Some(CommissionError::Spi),
-                        ..
-                    },
-                    ..
-                }
-            ));
-        });
-    }
-
-    #[test]
-    fn delay_presettle_shutdown_enters_gpio_first_restore() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelayPreSettle { deadline_us: 2_000 },
-                data: ElectricalIdentificationData::new(
-                    512,
-                    crate::commission_dispatch::test_support::current_limit(2816),
-                ),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.elapsed_us_value = 1_000;
-            backend.shutdown_requested = true;
-            backend.enable_pin = true;
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::ReadyNow));
-            assert!(!backend.enable_pin);
-            assert!(matches!(
-                phase,
-                InnerPhase::ElectricalIdentification {
-                    state: ElectricalIdentificationState::DelayRestore {
-                        primary_error: Some(CommissionError::Shutdown),
-                        ..
-                    },
-                    ..
-                }
-            ));
-            assert_eq!(register_operation_count(&backend.spi_log), 0);
-        });
-    }
-
-    #[test]
-    fn high_rate_capture_interruption_does_not_select_fallback() {
-        for (shutdown, expected_error) in [
-            (true, CommissionError::Shutdown),
-            (false, CommissionError::Spi),
-        ] {
-            pollster::block_on(async {
-                let mut phase = InnerPhase::ElectricalIdentification {
-                    state: ElectricalIdentificationState::DelaySample {
-                        capture: high_rate_capture_state(20, 8, 1),
-                    },
-                    data: ElectricalIdentificationData::new(512, current_limit(2816)),
-                };
-                let mut buf = TransientBuffer::new();
-                let mut backend = MockBackend::new();
-                backend.enable_pin = true;
-                backend.cycle_count_value = 10_000;
-                if shutdown {
-                    backend.shutdown_requested = true;
-                } else {
-                    backend.fail_on_read = Some(PID_TORQUE_FLUX_ACTUAL.addr());
-                }
-                let mut selftest_results = crate::selftest::SelftestResults::default();
-                let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-                let interrupted = step_electrical_identification(
-                    &mut phase,
-                    &mut buf,
-                    InnerSequence::Commission,
-                    &mut selftest_results,
-                    &mut diagnostics,
-                    &mut backend,
-                )
-                .await;
-
-                assert!(matches!(interrupted, StepResult::ReadyNow));
-                assert!(!backend.enable_pin);
-                let InnerPhase::ElectricalIdentification { state, data } = &phase else {
-                    unreachable!();
-                };
-                assert!(
-                    matches!(
-                        state,
-                        ElectricalIdentificationState::DelayRestore {
-                            primary_error: Some(error),
-                            completed: None,
-                            ..
-                        } if *error == expected_error
-                    ),
-                    "interrupted capture must enter restore with its error: {state:?}"
-                );
-                assert!(data.delay_estimate_us.is_none());
-
-                for _ in 0..40 {
-                    let result = step_electrical_identification(
-                        &mut phase,
-                        &mut buf,
-                        InnerSequence::Commission,
-                        &mut selftest_results,
-                        &mut diagnostics,
-                        &mut backend,
-                    )
-                    .await;
-                    match result {
-                        StepResult::ReadyNow => {}
-                        StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
-                        StepResult::InnerFailed(error) => {
-                            assert_eq!(error, expected_error);
-                            let InnerPhase::ElectricalIdentification { data, .. } = &phase else {
-                                return;
-                            };
-                            assert!(data.delay_estimate_us.is_none());
-                            return;
-                        }
-                        other => panic!("unexpected interrupted-capture result: {other:?}"),
-                    }
-                    assert!(
-                        !matches!(
-                            phase,
-                            InnerPhase::ElectricalIdentification {
-                                state: ElectricalIdentificationState::DelayStopMotion {
-                                    primary_error: None,
-                                    ..
-                                } | ElectricalIdentificationState::Validate,
-                                ..
-                            }
-                        ),
-                        "interrupted capture must never take the successful capture path"
-                    );
-                }
-                panic!("interrupted capture did not become terminal");
-            });
-        }
-    }
-
-    #[test]
-    fn high_rate_capture_records_actual_offsets_not_nominal_index_times_period() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelaySample {
-                    capture: high_rate_capture_state(20, 4, 1),
-                },
-                data: ElectricalIdentificationData::new(512, current_limit(2816)),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.cycle_count_value = 10_000;
-            // Unevenly spaced: sample 2 lands a full period past its deadline.
-            backend.set_cycle_count_sequence(&[25, 25, 61, 61, 62, 62, 85, 85]);
-            backend.set_pid_torque_flux_actual_sequence(&[10, 200, 400, 500]);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let captured = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(captured, StepResult::ReadyNow));
-            assert_eq!(backend.capture_register_reads, 4);
-            let InnerPhase::ElectricalIdentification { state, .. } = &phase else {
-                unreachable!();
-            };
-            let ElectricalIdentificationState::DelayStopMotion {
-                primary_error: None,
-                completed: Some(completed),
-            } = state
-            else {
-                panic!("expected a completed high-rate capture: {state:?}");
-            };
-            assert!(completed.timing_ok);
-            assert_eq!(completed.samples.samples(), &[10, 200, 400, 500]);
-            assert_eq!(completed.offsets.offsets_us(), &[25, 61, 62, 85]);
-            let nominal = [20u16, 40, 60, 80];
-            assert!(
-                completed
-                    .offsets
-                    .offsets_us()
-                    .iter()
-                    .zip(nominal)
-                    .any(|(actual, nominal)| *actual != nominal),
-                "recorded offsets must be measured, not index * period"
-            );
-
-            for _ in 0..40 {
-                if matches!(
-                    phase,
-                    InnerPhase::ElectricalIdentification {
-                        state: ElectricalIdentificationState::Validate,
-                        ..
-                    }
-                ) {
-                    break;
-                }
-                let result = step_electrical_identification(
-                    &mut phase,
-                    &mut buf,
-                    InnerSequence::Commission,
-                    &mut selftest_results,
-                    &mut diagnostics,
-                    &mut backend,
-                )
-                .await;
-                match result {
-                    StepResult::ReadyNow => {}
-                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
-                    other => panic!("unexpected post-capture result: {other:?}"),
-                }
-            }
-
-            let InnerPhase::ElectricalIdentification { state, data } = &phase else {
-                unreachable!();
-            };
-            assert!(matches!(state, ElectricalIdentificationState::Validate));
-            // Onset threshold is peak/10 = 50, first crossed by sample 2,
-            // whose measured offset is 61us and whose nominal one is 40us.
-            assert_eq!(data.delay_estimate_us, Some(61));
-        });
-    }
-
-    #[test]
-    fn high_rate_capture_timing_rejection_falls_back_and_continues() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelaySample {
-                    capture: high_rate_capture_state(20, 4, 1),
-                },
-                data: ElectricalIdentificationData::new(512, current_limit(2816)),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.cycle_count_value = 10_000;
-            // 130us exceeds 2 * (4 - 1) * 20us, the total-duration bound.
-            backend.set_cycle_count_sequence(&[25, 25, 45, 45, 65, 65, 130, 130]);
-            backend.set_pid_torque_flux_actual_sequence(&[10, 200, 400, 500]);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let captured = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(captured, StepResult::ReadyNow));
-            let InnerPhase::ElectricalIdentification { state, .. } = &phase else {
-                unreachable!();
-            };
-            let ElectricalIdentificationState::DelayStopMotion {
-                primary_error: None,
-                completed: Some(completed),
-            } = state
-            else {
-                panic!("expected a timing-rejected high-rate capture: {state:?}");
-            };
-            assert!(!completed.timing_ok);
-            assert_eq!(completed.offsets.offsets_us(), &[25, 45, 65]);
-
-            for _ in 0..40 {
-                if matches!(
-                    phase,
-                    InnerPhase::ElectricalIdentification {
-                        state: ElectricalIdentificationState::Validate,
-                        ..
-                    }
-                ) {
-                    break;
-                }
-                let result = step_electrical_identification(
-                    &mut phase,
-                    &mut buf,
-                    InnerSequence::Commission,
-                    &mut selftest_results,
-                    &mut diagnostics,
-                    &mut backend,
-                )
-                .await;
-                match result {
-                    StepResult::ReadyNow => {}
-                    StepResult::At(deadline_us) => backend.elapsed_us_value = deadline_us,
-                    other => panic!("timing rejection must not fail commissioning: {other:?}"),
-                }
-            }
-
-            let InnerPhase::ElectricalIdentification { state, data } = &phase else {
-                unreachable!();
-            };
-            assert!(matches!(state, ElectricalIdentificationState::Validate));
-            assert!(
-                data.delay_estimate_us.is_none(),
-                "a timing-rejected capture must not produce a measured theta"
-            );
-        });
     }
 
     // -----------------------------------------------------------------
@@ -6180,15 +5076,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_falls_back_to_configured_theta_when_no_measurement() {
-        let mut data = representative_data();
-        data.delay_estimate_us = None;
-        let assembly = assemble_electrical_model(&data, TEST_THETA_E_US).unwrap();
-        assert_eq!(assembly.model.theta_source, 1); // 1 = config fallback
-        assert_eq!(assembly.model.theta_e_us, TEST_THETA_E_US);
-    }
-
-    #[test]
     fn resistance_profile_ceiling_binds_to_the_frozen_limit() {
         use crate::resistance_identification::ResistanceBackend;
         use foci_tmc4671::current_limit::PidTorqueFluxLimit;
@@ -6263,57 +5150,6 @@ mod tests {
     }
 
     #[test]
-    fn high_rate_delay_timing_ok_accepts_within_two_x_bound() {
-        // sample_count=100, period_us=20: bound = 2*(100-1)*20 = 3_960.
-        assert!(high_rate_delay_timing_ok(3_960, 100, 20));
-        assert!(!high_rate_delay_timing_ok(3_961, 100, 20));
-    }
-
-    #[test]
-    fn high_rate_delay_timing_ok_single_sample_is_always_within_bound() {
-        // sample_count=1: bound = 2*0*period_us = 0, so only offset 0 passes.
-        assert!(high_rate_delay_timing_ok(0, 1, 20));
-        assert!(!high_rate_delay_timing_ok(1, 1, 20));
-    }
-
-    #[test]
-    fn settled_amplitude_is_the_last_sample_not_the_peak() {
-        // Overshoot/ringing case: peak (300) is not the settled value (250).
-        let samples = [0u32, 50, 300, 200, 260, 250];
-        assert_eq!(settled_amplitude_counts(&samples), Some(250));
-    }
-
-    #[test]
-    fn settled_amplitude_is_none_for_an_empty_capture() {
-        assert_eq!(settled_amplitude_counts(&[]), None);
-    }
-
-    #[test]
-    fn onset_detection_uses_peak_unaffected_by_settled_amplitude_under_ringing() {
-        // Same overshoot/ringing samples as above, with matching offsets.
-        // estimate_electrical_delay's 10%-of-peak threshold (peak=300, so
-        // threshold=30) must fire at the first sample >= 30 (index 1, value 50),
-        // regardless of where the settled amplitude (250, the last sample)
-        // ends up -- onset and amplitude are independent quantities.
-        let samples = [0u32, 50, 300, 200, 260, 250];
-        let offsets_us = [10u16, 20, 30, 40, 50, 60];
-        let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
-        assert_eq!(onset, 20);
-        assert_eq!(settled_amplitude_counts(&samples), Some(250));
-    }
-
-    #[test]
-    fn onset_detection_clean_case_matches_settled_amplitude_direction() {
-        // A monotonic rise with no ringing: onset and settled amplitude are
-        // still independently computed, but happen to agree in direction here.
-        let samples = [0u32, 10, 50, 90, 100, 100];
-        let offsets_us = [10u16, 20, 30, 40, 50, 60];
-        let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
-        assert_eq!(onset, 20); // peak=100, threshold=10, first sample >= 10 is index 1 (value 10 itself).
-        assert_eq!(settled_amplitude_counts(&samples), Some(100));
-    }
-
-    #[test]
     fn onset_detection_reports_no_onset_within_window() {
         // Flat capture never crosses 10% of its own (zero) peak meaningfully --
         // exercised here via estimate_electrical_delay's existing no-samples
@@ -6331,45 +5167,5 @@ mod tests {
         let offsets_us = [10u16, 20, 30, 40, 50, 60];
         let onset = crate::autotune::estimate_electrical_delay(&samples, &offsets_us).unwrap();
         assert_eq!(onset, 50); // peak=205, threshold=21, first sample >= 21 is index 4.
-    }
-
-    #[test]
-    fn delay_evaluate_stores_the_bias_corrected_onset() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::DelayEvaluate {
-                    completed: completed_delay_capture(&[0, 100, 1_000], &[160, 350, 515]),
-                },
-                data: representative_data(),
-            };
-            let mut buf = TransientBuffer::new();
-            let mut backend = MockBackend::new();
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let result = step_electrical_identification(
-                &mut phase,
-                &mut buf,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-
-            assert!(matches!(result, StepResult::At(_)));
-            let InnerPhase::ElectricalIdentification { state, data } = &phase else {
-                unreachable!();
-            };
-            assert!(matches!(
-                state,
-                ElectricalIdentificationState::DelayCooldown { .. }
-            ));
-            // peak=1000, threshold=100, so the raw crossing is 350us. This
-            // fixture's tau_e_us is 801, making the 10%-threshold bias term
-            // 801 * 27/256 = 84us.
-            assert_eq!(compute_tau_e_us(data).unwrap(), 801);
-            assert_eq!(data.delay_estimate_us, Some(350 - 84));
-        });
     }
 }

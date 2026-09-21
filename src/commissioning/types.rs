@@ -1864,7 +1864,8 @@ pub const COMMISSION_TIMING_REJECTED: u8 = 2;
 pub const COMMISSION_TIMING_METHOD_RESISTANCE: u8 = 0;
 /// Electrical-identification timing method identifier for inductance.
 pub const COMMISSION_TIMING_METHOD_INDUCTANCE: u8 = 1;
-/// Electrical-identification timing method identifier for delay.
+/// Electrical-identification timing method slot reserved for the retired
+/// delay capture; always reads `CommissionTimingSummary::NOT_RUN`.
 pub const COMMISSION_TIMING_METHOD_DELAY: u8 = 2;
 
 /// Compact retained timing result for one electrical-identification method.

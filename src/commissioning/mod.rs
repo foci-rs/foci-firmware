@@ -933,22 +933,6 @@ impl CommissioningEngine {
         };
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_delay_capture_for_test(&mut self, capture: inner::DelayCaptureState) {
-        let EngineMode::Inner { phase, .. } = &mut self.engine_mode else {
-            panic!("delay capture fixture requires an inner engine");
-        };
-        self.buf
-            .reset(inner::electrical_identification::ELECTRICAL_SAMPLE_PERIOD_US as u16);
-        *phase = InnerPhase::ElectricalIdentification {
-            state: inner::ElectricalIdentificationState::DelaySample { capture },
-            data: inner::ElectricalIdentificationData::new(
-                1_024,
-                crate::commission_dispatch::test_support::current_limit(2816),
-            ),
-        };
-    }
-
     /// Return the entry snapshot for the outer engine, if active.
     pub fn entry_snapshot(&self) -> Option<OuterGainRollbackSnapshot> {
         match &self.engine_mode {
@@ -1784,8 +1768,7 @@ impl CommissioningEngine {
             &self.engine_mode,
             EngineMode::Inner {
                 phase: InnerPhase::ElectricalIdentification {
-                    state: inner::ElectricalIdentificationState::InductanceSample { .. }
-                        | inner::ElectricalIdentificationState::DelaySample { .. },
+                    state: inner::ElectricalIdentificationState::InductanceSample { .. },
                     ..
                 },
                 ..
@@ -1939,7 +1922,7 @@ mod tests {
         assert_eq!(size_of::<crate::commissioning::types::StepResult>(), 928);
         assert_eq!(
             size_of::<inner::InnerPhase>(),
-            3_456,
+            3_392,
             "the gain-floor capture buffer must stay inside the existing variant slack"
         );
         // The breakaway campaign is the largest outer payload: its
@@ -1967,11 +1950,9 @@ mod tests {
         // must hold all state live across a suspension point; the flat
         // sequential restore it replaced let each write complete before the
         // next one was polled, so it never needed to carry that state.
-        // The high-rate electrical-delay burst holds its sample buffer and its
-        // parallel offset container live across the per-sample SPI await, so
-        // the electrical-ID future carries both (656 -> 3_248). The futures
-        // that are actually polled on the interrupt stack already reserved
-        // space for wider branches and absorb all but 16 bytes of that.
+        // The electrical-identification future no longer carries a capture
+        // buffer across an await point now that theta comes from the
+        // inductance excitation phase instead of a paced delay capture.
         // The GainFloorMeasurement phase keeps its 200-sample capture
         // workspace in `InnerPhase` (pinned above) and fits each capture in
         // a synchronous helper, so neither the samples nor the fit inputs
@@ -1981,9 +1962,9 @@ mod tests {
         assert!(engine_step <= 4_416);
         assert_eq!(step_inner, 4_368);
         assert!(step_inner <= 4_368);
-        assert_eq!(electrical_id, 3_248);
-        assert!(electrical_id <= 3_248);
-        assert!(electrical_id <= 3_328);
+        assert_eq!(electrical_id, 640);
+        assert!(electrical_id <= 640);
+        assert!(electrical_id <= 720);
         assert_eq!(scheduled_step, 4_496);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
@@ -3322,21 +3303,12 @@ mod tests {
         let mut engine =
             CommissioningEngine::new_commission(0, crate::autotune::CommissionProfile::Balanced);
         if let EngineMode::Inner { phase, .. } = &mut engine.engine_mode {
-            let mut data = inner::ElectricalIdentificationData::new(
+            let data = inner::ElectricalIdentificationData::new(
                 512,
                 crate::commission_dispatch::test_support::current_limit(2816),
             );
-            data.timing_states = crate::commissioning::types::COMMISSION_TIMING_REJECTED << 4;
             *phase = InnerPhase::ElectricalIdentification {
-                state: inner::ElectricalIdentificationState::DelaySample {
-                    capture: inner::DelayCaptureState {
-                        baseline: 0,
-                        origin_cycles: 0,
-                        period_us: 20,
-                        sample_count: 8,
-                        cycles_per_us: 520,
-                    },
-                },
+                state: inner::ElectricalIdentificationState::InductanceDisable { deadline_us: 20 },
                 data,
             };
         }
@@ -3358,12 +3330,6 @@ mod tests {
             !tmc_state().motor_armed.load(Ordering::Relaxed),
             "shutdown abort must gate step processing before reporting failure"
         );
-        let diagnostics = engine.take_diagnostics();
-        let delay = diagnostics
-            .iter()
-            .find(|event| event.code == 38)
-            .expect("shutdown timing diagnostic");
-        assert_eq!((delay.value1 >> 24) & 0x03, 2);
     }
 
     #[test]

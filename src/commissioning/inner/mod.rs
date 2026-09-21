@@ -210,7 +210,7 @@ pub(crate) struct ElectricalIdentificationData {
     pub(crate) current_limit: foci_tmc4671::current_limit::PidTorqueFluxLimit,
     /// Shared multi-point resistance-identification result. `Some` once the
     /// runner-owned `ResistanceIdentify` sub-state completes; the
-    /// inductance/delay/gain path reads its count-slope-milli values from here.
+    /// inductance/gain path reads its count-slope-milli values from here.
     pub(crate) resistance_result: Option<crate::resistance_identification::ResistanceRunResult>,
     /// Accepted timing evidence across all resistance windows.
     pub(crate) resistance_timing:
@@ -220,10 +220,6 @@ pub(crate) struct ElectricalIdentificationData {
     /// Accepted timing evidence for the rotating-field capture.
     pub(crate) inductance_timing:
         Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
-    /// Low-rate timestamp-aware electrical-delay onset evidence.
-    pub(crate) delay_estimate_us: Option<u32>,
-    /// Accepted timing evidence for the electrical-delay capture.
-    pub(crate) delay_timing: Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
     /// Packed two-bit timing lifecycle state for resistance, inductance, and delay.
     pub(crate) timing_states: u8,
     /// Bit per method indicating saturated timing telemetry.
@@ -244,8 +240,6 @@ impl ElectricalIdentificationData {
             resistance_timing: None,
             inductance: None,
             inductance_timing: None,
-            delay_estimate_us: None,
-            delay_timing: None,
             timing_states: 0,
             timing_overflow_mask: 0,
             encoder_domain: None,
@@ -272,26 +266,6 @@ pub(crate) struct InductanceCaptureState {
     pub(crate) timing: crate::commissioning::capture_timing::CaptureTiming,
     /// Diagnostic-current envelope in counts, derived from the frozen limit.
     pub(crate) current_envelope: u16,
-}
-
-/// Parameters for the high-rate electrical-delay capture, established once
-/// `DelayApplyStep`'s voltage step has been confirmed applied.
-#[derive(Debug, Clone, Copy, defmt::Format)]
-pub(crate) struct DelayCaptureState {
-    pub(crate) baseline: i16,
-    pub(crate) origin_cycles: u32,
-    pub(crate) period_us: u16,
-    pub(crate) sample_count: u16,
-    pub(crate) cycles_per_us: u32,
-}
-
-/// Completed high-rate delay samples/offsets and timing outcome, retained
-/// through restoration.
-#[derive(Debug, Clone, defmt::Format)]
-pub(crate) struct DelayCompletedCapture {
-    pub(crate) samples: crate::autotune::HighRateSampleBuffer,
-    pub(crate) offsets: crate::autotune::HighRateDelayOffsets,
-    pub(crate) timing_ok: bool,
 }
 
 /// One verified register operation in the bounded inductance restore sequence.
@@ -397,47 +371,10 @@ pub(crate) enum ElectricalIdentificationState {
         timing: Option<crate::commissioning::capture_timing::CaptureTimingEvidence>,
         timing_accepted: bool,
     },
-    /// Disable AC drive and cool down before delay capture.
+    /// Disable AC drive and cool down before validation.
     InductanceDisable {
         /// Cooldown deadline after explicit AC drive teardown.
         deadline_us: u64,
-    },
-
-    // --- Delay identification ---
-    /// Configure for delay step response capture.
-    DelaySetup,
-    /// Apply one delay setup register operation.
-    DelaySetupOperation { operation: u8 },
-    /// Brief settle at zero voltage before step.
-    DelayPreSettle { deadline_us: u64 },
-    /// Read the zero-voltage current baseline.
-    DelayReadBaseline,
-    /// Apply the voltage step; successful completion establishes timestamp zero.
-    DelayApplyStep { baseline: i16 },
-    /// Capture one timestamped current observation per poll.
-    DelaySample { capture: DelayCaptureState },
-    /// Stop motion with one verified operation after successful capture.
-    DelayStopMotion {
-        primary_error: Option<crate::autotune::CommissionError>,
-        completed: Option<DelayCompletedCapture>,
-    },
-    /// Clear external voltage before synchronously lowering the enable GPIO.
-    DelayStopVoltage {
-        primary_error: Option<crate::autotune::CommissionError>,
-        completed: Option<DelayCompletedCapture>,
-    },
-    /// Perform the complete canonical verified restore one operation per poll.
-    DelayRestore {
-        operation: InductanceRestoreOperation,
-        primary_error: Option<crate::autotune::CommissionError>,
-        completed: Option<DelayCompletedCapture>,
-    },
-    /// Estimate timestamped response onset after successful restoration.
-    DelayEvaluate { completed: DelayCompletedCapture },
-    /// Hold the power stage disabled for the required cooldown.
-    DelayCooldown {
-        deadline_us: u64,
-        primary_error: Option<crate::autotune::CommissionError>,
     },
 
     // --- Final ---

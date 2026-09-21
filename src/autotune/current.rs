@@ -509,9 +509,9 @@ pub const MAX_CAPTURE_DURATION_US: u32 = 10_000;
 /// (2 * period_us)), floor(MAX_CAPTURE_DURATION_US / period_us))`.
 ///
 /// The third term keeps the worst-case accepted final sample's actual `u16`
-/// offset in range: the capture's total-duration timing-rejection bound (see
-/// `high_rate_delay_timing_ok`) is `2x` nominal duration, so the worst-case
-/// accepted final offset is `2 * (sample_count - 1) * period_us`, and this
+/// offset in range: the capture's total-duration timing-rejection bound is
+/// `2x` nominal duration, so the worst-case accepted final offset is
+/// `2 * (sample_count - 1) * period_us`, and this
 /// term is derived from the same `2x` constant rather than chosen
 /// independently. It is arithmetically subsumed by the fourth term at the
 /// current [`MAX_CAPTURE_DURATION_US`], but is kept because it tracks the
