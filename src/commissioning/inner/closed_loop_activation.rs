@@ -907,6 +907,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
 
                 let next_attempt = attempt + 1;
                 if next_attempt < CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS {
+                    backend.set_enable_pin(false);
                     let InnerPhase::ClosedLoopActivation { state, attempt, .. } = phase else {
                         unreachable!("phase was just matched as ClosedLoopActivation");
                     };
@@ -2307,6 +2308,43 @@ mod tests {
             assert_eq!(events[0].status, CLOSED_LOOP_ACTIVATION_STATUS_FAIL_DRIFT);
             assert_eq!(events[0].value1, 100);
             assert_eq!(events[0].value2, 100);
+        });
+    }
+
+    #[test]
+    fn stability_drift_retry_disables_the_bridge_before_re_entering() {
+        pollster::block_on(async {
+            let mut phase = closed_loop_phase_at(ClosedLoopActivationState::StabilityCheck2 {
+                position_1: 0,
+                deadline_us: 0,
+            });
+            let mut backend = MockBackend::new();
+            backend.enable_pin = true;
+            backend
+                .registers
+                .insert(PID_POSITION_ACTUAL.addr(), 100)
+                .ok();
+
+            let result = step_calibrate(&mut phase, &mut backend).await;
+
+            assert!(matches!(result, StepResult::ReadyNow));
+            assert!(
+                !backend.enable_pin,
+                "a retry must re-run the velocity settle with the bridge disabled"
+            );
+            let stop_index = backend
+                .spi_log
+                .iter()
+                .position(|op| {
+                    matches!(op, SpiOp::Write(addr, 0) if *addr == MODE_RAMP_MODE_MOTION.addr())
+                })
+                .expect("retry should write stopped mode");
+            let disable_index = backend
+                .spi_log
+                .iter()
+                .position(|op| matches!(op, SpiOp::EnablePin(false)))
+                .expect("retry should lower the enable pin");
+            assert!(stop_index < disable_index);
         });
     }
 
