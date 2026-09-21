@@ -130,23 +130,25 @@ mod tests {
     }
 
     // (id_mean, iq_mean, id_rms, iq_rms, r_count_milli, theta_us, sigma_us): seven
-    // recorded runs, four at 50 kHz PWM then three at 25 kHz.
-    const RECORDED_RUNS: [(i32, i32, u32, u32, u32, u32, u32); 7] = [
-        (-3540, -52671, 21588, 19848, 997, 22, 7),
-        (-4071, -54311, 10105, 12198, 951, 23, 3),
-        (-2010, -53785, 13060, 10731, 940, 16, 4),
-        (-207, -54901, 9161, 11997, 953, 12, 3),
-        (-10657, -52615, 11909, 11265, 938, 42, 4),
-        (-10880, -53904, 12157, 12685, 932, 42, 4),
-        (-10075, -52282, 11739, 12046, 929, 41, 4),
+    // recorded runs, four at 50 kHz PWM then three at 25 kHz. theta_us is the offline
+    // fractional value from the spec's equations, to two decimals; the nearest integer
+    // is the uniquely correct rounding of it.
+    const RECORDED_RUNS: [(i32, i32, u32, u32, u32, f32, u32); 7] = [
+        (-3540, -52671, 21588, 19848, 997, 21.60, 7),
+        (-4071, -54311, 10105, 12198, 951, 22.65, 3),
+        (-2010, -53785, 13060, 10731, 940, 16.44, 4),
+        (-207, -54901, 9161, 11997, 953, 11.45, 3),
+        (-10657, -52615, 11909, 11265, 938, 42.25, 4),
+        (-10880, -53904, 12157, 12685, 932, 42.33, 4),
+        (-10075, -52282, 11739, 12046, 929, 40.56, 4),
     ];
 
     #[test]
-    fn recovers_the_recorded_delays_within_one_microsecond() {
+    fn rounds_the_recorded_delays_to_the_nearest_microsecond() {
         for (id, iq, id_rms, iq_rms, r, theta, sigma) in RECORDED_RUNS {
             let estimate = estimate_phase_delay(&run(id, iq, id_rms, iq_rms, r)).unwrap();
             assert!(
-                estimate.theta_e_us.abs_diff(theta) <= 1,
+                (estimate.theta_e_us as f32 - theta).abs() <= 0.5,
                 "id {id}: theta {}",
                 estimate.theta_e_us
             );
