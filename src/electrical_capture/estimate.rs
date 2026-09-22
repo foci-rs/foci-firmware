@@ -261,7 +261,7 @@ impl AcSaliencyAccumulator {
         let iq = i64::from(iq_count);
         let cos = i64::from(cos_2theta_q15(openloop_phi));
         let sin = i64::from(sin_2theta_q15(openloop_phi));
-        let w2 = i128::from(w) * i128::from(w);
+        let w2 = i128::from(w).checked_mul(i128::from(w))?;
 
         self.sample_count = self.sample_count.checked_add(1)?;
         self.weight_sum = self.weight_sum.checked_add(sample_weight_counts)?;
@@ -503,7 +503,8 @@ pub fn extract_saliency_from_second_harmonic(
         return None;
     }
 
-    let threshold = u128::from(SALIENCY_DETERMINABLE_SIGMA) * u128::from(input.noise_floor_milli);
+    let threshold =
+        u128::from(SALIENCY_DETERMINABLE_SIGMA).checked_mul(u128::from(input.noise_floor_milli))?;
     if amplitude == 0 || amplitude < threshold {
         return Some(AcSaliencyEvidence::not_determinable(
             input.x_average_count_ratio_milli,
