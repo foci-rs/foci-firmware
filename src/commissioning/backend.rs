@@ -1050,7 +1050,7 @@ where
 
     fn stall_threshold_units(&self) -> u32 {
         self.tmc_state()
-            .stall_threshold_units
+            .stall_ceiling_units
             .load(core::sync::atomic::Ordering::Relaxed)
     }
 
