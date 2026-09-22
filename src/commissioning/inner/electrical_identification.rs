@@ -4012,6 +4012,141 @@ mod tests {
     }
 
     #[test]
+    fn inductance_finish_marks_isotropic_capture_not_determinable() {
+        let mut accumulator = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut first_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut second_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut saliency = crate::electrical_capture::AcSaliencyAccumulator::new();
+
+        for index in 0..100u32 {
+            let weight = fixed_window_phi_weight(index, 100);
+            let phi = fixed_window_phi(index, 100);
+            accumulator.push_weighted(20, -84, weight).unwrap();
+            saliency.push_weighted_sample(phi, weight, 20, -84).unwrap();
+            if index < 50 {
+                first_half.push_weighted(20, -84, weight).unwrap();
+            } else {
+                second_half.push_weighted(20, -84, weight).unwrap();
+            }
+        }
+
+        // `AcFrameAccumulator` is `Copy`, so finishing a copy here leaves the
+        // original for the production call below.
+        let expected_x_average = expected_frame_x_quad(accumulator);
+
+        let evidence = finish_inductance_evidence(InductanceCaptureFinish {
+            data: &representative_data(),
+            encoder_domain: EncoderDomain::new(4000).unwrap(),
+            encoder_start: 10,
+            encoder_after: 10,
+            elapsed_us: NOMINAL_INDUCTANCE_CAPTURE_US,
+            phi_delta_counts: INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+            sample_count: 100,
+            status_flags_or: 0,
+            accumulator,
+            first_half,
+            second_half,
+            saliency_accumulator: saliency,
+        })
+        .expect("isotropic capture is accepted");
+
+        assert_eq!(
+            evidence.estimate.saliency_status,
+            crate::electrical_capture::AC_SALIENCY_NOT_DETERMINABLE
+        );
+        assert_eq!(evidence.estimate.x_d_count_ratio_milli, 0);
+        assert_eq!(evidence.estimate.x_q_count_ratio_milli, 0);
+        assert_eq!(evidence.estimate.saliency_permille, 0);
+        assert_eq!(
+            evidence.estimate.x_average_count_ratio_milli,
+            expected_x_average
+        );
+    }
+
+    #[test]
+    fn inductance_finish_publishes_strong_saliency_bracketing_the_average() {
+        let mut accumulator = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut first_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut second_half = crate::electrical_capture::AcFrameAccumulator::new();
+        let mut saliency = crate::electrical_capture::AcSaliencyAccumulator::new();
+
+        // Phasor-model currents at 30% reactance modulation, R / X = 0.25, at
+        // the production drive voltage; 100 samples over the production window.
+        let x_avg = 8.5_f64;
+        let r = 0.25 * x_avg;
+        for index in 0..100u32 {
+            let weight = fixed_window_phi_weight(index, 100);
+            let phi = fixed_window_phi(index, 100);
+            let theta = f64::from(phi) * core::f64::consts::TAU / 65_536.0;
+            let x = x_avg * (1.0 + 0.30 * (2.0 * theta + 0.9).cos());
+            let z_sq = r * r + x * x;
+            let id = (f64::from(INDUCTANCE_AC_UD_EXT) * r / z_sq).round() as i16;
+            let iq = (-f64::from(INDUCTANCE_AC_UD_EXT) * x / z_sq).round() as i16;
+            accumulator.push_weighted(id, iq, weight).unwrap();
+            saliency.push_weighted_sample(phi, weight, id, iq).unwrap();
+            if index < 50 {
+                first_half.push_weighted(id, iq, weight).unwrap();
+            } else {
+                second_half.push_weighted(id, iq, weight).unwrap();
+            }
+        }
+
+        let expected_x_average = expected_frame_x_quad(accumulator);
+
+        let evidence = finish_inductance_evidence(InductanceCaptureFinish {
+            data: &representative_data(),
+            encoder_domain: EncoderDomain::new(4000).unwrap(),
+            encoder_start: 10,
+            encoder_after: 10,
+            elapsed_us: NOMINAL_INDUCTANCE_CAPTURE_US,
+            phi_delta_counts: INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+            sample_count: 100,
+            status_flags_or: 0,
+            accumulator,
+            first_half,
+            second_half,
+            saliency_accumulator: saliency,
+        })
+        .expect("salient capture is accepted");
+
+        let estimate = evidence.estimate;
+        assert_eq!(estimate.x_average_count_ratio_milli, expected_x_average);
+        assert_eq!(
+            estimate.saliency_status,
+            crate::electrical_capture::AC_SALIENCY_DETERMINABLE
+        );
+        assert!(estimate.x_d_count_ratio_milli > estimate.x_average_count_ratio_milli);
+        assert!(estimate.x_average_count_ratio_milli > estimate.x_q_count_ratio_milli);
+        assert_eq!(
+            estimate.x_d_count_ratio_milli - estimate.x_average_count_ratio_milli,
+            estimate.x_average_count_ratio_milli - estimate.x_q_count_ratio_milli
+        );
+        // 2 * 0.30 = 600 permille, within the coarse 5-samples-per-turn window.
+        assert!(
+            (540..=660).contains(&estimate.saliency_permille),
+            "{}",
+            estimate.saliency_permille
+        );
+    }
+
+    /// The frame reactance the production path accepts for these samples,
+    /// computed independently of `finish_inductance_evidence`. `x_quad` does not
+    /// depend on the realized frequency or the resistance slope, so nominal
+    /// values are passed for both.
+    fn expected_frame_x_quad(accumulator: crate::electrical_capture::AcFrameAccumulator) -> u32 {
+        let frame = accumulator
+            .finish(
+                NOMINAL_INDUCTANCE_CAPTURE_US,
+                1_000_000,
+                INDUCTANCE_AC_TARGET_PHI_DELTA_COUNTS,
+            )
+            .expect("frame evidence");
+        crate::electrical_capture::rotating_frame_reactance(frame, INDUCTANCE_AC_UD_EXT, 1_706)
+            .expect("frame reactance")
+            .x_quad_count_ratio_milli
+    }
+
+    #[test]
     fn inductance_finish_reports_encoder_motion_rejection() {
         let mut accumulator = crate::electrical_capture::AcFrameAccumulator::new();
         let mut first_half = crate::electrical_capture::AcFrameAccumulator::new();
