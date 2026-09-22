@@ -3194,6 +3194,11 @@ pub struct FociStallResult {
     pub trigger_tick: u32,
     /// 1 while the homing clamp overrides the run-current limit.
     pub clamp_active: u8,
+    /// Which check latched: 0 = none, 1 = ceiling, 2 = margin.
+    pub trigger_path: u8,
+    /// Largest error-minus-baseline observed while the baseline was valid,
+    /// in TMC position units. 0 if the baseline never warmed up.
+    pub peak_margin_delta_units: u32,
 }
 
 /// `foci_tune_result` reply — final outer-loop tune output.

@@ -289,18 +289,20 @@ pub fn foci_commission_cancel(ctx: &mut dyn FociRuntimeHost, oid: u8) {
     state.cancel_requested.store(true, Relaxed);
 }
 
-/// Upper bound on the stall threshold: a quarter revolution, the same cap the
-/// host applies to `stall_distance`.
+/// Upper bound on the stall ceiling and margin: a quarter revolution, the
+/// same cap the host applies to stall_ceiling_mm/stall_margin_mm.
 const STALL_THRESHOLD_MAX_UNITS: u32 = 16_384;
 
 /// Store the homing-move clamp current and stall detector tunables.
 ///
 /// `homing_ma` of 0 disables the clamp and the detector on this channel.
-/// `stall_units` is a following error in TMC position units (65536 per
-/// revolution) and `persistence` the number of consecutive control ticks over
-/// it. Out-of-range threshold or persistence values are a config error and
-/// enter shutdown. `homing_ma` is stored as-is: the homing tick, which owns
-/// the board current scale and the stored run limit, refuses to clamp when the
+/// `stall_units` is the unconditional ceiling and `margin_units` the
+/// baseline-relative margin, both in TMC position units (65536 per
+/// revolution); `persistence` the number of consecutive control ticks
+/// either check must hold before latching. Out-of-range values, or
+/// `margin_units >= stall_units`, are a config error and enter shutdown.
+/// `homing_ma` is stored as-is: the homing tick, which owns the board
+/// current scale and the stored run limit, refuses to clamp when the
 /// converted value is not below the run limit.
 #[klipper_command]
 pub fn foci_config_homing(
@@ -308,17 +310,22 @@ pub fn foci_config_homing(
     oid: u8,
     homing_ma: u32,
     stall_units: u32,
+    margin_units: u32,
     persistence: u8,
 ) {
     let Some((_channel, state)) = foci_tmc_state_or_shutdown(ctx, oid) else {
         return;
     };
-    let valid = (1..=STALL_THRESHOLD_MAX_UNITS).contains(&stall_units) && persistence >= 1;
+    let valid = (1..=STALL_THRESHOLD_MAX_UNITS).contains(&stall_units)
+        && (1..=STALL_THRESHOLD_MAX_UNITS).contains(&margin_units)
+        && margin_units < stall_units
+        && persistence >= 1;
     if !valid {
         defmt::error!(
-            "foci_config_homing: oid={} stall_units={} persistence={} rejected",
+            "foci_config_homing: oid={} stall_units={} margin_units={} persistence={} rejected",
             oid,
             stall_units,
+            margin_units,
             persistence
         );
         if ctx.enter_shutdown() {
@@ -329,6 +336,7 @@ pub fn foci_config_homing(
     }
     state.homing_current_ma.store(homing_ma, Relaxed);
     state.stall_ceiling_units.store(stall_units, Relaxed);
+    state.stall_margin_units.store(margin_units, Relaxed);
     state.stall_persistence.store(persistence, Relaxed);
 }
 
@@ -345,7 +353,9 @@ pub fn foci_stall_query(ctx: &mut dyn FociRuntimeHost, oid: u8) {
         latched: u8 = u8::from(state.stall_result_latched.load(Relaxed)),
         peak_error_units: u32 = state.stall_peak_error_units.load(Relaxed),
         trigger_tick: u32 = state.stall_trigger_tick.load(Relaxed),
-        clamp_active: u8 = u8::from(state.homing_clamp_active.load(Relaxed))
+        clamp_active: u8 = u8::from(state.homing_clamp_active.load(Relaxed)),
+        trigger_path: u8 = state.stall_trigger_path.load(Relaxed),
+        peak_margin_delta_units: u32 = state.stall_peak_margin_delta_units.load(Relaxed)
     );
 }
 
@@ -875,6 +885,8 @@ mod tests {
         tmc_state.stall_peak_error_units.store(1234, Relaxed);
         tmc_state.stall_trigger_tick.store(77, Relaxed);
         tmc_state.homing_clamp_active.store(true, Relaxed);
+        tmc_state.stall_trigger_path.store(2, Relaxed); // Margin
+        tmc_state.stall_peak_margin_delta_units.store(45, Relaxed);
 
         foci_stall_query(&mut ctx, &mut sender, 10);
 
@@ -885,6 +897,8 @@ mod tests {
         assert_eq!(reply.peak_error_units, 1234);
         assert_eq!(reply.trigger_tick, 77);
         assert_eq!(reply.clamp_active, 1);
+        assert_eq!(reply.trigger_path, 2);
+        assert_eq!(reply.peak_margin_delta_units, 45);
     }
 
     #[test]
@@ -895,10 +909,11 @@ mod tests {
         config_stepper_channel(ctx.state(), 10, 1).unwrap();
         let tmc_state = crate::state::tmc::tmc_channel(1).unwrap();
 
-        foci_config_homing(&mut ctx, &mut sender, 10, 700, 819, 3);
+        foci_config_homing(&mut ctx, &mut sender, 10, 700, 819, 100, 3);
 
         assert_eq!(tmc_state.homing_current_ma.load(Relaxed), 700);
         assert_eq!(tmc_state.stall_ceiling_units.load(Relaxed), 819);
+        assert_eq!(tmc_state.stall_margin_units.load(Relaxed), 100);
         assert_eq!(tmc_state.stall_persistence.load(Relaxed), 3);
         assert_eq!(ctx.last_shutdown, None);
     }
@@ -906,12 +921,28 @@ mod tests {
     #[test]
     fn foci_config_homing_rejects_out_of_range_values() {
         let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
-        for (stall_units, persistence) in [(0u32, 3u8), (16_385, 3), (819, 0)] {
+        for (stall_units, margin_units, persistence) in [
+            (0u32, 100u32, 3u8),
+            (16_385, 100, 3),
+            (819, 0, 3),
+            (819, 16_385, 3),
+            (819, 819, 3), // margin_units == stall_units, not < it
+            (819, 900, 3), // margin_units > stall_units
+            (819, 100, 0),
+        ] {
             let mut ctx = MockCtx::new(2);
             let mut sender = EmptySender;
             config_stepper_channel(ctx.state(), 10, 1).unwrap();
 
-            foci_config_homing(&mut ctx, &mut sender, 10, 700, stall_units, persistence);
+            foci_config_homing(
+                &mut ctx,
+                &mut sender,
+                10,
+                700,
+                stall_units,
+                margin_units,
+                persistence,
+            );
 
             assert_eq!(
                 ctx.last_shutdown,
