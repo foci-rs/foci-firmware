@@ -925,7 +925,6 @@ async fn poll_inductance_sample<B: CommissioningBackend>(
         .push_weighted_sample(
             current_phi,
             interval.sample_weight_counts,
-            INDUCTANCE_AC_UD_EXT,
             id_count,
             iq_count,
         )
@@ -1220,7 +1219,12 @@ fn finish_inductance_evidence(
     };
 
     let saliency = match saliency_accumulator
-        .finish(phi_delta_counts)
+        .finish(crate::electrical_capture::SaliencyFinishInput {
+            phi_delta_counts,
+            frame,
+            x_average_count_ratio_milli: reactance.x_quad_count_ratio_milli,
+            ud_count: INDUCTANCE_AC_UD_EXT,
+        })
         .and_then(crate::electrical_capture::extract_saliency_from_second_harmonic)
     {
         Some(evidence) => evidence,
@@ -3406,51 +3410,6 @@ mod tests {
     }
 
     #[test]
-    fn inductance_capture_rejection_records_saliency_sample_detail() {
-        pollster::block_on(async {
-            let mut phase = InnerPhase::ElectricalIdentification {
-                state: ElectricalIdentificationState::InductanceSample {
-                    capture: inductance_capture_state(0, 0, 0, 0),
-                },
-                data: representative_data(),
-            };
-            let mut backend = MockBackend::new();
-            backend.enable_pin = true;
-            backend.set_openloop_phi_sequence(&[6_554], 0);
-            backend.set_pid_torque_flux_actual_sequence(&[0]);
-            let mut selftest_results = crate::selftest::SelftestResults::default();
-            let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-            let start_restore = step_electrical_identification(
-                &mut phase,
-                InnerSequence::Commission,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-            assert!(matches!(start_restore, StepResult::ReadyNow));
-            let result = finish_inductance_restore(
-                &mut phase,
-                &mut selftest_results,
-                &mut diagnostics,
-                &mut backend,
-            )
-            .await;
-            assert!(matches!(
-                result,
-                StepResult::InnerFailed(CommissionError::InductanceCaptureRejected)
-            ));
-            let detail = find_inductance_capture_rejection(&diagnostics);
-            assert_eq!(detail.status, 1);
-            assert_eq!(detail.value0, 4);
-            assert_eq!(detail.value1, 0);
-            assert_eq!(detail.value2, 0);
-            assert_ac_teardown_after_failure(&backend);
-        });
-    }
-
-    #[test]
     fn inductance_capture_rejection_records_elapsed_interpolation_detail() {
         pollster::block_on(async {
             let mut phase = InnerPhase::ElectricalIdentification {
@@ -4024,9 +3983,7 @@ mod tests {
             let weight = fixed_window_phi_weight(index, 100);
             let phi = fixed_window_phi(index, 100);
             accumulator.push_weighted(20, -84, weight).unwrap();
-            saliency
-                .push_weighted_sample(phi, weight, INDUCTANCE_AC_UD_EXT, 20, -84)
-                .unwrap();
+            saliency.push_weighted_sample(phi, weight, 20, -84).unwrap();
             if index < 50 {
                 first_half.push_weighted(20, -84, weight).unwrap();
             } else {
@@ -4065,9 +4022,7 @@ mod tests {
             let weight = fixed_window_phi_weight(index, 100);
             let phi = fixed_window_phi(index, 100);
             accumulator.push_weighted(20, -84, weight).unwrap();
-            saliency
-                .push_weighted_sample(phi, weight, INDUCTANCE_AC_UD_EXT, 20, -84)
-                .unwrap();
+            saliency.push_weighted_sample(phi, weight, 20, -84).unwrap();
             if index < 50 {
                 first_half.push_weighted(20, -84, weight).unwrap();
             } else {
