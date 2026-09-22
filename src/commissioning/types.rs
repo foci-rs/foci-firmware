@@ -194,18 +194,6 @@ pub struct InductanceEstimateEvidence {
     pub x_mag_vs_quad_permille: u16,
 }
 
-impl InductanceEstimateEvidence {
-    /// Return true when determinable Ld/Lq bracket the accepted average.
-    pub fn brackets_average(&self) -> bool {
-        if self.saliency_status != crate::electrical_capture::AC_SALIENCY_DETERMINABLE {
-            return false;
-        }
-        let low = self.x_d_count_ratio_milli.min(self.x_q_count_ratio_milli);
-        let high = self.x_d_count_ratio_milli.max(self.x_q_count_ratio_milli);
-        low <= self.x_average_count_ratio_milli && self.x_average_count_ratio_milli <= high
-    }
-}
-
 /// Complete production inductance evidence carried from Phase 5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct InductanceEvidence {

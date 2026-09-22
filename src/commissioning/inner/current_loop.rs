@@ -2607,7 +2607,6 @@ mod tests {
                     assert_eq!(data.inductance.estimate.x_average_count_ratio_milli, 8_600);
                     assert_eq!(data.inductance.estimate.x_d_count_ratio_milli, 9_200);
                     assert_eq!(data.inductance.estimate.x_q_count_ratio_milli, 8_000);
-                    assert!(data.inductance.estimate.brackets_average());
                     assert_eq!(
                         data.current_loop_evidence.gains_tier,
                         CURRENT_GAINS_TIER_PHYSICAL_SYMMETRIC

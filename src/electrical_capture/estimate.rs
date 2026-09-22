@@ -158,16 +158,6 @@ impl AcSaliencyEvidence {
             saliency_permille: Permille::ZERO,
         }
     }
-
-    /// Return true when the accepted average is bracketed by the two axes.
-    pub fn brackets_average(&self) -> bool {
-        if self.status != AC_SALIENCY_DETERMINABLE {
-            return false;
-        }
-        let low = self.x_d_count_ratio_milli.min(self.x_q_count_ratio_milli);
-        let high = self.x_d_count_ratio_milli.max(self.x_q_count_ratio_milli);
-        low <= self.x_average_count_ratio_milli && self.x_average_count_ratio_milli <= high
-    }
 }
 
 /// Standard deviations of amplitude noise a split must clear to be determinable.
@@ -1713,32 +1703,6 @@ mod tests {
     }
 
     #[test]
-    fn saliency_reactance_brackets_average_when_determinable() {
-        let evidence = AcSaliencyEvidence {
-            status: AC_SALIENCY_DETERMINABLE,
-            x_average_count_ratio_milli: 8_600,
-            x_d_count_ratio_milli: 9_200,
-            x_q_count_ratio_milli: 8_000,
-            saliency_permille: Permille::new(140),
-        };
-
-        assert!(evidence.brackets_average());
-    }
-
-    #[test]
-    fn saliency_reactance_rejects_average_outside_ld_lq() {
-        let evidence = AcSaliencyEvidence {
-            status: AC_SALIENCY_DETERMINABLE,
-            x_average_count_ratio_milli: 9_500,
-            x_d_count_ratio_milli: 9_200,
-            x_q_count_ratio_milli: 8_000,
-            saliency_permille: Permille::new(140),
-        };
-
-        assert!(!evidence.brackets_average());
-    }
-
-    #[test]
     fn saliency_reactance_allows_not_determinable_without_fake_axes() {
         let evidence = AcSaliencyEvidence::not_determinable(8_600);
 
@@ -1746,7 +1710,6 @@ mod tests {
         assert_eq!(evidence.x_average_count_ratio_milli, 8_600);
         assert_eq!(evidence.x_d_count_ratio_milli, 0);
         assert_eq!(evidence.x_q_count_ratio_milli, 0);
-        assert!(!evidence.brackets_average());
     }
 
     #[test]

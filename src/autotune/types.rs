@@ -207,8 +207,6 @@ pub enum CommissionError {
     InductanceReactanceInvalid,
     /// Inductance identification could not compute the drift cross-check. Code 40.
     InductanceDriftInvalid,
-    /// Inductance identification rejected saliency evidence. Code 41.
-    InductanceSaliencyInvalid,
     /// Sustained current-loop hold validation failed. Code 42.
     CurrentHoldFailed,
     /// Closed-loop entry stability check saw runaway or drift. Code 43.
@@ -600,7 +598,6 @@ impl CommissionError {
             Self::InductanceMissingResistanceEvidence => 38,
             Self::InductanceReactanceInvalid => 39,
             Self::InductanceDriftInvalid => 40,
-            Self::InductanceSaliencyInvalid => 41,
             Self::CurrentHoldFailed => 42,
             Self::ClosedLoopActivationUnstable => 43,
             Self::ElectricalModelNoSamples => 44,
@@ -939,7 +936,6 @@ mod tests {
             CommissionError::InductanceMissingResistanceEvidence,
             CommissionError::InductanceReactanceInvalid,
             CommissionError::InductanceDriftInvalid,
-            CommissionError::InductanceSaliencyInvalid,
             CommissionError::CurrentHoldFailed,
             CommissionError::ClosedLoopActivationUnstable,
             CommissionError::ElectricalModelNoSamples,

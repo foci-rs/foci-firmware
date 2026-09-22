@@ -45,7 +45,6 @@ const INDUCTANCE_MAX_ENCODER_DELTA_COUNTS: u32 = 8;
 const INDUCTANCE_MAX_DRIFT_WARN_PERMILLE: u16 = 70;
 const INDUCTANCE_MAX_IQ_RMS_WARN_PERMILLE: u16 = 250;
 const INDUCTANCE_MAX_MAG_CROSSCHECK_WARN_PERMILLE: u16 = 100;
-const INDUCTANCE_SALIENCY_BRACKET_TOLERANCE_COUNT_RATIO_MILLI: u32 = 256;
 const INDUCTANCE_REALIZED_FREQUENCY_TARGET_MILLIHZ: u32 = 1_000_000;
 const INDUCTANCE_REALIZED_FREQUENCY_TOLERANCE_MILLIHZ: u32 = 50_000;
 const INDUCTANCE_MIN_AC_SAMPLE_COUNT: u16 = 90;
@@ -706,8 +705,6 @@ enum InductanceCaptureRejectReason {
     FirstHalfAccumulator = 5,
     SecondHalfAccumulator = 6,
     ElapsedInterpolation = 7,
-    SaliencyAverageBelowBracket = 9,
-    SaliencyAverageAboveBracket = 10,
 }
 
 impl InductanceCaptureRejectReason {
@@ -753,37 +750,6 @@ fn push_inductance_capture_rejection(
         reason,
         sample_count,
         value2,
-    ));
-}
-
-fn push_inductance_saliency_bracket_rejection(
-    diagnostics: &mut crate::selftest::CommissionDiagnostics,
-    estimate: InductanceEstimateEvidence,
-) {
-    let low = estimate
-        .x_d_count_ratio_milli
-        .min(estimate.x_q_count_ratio_milli);
-    let high = estimate
-        .x_d_count_ratio_milli
-        .max(estimate.x_q_count_ratio_milli);
-    let (reason, bound) = if estimate.x_average_count_ratio_milli < low {
-        (
-            InductanceCaptureRejectReason::SaliencyAverageBelowBracket,
-            low,
-        )
-    } else {
-        (
-            InductanceCaptureRejectReason::SaliencyAverageAboveBracket,
-            high,
-        )
-    };
-    diagnostics.push(inductance_capture_rejection_diagnostic(
-        reason,
-        estimate.saliency_permille,
-        pack_u16_pair(
-            low_u16(estimate.x_average_count_ratio_milli),
-            low_u16(bound),
-        ),
     ));
 }
 
@@ -1110,7 +1076,6 @@ enum InductanceReject {
     MissingResistance,
     Reactance,
     Drift,
-    Saliency,
     EncoderMotion,
 }
 
@@ -1124,7 +1089,6 @@ impl InductanceReject {
             Self::MissingResistance => CommissionError::InductanceMissingResistanceEvidence,
             Self::Reactance => CommissionError::InductanceReactanceInvalid,
             Self::Drift => CommissionError::InductanceDriftInvalid,
-            Self::Saliency => CommissionError::InductanceSaliencyInvalid,
         }
     }
 }
@@ -1232,11 +1196,6 @@ fn finish_inductance_evidence(
             reactance.x_quad_count_ratio_milli,
         ),
     };
-    if saliency.status == crate::electrical_capture::AC_SALIENCY_DETERMINABLE
-        && !saliency.brackets_average()
-    {
-        return Err(InductanceReject::Saliency);
-    }
 
     let mut warning_flags = 0u16;
     let iq_rms_permille = Permille::checked_ratio(
@@ -1298,43 +1257,6 @@ fn finish_inductance_evidence(
             x_mag_vs_quad_permille: reactance.x_mag_vs_quad_permille,
         },
     })
-}
-
-fn saliency_for_frame_average(
-    frame_average_count_ratio_milli: u32,
-    saliency: crate::electrical_capture::AcSaliencyEvidence,
-) -> Result<crate::electrical_capture::AcSaliencyEvidence, InductanceReject> {
-    if saliency.status != crate::electrical_capture::AC_SALIENCY_DETERMINABLE {
-        return Ok(saliency);
-    }
-
-    let low = saliency
-        .x_d_count_ratio_milli
-        .min(saliency.x_q_count_ratio_milli);
-    let high = saliency
-        .x_d_count_ratio_milli
-        .max(saliency.x_q_count_ratio_milli);
-    if low <= frame_average_count_ratio_milli && frame_average_count_ratio_milli <= high {
-        return Ok(saliency);
-    }
-
-    let miss = if frame_average_count_ratio_milli < low {
-        low - frame_average_count_ratio_milli
-    } else {
-        frame_average_count_ratio_milli - high
-    };
-    if miss > INDUCTANCE_SALIENCY_BRACKET_TOLERANCE_COUNT_RATIO_MILLI {
-        return Err(InductanceReject::Saliency);
-    }
-
-    // Low-saliency D/Q split evidence is below the measurement consistency
-    // floor. Keep the angle-averaged production L and decline to publish a
-    // physically weak split rather than hard-failing a valid capture.
-    Ok(
-        crate::electrical_capture::AcSaliencyEvidence::not_determinable(
-            frame_average_count_ratio_milli,
-        ),
-    )
 }
 
 fn electrical_timing_summaries(
@@ -2029,55 +1951,13 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 saliency_accumulator: capture.saliency,
             });
             match evidence {
-                Ok(mut evidence) => {
-                    let saliency = crate::electrical_capture::AcSaliencyEvidence {
-                        status: evidence.estimate.saliency_status,
-                        x_average_count_ratio_milli: evidence.estimate.x_average_count_ratio_milli,
-                        x_d_count_ratio_milli: evidence.estimate.x_d_count_ratio_milli,
-                        x_q_count_ratio_milli: evidence.estimate.x_q_count_ratio_milli,
-                        saliency_permille: Permille::new(evidence.estimate.saliency_permille),
-                    };
-                    match saliency_for_frame_average(
-                        evidence.estimate.x_average_count_ratio_milli,
-                        saliency,
-                    ) {
-                        Ok(saliency) => {
-                            evidence.estimate.x_d_count_ratio_milli =
-                                saliency.x_d_count_ratio_milli;
-                            evidence.estimate.x_q_count_ratio_milli =
-                                saliency.x_q_count_ratio_milli;
-                            evidence.estimate.saliency_status = saliency.status;
-                            evidence.estimate.saliency_permille = saliency.saliency_permille.raw();
-                            begin_inductance_restore(
-                                electrical_identification_state,
-                                backend,
-                                None,
-                                Some(evidence),
-                                Some(timing),
-                            )
-                        }
-                        Err(InductanceReject::Saliency) => {
-                            push_inductance_saliency_bracket_rejection(
-                                diagnostics,
-                                evidence.estimate,
-                            );
-                            begin_inductance_restore(
-                                electrical_identification_state,
-                                backend,
-                                Some(CommissionError::InductanceCaptureRejected),
-                                None,
-                                Some(timing),
-                            )
-                        }
-                        Err(error) => begin_inductance_restore(
-                            electrical_identification_state,
-                            backend,
-                            Some(error.commission_error()),
-                            None,
-                            Some(timing),
-                        ),
-                    }
-                }
+                Ok(evidence) => begin_inductance_restore(
+                    electrical_identification_state,
+                    backend,
+                    None,
+                    Some(evidence),
+                    Some(timing),
+                ),
                 Err(error) => {
                     if error == InductanceReject::Frequency {
                         let frequency = crate::electrical_capture::realized_frequency_millihz(
@@ -2958,137 +2838,6 @@ mod tests {
                 event.phase == CommissionPhase::ElectricalIdentification.to_u8() && event.code == 33
             })
             .expect("inductance capture rejection should retain branch detail")
-    }
-
-    #[test]
-    fn saliency_bracket_rejection_records_violated_bound() {
-        let mut diagnostics = crate::selftest::CommissionDiagnostics::default();
-
-        push_inductance_saliency_bracket_rejection(
-            &mut diagnostics,
-            InductanceEstimateEvidence {
-                x_average_count_ratio_milli: 8_500,
-                x_d_count_ratio_milli: 8_616,
-                x_q_count_ratio_milli: 8_552,
-                saliency_status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
-                saliency_permille: 7,
-                x_mag_nominal_count_ratio_milli: 0,
-                x_mag_shift_minus_permille: 0,
-                x_mag_shift_plus_permille: 0,
-                x_mag_vs_quad_permille: 0,
-            },
-        );
-        push_inductance_saliency_bracket_rejection(
-            &mut diagnostics,
-            InductanceEstimateEvidence {
-                x_average_count_ratio_milli: 8_700,
-                x_d_count_ratio_milli: 8_616,
-                x_q_count_ratio_milli: 8_552,
-                saliency_status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
-                saliency_permille: 7,
-                x_mag_nominal_count_ratio_milli: 0,
-                x_mag_shift_minus_permille: 0,
-                x_mag_shift_plus_permille: 0,
-                x_mag_vs_quad_permille: 0,
-            },
-        );
-
-        let mut details = diagnostics.iter();
-        let below = details
-            .next()
-            .expect("below-bound saliency diagnostic missing");
-        assert_eq!(below.value0, 9);
-        assert_eq!(below.value1, 7);
-        assert_eq!(below.value2, (8_500u32 << 16) | 8_552);
-
-        let above = details
-            .next()
-            .expect("above-bound saliency diagnostic missing");
-        assert_eq!(above.value0, 10);
-        assert_eq!(above.value1, 7);
-        assert_eq!(above.value2, (8_700u32 << 16) | 8_616);
-    }
-
-    #[test]
-    fn saliency_bracket_small_miss_marks_split_not_determinable() {
-        let below = saliency_for_frame_average(
-            8_659,
-            crate::electrical_capture::AcSaliencyEvidence {
-                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
-                x_average_count_ratio_milli: 8_834,
-                x_d_count_ratio_milli: 8_936,
-                x_q_count_ratio_milli: 8_732,
-                saliency_permille: Permille::new(23),
-            },
-        )
-        .expect("small below-bracket miss should keep average L");
-        let above = saliency_for_frame_average(
-            8_735,
-            crate::electrical_capture::AcSaliencyEvidence {
-                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
-                x_average_count_ratio_milli: 8_586,
-                x_d_count_ratio_milli: 8_629,
-                x_q_count_ratio_milli: 8_543,
-                saliency_permille: Permille::new(10),
-            },
-        )
-        .expect("small above-bracket miss should keep average L");
-        let p95_tail = saliency_for_frame_average(
-            8_832,
-            crate::electrical_capture::AcSaliencyEvidence {
-                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
-                x_average_count_ratio_milli: 8_586,
-                x_d_count_ratio_milli: 8_629,
-                x_q_count_ratio_milli: 8_543,
-                saliency_permille: Permille::new(10),
-            },
-        )
-        .expect("p95-scale benign mismatch should keep average L");
-
-        assert_eq!(
-            below,
-            crate::electrical_capture::AcSaliencyEvidence::not_determinable(8_659)
-        );
-        assert_eq!(
-            above,
-            crate::electrical_capture::AcSaliencyEvidence::not_determinable(8_735)
-        );
-        assert_eq!(
-            p95_tail,
-            crate::electrical_capture::AcSaliencyEvidence::not_determinable(8_832)
-        );
-    }
-
-    #[test]
-    fn saliency_bracket_large_miss_still_rejects() {
-        let result = saliency_for_frame_average(
-            9_200,
-            crate::electrical_capture::AcSaliencyEvidence {
-                status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
-                x_average_count_ratio_milli: 8_586,
-                x_d_count_ratio_milli: 8_629,
-                x_q_count_ratio_milli: 8_543,
-                saliency_permille: Permille::new(10),
-            },
-        );
-
-        assert_eq!(result, Err(InductanceReject::Saliency));
-    }
-
-    #[test]
-    fn saliency_bracketed_average_preserves_split_evidence() {
-        let saliency = crate::electrical_capture::AcSaliencyEvidence {
-            status: crate::electrical_capture::AC_SALIENCY_DETERMINABLE,
-            x_average_count_ratio_milli: 8_600,
-            x_d_count_ratio_milli: 8_900,
-            x_q_count_ratio_milli: 8_300,
-            saliency_permille: Permille::new(70),
-        };
-
-        let result =
-            saliency_for_frame_average(8_620, saliency).expect("bracketed average should pass");
-
-        assert_eq!(result, saliency);
     }
 
     #[test]
