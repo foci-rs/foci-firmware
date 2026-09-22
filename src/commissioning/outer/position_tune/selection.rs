@@ -187,4 +187,32 @@ mod tests {
             RungDecision::Conflict(ConflictKind::Dither)
         );
     }
+
+    #[test]
+    fn a_quartered_ppr_dither_trip_still_reaches_conflict() {
+        let velocity_p = PidPGain::new(1434).unwrap();
+        let position_p = PidPGain::new(627).unwrap();
+        let k_q16 =
+            super::super::ceiling::compute_k(250, velocity_p).expect("valid k at a quartered PPR");
+        let predicted = k_q16.saturating_mul(i64::from(position_p.raw())) / 65_536;
+        let predicted_i32 = i32::try_from(predicted).expect("fits i32 for this fixture");
+        let captures: [i32; 5] = [
+            predicted_i32 * 3,
+            predicted_i32 * 3,
+            predicted_i32 / 2,
+            predicted_i32 * 3,
+            predicted_i32 / 2,
+        ];
+        let (ceiling_tripped, ratios) =
+            super::super::ceiling::ceiling_trips(&captures, k_q16, position_p);
+        assert!(ceiling_tripped);
+        let m = RungMeasurement {
+            ceiling_ratios_milli: ratios,
+            ..measurement(627, 300, 200, 50)
+        };
+        assert_eq!(
+            decide(&m, 409, None, ceiling_tripped),
+            RungDecision::Conflict(ConflictKind::Dither)
+        );
+    }
 }
