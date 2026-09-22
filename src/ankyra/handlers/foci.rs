@@ -328,7 +328,7 @@ pub fn foci_config_homing(
         return;
     }
     state.homing_current_ma.store(homing_ma, Relaxed);
-    state.stall_threshold_units.store(stall_units, Relaxed);
+    state.stall_ceiling_units.store(stall_units, Relaxed);
     state.stall_persistence.store(persistence, Relaxed);
 }
 
@@ -898,7 +898,7 @@ mod tests {
         foci_config_homing(&mut ctx, &mut sender, 10, 700, 819, 3);
 
         assert_eq!(tmc_state.homing_current_ma.load(Relaxed), 700);
-        assert_eq!(tmc_state.stall_threshold_units.load(Relaxed), 819);
+        assert_eq!(tmc_state.stall_ceiling_units.load(Relaxed), 819);
         assert_eq!(tmc_state.stall_persistence.load(Relaxed), 3);
         assert_eq!(ctx.last_shutdown, None);
     }

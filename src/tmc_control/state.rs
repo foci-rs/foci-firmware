@@ -2079,7 +2079,8 @@ impl TmcControlRuntime {
         refs.tmc.stall_latched.store(false, Relaxed);
         refs.tmc.homing_clamp_active.store(true, Relaxed);
         self.stall_detector = Some(crate::tmc_control::stall_detector::StallDetector::new(
-            refs.tmc.stall_threshold_units.load(Relaxed),
+            refs.tmc.stall_ceiling_units.load(Relaxed),
+            refs.tmc.stall_margin_units.load(Relaxed),
             refs.tmc.stall_persistence.load(Relaxed),
         ));
         defmt::info!("homing: clamp {} mA, detector armed", homing_ma);
@@ -2126,6 +2127,12 @@ impl TmcControlRuntime {
             refs.tmc
                 .stall_trigger_tick
                 .store(detector.trigger_tick(), Relaxed);
+            refs.tmc
+                .stall_trigger_path
+                .store(detector.trigger_path().as_u8(), Relaxed);
+            refs.tmc
+                .stall_peak_margin_delta_units
+                .store(detector.peak_margin_delta_units(), Relaxed);
         }
         refs.tmc.stall_latched.store(false, Relaxed);
         defmt::info!("homing: run current restored");
@@ -2309,9 +2316,15 @@ impl TmcControlRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn arm_stall_detector_for_test(&mut self, threshold: u32, persistence: u8) {
+    pub(crate) fn arm_stall_detector_for_test(
+        &mut self,
+        ceiling: u32,
+        margin: u32,
+        persistence: u8,
+    ) {
         self.stall_detector = Some(crate::tmc_control::stall_detector::StallDetector::new(
-            threshold,
+            ceiling,
+            margin,
             persistence,
         ));
     }

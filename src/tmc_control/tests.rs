@@ -146,15 +146,19 @@ fn channel_runtime_size_stays_bounded() {
     // state carries an `Option<RobustnessEvidence>` so a robustness pass, which
     // deploys through `OuterDone` and never emits its terminal, can still put
     // the per-direction cycle evidence on the wire ahead of the tune result.
+    // 8_144 -> 8_176 / 8_112 -> 8_144: `StallDetector` gained the
+    // baseline-relative margin check's fixed-point EMA state (two u64
+    // accumulators, the ceiling/margin split, and per-check consecutive
+    // counters) alongside the existing absolute-ceiling check.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_176);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_112);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
 }
 
 #[test]
@@ -1522,7 +1526,8 @@ fn homing_state(runtime: &mut TmcControlRuntime) -> crate::state::tmc::TmcChanne
     let tmc_state = crate::state::tmc::TmcChannelState::new();
     tmc_state.store_outer_gains(crate::pid::test_outer_gains(123, 0, 1152, 0), Relaxed);
     tmc_state.homing_current_ma.store(700, Relaxed);
-    tmc_state.stall_threshold_units.store(100, Relaxed);
+    tmc_state.stall_ceiling_units.store(100, Relaxed);
+    tmc_state.stall_margin_units.store(99, Relaxed);
     tmc_state.stall_persistence.store(2, Relaxed);
     tmc_state.store_current_limit(homing_limit_for(2300), Relaxed);
     runtime.set_motor_enabled_for_test(true);
@@ -2102,7 +2107,11 @@ fn homing_restore_writes_run_current_and_publishes_result() {
         assert!(tmc_state.stall_result_latched.load(Relaxed));
         assert_eq!(tmc_state.stall_peak_error_units.load(Relaxed), 1000);
         assert_eq!(tmc_state.stall_trigger_tick.load(Relaxed), 2);
+        assert_eq!(tmc_state.stall_trigger_path.load(Relaxed), 1); // Ceiling
         assert!(!runtime.stall_detector_armed_for_test());
+        // Baseline never warmed up in these 2-3 ticks, so no margin-delta
+        // headroom was ever tracked.
+        assert_eq!(tmc_state.stall_peak_margin_delta_units.load(Relaxed), 0);
     });
 }
 

@@ -1488,7 +1488,7 @@ mod tests {
             let tmc = crate::state::tmc::tmc_channel0();
             let stepper = crate::state::stepper::stepper_channel0();
             use core::sync::atomic::Ordering::Relaxed;
-            runtime.arm_stall_detector_for_test(100, 2);
+            runtime.arm_stall_detector_for_test(100, 50, 2);
             tmc.homing_clamp_active.store(true, Relaxed);
             tmc.stall_latched.store(true, Relaxed);
 

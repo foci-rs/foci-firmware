@@ -348,9 +348,16 @@ pub struct TmcChannelState {
     velocity_ff_clamp_count: AtomicU32,
     /// Homing-move current clamp in mA RMS; 0 disables the clamp and detector.
     pub homing_current_ma: AtomicU32,
-    /// Stall threshold in TMC position units (65536 per revolution).
-    pub stall_threshold_units: AtomicU32,
-    /// Consecutive control ticks over threshold before the latch sets.
+    /// Unconditional stall-detector ceiling in TMC position units (65536 per
+    /// revolution) — the loose backstop, always active regardless of
+    /// baseline state.
+    pub stall_ceiling_units: AtomicU32,
+    /// Baseline-relative stall-detector margin in TMC position units — the
+    /// tight, primary detection threshold, active once the detector's EMA
+    /// baseline has warmed up.
+    pub stall_margin_units: AtomicU32,
+    /// Consecutive control ticks over threshold before either check's latch
+    /// sets.
     pub stall_persistence: AtomicU8,
     /// An endstop on this channel is configured on the virtual STALL pin.
     pub stall_endstop_configured: AtomicBool,
@@ -364,6 +371,13 @@ pub struct TmcChannelState {
     pub stall_peak_error_units: AtomicU32,
     /// Detector tick at which the most recent latch set, 0 if none.
     pub stall_trigger_tick: AtomicU32,
+    /// Which check latched during the most recent completed homing mode.
+    /// Wire-encoded per `stall_detector::StallTriggerPath::as_u8` (0 = None,
+    /// 1 = Ceiling, 2 = Margin).
+    pub stall_trigger_path: AtomicU8,
+    /// Largest `error - baseline` observed during the most recent completed
+    /// homing mode, while the baseline was valid. 0 if it never warmed up.
+    pub stall_peak_margin_delta_units: AtomicU32,
 }
 
 impl TmcChannelState {
@@ -456,7 +470,8 @@ impl TmcChannelState {
             velocity_ff_clamp_latched: AtomicBool::new(false),
             velocity_ff_clamp_count: AtomicU32::new(0),
             homing_current_ma: AtomicU32::new(0),
-            stall_threshold_units: AtomicU32::new(0),
+            stall_ceiling_units: AtomicU32::new(0),
+            stall_margin_units: AtomicU32::new(0),
             stall_persistence: AtomicU8::new(0),
             stall_endstop_configured: AtomicBool::new(false),
             stall_latched: AtomicBool::new(false),
@@ -464,6 +479,8 @@ impl TmcChannelState {
             stall_result_latched: AtomicBool::new(false),
             stall_peak_error_units: AtomicU32::new(0),
             stall_trigger_tick: AtomicU32::new(0),
+            stall_trigger_path: AtomicU8::new(0),
+            stall_peak_margin_delta_units: AtomicU32::new(0),
         }
     }
 
@@ -552,7 +569,8 @@ impl TmcChannelState {
         self.store_outer_gains(crate::pid::CONFIG_RESET_PLACEHOLDER_GAINS, Relaxed);
         self.clear_velocity_clamp_latch();
         self.homing_current_ma.store(0, Relaxed);
-        self.stall_threshold_units.store(0, Relaxed);
+        self.stall_ceiling_units.store(0, Relaxed);
+        self.stall_margin_units.store(0, Relaxed);
         self.stall_persistence.store(0, Relaxed);
         self.stall_endstop_configured.store(false, Relaxed);
         self.stall_latched.store(false, Relaxed);
@@ -560,6 +578,8 @@ impl TmcChannelState {
         self.stall_result_latched.store(false, Relaxed);
         self.stall_peak_error_units.store(0, Relaxed);
         self.stall_trigger_tick.store(0, Relaxed);
+        self.stall_trigger_path.store(0, Relaxed);
+        self.stall_peak_margin_delta_units.store(0, Relaxed);
     }
 
     /// Load the validated torque/flux current limit.
@@ -1212,7 +1232,8 @@ mod tests {
     fn homing_config_and_stall_result_default_to_inactive() {
         let state = TmcChannelState::new();
         assert_eq!(state.homing_current_ma.load(Relaxed), 0);
-        assert_eq!(state.stall_threshold_units.load(Relaxed), 0);
+        assert_eq!(state.stall_ceiling_units.load(Relaxed), 0);
+        assert_eq!(state.stall_margin_units.load(Relaxed), 0);
         assert_eq!(state.stall_persistence.load(Relaxed), 0);
         assert!(!state.stall_endstop_configured.load(Relaxed));
         assert!(!state.stall_latched.load(Relaxed));
@@ -1220,6 +1241,8 @@ mod tests {
         assert!(!state.stall_result_latched.load(Relaxed));
         assert_eq!(state.stall_peak_error_units.load(Relaxed), 0);
         assert_eq!(state.stall_trigger_tick.load(Relaxed), 0);
+        assert_eq!(state.stall_trigger_path.load(Relaxed), 0);
+        assert_eq!(state.stall_peak_margin_delta_units.load(Relaxed), 0);
     }
 
     #[test]

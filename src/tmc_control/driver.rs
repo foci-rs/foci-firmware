@@ -1014,7 +1014,7 @@ mod tests {
                 driver.runtime.set_phase_advance_for_test(true, 0, 0);
             }),
             ("runtime.stall_detector", |driver| {
-                driver.runtime.arm_stall_detector_for_test(1, 1);
+                driver.runtime.arm_stall_detector_for_test(1, 1, 1);
             }),
             ("runtime.homing_state_1_retries", |driver| {
                 driver.runtime.set_homing_state_1_retries_for_test(1);
