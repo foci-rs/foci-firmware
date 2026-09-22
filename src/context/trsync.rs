@@ -167,6 +167,10 @@ pub struct TriggerDomainState {
     pub stop_signals: [Option<StopSignal>; STOP_SIGNAL_CAPACITY],
     /// Per-stepper state used by triggered stops and reset checks.
     pub stepper_stop: [foci_klipper::trigger::StepperStopRuntime; NUM_STEPPERS],
+    /// Discarded host segments in the current needs-reset episode are
+    /// expected (trigger stop) or already logged; cleared by
+    /// `reset_step_clock`.
+    pub discard_silenced: [bool; NUM_STEPPERS],
     /// Runtime state for configured endstops.
     pub endstops: [foci_klipper::endstop::EndstopRuntime; NUM_ENDSTOPS],
     /// OID-to-runtime-slot map for endstops.
@@ -184,6 +188,7 @@ impl TriggerDomainState {
             stop_signals: [None; STOP_SIGNAL_CAPACITY],
             stepper_stop: [const { foci_klipper::trigger::StepperStopRuntime::new() };
                 NUM_STEPPERS],
+            discard_silenced: [false; NUM_STEPPERS],
             endstops: [const { foci_klipper::endstop::EndstopRuntime::new() }; NUM_ENDSTOPS],
             endstop_by_oid: heapless::LinearMap::new(),
             scheduler: TriggerScheduler::new(),
@@ -422,6 +427,7 @@ pub fn dispatch_trigger<B: TriggerDispatchBoard + ?Sized>(
             state.stepper_stop[stepper_idx].need_reset = true;
             state.stepper_stop[stepper_idx].blocked_by_trigger = true;
             state.stepper_stop[stepper_idx].blocked_by_trsync = Some(trsync_oid);
+            state.discard_silenced[stepper_idx] = true;
             board.set_timer_active(state, stepper_idx, false);
         }
         if !stopped_indices.is_empty() {
@@ -883,6 +889,31 @@ mod tests {
 
         assert_eq!(trsync_set_timeout(&mut state, &mut board, 2, 999), Ok(()));
         assert_eq!(state.scheduler.earliest_deadline(), None);
+    }
+
+    #[test]
+    fn late_host_segments_after_a_trigger_stop_are_not_reported_once_unblocked() {
+        let _guard = homing_test_guard();
+        reset_homing_triggered();
+        let mut state = fresh_state();
+        let mut board = MockBoard::new();
+        register_trsync(&mut state, 2).unwrap();
+        trsync_arm(&mut state, &mut board, 2, 100, 0, 7).unwrap();
+        state.stop_signals[0] = Some(StopSignal {
+            trsync_oid: 2,
+            stepper_idx: 0,
+        });
+        assert!(matches!(
+            dispatch_trigger(&mut state, &mut board, 2, 42, 1234),
+            TriggerResult::First { .. }
+        ));
+        assert_eq!(trsync_trigger(&mut state, &mut board, 2, 42), Ok(42));
+        assert!(state.stepper_stop[0].need_reset);
+        assert!(!state.stepper_stop[0].blocked_by_trigger);
+
+        assert!(!super::super::stepper::note_host_segment_discarded(
+            &mut state, 0, true
+        ));
     }
 
     #[test]

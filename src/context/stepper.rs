@@ -182,6 +182,12 @@ pub fn queue_step_move<B: StepperQueueBoard + ?Sized>(
     match queue_step_hw(need_reset, move_.count, false, true) {
         Ok(QueueStepResult::Discarded) => {
             board.record_discarded_segment(channel, u32::from(move_.count));
+            if note_host_segment_discarded(state, stepper_idx, board.motor_armed(channel)) {
+                defmt::warn!(
+                    "stepper {}: discarding host steps until reset_step_clock (motor armed)",
+                    channel
+                );
+            }
             return Ok(());
         }
         Err(CommandError::ZeroCount) => {
@@ -237,8 +243,28 @@ pub fn reset_step_clock<B: StepperResetBoard + ?Sized>(
 
     if !state.stepper_stop[stepper_idx].blocked_by_trigger {
         state.stepper_stop[stepper_idx].need_reset = false;
+        state.discard_silenced[stepper_idx] = false;
     }
     Ok(())
+}
+
+/// Record a host segment discarded under `need_reset` and return whether it
+/// is the first worth logging in this episode.
+///
+/// A trigger stop silences its own episode when it fires, since the host
+/// keeps streaming until it has processed the trigger, and a disarmed motor
+/// is not being driven. Anything else means the host is stepping a channel
+/// the firmware stopped without telling it.
+pub fn note_host_segment_discarded(
+    state: &mut TriggerDomainState,
+    stepper_idx: usize,
+    motor_armed: bool,
+) -> bool {
+    if !motor_armed || state.discard_silenced[stepper_idx] {
+        return false;
+    }
+    state.discard_silenced[stepper_idx] = true;
+    true
 }
 
 /// Shared P2 stop-check policy.
@@ -453,6 +479,28 @@ mod tests {
                 .unwrap();
             self.set_timer_active(state, stepper_idx, true);
         }
+    }
+
+    #[test]
+    fn discarded_host_segment_is_reported_once_per_needs_reset_episode() {
+        let mut state = TriggerDomainState::new();
+        let mut board = MockStepperBoard::default();
+        state.stepper_stop[0].need_reset = true;
+
+        assert!(note_host_segment_discarded(&mut state, 0, true));
+        assert!(!note_host_segment_discarded(&mut state, 0, true));
+
+        assert_eq!(reset_step_clock(&mut state, &mut board, 0, 5000), Ok(()));
+        state.stepper_stop[0].need_reset = true;
+        assert!(note_host_segment_discarded(&mut state, 0, true));
+    }
+
+    #[test]
+    fn discarded_host_segment_with_motor_disarmed_is_not_reported() {
+        let mut state = TriggerDomainState::new();
+        state.stepper_stop[0].need_reset = true;
+
+        assert!(!note_host_segment_discarded(&mut state, 0, false));
     }
 
     #[test]
