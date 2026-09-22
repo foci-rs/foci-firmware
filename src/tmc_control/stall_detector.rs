@@ -28,12 +28,37 @@ impl StallTriggerPath {
     }
 }
 
-/// Ticks a following-error delta must exceed to count as "real motion" for
+/// A following-error delta a tick must exceed to count as "real motion" for
 /// baseline purposes. Firmware constant, not host-configurable (see spec's
-/// Config surface). Position units (65536 per revolution); a few units is
-/// well above encoder/quantization noise at any homing speed this printer
-/// runs.
-const MOTION_NOISE_FLOOR_UNITS: u32 = 4;
+/// Config surface). Position units (65536 per revolution).
+///
+/// Sized against two bounds, not picked as a round number:
+///
+/// - **Above realistic encoder jitter.** The ABN encoder is 4000 counts/rev
+///   (`docs/notes/openffboard-hardware.md`), so one count is
+///   `65536 / 4000 ~= 16.384` position units. The project's own
+///   "+/-2 counts jitter" precedent for a stationary axis
+///   (`docs/notes/decisions.md`, 2026-04-05) is therefore `~=33` units of
+///   realistic settling noise, with observed excursions up to `~=49` units
+///   (3 counts). A stalled axis that is genuinely not moving can still show
+///   deltas in that range every tick; the floor must sit above it or a
+///   stall never stops "confirming motion" and the EMA baseline keeps
+///   chasing the rising following error instead of staying gated.
+/// - **Far below real per-tick motion at the slowest homing speed in use.**
+///   The homing maintenance tick runs on the shared 1 ms maintenance grid
+///   (`scheduler::MAINTENANCE_PERIOD_US`), so 1 tick = 1 ms. At this
+///   printer's slowest homing speed, 100 mm/s, and its `rotation_distance`
+///   of 40 mm/rev (`POSITION_UNITS_PER_REV = 65536` in `config.py`), one
+///   tick of real cruise motion is `0.1 mm * 65536 / 40 ~= 164` position
+///   units -- comfortably above this floor, so genuine motion still
+///   registers on essentially every tick and the baseline still warms up
+///   promptly.
+///
+/// 64 sits well clear of both bounds: ~1.9x the ~33-unit documented jitter
+/// precedent, ~1.3x the ~49-unit observed excursion, and about 2.5x below
+/// per-tick motion at the slowest homing speed (100 mm/s; 175 mm/s gives
+/// even more headroom).
+const MOTION_NOISE_FLOOR_UNITS: u32 = 64;
 
 /// Consecutive motion-confirmed ticks required before the baseline is
 /// trusted. Firmware constant; see spec's residual-risk section for why
@@ -251,6 +276,32 @@ mod tests {
     }
 
     #[test]
+    fn ceiling_check_latches_under_encoder_jitter_within_the_new_noise_floor() {
+        // Companion to `ceiling_check_latches_on_gross_error_before_baseline_
+        // warms_up` above, but with `actual` jittering by 50 units a tick
+        // (below MOTION_NOISE_FLOOR_UNITS's 64, above the old 4-unit floor,
+        // and above the documented +/-2-count / ~33-unit encoder jitter
+        // precedent) instead of holding perfectly still. A real stalled
+        // axis's encoder reading jitters like this; it must not look like
+        // "real motion" to the baseline, so only the ceiling backstop may
+        // latch here, exactly as it does in the zero-jitter case.
+        let mut det = StallDetector::new(
+            /* ceiling */ 200, /* margin */ 10, /* persistence */ 2,
+        );
+        assert!(!det.observe(100, 0));
+        assert!(!det.observe(150, 50));
+        assert!(!det.observe(205, 0));
+        assert!(det.observe(250, 50));
+        assert!(det.latched());
+        assert_eq!(det.trigger_path(), StallTriggerPath::Ceiling);
+        // The baseline never warmed up: every tick-to-tick jitter delta (50
+        // units) stayed under MOTION_NOISE_FLOOR_UNITS, so motion was never
+        // confirmed and the margin path could not have been the one that
+        // fired.
+        assert_eq!(det.peak_margin_delta_units(), 0);
+    }
+
+    #[test]
     fn margin_check_stays_masked_while_axis_is_jammed_from_tick_1() {
         // Companion to the ceiling test above: the delta check never
         // activates for a stall present since tick 1, because the baseline
@@ -276,7 +327,7 @@ mod tests {
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 2 {
-            actual += 10;
+            actual += 70;
             assert!(!det.observe(actual + 5, actual));
         }
         assert!(!det.latched());
@@ -295,7 +346,7 @@ mod tests {
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 20 {
-            actual += 10;
+            actual += 70;
             assert!(!det.observe(actual + 5, actual));
         }
         assert!(!det.latched());
@@ -310,7 +361,7 @@ mod tests {
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 1 {
-            actual += 10;
+            actual += 70;
             det.observe(actual + 2, actual);
         }
         assert!(!det.latched());
@@ -327,7 +378,7 @@ mod tests {
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 5 {
-            actual += 10;
+            actual += 70;
             det.observe(actual + 5, actual);
         }
         assert!(!det.latched());
@@ -369,7 +420,7 @@ mod tests {
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 40 {
-            actual += 10;
+            actual += 70;
             det.observe(actual + 1, actual);
         }
         // If the baseline were stuck at 0, error(1) - baseline(0) = 1 >=
@@ -392,7 +443,7 @@ mod tests {
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 5 {
-            actual += 10;
+            actual += 70;
             det.observe(actual + 5, actual);
         }
         assert!(!det.latched());
@@ -403,7 +454,7 @@ mod tests {
         // detector must still never latch.
         let mut error_offset = 5u32;
         for _ in 0..300 {
-            actual += 10;
+            actual += 70;
             error_offset += 1;
             det.observe(actual + error_offset, actual);
         }
@@ -422,7 +473,7 @@ mod tests {
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 5 {
-            actual += 10;
+            actual += 70;
             det.observe(actual + 5, actual);
         }
         // One tick with a known, large jump while actual holds still: the
