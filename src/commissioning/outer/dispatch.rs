@@ -1,8 +1,6 @@
 //! Outer commissioning phase dispatcher.
 
-use crate::autotune::{
-    CommissionError, CommissionProfile, OperatingMode, PositionTuneOutcome, TransientBuffer,
-};
+use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::types::{OuterSafetyFault, PositionTuneProvenance, StepResult};
 
@@ -223,14 +221,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                 return velocity_fault_terminal(phase, err, Some(fault));
             }
             let position_tune = position_tune_provenance(phase);
-            if is_position_tune && position_tune.rungs_measured == 0 {
-                return fail_outer_position_tune(
-                    phase,
-                    CommissionError::PositionTuneFailed,
-                    Some(PositionTuneOutcome::Conflict),
-                    position_tune,
-                );
-            }
             return fail_outer_with_safety(phase, err, fault, position_tune);
         }
         let safety_result = if let Some(context) = timing_context {
@@ -269,14 +259,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                     return velocity_fault_terminal(phase, err, Some(fault));
                 }
                 let position_tune = position_tune_provenance(phase);
-                if is_position_tune && position_tune.rungs_measured == 0 {
-                    return fail_outer_position_tune(
-                        phase,
-                        CommissionError::PositionTuneFailed,
-                        Some(PositionTuneOutcome::Conflict),
-                        position_tune,
-                    );
-                }
                 return fail_outer_with_safety(phase, err, fault, position_tune);
             }
             Ok(None) => {}

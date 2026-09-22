@@ -1561,7 +1561,7 @@ mod tests {
         let terminal = pollster::block_on(engine.step(&mut backend));
         assert!(matches!(
             terminal,
-            StepResult::OuterFailed(CommissionError::PositionTuneFailed)
+            StepResult::OuterFailed(CommissionError::SafetyEnvelopeViolation)
         ));
 
         // `arm_stroke`'s own admission (the first `engine.step` in the drive
@@ -1679,91 +1679,6 @@ mod tests {
                     };
                     assert_eq!(position_tune.rungs_measured, 1);
                     assert_eq!(position_tune.last_rung_p, start_raw);
-                    return;
-                }
-            }
-        }
-        panic!("expected a terminal within the tick budget");
-    }
-
-    #[fixture_test]
-    fn a_safety_fault_on_the_predicted_start_stroke_reports_conflict() {
-        let mut backend = position_tune_backend();
-        let mut phase = position_tune_phase();
-        let start_raw = predicted_start_of(&mut phase, &mut backend);
-        backend.mechanical_encoder_position_counts_value = 5_000;
-
-        let mut workspace = TransientBuffer::new();
-        let mut trace_summary_seqs = crate::commissioning::outer::TraceSummarySeqs::new();
-        let mut clock_us = backend.elapsed_us_value;
-
-        for _ in 0..20_000 {
-            let OuterPhase::PositionTune { state, .. } = &phase else {
-                panic!("the phase must stay resident until it reports a terminal");
-            };
-            match state.step {
-                PositionTuneStep::Predict => {}
-                PositionTuneStep::Stroke { rung, kind, .. } => {
-                    let error = if rung.raw() == start_raw {
-                        match kind {
-                            StrokeKind::Homing => 10_000,
-                            StrokeKind::Motion => 50,
-                        }
-                    } else {
-                        50
-                    };
-                    let _ = backend
-                        .registers
-                        .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), error as u32);
-                }
-                PositionTuneStep::AwaitRestore { .. } => {
-                    backend
-                        .tmc_state
-                        .feedforward_surfaces_idle
-                        .store(true, Relaxed);
-                }
-                PositionTuneStep::StandstillHold { rung, .. } => {
-                    let sample_index = workspace.len();
-                    let predicted = quantization_only(rung.raw(), state.k_q16);
-                    let torque = if sample_index % 2 == 0 { 0 } else { predicted };
-                    let _ = backend.registers.insert(
-                        PID_TORQUE_FLUX_TARGET.addr(),
-                        torque_target_register(torque),
-                    );
-                }
-                PositionTuneStep::Done => {}
-            }
-
-            backend.elapsed_us_value = clock_us;
-            let result = pollster::block_on(crate::commissioning::outer::step_outer_with_trace(
-                &mut phase,
-                &mut workspace,
-                CommissionProfile::Balanced,
-                crate::autotune::OperatingMode::Nominal,
-                0,
-                0,
-                false,
-                0,
-                0,
-                &mut trace_summary_seqs,
-                &mut backend,
-            ));
-            match result {
-                StepResult::At(next_us) => clock_us = next_us,
-                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
-                terminal => {
-                    assert!(matches!(
-                        terminal,
-                        StepResult::OuterFailed(CommissionError::PositionTuneFailed)
-                    ));
-                    let OuterPhase::PositionTuneFailed {
-                        outcome, provenance, ..
-                    } = &phase
-                    else {
-                        panic!("expected PositionTuneFailed, got {phase:?}");
-                    };
-                    assert_eq!(*outcome, Some(PositionTuneOutcome::Conflict));
-                    assert_eq!(provenance.rungs_measured, 0);
                     return;
                 }
             }
