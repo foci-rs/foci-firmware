@@ -324,7 +324,7 @@ fn historical_schema_three_keeps_the_stabilized_recovery_digest_input() {
     .unwrap();
     historical.schema_revision = 3;
 
-    assert_eq!(historical.digest(), 0xef8e_e895_03a9_cc71);
+    assert_eq!(historical.digest(), 0xa0c7_1872_d0c7_a971);
 }
 
 #[test]

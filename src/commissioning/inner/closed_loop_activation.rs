@@ -49,6 +49,10 @@ use foci_tmc4671::pid::{PidIGain, PidPGain};
 /// `tau = 65536 / (I_raw * f_pwm)` that the I-rung seeding depends on.
 /// Closed-loop entry's stability and runaway thresholds are the gate.
 const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0009;
+/// Velocity quantum of the standard meter selected above, in encoder counts per
+/// minute: one count per 65536/15 Hz differentiation sample, so `60 * 65536 / 15`
+/// exactly. Meter 1 would instead quantise at one count per PWM period.
+pub(crate) const STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE: u32 = 262_144;
 // phi_m_abn selects the mechanical ABN angle directly; no pole-pair scaling applies.
 const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
 const CLOSED_LOOP_PWM_SV_CHOP: u32 = 7;
@@ -1124,6 +1128,9 @@ mod tests {
 
     #[test]
     fn closed_loop_velocity_selection_uses_the_standard_meter_on_the_mechanical_angle() {
+        use crate::commissioning::outer::velocity::reproduction::{
+            BUILD_FEATURE_STANDARD_METER_QUANTUM, BUILD_FEATURES,
+        };
         use foci_tmc4671::registers::VelocitySelection;
 
         let selection = VelocitySelection::from(CLOSED_LOOP_VELOCITY_SELECTION);
@@ -1137,6 +1144,16 @@ mod tests {
             selection.velocity_meter_selection(),
             0,
             "commissioning must run the standard velocity meter"
+        );
+        assert_eq!(
+            STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE,
+            60 * 65_536 / 15,
+            "the gate's velocity quantum must be the standard meter's sample rate"
+        );
+        assert_ne!(
+            BUILD_FEATURES & BUILD_FEATURE_STANDARD_METER_QUANTUM,
+            0,
+            "the build must declare the standard-meter quantum it gates with"
         );
         // The feedback source stays the mechanical ABN angle. `TmcMechanicalRpm`
         // documents that this field, not the meter, fixes the RPM domain shared

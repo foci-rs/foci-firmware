@@ -251,16 +251,21 @@ fn response_horizon_classifies_anchors_and_the_64_to_128_boundary() {
 #[test]
 fn recovery_quantization_exposure_is_exact_and_checked() {
     assert_eq!(
-        recovery_quantization_exposed(724, 264, 4_000, 25_000, 2_534),
+        recovery_quantization_exposed(724, 264, 4_000, 2_534),
         Ok(false)
     );
     assert_eq!(
-        recovery_quantization_exposed(1_024, 264, 4_000, 25_000, 2_534),
+        recovery_quantization_exposed(1_968, 264, 4_000, 2_534),
+        Ok(false)
+    );
+    assert_eq!(
+        recovery_quantization_exposed(1_969, 264, 4_000, 2_534),
         Ok(true)
     );
-    assert_eq!(recovery_quantization_exposed(256, 0, 1, 1, 60), Ok(false));
+    assert_eq!(recovery_quantization_exposed(1, 0, 4, 256), Ok(false));
+    assert_eq!(recovery_quantization_exposed(1, 0, 4, 255), Ok(true));
     assert_eq!(
-        recovery_quantization_exposed(1, i32::MIN, 1, 1, 1),
+        recovery_quantization_exposed(1, i32::MIN, 1, 1),
         Err(VelocityIntegralPlanError::Arithmetic)
     );
 }
@@ -962,7 +967,7 @@ fn integral_authority_rejects_an_acceptance_for_a_different_candidate() {
 #[test]
 fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     let plan = build_test_breakaway_plan();
-    assert_eq!(plan.digest(), 106_042_503_528_755_426);
+    assert_eq!(plan.digest(), 16_233_484_769_674_924_850);
 }
 
 // --- Breakaway Stage-C constructor -------------------------------------------
@@ -1280,14 +1285,12 @@ fn breakaway_integral_refuses_without_motion_when_the_confirmed_p_fails_current_
 
 /// The nomination ceiling is the exact monotone inverse of the Stage-C
 /// admission gate: the returned P passes `transition_capable_integral_gain` and
-/// the next-higher P fails it. Values are a live acquisition context
-/// (322 RPM, usable torque 2534, 4000 cpr, 25 kHz), where the ceiling is 897 --
-/// below the confirmed P=925 that discovery nominated and Integral refused.
+/// the next-higher P fails it.
 #[test]
 fn max_transition_capable_p_is_the_inverse_of_the_admission_gate() {
     let ceiling = max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
         .expect("valid acquisition context");
-    assert_eq!(ceiling, 897);
+    assert_eq!(ceiling, 1_614);
     assert!(
         transition_capable_integral_gain(ceiling, 322, 4_000, 25_000, MOVING_STROKE_US, 2_534)
             .expect("valid inputs")
@@ -1299,14 +1302,29 @@ fn max_transition_capable_p_is_the_inverse_of_the_admission_gate() {
 }
 
 /// The ceiling tracks the acquisition context: a lower target RPM raises it.
-/// At 264 RPM the largest transition-capable P is 979, matching the Stage-C
-/// admission audit's worked example.
 #[test]
 fn max_transition_capable_p_rises_as_target_rpm_falls() {
     assert_eq!(
         max_transition_capable_p(264, 4_000, 25_000, MOVING_STROKE_US, 2_534)
             .expect("valid acquisition context"),
-        979
+        1_898
+    );
+}
+
+#[test]
+fn max_transition_capable_p_does_not_halve_when_the_pwm_carrier_doubles() {
+    let at_25_khz = max_transition_capable_p(322, 4_000, 25_000, MOVING_STROKE_US, 2_301)
+        .expect("valid acquisition context");
+    let at_50_khz = max_transition_capable_p(322, 4_000, 50_000, MOVING_STROKE_US, 2_301)
+        .expect("valid acquisition context");
+    assert_eq!(at_50_khz, 1_416);
+    assert!(
+        at_50_khz > 731,
+        "band-admissible candidates must be transition-capable"
+    );
+    assert!(
+        u32::from(at_50_khz) * 100 > u32::from(at_25_khz) * 95,
+        "carrier rate must not dominate the ceiling"
     );
 }
 

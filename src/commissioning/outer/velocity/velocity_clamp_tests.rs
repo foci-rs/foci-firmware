@@ -11,6 +11,7 @@ use super::velocity_clamp::{
 use crate::commission_dispatch::test_support::{
     MockBackend, SpiOp, breakaway_confirmation_for_test,
 };
+use crate::commissioning::inner::closed_loop_activation::STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE;
 use crate::commissioning::outer::OuterMotionBudget;
 use foci_tmc4671::registers::{PID_TORQUE_FLUX_LIMITS, STATUS_FLAGS};
 
@@ -196,15 +197,14 @@ fn breakaway_integral_plan(
 
 #[test]
 fn velocity_current_prevention_configuration_matrix() {
-    const SUPPORTED_PWM_HZ: [u32; 1] = [25_000];
-    const SUPPORTED_VELOCITY_METERS: [u8; 1] = [1];
+    const SUPPORTED_PWM_HZ: [u32; 2] = [25_000, 50_000];
+    const SUPPORTED_VELOCITY_METERS: [u8; 1] = [0];
     const SUPPORTED_VELOCITY_FILTERS_ENABLED: [bool; 2] = [false, true];
 
     for encoder_counts_per_rev in [1_000_u32, 65_536] {
         for pwm_hz in SUPPORTED_PWM_HZ {
             let meter_quantum_rpm =
-                u32::try_from((u64::from(pwm_hz) * 60).div_ceil(u64::from(encoder_counts_per_rev)))
-                    .unwrap();
+                STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE.div_ceil(encoder_counts_per_rev);
             for target_rpm in [
                 meter_quantum_rpm.saturating_sub(1).max(1),
                 meter_quantum_rpm,

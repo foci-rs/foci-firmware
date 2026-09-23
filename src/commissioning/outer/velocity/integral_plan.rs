@@ -2,6 +2,7 @@
 
 use heapless::Vec;
 
+use crate::commissioning::inner::closed_loop_activation::STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
 
 use super::band_confirmation::{
@@ -833,7 +834,6 @@ pub(crate) fn recovery_quantization_exposed(
     p_raw: u16,
     target_rpm: i32,
     counts_per_rev: u32,
-    pwm_hz: u32,
     probe_limit: u16,
 ) -> Result<bool, VelocityIntegralPlanError> {
     let target_rpm = target_rpm
@@ -841,7 +841,7 @@ pub(crate) fn recovery_quantization_exposed(
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let velocity_term = u128::from(target_rpm as u32)
         .checked_mul(u128::from(counts_per_rev))
-        .and_then(|value| value.checked_add(60_u128 * u128::from(pwm_hz)))
+        .and_then(|value| value.checked_add(u128::from(STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let demand = u128::from(p_raw)
         .checked_mul(velocity_term)
@@ -876,7 +876,7 @@ pub(crate) fn transition_capable_integral_gain(
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let error_num = u128::from(target_rpm as u32)
         .checked_mul(u128::from(counts_per_rev))
-        .and_then(|value| value.checked_add(60_u128 * u128::from(pwm_hz)))
+        .and_then(|value| value.checked_add(u128::from(STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let prefix_scale = u128::from(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR)
         .checked_add(
@@ -928,7 +928,7 @@ pub(crate) fn max_transition_capable_p(
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let error_num = u128::from(target_rpm as u32)
         .checked_mul(u128::from(counts_per_rev))
-        .and_then(|value| value.checked_add(60_u128 * u128::from(pwm_hz)))
+        .and_then(|value| value.checked_add(u128::from(STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE)))
         .ok_or(VelocityIntegralPlanError::Arithmetic)?;
     let prefix_scale = u128::from(crate::autotune::ADVANCED_PI_I_Q4_12_NUMERATOR)
         .checked_add(
@@ -1510,7 +1510,6 @@ fn plan_velocity_integral_response_from_source(
         source.fixed_p,
         context.target_velocity_rpm,
         encoder_counts_per_rev,
-        pwm_hz,
         context.usable_torque_limit,
     )?;
 
