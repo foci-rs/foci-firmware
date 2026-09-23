@@ -535,21 +535,6 @@ impl FilterCutoffsStep {
         )
     }
 
-    pub(crate) fn from_outer_result(
-        outer: &crate::commissioning::types::OuterResult,
-        pwm_maxcnt: u16,
-    ) -> Self {
-        Self::start(
-            BackendFilterCutoffs {
-                velocity_hz: outer.velocity_filter_hz,
-                torque_hz: outer.torque_filter_hz,
-                position_hz: outer.position_filter_hz,
-                flux_hz: outer.flux_filter_hz,
-            },
-            pwm_maxcnt,
-        )
-    }
-
     pub(crate) fn from_entry_snapshot(
         snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
         pwm_maxcnt: u16,

@@ -1288,110 +1288,21 @@ fn sample_outer_result_for_dispatch() -> OuterResult {
     }
 }
 
-async fn restored_position_target(
-    encoder_count: i32,
-    encoder_ppr: u32,
-    planner_steps_per_rev: u32,
-) -> u32 {
-    use foci_tmc4671::registers::PID_POSITION_TARGET;
-
-    let mut backend = MockBackend::new();
-    backend.set_abn_decoder_count(encoder_count);
-    backend.mechanical_encoder_quadrature_counts_per_rev_value = encoder_ppr * 4;
-    tmc_state()
-        .configure_motion_scale(stepper_state(), encoder_ppr, planner_steps_per_rev)
-        .expect("valid test motion scale");
-
-    let outer = sample_outer_result_for_dispatch();
-    let mut step = restore::PositionModeRestoreStep::start();
-    loop {
-        match step.advance(&mut backend, tmc_state(), &outer).await {
-            None => continue,
-            Some(Ok(_)) => break,
-            Some(Err(kind)) => panic!("restore failed: {:?}", kind),
-        }
-    }
-
-    backend
-        .spi_log
-        .iter()
-        .find_map(|op| match op {
-            SpiOp::Write(addr, value) if *addr == PID_POSITION_TARGET.addr() => Some(*value),
-            _ => None,
-        })
-        .expect("position target write")
-}
-
-#[test]
-fn outer_restore_converts_positive_and_negative_encoder_counts_symmetrically() {
-    pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-
-        assert_eq!(restored_position_target(1_234, 1_000, 3_200).await, 20_218);
-        assert_eq!(
-            restored_position_target(-1_234, 1_000, 3_200).await,
-            (-20_218_i32) as u32
-        );
-    });
-}
-
-#[test]
-fn outer_restore_rounds_non_divisible_encoder_positions_to_nearest() {
-    pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-
-        assert_eq!(restored_position_target(7, 1_000, 3_200).await, 115);
-        assert_eq!(
-            restored_position_target(-7, 1_000, 3_200).await,
-            (-115_i32) as u32
-        );
-    });
-}
-
-#[test]
-fn outer_restore_preserves_signed_behavior_adjacent_to_encoder_wrap() {
-    pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-
-        assert_eq!(
-            restored_position_target(i32::MAX, 16_384, 3_200).await,
-            i32::MAX as u32
-        );
-        assert_eq!(
-            restored_position_target(i32::MIN, 16_384, 3_200).await,
-            i32::MIN as u32
-        );
-    });
-}
-
-#[test]
-fn outer_restore_is_independent_of_planner_microsteps() {
-    pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-
-        let coarse = restored_position_target(1_234, 1_000, 3_200).await;
-        let fine = restored_position_target(1_234, 1_000, 51_200).await;
-
-        assert_eq!(coarse, 20_218);
-        assert_eq!(fine, coarse);
-    });
-}
-
 #[fixture_test]
-async fn outer_done_success_arms_motor() {
+async fn outer_done_success_disarms_and_publishes_tuned_gains() {
     use core::sync::atomic::Ordering;
     let mut backend = MockBackend::new();
-    backend.assert_motor_armed_false_on_write = true;
+    backend.enable_pin = true;
     let (mut cal, mut en, mut gains) = fresh_state_locals();
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
+    *state.calibrated = true;
+    *state.motor_enabled = true;
     let mut engine = Some(CommissioningEngine::new_commission(
         0,
         CommissionProfile::Balanced,
     ));
     let outer = sample_outer_result_for_dispatch();
     let original = load_published_controller_cache(&state);
-    tmc_state().motor_armed.store(false, Ordering::Relaxed);
-    seed_motor_sentinel(&mut backend).await;
     tmc_state().motor_armed.store(true, Ordering::Relaxed);
 
     let outcome = drive_commission_result(
@@ -1403,16 +1314,15 @@ async fn outer_done_success_arms_motor() {
     )
     .await;
 
-    // Atomics persisted
     let published = tmc_state().load_outer_gains(Ordering::Relaxed).unwrap();
     assert_eq!(published.position_p.raw(), outer.position_p);
+    assert_eq!(published.position_i.raw(), outer.position_i);
+    assert_eq!(published.velocity_p.raw(), outer.velocity_p);
+    assert_eq!(published.velocity_i.raw(), outer.velocity_i);
     assert_eq!(
         tmc_state().velocity_limit_cfg.load(Ordering::Relaxed),
         outer.velocity_limit
     );
-    assert_eq!(published.position_i.raw(), outer.position_i);
-    assert_eq!(published.velocity_p.raw(), outer.velocity_p);
-    assert_eq!(published.velocity_i.raw(), outer.velocity_i);
     assert_eq!(
         tmc_state().velocity_filter_hz.load(Ordering::Relaxed),
         Some(outer.velocity_filter_hz)
@@ -1430,81 +1340,33 @@ async fn outer_done_success_arms_motor() {
         Some(outer.flux_filter_hz)
     );
 
-    // Motor electrically enabled; board owns stepper arming.
-    assert!(backend.enable_pin);
+    assert!(!backend.enable_pin);
+    assert!(!*state.calibrated);
+    assert!(!*state.motor_enabled);
     assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
 
     match outcome {
         CommissionOutcome::Terminal {
-            reply: ReplyPayload::TuneResult { status, .. },
+            reply: ReplyPayload::TuneResult { status, result, .. },
             actions,
         } => {
             assert_eq!(status, 0);
+            assert_eq!(result.velocity_p, outer.velocity_p);
+            assert_eq!(result.position_p, outer.position_p);
             assert!(actions.stop_trace);
-            assert_eq!(actions.stepper, StepperPostAction::ArmPreservePosition);
+            assert_eq!(actions.stepper, StepperPostAction::Stop);
         }
         _ => panic!("expected TuneResult"),
     }
 
-    tmc_state().motor_armed.store(false, Ordering::Relaxed);
-    store_published_controller_cache(&mut state, original);
-    clear_motor_sentinel();
-}
-
-#[fixture_test]
-async fn outer_done_spi_failure_disarms() {
-    use core::sync::atomic::Ordering;
-    let mut backend = MockBackend::new();
-    backend.fail_on_write = Some(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr());
-    let (mut cal, mut en, mut gains) = fresh_state_locals();
-    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_commission(
-        0,
-        CommissionProfile::Balanced,
-    ));
-    let outer = sample_outer_result_for_dispatch();
-    let original = load_published_controller_cache(&state);
-    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
-
-    let outcome = drive_commission_result(
-        StepResult::OuterDone(outer),
-        &mut engine,
-        &mut backend,
-        &mut state,
-        4095,
-    )
-    .await;
-
-    // Disarmed
-    assert!(!*state.calibrated);
-    assert!(!*state.motor_enabled);
-    assert!(!backend.enable_pin);
-    assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    assert_eq!(
-        load_published_controller_cache(&state),
-        PREVIOUS_CONTROLLER_CACHE
-    );
-
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::TuneResult { status, .. },
-            actions,
-        } => {
-            assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
-            assert!(actions.stop_trace);
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
-        }
-        _ => panic!("expected TuneResult error"),
-    }
-
     store_published_controller_cache(&mut state, original);
 }
 
 #[fixture_test]
-async fn outer_done_filter_apply_failure_disarms() {
+async fn outer_done_invalid_gains_disarms_without_publishing() {
     use core::sync::atomic::Ordering;
     let mut backend = MockBackend::new();
-    backend.fail_on_write = Some(foci_tmc4671::registers::CONFIG_BIQUAD_V_ENABLE.data.addr());
+    backend.enable_pin = true;
     let (mut cal, mut en, mut gains) = fresh_state_locals();
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(CommissioningEngine::new_commission(
@@ -1512,13 +1374,9 @@ async fn outer_done_filter_apply_failure_disarms() {
         CommissionProfile::Balanced,
     ));
     let mut outer = sample_outer_result_for_dispatch();
-    outer.velocity_filter_hz = 100;
+    outer.velocity_p = 0x8000;
     let original = load_published_controller_cache(&state);
-    let previous_cache = PublishedControllerCache {
-        velocity_filter_hz: Some(0),
-        ..PREVIOUS_CONTROLLER_CACHE
-    };
-    store_published_controller_cache(&mut state, previous_cache);
+    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
 
     let outcome = drive_commission_result(
         StepResult::OuterDone(outer),
@@ -1533,14 +1391,21 @@ async fn outer_done_filter_apply_failure_disarms() {
     assert!(!*state.motor_enabled);
     assert!(!backend.enable_pin);
     assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    assert_eq!(load_published_controller_cache(&state), previous_cache);
+    assert_eq!(
+        load_published_controller_cache(&state),
+        PREVIOUS_CONTROLLER_CACHE
+    );
 
     match outcome {
         CommissionOutcome::Terminal {
-            reply: ReplyPayload::TuneResult { status, .. },
+            reply: ReplyPayload::TuneResult { status, result, .. },
             actions,
         } => {
-            assert_eq!(status, crate::autotune::CommissionError::Spi.status_code());
+            assert_eq!(
+                status,
+                crate::autotune::CommissionError::CurrentValidationFailed.status_code()
+            );
+            assert_eq!(result.velocity_p, 0);
             assert!(actions.stop_trace);
             assert_eq!(actions.stepper, StepperPostAction::Stop);
         }
@@ -1548,61 +1413,6 @@ async fn outer_done_filter_apply_failure_disarms() {
     }
 
     store_published_controller_cache(&mut state, original);
-}
-
-#[fixture_test]
-async fn outer_done_sentinel_failure_preserves_published_cache() {
-    use core::sync::atomic::Ordering;
-
-    let mut backend = MockBackend::new();
-    let (mut cal, mut en, mut gains) = fresh_state_locals();
-    let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-    let mut engine = Some(CommissioningEngine::new_commission(
-        0,
-        CommissionProfile::Balanced,
-    ));
-    let original = load_published_controller_cache(&state);
-    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
-    seed_motor_sentinel(&mut backend).await;
-    backend.read_override = Some((
-        foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS.addr(),
-        TEST_MOTOR_SENTINEL ^ 1,
-    ));
-
-    let outcome = drive_commission_result(
-        StepResult::OuterDone(sample_outer_result_for_dispatch()),
-        &mut engine,
-        &mut backend,
-        &mut state,
-        4095,
-    )
-    .await;
-
-    assert_eq!(
-        load_published_controller_cache(&state),
-        PREVIOUS_CONTROLLER_CACHE
-    );
-    assert!(!*state.calibrated);
-    assert!(!*state.motor_enabled);
-    assert!(!backend.enable_pin);
-    assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-    match outcome {
-        CommissionOutcome::Terminal {
-            reply: ReplyPayload::TuneResult { status, .. },
-            actions,
-        } => {
-            assert_eq!(
-                status,
-                crate::autotune::CommissionError::ChipResetDetected.status_code()
-            );
-            assert!(actions.stop_trace);
-            assert_eq!(actions.stepper, StepperPostAction::Stop);
-        }
-        _ => panic!("expected TuneResult sentinel error"),
-    }
-
-    store_published_controller_cache(&mut state, original);
-    clear_motor_sentinel();
 }
 
 #[test]
@@ -3021,7 +2831,17 @@ async fn robustness_pass_emits_tune_result_with_joined_gains() {
     assert_eq!(result.provenance.band_upper_percent, 80);
     assert_eq!(result.warning_code, 0);
     assert_eq!(status, crate::autotune::CommissionStatus::Accepted.to_u8());
-    assert!(backend.deployed_outer_gains(), "pass must deploy the tune");
+    let published = tmc_state().load_outer_gains(Relaxed).unwrap();
+    assert_eq!(
+        (
+            published.velocity_p.raw(),
+            published.velocity_i.raw(),
+            published.position_p.raw(),
+            published.position_i.raw(),
+        ),
+        (863, 512, 700, 40),
+        "pass must publish the tune"
+    );
 
     tmc_state().motor_armed.store(false, Relaxed);
     store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
@@ -3158,6 +2978,8 @@ async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
     let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(robustness_accepted_point(0));
     seed_motor_sentinel(&mut backend).await;
+    let original = load_published_controller_cache(&state);
+    store_published_controller_cache(&mut state, PREVIOUS_CONTROLLER_CACHE);
 
     let outcome = drive_commission_result_with_stages(
         StepResult::RobustnessReversalTerminal(robustness_reject_terminal(3)),
@@ -3177,10 +2999,12 @@ async fn robustness_reject_keeps_fault_terminal_and_does_not_deploy() {
         matches!(reply, ReplyPayload::RobustnessReversalTerminal { .. }),
         "reject must keep the robustness fault terminal"
     );
-    assert!(
-        !backend.deployed_outer_gains(),
-        "reject must not deploy the tune"
+    assert_eq!(
+        load_published_controller_cache(&state),
+        PREVIOUS_CONTROLLER_CACHE,
+        "reject must not publish the tune"
     );
+    store_published_controller_cache(&mut state, original);
 
     clear_motor_sentinel();
 }

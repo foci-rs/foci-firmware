@@ -26,10 +26,8 @@
 //! | `CommissionDone` (current-limit restore SPI failure) | `disarm_motor`                                                                            | `Spi`                                                      | `CommissionResult`           | always           | never |
 //! | `CommissionDone` (`arm_motor_electrical` failure)   | `disarm_motor`                                                                             | error's status code                                        | `CommissionResult`           | always           | never |
 //! | `CommissionDone` (success)                          | none                                                                                       | `inner.status`'s code (0/1/2)                              | `CommissionResult`           | always           | **yes** (`ArmPreservePosition`) |
-//! | `OuterDone` (position-mode restore failure)         | `disarm_motor`                                                                             | mapped from `PositionModeRestoreErrorKind`                  | `TuneResult`                 | always           | never |
-//! | `OuterDone` (filter-apply SPI failure)              | `disarm_motor`                                                                             | `Spi`                                                       | `TuneResult`                 | always           | never |
-//! | `OuterDone` (`arm_motor_electrical` failure)        | `disarm_motor`                                                                             | error's status code                                          | `TuneResult`                 | always           | never |
-//! | `OuterDone` (success)                                | none                                                                                       | `outer.status`'s code                                        | `TuneResult`                 | always           | **yes** (`ArmPreservePosition`) |
+//! | `OuterDone` (tuned gains out of range)            | `disarm_motor`                                                                            | `CurrentValidationFailed`                                | `TuneResult`                 | always           | never |
+//! | `OuterDone` (success)                             | `disarm_motor`; tuned gains/limit/filter cutoffs published for the next calibrate-on-enable | `outer.status`'s code                                    | `TuneResult`                 | always           | never |
 //! | `OuterFailed` (safety-fault error variant)          | restore skipped outright; `MODE_RAMP_MODE_MOTION=0` best-effort, then `disarm_motor`        | the safety-fault error itself                                 | `TuneResult`                 | always (`take_after_handled_stop` or plain `take`) | never |
 //! | `OuterFailed` (entry-gain restore fails, or restore-stability read fails) | `MODE_RAMP_MODE_MOTION=0`, `disarm_motor`                          | restore error, or `Spi` on a stability-read failure             | `TuneResult`                 | always           | never |
 //! | `OuterFailed` (restore succeeds but position drifts) | `MODE_RAMP_MODE_MOTION=0`, `disarm_motor`                                                 | the **original upstream** error is preserved, not overwritten  | `TuneResult`                 | always           | never |
@@ -729,15 +727,16 @@ async fn commission_done_arm_failure_disarms_without_reaching_arm_for_steps() {
 // --- outer (Stage 2) ------------------------------------------------------
 
 #[fixture_test]
-async fn outer_done_success_arms_electrical_before_preserve_position_arm() {
+async fn outer_done_success_disarms_without_arming() {
     let mut backend = MockBackend::new();
-    let (mut cal, mut en, mut gains) = fresh_state_locals();
+    let (_, _, mut gains) = fresh_state_locals();
+    let mut cal = true;
+    let mut en = true;
     let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
     let mut engine = Some(CommissioningEngine::new_commission(
         0,
         CommissionProfile::Balanced,
     ));
-    seed_motor_sentinel(&mut backend).await;
 
     let trace = run_variant(
         StepResult::OuterDone(sample_outer_result()),
@@ -752,27 +751,25 @@ async fn outer_done_success_arms_electrical_before_preserve_position_arm() {
         trace.outcome_tag,
         OutcomeTag::Terminal {
             stop_trace: true,
-            stepper: StepperPostAction::ArmPreservePosition,
+            stepper: StepperPostAction::Stop,
             outcome_class: None,
         }
     );
-    let enabled_index = index_of(
+    assert!(contains(
         &trace.events,
         SpiOp::Lifecycle {
             flag: LifecycleFlag::MotorEnabled,
-            value: true,
+            value: false,
         },
-    )
-    .expect("must record MotorEnabled(true)");
-    let armed_index = index_of(
+    ));
+    assert!(!contains(
         &trace.events,
         SpiOp::Lifecycle {
             flag: LifecycleFlag::MotorArmed,
             value: true,
         },
-    )
-    .expect("must record MotorArmed(true)");
-    assert!(enabled_index < armed_index);
+    ));
+    assert!(!backend.enable_pin);
 }
 
 #[fixture_test]
@@ -864,10 +861,6 @@ async fn outer_failed_soft_failure_arms_electrical_and_holds_position() {
 
 #[fixture_test]
 async fn robustness_reversal_terminal_never_arms_even_on_complete_outcome() {
-    // Driven directly through `drive_commission_result` (not the
-    // `_with_stages` wrapper): a Complete outcome never deploys/arms here --
-    // that only happens in `drive_commission_result_with_stages`, which
-    // reroutes a passed probe through the OuterDone arm.
     let mut backend = MockBackend::new();
     let (_, _, mut gains) = fresh_state_locals();
     let mut cal = true;
@@ -1232,10 +1225,6 @@ fn fail_flux_gain_write(backend: &mut MockBackend) {
     backend.fail_writes_remaining = Some((foci_tmc4671::registers::PID_FLUX_P_FLUX_I.addr(), 1));
 }
 
-fn fail_velocity_gain_write(backend: &mut MockBackend) {
-    backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_P_VELOCITY_I.addr());
-}
-
 fn fail_velocity_target_write(backend: &mut MockBackend) {
     backend.fail_on_write = Some(foci_tmc4671::registers::PID_VELOCITY_TARGET.addr());
 }
@@ -1343,16 +1332,16 @@ fn all_terminal_variants() -> [TerminalVariant; 22] {
             name: "outer_done_success",
             result: || StepResult::OuterDone(sample_outer_result()),
             engine: commission_engine,
-            seed_sentinel: true,
-            reaches_single_op_arm: true,
             ..BASE
         },
         TerminalVariant {
-            name: "outer_done_restore_failure",
-            result: || StepResult::OuterDone(sample_outer_result()),
+            name: "outer_done_invalid_gains",
+            result: || {
+                let mut outer = sample_outer_result();
+                outer.velocity_p = 0x8000;
+                StepResult::OuterDone(outer)
+            },
             engine: commission_engine,
-            prepare: fail_velocity_gain_write,
-            seed_sentinel: true,
             ..BASE
         },
         TerminalVariant {
@@ -1834,16 +1823,6 @@ async fn assert_staged_single_op_arm_budget(
 }
 
 #[fixture_test]
-async fn outer_done_reaches_apply_filters_one_op_per_poll() {
-    for variant in all_terminal_variants()
-        .iter()
-        .filter(|v| v.name.starts_with("outer_done"))
-    {
-        assert_single_op_arm_budget(variant).await;
-    }
-}
-
-#[fixture_test]
 async fn calibrate_done_reaches_apply_filters_one_op_per_poll() {
     for variant in all_terminal_variants()
         .iter()
@@ -2010,11 +1989,11 @@ async fn commission_done_arm_failure_disarm_phase_is_one_op_per_poll() {
 }
 
 #[fixture_test]
-async fn outer_done_restore_failure_disarm_phase_is_one_op_per_poll() {
+async fn outer_done_success_disarm_phase_is_one_op_per_poll() {
     let variant = all_terminal_variants()
         .into_iter()
-        .find(|v| v.name == "outer_done_restore_failure")
-        .expect("outer_done_restore_failure variant must exist");
+        .find(|v| v.name == "outer_done_success")
+        .expect("outer_done_success variant must exist");
     assert_disarm_phase_one_op_per_poll(&variant).await;
 }
 

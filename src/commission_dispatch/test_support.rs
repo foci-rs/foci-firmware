@@ -692,20 +692,6 @@ impl MockBackend {
         }
         Err(MockSpiError)
     }
-
-    /// True once the outer-tune deploy path has entered position mode.
-    /// `MODE_RAMP_MODE_MOTION` is written `0x8000_0003` only by the
-    /// position-mode restore that publishes an accepted tune; the disarm
-    /// safe-state path writes the same register but always with `0`, and a
-    /// non-passing robustness/candidate terminal's baseline restore never
-    /// touches this register at all, so the paired address+value is an
-    /// unambiguous deploy marker.
-    pub fn deployed_outer_gains(&self) -> bool {
-        let addr = foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr();
-        self.spi_log
-            .iter()
-            .any(|op| matches!(op, SpiOp::Write(written, val) if *written == addr && *val == 0x8000_0003))
-    }
 }
 
 /// Returns `Pending` once, then `Ready`. Lets a test drive a caller's future to
