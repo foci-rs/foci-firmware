@@ -334,19 +334,25 @@ fn remaining_headroom_counts(
     u32::try_from(remaining.max(0)).unwrap_or(u32::MAX)
 }
 
-fn establish_leg_fits(
+/// Whether one probe cycle fits from `unwrapped_position`: the establish leg
+/// forward and, at worst, a full leg's travel back past the start on the
+/// reverse leg, which keeps cruising through its settle tail and analysis.
+fn cycle_fits(
     rate_counts_per_ms: u32,
     unwrapped_position: i32,
     negative_window: u32,
     positive_window: u32,
     direction: usize,
 ) -> bool {
-    remaining_headroom_counts(
-        unwrapped_position,
-        negative_window,
-        positive_window,
-        direction,
-    ) >= establish_leg_travel_counts(rate_counts_per_ms)
+    let leg_travel = establish_leg_travel_counts(rate_counts_per_ms);
+    [direction, 1 - direction].into_iter().all(|leg_direction| {
+        remaining_headroom_counts(
+            unwrapped_position,
+            negative_window,
+            positive_window,
+            leg_direction,
+        ) >= leg_travel
+    })
 }
 
 /// Per-tick rate-Q value corresponding to a signed RPM target, in the same
@@ -606,7 +612,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         }
         RobustnessReversalState::EstablishWriteGain => {
             let rate = establish_rate_counts_per_ms(&session.point, counts_per_rev);
-            if !establish_leg_fits(
+            if !cycle_fits(
                 rate,
                 safety.unwrapped_position,
                 safety.negative_position_window,
@@ -614,7 +620,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                 session.direction,
             ) {
                 defmt::warn!(
-                    "robustness establish leg does not fit: dir={} slot={} position={} remaining={} leg_travel={} origin_recovered={}",
+                    "robustness cycle does not fit: dir={} slot={} position={} remaining_establish={} remaining_reverse={} leg_travel={} origin_recovered={}",
                     session.direction,
                     session.cycle_cursor[session.direction],
                     safety.unwrapped_position,
@@ -623,6 +629,12 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                         safety.negative_position_window,
                         safety.positive_position_window,
                         session.direction,
+                    ),
+                    remaining_headroom_counts(
+                        safety.unwrapped_position,
+                        safety.negative_position_window,
+                        safety.positive_position_window,
+                        1 - session.direction,
                     ),
                     establish_leg_travel_counts(rate),
                     session.origin_recovered
@@ -2448,14 +2460,18 @@ mod tests {
     }
 
     #[test]
-    fn establish_leg_fits_exactly_at_the_remaining_headroom_boundary() {
+    fn cycle_fits_exactly_at_the_remaining_headroom_boundary_on_both_sides() {
         let leg = establish_leg_travel_counts(12) as i32;
-        let window: u32 = 20_000;
+        let window: u32 = 30_000;
         let edge = window as i32 - leg;
-        assert!(establish_leg_fits(12, edge, window, window, 0));
-        assert!(!establish_leg_fits(12, edge + 1, window, window, 0));
-        assert!(establish_leg_fits(12, -edge, window, window, 1));
-        assert!(!establish_leg_fits(12, -(edge + 1), window, window, 1));
+        assert!(cycle_fits(12, edge, window, window, 0));
+        assert!(!cycle_fits(12, edge + 1, window, window, 0));
+        assert!(cycle_fits(12, -edge, window, window, 1));
+        assert!(!cycle_fits(12, -(edge + 1), window, window, 1));
+        assert!(cycle_fits(12, -edge, window, window, 0));
+        assert!(!cycle_fits(12, -(edge + 1), window, window, 0));
+        assert!(cycle_fits(12, edge, window, window, 1));
+        assert!(!cycle_fits(12, edge + 1, window, window, 1));
         assert_eq!(
             remaining_headroom_counts(window as i32 + 5, window, window, 0),
             0
@@ -2464,13 +2480,7 @@ mod tests {
             remaining_headroom_counts(-(window as i32) - 5, window, window, 1),
             0
         );
-        assert!(!establish_leg_fits(
-            12,
-            window as i32 + 5,
-            window,
-            window,
-            0
-        ));
+        assert!(!cycle_fits(12, window as i32 + 5, window, window, 0));
     }
 
     /// A recorded cycle with extreme values must saturate, not wrap or panic,
@@ -3508,6 +3518,35 @@ mod tests {
         );
         assert_eq!(parts.session.held_route, Some(HeldRoute::ReenterEstablish));
         assert_eq!(nonzero_target_writes(&parts.backend), 0);
+    }
+
+    /// The reverse leg runs back through the origin and, at worst, a full
+    /// leg's travel beyond the establish start, so a cycle whose establish leg
+    /// fits can still trip the absolute window on the far side. The
+    /// precondition must size the whole cycle and route to origin recovery.
+    #[test]
+    fn precondition_refuses_a_cycle_whose_reverse_leg_would_not_fit() {
+        for direction in 0..DIRECTION_COUNT {
+            let leg = leg_travel(&test_point());
+            let mut parts = RunParts::new(test_point());
+            assert!(matches!(parts.step(), StepResult::ReadyNow));
+            parts.session.direction = direction;
+            parts.safety.unwrapped_position = if direction == 0 {
+                -(parts.safety.negative_position_window as i32 - leg + 1)
+            } else {
+                parts.safety.positive_position_window as i32 - leg + 1
+            };
+            assert!(matches!(parts.step(), StepResult::ReadyNow));
+
+            assert_eq!(
+                parts.state,
+                RobustnessReversalState::ZeroCommand {
+                    retry_available: true
+                }
+            );
+            assert_eq!(parts.session.held_route, Some(HeldRoute::ReenterEstablish));
+            assert_eq!(nonzero_target_writes(&parts.backend), 0);
+        }
     }
 
     #[test]
