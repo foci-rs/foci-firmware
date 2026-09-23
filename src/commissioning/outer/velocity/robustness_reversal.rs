@@ -3590,6 +3590,36 @@ mod tests {
         );
     }
 
+    /// Conclusive cycles drift the axis without recovering origin, and the two
+    /// absolute windows are not symmetric, so the axis can sit past the
+    /// smaller window on the larger side when a direction switch needs a
+    /// return. The recovery must judge its start against the window on the
+    /// side it occupies.
+    #[test]
+    fn origin_recovery_starts_from_drift_beyond_the_smaller_absolute_window() {
+        let mut parts = RunParts::new(recovery_point());
+        assert!(matches!(parts.step(), StepResult::ReadyNow));
+        let leg = leg_travel(&recovery_point());
+        parts.session.direction = 1;
+        parts.safety.negative_position_window = (2 * leg) as u32;
+        parts.safety.positive_position_window = leg as u32;
+        parts.safety.position_window = leg as u32;
+        parts.safety.unwrapped_position = -(leg + 1);
+
+        let (terminal, parts) = drive_parts(parts, Envelope::Tracked, |_phase, _tick, target| {
+            if target == 0 {
+                0
+            } else {
+                target.signum() * STEADY_DELTA
+            }
+        });
+
+        assert_eq!(parts.recoveries, 1);
+        assert_ne!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
+        assert!(terminal.safety_fault.is_none());
+        assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
+    }
+
     #[test]
     fn exhausted_establish_unwinds_to_origin_before_its_retry() {
         let mut establish_legs = 0u32;

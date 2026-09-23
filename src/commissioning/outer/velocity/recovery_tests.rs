@@ -1396,10 +1396,10 @@ fn recovery_safety_inherits_velocity_local_and_absolute_position_faults() {
     assert_eq!(safety_fault(local.sample(1_000, -20)), 11);
 
     let mut absolute = RecoveryFixture::new(8_458, Some(14_000_000));
-    absolute.safety.positive_position_window = 8_000;
+    absolute.safety.positive_position_window = 8_500;
     absolute.command_motion();
     // Absolute (machine-headroom) branch keeps POSITION = 5.
-    assert_eq!(safety_fault(absolute.sample(1_000, 8_450)), 5);
+    assert_eq!(safety_fault(absolute.sample(1_000, 8_550)), 5);
 }
 
 #[test]
@@ -1619,9 +1619,8 @@ fn recovery_diagnostic_count_no_commanded_side_rate() {
 
 #[test]
 fn recovery_diagnostic_count_start_offset_outside_position_window() {
-    // `position_window` under `configured_safety` is `max_stroke_travel_mrev`
-    // (2_500) converted at 4_000 counts/rev, i.e. 10_000 counts. 11_040 trips
-    // the `WriteGains` guard while still fitting the recovery deadline
+    // The `WriteGains` guard judges the start against the absolute window on
+    // the side the axis occupies. 11_040 still fits the recovery deadline
     // (~1.97 ms of 3.0 ms), so the runtime reaches `WriteGains` instead of
     // being turned away at construction with `RecoveryBindingSource::Deadline`.
     let mut fixture = RecoveryFixture::new_with_source(
@@ -1629,7 +1628,7 @@ fn recovery_diagnostic_count_start_offset_outside_position_window() {
         Some(14_000_000),
         RecoveryBindingSource::SettledRate,
     );
-    assert_eq!(fixture.safety.position_window, 10_000);
+    fixture.safety.positive_position_window = 11_000;
     let (terminal, selections, analyses) = fixture.drive_to_terminal();
 
     let RungOriginRecoveryStep::Contained(report) = terminal else {

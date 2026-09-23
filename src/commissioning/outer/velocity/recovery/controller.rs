@@ -126,7 +126,12 @@ pub(crate) async fn step_rung_origin_recovery<B: CommissioningBackend>(
             ))
         }
         RecoveryState::WriteGains => {
-            if runtime.start_offset_counts.unsigned_abs() > resources.safety.position_window {
+            let start_side_window = if runtime.start_offset_counts < 0 {
+                resources.safety.negative_position_window
+            } else {
+                resources.safety.positive_position_window
+            };
+            if runtime.start_offset_counts.unsigned_abs() > start_side_window {
                 runtime.state = RecoveryState::Terminal {
                     outcome: RungOriginRecoveryOutcome::ContainedDeadline,
                     binding_source: RecoveryBindingSource::LocalTravel,
