@@ -2803,8 +2803,8 @@ mod tests {
                 ..
             }
         ));
-        // Carried-over 6e-2a review fix: safe-state restoration must see the
-        // campaign's active torque limit instead of the former `None`.
+        // Without this limit the terminal disarm skips zeroing the velocity
+        // target and restoring the operational torque clamp.
         assert_eq!(engine.velocity_operational_torque_limit(), Some(2_816));
     }
 
