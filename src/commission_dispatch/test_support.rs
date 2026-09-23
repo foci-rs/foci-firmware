@@ -97,7 +97,7 @@ pub fn sample_outer_params() -> crate::commissioning::OuterAutotuneInputs {
 /// A genuine breakaway confirmation, minted through the real
 /// `plan_band_confirmation` -> `evaluate_band_confirmation` ->
 /// `bind_breakaway_integral_authority` chain a live campaign uses, plus the
-/// intermediate values a Stage-C plan builder needs alongside the token.
+/// intermediate values an Integral plan builder needs alongside the token.
 pub struct BreakawayConfirmationForTest {
     pub token: crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest,
     pub confirmation_plan:
@@ -173,7 +173,7 @@ pub fn breakaway_confirmation_for_test() -> BreakawayConfirmationForTest {
 }
 
 /// Mint one genuine breakaway confirmation token; see
-/// [`breakaway_confirmation_for_test`] for the fuller bundle a Stage-C plan
+/// [`breakaway_confirmation_for_test`] for the fuller bundle an Integral plan
 /// builder needs.
 pub fn breakaway_acquisition_for_test()
 -> crate::commissioning::outer::velocity::integral_plan::ConfirmedAcquisitionDigest {
@@ -211,7 +211,7 @@ pub fn breakaway_campaign_engine() -> crate::commissioning::CommissioningEngine 
 }
 
 /// Build a real admitted reversal-standstill robustness engine for
-/// cross-module lifecycle tests. Unlike a breakaway-campaign or Stage-C
+/// cross-module lifecycle tests. Unlike a breakaway-campaign or Integral
 /// engine, this phase reports no active velocity workflow (see
 /// `CommissioningEngine::velocity_operational_torque_limit`), so it is the
 /// live-path witness for dispatch behavior gated on that distinction.

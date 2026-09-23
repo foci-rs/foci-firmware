@@ -1,4 +1,4 @@
-//! Per-run Stage-C velocity-integral evidence in the encoder-rate domain.
+//! Per-run Integral velocity-integral evidence in the encoder-rate domain.
 
 use crate::autotune::velocity_measurement::{StationarityResult, VelocityDirection};
 
@@ -41,7 +41,7 @@ impl ExactRateInterval {
     }
 }
 
-/// Intrinsic Stage-C interpretation of one observation.
+/// Intrinsic Integral interpretation of one observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralObservationClass {
     /// Stationary commanded-direction motion yielded usable rate evidence.
@@ -58,7 +58,7 @@ pub enum IntegralObservationClass {
     Fault,
 }
 
-/// Semantic role of one Stage-C I rung.
+/// Semantic role of one Integral I rung.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralRungKind {
     /// Opening I=0 operating-point precondition and baseline.
@@ -86,7 +86,7 @@ pub enum IntegralRungClass {
     Fault,
 }
 
-/// Auditable direction-level result for one Stage-C rung.
+/// Auditable direction-level result for one Integral rung.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralRungEvidence {
     /// Commanded mechanical direction.
@@ -111,7 +111,7 @@ pub struct IntegralRungEvidence {
     pub included_mask: u8,
 }
 
-/// Why a safe Stage-C run lacks the structural evidence needed for pairing.
+/// Why a safe Integral run lacks the structural evidence needed for pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralInconclusiveKind {
     /// One or both directions contain fewer than three eligible positive rungs.
@@ -122,10 +122,10 @@ pub enum IntegralInconclusiveKind {
     BookendUnavailable,
 }
 
-/// Per-run Stage-C handoff sufficiency; this is not I acceptance.
+/// Per-run Integral handoff sufficiency; this is not I acceptance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralRunSufficiency {
-    /// The run can become or compare against a Stage-C candidate.
+    /// The run can become or compare against an Integral candidate.
     Sufficient {
         /// Per-direction positive-rung membership.
         eligible_masks: [u32; DIRECTION_COUNT],
@@ -147,7 +147,7 @@ pub enum IntegralRunSufficiency {
     },
 }
 
-/// Exact raw Stage-C curve retained before anchor-relative comparison.
+/// Exact raw Integral curve retained before anchor-relative comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralRunEvidence {
     /// Opening I=0 intervals in forward, reverse order.
@@ -250,14 +250,14 @@ impl IntegralRunEvidence {
     }
 }
 
-/// Evidence-integrity failure while building one Stage-C curve.
+/// Evidence-integrity failure while building one Integral curve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralEvidenceError {
     /// A raw interval had reversed bounds.
     InvalidInterval,
     /// An observation's direction, gain, or interval was inconsistent.
     MismatchedObservation,
-    /// An exact i64 rate bound did not fit Stage-C's retained i32 domain.
+    /// An exact i64 rate bound did not fit Integral's retained i32 domain.
     Conversion,
     /// A direction, rung, mask bit, or terminus exceeded the declared ladder.
     MaskOutOfRange,
@@ -265,7 +265,7 @@ pub enum IntegralEvidenceError {
     DuplicateRung,
 }
 
-/// Classify one Stage-C observation without constructing or requiring D_eq.
+/// Classify one Integral observation without constructing or requiring D_eq.
 pub fn classify_integral_observation(
     input: VelocityObservationInput,
 ) -> VelocityObservationSummary {

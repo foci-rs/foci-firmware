@@ -2426,7 +2426,7 @@ fn outer_failed_restore_rejects_monotonic_creep() {
 /// The campaign energizes through the documented commissioning exception, so the
 /// dispatch owns the disarm. On the engine's `OuterFailed` terminal the safety
 /// fault de-energizes the motor and produces the outer-failure reply namespace,
-/// never a Stage-C / velocity-integral continuation.
+/// never an Integral / velocity-integral continuation.
 #[fixture_test]
 async fn breakaway_campaign_safety_failure_disarms_without_reaching_integral() {
     use core::sync::atomic::Ordering::Relaxed;
@@ -2456,8 +2456,8 @@ async fn breakaway_campaign_safety_failure_disarms_without_reaching_integral() {
     assert!(engine.is_none());
     assert!(!tmc_state().commission_in_flight.load(Relaxed));
 
-    // No Stage-C continuation: the reply is the outer-failure namespace, and
-    // no velocity-integral / Stage-C terminal is produced.
+    // No Integral continuation: the reply is the outer-failure namespace, and
+    // no velocity-integral / Integral terminal is produced.
     match outcome {
         CommissionOutcome::Terminal {
             reply: ReplyPayload::TuneResult { status, .. },
@@ -2592,7 +2592,7 @@ fn outer_failed_breakaway_cancellation_restore_failure_stays_active() {
     });
 }
 
-/// Build a representative Stage-C terminal for the downgrade-guard test below.
+/// Build a representative Integral terminal for the downgrade-guard test below.
 ///
 /// Field values mirror the fixture `replies.rs`'s own dispatch tests already
 /// build for the same struct; this promotes that pattern out from behind the
@@ -2638,12 +2638,12 @@ fn sample_velocity_integral_terminal_for_test()
     }
 }
 
-/// A Stage-C terminal must not fall through to the generic `TuneResult` reply.
+/// An Integral terminal must not fall through to the generic `TuneResult` reply.
 ///
 /// A disabled-feature stub arm for
 /// `StepResult::VelocityIntegralTerminal` downgraded every production
 /// autotune terminal to a zero-filled `TuneResult`, discarding the real
-/// Stage-C evidence. This test pins the dedicated reply in the default
+/// Integral evidence. This test pins the dedicated reply in the default
 /// build.
 #[fixture_test]
 async fn velocity_integral_terminal_is_not_downgraded_to_tune_result() {
@@ -2670,7 +2670,7 @@ async fn velocity_integral_terminal_is_not_downgraded_to_tune_result() {
     };
     assert!(
         matches!(reply, ReplyPayload::VelocityIntegralTerminal { .. }),
-        "Stage-C terminal must emit a VelocityIntegralTerminal reply"
+        "Integral terminal must emit a VelocityIntegralTerminal reply"
     );
 
     clear_motor_sentinel();

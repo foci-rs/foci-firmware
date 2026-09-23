@@ -73,7 +73,7 @@ pub struct CommissionRetention<'a> {
 }
 
 impl<'a> CommissionRetention<'a> {
-    /// Borrow the Stage-C RAM slot as one lifecycle context.
+    /// Borrow the Integral RAM slot as one lifecycle context.
     pub fn new(
         integral: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
     ) -> Self {
@@ -83,14 +83,14 @@ impl<'a> CommissionRetention<'a> {
 
 /// Stage-retention and immediate evidence emission for one terminal dispatch.
 pub struct CommissionTerminalContext<'a, E> {
-    /// Mutable Stage-C retained evidence for this dispatch.
+    /// Mutable Integral retained evidence for this dispatch.
     pub retention: CommissionRetention<'a>,
     /// Board-owned emitter used before returning the compact scheduler action.
     pub emit_evidence: E,
 }
 
 impl<'a, E> CommissionTerminalContext<'a, E> {
-    /// Borrow the retained Stage-C slot and bind the board's reply emitter.
+    /// Borrow the retained Integral slot and bind the board's reply emitter.
     pub fn new(
         integral: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
         emit_evidence: E,
@@ -311,18 +311,18 @@ pub enum ReplyPayload {
         diagnostics: crate::selftest::CommissionDiagnostics,
         done_status: u8,
     },
-    /// Complete exact Stage-C plan emitted before direct-resume motion.
+    /// Complete exact Integral plan emitted before direct-resume motion.
     VelocityIntegralPlan {
         oid: u8,
         run_sequence: u32,
         plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     },
-    /// One streamed Stage-C observation or rung event.
+    /// One streamed Integral observation or rung event.
     VelocityIntegralEvent {
         oid: u8,
         event: crate::commissioning::types::VelocityIntegralEvent,
     },
-    /// Dedicated detailed Stage-C terminal and optional comparison.
+    /// Dedicated detailed Integral terminal and optional comparison.
     VelocityIntegralTerminal {
         oid: u8,
         terminal: crate::commissioning::types::VelocityIntegralTerminal,
@@ -331,7 +331,7 @@ pub enum ReplyPayload {
             crate::commissioning::outer::velocity::integral_reproduction::IntegralAuthoritySummary,
         >,
     },
-    /// Stage-C terminal for a request refused before any exact plan existed.
+    /// Integral terminal for a request refused before any exact plan existed.
     ///
     /// Distinct from [`ReplyPayload::VelocityIntegralTerminal`] because that one
     /// derives leading fragments from run evidence. A refusal has no run, so
@@ -691,7 +691,7 @@ async fn drive_restore_machine<B: CommissioningBackend>(
     }
 }
 
-/// Dispatch one Stage-C terminal while applying its retained-evidence lifecycle.
+/// Dispatch one Integral terminal while applying its retained-evidence lifecycle.
 pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
     terminal: crate::commissioning::types::VelocityIntegralTerminal,
     engine: &mut Option<CommissioningEngine>,
@@ -709,7 +709,7 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     drive_restore_machine(&mut machine, engine, backend, state, Some(&mut retention)).await
 }
 
-/// Dispatch one Stage-B result while applying its retained-evidence lifecycle.
+/// Dispatch one Proportional result while applying its retained-evidence lifecycle.
 pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     result: StepResult,
     engine: &mut Option<CommissioningEngine>,
@@ -740,7 +740,7 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
             };
         }
         StepResult::VelocityIntegralTerminal(_) => {
-            unreachable!("Stage-C terminals use their stage-owned dispatcher")
+            unreachable!("Integral terminals use their stage-owned dispatcher")
         }
         _ => unreachable!("non-velocity terminal reached retained velocity dispatch"),
     };

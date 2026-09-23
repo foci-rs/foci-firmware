@@ -16,7 +16,7 @@ use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTL
 pub const PROPORTIONAL_PLAN_SCHEMA_REVISION: u16 = 14;
 /// First Proportional schema with cap-safe target quantization.
 pub const FIRST_CAP_SAFE_PROPORTIONAL_SCHEMA_REVISION: u16 = 10;
-/// Live Stage-C schema for the shared Stage-C continuation planner.
+/// Live Integral schema for the shared Integral continuation planner.
 pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
 /// Live Proportional schema for the breakaway-seeded campaign.
 ///
@@ -27,9 +27,9 @@ pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
 /// schemas 8 through [`PROPORTIONAL_PLAN_SCHEMA_REVISION`] keep their exact
 /// digest and behavior; this schema is additive.
 pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
-/// Live Stage-C schema for the breakaway-seeded campaign.
+/// Live Integral schema for the breakaway-seeded campaign.
 ///
-/// A Stage-C plan built under this schema binds the accepted
+/// An Integral plan built under this schema binds the accepted
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
 /// Proportional sweep digest -- see
 /// [`super::integral_plan::bind_breakaway_integral_authority`]. Historical
@@ -194,7 +194,7 @@ pub fn build_combined_integral_ladder(
     Ok(ladder)
 }
 
-/// Derive the exact Stage-C continuation duration without summing rounded
+/// Derive the exact Integral continuation duration without summing rounded
 /// phase reports.
 pub fn integral_continuation_geometry(
     proportional: VelocitySweepPlan,

@@ -82,7 +82,7 @@ pub(crate) use integral_sweep::{
 /// Writes `PID_ERROR_PID_VELOCITY_ERROR_SUM = 0` so a fresh velocity command
 /// starts from a clean integrator. This clears only the error-sum accumulator;
 /// it does not touch `PID_VELOCITY_OFFSET` (see [`clear_velocity_offset`]).
-/// Shared by the breakaway campaign, the Stage-C integral sweep, and origin
+/// Shared by the breakaway campaign, the Integral-phase integral sweep, and origin
 /// recovery; self-contained with no dependency on any commissioning phase state.
 ///
 /// # Errors
@@ -108,7 +108,7 @@ where
 /// The runtime STEP/DIR feedforward can leave a nonzero `PID_VELOCITY_OFFSET`
 /// residual from a homing move; [`clear_velocity_error_sum`] does not clear it.
 /// Called at each commissioning velocity-phase entry (discovery ladder start,
-/// Stage-C integral sweep, robustness establish) so a residual offset does not
+/// Integral-phase integral sweep, robustness establish) so a residual offset does not
 /// bias the leg into creep.
 ///
 /// # Errors

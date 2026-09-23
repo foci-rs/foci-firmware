@@ -1,4 +1,4 @@
-//! RAM-only Stage-C authority, candidate retention, and curve reproduction.
+//! RAM-only Integral authority, candidate retention, and curve reproduction.
 
 use super::integral_evidence::{ExactRateInterval, IntegralEvidenceError, IntegralRunEvidence};
 use super::integral_plan::{INTEGRAL_MAX_POSITIVE_RUNGS, VelocityIntegralExecutionPlan};
@@ -15,33 +15,33 @@ pub struct IntegralRestBoundaryReference {
     pub slot: u8,
 }
 
-/// Pre-motion identity for one exact Stage-C plan.
+/// Pre-motion identity for one exact Integral plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralPlanIdentity {
     /// Physical firmware channel.
     pub channel: u8,
     /// Analysis-rule contract this plan was built under.
     pub build_features: u16,
-    /// Stage-C evidence schema revision.
+    /// Integral evidence schema revision.
     pub schema_revision: u16,
-    /// Exact digest of Stage-C authority, geometry, durations, and safety identity.
+    /// Exact digest of Integral authority, geometry, durations, and safety identity.
     pub plan_digest: u64,
 }
 
-/// Compact Proportional-derived authority retained across Stage-C commands.
+/// Compact Proportional-derived authority retained across Integral commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralAuthoritySummary {
     /// Exact pre-motion identity.
     pub identity: IntegralPlanIdentity,
-    /// Which acquisition authorized this Stage-C plan, and its exact digest.
+    /// Which acquisition authorized this Integral plan, and its exact digest.
     pub acquisition: super::integral_plan::ConfirmedAcquisitionDigest,
     /// Firmware-authoritative fixed proportional gain.
     pub fixed_p: u16,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; DIRECTION_COUNT],
-    /// Reproduced Proportional joint-operability component before Stage-C filtering.
+    /// Reproduced Proportional joint-operability component before Integral filtering.
     pub proportional_joint_membership: u32,
-    /// Stage-C transition-capable subset of the reproduced joint component.
+    /// Integral transition-capable subset of the reproduced joint component.
     pub joint_membership: u32,
     /// Cross-run validity of the forward and reverse Proportional models.
     pub directional_validity: [ProportionalDirectionalValidity; DIRECTION_COUNT],
@@ -75,14 +75,14 @@ pub struct IntegralAuthoritySummary {
     pub positive_rung_count: u8,
     /// Simultaneous interval family size per direction.
     pub family_size: u16,
-    /// Conservative Stage-C schedule maximum.
+    /// Conservative Integral schedule maximum.
     pub maximum_workflow_ms: u32,
     /// The commissioning probe clamp removed at least one Proportional-operable rung.
     pub probe_constrained_test_point: bool,
 }
 
 impl IntegralAuthoritySummary {
-    /// Compact one emitted Stage-C execution plan into retained authority.
+    /// Compact one emitted Integral execution plan into retained authority.
     pub fn from_plan(
         channel: u8,
         build_features: u16,
@@ -122,7 +122,7 @@ impl IntegralAuthoritySummary {
         }
     }
 
-    /// Rebuild the exact Proportional handoff used by Stage-C planning.
+    /// Rebuild the exact Proportional handoff used by Integral planning.
     pub const fn integral_authority(self) -> super::integral_plan::IntegralAcquisitionAuthority {
         super::integral_plan::IntegralAcquisitionAuthority {
             channel: self.identity.channel,
@@ -186,7 +186,7 @@ pub enum FixedGainAmplitudeProgress {
 /// Compact RAM-only handoff from one target-reaching breakaway run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct AcceptancePoint {
-    /// Exact breakaway Stage-C identity that established the point.
+    /// Exact breakaway Integral identity that established the point.
     pub identity: IntegralPlanIdentity,
     /// Firmware-selected proportional gain.
     pub selected_p: u16,
@@ -210,14 +210,14 @@ pub struct AcceptancePoint {
     pub progress: FixedGainAmplitudeProgress,
 }
 
-/// Externally visible lifecycle state of the Stage-C RAM slot.
+/// Externally visible lifecycle state of the Integral RAM slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralRetentionSlotState {
     /// No Proportional handoff authority is retained.
     Empty,
-    /// Proportional authority exists but no sufficient Stage-C curve is retained.
+    /// Proportional authority exists but no sufficient Integral curve is retained.
     AuthorityOnly,
-    /// Authority and one sufficient Stage-C curve await reproduction.
+    /// Authority and one sufficient Integral curve await reproduction.
     Candidate,
     /// One target-reaching breakaway point awaits its fixed amplitude sequence.
     AcceptancePoint,
@@ -273,7 +273,7 @@ impl IntegralReproductionDelta {
 // the F407 RTIC task stack before any motion begins.
 const _: () = assert!(core::mem::size_of::<IntegralReproductionDelta>() <= 600);
 
-/// Firmware-owned outcome of one Stage-C retained-state transition.
+/// Firmware-owned outcome of one Integral retained-state transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralReproductionDecision {
     /// First sufficient curve retained for a separately commanded repeat.
@@ -293,7 +293,7 @@ pub enum IntegralReproductionDecision {
     EvidenceIntegrityFault,
 }
 
-/// One RAM-only Stage-C authority/candidate slot.
+/// One RAM-only Integral authority/candidate slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralRetentionSlot {
     retained: RetainedIntegral,
@@ -409,7 +409,7 @@ impl IntegralRetentionSlot {
         })
     }
 
-    /// Retain or compare one independently sufficient Stage-C run.
+    /// Retain or compare one independently sufficient Integral run.
     pub fn observe_sufficient(
         &mut self,
         current: RetainedIntegralEvidence,
@@ -464,7 +464,7 @@ impl IntegralRetentionSlot {
     /// A host-side error does not rewrite a completed firmware terminal or slot state.
     pub const fn observe_host_error(&mut self) {}
 
-    /// Same-channel explicit homing calibration preserves retained Stage-C state.
+    /// Same-channel explicit homing calibration preserves retained Integral state.
     pub fn preserve_for_same_channel_calibration(&mut self, channel: u8) {
         self.invalidate_for_channel(channel);
     }

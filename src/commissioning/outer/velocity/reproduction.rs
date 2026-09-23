@@ -15,7 +15,7 @@ pub const BUILD_FEATURE_DRIFT_BOUND_GATE: u16 = 1 << 1;
 pub const BUILD_FEATURE_SUFFIX_WALK_CONTINUES: u16 = 1 << 2;
 /// The scored-rest chain closes only on evidence against rest.
 pub const BUILD_FEATURE_REST_CHAIN_ON_EVIDENCE: u16 = 1 << 3;
-/// The Stage-C transition gate models the standard velocity meter's fixed-rate
+/// The Integral transition gate models the standard velocity meter's fixed-rate
 /// quantum instead of one encoder count per PWM period.
 pub const BUILD_FEATURE_STANDARD_METER_QUANTUM: u16 = 1 << 4;
 

@@ -641,7 +641,7 @@ pub fn nominate_confirmation_candidate_from_bounds(
 /// Why nomination spent zero confirmation strokes.
 ///
 /// Distinguishes "the discovery band held no admissible rung at all" from "the
-/// band held admissible rungs, but every one exceeds the Stage-C
+/// band held admissible rungs, but every one exceeds the Integral
 /// transition-capability ceiling", so a refusal names its own reason instead of
 /// collapsing into one generic terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -649,14 +649,14 @@ pub enum NominationRejection {
     /// No discovery rung's response was band-admissible (`M_i >= 0`).
     Unconfirmable,
     /// Band-admissible rungs existed, but every one's proportional gain exceeds
-    /// the Stage-C transition-capability ceiling, so admitting any would clip the
+    /// the Integral transition-capability ceiling, so admitting any would clip the
     /// current clamp during Integral. Refused before motion.
     NoTransitionCapableCandidate,
 }
 
 /// Nominate the highest band-admissible rung whose proportional gain is also
 /// transition-capable (`p <= transition_ceiling`), so nomination never selects a
-/// gain that Stage-C admission would later refuse without motion.
+/// gain that Integral admission would later refuse without motion.
 ///
 /// `transition_ceiling` is [`super::integral_plan::max_transition_capable_p`]
 /// for the campaign's live acquisition context -- the exact monotone inverse of
@@ -759,7 +759,7 @@ pub struct BandConfirmationAcceptance {
     nominated_p: PidPGain,
     /// Per-direction held-out response interval, forward then reverse, in
     /// the SAME signed settled-rate-Q domain `directional_pooled_intervals`
-    /// already carries on the combined Stage-C path
+    /// already carries on the combined Integral path
     /// (see [`super::combined_plan::CombinedSelectedResponse::response_intervals_q`]):
     /// forward's `[low_q, high_q]` is a strictly
     /// positive commanded-magnitude bound (`low_q > 0`); reverse's is
@@ -1077,7 +1077,7 @@ impl BandConfirmationPlan {
 /// Build the immutable held-out confirmation plan for one nominated candidate.
 ///
 /// Binds `discovery_plan_digest`, the digest of the discovery plan whose
-/// nomination screen produced `nominated_p`, so a later Stage-C plan can trace
+/// nomination screen produced `nominated_p`, so a later Integral plan can trace
 /// authority back through confirmation to the discovery evidence that
 /// selected its candidate.
 pub fn plan_band_confirmation(
@@ -1159,7 +1159,7 @@ const CANONICAL_CONFIRMATION_SLOT_ORDER: [VelocityDirection; 8] = [
 ///
 /// This is the single canonical contract check, called at both sites that
 /// consume a [`BandConfirmationPlan`]: before the confirmation phase drives any
-/// motion (in `breakaway_campaign.rs`, at plan freeze) and at Stage-C
+/// motion (in `breakaway_campaign.rs`, at plan freeze) and at Integral
 /// construction in
 /// [`super::integral_plan::plan_breakaway_velocity_integral_response`]. Because
 /// there is exactly one implementation, the timing, band, family, slot-order,

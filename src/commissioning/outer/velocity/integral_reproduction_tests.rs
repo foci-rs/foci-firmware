@@ -536,7 +536,7 @@ fn q8_8_package_authority_rejects_before_integral_motion() {
 
 #[test]
 fn integral_candidate_size_is_measured_without_padding() {
-    // Exact sizes, so retained Stage-C state cannot grow unnoticed on a target
+    // Exact sizes, so retained Integral state cannot grow unnoticed on a target
     // with no heap. A failure here is a prompt to justify the growth, not to
     // update the number reflexively.
     // 232 -> 216: removes the `combined_selected_response`

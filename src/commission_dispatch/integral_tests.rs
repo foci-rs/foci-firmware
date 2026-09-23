@@ -99,7 +99,7 @@ fn breakaway_integral_plan()
         PWM_HZ,
         COUNTS_PER_REV,
     )
-    .expect("valid breakaway Stage-C plan")
+    .expect("valid breakaway Integral plan")
 }
 
 /// The retained breakaway authority summary, as `apply_integral_terminal` holds
@@ -118,7 +118,7 @@ fn breakaway_authority_summary(
     )
 }
 
-/// One breakaway Stage-C terminal (`breakaway_acceptance` set, no combined bit).
+/// One breakaway Integral terminal (`breakaway_acceptance` set, no combined bit).
 fn breakaway_terminal(
     plan: &crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     authority: &IntegralAuthoritySummary,
@@ -355,7 +355,7 @@ fn retained_authority_regenerates_the_exact_integral_plan_before_motion() {
 
     let preflight = preflight_integral_request(request(), &preflight_config(), 7, &slot)
         .expect("matching retained plan")
-        .expect("nonempty Stage-C slot");
+        .expect("nonempty Integral slot");
 
     assert_eq!(preflight.plan, breakaway_integral_plan());
     assert_eq!(preflight.identity, retained_authority().identity);
@@ -970,7 +970,7 @@ fn outer_safety_timing_terminal_order_integral_resume() {
             ..
         } = outcome
         else {
-            panic!("Stage-C terminal must use the dedicated reply");
+            panic!("Integral terminal must use the dedicated reply");
         };
         assert_eq!(terminal.rest_boundary_rung_plus_one, 4);
         assert_eq!(terminal.rest_boundary_slot_plus_one, 6);
@@ -1156,7 +1156,7 @@ fn candidate_terminal_restores_entry_snapshot_to_registers() {
     });
 }
 
-/// Build the breakaway Stage-C engine parked in `OuterPhase::VelocityIntegral`
+/// Build the breakaway Integral engine parked in `OuterPhase::VelocityIntegral`
 /// whose live execution plan the dispatch seam reads for the promotion.
 fn breakaway_engine(
     plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,

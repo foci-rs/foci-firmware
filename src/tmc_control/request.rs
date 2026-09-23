@@ -51,7 +51,7 @@ enum TuneRoute {
     PositionTune(u32),
 }
 
-/// Map a refused Stage-C resume onto the terminal the host will render.
+/// Map a refused Integral resume onto the terminal the host will render.
 ///
 /// Every rejection here names retained state that disagrees with the request,
 /// so each keeps a plan digest where one exists. The empty-slot case is not a
@@ -95,7 +95,7 @@ fn integral_resume_rejection_terminal(
 
 /// Build the `integral_resume` route's disclosed workflow envelope.
 ///
-/// `reproduce_ms` is the retained Stage-C plan's own `maximum_workflow_ms`. An
+/// `reproduce_ms` is the retained Integral plan's own `maximum_workflow_ms`. An
 /// admitted resume continues inline into robustness on the same dispatch, so
 /// the disclosed envelope has to bound reproduce plus the robustness worst
 /// case: the host arms one wait covering the whole run instead of re-arming
@@ -155,7 +155,7 @@ where
     fn normal_tail(&self) -> TmcControlRequestTail;
     /// Return the board default current-filter cutoff for omitted host config.
     fn default_current_filter_hz(&self) -> u16;
-    /// Return the configured PWM frequency that defines the Stage-C I ladder.
+    /// Return the configured PWM frequency that defines the Integral I ladder.
     fn pwm_freq_hz(&self) -> u32;
     /// Return the step-queue stimulus timer frequency, in Hz.
     ///
@@ -382,7 +382,7 @@ where
                     defmt::info!("Auto-calibrating on enable");
                     // A routine same-channel re-enable may auto-calibrate after the
                     // required disarm/cooling interval; preserve that channel's
-                    // Stage-C authority across the alignment lifecycle.
+                    // Integral authority across the alignment lifecycle.
                     integral_candidate.preserve_for_same_channel_calibration(board.channel());
                     runtime.set_commission_engine(
                         CommissioningEngine::new_calibrate_for_tmc_with_gains_and_trace_seq(
@@ -479,7 +479,7 @@ where
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
             // Host homing explicitly calibrates after the required disarm/cooling
-            // interval. Preserve same-channel Stage-C authority across that
+            // interval. Preserve same-channel Integral authority across that
             // alignment lifecycle.
             integral_candidate.preserve_for_same_channel_calibration(board.channel());
             runtime.clear_calibrated();
@@ -1246,7 +1246,7 @@ where
             });
             // The workflow envelope only discloses the shape and its
             // durations. The exact plan is a separate reply, and the
-            // host refuses Stage-C evidence that arrives before it, so
+            // host refuses Integral evidence that arrives before it, so
             // it has to be on the wire before the engine takes a stroke.
             for record in crate::commissioning::outer::velocity::integral_reporting::
                         encode_velocity_integral_plan_trace(run_sequence, preflight.plan)
@@ -1571,13 +1571,13 @@ where
     normal_outcome(board.normal_tail())
 }
 
-/// Handle one request with a throwaway, per-call Stage-C candidate slot.
+/// Handle one request with a throwaway, per-call Integral candidate slot.
 ///
 /// This wrapper is a test/convenience entry point: it allocates a fresh
-/// `IntegralRetentionSlot` on every call, so it retains no Stage-C state across
+/// `IntegralRetentionSlot` on every call, so it retains no Integral state across
 /// calls. Production board integration calls
 /// [`handle_tmc_control_request_with_stages`] directly with its persistent,
-/// task-local Stage-C slot.
+/// task-local Integral slot.
 pub async fn handle_tmc_control_request<Spi, Board>(
     req: TmcRequest,
     pre_request: TmcPreRequestDisposition,
@@ -3228,7 +3228,7 @@ mod tests {
             25_000,
             4_000,
         )
-        .expect("valid Stage-C plan")
+        .expect("valid Integral plan")
     }
 
     #[fixture_test]
@@ -3283,7 +3283,7 @@ mod tests {
             plan: disclosed, ..
         } = board.replies[1]
         else {
-            panic!("exact Stage-C plan must be disclosed before execution")
+            panic!("exact Integral plan must be disclosed before execution")
         };
         assert_eq!(disclosed, plan);
         #[cfg(feature = "trace")]
@@ -3358,7 +3358,7 @@ mod tests {
         // The refusal namespace, not the ordinary terminal: an ordinary terminal
         // expands to leading evidence fragments describing a run that never ran.
         let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
-            panic!("a refused resume must use the Stage-C refusal namespace")
+            panic!("a refused resume must use the Integral refusal namespace")
         };
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(
@@ -3427,7 +3427,7 @@ mod tests {
         // The refusal namespace, not the ordinary terminal: an ordinary terminal
         // expands to leading evidence fragments describing a run that never ran.
         let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
-            panic!("a refused resume must use the Stage-C refusal namespace")
+            panic!("a refused resume must use the Integral refusal namespace")
         };
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Failed);
         assert_eq!(

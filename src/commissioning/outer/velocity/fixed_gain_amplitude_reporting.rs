@@ -511,7 +511,7 @@ mod tests {
         u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
     }
 
-    /// A breakaway-derived amplitude run must disclose the breakaway Stage-C
+    /// A breakaway-derived amplitude run must disclose the breakaway Integral
     /// schema (16), not the outer amplitude schema and not the combined
     /// constant, so the wire reply lets the host tell the two acceptance
     /// families apart.

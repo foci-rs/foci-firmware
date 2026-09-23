@@ -538,11 +538,11 @@ pub enum RestSelectionOwner {
     ProportionalRecovery = 1,
     /// Selected final-P Proportional recovery.
     ProportionalSelectedRecovery = 2,
-    /// Stage-C opening anchor or closing bookend.
+    /// Integral opening anchor or closing bookend.
     IntegralAnchor = 3,
-    /// Stage-C positive-I observation.
+    /// Integral positive-I observation.
     IntegralPositiveObservation = 4,
-    /// Stage-C origin recovery.
+    /// Integral origin recovery.
     IntegralRecovery = 5,
     /// Positive-I I=0 cleanup.
     IntegralCleanup = 6,
@@ -622,24 +622,24 @@ pub struct VelocityPrimitiveCurrentEvidence {
     pub contact: u8,
 }
 
-/// Exact Stage-C plan identity disclosed before the first integral stroke.
+/// Exact Integral plan identity disclosed before the first integral stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralPlanned {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
-    /// Exact Stage-C stage-plan digest.
+    /// Exact Integral stage-plan digest.
     pub plan_digest: u64,
     /// Firmware-authoritative fixed proportional gain.
     pub fixed_p: u16,
     /// Number of positive-I rungs between the two I=0 anchors.
     pub positive_rung_count: u8,
-    /// Conservative complete Stage-C duration.
+    /// Conservative complete Integral duration.
     pub maximum_workflow_ms: u32,
 }
 
-/// Compact gate statistics retained at the Stage-C event boundary.
+/// Compact gate statistics retained at the Integral event boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StationarityRejectionDiagnostic {
     /// Number of raw observations in the rejected suffix.
@@ -680,14 +680,14 @@ impl From<crate::autotune::velocity_measurement::SuffixDiagnostic>
     }
 }
 
-/// One analyzed Stage-C moving observation.
+/// One analyzed Integral moving observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralObservation {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
-    /// Exact Stage-C plan digest.
+    /// Exact Integral plan digest.
     pub plan_digest: u64,
     /// Zero-based rung index including both anchors.
     pub rung_index: u8,
@@ -718,14 +718,14 @@ pub enum ResponseHorizonClass {
     HorizonResolved = 2,
 }
 
-/// One completed Stage-C rung after both directional consensus folds.
+/// One completed Integral rung after both directional consensus folds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralRungReport {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Monotonic evidence sequence within the run.
     pub evidence_sequence: u16,
-    /// Exact Stage-C plan digest.
+    /// Exact Integral plan digest.
     pub plan_digest: u64,
     /// Zero-based rung index including both anchors.
     pub rung_index: u8,
@@ -746,10 +746,10 @@ pub struct VelocityIntegralRungReport {
     pub target_terminus_plus_one: u8,
 }
 
-/// Nonterminal Stage-C evidence produced by one cooperative poll.
+/// Nonterminal Integral evidence produced by one cooperative poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityIntegralEvent {
-    /// Exact Stage-C plan became authoritative before motion.
+    /// Exact Integral plan became authoritative before motion.
     Planned(VelocityIntegralPlanned),
     /// One moving observation was analyzed.
     Observation(VelocityIntegralObservation),
@@ -765,7 +765,7 @@ pub enum VelocityIntegralEvent {
     Current(VelocityPrimitiveCurrentEvidence),
 }
 
-/// Report-only Stage-C terminal class.
+/// Report-only Integral terminal class.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityIntegralOutcome {
@@ -779,7 +779,7 @@ pub enum VelocityIntegralOutcome {
     Fault = 3,
     /// A changed exact plan was rejected before motion.
     RejectedPlanMismatch = 4,
-    /// No reproduced operating rung can run the Stage-C acquisition.
+    /// No reproduced operating rung can run the Integral acquisition.
     Failed = 5,
 }
 
@@ -976,7 +976,7 @@ pub struct RobustnessReversalTerminal {
     pub safety_fault: Option<OuterSafetyFault>,
 }
 
-/// Namespaced Stage-C terminal cause: engine (`INTEGRAL_CAUSE_*`), error
+/// Namespaced Integral terminal cause: engine (`INTEGRAL_CAUSE_*`), error
 /// (`CommissionError::status_code()`), or dispatch (`INTEGRAL_DISPATCH_CAUSE_*`).
 /// The three source enumerations are independently numbered and can share a
 /// raw value, so the namespace must travel with it.
@@ -1009,20 +1009,20 @@ impl IntegralOutcomeCause {
     }
 }
 
-/// Detailed Stage-C terminal retained for lifecycle and canonical reporting.
+/// Detailed Integral terminal retained for lifecycle and canonical reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralTerminal {
     /// Caller-assigned run sequence.
     pub run_sequence: u32,
     /// Terminal evidence sequence.
     pub evidence_sequence: u16,
-    /// Exact Stage-C plan digest.
+    /// Exact Integral plan digest.
     pub plan_digest: u64,
     /// Rolling FNV-1a digest over the plan marker and all nonterminal evidence.
     pub digest: u64,
     /// Terminal measurement-stage class.
     pub outcome: VelocityIntegralOutcome,
-    /// Dedicated Stage-C phase-local cause, namespaced (see [`IntegralOutcomeCause`]).
+    /// Dedicated Integral phase-local cause, namespaced (see [`IntegralOutcomeCause`]).
     pub cause: IntegralOutcomeCause,
     /// Whether this terminal came from a breakaway-campaign acceptance run.
     ///
@@ -1033,9 +1033,9 @@ pub struct VelocityIntegralTerminal {
     /// "breakaway with no terminus recorded" from "not an acceptance
     /// terminal at all".
     pub breakaway_acceptance: bool,
-    /// Fixed Stage-C proportional gain carried on the terminal.
+    /// Fixed Integral proportional gain carried on the terminal.
     ///
-    /// Carried verbatim from the plan for every Stage-C workflow. Not zeroed
+    /// Carried verbatim from the plan for every Integral workflow. Not zeroed
     /// for a non-target-recording (e.g. reproduced Proportional) terminal.
     pub fixed_p: u16,
     /// The confirmed integral gain, once a breakaway acceptance point has
@@ -1054,7 +1054,7 @@ pub struct VelocityIntegralTerminal {
     pub recovered_with_current_headroom: bool,
     /// The immutable plan permits one meter quantum to contact the probe clamp.
     pub recovery_quantization_exposed: bool,
-    /// The commissioning probe clamp narrowed or removed the Stage-C test point.
+    /// The commissioning probe clamp narrowed or removed the Integral test point.
     pub probe_constrained_test_point: bool,
     /// One-based positive-rung index of an active-I rest boundary, or zero.
     pub rest_boundary_rung_plus_one: u8,
@@ -1070,7 +1070,7 @@ pub struct VelocityIntegralTerminal {
     pub expected_rungs: u16,
     /// Number of rung records emitted.
     pub emitted_rungs: u16,
-    /// Monotonic timestamp captured before Stage-C motion.
+    /// Monotonic timestamp captured before Integral motion.
     pub run_started_us: u64,
     /// Monotonic timestamp captured at terminal construction.
     pub run_completed_us: u64,
@@ -1080,7 +1080,7 @@ pub struct VelocityIntegralTerminal {
     /// check rejected the run. Distinguishes a partial acquisition from
     /// evidence that was discarded after it was already good.
     pub rest_rejection_after_sufficiency: bool,
-    /// The Stage-C owner responsible, only when `rest_rejection_after_sufficiency`.
+    /// The Integral owner responsible, only when `rest_rejection_after_sufficiency`.
     /// `None` whenever that flag is `false`, even if the run's rest check did
     /// fail for a different (case-(a)) reason.
     pub rest_rejection_owner: Option<RestSelectionOwner>,
@@ -1501,7 +1501,7 @@ pub struct BreakawayCampaignTerminal {
     pub terminal_cause: u8,
     /// Nonzero when the confirmed candidate was accepted and admitted to Integral.
     pub accepted: u8,
-    /// Exact digest of the Stage-C plan bound through the confirmed candidate,
+    /// Exact digest of the Integral plan bound through the confirmed candidate,
     /// or zero when `accepted == 0`.
     pub integral_plan_digest: u64,
     /// `CommissionError::status_code()` for a campaign terminal that carries a
@@ -1510,7 +1510,7 @@ pub struct BreakawayCampaignTerminal {
     ///
     /// `terminal_cause` says which phase closed and, broadly, why; it does not
     /// carry a specific `CommissionError` identity. Without this, a confirmed
-    /// acceptance whose Stage-C plan build was refused is unattributable.
+    /// acceptance whose Integral plan build was refused is unattributable.
     pub error_code: u8,
 }
 
@@ -1747,9 +1747,9 @@ pub enum StepResult {
     At(u64),
     /// A phase transition occurred. Report to host.
     PhaseChanged(CommissionPhase),
-    /// Streamed Stage-C velocity-integral evidence became available.
+    /// Streamed Integral velocity-integral evidence became available.
     VelocityIntegralEvent(VelocityIntegralEvent),
-    /// The report-only Stage-C response sweep reached a terminal result.
+    /// The report-only Integral response sweep reached a terminal result.
     VelocityIntegralTerminal(VelocityIntegralTerminal),
     /// Trace-only fixed-I velocity confidence evidence became available.
     FixedGainAmplitudeEvent(FixedGainAmplitudeEvent),
@@ -1763,14 +1763,14 @@ pub enum StepResult {
     /// plan that hand-off installed.
     ///
     /// The plan must be reported, not merely installed. This event carries the
-    /// exact Stage-C plan alongside the hand-off transition so the host sees it,
-    /// and the host assembler refuses every Stage-C observation until it has seen
+    /// exact Integral plan alongside the hand-off transition so the host sees it,
+    /// and the host assembler refuses every Integral observation until it has seen
     /// a complete plan. A hand-off that transitions silently strands the host
     /// with no plan and fails the run on its first observation.
     BreakawayIntegralPlanReady {
-        /// Campaign run sequence the Stage-C evidence chains to.
+        /// Campaign run sequence the Integral evidence chains to.
         run_sequence: u32,
-        /// Exact Stage-C plan installed by the hand-off.
+        /// Exact Integral plan installed by the hand-off.
         plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     },
     /// Inner commissioning failed.

@@ -83,7 +83,7 @@ pub enum FixedGainAmplitudePlanError {
 pub struct FixedGainAmplitudePlan {
     /// Independent amplitude evidence schema.
     pub schema_revision: u16,
-    /// Combined Stage-C identity that established the operating point.
+    /// Combined Integral identity that established the operating point.
     pub acceptance_identity: IntegralPlanIdentity,
     /// Immutable acquisition order.
     pub order: FixedGainAmplitudeOrder,
@@ -250,7 +250,7 @@ impl FixedGainAmplitudePlan {
             },
             acceptance_source: AcceptanceSource::NonBreakaway,
             amplitude_targets_rpm: self.target_rpm,
-            // Amplitude acquisitions carry no real Stage-B response intervals;
+            // Amplitude acquisitions carry no real Proportional response intervals;
             // the retained identity and qualifiers now have their own
             // fields below.
             selected_response_intervals_q: [[0; 2]; 2],

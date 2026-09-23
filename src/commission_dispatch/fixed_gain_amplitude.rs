@@ -87,7 +87,7 @@ pub enum FixedGainAmplitudePreflightRejection {
 /// plan is rebuilt directly from the point's carried `token`, `selected_p`,
 /// and `selected_response_intervals_q` via
 /// [`plan_retained_breakaway_velocity_integral_response`] -- the same builder
-/// the Stage-C resume path already uses -- rather than from any retained full
+/// the Integral resume path already uses -- rather than from any retained full
 /// plan. `point.token` is `Some` only for a genuine breakaway acceptance
 /// point (see [`AcceptancePoint::token`]), so a point carrying none is
 /// refused before any reconstruction is attempted. Digest, schema, final P,

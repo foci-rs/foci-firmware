@@ -1126,10 +1126,10 @@ impl TmcControlRuntime {
         }
     }
 
-    /// Dispatch a terminal with temporary empty Stage-C retention.
+    /// Dispatch a terminal with temporary empty Integral retention.
     ///
     /// Delegates to [`Self::drive_commissioning_terminal_with_stages`] with a
-    /// throwaway Stage-C candidate slot, for callers that do not carry a
+    /// throwaway Integral candidate slot, for callers that do not carry a
     /// persistent cross-call retention context.
     pub async fn drive_commissioning_terminal<B>(
         &mut self,
@@ -1150,7 +1150,7 @@ impl TmcControlRuntime {
             backend,
             crate::commission_dispatch::CommissionTerminalContext::new(
                 &mut integral_candidate,
-                |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
+                |_| unreachable!("temporary Integral retention cannot continue a workflow"),
             ),
             tmc,
             stepper,
@@ -1159,10 +1159,10 @@ impl TmcControlRuntime {
         .await
     }
 
-    /// Dispatch one poll with temporary empty Stage-C retention.
+    /// Dispatch one poll with temporary empty Integral retention.
     ///
     /// Delegates to [`Self::drive_commissioning_poll_with_stages`] with a
-    /// throwaway Stage-C candidate slot, for callers that do not carry a
+    /// throwaway Integral candidate slot, for callers that do not carry a
     /// persistent cross-call retention context.
     pub async fn drive_commissioning_poll<B>(
         &mut self,
@@ -1183,7 +1183,7 @@ impl TmcControlRuntime {
             backend,
             crate::commission_dispatch::CommissionTerminalContext::new(
                 &mut integral_candidate,
-                |_| unreachable!("temporary Stage-C retention cannot continue a workflow"),
+                |_| unreachable!("temporary Integral retention cannot continue a workflow"),
             ),
             tmc,
             stepper,

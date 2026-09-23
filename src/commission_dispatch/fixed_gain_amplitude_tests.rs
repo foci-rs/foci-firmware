@@ -194,7 +194,7 @@ fn breakaway_plan_and_token() -> (VelocityIntegralPlan, ConfirmedAcquisitionDige
         PWM_HZ,
         COUNTS_PER_REV,
     )
-    .expect("the campaign's own Stage-C plan");
+    .expect("the campaign's own Integral plan");
     (plan, token)
 }
 

@@ -92,7 +92,7 @@ pub(crate) enum BreakawayTerminalCause {
     ConfirmationEvidenceExcluded = 19,
     /// [`BandConfirmationOutcome::SafetyFault`].
     ConfirmationSafetyFault = 20,
-    /// [`BandConfirmationOutcome::Accepted`], or the campaign-level Stage-C hand-off.
+    /// [`BandConfirmationOutcome::Accepted`], or the campaign-level Integral hand-off.
     Accepted = 21,
     /// [`BreakawayProbeOutcome::ExcursionEvidenceInvalid`].
     ProbeExcursionEvidenceInvalid = 22,
@@ -104,18 +104,18 @@ pub(crate) enum BreakawayTerminalCause {
     /// A confirmation fault that carries no safety fault.
     ConfirmationInternalFault = 25,
     /// A confirmation genuinely accepted the held-out block, but
-    /// `route_confirmed_accept` refused to build a Stage-C plan (transition
+    /// `route_confirmed_accept` refused to build an Integral plan (transition
     /// capability, physical-context match, or recovery-geometry/duration
     /// admission). See the campaign terminal's `error_code` for the specific
     /// `CommissionError`. Distinct from `Accepted`: this is a legitimate,
     /// non-safety-fault divergence between confirmation acceptance and
-    /// Stage-C plan-buildability -- the two are deliberately separate,
+    /// Integral plan-buildability -- the two are deliberately separate,
     /// stacked admission gates.
     ConfirmationIntegralPlanRefused = 26,
     /// [`BandConfirmationOutcome::TargetBandNoTransitionCapableCandidate`]:
     /// discovery selected a band, but every band-admissible rung's gain exceeds
-    /// the Stage-C transition-capability ceiling, so nomination refused before
-    /// motion rather than seeding a plan Stage-C admission would reject.
+    /// the Integral transition-capability ceiling, so nomination refused before
+    /// motion rather than seeding a plan Integral admission would reject.
     ConfirmationNoTransitionCapableCandidate = 27,
 }
 

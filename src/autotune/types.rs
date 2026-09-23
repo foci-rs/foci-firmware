@@ -262,7 +262,7 @@ pub enum CommissionError {
     /// A campaign plan, ladder, envelope, or sub-plan could not be constructed
     /// before motion. Code 64.
     CampaignPlanInvalid,
-    /// Stage-C authority could not be bound from an accepted confirmation. Code 65.
+    /// Integral authority could not be bound from an accepted confirmation. Code 65.
     IntegralAuthorityDenied,
     /// A periodic sampling grid was configured with a zero period. Code 67.
     SchedulePeriodZero,

@@ -1096,7 +1096,7 @@ impl TerminalRestoreMachine {
                 RestoreCursor::FixedGainAmplitudeStagedDisarmVelocity(step) => {
                     let retention = retention
                         .take()
-                        .expect("staged terminal restore requires Stage-C retention");
+                        .expect("staged terminal restore requires Integral retention");
                     let mut step = step.unwrap_or_else(|| VelocityDisarmStep::start(engine));
                     match poll_velocity_disarm(&mut step, backend, state).await {
                         None => {
@@ -1191,7 +1191,7 @@ impl TerminalRestoreMachine {
                     };
                     let retention = retention
                         .take()
-                        .expect("staged terminal restore requires Stage-C retention");
+                        .expect("staged terminal restore requires Integral retention");
                     let mut terminal =
                         robustness::apply_robustness_terminal(terminal, retention.integral);
                     let deploy = (terminal.outcome == RobustnessOutcome::Complete)
@@ -1299,7 +1299,7 @@ impl TerminalRestoreMachine {
                 RestoreCursor::VelocityStagedPrologue => {
                     let retention = retention
                         .take()
-                        .expect("staged terminal restore requires Stage-C retention");
+                        .expect("staged terminal restore requires Integral retention");
                     self.velocity_staged_prologue(engine, backend, retention);
                     if self.entry_snapshot(engine).is_some() {
                         self.cursor = RestoreCursor::VelocityStagedRestoreBaseline(None);
@@ -1315,7 +1315,7 @@ impl TerminalRestoreMachine {
                     }
                     let snapshot = self
                         .entry_snapshot(engine)
-                        .expect("entry snapshot disappeared during Stage-C restore");
+                        .expect("entry snapshot disappeared during Integral restore");
                     let pwm_maxcnt = self.pwm_maxcnt;
                     let mut step = step.unwrap_or_else(|| {
                         restore::EntrySnapshotRestoreStep::start(&snapshot, pwm_maxcnt)
@@ -1334,7 +1334,7 @@ impl TerminalRestoreMachine {
                 RestoreCursor::VelocityStagedDisarmVelocity(step) => {
                     let retention = retention
                         .take()
-                        .expect("staged terminal restore requires Stage-C retention");
+                        .expect("staged terminal restore requires Integral retention");
                     let mut step = step.unwrap_or_else(|| VelocityDisarmStep::start(engine));
                     match poll_velocity_disarm(&mut step, backend, state).await {
                         None => {

@@ -20,7 +20,7 @@ pub enum CommissionEvent {
         /// Engine kind used to route the progress reply.
         engine_kind: EngineKind,
     },
-    /// Streamed report-only Stage-C velocity-integral evidence.
+    /// Streamed report-only Integral velocity-integral evidence.
     VelocityIntegral {
         /// Object id of the commissioning channel.
         oid: u8,
@@ -32,29 +32,29 @@ pub enum CommissionEvent {
     /// Without this the scheduled tick -- the only path a cooperative campaign
     /// runs on -- has no way to turn campaign evidence into a Klipper reply, so
     /// the host's campaign assembler never completes and refuses every later
-    /// Stage-C reply.
+    /// Integral reply.
     BreakawayCampaign {
         /// Object id of the commissioning channel.
         oid: u8,
         /// Transport-neutral evidence group.
         event: crate::commissioning::types::BreakawayCampaignEvent,
     },
-    /// The exact Stage-C plan an accepted breakaway campaign handed off to.
+    /// The exact Integral plan an accepted breakaway campaign handed off to.
     ///
     /// Carried as its own variant because the host assembler refuses every
-    /// Stage-C observation until it has seen a complete plan, and no other
+    /// Integral observation until it has seen a complete plan, and no other
     /// event can deliver one: [`VelocityIntegralEvent::Planned`] holds only a
     /// digest and rung count, and the reply layer ignores it outright. The
-    /// combined Stage-B path emits its plan through
+    /// combined Proportional path emits its plan through
     /// `commission_dispatch`'s continuation reply instead; a breakaway campaign
     /// reaches Integral on the scheduled-tick path, which only speaks
     /// [`CommissionEvent`], so it needs this route.
     VelocityIntegralPlan {
         /// Object id of the commissioning channel.
         oid: u8,
-        /// Campaign run sequence the Stage-C evidence chains to.
+        /// Campaign run sequence the Integral evidence chains to.
         run_sequence: u32,
-        /// Exact Stage-C plan installed by the hand-off.
+        /// Exact Integral plan installed by the hand-off.
         plan: crate::commissioning::outer::velocity::integral_plan::VelocityIntegralPlan,
     },
 }
@@ -75,7 +75,7 @@ pub enum CommissionTerminal {
     SelftestDone,
     /// Stage 1 commissioning completed.
     CommissionDone(CommissionResult),
-    /// Report-only Stage-C response sweep completed, remained inconclusive, or faulted.
+    /// Report-only Integral response sweep completed, remained inconclusive, or faulted.
     VelocityIntegral(VelocityIntegralTerminal),
     /// One fixed-I fixed-gain amplitude validation completed, remained inconclusive, or faulted.
     FixedGainAmplitude(FixedGainAmplitudeTerminal),
@@ -205,10 +205,10 @@ pub fn adapt_step_result(
                 event: Some(CommissionEvent::BreakawayCampaign { oid, event }),
             })
         }
-        // The hand-off already installed the Stage-C phase, so the engine stays
+        // The hand-off already installed the Integral phase, so the engine stays
         // immediately runnable -- but the plan must ride along as an event. A
         // bare `ReadyNow` here drops it, and the host then fails its first
-        // Stage-C observation with "integral-response evidence arrived before
+        // Integral observation with "integral-response evidence arrived before
         // exact plan".
         StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
             let (oid, _) = event_context.ok_or(CommissionError::InvalidSchedule)?;
@@ -257,7 +257,7 @@ mod tests {
     }
 
     /// A dropped campaign event never reaches the host, so the host's campaign
-    /// assembler never completes and every later Stage-C reply is refused as
+    /// assembler never completes and every later Integral reply is refused as
     /// arriving "before an accepted campaign terminal". The scheduled tick is
     /// the only path a cooperative campaign runs on, so this is the sole route
     /// its evidence has.

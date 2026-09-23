@@ -21,7 +21,7 @@ pub const FRAME_MAGIC: u32 = 0x4352_5446;
 /// adds the velocity feedforward clamp-engaged flag to the critical sample,
 /// at byte 83 bit 0. Version 19 adds `error_code` to the
 /// breakaway campaign terminal record, so a confirmed acceptance whose
-/// Stage-C plan build was refused names the `CommissionError` behind it
+/// Integral plan build was refused names the `CommissionError` behind it
 /// rather than leaving the terminal cause self-contradictory. Version 18
 /// adds the breakaway rejected-recovery-rest record, the only evidence that
 /// explains a `velocity_rest_not_confirmed` terminal: it pairs the

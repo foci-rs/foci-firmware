@@ -52,7 +52,7 @@ pub const PROBE_MAX_OBSERVATIONS: u8 = 128;
 /// discovery digest) -> Integral (binds the confirmation digest) -- is pinned to
 /// the exact command-level envelope and the physical parameters it was planned
 /// against, not merely to the search geometry. These are the same
-/// `AcquisitionContext`-shaped values the Stage-C tail consumes.
+/// `AcquisitionContext`-shaped values the Integral tail consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbeContext {
     /// Digest of the command-level [`super::workflow_plan::CommissioningWorkflowPlan`]

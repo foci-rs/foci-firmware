@@ -81,14 +81,14 @@ ident = "IntegralGainResponseCharacterization"
 wire_code = 19
 label = "Finding integral gain (velocity)"
 trace_ident = "IntegralGainResponseCharacterization"
-doc = "Stage-C fixed-P velocity-integral response ladder. Wire code 19."
+doc = "Integral-phase fixed-P velocity-integral response ladder. Wire code 19."
 [[phase]]
 ident = "FixedGainAmplitudeValidation"
 wire_code = 20
 label = "Fixed-gain amplitude validation"
 trace_ident = "FixedGainAmplitudeValidation"
 doc = """
-Stage-C fixed-P velocity-integral fixed-gain sweep (ascending or
+Integral-phase fixed-P velocity-integral fixed-gain sweep (ascending or
 descending amplitude) against the retained acceptance point. Wire code 20."""
 [[phase]]
 ident = "ReversalStandstillRobustnessGate"
@@ -163,7 +163,7 @@ doc = "The held-out eight-stroke confirmation block."
 ident = "Resume"
 wire_code = 0
 const_stem = "SHAPE_RESUME"
-doc = "Resume Stage C from retained firmware authority."
+doc = "Resume Integral from retained firmware authority."
 [[workflow_shape]]
 ident = "FixedGainAmplitudeAscending"
 wire_code = 1
@@ -180,7 +180,7 @@ wire_code = 3
 const_stem = "SHAPE_BREAKAWAY_SEEDED"
 doc = """
 Run the breakaway probe, additive discovery, held-out confirmation, and
-the existing Stage-C integral continuation as one bounded command."""
+the existing Integral continuation as one bounded command."""
 [[workflow_shape]]
 ident = "ReversalStandstillRobustnessGate"
 wire_code = 4

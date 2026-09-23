@@ -2659,7 +2659,7 @@ pub struct FociCommissioningWorkflowPlan {
     pub oid: u8,
     /// Caller-assigned command sequence.
     pub run_sequence: u32,
-    /// Stage B, Stage-B-then-C, or Stage-C-resume discriminator.
+    /// Proportional, Proportional-then-Integral, or Integral-resume discriminator.
     pub shape: u8,
     /// Exact low workflow-envelope digest word.
     pub digest_low: u32,
@@ -2671,7 +2671,7 @@ pub struct FociCommissioningWorkflowPlan {
     pub maximum_workflow_ms: u32,
 }
 
-/// Stage-C plan identity and reproduced proportional authority.
+/// Integral plan identity and reproduced proportional authority.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanCore {
     /// Endpoint object id.
@@ -2682,9 +2682,9 @@ pub struct FociVelocityIntegralPlanCore {
     pub evidence_sequence: u16,
     /// Plan fragment discriminator.
     pub fragment: u8,
-    /// Exact low Stage-C plan digest word.
+    /// Exact low Integral plan digest word.
     pub plan_digest_low: u32,
-    /// Exact high Stage-C plan digest word.
+    /// Exact high Integral plan digest word.
     pub plan_digest_high: u32,
     /// Exact low authorizing Proportional plan digest word.
     pub proportional_digest_low: u32,
@@ -2694,7 +2694,7 @@ pub struct FociVelocityIntegralPlanCore {
     pub build_features: u16,
     /// Image identity of the firmware that produced this plan.
     pub build_identity: u32,
-    /// Stage-C evidence schema revision.
+    /// Integral evidence schema revision.
     pub schema_revision: u16,
     /// Physical firmware channel.
     pub channel: u8,
@@ -2702,7 +2702,7 @@ pub struct FociVelocityIntegralPlanCore {
     pub fixed_p: u16,
 }
 
-/// Stage-C plan geometry and controller-domain limits.
+/// Integral plan geometry and controller-domain limits.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanGeometry {
     /// Endpoint object id.
@@ -2737,7 +2737,7 @@ pub struct FociVelocityIntegralPlanGeometry {
     pub usable_torque_limit: u16,
 }
 
-/// One direction of Stage-B evidence authorizing Integral.
+/// One direction of Proportional evidence authorizing Integral.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanAuthority {
     /// Endpoint object id.
@@ -2756,13 +2756,13 @@ pub struct FociVelocityIntegralPlanAuthority {
     pub directional_validity: u8,
     /// Whether the selected operating component has reduced margin.
     pub reduced_margin: u8,
-    /// Retained Stage-B pooled lower edge, or schema-8 selected-rate lower edge.
+    /// Retained Proportional pooled lower edge, or schema-8 selected-rate lower edge.
     pub pooled_low_q16: i32,
-    /// Retained Stage-B pooled upper edge, or schema-8 selected-rate upper edge.
+    /// Retained Proportional pooled upper edge, or schema-8 selected-rate upper edge.
     pub pooled_high_q16: i32,
 }
 
-/// Stage-C fixed schedule and travel identity.
+/// Integral fixed schedule and travel identity.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanTiming {
     /// Endpoint object id.
@@ -2785,7 +2785,7 @@ pub struct FociVelocityIntegralPlanTiming {
     pub maximum_workflow_ms: u32,
 }
 
-/// Stage-C travel and absolute-position identity.
+/// Integral travel and absolute-position identity.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanTravel {
     /// Endpoint object id.
@@ -2806,7 +2806,7 @@ pub struct FociVelocityIntegralPlanTravel {
     pub positive_position_headroom_mrev: u32,
 }
 
-/// Stage-C rung-origin recovery geometry and reserved schedule.
+/// Integral rung-origin recovery geometry and reserved schedule.
 #[klipper_reply]
 pub struct FociVelocityIntegralPlanRecovery {
     /// Endpoint object id.
@@ -2874,7 +2874,7 @@ pub struct FociRobustnessReversalTerminal<'a> {
     pub payload: &'a [u8],
 }
 
-/// Compact single-reply Stage-C velocity-integral terminal.
+/// Compact single-reply Integral velocity-integral terminal.
 #[klipper_reply]
 pub struct FociVelocityIntegralTerminal<'a> {
     /// Endpoint object id.

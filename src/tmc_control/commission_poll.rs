@@ -121,7 +121,7 @@ pub fn classify_absolute_wait(
 ///
 /// The board classifies each poll before dispatching it, so a `Terminal`
 /// classification normally ends the polling loop. The staged terminal dispatch
-/// can instead promote a completed Stage-C run straight into the inline
+/// can instead promote a completed Integral run straight into the inline
 /// robustness gate and hand back a nonterminal `ReadyNow`/`At` action. That
 /// phase-change promotion keeps the live engine stepping, so a stale `Terminal`
 /// classification collapses to an immediate re-poll only for that case; every
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn promoted_phase_change_reclassifies_terminal_as_immediate_repoll() {
-        // A promoted Stage-C completion reaches the terminal poll but dispatches
+        // A promoted Integral completion reaches the terminal poll but dispatches
         // to a nonterminal action; the board must keep polling instead of ending
         // the loop, so a `Terminal` pre-classification collapses to `PollNow`.
         assert_eq!(

@@ -113,7 +113,7 @@ fn channel_runtime_size_stays_bounded() {
     // The runtime embeds the `CommissioningEngine`, so it tracks that engine's
     // size plus the runtime's own fixed overhead.
     // 5_872 -> 5_856: removes the `combined_workflow` bool
-    // from the embedded Stage-C execution plan.
+    // from the embedded Integral execution plan.
     // Both builds grow because the runtime now caches the planner mechanical-RPM
     // ratio alongside the position-per-PWM ratio; the trace build absorbs part of
     // it into existing padding.

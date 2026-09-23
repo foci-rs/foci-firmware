@@ -1,4 +1,4 @@
-//! Board-owned Stage-C admission and retained-evidence policy.
+//! Board-owned Integral admission and retained-evidence policy.
 
 use crate::commissioning::outer::OuterMotionBudget;
 use crate::commissioning::outer::velocity::integral_plan::{
@@ -16,15 +16,15 @@ use crate::commissioning::types::{
     VelocityIntegralTerminal,
 };
 
-/// Dedicated cause for retained or live Stage-C evidence violating its contract.
+/// Dedicated cause for retained or live Integral evidence violating its contract.
 pub const INTEGRAL_DISPATCH_CAUSE_EVIDENCE_INTEGRITY: u8 = 4;
 /// Dedicated cause for a sufficient curve that did not reproduce.
 pub const INTEGRAL_DISPATCH_CAUSE_REPRODUCTION_MISMATCH: u8 = 6;
-/// Dedicated cause for a frozen Stage-C plan mismatch.
+/// Dedicated cause for a frozen Integral plan mismatch.
 pub const INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH: u8 = 7;
-/// No reproduced operating rung can run under the Stage-C probe clamp.
+/// No reproduced operating rung can run under the Integral probe clamp.
 pub const INTEGRAL_DISPATCH_CAUSE_NO_TRANSITION_CAPABLE_OPERATING_POINT: u8 = 11;
-/// A Stage-C resume was requested with nothing retained to resume from.
+/// An Integral resume was requested with nothing retained to resume from.
 ///
 /// Distinct from every rejection cause: the request was well formed and the
 /// slot is simply empty, which is the ordinary state after any reset because
@@ -38,14 +38,14 @@ pub const INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY: u8 = 12;
 /// a cause with a fault would tell the operator to inspect an integrity breach
 /// that did not occur.
 pub const INTEGRAL_DISPATCH_CAUSE_NO_ACCEPTANCE_TERMINUS: u8 = 13;
-/// A Stage-C terminal arrived with no retained authority to dispatch against.
+/// An Integral terminal arrived with no retained authority to dispatch against.
 ///
 /// Distinct from [`INTEGRAL_DISPATCH_CAUSE_NO_RETAINED_AUTHORITY`]: a
 /// terminal only exists because a run was dispatched, which requires
 /// authority to have been present at start, so its absence here means
 /// authority was lost mid-run, not the ordinary empty-slot state.
 pub const INTEGRAL_DISPATCH_CAUSE_AUTHORITY_LOST_MID_RUN: u8 = 14;
-/// A Stage-C terminal arrived already carrying an outcome only this
+/// An Integral terminal arrived already carrying an outcome only this
 /// dispatch is meant to assign. Code 15.
 ///
 /// Not reachable via `apply_integral_terminal`, its only production caller
@@ -60,10 +60,10 @@ const ACCEPTANCE_QUALIFIER_RECOVERY_QUANTIZATION_EXPOSED: u16 = 1 << 7;
 const ACCEPTANCE_QUALIFIER_PROBE_CONSTRAINED_TEST_POINT: u16 = 1 << 8;
 const ACCEPTANCE_QUALIFIER_LATCHED_LIMIT_EVIDENCE: u16 = 1 << 9;
 
-/// Immutable plan and identity accepted before Stage-C actuation.
+/// Immutable plan and identity accepted before Integral actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntegralPreflight {
-    /// The sole exact Stage-C plan consumed by construction and reporting.
+    /// The sole exact Integral plan consumed by construction and reporting.
     pub plan: VelocityIntegralPlan,
     /// Exact cross-run identity derived from the plan.
     pub identity: IntegralPlanIdentity,
@@ -72,7 +72,7 @@ pub struct IntegralPreflight {
 }
 
 impl IntegralPreflight {
-    /// Return the exact plan evidence emitted before the first Stage-C stroke.
+    /// Return the exact plan evidence emitted before the first Integral stroke.
     pub const fn planned_event(self) -> VelocityIntegralEvent {
         VelocityIntegralEvent::Planned(VelocityIntegralPlanned {
             run_sequence: self.run_sequence,
@@ -85,13 +85,13 @@ impl IntegralPreflight {
     }
 }
 
-/// Install retained Stage-C authority from one exact execution plan.
+/// Install retained Integral authority from one exact execution plan.
 ///
 /// Public so a board can retain authority directly from the scheduled plan
 /// event. Boards whose budget keeps nonterminal classification outside the
 /// terminal async dispatch future cannot reach the retention inside
 /// [`crate::tmc_control::TmcControlRuntime::drive_commissioning_poll_with_stages`],
-/// and a Stage-C terminal arriving with an empty slot fails closed.
+/// and an Integral terminal arriving with an empty slot fails closed.
 pub fn install_authority_from_plan(
     channel: u8,
     integral_candidate: &mut IntegralRetentionSlot,
@@ -109,21 +109,21 @@ pub fn install_authority_from_plan(
     authority
 }
 
-/// Fail-closed reason a retained Stage-C request was rejected before actuation.
+/// Fail-closed reason a retained Integral request was rejected before actuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum IntegralPreflightRejection {
-    /// The current request could not reconstruct a safe exact Stage-C plan.
+    /// The current request could not reconstruct a safe exact Integral plan.
     InvalidPlan,
-    /// The current request differs from retained Stage-C authority.
+    /// The current request differs from retained Integral authority.
     RejectedPlanMismatch {
-        /// Exact retained Stage-C identity.
+        /// Exact retained Integral identity.
         retained: IntegralPlanIdentity,
     },
-    /// The reproduced operating component contains no Stage-C-safe test point.
+    /// The reproduced operating component contains no Integral-safe test point.
     NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
 }
 
-/// Cross-run comparison attached to the Stage-C terminal.
+/// Cross-run comparison attached to the Integral terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralReproductionReport {
     /// One exact retained-versus-current comparison.
@@ -136,7 +136,7 @@ pub struct IntegralReproductionReport {
     pub current_run_digest: u64,
 }
 
-/// Stage-C terminal after firmware-owned retention policy.
+/// Integral terminal after firmware-owned retention policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralTerminalDispatch {
     /// Authoritative terminal class after comparison.
@@ -243,7 +243,7 @@ pub(crate) fn breakaway_acceptance_point(
     }))
 }
 
-/// Device parameters needed to reproduce a retained Stage-C authority's plan.
+/// Device parameters needed to reproduce a retained Integral authority's plan.
 ///
 /// Grouped out of `preflight_integral_request`'s argument list to bring it under the
 /// project's <=5-parameter rule: these five are the axis/hardware description the
@@ -329,9 +329,9 @@ fn preflight_retained_breakaway(
     }))
 }
 
-/// Reconstruct and identity-check retained Stage-C authority before any SPI work.
+/// Reconstruct and identity-check retained Integral authority before any SPI work.
 ///
-/// `Ok(None)` means no Stage-C authority exists and admission must proceed to Proportional.
+/// `Ok(None)` means no Integral authority exists and admission must proceed to Proportional.
 pub fn preflight_integral_request(
     request: VelocitySweepRequest,
     config: &IntegralPreflightConfig,
@@ -368,7 +368,7 @@ pub fn preflight_integral_request(
     )
 }
 
-/// Apply one Stage-C terminal to the authoritative RAM-only lifecycle.
+/// Apply one Integral terminal to the authoritative RAM-only lifecycle.
 pub fn apply_integral_terminal(
     mut terminal: VelocityIntegralTerminal,
     integral_candidate: &mut IntegralRetentionSlot,
@@ -514,8 +514,8 @@ pub fn apply_integral_terminal(
     }
 }
 
-/// Build the authoritative zero-motion terminal for a failed Stage-C admission.
-/// Terminal for a Stage-C resume with nothing retained to resume from.
+/// Build the authoritative zero-motion terminal for a failed Integral admission.
+/// Terminal for an Integral resume with nothing retained to resume from.
 ///
 /// Reports a zero plan digest because there is genuinely no exact plan: the
 /// slot held no authority to reconstruct one from. Every other failed-admission

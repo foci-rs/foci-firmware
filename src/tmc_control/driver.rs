@@ -146,7 +146,7 @@ pub struct DriveCtx<'a> {
     pub status_mask: u32,
     /// Board constants.
     pub config: &'a TmcControlConfig,
-    /// Stage-C retention slot.
+    /// Integral retention slot.
     pub retention: CommissionRetention<'a>,
 }
 

@@ -384,7 +384,7 @@ fn build_test_breakaway_plan() -> VelocityIntegralPlan {
         25_000,
         4_000,
     )
-    .expect("the campaign's own Stage-C plan")
+    .expect("the campaign's own Integral plan")
 }
 
 #[test]
@@ -435,7 +435,7 @@ fn workflow_shape_resume_composes_its_digest_from_duration_arithmetic() {
     assert_eq!(
         CommissioningWorkflowPlan::new(9, VelocityAutotuneWorkflowKind::Resume, 0, 0),
         Err(VelocityIntegralPlanError::InvalidRequest),
-        "Resume must name a Stage-C duration"
+        "Resume must name an Integral duration"
     );
     let different_sequence = CommissioningWorkflowPlan::new(
         10,
@@ -718,7 +718,7 @@ fn envelope_arithmetic_is_checked_against_overflow() {
         Err(VelocityIntegralPlanError::Arithmetic)
     );
     // The recovery term (`recovery_slot_count * recovery_maximum_slot_us`)
-    // pushed to its extreme, combined with a near-maximal Stage-C term, must
+    // pushed to its extreme, combined with a near-maximal Integral term, must
     // also be rejected.
     assert_eq!(
         breakaway_workflow_envelope_us(u32::MAX, u32::MAX, u64::MAX),
@@ -970,7 +970,7 @@ fn breakaway_plan_digest_reflects_the_half_octave_insertion() {
     assert_eq!(plan.digest(), 16_233_484_769_674_924_850);
 }
 
-// --- Breakaway Stage-C constructor -------------------------------------------
+// --- Breakaway Integral constructor -------------------------------------------
 
 /// Physical acquisition context for the breakaway fixtures below, built from
 /// the same [`proportional_plan`] fixture the legacy tests use so the confirmed
@@ -995,7 +995,7 @@ fn breakaway_confirmation_plan(nominated_p: PidPGain) -> BandConfirmationPlan {
 /// Mint the breakaway confirmation token for `confirmation_plan` through the
 /// real [`bind_breakaway_integral_authority`] gate, exactly as a live campaign
 /// would, rather than fabricating the digest. The token is the only input the
-/// Stage-C gate accepts as authority.
+/// Integral gate accepts as authority.
 fn breakaway_token_for(confirmation_plan: BandConfirmationPlan) -> ConfirmedAcquisitionDigest {
     let (forward, reverse) = accepted_confirmation_evidence();
     let acceptance =
@@ -1022,7 +1022,7 @@ fn breakaway_intervals_for(confirmation_plan: BandConfirmationPlan) -> [[i32; 2]
         .held_out_response_intervals_q
 }
 
-/// A campaign's Stage-C plan must be resumable from retained authority alone.
+/// A campaign's Integral plan must be resumable from retained authority alone.
 ///
 /// The breakaway campaign has no Proportional phase, so nothing recomputes a sweep
 /// plan for it. Before this the preflight compared the retained confirmation
@@ -1048,7 +1048,7 @@ fn retained_breakaway_authority_regenerates_its_exact_plan() {
         25_000,
         4_000,
     )
-    .expect("the campaign's own Stage-C plan");
+    .expect("the campaign's own Integral plan");
     let mut slot = IntegralRetentionSlot::new();
     install_authority_from_plan(0, &mut slot, plan);
 
@@ -1104,7 +1104,7 @@ fn a_resume_under_changed_physical_context_is_refused() {
         25_000,
         4_000,
     )
-    .expect("the campaign's own Stage-C plan");
+    .expect("the campaign's own Integral plan");
     let mut slot = IntegralRetentionSlot::new();
     install_authority_from_plan(0, &mut slot, plan);
     let config = |pwm_hz, encoder_counts_per_rev| IntegralPreflightConfig {
@@ -1151,7 +1151,7 @@ fn a_changed_request_still_cannot_resume_retained_breakaway_authority() {
         25_000,
         4_000,
     )
-    .expect("the campaign's own Stage-C plan");
+    .expect("the campaign's own Integral plan");
     let mut slot = IntegralRetentionSlot::new();
     let retained = install_authority_from_plan(0, &mut slot, plan);
     let mut changed = proportional_request();
@@ -1220,7 +1220,7 @@ fn breakaway_integral_admits_the_confirmed_p_unchanged() {
 /// `acquisition_kind == ResponseLadder` alone cannot isolate breakaway: a
 /// live combined workflow and an accepted breakaway confirmation both report
 /// that same kind. The `acceptance_source` discriminator, resolved from the
-/// Stage-C authority, is what `records_target_terminus` keys on instead. The
+/// Integral authority, is what `records_target_terminus` keys on instead. The
 /// non-breakaway half of the contract -- it must not over-admit a plan that
 /// carries no target evidence -- is covered by
 /// `non_breakaway_ladder_does_not_record_a_terminus` in
@@ -1240,7 +1240,7 @@ fn execution_plan_reports_acceptance_source_from_authority() {
         25_000,
         4_000,
     )
-    .expect("the campaign's own Stage-C plan")
+    .expect("the campaign's own Integral plan")
     .execution_plan();
     assert_eq!(breakaway.acceptance_source, AcceptanceSource::Breakaway);
     assert!(breakaway.records_target_terminus());
@@ -1283,7 +1283,7 @@ fn breakaway_integral_refuses_without_motion_when_the_confirmed_p_fails_current_
     );
 }
 
-/// The nomination ceiling is the exact monotone inverse of the Stage-C
+/// The nomination ceiling is the exact monotone inverse of the Integral
 /// admission gate: the returned P passes `transition_capable_integral_gain` and
 /// the next-higher P fails it.
 #[test]
@@ -1453,7 +1453,7 @@ fn breakaway_integral_rejects_a_token_minted_for_a_different_confirmation_plan()
 }
 
 /// The round-2 acceptance criterion: there is NO in-crate path that reaches
-/// breakaway Stage-C plan construction without a genuine
+/// breakaway Integral plan construction without a genuine
 /// [`ConfirmedAcquisitionDigest`] token. The gate's only authority input is the
 /// token, which can be minted solely by [`bind_breakaway_integral_authority`]
 /// from a real `Ok(BandConfirmationAcceptance)` -- itself unforgeable. A caller
@@ -1478,7 +1478,7 @@ fn breakaway_integral_requires_a_token_matching_the_confirmation_plan() {
     assert_ne!(genuine_token.get(), forged_plan.plan_digest);
 
     // Pairing the only obtainable token with the forged plan is refused: no
-    // Stage-C plan for gain 384 is ever constructed. The token is the gate's
+    // Integral plan for gain 384 is ever constructed. The token is the gate's
     // sole authority input -- there is no `IntegralAcquisitionAuthority` parameter through
     // which a forged authority could enter -- so this is the whole attack
     // surface, and it is closed. (A token genuinely minted for the forged plan

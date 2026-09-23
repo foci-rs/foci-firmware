@@ -1,4 +1,4 @@
-//! Immutable Stage-C velocity-integral acquisition planning.
+//! Immutable Integral velocity-integral acquisition planning.
 
 use heapless::Vec;
 
@@ -18,15 +18,15 @@ use super::sweep_plan::{
 };
 use super::velocity_clamp::VelocityLimitEvidenceCapability;
 
-/// Evidence schema stored in the RAM-only Stage-C candidate slot.
+/// Evidence schema stored in the RAM-only Integral candidate slot.
 pub const INTEGRAL_EVIDENCE_SCHEMA_REVISION: u16 = 17;
 /// Largest predeclared positive-I ladder accepted by the family-128 table.
 pub const INTEGRAL_MAX_POSITIVE_RUNGS: usize = 30;
 /// Minimum representable positive Q4.12 velocity-I gain.
 pub const INTEGRAL_MIN_POSITIVE_I: u16 = 1;
-/// Independent observations collected in one direction at every Stage-C rung.
+/// Independent observations collected in one direction at every Integral rung.
 pub const INTEGRAL_OBSERVATIONS_PER_DIRECTION: u16 = 4;
-/// Forward and reverse observations collected at every Stage-C rung.
+/// Forward and reverse observations collected at every Integral rung.
 pub const INTEGRAL_OBSERVATIONS_PER_RUNG: u32 = 8;
 /// Maximum combined entry-plus-exit SPI time reserved for one moving slot.
 pub const INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US: u32 = 20_000;
@@ -34,21 +34,21 @@ pub const INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US: u32 = 20_000;
 const MICROS_PER_SECOND: u64 = 1_000_000;
 const CONFIDENCE_FAMILY_MAX: u16 = 128;
 
-/// Reproduced Proportional evidence that authorizes one fixed-P Stage-C plan.
+/// Reproduced Proportional evidence that authorizes one fixed-P Integral plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct IntegralAcquisitionAuthority {
     /// Physical firmware channel.
     pub channel: u8,
     /// The unforgeable token of the accepted breakaway confirmation that
-    /// authorized this Stage-C plan. There is no Proportional sweep plan behind
+    /// authorized this Integral plan. There is no Proportional sweep plan behind
     /// it: the breakaway campaign has no Proportional phase, so nothing
     /// recomputes from the request.
     pub acquisition: ConfirmedAcquisitionDigest,
     /// Cross-run forward and reverse model-or-fragment intersections.
     pub directional_memberships: [u32; 2],
-    /// Reproduced Proportional joint-operability component before Stage-C filtering.
+    /// Reproduced Proportional joint-operability component before Integral filtering.
     pub proportional_joint_membership: u32,
-    /// Stage-C transition-capable subset of the reproduced joint component.
+    /// Integral transition-capable subset of the reproduced joint component.
     pub joint_membership: u32,
     /// Cross-run validity of the forward and reverse Proportional models.
     pub directional_validity: [ProportionalDirectionalValidity; 2],
@@ -78,7 +78,7 @@ impl IntegralAcquisitionAuthority {
         )
     }
 
-    /// Construct breakaway-campaign Stage-C authority bound to a confirmed
+    /// Construct breakaway-campaign Integral authority bound to a confirmed
     /// acquisition digest.
     ///
     /// The breakaway campaign has no reproduced Proportional directional evidence,
@@ -127,12 +127,12 @@ pub struct VelocityIntegralLadder {
     pub rungs: Vec<u16, INTEGRAL_MAX_POSITIVE_RUNGS>,
 }
 
-/// Complete immutable Stage-C plan emitted before its first stroke.
+/// Complete immutable Integral plan emitted before its first stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralPlan {
     /// Analysis-rule contract this plan was built under.
     pub build_features: u16,
-    /// Stage-C evidence schema.
+    /// Integral evidence schema.
     pub schema_revision: u16,
     /// Reproduced Proportional authority.
     pub authority: IntegralAcquisitionAuthority,
@@ -277,7 +277,7 @@ impl VelocityIntegralPlan {
         hash_value!(self.motion_request.max_duration_ms);
         // Hashed only when mirrored. Forward-first is the historical order, so
         // omitting it keeps every archived plan digest and retained
-        // acceptance-point binding valid without a Stage-C schema bump.
+        // acceptance-point binding valid without an Integral schema bump.
         if !matches!(self.slot_order, IntegralSlotOrder::ForwardFirst) {
             hash_value!(self.slot_order.report_code());
         }
@@ -418,7 +418,7 @@ pub enum VelocityIntegralAcquisitionKind {
     FixedGainAmplitudeDescending = 2,
 }
 
-/// Which acquisition authorized one Stage-C execution plan.
+/// Which acquisition authorized one Integral execution plan.
 ///
 /// `acquisition_kind == ResponseLadder` alone cannot distinguish these: an
 /// accepted breakaway confirmation and a fixed-I fixed-gain-amplitude plan can
@@ -439,7 +439,7 @@ pub enum AcceptanceSource {
     NonBreakaway = 2,
 }
 
-/// Compact immutable Stage-C state retained after plan emission.
+/// Compact immutable Integral state retained after plan emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct VelocityIntegralExecutionPlan {
     /// Exact complete-plan digest.
@@ -485,7 +485,7 @@ pub struct VelocityIntegralExecutionPlan {
     pub zero_settle_us: u32,
     /// Cooperative analysis allowance per observation.
     pub analysis_budget_us: u32,
-    /// Conservative complete Stage-C duration retained in candidate identity.
+    /// Conservative complete Integral duration retained in candidate identity.
     pub maximum_workflow_ms: u32,
     /// Inclusive immutable-origin recovery band.
     pub recovery_origin_band_counts: u32,
@@ -556,7 +556,7 @@ pub struct IntegralFailedAdmission {
     pub probe_constrained_test_point: bool,
 }
 
-/// Failure to construct a deterministic Stage-C plan before motion.
+/// Failure to construct a deterministic Integral plan before motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityIntegralPlanError {
     /// A required duration, scale, or workflow component was invalid.
@@ -569,7 +569,7 @@ pub enum VelocityIntegralPlanError {
     ConfidenceFamilyTooLarge,
     /// Checked planner arithmetic exceeded its representation.
     Arithmetic,
-    /// The reproduced Proportional component contains no transition-capable Stage-C rung.
+    /// The reproduced Proportional component contains no transition-capable Integral rung.
     NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
     /// A breakaway confirmation plan's recomputed digest, or its fixed family
     /// size, capture profile, or acceptance rule, did not match what
@@ -583,13 +583,13 @@ pub enum VelocityIntegralPlanError {
     ConfirmedGainNotTransitionCapable(u64),
     /// The plan-time physical acquisition context frozen into the confirmation
     /// evidence (PWM carrier frequency or encoder counts per revolution) does
-    /// not match the live values presented at Stage-C construction. Confirmation
-    /// evidence gathered under one physical timebase cannot seed a Stage-C plan
+    /// not match the live values presented at Integral construction. Confirmation
+    /// evidence gathered under one physical timebase cannot seed an Integral plan
     /// admitted under another; the gate refuses without motion.
     PhysicalContextMismatch,
 }
 
-/// Rejected attempt to bind Stage-C authority to a breakaway confirmation.
+/// Rejected attempt to bind Integral authority to a breakaway confirmation.
 ///
 /// Returned only by [`bind_breakaway_integral_authority`], the single gate
 /// that may produce the digest a breakaway-schema [`IntegralAcquisitionAuthority::
@@ -906,7 +906,7 @@ pub(crate) fn transition_capable_integral_gain(
 /// `p_raw` (the gain appears only on the left of a `lhs < rhs` comparison whose
 /// right side is P-independent), so a single ceiling is exactly equivalent to
 /// testing every candidate individually: `p <= max_transition_capable_p(..)`
-/// iff the gate admits `p`. Nomination uses this to refuse a gain the Stage-C
+/// iff the gate admits `p`. Nomination uses this to refuse a gain the Integral
 /// admission would later reject, before any stroke is planned.
 pub(crate) fn max_transition_capable_p(
     target_rpm: i32,
@@ -954,7 +954,7 @@ pub(crate) fn max_transition_capable_p(
     Ok(u16::try_from(max_p.min(u128::from(u16::MAX))).unwrap_or(u16::MAX))
 }
 
-/// Derive the conservative fixed Stage-C duration for one frozen PWM rate.
+/// Derive the conservative fixed Integral duration for one frozen PWM rate.
 pub fn integral_workflow_maximum_ms(
     pwm_hz: u32,
     maximum_recovery_slot_ms: u16,
@@ -1041,7 +1041,7 @@ pub fn breakaway_confirmation_slots_us() -> Result<u64, VelocityIntegralPlanErro
 /// Sums the worst-case joint probe, the worst-case [`MAX_SWEEP_RUNGS`]-rung
 /// discovery ladder, the fixed family-8 confirmation block, the caller's
 /// worst-case recovery reservation (`recovery_slot_count *
-/// recovery_maximum_slot_us`), and the caller's maximum possible Stage-C
+/// recovery_maximum_slot_us`), and the caller's maximum possible Integral
 /// continuation duration. Every term is added in microseconds; callers round
 /// to milliseconds exactly once, in [`breakaway_workflow_envelope_ms`], never
 /// before. Every later phase's exact plan duration must fit inside the
@@ -1131,7 +1131,7 @@ pub(crate) fn bind_breakaway_integral_authority(
     Ok(ConfirmedAcquisitionDigest(confirmation_plan.plan_digest))
 }
 
-/// Explicit physical acquisition inputs the shared Stage-C tail needs.
+/// Explicit physical acquisition inputs the shared Integral tail needs.
 ///
 /// The breakaway campaign ([`plan_breakaway_velocity_integral_response`]) has
 /// no Proportional sweep plan at all and builds one directly from its own campaign
@@ -1151,7 +1151,7 @@ pub(crate) struct AcquisitionContext {
     pub(crate) usable_torque_limit: u16,
     /// Available authority for proving absence of transient clamp contact.
     pub(crate) limit_evidence_capability: VelocityLimitEvidenceCapability,
-    /// Physical firmware channel the breakaway Stage-C authority is minted for.
+    /// Physical firmware channel the breakaway Integral authority is minted for.
     ///
     /// Consumed only by [`plan_breakaway_velocity_integral_response`], which
     /// builds its [`IntegralAcquisitionAuthority`] internally from the confirmation token so
@@ -1163,8 +1163,8 @@ pub(crate) struct AcquisitionContext {
     /// under, in Hz.
     ///
     /// The breakaway gate refuses if this does not match the live PWM frequency
-    /// handed to it at Stage-C construction, so confirmation evidence measured
-    /// under one physical timebase can never seed a Stage-C plan admitted under
+    /// handed to it at Integral construction, so confirmation evidence measured
+    /// under one physical timebase can never seed an Integral plan admitted under
     /// another. [`From`] leaves this zero (fail-closed: zero never matches a
     /// live frequency); the fixed-gain-amplitude preflight overwrites it with the
     /// live value immediately after constructing from it.
@@ -1179,7 +1179,7 @@ pub(crate) struct AcquisitionContext {
 }
 
 impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
-    /// Extract exactly the physical fields the shared Stage-C tail reads.
+    /// Extract exactly the physical fields the shared Integral tail reads.
     ///
     /// The breakaway-only `channel` and `plan_time_*` fields are left zero:
     /// every caller of this conversion overwrites them explicitly with its
@@ -1199,12 +1199,12 @@ impl From<VelocitySweepExecutionPlan> for AcquisitionContext {
     }
 }
 
-/// Construct one exact breakaway-campaign Stage-C plan from a confirmed
+/// Construct one exact breakaway-campaign Integral plan from a confirmed
 /// candidate proportional gain, with no reselection.
 ///
 /// The normative decision (spec section 7):
-/// confirmation selects the exact Stage-C proportional gain but does not
-/// waive Stage-C safety admission. `fixed_p = confirmation_plan.nominated_p`
+/// confirmation selects the exact Integral proportional gain but does not
+/// waive Integral safety admission. `fixed_p = confirmation_plan.nominated_p`
 /// unconditionally -- there is no joint-membership test-point selection, no
 /// lower-middle or highest-in-band reselection, and no fallback to another
 /// discovery candidate. Every existing plan-time safety check still gates
@@ -1274,7 +1274,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
         return Err(VelocityIntegralPlanError::MismatchedAuthority);
     }
     // Fail-closed physical-context guard: confirmation evidence frozen under one
-    // PWM timebase / encoder resolution must not seed a Stage-C plan admitted
+    // PWM timebase / encoder resolution must not seed an Integral plan admitted
     // under different live values.
     if context.plan_time_pwm_hz != pwm_hz
         || context.plan_time_encoder_counts_per_rev != encoder_counts_per_rev
@@ -1320,7 +1320,7 @@ pub(crate) fn plan_breakaway_velocity_integral_response(
     )
 }
 
-/// Rebuild one breakaway Stage-C plan from authority firmware already retained.
+/// Rebuild one breakaway Integral plan from authority firmware already retained.
 ///
 /// The resume counterpart to [`plan_breakaway_velocity_integral_response`]. It
 /// takes the same unforgeable [`ConfirmedAcquisitionDigest`], so a gain still

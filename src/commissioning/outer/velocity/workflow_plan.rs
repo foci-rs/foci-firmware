@@ -87,7 +87,7 @@ impl CommissioningWorkflowPlan {
     /// Reserved before the probe's first stroke. `nominal_workflow_ms` and
     /// `maximum_workflow_ms` must already be the worst-case sums produced by
     /// [`super::integral_plan::breakaway_workflow_envelope_ms`]; every later
-    /// probe, discovery, confirmation, and Stage-C continuation plan must
+    /// probe, discovery, confirmation, and Integral continuation plan must
     /// report an exact duration that fits inside `maximum_workflow_ms`. A
     /// phase plan that would exceed it is rejected before that phase's first
     /// stroke -- see

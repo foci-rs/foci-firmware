@@ -561,7 +561,7 @@ impl RungOriginRecoveryRuntime {
     }
 }
 
-/// Borrowed large state shared with the owning Stage-B or Stage-C phase.
+/// Borrowed large state shared with the owning Proportional or Integral phase.
 pub(crate) struct RungOriginRecoveryResources<'a> {
     pub(crate) safety: &'a mut OuterSafetyLimits,
     pub(crate) observations: &'a mut VelocityObservationRing,

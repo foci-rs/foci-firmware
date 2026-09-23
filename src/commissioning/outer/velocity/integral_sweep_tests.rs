@@ -452,7 +452,7 @@ fn live_integral_schedule_records_one_selector_per_observation() {
             let StepResult::VelocityIntegralEvent(VelocityIntegralEvent::RestSelection(report)) =
                 record_integral_observation_rest_selection(&mut data, decision, owner)
             else {
-                panic!("every ordinary Stage-C rest decision must emit Event 151");
+                panic!("every ordinary Integral rest decision must emit Event 151");
             };
             emitted += 1;
             assert_eq!(report.evidence_sequence, emitted);
@@ -476,7 +476,7 @@ fn live_integral_schedule_records_one_selector_per_observation() {
                 rung_index,
             )
         else {
-            panic!("every completed Stage-C recovery rest decision must emit Event 151");
+            panic!("every completed Integral recovery rest decision must emit Event 151");
         };
         assert_eq!(report.evidence_sequence, 121 + u16::from(rung_index));
         assert_eq!(report.owner, RestSelectionOwner::IntegralRecovery);
@@ -1240,7 +1240,7 @@ fn completed_integral_recovery_rest_rejection_is_cause_53() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("completed Stage-C recovery rest rejection must terminate");
+        panic!("completed Integral recovery rest rejection must terminate");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
@@ -1806,7 +1806,7 @@ fn begin_positive_i_rest_cleanup_reports_missing_capture_state_without_a_boundar
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("a missing boundary must emit the Stage-C integrity terminal");
+        panic!("a missing boundary must emit the Integral integrity terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -1833,7 +1833,7 @@ fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_sample_grid()
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("sample-grid overflow must emit the Stage-C integrity terminal");
+        panic!("sample-grid overflow must emit the Integral integrity terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -1860,7 +1860,7 @@ fn begin_positive_i_rest_cleanup_reports_deadline_overflow_for_the_settle_window
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("settle-window overflow must emit the Stage-C integrity terminal");
+        panic!("settle-window overflow must emit the Integral integrity terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -1900,7 +1900,7 @@ fn positive_i_rest_cleanup_capture_reports_deadline_overflow_for_the_analysis_bu
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("analysis-budget overflow must emit the Stage-C integrity terminal");
+        panic!("analysis-budget overflow must emit the Integral integrity terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -2056,7 +2056,7 @@ fn integral_anchor_and_bookend_unconfirmed_rest_use_dedicated_cause() {
             }
         };
 
-        let diagnostic = diagnostic.expect("completed Stage-C rest must emit Event 151");
+        let diagnostic = diagnostic.expect("completed Integral rest must emit Event 151");
         assert_eq!(diagnostic.owner, RestSelectionOwner::IntegralAnchor);
         assert_eq!(diagnostic.slot, 0);
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
@@ -2536,7 +2536,7 @@ fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("completed Stage-C recovery rest rejection must terminate");
+        panic!("completed Integral recovery rest rejection must terminate");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Inconclusive);
     assert_eq!(
@@ -2927,7 +2927,7 @@ fn entry_and_exit_transaction_failures_fault_before_motion_or_evidence() {
         let StepResult::VelocityIntegralTerminal(terminal) =
             step(&mut phase, &mut workspace, &mut backend)
         else {
-            panic!("entry failure must emit the Stage-C integrity terminal");
+            panic!("entry failure must emit the Integral integrity terminal");
         };
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
         assert!(!backend.spi_log.iter().any(|operation| {
@@ -2962,7 +2962,7 @@ fn entry_and_exit_transaction_failures_fault_before_motion_or_evidence() {
         let StepResult::VelocityIntegralTerminal(terminal) =
             step(&mut phase, &mut workspace, &mut backend)
         else {
-            panic!("exit failure must emit the Stage-C integrity terminal");
+            panic!("exit failure must emit the Integral integrity terminal");
         };
         assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
         let OuterPhase::VelocityIntegral { data, .. } = &phase else {
@@ -3060,7 +3060,7 @@ fn prepare_zero_settle_reports_deadline_overflow_for_the_settle_window() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("settle-deadline overflow must emit the Stage-C integrity terminal");
+        panic!("settle-deadline overflow must emit the Integral integrity terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -3094,7 +3094,7 @@ fn prepare_zero_settle_reports_deadline_overflow_for_the_analysis_budget() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("analysis-budget overflow must emit the Stage-C integrity terminal");
+        panic!("analysis-budget overflow must emit the Integral integrity terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -3137,7 +3137,7 @@ fn settle_capture_reports_deadline_overflow_for_the_analysis_budget() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("analysis-budget overflow must emit the Stage-C integrity terminal");
+        panic!("analysis-budget overflow must emit the Integral integrity terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -3167,7 +3167,7 @@ fn excessive_slot_transition_time_emits_an_observation_gap_fault() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("transition overrun must emit the Stage-C safety terminal");
+        panic!("transition overrun must emit the Integral safety terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -3328,7 +3328,7 @@ fn contained_recovery_after_an_eligible_bookend_is_nonblocking() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         step(&mut phase, &mut workspace, &mut backend)
     else {
-        panic!("contained final recovery must preserve the Stage-C terminal");
+        panic!("contained final recovery must preserve the Integral terminal");
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::FirstRunRetained);
     assert_eq!(terminal.cause, IntegralOutcomeCause::Engine(0));
@@ -3348,7 +3348,7 @@ fn integral_safety_fault_uses_the_dedicated_terminal() {
     let StepResult::VelocityIntegralTerminal(terminal) =
         integral_fault_terminal(&phase, CommissionError::SafetyEnvelopeViolation, None)
     else {
-        panic!("Stage-C fault must not fall through to the generic terminal")
+        panic!("Integral fault must not fall through to the generic terminal")
     };
     assert_eq!(terminal.outcome, VelocityIntegralOutcome::Fault);
     assert_eq!(
@@ -3378,7 +3378,7 @@ fn amplitude_safety_fault_uses_the_amplitude_terminal() {
     assert_eq!(terminal.cause, FixedGainAmplitudeCause::EvidenceIntegrity);
 }
 
-/// Stage-C rung aggregation must read the slots that actually carry each direction.
+/// Integral rung aggregation must read the slots that actually carry each direction.
 ///
 /// Evidence is written by raw slot index and read back by observation ordinal and
 /// direction. `analyze_rung` hardcoded `index * 2 + offset`, so a mirrored run

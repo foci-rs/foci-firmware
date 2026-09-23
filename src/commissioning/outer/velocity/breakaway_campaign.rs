@@ -2680,7 +2680,7 @@ pub(crate) enum BandConfirmationOutcome {
     /// All eight held-out strokes were collected with complete
     /// `collected == eligible == included == 0b1111` masks in both directions
     /// and every fresh interval contained in 70-80%. Carries the confirmed
-    /// gain and the frozen plan for a later slice's Stage-C construction.
+    /// gain and the frozen plan for a later slice's Integral construction.
     Accepted {
         /// The held-out acceptance itself.
         acceptance: BandConfirmationAcceptance,
@@ -2691,8 +2691,8 @@ pub(crate) enum BandConfirmationOutcome {
     /// confirmation strokes were spent.
     TargetBandUnconfirmableFromDiscovery,
     /// Discovery selected a band, but every band-admissible rung's proportional
-    /// gain exceeds the Stage-C transition-capability ceiling, so nominating any
-    /// would seed a plan Stage-C admission must refuse. Refused before motion;
+    /// gain exceeds the Integral transition-capability ceiling, so nominating any
+    /// would seed a plan Integral admission must refuse. Refused before motion;
     /// zero confirmation strokes were spent. Distinct from
     /// [`Self::TargetBandUnconfirmableFromDiscovery`] (an empty band) so the
     /// refusal names its own reason on the wire.
@@ -2810,7 +2810,7 @@ pub(crate) fn begin_band_confirmation(
         }
     };
     // Single canonical contract check, run before the fixed eight-stroke block
-    // drives any motion. The same `validate_fixed_contract` gates Stage-C
+    // drives any motion. The same `validate_fixed_contract` gates Integral
     // construction, so a plan that reaches confirmation and a plan that reaches
     // Integral are held to one identical, non-drifting contract.
     if validate_fixed_contract(&plan).is_err() {
@@ -3603,7 +3603,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
 /// Computed once at [`BreakawayCampaign::new`], before any probe motion: the
 /// current-representable `(p_start, p_top)` gain span (shared with the classic
 /// sweep via [`current_gain_span`]), the physical acquisition parameters the
-/// Stage-C tail needs, and the reserved command-level workflow envelope. The
+/// Integral tail needs, and the reserved command-level workflow envelope. The
 /// probe outcome supplies only the resolved breakaway grid index; every other
 /// discovery-plan input is derived from these retained values, matching the
 /// spec's plan-time authority-ceiling rule (`authority_ceiling = p_top`).
@@ -3624,11 +3624,11 @@ pub(crate) struct BreakawayCampaignInputs {
     channel: u8,
     run_sequence: u32,
     /// Plan-time PWM carrier frequency, in Hz, frozen from the command request.
-    /// Cross-checked against the live PWM frequency at Stage-C construction so
+    /// Cross-checked against the live PWM frequency at Integral construction so
     /// confirmation evidence cannot be admitted under a different timebase.
     pwm_hz: u32,
     /// Plan-time encoder counts per mechanical revolution, frozen from the
-    /// command request. Cross-checked against the live resolution at Stage-C
+    /// command request. Cross-checked against the live resolution at Integral
     /// construction.
     encoder_counts_per_rev: u32,
     /// `sweep_plan::CEILING_BINDING_CURRENT_LIMIT` or
@@ -3642,7 +3642,7 @@ pub(crate) struct BreakawayCampaignInputs {
 ///
 /// Every field is a command-admission input; `nominal_workflow_ms` and
 /// `maximum_workflow_ms` are the worst-case sums reserved for the whole campaign
-/// (probe, discovery, confirmation, and the Stage-C continuation) before probe
+/// (probe, discovery, confirmation, and the Integral continuation) before probe
 /// motion, so every phase plan must fit inside `maximum_workflow_ms`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BreakawayCampaignRequest {
@@ -3664,9 +3664,9 @@ pub(crate) struct BreakawayCampaignRequest {
     pub(crate) nominal_workflow_ms: u32,
     /// Reserved maximum campaign duration; every phase plan must fit inside it.
     pub(crate) maximum_workflow_ms: u32,
-    /// Physical firmware channel bound into the Stage-C authority.
+    /// Physical firmware channel bound into the Integral authority.
     pub(crate) channel: u8,
-    /// Trace/run sequence carried into the Stage-C continuation.
+    /// Trace/run sequence carried into the Integral continuation.
     pub(crate) run_sequence: u32,
     /// PWM carrier frequency the campaign is planned under, in Hz. Bound into
     /// the probe plan's digest as part of its acquisition context.
@@ -3803,7 +3803,7 @@ impl BreakawayCampaign {
         })
     }
 
-    /// Trace/run sequence the Stage-C continuation is emitted under.
+    /// Trace/run sequence the Integral continuation is emitted under.
     pub(crate) const fn run_sequence(&self) -> u32 {
         self.inputs.run_sequence
     }
@@ -3827,7 +3827,7 @@ impl BreakawayCampaign {
     ///
     /// This is the operational torque limit that safe-state restoration must
     /// restore when a campaign phase is torn down while still armed. It is the
-    /// same frozen limit the Stage-C hand-off carries into the confirmed plan
+    /// same frozen limit the Integral hand-off carries into the confirmed plan
     /// (`hard_torque_limit` in [`BreakawayCampaignInputs`]).
     pub(crate) const fn hard_torque_limit(&self) -> u16 {
         self.inputs.hard_torque_limit
@@ -3860,7 +3860,7 @@ impl BreakawayCampaign {
 /// This is pure command admission: it commands no motion and touches no backend.
 /// It reuses [`plan_proportional_velocity_sweep`] to derive the shared target
 /// velocity, planned amplitude, and per-slot recovery reservations, and
-/// [`integral_continuation_geometry`] for the worst-case Stage-C continuation, then
+/// [`integral_continuation_geometry`] for the worst-case Integral continuation, then
 /// sums the whole pre-motion envelope with [`breakaway_workflow_envelope_ms`]
 /// (392 recovery slots per [`BreakawayCampaign::RECOVERY_SLOT_COUNT`]). The
 /// returned [`CommissioningWorkflowPlan`] carries the exact envelope the
@@ -3932,17 +3932,17 @@ pub(crate) fn plan_breakaway_campaign_command(
 /// is reachable only from an accepted held-out confirmation whose confirmed P
 /// also passed the 6a plan-time safety admission. Every other terminal --
 /// including an accepted confirmation whose P the 6a constructor refuses WITHOUT
-/// motion -- is a [`Self::Terminal`] that carries NO Stage-C plan, so no
+/// motion -- is a [`Self::Terminal`] that carries NO Integral plan, so no
 /// failure or inconclusive path can begin Integral.
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum BreakawayCampaignOutcome {
     /// The confirmed candidate P was accepted and admitted by 6a plan-time
-    /// safety; the exact Stage-C plan built through the token route is ready to
+    /// safety; the exact Integral plan built through the token route is ready to
     /// hand off to the `VelocityIntegral` phase.
     IntegralPlanReady(VelocityIntegralPlan),
     /// A non-accept campaign terminal, or an accept whose confirmed P the 6a
-    /// constructor refused WITHOUT motion. Never carries a Stage-C plan.
+    /// constructor refused WITHOUT motion. Never carries an Integral plan.
     Terminal {
         error: CommissionError,
         safety: Option<OuterSafetyFault>,
@@ -4481,7 +4481,7 @@ fn route_discovery_outcome(
     inputs: &BreakawayCampaignInputs,
     evidence_sequence: &mut u16,
 ) -> EmitContinuation {
-    // The Stage-C transition-capability ceiling for the live acquisition
+    // The Integral transition-capability ceiling for the live acquisition
     // context. Nomination refuses any candidate above it, so a confirmed gain
     // can never reach `route_confirmed_accept` only to be refused without
     // motion. The acquisition context is validated upstream, so an error here
@@ -4536,12 +4536,12 @@ fn route_discovery_outcome(
     }
 }
 
-/// Route an accepted held-out confirmation through the ONE authorized Stage-C
+/// Route an accepted held-out confirmation through the ONE authorized Integral
 /// chain: [`bind_breakaway_integral_authority`] -> `ConfirmedAcquisitionDigest`
 /// token -> [`plan_breakaway_velocity_integral_response`], which builds the
 /// `IntegralAcquisitionAuthority` internally from the token.
 ///
-/// This is the sole breakaway path from a confirmed acceptance to a Stage-C
+/// This is the sole breakaway path from a confirmed acceptance to an Integral
 /// plan. It is reachable only from [`BandConfirmationOutcome::Accepted`]; it
 /// takes the acceptance and its frozen plan by value, so no failure or
 /// inconclusive confirmation terminal can even be expressed as an argument, and
@@ -4604,7 +4604,7 @@ fn route_confirmed_accept<B: CommissioningBackend>(
 /// Build the additive discovery session from a resolved probe breakaway.
 ///
 /// `authority_ceiling = p_top` (the retained plan-time ceiling), per the spec's
-/// plan-time authority rule: the Stage-C transition-authority guard is applied
+/// plan-time authority rule: the Integral transition-authority guard is applied
 /// only at Integral, by [`plan_breakaway_velocity_integral_response`], never as a
 /// pre-sweep discovery ceiling. Dedicated plan-time discovery refusals retain
 /// their discovery-owned terminal causes; structural failures retain the generic
@@ -4908,7 +4908,7 @@ const EMPTY_CONFIRMATION_DIRECTIONAL_INPUT: ConfirmationDirectionalInput =
 /// Build the campaign's confirmation-terminal advance: report every fresh
 /// held-out stroke's response interval and the confirmation terminal itself
 /// now, then the campaign's closure record starting the following tick,
-/// routing an acceptance through the Stage-C token chain.
+/// routing an acceptance through the Integral token chain.
 fn confirmation_done_advance<B: CommissioningBackend>(
     outcome: BandConfirmationOutcome,
     session: &BandConfirmationSession,
@@ -5129,7 +5129,7 @@ fn checkpoint_event_routing(step: BreakawayCampaignStep) -> BreakawayCampaignSte
 ///
 /// Sequences the three committed drivers -- probe, additive discovery, held-out
 /// confirmation -- through the ONE borrowed `workspace`, then routes an accepted
-/// confirmation through the Stage-C token chain. `safety` and `workspace` are
+/// confirmation through the Integral token chain. `safety` and `workspace` are
 /// caller-owned; neither is allocated here. The caller runs
 /// [`crate::commissioning::outer::check_outer_safety`] against `safety` between
 /// ticks, exactly as it does for every other outer phase; this function never
@@ -5379,12 +5379,12 @@ pub(crate) async fn step_breakaway_campaign<B: CommissioningBackend>(
 ///
 /// On an accepted, admitted confirmation this performs the Confirmed -> Integral
 /// hand-off in place: it replaces the [`OuterPhase::BreakawayCampaign`] with the
-/// existing [`OuterPhase::VelocityIntegral`] variant carrying the exact Stage-C
+/// existing [`OuterPhase::VelocityIntegral`] variant carrying the exact Integral
 /// plan, so
-/// Stage-C execution state lives in that variant, off the campaign variant's
+/// Integral execution state lives in that variant, off the campaign variant's
 /// retained budget. Every non-accept campaign terminal -- including an accept
 /// the 6a constructor refused WITHOUT motion -- fails the outer phase and never
-/// begins Integral, so no failure or inconclusive path can reach a Stage-C
+/// begins Integral, so no failure or inconclusive path can reach an Integral
 /// stroke. Safe-state restoration on the resulting `Failed`/`FailedWithSafety`
 /// terminal happens at the surrounding engine/dispatch boundary, as it does for
 /// every other outer phase.
@@ -5426,9 +5426,9 @@ pub(crate) async fn step_breakaway_campaign_with_trace<B: CommissioningBackend>(
                 crate::diagnostic::BreakawayCheckpoint::IntegralHandedOff,
             );
             // Report the plan with the transition. The combined path emits its
-            // Stage-C plan alongside the equivalent transition; returning a bare
+            // Integral plan alongside the equivalent transition; returning a bare
             // `ReadyNow` here left the host assembler with no plan at all, so
-            // its first Stage-C observation failed `_require_plan` with
+            // its first Integral observation failed `_require_plan` with
             // "integral-response evidence arrived before exact plan".
             StepResult::BreakawayIntegralPlanReady { run_sequence, plan }
         }

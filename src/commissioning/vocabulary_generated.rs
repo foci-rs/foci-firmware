@@ -25,9 +25,9 @@ pub enum CommissionPhase {
     /// Breakaway-seeded campaign: proportional-gain acquisition against the
     /// nominated in-band ladder. Wire code 18.
     BreakawayProportionalAcquisition,
-    /// Stage-C fixed-P velocity-integral response ladder. Wire code 19.
+    /// Integral-phase fixed-P velocity-integral response ladder. Wire code 19.
     IntegralGainResponseCharacterization,
-    /// Stage-C fixed-P velocity-integral fixed-gain sweep (ascending or
+    /// Integral-phase fixed-P velocity-integral fixed-gain sweep (ascending or
     /// descending amplitude) against the retained acceptance point. Wire code 20.
     FixedGainAmplitudeValidation,
     /// Reversal-standstill robustness gate over the retained acceptance point.
@@ -135,14 +135,14 @@ impl BreakawayPhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[repr(u8)]
 pub enum VelocityAutotuneWorkflowKind {
-    /// Resume Stage C from retained firmware authority.
+    /// Resume Integral from retained firmware authority.
     Resume = 0,
     /// Run the retained fixed-I gain from low to high amplitude.
     FixedGainAmplitudeAscending = 1,
     /// Run the retained fixed-I gain from high to low amplitude.
     FixedGainAmplitudeDescending = 2,
     /// Run the breakaway probe, additive discovery, held-out confirmation, and
-    /// the existing Stage-C integral continuation as one bounded command.
+    /// the existing Integral continuation as one bounded command.
     BreakawaySeededProportionalThenIntegral = 3,
     /// Run the reversal-standstill robustness gate over the retained acceptance point.
     /// Distinct from every acquisition shape so the host arms the extended run

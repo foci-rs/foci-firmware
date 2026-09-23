@@ -45,7 +45,7 @@ use crate::trace::events::{
     EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG, TraceEventLevel, u32_arg,
 };
 // Raw FTRC trace-channel event ids: used only inside the raw-trace helpers
-// kept on `trace` (Stage-C/amplitude/breakaway terminal and evidence emission).
+// kept on `trace` (Integral/amplitude/breakaway terminal and evidence emission).
 #[cfg(feature = "trace")]
 use crate::trace::events::{
     EVENT_COMMISSION_BREAKAWAY_CAMPAIGN_TERMINAL, EVENT_COMMISSION_BREAKAWAY_CONFIRMATION_PLAN,
@@ -666,7 +666,7 @@ impl CommissioningEngine {
         (code, true)
     }
 
-    /// Create a direct Stage-C resume engine from a preflighted exact plan.
+    /// Create a direct Integral resume engine from a preflighted exact plan.
     pub fn new_outer_for_tmc_with_integral_preflight(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -723,7 +723,7 @@ impl CommissioningEngine {
     /// Mirrors [`Self::new_outer_for_tmc_with_fixed_gain_amplitude_preflight`] but
     /// configures the outer safety envelope up front from the accepted point's
     /// own probe velocity, because the robustness stepper's `Setup` -- unlike the
-    /// Stage-C/acceptance stepper -- assumes the encoder domain and velocity
+    /// Integral/acceptance stepper -- assumes the encoder domain and velocity
     /// envelope are already installed and only reads the encoder baseline itself.
     ///
     /// # Errors
@@ -859,7 +859,7 @@ impl CommissioningEngine {
     /// Complete an active breakaway cancellation before removing its engine.
     ///
     /// Only the live [`OuterPhase::BreakawayCampaign`] phase owns an active
-    /// campaign breadcrumb. Terminal and Stage-C phases are deliberately left
+    /// campaign breadcrumb. Terminal and Integral phases are deliberately left
     /// unchanged so their completed evidence cannot be overwritten.
     pub(crate) fn take_after_handled_stop(slot: &mut Option<Self>) -> Option<Self> {
         if matches!(
@@ -929,7 +929,7 @@ impl CommissioningEngine {
         match phase {
             OuterPhase::VelocityIntegral { data, .. } => data.plan.hard_torque_limit = 0,
             // The campaign's operational limit lives in its frozen inputs, which
-            // the Stage-C hand-off still reads, so it must not be cleared. The
+            // the Integral hand-off still reads, so it must not be cleared. The
             // engine is consumed or replaced immediately after a checked
             // restoration, so no idempotent re-query occurs on this phase.
             OuterPhase::BreakawayCampaign { .. } => {}
@@ -1145,7 +1145,7 @@ impl CommissioningEngine {
         terminal.rest_boundary_slot_plus_one = boundary
             .slot
             .checked_add(1)
-            .expect("Stage-C boundary slot fits its one-based terminal field");
+            .expect("Integral boundary slot fits its one-based terminal field");
         Some(record)
     }
 
@@ -1159,7 +1159,7 @@ impl CommissioningEngine {
             ..
         } = &mut self.engine_mode
         else {
-            panic!("test requires a Stage-C engine");
+            panic!("test requires an Integral engine");
         };
         data.positive_i_rest_boundary = Some(boundary);
     }
@@ -1313,7 +1313,7 @@ impl CommissioningEngine {
         }
     }
 
-    /// Emit the authoritative Stage-C terminal after retained-evidence policy.
+    /// Emit the authoritative Integral terminal after retained-evidence policy.
     #[cfg(feature = "trace")]
     #[inline(never)]
     pub(crate) fn emit_integral_terminal_trace<B: CommissioningBackend>(
@@ -2047,7 +2047,7 @@ mod tests {
         // engine state cannot grow unnoticed; the audited F407 ceiling is
         // the `<= 6_144` bound below.
         // 5_760 -> 5_744: removes the `combined_workflow`
-        // bool from the embedded Stage-C execution plan.
+        // bool from the embedded Integral execution plan.
         // 5_744 -> 5_760: `OuterSafetyLimits` gains a `u32` peak local-window
         // excursion field for uncensored characterization data.
         assert_eq!(size_of::<CommissioningEngine>(), 5_760);
@@ -3078,7 +3078,7 @@ mod tests {
         assert!(engine.trace_run.terminal);
     }
 
-    /// Build a Stage-C `VelocityIntegral` engine already sitting at a rest
+    /// Build an Integral `VelocityIntegral` engine already sitting at a rest
     /// boundary, plus a matching terminal ready for
     /// [`CommissioningEngine::attach_integral_rest_boundary`] and the
     /// boundary the engine was seeded with.
@@ -3274,7 +3274,7 @@ mod tests {
         (engine, terminal, boundary)
     }
 
-    /// The Stage-C rest-boundary digest fold happens inside
+    /// The Integral rest-boundary digest fold happens inside
     /// `attach_integral_rest_boundary` itself, before any board sink ever sees
     /// the record. Whether the sink then records the boundary event or drops
     /// it (as the always-compiled `record_velocity_sweep_trace_record` no-op

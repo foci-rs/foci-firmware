@@ -124,7 +124,7 @@ pub(crate) fn terminal_recovery_flags(report: &VelocityIntegralTerminal) -> u8 {
         }
 }
 
-/// Fixed-memory sequencing and digest state for one Stage-C run.
+/// Fixed-memory sequencing and digest state for one Integral run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct VelocityIntegralIntegrity {
     run_sequence: u32,
@@ -227,7 +227,7 @@ impl VelocityIntegralIntegrity {
     }
 }
 
-/// Encode one nonterminal Stage-C event in the canonical digest representation.
+/// Encode one nonterminal Integral event in the canonical digest representation.
 pub(crate) fn encode_velocity_integral_event(
     event: VelocityIntegralEvent,
 ) -> VelocitySweepCanonicalRecord {
@@ -263,7 +263,7 @@ pub(crate) fn encode_velocity_integral_event(
     }
 }
 
-/// Encode the complete immutable Stage-C plan for trace-only reconstruction.
+/// Encode the complete immutable Integral plan for trace-only reconstruction.
 ///
 /// This record is emitted before motion and preserves every input to
 /// [`VelocityIntegralPlan::digest`]. It is intentionally distinct from the
@@ -375,7 +375,7 @@ fn push_reply<const N: usize>(destination: &mut [u8; N], offset: &mut usize, val
     *offset += value.len();
 }
 
-/// Encode the single compact ordinary-reply Stage-C terminal.
+/// Encode the single compact ordinary-reply Integral terminal.
 ///
 /// Carries only the fields the live host reads for status text and
 /// orchestration; the detailed observation/rung/recovery evidence rides
@@ -448,7 +448,7 @@ pub(crate) fn encode_velocity_integral_terminal_reply(
     bytes
 }
 
-/// Encode the detailed Stage-C terminal for trace-only parity.
+/// Encode the detailed Integral terminal for trace-only parity.
 pub(crate) fn encode_velocity_integral_terminal(
     report: &VelocityIntegralTerminal,
 ) -> VelocitySweepCanonicalRecord {
@@ -882,7 +882,7 @@ mod tests {
     use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
     use foci_tmc4671::pid::PidPGain;
 
-    /// Byte offset of `drift_ratio_ppm` in an encoded Stage-C observation record.
+    /// Byte offset of `drift_ratio_ppm` in an encoded Integral observation record.
     ///
     /// Counted from the fixed prefix `encode_observation` pushes ahead of the
     /// field: tag(1) + run_sequence(4) + evidence_sequence(2) + plan_digest(8) +
@@ -1310,7 +1310,7 @@ mod tests {
         assert_eq!(integrity.digest(), 0xabbe_8f32_faa4_a140);
     }
 
-    /// Proves the production Stage-C digest path is live in the default
+    /// Proves the production Integral digest path is live in the default
     /// build: this module now un-gates in the default build, so
     /// `VelocityIntegralIntegrity::record` and the
     /// canonical-record encoders it calls run identically whether or not the

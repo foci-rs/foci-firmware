@@ -343,7 +343,7 @@ impl OuterSafetyLimits {
             self.positive_position_window.saturating_add(reserve_counts);
     }
 
-    /// Configure encoder-domain safety for the Stage-C `VelocityIntegral`
+    /// Configure encoder-domain safety for the Integral `VelocityIntegral`
     /// phase (both first acquisition and resume/reproduce -- they share the
     /// same `Setup` entry point, so there is no narrower seam to hook).
     ///
@@ -1493,12 +1493,12 @@ mod tests {
         });
     }
 
-    /// The Stage-C `VelocityIntegral` phase's `position_local` window
+    /// The Integral `VelocityIntegral` phase's `position_local` window
     /// currently equals `travel_counts` exactly (via
     /// `configure_velocity_sweep_encoder_resolution`), giving it zero
     /// transient reserve -- a resume/reproduce that is otherwise passing can
     /// intermittently trip on a sub-0.1% overshoot. Mirrors
-    /// `robustness_window_opens_to_the_absolute_clamp`: Stage-C's window
+    /// `robustness_window_opens_to_the_absolute_clamp`: Integral's window
     /// should open to the same absolute machine-headroom clamp the
     /// robustness phase already uses, not a bespoke bounded margin --
     /// the observed overshoot is itself right-censored at the trip point, so

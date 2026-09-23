@@ -77,7 +77,7 @@ use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapabi
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
 /// Outer velocity ramp mode: single-direction velocity ramp, I applied through
-/// the gain pair. Matches the shared outer-velocity mode used by the Stage-C
+/// the gain pair. Matches the shared outer-velocity mode used by the Integral
 /// sweep and the breakaway campaign.
 const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 
@@ -560,7 +560,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             // Arm the shared outer-safety envelope check for the ticks that
             // follow: `check_outer_safety` returns early while `torque_cap == 0`,
             // so the dispatch only begins enforcing the envelope once the encoder
-            // baseline exists, exactly as the Stage-C sweep does in its own setup.
+            // baseline exists, exactly as the Integral sweep does in its own setup.
             safety.torque_cap = u16::from(backend.current_limit());
             let now_us = backend.elapsed_us();
             if safety.arm_safety_observation(now_us).is_err() {

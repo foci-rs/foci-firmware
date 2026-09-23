@@ -954,7 +954,7 @@ async fn robustness_reversal_terminal_restores_baseline_before_disarm_on_reject(
     );
 }
 
-// --- stage-c / fixed-gain amplitude -------------------------------------------
+// --- integral-phase / fixed-gain amplitude -------------------------------------------
 
 #[fixture_test]
 async fn fixed_gain_amplitude_terminal_disarms_unconditionally() {

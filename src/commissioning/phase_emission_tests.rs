@@ -101,7 +101,7 @@ fn plan_request() -> crate::commissioning::outer::velocity::sweep_plan::Velocity
     }
 }
 
-/// One genuine breakaway Stage-C plan, minted through the real
+/// One genuine breakaway Integral plan, minted through the real
 /// confirmation-token path a live campaign uses.
 fn response_ladder_plan() -> VelocityIntegralPlan {
     use crate::commissioning::outer::OuterMotionBudget;
@@ -147,7 +147,7 @@ fn response_ladder_plan() -> VelocityIntegralPlan {
         PWM_HZ,
         COUNTS_PER_REV,
     )
-    .expect("a valid retained breakaway Stage-C plan")
+    .expect("a valid retained breakaway Integral plan")
 }
 
 fn response_ladder_engine_with_params(params: OuterAutotuneInputs) -> CommissioningEngine {
@@ -351,7 +351,7 @@ async fn the_phase_tick_does_not_advance_the_stepper() {
     );
     assert!(
         backend.spi_log.is_empty(),
-        "the phase tick must not run the Stage-C stepper: {:?}",
+        "the phase tick must not run the Integral stepper: {:?}",
         backend.spi_log
     );
 
@@ -360,14 +360,14 @@ async fn the_phase_tick_does_not_advance_the_stepper() {
         ..
     } = &engine.engine_mode
     else {
-        panic!("the Stage-C phase must still be resident");
+        panic!("the Integral phase must still be resident");
     };
     assert!(
         matches!(
             state,
             crate::commissioning::outer::VelocityIntegralState::Setup
         ),
-        "the Stage-C stepper must still be parked at Setup"
+        "the Integral stepper must still be parked at Setup"
     );
 }
 

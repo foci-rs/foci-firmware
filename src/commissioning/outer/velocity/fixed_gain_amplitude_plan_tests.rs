@@ -165,7 +165,7 @@ fn breakaway_plan() -> super::integral_plan::VelocityIntegralPlan {
         PWM_HZ,
         COUNTS_PER_REV,
     )
-    .expect("the campaign's own Stage-C plan")
+    .expect("the campaign's own Integral plan")
 }
 
 fn breakaway_point(plan: super::integral_plan::VelocityIntegralPlan) -> AcceptancePoint {
@@ -529,7 +529,7 @@ fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
 
 /// Forward-first must hash exactly as it did before slot order was recorded.
 ///
-/// Hashing the order only when mirrored keeps every existing Stage-C plan digest,
+/// Hashing the order only when mirrored keeps every existing Integral plan digest,
 /// retained acceptance-point binding, and archived capture valid. A schema bump
 /// would have cascaded into the host cross-check for a diagnostic-only field.
 #[test]
@@ -546,7 +546,7 @@ fn forward_first_leaves_the_integral_plan_digest_untouched() {
     );
 }
 
-/// The Stage-C plan flags reserve bits 2 and 3 for the slot order.
+/// The Integral plan flags reserve bits 2 and 3 for the slot order.
 ///
 /// `ReverseFirst` and `PairedOutAndBack` used to occupy those bits (now
 /// removed); forward-first stays all-zero there and must not

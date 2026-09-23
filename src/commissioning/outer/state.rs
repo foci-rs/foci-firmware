@@ -148,7 +148,7 @@ impl crate::autotune::velocity_measurement::VelocityObservationSource for Veloci
     }
 }
 
-/// Phase-local state for the Stage-C velocity-integral response sweep.
+/// Phase-local state for the Integral velocity-integral response sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) struct VelocitySettleTransition {
     pub(crate) sample_index: u16,
@@ -278,7 +278,7 @@ pub(crate) struct PositiveIRestBoundary {
     pub(crate) cleanup_confirmed: bool,
 }
 
-/// Phase-local state for the Stage-C velocity-integral response sweep.
+/// Phase-local state for the Integral velocity-integral response sweep.
 #[derive(Debug, defmt::Format)]
 pub(crate) enum VelocityIntegralState {
     /// Validate the already-emitted immutable plan and arm measurement safety.
@@ -328,11 +328,11 @@ pub(crate) enum VelocityIntegralState {
     FinalizeRecovery(RungOriginRecoveryReport),
     /// Emit a structural-fault terminal after its observation evidence.
     FaultTerminal { error: CommissionError },
-    /// Emit the report-only Stage-C terminal.
+    /// Emit the report-only Integral terminal.
     Terminal,
 }
 
-/// Engine-owned Stage-C acquisition and exact raw-curve state.
+/// Engine-owned Integral acquisition and exact raw-curve state.
 #[derive(Debug, defmt::Format)]
 pub(crate) struct VelocityIntegralRuntime {
     pub(crate) plan: VelocityIntegralExecutionPlan,
@@ -420,7 +420,7 @@ impl VelocityIntegralRuntime {
 #[derive(Debug, defmt::Format)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum OuterPhase {
-    /// Stage-C fixed-P velocity-integral response phase.
+    /// Integral fixed-P velocity-integral response phase.
     VelocityIntegral {
         state: VelocityIntegralState,
         data: VelocityIntegralRuntime,
@@ -428,9 +428,9 @@ pub(crate) enum OuterPhase {
     },
     /// Breakaway-seeded campaign: probe, additive discovery, and held-out
     /// confirmation, sequenced through one borrowed workspace before the
-    /// confirmed Stage-C continuation. On an accepted, admitted confirmation
+    /// confirmed Integral continuation. On an accepted, admitted confirmation
     /// this phase is replaced in place by [`Self::VelocityIntegral`], so
-    /// Stage-C execution state never occupies this variant's footprint.
+    /// Integral execution state never occupies this variant's footprint.
     BreakawayCampaign {
         campaign: super::velocity::breakaway_campaign::BreakawayCampaign,
         workspace: super::velocity::breakaway_campaign::BreakawayProbeWorkspace,

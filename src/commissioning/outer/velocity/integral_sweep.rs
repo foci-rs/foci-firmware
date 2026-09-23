@@ -1,4 +1,4 @@
-//! Cooperative fixed-P Stage-C velocity-integral acquisition.
+//! Cooperative fixed-P Integral velocity-integral acquisition.
 
 use super::integral_plan::IntegralSlotOrder;
 use crate::autotune::velocity_measurement::SuffixDiagnostic;
@@ -90,7 +90,7 @@ const INTEGRAL_CAUSE_EVIDENCE_INVALID_INTERVAL: u8 = 7;
 /// An observation's direction, gain, or interval was inconsistent during
 /// run-evidence assessment.
 const INTEGRAL_CAUSE_EVIDENCE_MISMATCHED_OBSERVATION: u8 = 11;
-/// An exact i64 rate bound did not fit Stage-C's retained i32 domain during
+/// An exact i64 rate bound did not fit Integral's retained i32 domain during
 /// run-evidence assessment.
 const INTEGRAL_CAUSE_EVIDENCE_CONVERSION: u8 = 14;
 /// A direction, rung, mask bit, or terminus exceeded the declared ladder
@@ -819,7 +819,7 @@ pub(super) fn plan_integral_recovery(
         RungOriginRecoveryConfig {
             stage: RecoveryStage::Integral,
             rung_index: data.rung_index,
-            p: PidPGain::new(data.plan.fixed_p).expect("validated Stage-C P remains nonzero"),
+            p: PidPGain::new(data.plan.fixed_p).expect("validated Integral P remains nonzero"),
             target_velocity_rpm: TmcMechanicalRpm::from_register(target_velocity_rpm),
             planned_velocity_mrev_s,
             start_offset_counts: safety.unwrapped_position,
@@ -1127,7 +1127,7 @@ pub(super) fn analyze_rung(
     let observations = core::array::from_fn(|index| {
         let slot = usize::from(data.plan.slot_order.slot_for(index, direction_index));
         compact_summary(data, slot, direction)
-            .expect("validated compact Stage-C evidence reconstructs")
+            .expect("validated compact Integral evidence reconstructs")
     });
     analyze_integral_direction(
         direction,
@@ -1515,7 +1515,7 @@ fn retain_analyzed_observation(
     Ok(())
 }
 
-/// Advance the Stage-C response sweep by one cooperative state-machine step.
+/// Advance the Integral response sweep by one cooperative state-machine step.
 ///
 /// This step compiles into the default (production) build; only the raw
 /// trace emission it may call into is gated behind the `trace` feature.
@@ -1744,7 +1744,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
             };
             let domain = EncoderDomain::new(safety.counts_per_rev())
-                .expect("Stage-C setup validates encoder domain");
+                .expect("Integral setup validates encoder domain");
             let delta = match domain.delta(
                 domain.count(data.previous_encoder_raw),
                 domain.count(encoder_raw),
@@ -2024,7 +2024,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
             };
             let domain = EncoderDomain::new(safety.counts_per_rev())
-                .expect("Stage-C setup validates encoder domain");
+                .expect("Integral setup validates encoder domain");
             let delta = match domain.delta(
                 domain.count(data.previous_encoder_raw),
                 domain.count(encoder_raw),
@@ -2384,7 +2384,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                 }
             };
             let domain = EncoderDomain::new(safety.counts_per_rev())
-                .expect("Stage-C setup validates encoder domain");
+                .expect("Integral setup validates encoder domain");
             let delta = match domain.delta(
                 domain.count(data.previous_encoder_raw),
                 domain.count(encoder_raw),
