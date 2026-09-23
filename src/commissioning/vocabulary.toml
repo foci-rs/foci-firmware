@@ -71,7 +71,7 @@ doc = "Inner commissioning completed."
 [[phase]]
 ident = "BreakawayProportionalAcquisition"
 wire_code = 18
-label = "Breakaway proportional acquisition"
+label = "Finding proportional gain (velocity)"
 trace_ident = "BreakawayProportionalAcquisition"
 doc = """
 Breakaway-seeded campaign: proportional-gain acquisition against the
@@ -79,7 +79,7 @@ nominated in-band ladder. Wire code 18."""
 [[phase]]
 ident = "IntegralGainResponseCharacterization"
 wire_code = 19
-label = "Integral gain response characterization"
+label = "Finding integral gain (velocity)"
 trace_ident = "IntegralGainResponseCharacterization"
 doc = "Stage-C fixed-P velocity-integral response ladder. Wire code 19."
 [[phase]]
@@ -93,7 +93,7 @@ descending amplitude) against the retained acceptance point. Wire code 20."""
 [[phase]]
 ident = "ReversalStandstillRobustnessGate"
 wire_code = 21
-label = "Reversal standstill robustness gate"
+label = "Verifying gain under reversal/standstill"
 trace_ident = "ReversalStandstillRobustnessGate"
 doc = """
 Reversal-standstill robustness gate over the retained acceptance point.
