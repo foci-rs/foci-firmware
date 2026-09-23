@@ -1018,6 +1018,7 @@ pub(super) fn terminal_from_data(
         cause,
         breakaway_acceptance: data.plan.acceptance_source == AcceptanceSource::Breakaway,
         fixed_p: data.plan.fixed_p,
+        candidate_i: None,
         recovery_unavailable: data.recovery_unavailable,
         recovered_with_current_headroom: data.recovered_with_current_headroom,
         recovery_quantization_exposed: data.plan.recovery_quantization_exposed,

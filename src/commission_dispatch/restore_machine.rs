@@ -1733,6 +1733,7 @@ impl TerminalRestoreMachine {
             ) {
                 Ok(integral::AcceptanceInstall::Installed(point)) => {
                     defmt::info!("velocity-integral promotion: acceptance point installed");
+                    dispatch.terminal.candidate_i = Some(point.selected_i);
                     retention.integral.install_acceptance_point(point);
                     #[cfg(feature = "trace")]
                     {

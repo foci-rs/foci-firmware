@@ -3036,6 +3036,7 @@ mod tests {
             cause: crate::commissioning::types::IntegralOutcomeCause::Engine(7),
             breakaway_acceptance: false,
             fixed_p: 0,
+            candidate_i: None,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,

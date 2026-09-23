@@ -1038,6 +1038,16 @@ pub struct VelocityIntegralTerminal {
     /// Carried verbatim from the plan for every Stage-C workflow. Not zeroed
     /// for a non-target-recording (e.g. reproduced Proportional) terminal.
     pub fixed_p: u16,
+    /// The confirmed integral gain, once a breakaway acceptance point has
+    /// been installed for this terminal (`RepeatabilityConfirmed` with a
+    /// recorded target terminus).
+    ///
+    /// `None` for every other terminal -- including `FirstRunRetained` (no
+    /// acceptance point yet), a non-breakaway resume, and a breakaway
+    /// `RepeatabilityConfirmed` that recorded no target terminus. Firmware
+    /// sets this only at `restore_machine.rs`'s acceptance-point install
+    /// site, after `breakaway_acceptance_point` resolves `selected_i`.
+    pub candidate_i: Option<u16>,
     /// Final bookend recovery could not establish the next-command origin.
     pub recovery_unavailable: bool,
     /// Final bookend recovery proved passive in-band rest after clamp contact.

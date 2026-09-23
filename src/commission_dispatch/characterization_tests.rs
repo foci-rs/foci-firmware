@@ -1126,6 +1126,7 @@ fn sample_velocity_integral_terminal() -> crate::commissioning::types::VelocityI
         cause: crate::commissioning::types::IntegralOutcomeCause::Engine(0),
         breakaway_acceptance: false,
         fixed_p: 0,
+        candidate_i: None,
         recovery_unavailable: false,
         recovered_with_current_headroom: false,
         recovery_quantization_exposed: false,

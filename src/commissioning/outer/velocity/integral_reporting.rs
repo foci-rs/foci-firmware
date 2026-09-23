@@ -354,8 +354,8 @@ pub(crate) fn encode_velocity_integral_plan_trace(
     [core, schedule, recovery]
 }
 
-pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_SCHEMA_REVISION: u8 = 1;
-pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES: usize = 36;
+pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_SCHEMA_REVISION: u8 = 2;
+pub(crate) const VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES: usize = 39;
 
 /// Cross-run reproduction summary carried on the compact terminal reply.
 ///
@@ -434,6 +434,16 @@ pub(crate) fn encode_velocity_integral_terminal_reply(
             &reproduction.divergent_masks[direction].to_le_bytes(),
         );
     }
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &[u8::from(report.candidate_i.is_some())],
+    );
+    push_reply(
+        &mut bytes,
+        &mut offset,
+        &report.candidate_i.unwrap_or(0).to_le_bytes(),
+    );
     debug_assert_eq!(offset, VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES);
     bytes
 }
@@ -1453,6 +1463,7 @@ mod tests {
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
             fixed_p: 0,
+            candidate_i: None,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -1521,6 +1532,7 @@ mod tests {
             cause: IntegralOutcomeCause::Engine(0x2A),
             breakaway_acceptance: false,
             fixed_p: 0,
+            candidate_i: None,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -1557,7 +1569,7 @@ mod tests {
 
         #[rustfmt::skip]
         let expected: [u8; VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES] = [
-            0x01,
+            0x02,
             0x44, 0x33, 0x22, 0x11,
             0x01,
             0x2A, 0x00,
@@ -1571,6 +1583,7 @@ mod tests {
             0x02, 0x00, 0x00, 0x00,
             0x02, 0x00, 0x00, 0x00,
             0x01, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00,
         ];
         assert_eq!(bytes, expected);
 
@@ -1587,6 +1600,55 @@ mod tests {
     }
 
     #[test]
+    fn encode_velocity_integral_terminal_reply_carries_candidate_i_when_present() {
+        let mut terminal = VelocityIntegralTerminal {
+            run_sequence: 1,
+            evidence_sequence: 0,
+            plan_digest: 0,
+            digest: 0,
+            outcome: VelocityIntegralOutcome::RepeatabilityConfirmed,
+            cause: IntegralOutcomeCause::Engine(0),
+            breakaway_acceptance: true,
+            fixed_p: 724,
+            candidate_i: Some(512),
+            recovery_unavailable: false,
+            recovered_with_current_headroom: false,
+            recovery_quantization_exposed: false,
+            probe_constrained_test_point: false,
+            rest_boundary_rung_plus_one: 0,
+            rest_boundary_slot_plus_one: 0,
+            evidence: super::super::integral_evidence::IntegralRunEvidence::new(
+                [super::super::integral_evidence::ExactRateInterval::EMPTY; 2],
+            ),
+            expected_observations: 0,
+            emitted_observations: 0,
+            expected_rungs: 0,
+            emitted_rungs: 0,
+            run_started_us: 0,
+            run_completed_us: 0,
+            safety_fault: None,
+            rest_rejection_after_sufficiency: false,
+            rest_rejection_owner: None,
+        };
+        terminal.evidence.eligible_masks = [0, 0];
+
+        let bytes = encode_velocity_integral_terminal_reply(&terminal, None);
+        assert_eq!(bytes.len(), VELOCITY_INTEGRAL_TERMINAL_REPLY_BYTES);
+        assert_eq!(bytes[0], 2, "schema revision bumped to 2");
+        assert_eq!(bytes[36], 1, "candidate_i presence flag set");
+        assert_eq!(&bytes[37..39], &512_u16.to_le_bytes(), "candidate_i value");
+
+        terminal.candidate_i = None;
+        let bytes_absent = encode_velocity_integral_terminal_reply(&terminal, None);
+        assert_eq!(bytes_absent[36], 0, "candidate_i presence flag clear");
+        assert_eq!(
+            &bytes_absent[37..39],
+            &[0, 0],
+            "candidate_i value zeroed when absent"
+        );
+    }
+
+    #[test]
     fn encode_velocity_integral_terminal_reply_masks_retired_recovery_state_bits() {
         let mut terminal = VelocityIntegralTerminal {
             run_sequence: 1,
@@ -1597,6 +1659,7 @@ mod tests {
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: false,
             fixed_p: 0,
+            candidate_i: None,
             recovery_unavailable: true,
             recovered_with_current_headroom: true,
             recovery_quantization_exposed: true,
@@ -1637,6 +1700,7 @@ mod tests {
             cause: IntegralOutcomeCause::Engine(8),
             breakaway_acceptance: false,
             fixed_p: 0,
+            candidate_i: None,
             recovery_unavailable: false,
             recovered_with_current_headroom: true,
             recovery_quantization_exposed: true,
@@ -1683,6 +1747,7 @@ mod tests {
             cause: IntegralOutcomeCause::Error(53),
             breakaway_acceptance: false,
             fixed_p: 0,
+            candidate_i: None,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
@@ -1740,6 +1805,7 @@ mod tests {
             cause: IntegralOutcomeCause::Engine(0),
             breakaway_acceptance: true,
             fixed_p: 512,
+            candidate_i: None,
             recovery_unavailable: false,
             recovered_with_current_headroom: false,
             recovery_quantization_exposed: false,
