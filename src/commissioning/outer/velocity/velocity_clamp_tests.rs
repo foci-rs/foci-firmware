@@ -513,7 +513,11 @@ fn velocity_current_observer_attributes_phases() {
 #[test]
 fn begin_clears_demoted_bits_without_faulting() {
     for preload in [
-        1u32 << 16,
+        1u32 << 8,
+        1 << 10,
+        1 << 12,
+        1 << 14,
+        1 << 16,
         1 << 17,
         1 << 18,
         1 << 20,
@@ -521,7 +525,7 @@ fn begin_clears_demoted_bits_without_faulting() {
         1 << 22,
         1 << 24,
         1 << 25,
-        0x0377_0000,
+        0x0377_5500,
     ] {
         let mut backend = MockBackend::new();
         let _ = backend.registers.insert(STATUS_FLAGS.addr(), preload);
@@ -585,7 +589,11 @@ fn begin_reports_register_io_and_does_not_clear() {
 #[test]
 fn restart_clears_demoted_bits_without_faulting() {
     for preload in [
-        1u32 << 16,
+        1u32 << 8,
+        1 << 10,
+        1 << 12,
+        1 << 14,
+        1 << 16,
         1 << 17,
         1 << 18,
         1 << 20,
@@ -593,7 +601,7 @@ fn restart_clears_demoted_bits_without_faulting() {
         1 << 22,
         1 << 24,
         1 << 25,
-        0x0377_0000,
+        0x0377_5500,
     ] {
         let mut backend = MockBackend::new();
         let _ = backend.registers.insert(STATUS_FLAGS.addr(), preload);
@@ -634,7 +642,7 @@ fn restart_faults_on_genuine_fault_bit() {
 
 #[test]
 fn finish_moving_still_faults_on_demoted_bit_set_during_stroke() {
-    for bit in [16u32, 17, 18, 20, 21, 22, 24, 25] {
+    for bit in [8u32, 10, 12, 14, 16, 17, 18, 20, 21, 22, 24, 25] {
         let mut backend = MockBackend::new();
         let _ = backend.registers.insert(STATUS_FLAGS.addr(), 1 << bit);
         let mut observer = VelocityCurrentObserver::new(

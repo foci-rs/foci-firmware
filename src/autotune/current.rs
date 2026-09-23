@@ -101,11 +101,22 @@ pub const fn current_loop_actionable_status_mask(
 
 // Demoted from the primitive-start entry check: transition/limiter bits a
 // preceding phase legitimately leaves set (ipark circular-limit 16-18,
-// reference-switch 20-22, PWM duty rails 24-25). They remain full-mask
-// actionable on the finish-phase checks. Datasheet classification:
+// reference-switch 20-22, PWM duty rails 24-25, flux/torque target and
+// errsum limits 8/10/12/14). They remain full-mask actionable on the
+// finish-phase checks. Datasheet classification:
 // docs/notes/2026-09-03-foci-305-entry-mask-audit.md
-const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 =
-    (1 << 16) | (1 << 17) | (1 << 18) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 24) | (1 << 25);
+const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = (1 << 8)
+    | (1 << 10)
+    | (1 << 12)
+    | (1 << 14)
+    | (1 << 16)
+    | (1 << 17)
+    | (1 << 18)
+    | (1 << 20)
+    | (1 << 21)
+    | (1 << 22)
+    | (1 << 24)
+    | (1 << 25);
 
 /// Actionable status the guard checks at primitive start, before commanding
 /// motion. Narrower than [`current_loop_actionable_status_mask`]: it demotes the
