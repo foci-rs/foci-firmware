@@ -62,9 +62,9 @@ use super::robustness_cycles::{
 };
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
-    ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US,
-    ReversalMetrics, ReversalOnlineAccumulator, RobustnessThresholds, dac_rms_q,
-    reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
+    ESTABLISH_BAND_WINDOW_SAMPLES, ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT,
+    ROBUSTNESS_MEASUREMENT_BUDGET_US, ReversalMetrics, ReversalOnlineAccumulator,
+    RobustnessThresholds, dac_rms_q, reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -670,7 +670,17 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         RobustnessReversalState::EstablishCommandTarget => {
             session.origin_recovered = false;
             let target = establish_target_rpm(&session.point, session.direction);
-            match begin_capture(session, workspace, safety, backend, target, true).await {
+            match begin_capture(
+                session,
+                workspace,
+                safety,
+                backend,
+                target,
+                true,
+                ESTABLISH_BAND_WINDOW_SAMPLES,
+            )
+            .await
+            {
                 Ok((next_sample_us, budget_deadline_us)) => {
                     *state = RobustnessReversalState::EstablishCapture {
                         next_sample_us,
@@ -815,7 +825,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let target = reverse_target_rpm(&session.point, session.direction);
             // Deliberately no clear_velocity_error_sum here: the reversal is
             // measured against the integrator state established by the entry leg.
-            match begin_capture(session, workspace, safety, backend, target, false).await {
+            match begin_capture(session, workspace, safety, backend, target, false, 1).await {
                 Ok((next_sample_us, budget_deadline_us)) => {
                     *state = RobustnessReversalState::ReverseCapture {
                         next_sample_us,
@@ -1356,6 +1366,7 @@ async fn begin_capture<B: CommissioningBackend>(
     backend: &mut B,
     signed_target_rpm: i32,
     open_primitive: bool,
+    band_window_samples: usize,
 ) -> Result<(u64, u64), StepResult> {
     let counts_per_rev = safety.counts_per_rev();
     let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
@@ -1403,9 +1414,12 @@ async fn begin_capture<B: CommissioningBackend>(
     workspace.analysis.reset();
     let target_rate = target_rate_q(signed_target_rpm, counts_per_rev);
     let band = band_q_for(target_rate);
-    workspace
-        .capture
-        .reset(target_rate, band, ROBUSTNESS_BAND_DWELL_US);
+    workspace.capture.reset_with_band_window(
+        target_rate,
+        band,
+        ROBUSTNESS_BAND_DWELL_US,
+        band_window_samples,
+    );
     workspace.previous_encoder_raw = baseline;
     workspace.previous_read_us = baseline_us;
     let Some(next_sample_us) = baseline_us.checked_add(CAPTURE_PERIOD_US) else {
@@ -2364,6 +2378,35 @@ mod tests {
     }
 
     #[test]
+    fn establish_leg_settles_through_per_tick_ripple_around_target() {
+        let mut high = false;
+        let (terminal, _backend, _session) =
+            drive_scripted(test_point(), move |phase, _tick, target| {
+                if target == 0 {
+                    return 0;
+                }
+                match phase {
+                    CapturePhase::Establish => {
+                        high = !high;
+                        target.signum()
+                            * if high {
+                                STEADY_DELTA + 2
+                            } else {
+                                STEADY_DELTA - 2
+                            }
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        for direction in terminal.evidence.directions {
+            assert!(!direction.inconclusive);
+            assert_eq!(direction.retry_count, 0, "ripple must not consume retries");
+        }
+    }
+
+    #[test]
     fn noisy_reversal_exhausts_retries_and_reports_inconclusive() {
         let (terminal, _backend, _session) = drive(test_point(), true);
         assert_eq!(terminal.outcome, RobustnessOutcome::Inconclusive);
@@ -2400,8 +2443,8 @@ mod tests {
     fn establish_leg_travel_covers_budget_settle_tail_and_analysis() {
         let rate = establish_rate_counts_per_ms(&test_point(), COUNTS_PER_REV);
         assert_eq!(rate, 12);
-        assert_eq!(ESTABLISH_LEG_WINDOW_US, 816_000);
-        assert_eq!(establish_leg_travel_counts(rate), 12 * 816);
+        assert_eq!(ESTABLISH_LEG_WINDOW_US, 1_016_000);
+        assert_eq!(establish_leg_travel_counts(rate), 12 * 1_016);
     }
 
     #[test]
@@ -2582,7 +2625,7 @@ mod tests {
             match phase {
                 // Stall past t_max but short of the budget-minus-dwell censoring
                 // point, then converge in-band.
-                CapturePhase::Reverse if tick < 440 => 0,
+                CapturePhase::Reverse if tick < 620 => 0,
                 _ => target.signum() * STEADY_DELTA,
             }
         });
@@ -2618,7 +2661,7 @@ mod tests {
                     // short of the budget-minus-dwell censoring point, then
                     // converge in band -> a real TRIP_TIME rejection.
                     CapturePhase::Reverse if target < 0 => {
-                        if tick < 440 {
+                        if tick < 620 {
                             0
                         } else {
                             target.signum() * STEADY_DELTA
@@ -2661,10 +2704,10 @@ mod tests {
                 CapturePhase::Establish => {
                     // In-band long enough to reach band entry, then a clear drift
                     // so the settled tail resolves a slope and is Excluded.
-                    if tick < 50 {
+                    if tick < 80 {
                         target.signum() * STEADY_DELTA
                     } else {
-                        target.signum() * STEADY_DELTA + (tick as i32 - 50) * 3
+                        target.signum() * STEADY_DELTA + (tick as i32 - 80) * 3
                     }
                 }
                 _ => target.signum() * STEADY_DELTA,
@@ -2779,7 +2822,7 @@ mod tests {
     /// cause even when individual cycles are fast.
     #[test]
     fn slow_median_rejects_with_time_cause() {
-        const STALLS_MS: [u32; ROBUSTNESS_CYCLES_PER_DIRECTION] = [400, 445, 435, 415, 440];
+        const STALLS_MS: [u32; ROBUSTNESS_CYCLES_PER_DIRECTION] = [580, 615, 605, 595, 610];
         let mut attempt = [0usize; DIRECTION_COUNT];
         let (terminal, _backend, _session) =
             drive_scripted(test_point(), move |phase, tick, target| match phase {

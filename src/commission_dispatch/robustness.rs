@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn worst_case_run_duration_reserves_one_unwind_and_two_rests_per_retry_and_direction() {
-        assert_eq!(robustness_worst_case_duration_ms(3_000_000), 200_000);
+        assert_eq!(robustness_worst_case_duration_ms(3_000_000), 216_000);
         assert!(robustness_nominal_duration_ms() <= robustness_worst_case_duration_ms(0));
     }
 }

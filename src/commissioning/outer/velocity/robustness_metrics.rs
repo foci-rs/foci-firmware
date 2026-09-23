@@ -189,6 +189,11 @@ pub(crate) fn dac_rms_q<S: VelocityObservationSource + ?Sized>(
     libm::sqrtf(mean_sq_diff_f) as i64
 }
 
+/// Samples in the establish leg's band-membership window. Sixteen ~1 ms ticks
+/// span the chip velocity meter's 20 Hz filter time scale, so the settle test
+/// sees the velocity the loop regulates rather than per-tick count ripple.
+pub(crate) const ESTABLISH_BAND_WINDOW_SAMPLES: usize = 16;
+
 /// Online band-entry and recovery-IAE accumulator for one capture leg.
 ///
 /// The [`VelocityObservationRing`](crate::commissioning::outer::state::VelocityObservationRing)
@@ -205,6 +210,12 @@ pub(crate) struct ReversalOnlineAccumulator {
     lower_q: i64,
     upper_q: i64,
     dwell_us: u32,
+    band_window_samples: usize,
+    band_window: [(i32, u32); ESTABLISH_BAND_WINDOW_SAMPLES],
+    band_window_len: usize,
+    band_window_head: usize,
+    band_window_delta: i64,
+    band_window_elapsed: u64,
     elapsed_before_us: u32,
     iae_running_q: i64,
     run_start_us: Option<u32>,
@@ -225,6 +236,12 @@ impl ReversalOnlineAccumulator {
             lower_q: 0,
             upper_q: 0,
             dwell_us: 0,
+            band_window_samples: 1,
+            band_window: [(0, 0); ESTABLISH_BAND_WINDOW_SAMPLES],
+            band_window_len: 0,
+            band_window_head: 0,
+            band_window_delta: 0,
+            band_window_elapsed: 0,
             elapsed_before_us: 0,
             iae_running_q: 0,
             run_start_us: None,
@@ -246,11 +263,28 @@ impl ReversalOnlineAccumulator {
     /// tracker is scoped to one leg, so the reverse leg's own `reset()` call
     /// is the reversal-command instant it anchors at. See
     /// `docs/specs/2026-08-22-foc-274-overshoot-metric-redesign.md`.
-    pub(crate) fn reset(&mut self, target_rate_q: i64, band_q: i64, dwell_us: u32) {
+    ///
+    /// Band membership is judged on the mean rate of the last
+    /// `band_window_samples` observations (1 for each raw tick, at most
+    /// [`ESTABLISH_BAND_WINDOW_SAMPLES`]); samples before the window first
+    /// fills are out of band. The recovery IAE and the overshoot tracker keep
+    /// integrating the raw per-tick rate.
+    pub(crate) fn reset_with_band_window(
+        &mut self,
+        target_rate_q: i64,
+        band_q: i64,
+        dwell_us: u32,
+        band_window_samples: usize,
+    ) {
         self.target_rate_q = target_rate_q;
         self.lower_q = target_rate_q.saturating_sub(band_q);
         self.upper_q = target_rate_q.saturating_add(band_q);
         self.dwell_us = dwell_us;
+        self.band_window_samples = band_window_samples.clamp(1, ESTABLISH_BAND_WINDOW_SAMPLES);
+        self.band_window_len = 0;
+        self.band_window_head = 0;
+        self.band_window_delta = 0;
+        self.band_window_elapsed = 0;
         self.elapsed_before_us = 0;
         self.iae_running_q = 0;
         self.run_start_us = None;
@@ -285,7 +319,10 @@ impl ReversalOnlineAccumulator {
             return;
         }
         let rate = per_tick_rate_q(delta_counts, elapsed_us);
-        if rate >= self.lower_q && rate <= self.upper_q {
+        let in_band = self
+            .windowed_rate_q(delta_counts, elapsed_us)
+            .is_some_and(|windowed| windowed >= self.lower_q && windowed <= self.upper_q);
+        if in_band {
             if self.run_start_us.is_none() {
                 self.run_start_us = Some(self.elapsed_before_us);
                 self.run_iae_at_start_q = self.iae_running_q;
@@ -305,6 +342,29 @@ impl ReversalOnlineAccumulator {
         let contribution_q = error_q.saturating_mul(i64::from(elapsed_us));
         self.iae_running_q = self.iae_running_q.saturating_add(contribution_q);
         self.elapsed_before_us = self.elapsed_before_us.saturating_add(elapsed_us);
+    }
+
+    fn windowed_rate_q(&mut self, delta_counts: i32, elapsed_us: u32) -> Option<i64> {
+        if self.band_window_samples == 1 {
+            return Some(per_tick_rate_q(delta_counts, elapsed_us));
+        }
+        if self.band_window_len == self.band_window_samples {
+            let (old_delta, old_elapsed) = self.band_window[self.band_window_head];
+            self.band_window_delta -= i64::from(old_delta);
+            self.band_window_elapsed -= u64::from(old_elapsed);
+        } else {
+            self.band_window_len += 1;
+        }
+        self.band_window[self.band_window_head] = (delta_counts, elapsed_us);
+        self.band_window_head = (self.band_window_head + 1) % self.band_window_samples;
+        self.band_window_delta += i64::from(delta_counts);
+        self.band_window_elapsed += u64::from(elapsed_us);
+        if self.band_window_len < self.band_window_samples {
+            return None;
+        }
+        let delta = i32::try_from(self.band_window_delta).unwrap_or(i32::MAX);
+        let elapsed = u32::try_from(self.band_window_elapsed).unwrap_or(u32::MAX);
+        Some(per_tick_rate_q(delta, elapsed))
     }
 
     /// Band-entry time (elapsed-us from leg start), or `None` while the leg has
@@ -366,11 +426,10 @@ pub(crate) struct RobustnessThresholds {
 /// tail cycle cannot by itself trip a threshold.
 ///
 /// Structural censoring: a conclusive tail cycle cannot be measured while the
-/// tail threshold (`2 * t_max` = 860 ms) exceeds the measurement budget
-/// (`ROBUSTNESS_MEASUREMENT_BUDGET_US` = 500 ms) -- band entry past the budget
-/// reads as inconclusive, never as a slow conclusive cycle. The tail-reject
-/// path is therefore dormant until the tail threshold is pinned below the
-/// budget.
+/// tail threshold (`2 * t_max`) exceeds `ROBUSTNESS_MEASUREMENT_BUDGET_US` --
+/// band entry past the budget reads as inconclusive, never as a slow
+/// conclusive cycle. The tail-reject path is therefore dormant until the tail
+/// threshold is pinned below the budget.
 ///
 /// `r_max_q` is the deficit-Q equivalent of 10% of a reference acceptance
 /// target rate (176 rpm at `REFERENCE_ENCODER_COUNTS_PER_REV` = 4000 counts
@@ -389,21 +448,17 @@ pub(crate) struct RobustnessThresholds {
 /// `iae_max_q` is a loose *transient* envelope, not a settled-residual one:
 /// the recovery window integrates the reversal transient, whose error starts
 /// near twice the target rate. The seed allows a 2x margin over that peak
-/// error (`2 * target_rate_q`) sustained across the full measurement budget
-/// (`ROBUSTNESS_MEASUREMENT_BUDGET_US`), in the same rate-Q-microsecond unit
+/// error (`2 * target_rate_q`) sustained across the IAE reference window
+/// (`ROBUSTNESS_IAE_REFERENCE_WINDOW_US`), in the same rate-Q-microsecond unit
 /// as the internal `recovery_iae_q` the gate compares:
 ///
 /// ```text
-/// iae_max_q = 2 (margin) * (2 * target_rate_q) * ROBUSTNESS_MEASUREMENT_BUDGET_US
+/// iae_max_q = 2 (margin) * (2 * target_rate_q) * ROBUSTNESS_IAE_REFERENCE_WINDOW_US
 ///           = 2 * (2 * 11_733_333) * 500_000
 ///           = 23_466_666_000_000 (rate-Q microseconds)
 /// ```
 pub(crate) const ROBUSTNESS_THRESHOLDS: RobustnessThresholds = RobustnessThresholds {
-    // Reconvergence time becomes a coarse live-range catch, above the observed
-    // reference conclusive max and below the budget-minus-dwell censoring point;
-    // beyond-budget slowness surfaces as inconclusive, and the tail path stays
-    // dormant above the measurement budget.
-    t_max_us: 430_000,
+    t_max_us: ROBUSTNESS_MEASUREMENT_BUDGET_US - ROBUSTNESS_TRIP_TIME_HEADROOM_US,
     // Loose seed (10% of target), pending hardware characterization.
     r_max_q: 1_173_333,
     // Loose seed: 2x margin over the full-budget peak-error transient,
@@ -432,10 +487,19 @@ pub(crate) const ROBUSTNESS_BAND_FRACTION_PCT: u32 = 5;
 pub(crate) const ROBUSTNESS_BAND_DWELL_US: u32 = 48_000;
 
 /// Overall measurement budget for one reversal-robustness probe leg, in
-/// microseconds. Matches the existing 500 ms zero-target rest window
-/// budget; must exceed `t_max_us`. A leg that does not reach band entry
-/// within this budget is inconclusive.
-pub(crate) const ROBUSTNESS_MEASUREMENT_BUDGET_US: u32 = 500_000;
+/// microseconds; must exceed `t_max_us`. A leg that does not reach band entry
+/// within this budget is inconclusive. The IAE bound does not follow this
+/// budget; see [`ROBUSTNESS_IAE_REFERENCE_WINDOW_US`].
+pub(crate) const ROBUSTNESS_MEASUREMENT_BUDGET_US: u32 = 700_000;
+
+/// Fixed integration window the live IAE bound is derived over, so the gate's
+/// transient envelope stays put when the measurement budget changes.
+pub(crate) const ROBUSTNESS_IAE_REFERENCE_WINDOW_US: u32 = 500_000;
+
+/// Gap between the measurement budget and the reconvergence trip line. Wider
+/// than [`ROBUSTNESS_BAND_DWELL_US`], so a conclusive cycle can still land
+/// between the trip line and the budget's censoring point.
+pub(crate) const ROBUSTNESS_TRIP_TIME_HEADROOM_US: u32 = 100_000;
 
 /// Bounded retry count for an inconclusive probe leg. Band entry is stochastic
 /// and occasionally misses within a single leg's budget; each retry re-runs a
@@ -475,7 +539,7 @@ pub(crate) const PLANT_RATE_DEGENERATE_MIN_DIVISOR: i64 = 256;
 pub(crate) const ROBUSTNESS_IAE_SEED_MAX_Q: i64 = 23_466_666_000_000;
 
 /// Calibration coefficient (numerator) for [`robustness_thresholds_for`]'s
-/// `iae_max_q`: `iae_max_q = plant_rate_q * NUM * BUDGET_US / DEN`. Split as a
+/// `iae_max_q`: `iae_max_q = plant_rate_q * NUM * REFERENCE_WINDOW_US / DEN`. Split as a
 /// rational so the calibration is exact.
 ///
 /// Candidate-independence invariant: the `plant_rate_q` this scales must derive
@@ -518,7 +582,7 @@ pub(crate) fn robustness_thresholds_for(
     } else {
         let scaled = i128::from(ROBUSTNESS_IAE_COEFF_NUM)
             .saturating_mul(i128::from(plant_rate_q))
-            .saturating_mul(i128::from(ROBUSTNESS_MEASUREMENT_BUDGET_US))
+            .saturating_mul(i128::from(ROBUSTNESS_IAE_REFERENCE_WINDOW_US))
             / i128::from(ROBUSTNESS_IAE_COEFF_DEN);
         i64::try_from(scaled).unwrap_or(if scaled.is_negative() {
             i64::MIN
@@ -626,7 +690,7 @@ mod tests {
     fn assert_online_matches_pure(samples: &[(i32, u32)], target: i64, band: i64, dwell_us: u32) {
         let mut ring = VelocityObservationRing::new();
         let mut online = ReversalOnlineAccumulator::new();
-        online.reset(target, band, dwell_us);
+        online.reset_with_band_window(target, band, dwell_us, 1);
         for &(delta, elapsed) in samples {
             ring.push(delta, elapsed as u16).unwrap();
             online.observe(delta, elapsed);
@@ -662,6 +726,47 @@ mod tests {
     }
 
     #[test]
+    fn windowed_band_membership_admits_fast_ripple_and_rejects_slow_hunting() {
+        let target = per_tick_rate_q(12, 1_000);
+        let band = target * 5 / 100;
+        let ripple: [(i32, u32); 200] =
+            core::array::from_fn(|i| (if i % 2 == 0 { 10 } else { 14 }, 1_000));
+
+        let mut raw = ReversalOnlineAccumulator::new();
+        raw.reset_with_band_window(target, band, 48_000, 1);
+        for &(delta, elapsed) in &ripple {
+            raw.observe(delta, elapsed);
+        }
+        assert_eq!(raw.band_entry_us(), None);
+
+        let mut windowed = ReversalOnlineAccumulator::new();
+        windowed.reset_with_band_window(target, band, 48_000, ESTABLISH_BAND_WINDOW_SAMPLES);
+        for &(delta, elapsed) in &ripple {
+            windowed.observe(delta, elapsed);
+        }
+        assert_eq!(
+            windowed.band_entry_us(),
+            Some((ESTABLISH_BAND_WINDOW_SAMPLES as u32 - 1) * 1_000)
+        );
+
+        let hunting: [(i32, u32); 400] =
+            core::array::from_fn(|i| (if (i / 50) % 2 == 0 { 10 } else { 14 }, 1_000));
+        let mut slow = ReversalOnlineAccumulator::new();
+        slow.reset_with_band_window(target, band, 48_000, ESTABLISH_BAND_WINDOW_SAMPLES);
+        for &(delta, elapsed) in &hunting {
+            slow.observe(delta, elapsed);
+        }
+        assert_eq!(slow.band_entry_us(), None);
+
+        let mut off_target = ReversalOnlineAccumulator::new();
+        off_target.reset_with_band_window(target, band, 48_000, ESTABLISH_BAND_WINDOW_SAMPLES);
+        for _ in 0..200 {
+            off_target.observe(10, 1_000);
+        }
+        assert_eq!(off_target.band_entry_us(), None);
+    }
+
+    #[test]
     fn online_accumulator_matches_pure_scanners_when_band_never_reached() {
         let target = per_tick_rate_q(100, 1_000);
         let band = per_tick_rate_q(1, 1_000);
@@ -669,7 +774,7 @@ mod tests {
             core::array::from_fn(|i| (if i % 2 == 0 { 100 } else { 400 }, 1_000));
         assert_online_matches_pure(&samples, target, band, 3_000);
         let mut online = ReversalOnlineAccumulator::new();
-        online.reset(target, band, 3_000);
+        online.reset_with_band_window(target, band, 3_000, 1);
         for &(delta, elapsed) in &samples {
             online.observe(delta, elapsed);
         }
@@ -734,7 +839,7 @@ mod tests {
     fn overshoot_is_zero_when_leg_tracks_target_rate_exactly() {
         let mut online = ReversalOnlineAccumulator::new();
         let target = per_tick_rate_q(100, 1_000); // 100 counts per 1ms tick
-        online.reset(target, 0, 0);
+        online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..10 {
             online.observe(100, 1_000);
         }
@@ -745,7 +850,7 @@ mod tests {
     fn overshoot_registers_a_mid_transient_burst_even_after_settling_back() {
         let mut online = ReversalOnlineAccumulator::new();
         let target = per_tick_rate_q(100, 1_000);
-        online.reset(target, 0, 0);
+        online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..3 {
             // 2x target rate for 3 ticks: +100 counts of excess per tick.
             online.observe(200, 1_000);
@@ -764,7 +869,7 @@ mod tests {
     fn overshoot_stays_zero_when_leg_runs_behind_target_rate() {
         let mut online = ReversalOnlineAccumulator::new();
         let target = per_tick_rate_q(100, 1_000);
-        online.reset(target, 0, 0);
+        online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..10 {
             // Half the target rate, never ahead of the ideal trajectory.
             online.observe(50, 1_000);
@@ -793,7 +898,7 @@ mod tests {
     fn overshoot_sign_symmetry_holds_for_a_reverse_target_burst() {
         let mut online = ReversalOnlineAccumulator::new();
         let target = per_tick_rate_q(-100, 1_000);
-        online.reset(target, 0, 0);
+        online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..3 {
             online.observe(-200, 1_000);
         }
@@ -807,7 +912,7 @@ mod tests {
     fn overshoot_sign_symmetry_holds_for_a_reverse_target_running_behind() {
         let mut online = ReversalOnlineAccumulator::new();
         let target = per_tick_rate_q(-100, 1_000);
-        online.reset(target, 0, 0);
+        online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..10 {
             // Half the target magnitude, same (negative) direction -- never
             // ahead of the ideal trajectory. A sign-omitted implementation
@@ -830,13 +935,13 @@ mod tests {
     fn reset_clears_the_excess_tracker_for_a_fresh_leg() {
         let mut online = ReversalOnlineAccumulator::new();
         let target = per_tick_rate_q(100, 1_000);
-        online.reset(target, 0, 0);
+        online.reset_with_band_window(target, 0, 0, 1);
         for _ in 0..3 {
             online.observe(200, 1_000); // burst: reaches overshoot 300
         }
         assert_eq!(online.reversal_overshoot_counts(), 300);
 
-        online.reset(target, 0, 0); // new leg
+        online.reset_with_band_window(target, 0, 0, 1); // new leg
         assert_eq!(
             online.reversal_overshoot_counts(),
             0,
@@ -848,18 +953,28 @@ mod tests {
 
     #[test]
     fn t_max_is_a_live_range_coarse_catch() {
-        // Above the observed reference conclusive max (388 ms) and below the
-        // ~452 ms conclusive-time censoring point (budget 500 ms - dwell 48 ms):
-        // a conclusive leg slower than the budget cannot reach this threshold and
-        // reads as inconclusive instead, so the catch is deliberately coarse.
-        assert_eq!(ROBUSTNESS_THRESHOLDS.t_max_us, 430_000);
-        const { assert!(ROBUSTNESS_THRESHOLDS.t_max_us > 388_000) };
+        // Above the observed hot-plant conclusive max and below the conclusive-
+        // time censoring point (budget minus dwell): a conclusive leg slower
+        // than the budget cannot reach this threshold and reads as inconclusive
+        // instead, so the catch is deliberately coarse.
+        assert_eq!(ROBUSTNESS_THRESHOLDS.t_max_us, 600_000);
+        const { assert!(ROBUSTNESS_THRESHOLDS.t_max_us > 450_000) };
         const {
             assert!(
                 ROBUSTNESS_THRESHOLDS.t_max_us
                     < ROBUSTNESS_MEASUREMENT_BUDGET_US - ROBUSTNESS_BAND_DWELL_US
             )
         };
+    }
+
+    #[test]
+    fn iae_bound_is_independent_of_the_measurement_budget() {
+        const LIVE_PLANT_RATE_Q: i64 = 16_912_328;
+        const LIVE_TARGET_RATE_Q: i64 = 21_466_666;
+        const LIVE_IAE_MAX_QS: i64 = 1_226_143;
+        let thresholds = robustness_thresholds_for(LIVE_PLANT_RATE_Q, LIVE_TARGET_RATE_Q);
+        assert_eq!(thresholds.iae_max_q / 1_000_000, LIVE_IAE_MAX_QS);
+        const { assert!(ROBUSTNESS_MEASUREMENT_BUDGET_US != ROBUSTNESS_IAE_REFERENCE_WINDOW_US) };
     }
 
     #[test]
