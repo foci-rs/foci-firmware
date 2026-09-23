@@ -167,7 +167,7 @@ enum OutcomeTag {
 /// through both implementations and `assert_eq!` the two `OpTrace` values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OpTrace {
-    events: heapless::Vec<SpiOp, 8_192>,
+    events: std::vec::Vec<SpiOp>,
     outcome_tag: OutcomeTag,
     terminal_cause: Option<u16>,
     engine_consumed: bool,

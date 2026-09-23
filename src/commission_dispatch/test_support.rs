@@ -293,7 +293,7 @@ pub struct MockBackend {
     /// Value retained specifically for CONFIG subregister 62.
     advanced_pi_representation: u32,
     /// Ordered log of every SPI read/write issued during the test.
-    pub spi_log: Vec<SpiOp, 8_192>,
+    pub spi_log: std::vec::Vec<SpiOp>,
     /// Number of paired register-read operations issued during the test.
     pub register_pair_reads: usize,
     /// Number of single-register capture reads issued during the test.
@@ -520,7 +520,7 @@ impl MockBackend {
             config_selected_subregister: 0,
             advanced_pi_representation:
                 foci_tmc4671::registers::ADVANCED_PI_REPRESENT_P_Q8_8_I_Q4_12,
-            spi_log: Vec::new(),
+            spi_log: std::vec::Vec::new(),
             register_pair_reads: 0,
             capture_register_reads: 0,
             velocity_controller_output_selects: 0,
@@ -739,7 +739,7 @@ impl CommissionRegisterIo for MockBackend {
         self.elapsed_us_value = self
             .elapsed_us_value
             .saturating_add(self.spi_elapsed_step_us);
-        self.spi_log.push(SpiOp::Read).ok();
+        self.spi_log.push(SpiOp::Read);
         if let Some((failure_addr, remaining)) = self.fail_reads_remaining.as_mut()
             && *failure_addr == addr
             && *remaining > 0
@@ -925,7 +925,7 @@ impl CommissionRegisterIo for MockBackend {
             .iter()
             .filter(|operation| matches!(operation, SpiOp::Write(logged, _) if *logged == addr))
             .count();
-        self.spi_log.push(SpiOp::Write(addr, val)).ok();
+        self.spi_log.push(SpiOp::Write(addr, val));
         self.event_log
             .push(MockEvent::Spi(SpiOp::Write(addr, val)))
             .ok();
@@ -1003,7 +1003,7 @@ impl CommissionMotorControl for MockBackend {
 
     fn set_enable_pin(&mut self, state: bool) {
         self.enable_pin = state;
-        self.spi_log.push(SpiOp::EnablePin(state)).ok();
+        self.spi_log.push(SpiOp::EnablePin(state));
     }
 
     fn interlock_tripped(&self) -> bool {
@@ -1018,7 +1018,7 @@ impl CommissionMotorControl for MockBackend {
     }
 
     fn record_lifecycle(&mut self, flag: LifecycleFlag, value: bool) {
-        self.spi_log.push(SpiOp::Lifecycle { flag, value }).ok();
+        self.spi_log.push(SpiOp::Lifecycle { flag, value });
     }
 
     fn record_safe_state_report(
@@ -1041,7 +1041,7 @@ impl CommissionPendingConfig for MockBackend {
     ) -> Result<(), PendingConfigItem> {
         use core::sync::atomic::Ordering::Relaxed;
 
-        self.spi_log.push(SpiOp::DrainPendingConfig).ok();
+        self.spi_log.push(SpiOp::DrainPendingConfig);
         let observed = self.tmc_state.config_apply_pending.load(Relaxed);
         self.pending_config_result?;
         // Mirrors the real drain: a success clears exactly the bits observed
@@ -1063,7 +1063,7 @@ impl CommissionEncoderRead for MockBackend {
 
     async fn try_read_mechanical_encoder_position_counts(&mut self) -> Result<u32, Self::Error> {
         let addr = foci_tmc4671::registers::ABN_DECODER_COUNT.addr();
-        self.spi_log.push(SpiOp::Read).ok();
+        self.spi_log.push(SpiOp::Read);
         if self.fail_on_read == Some(addr) {
             return Err(MockSpiError);
         }
