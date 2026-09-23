@@ -63,8 +63,9 @@ use super::robustness_cycles::{
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
     ESTABLISH_BAND_WINDOW_SAMPLES, ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT,
-    ROBUSTNESS_MEASUREMENT_BUDGET_US, ReversalMetrics, ReversalOnlineAccumulator,
-    RobustnessThresholds, dac_rms_q, reduce_plant_rate_q, robustness_thresholds_for, tripped_mask,
+    ROBUSTNESS_LEG_AMPLITUDE_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US, ReversalMetrics,
+    ReversalOnlineAccumulator, RobustnessThresholds, dac_rms_q, reduce_plant_rate_q,
+    robustness_thresholds_for, tripped_mask,
 };
 use super::robustness_reporting::CycleWire;
 use super::sweep_analysis::poll_stationarity;
@@ -289,10 +290,17 @@ fn amplitude_rpm(point: &AcceptancePoint) -> i32 {
     point.target_velocity_rpm.saturating_abs()
 }
 
+/// Unsigned cruise target of the probe legs, [`ROBUSTNESS_LEG_AMPLITUDE_PCT`]
+/// of the campaign amplitude, rounded to the nearest RPM.
+fn leg_amplitude_rpm(point: &AcceptancePoint) -> i32 {
+    let scaled = i64::from(amplitude_rpm(point)) * i64::from(ROBUSTNESS_LEG_AMPLITUDE_PCT) + 50;
+    i32::try_from(scaled / 100).unwrap_or(i32::MAX)
+}
+
 /// Signed establish-cruise target for `direction`. Index 0 establishes forward
 /// (measures forward->reverse); index 1 establishes reverse.
 fn establish_target_rpm(point: &AcceptancePoint, direction: usize) -> i32 {
-    let amplitude = amplitude_rpm(point);
+    let amplitude = leg_amplitude_rpm(point);
     if direction == 0 {
         amplitude
     } else {
@@ -309,8 +317,8 @@ const ESTABLISH_LEG_WINDOW_US: u32 =
     ROBUSTNESS_MEASUREMENT_BUDGET_US + ROBUSTNESS_SETTLE_TAIL_US + SETTLE_ANALYSIS_BUDGET_US;
 
 fn establish_rate_counts_per_ms(point: &AcceptancePoint, counts_per_rev: u32) -> u32 {
-    let counts_per_minute =
-        u64::from(amplitude_rpm(point).unsigned_abs()).saturating_mul(u64::from(counts_per_rev));
+    let counts_per_minute = u64::from(leg_amplitude_rpm(point).unsigned_abs())
+        .saturating_mul(u64::from(counts_per_rev));
     u32::try_from(counts_per_minute.div_ceil(60_000)).unwrap_or(u32::MAX)
 }
 
@@ -2054,7 +2062,7 @@ mod tests {
     use crate::commissioning::types::OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY;
     use foci_tmc4671::registers::PID_ERROR_PID_VELOCITY_ERROR_SUM;
 
-    const STEADY_DELTA: i32 = 12;
+    const STEADY_DELTA: i32 = 10;
     const STEP_BUDGET: usize = 200_000;
 
     fn test_budget() -> OuterMotionBudget {
@@ -2451,12 +2459,25 @@ mod tests {
         assert_eq!(evidence.iae_medians_qs, [0, 0]);
     }
 
+    /// The reversal is a full sign flip, twice the step the velocity envelope
+    /// was sized for, so the probe legs run below the campaign amplitude to
+    /// keep the reversal's overshoot under the machine ceiling.
+    #[test]
+    fn probe_legs_run_at_the_leg_fraction_of_the_amplitude() {
+        let point = test_point();
+        assert_eq!(point.target_velocity_rpm, 176);
+        assert_eq!(establish_target_rpm(&point, 0), 150);
+        assert_eq!(establish_target_rpm(&point, 1), -150);
+        assert_eq!(reverse_target_rpm(&point, 0), -150);
+        assert_eq!(establish_rate_counts_per_ms(&point, COUNTS_PER_REV), 10);
+    }
+
     #[test]
     fn establish_leg_travel_covers_budget_settle_tail_and_analysis() {
         let rate = establish_rate_counts_per_ms(&test_point(), COUNTS_PER_REV);
-        assert_eq!(rate, 12);
+        assert_eq!(rate, 10);
         assert_eq!(ESTABLISH_LEG_WINDOW_US, 1_016_000);
-        assert_eq!(establish_leg_travel_counts(rate), 12 * 1_016);
+        assert_eq!(establish_leg_travel_counts(rate), 10 * 1_016);
     }
 
     #[test]
@@ -3407,7 +3428,7 @@ mod tests {
                 }
             },
         );
-        assert_eq!(&parts.targets[..3], &[176, 0, 176]);
+        assert_eq!(&parts.targets[..3], &[150, 0, 150]);
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
         assert_ne!(terminal.outcome, RobustnessOutcome::Failed);
@@ -3680,7 +3701,7 @@ mod tests {
                 }
             },
         );
-        assert_eq!(&parts.targets[..5], &[176, 0, -176, 0, 176]);
+        assert_eq!(&parts.targets[..5], &[150, 0, -176, 0, 150]);
         assert_eq!(parts.recoveries, 1);
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
@@ -3711,7 +3732,7 @@ mod tests {
                 }
             },
         );
-        assert_eq!(&parts.targets[..5], &[176, 0, -176, 0, 176]);
+        assert_eq!(&parts.targets[..5], &[150, 0, -176, 0, 150]);
         assert_eq!(parts.recoveries, 1);
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
@@ -3743,14 +3764,14 @@ mod tests {
                 }
             },
         );
-        assert_eq!(&parts.targets[..3], &[176, -176, 0]);
+        assert_eq!(&parts.targets[..3], &[150, -150, 0]);
         assert_eq!(
             parts.targets[3].abs(),
             176,
-            "the recovery commands a return leg"
+            "the recovery commands a return leg at the campaign amplitude"
         );
         assert_eq!(parts.targets[4], 0);
-        assert_eq!(parts.targets[5], 176);
+        assert_eq!(parts.targets[5], 150);
         assert_eq!(parts.recoveries, 1);
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
@@ -3783,7 +3804,7 @@ mod tests {
         assert!(terminal.safety_fault.is_none());
         assert_eq!(parts.recoveries, 1);
         assert_eq!(parts.targets.last(), Some(&0));
-        assert_eq!(&parts.targets[..3], &[176, 0, -176]);
+        assert_eq!(&parts.targets[..3], &[150, 0, -176]);
     }
 
     #[test]
@@ -3811,7 +3832,7 @@ mod tests {
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_RECOVERY_PLAN_INVALID);
         assert!(terminal.safety_fault.is_none());
         assert_eq!(parts.recoveries, 0);
-        assert_eq!(parts.targets.as_slice(), &[176, 0]);
+        assert_eq!(parts.targets.as_slice(), &[150, 0]);
     }
 
     #[test]
@@ -3839,7 +3860,7 @@ mod tests {
                 }
             },
         );
-        assert_eq!(&parts.targets[..4], &[176, -176, 0, 176]);
+        assert_eq!(&parts.targets[..4], &[150, -150, 0, 150]);
         assert_eq!(parts.recoveries, 1);
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
@@ -3920,7 +3941,7 @@ mod tests {
                 }
             },
         );
-        assert_eq!(&parts.targets[..5], &[176, 0, -176, 0, 176]);
+        assert_eq!(&parts.targets[..5], &[150, 0, -176, 0, 150]);
         assert_eq!(parts.recoveries, 1);
         assert_eq!(terminal.evidence.directions[0].retry_count, 1);
         assert!(terminal.safety_fault.is_none());
@@ -3949,7 +3970,7 @@ mod tests {
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
         assert!(terminal.safety_fault.is_none());
         assert_eq!(parts.recoveries, 1);
-        assert_eq!(parts.targets.as_slice(), &[176, 0, -176, 0]);
+        assert_eq!(parts.targets.as_slice(), &[150, 0, -176, 0]);
     }
 
     #[test]
@@ -3981,7 +4002,7 @@ mod tests {
         assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_ORIGIN_NOT_RECOVERED);
         assert!(terminal.safety_fault.is_none());
         assert_eq!(parts.recoveries, 1);
-        assert_eq!(parts.targets.as_slice(), &[176, 0, -176, 0]);
+        assert_eq!(parts.targets.as_slice(), &[150, 0, -176, 0]);
     }
 
     #[test]

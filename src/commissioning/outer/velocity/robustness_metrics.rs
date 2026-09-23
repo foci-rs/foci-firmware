@@ -501,6 +501,13 @@ pub(crate) const ROBUSTNESS_IAE_REFERENCE_WINDOW_US: u32 = 500_000;
 /// between the trip line and the budget's censoring point.
 pub(crate) const ROBUSTNESS_TRIP_TIME_HEADROOM_US: u32 = 100_000;
 
+/// Probe-leg cruise target as a percentage of the campaign amplitude. The
+/// planner sizes the amplitude so that 1.5x of it meets the machine velocity
+/// ceiling, an allowance for a 0-to-target step; the reversal is a full sign
+/// flip, twice that step, so at full amplitude a 25% relative overshoot lands
+/// on the ceiling and the outer safety faults instead of the gate deciding.
+pub(crate) const ROBUSTNESS_LEG_AMPLITUDE_PCT: i32 = 85;
+
 /// Bounded retry count for an inconclusive probe leg. Band entry is stochastic
 /// and occasionally misses within a single leg's budget; each retry re-runs a
 /// fresh leg within that same budget, so a slow cycle gets four independent
