@@ -530,7 +530,16 @@ async fn arm_stroke<B: CommissioningBackend>(
     .await?;
     write_sub_register(backend, PID_ERROR_PID_POSITION_ERROR_SUM, 0).await?;
     write_register(backend, MODE_RAMP_MODE_MOTION, POSITION_TUNE_POSITION_MODE).await?;
-    safety.configure_velocity_envelope(leg.speed_mrev_s)?;
+    // A soft position loop overshoots the slower homing leg's cruise speed at
+    // the end of its ramp by about as much as the per-leg margin allows, so
+    // both legs share the faster leg's runaway bound.
+    let envelope_speed_mrev_s = [state.homing_leg, state.motion_leg]
+        .into_iter()
+        .flatten()
+        .map(|planned| planned.speed_mrev_s)
+        .max()
+        .unwrap_or(leg.speed_mrev_s);
+    safety.configure_velocity_envelope(envelope_speed_mrev_s)?;
 
     backend.stimulus_stop();
     if backend.stimulus_is_trigger_blocked() {
@@ -1209,6 +1218,56 @@ mod tests {
             last_feedforward,
             Some(&StimulusOp::Feedforward(false)),
             "expected the final Feedforward op to be false, log: {log:?}"
+        );
+    }
+
+    #[fixture_test]
+    fn homing_strokes_share_the_motion_legs_velocity_envelope() {
+        let mut backend = position_tune_backend();
+        let mut phase = position_tune_phase();
+        let mut workspace = TransientBuffer::new();
+        let mut clock_us = backend.elapsed_us_value;
+        let mut homing_cap = None;
+        let mut motion_cap = None;
+
+        for _ in 0..20_000 {
+            backend.elapsed_us_value = clock_us;
+            let _ = backend
+                .registers
+                .insert(PID_ERROR_PID_POSITION_ERROR.data.addr(), 50);
+            match pollster::block_on(step_position_tune(&mut phase, &mut workspace, &mut backend)) {
+                StepResult::At(next_us) => clock_us = next_us,
+                StepResult::ReadyNow | StepResult::PhaseChanged(_) => {}
+                terminal => panic!("unexpected terminal {terminal:?}"),
+            }
+            let OuterPhase::PositionTune { state, safety } = &phase else {
+                panic!("the phase stays resident");
+            };
+            if let (PositionTuneStep::Stroke { kind, .. }, true) =
+                (state.step, state.capture_running)
+            {
+                let cap = safety.active_velocity_cap_milli_counts_per_s();
+                match kind {
+                    StrokeKind::Homing => homing_cap = homing_cap.or(Some(cap)),
+                    StrokeKind::Motion => motion_cap = motion_cap.or(Some(cap)),
+                }
+            }
+            if motion_cap.is_some() {
+                break;
+            }
+        }
+
+        let OuterPhase::PositionTune { state, .. } = &phase else {
+            panic!("the phase stays resident");
+        };
+        assert!(
+            state.homing_leg.expect("planned").speed_mrev_s
+                < state.motion_leg.expect("planned").speed_mrev_s,
+            "fixture must plan a slower homing leg"
+        );
+        assert_eq!(
+            homing_cap.expect("a homing stroke armed"),
+            motion_cap.expect("a motion stroke armed")
         );
     }
 
