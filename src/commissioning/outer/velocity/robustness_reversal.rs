@@ -62,7 +62,7 @@ use super::robustness_cycles::{
 };
 use super::robustness_evidence::{RobustnessDirectionSummary, RobustnessEvidence, summary_cause};
 use super::robustness_metrics::{
-    ESTABLISH_BAND_WINDOW_SAMPLES, ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT,
+    PROBE_BAND_WINDOW_SAMPLES, ROBUSTNESS_BAND_DWELL_US, ROBUSTNESS_BAND_FRACTION_PCT,
     ROBUSTNESS_LEG_AMPLITUDE_PCT, ROBUSTNESS_MEASUREMENT_BUDGET_US, ReversalMetrics,
     ReversalOnlineAccumulator, RobustnessThresholds, dac_rms_q, reduce_plant_rate_q,
     robustness_thresholds_for, tripped_mask,
@@ -690,17 +690,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
         RobustnessReversalState::EstablishCommandTarget => {
             session.origin_recovered = false;
             let target = establish_target_rpm(&session.point, session.direction);
-            match begin_capture(
-                session,
-                workspace,
-                safety,
-                backend,
-                target,
-                true,
-                ESTABLISH_BAND_WINDOW_SAMPLES,
-            )
-            .await
-            {
+            match begin_capture(session, workspace, safety, backend, target, true).await {
                 Ok((next_sample_us, budget_deadline_us)) => {
                     *state = RobustnessReversalState::EstablishCapture {
                         next_sample_us,
@@ -845,7 +835,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
             let target = reverse_target_rpm(&session.point, session.direction);
             // Deliberately no clear_velocity_error_sum here: the reversal is
             // measured against the integrator state established by the entry leg.
-            match begin_capture(session, workspace, safety, backend, target, false, 1).await {
+            match begin_capture(session, workspace, safety, backend, target, false).await {
                 Ok((next_sample_us, budget_deadline_us)) => {
                     *state = RobustnessReversalState::ReverseCapture {
                         next_sample_us,
@@ -1386,7 +1376,6 @@ async fn begin_capture<B: CommissioningBackend>(
     backend: &mut B,
     signed_target_rpm: i32,
     open_primitive: bool,
-    band_window_samples: usize,
 ) -> Result<(u64, u64), StepResult> {
     let counts_per_rev = safety.counts_per_rev();
     let baseline = match backend.read_capture_register(ABN_DECODER_COUNT).await {
@@ -1438,7 +1427,7 @@ async fn begin_capture<B: CommissioningBackend>(
         target_rate,
         band,
         ROBUSTNESS_BAND_DWELL_US,
-        band_window_samples,
+        PROBE_BAND_WINDOW_SAMPLES,
     );
     workspace.previous_encoder_raw = baseline;
     workspace.previous_read_us = baseline_us;
@@ -2407,6 +2396,38 @@ mod tests {
                 }
                 match phase {
                     CapturePhase::Establish => {
+                        high = !high;
+                        target.signum()
+                            * if high {
+                                STEADY_DELTA + 2
+                            } else {
+                                STEADY_DELTA - 2
+                            }
+                    }
+                    _ => target.signum() * STEADY_DELTA,
+                }
+            });
+        assert_eq!(terminal.outcome, RobustnessOutcome::Complete);
+        assert_eq!(terminal.cause, ROBUSTNESS_CAUSE_PASS);
+        for direction in terminal.evidence.directions {
+            assert!(!direction.inconclusive);
+            assert_eq!(direction.retry_count, 0, "ripple must not consume retries");
+        }
+    }
+
+    /// The reverse leg's band is judged the same way as the establish leg's:
+    /// per-tick ripple faster than the meter filter must not keep a
+    /// reconverged reversal from ever entering the band.
+    #[test]
+    fn reverse_leg_settles_through_per_tick_ripple_around_target() {
+        let mut high = false;
+        let (terminal, _backend, _session) =
+            drive_scripted(test_point(), move |phase, _tick, target| {
+                if target == 0 {
+                    return 0;
+                }
+                match phase {
+                    CapturePhase::Reverse => {
                         high = !high;
                         target.signum()
                             * if high {
@@ -3850,10 +3871,10 @@ mod tests {
                 }
                 match phase {
                     CapturePhase::Reverse if reverse_legs == 1 => {
-                        if tick < 50 {
+                        if tick < 80 {
                             target.signum() * STEADY_DELTA
                         } else {
-                            target.signum() * STEADY_DELTA + (tick as i32 - 50) * 3
+                            target.signum() * STEADY_DELTA + (tick as i32 - 80) * 3
                         }
                     }
                     _ => target.signum() * STEADY_DELTA,

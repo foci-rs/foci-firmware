@@ -189,10 +189,11 @@ pub(crate) fn dac_rms_q<S: VelocityObservationSource + ?Sized>(
     libm::sqrtf(mean_sq_diff_f) as i64
 }
 
-/// Samples in the establish leg's band-membership window. Sixteen ~1 ms ticks
-/// span the chip velocity meter's 20 Hz filter time scale, so the settle test
-/// sees the velocity the loop regulates rather than per-tick count ripple.
-pub(crate) const ESTABLISH_BAND_WINDOW_SAMPLES: usize = 16;
+/// Samples in a probe leg's band-membership window. Sixteen ~1 ms ticks span
+/// the chip velocity meter's 20 Hz filter time scale, so band entry sees the
+/// velocity the loop regulates rather than per-tick count ripple, which at
+/// one count per tick is already the width of the band.
+pub(crate) const PROBE_BAND_WINDOW_SAMPLES: usize = 16;
 
 /// Online band-entry and recovery-IAE accumulator for one capture leg.
 ///
@@ -211,7 +212,7 @@ pub(crate) struct ReversalOnlineAccumulator {
     upper_q: i64,
     dwell_us: u32,
     band_window_samples: usize,
-    band_window: [(i32, u32); ESTABLISH_BAND_WINDOW_SAMPLES],
+    band_window: [(i32, u32); PROBE_BAND_WINDOW_SAMPLES],
     band_window_len: usize,
     band_window_head: usize,
     band_window_delta: i64,
@@ -237,7 +238,7 @@ impl ReversalOnlineAccumulator {
             upper_q: 0,
             dwell_us: 0,
             band_window_samples: 1,
-            band_window: [(0, 0); ESTABLISH_BAND_WINDOW_SAMPLES],
+            band_window: [(0, 0); PROBE_BAND_WINDOW_SAMPLES],
             band_window_len: 0,
             band_window_head: 0,
             band_window_delta: 0,
@@ -266,7 +267,7 @@ impl ReversalOnlineAccumulator {
     ///
     /// Band membership is judged on the mean rate of the last
     /// `band_window_samples` observations (1 for each raw tick, at most
-    /// [`ESTABLISH_BAND_WINDOW_SAMPLES`]); samples before the window first
+    /// [`PROBE_BAND_WINDOW_SAMPLES`]); samples before the window first
     /// fills are out of band. The recovery IAE and the overshoot tracker keep
     /// integrating the raw per-tick rate.
     pub(crate) fn reset_with_band_window(
@@ -280,7 +281,7 @@ impl ReversalOnlineAccumulator {
         self.lower_q = target_rate_q.saturating_sub(band_q);
         self.upper_q = target_rate_q.saturating_add(band_q);
         self.dwell_us = dwell_us;
-        self.band_window_samples = band_window_samples.clamp(1, ESTABLISH_BAND_WINDOW_SAMPLES);
+        self.band_window_samples = band_window_samples.clamp(1, PROBE_BAND_WINDOW_SAMPLES);
         self.band_window_len = 0;
         self.band_window_head = 0;
         self.band_window_delta = 0;
@@ -747,26 +748,26 @@ mod tests {
         assert_eq!(raw.band_entry_us(), None);
 
         let mut windowed = ReversalOnlineAccumulator::new();
-        windowed.reset_with_band_window(target, band, 48_000, ESTABLISH_BAND_WINDOW_SAMPLES);
+        windowed.reset_with_band_window(target, band, 48_000, PROBE_BAND_WINDOW_SAMPLES);
         for &(delta, elapsed) in &ripple {
             windowed.observe(delta, elapsed);
         }
         assert_eq!(
             windowed.band_entry_us(),
-            Some((ESTABLISH_BAND_WINDOW_SAMPLES as u32 - 1) * 1_000)
+            Some((PROBE_BAND_WINDOW_SAMPLES as u32 - 1) * 1_000)
         );
 
         let hunting: [(i32, u32); 400] =
             core::array::from_fn(|i| (if (i / 50) % 2 == 0 { 10 } else { 14 }, 1_000));
         let mut slow = ReversalOnlineAccumulator::new();
-        slow.reset_with_band_window(target, band, 48_000, ESTABLISH_BAND_WINDOW_SAMPLES);
+        slow.reset_with_band_window(target, band, 48_000, PROBE_BAND_WINDOW_SAMPLES);
         for &(delta, elapsed) in &hunting {
             slow.observe(delta, elapsed);
         }
         assert_eq!(slow.band_entry_us(), None);
 
         let mut off_target = ReversalOnlineAccumulator::new();
-        off_target.reset_with_band_window(target, band, 48_000, ESTABLISH_BAND_WINDOW_SAMPLES);
+        off_target.reset_with_band_window(target, band, 48_000, PROBE_BAND_WINDOW_SAMPLES);
         for _ in 0..200 {
             off_target.observe(10, 1_000);
         }
