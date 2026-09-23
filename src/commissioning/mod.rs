@@ -2811,10 +2811,9 @@ mod tests {
     /// A live breakaway campaign must dual-emit -- the Klipper
     /// wire path (`commission_dispatch::replies::emit_breakaway_campaign_event`,
     /// covered by `breakaway_campaign_tests.rs`) and the FTRC trace path
-    /// covered here. Drives a real `CommissioningEngine` through its first
-    /// substantive tick (the probe plan freezes before any stroke, matching
-    /// `no_register_traffic_happens_before_the_planned_probe_state_advances`),
-    /// and confirms `emit_trace_after_step` is no longer a no-op for
+    /// covered here. Drives a real `CommissioningEngine` through its
+    /// workflow-entry phase change to the probe plan, which freezes before any
+    /// stroke, and confirms `emit_trace_after_step` is no longer a no-op for
     /// `StepResult::BreakawayCampaignEvent`: both the canonical detail record
     /// and the lightweight marker land on the `MockBackend`.
     #[cfg(feature = "trace")]
@@ -2847,9 +2846,14 @@ mod tests {
         .expect("valid breakaway safety configuration");
         let mut backend = crate::commission_dispatch::test_support::MockBackend::new();
 
-        // The probe plan freezes and is reported before its first stroke
-        // (`PlannedProbe -> SetupSafety` touches no SPI register), so this
-        // one tick is enough to reach it.
+        let entry = engine.step(&mut backend).await;
+        assert!(
+            matches!(
+                entry,
+                StepResult::PhaseChanged(CommissionPhase::BreakawayProportionalAcquisition)
+            ),
+            "expected the workflow-entry phase change first, got {entry:?}"
+        );
         let result = engine.step(&mut backend).await;
         assert!(
             matches!(
@@ -2858,7 +2862,7 @@ mod tests {
                     crate::commissioning::types::BreakawayCampaignEvent::ProbePlanned(_)
                 )
             ),
-            "expected the probe-planned event on the first substantive tick, got {result:?}"
+            "expected the probe-planned event after the phase change, got {result:?}"
         );
 
         assert!(
