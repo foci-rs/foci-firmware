@@ -354,6 +354,7 @@ mod tests {
     use crate::context::{BoardChannels, ClockSource, StateAccess};
     use crate::shutdown::ShutdownReason;
     use crate::state::trsync::{HOMING_START_CLOCK, HOMING_STATE};
+    use foci_firmware_macros::fixture_test;
     use foci_klipper::state::State;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,7 +620,7 @@ mod tests {
         tmc
     }
 
-    #[test]
+    #[fixture_test]
     fn queue_step_on_a_commissioning_owned_channel_shuts_down_without_queuing() {
         let mut ctx = MockCtx::new();
         let mut sender = MockSender::new();
@@ -636,7 +637,7 @@ mod tests {
         tmc.commission_in_flight.store(false, Relaxed);
     }
 
-    #[test]
+    #[fixture_test]
     fn set_next_step_dir_on_a_commissioning_owned_channel_shuts_down() {
         let mut ctx = MockCtx::new();
         let mut sender = MockSender::new();
@@ -653,7 +654,7 @@ mod tests {
         tmc.commission_in_flight.store(false, Relaxed);
     }
 
-    #[test]
+    #[fixture_test]
     fn reset_step_clock_on_a_commissioning_owned_channel_shuts_down() {
         let mut ctx = MockCtx::new();
         let mut sender = MockSender::new();
@@ -670,7 +671,7 @@ mod tests {
         tmc.commission_in_flight.store(false, Relaxed);
     }
 
-    #[test]
+    #[fixture_test]
     fn host_step_commands_route_normally_once_commissioning_releases_the_channel() {
         let mut ctx = MockCtx::new();
         let mut sender = MockSender::new();
