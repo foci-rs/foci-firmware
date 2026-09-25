@@ -990,6 +990,67 @@ fn current_torque_sample_exact_half_turn_aborts_via_post_measurement_error() {
 }
 
 #[test]
+fn current_torque_sample_success_reports_current_torque_sample_kind() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0) // saved MODE_RAMP_MODE_MOTION
+            .with_read(0xaaaa_bbbb) // PID_POSITION_ACTUAL
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1000) // ABN_DECODER_PPR
+            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
+            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
+            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
+            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
+            .with_read(0) // STATUS_FLAGS
+            .with_read(110) // ABN_DECODER_COUNT sample
+            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL sample
+            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
+            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD
+            .with_read(0) // INTERIM_FF_VELOCITY
+            .with_read(0) // INTERIM_FF_TORQUE
+            .with_read(0x000f_0010) // INTERIM_FOC_UQ_UD_LIMITED
+            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
+            .with_read(120) // ABN_DECODER_COUNT after
+            .with_read(0x0006_0000); // PID_TORQUE_FLUX_ACTUAL after
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_current_torque_sample_request(
+            tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
+            DiagnosticContext {
+                host_liveness_expired: None,
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.status, 0);
+        assert_eq!(report.kind, TorqueSampleKind::CurrentTorqueSample);
+    });
+}
+
+#[test]
 fn position_offset_rejects_non_position_mode() {
     pollster::block_on(async {
         let mut runtime = ready_runtime();
@@ -1183,6 +1244,67 @@ fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_err
             panic!("expected position offset report");
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_SPI);
+    });
+}
+
+#[test]
+fn position_torque_offset_sample_success_reports_position_torque_offset_kind() {
+    pollster::block_on(async {
+        let raw_spi = DiagnosticMockSpi::default()
+            .with_read(0x8000_0003) // saved MODE_RAMP_MODE_MOTION -- must be position mode
+            .with_read(0x1234_5678) // saved PID_TORQUE_FLUX_OFFSET
+            .with_read(100) // ABN_DECODER_COUNT before
+            .with_read(1000) // ABN_DECODER_PPR
+            .with_read(0x0005_0000) // PID_TORQUE_FLUX_ACTUAL before
+            .with_read(0) // INTERIM_PIDIN_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDIN_TARGET_FLUX
+            .with_read(0) // INTERIM_PIDOUT_TARGET_TORQUE
+            .with_read(0) // INTERIM_PIDOUT_TARGET_FLUX
+            .with_read(0) // INTERIM_PID_TORQUE_TARGET_TORQUE_ACTUAL
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR
+            .with_read(0) // PID_ERROR_PID_TORQUE_ERROR_SUM
+            .with_read(0) // PID_ERROR_PID_FLUX_ERROR_SUM
+            .with_read(0) // STATUS_FLAGS
+            .with_read(110) // ABN_DECODER_COUNT sample
+            .with_read(0x0009_000a) // PID_TORQUE_FLUX_ACTUAL sample
+            .with_read(0x000b_000c) // INTERIM_FOC_IQ_ID
+            .with_read(0x000d_000e) // INTERIM_FOC_UQ_UD
+            .with_read(0) // INTERIM_FF_VELOCITY
+            .with_read(0) // INTERIM_FF_TORQUE
+            .with_read(0x000f_0010) // INTERIM_FOC_UQ_UD_LIMITED
+            .with_read(0x0000_1234) // ADC_AGPI_A_RAW_ADC_VM_RAW
+            .with_read(120) // ABN_DECODER_COUNT after
+            .with_read(0x0006_0000); // PID_TORQUE_FLUX_ACTUAL after
+        let mut tmc = Tmc4671Spi::new(raw_spi);
+        let mut runtime = ready_runtime();
+        let mut delay = MockDelay::default();
+
+        let outcome = run_position_torque_offset_sample_request(
+            tmc_position_torque_offset_sample_test(0, 4, 33, 3, 444),
+            DiagnosticContext {
+                host_liveness_expired: None,
+                tmc: &mut tmc,
+                runtime: &mut runtime,
+                delay: &mut delay,
+                power_stage: &mut MockDiagnosticPowerStage::default(),
+                tmc_config: &TEST_TMC_CONFIG,
+                feedback_config: crate::config::FeedbackConfig::abn_abn(),
+                readiness: DiagnosticReadiness {
+                    homing_active: false,
+                    stepper_active: false,
+                    saved_voltage_limit: 777,
+                },
+            },
+        )
+        .await;
+
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
+        else {
+            panic!("expected position offset report");
+        };
+        assert_eq!(report.status, 0);
+        assert_eq!(report.kind, TorqueSampleKind::PositionTorqueOffset);
     });
 }
 
