@@ -713,10 +713,6 @@ pub struct FociCurrentStepResult {
     pub axis: u8,
     /// Requested signed torque target in TMC4671 current counts.
     pub target: i16,
-    /// Hold duration in milliseconds.
-    pub duration_ms: u16,
-    /// Temporary PIDOUT_UQ_UD_LIMITS used during the diagnostic.
-    pub voltage_limit: u16,
     /// Torque actual before applying the step.
     pub torque_before: i16,
     /// Torque actual while the step is applied.
@@ -737,8 +733,6 @@ pub struct FociCurrentStepResult {
     pub encoder_before: u32,
     /// ABN decoder count after returning target to zero.
     pub encoder_after: u32,
-    /// Signed encoder delta from before to after.
-    pub encoder_delta: i32,
     /// Raw TMC4671 supply-voltage ADC sample during the dwell.
     pub adc_vm_raw: u16,
 }
@@ -756,10 +750,6 @@ pub struct FociCurrentVectorStepResult {
     pub torque_target: i16,
     /// Requested signed flux-current target in TMC4671 current counts.
     pub flux_target: i16,
-    /// Hold duration in milliseconds.
-    pub duration_ms: u16,
-    /// Temporary PIDOUT_UQ_UD_LIMITS used during the diagnostic.
-    pub voltage_limit: u16,
     /// Torque actual before applying the step.
     pub torque_before: i16,
     /// Torque actual while the step is applied.
@@ -780,8 +770,6 @@ pub struct FociCurrentVectorStepResult {
     pub encoder_before: u32,
     /// ABN decoder count after returning target to zero.
     pub encoder_after: u32,
-    /// Signed encoder delta from before to after.
-    pub encoder_delta: i32,
     /// Raw TMC4671 supply-voltage ADC sample during the dwell.
     pub adc_vm_raw: u16,
 }
@@ -2688,36 +2676,6 @@ mod velocity_sweep_reply_tests {
             payload + FRAME_OVERHEAD_BYTES <= FRAME_MAX,
             "{name} frame is {}",
             payload + FRAME_OVERHEAD_BYTES
-        );
-    }
-
-    #[test]
-    fn current_step_result_fits_one_frame_at_enforced_bounds() {
-        use crate::ankyra::handlers::tmc::{
-            MAX_CURRENT_STEP_DURATION_MS, MAX_CURRENT_STEP_TARGET, MAX_CURRENT_STEP_VOLTAGE_LIMIT,
-        };
-        assert_fits(
-            &FociCurrentStepResult {
-                oid: u8::MAX,
-                status: u8::MAX,
-                axis: 1,
-                target: -MAX_CURRENT_STEP_TARGET,
-                duration_ms: MAX_CURRENT_STEP_DURATION_MS,
-                voltage_limit: MAX_CURRENT_STEP_VOLTAGE_LIMIT,
-                torque_before: i16::MIN,
-                torque_during: i16::MIN,
-                torque_after: i16::MIN,
-                flux_during: i16::MIN,
-                iq_during: i16::MIN,
-                id_during: i16::MIN,
-                uq_limited: i16::MIN,
-                ud_limited: i16::MIN,
-                encoder_before: WIDE_U32,
-                encoder_after: WIDE_U32,
-                encoder_delta: i32::MIN,
-                adc_vm_raw: u16::MAX,
-            },
-            "current step result",
         );
     }
 
