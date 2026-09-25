@@ -855,7 +855,8 @@ pub struct FociCurrentTorqueSampleResult {
     pub status_flags: u32,
 }
 
-/// `foci_current_torque_sample_detail_result` reply - non-terminal encoder/prelimit/feedforward fragment.
+/// `foci_current_torque_sample_detail_result` reply - non-terminal
+/// encoder/prelimit/feedforward fragment.
 ///
 /// Wire name: `foci_current_torque_sample_detail_result`.
 #[klipper_reply]
