@@ -54,6 +54,8 @@ pub struct CurrentStepReport {
 pub struct CurrentTorqueSampleReport {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
+    /// Which torque-sample diagnostic produced this report.
+    pub kind: crate::tmc::TorqueSampleKind,
     /// Status code: 0 success, 1 not ready, 2 SPI or restore failure, 3 host-liveness expiry.
     pub status: u8,
     /// Requested signed torque target in TMC4671 current counts.
@@ -188,6 +190,7 @@ pub struct VoltageStepReport {
 /// Construct a zero-filled [`CurrentTorqueSampleReport`] with header fields.
 pub fn empty_current_torque_sample_report(
     oid: u8,
+    kind: crate::tmc::TorqueSampleKind,
     status: u8,
     target: i16,
     flux_target: i16,
@@ -196,6 +199,7 @@ pub fn empty_current_torque_sample_report(
 ) -> CurrentTorqueSampleReport {
     CurrentTorqueSampleReport {
         oid,
+        kind,
         status,
         target,
         flux_target,

@@ -786,13 +786,43 @@ pub struct FociCurrentVectorStepResult {
     pub adc_vm_raw: u16,
 }
 
-/// `foci_current_torque_sample_result` reply - early torque-pulse sample result.
+/// `foci_current_torque_sample_pid_result` reply - non-terminal PID monitor fragment.
+///
+/// Emitted before the detail and terminal fragments when the sample succeeded.
+/// Wire name: `foci_current_torque_sample_pid_result`.
+#[klipper_reply]
+pub struct FociCurrentTorqueSamplePidResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// TMC clipped torque input target at the sample point.
+    pub pidin_target_torque: i32,
+    /// TMC clipped flux input target at the sample point.
+    pub pidin_target_flux: i32,
+    /// TMC torque-controller output target at the sample point.
+    pub pidout_target_torque: i32,
+    /// TMC flux-controller output target at the sample point.
+    pub pidout_target_flux: i32,
+    /// TMC packed monitor's torque-target half at the sample point.
+    pub pid_torque_target_monitor: i16,
+    /// TMC torque current-loop error at the sample point.
+    pub torque_error: i32,
+    /// TMC flux current-loop error at the sample point.
+    pub flux_error: i32,
+    /// TMC torque current-loop error sum at the sample point.
+    pub torque_error_sum: i32,
+    /// TMC flux current-loop error sum at the sample point.
+    pub flux_error_sum: i32,
+}
+
+/// `foci_current_torque_sample_result` reply - torque-pulse sample terminal result.
 ///
 /// Wire name: `foci_current_torque_sample_result`.
 #[klipper_reply]
 pub struct FociCurrentTorqueSampleResult {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
+    /// Which torque-sample diagnostic produced this report: `TorqueSampleKind::as_u8()`.
+    pub kind: u8,
     /// Status code: 0 success, 1 not enabled/calibrated, 2 SPI failure.
     pub status: u8,
     /// Requested signed torque target in TMC4671 current counts.
@@ -819,6 +849,19 @@ pub struct FociCurrentTorqueSampleResult {
     pub uq_limited: i16,
     /// Limited UD at the sample point.
     pub ud_limited: i16,
+    /// Raw TMC4671 supply-voltage ADC sample at the sample point.
+    pub adc_vm_raw: u16,
+    /// TMC4671 status flags at the sample point.
+    pub status_flags: u32,
+}
+
+/// `foci_current_torque_sample_detail_result` reply - non-terminal encoder/prelimit/feedforward fragment.
+///
+/// Wire name: `foci_current_torque_sample_detail_result`.
+#[klipper_reply]
+pub struct FociCurrentTorqueSampleDetailResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
     /// ABN decoder count before applying the pulse.
     pub encoder_before: u32,
     /// ABN decoder count at the sample point.
@@ -829,45 +872,6 @@ pub struct FociCurrentTorqueSampleResult {
     pub encoder_delta_sample: i32,
     /// Signed encoder delta from before to after.
     pub encoder_delta_after: i32,
-    /// Raw TMC4671 supply-voltage ADC sample at the sample point.
-    pub adc_vm_raw: u16,
-    /// TMC clipped torque input target at the sample point.
-    pub pidin_target_torque: i32,
-    /// TMC clipped flux input target at the sample point.
-    pub pidin_target_flux: i32,
-    /// TMC torque-controller output target at the sample point.
-    pub pidout_target_torque: i32,
-    /// TMC flux-controller output target at the sample point.
-    pub pidout_target_flux: i32,
-    /// TMC packed monitor's torque-target half at the sample point.
-    pub pid_torque_target_monitor: i16,
-    /// TMC4671 status flags at the sample point.
-    pub status_flags: u32,
-}
-
-/// `foci_current_torque_sample_detail_result` reply - extended early sample data.
-///
-/// Wire name: `foci_current_torque_sample_detail_result`.
-#[klipper_reply]
-pub struct FociCurrentTorqueSampleDetailResult {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Requested signed torque target in TMC4671 current counts.
-    pub target: i16,
-    /// Requested signed flux target in TMC4671 current counts.
-    pub flux_target: i16,
-    /// Delay between applying the target and sampling, in milliseconds.
-    pub sample_delay_ms: u16,
-    /// Temporary PIDOUT_UQ_UD_LIMITS used during the diagnostic.
-    pub voltage_limit: u16,
-    /// TMC torque current-loop error at the sample point.
-    pub torque_error: i32,
-    /// TMC flux current-loop error at the sample point.
-    pub flux_error: i32,
-    /// TMC torque current-loop error sum at the sample point.
-    pub torque_error_sum: i32,
-    /// TMC flux current-loop error sum at the sample point.
-    pub flux_error_sum: i32,
     /// Pre-limit UQ at the sample point.
     pub uq_prelimit: i16,
     /// Pre-limit UD at the sample point.
@@ -2877,6 +2881,73 @@ mod velocity_sweep_reply_tests {
                 adc_vm_raw: u16::MAX,
             },
             "current step result",
+        );
+    }
+
+    #[test]
+    fn torque_sample_result_fits_one_frame_at_enforced_bounds() {
+        use crate::ankyra::handlers::tmc::{
+            MAX_CURRENT_SAMPLE_DELAY_MS, MAX_CURRENT_STEP_TARGET, MAX_CURRENT_STEP_VOLTAGE_LIMIT,
+        };
+        assert_fits(
+            &FociCurrentTorqueSampleResult {
+                oid: u8::MAX,
+                kind: 1,
+                status: u8::MAX,
+                target: -MAX_CURRENT_STEP_TARGET,
+                flux_target: MAX_CURRENT_STEP_TARGET,
+                sample_delay_ms: MAX_CURRENT_SAMPLE_DELAY_MS,
+                voltage_limit: MAX_CURRENT_STEP_VOLTAGE_LIMIT,
+                torque_before: i16::MIN,
+                torque_sample: i16::MIN,
+                torque_after: i16::MIN,
+                flux_sample: i16::MIN,
+                iq_sample: i16::MIN,
+                id_sample: i16::MIN,
+                uq_limited: i16::MIN,
+                ud_limited: i16::MIN,
+                adc_vm_raw: u16::MAX,
+                status_flags: WIDE_U32,
+            },
+            "torque sample result",
+        );
+    }
+
+    #[test]
+    fn torque_sample_pid_result_fits_one_frame() {
+        assert_fits(
+            &FociCurrentTorqueSamplePidResult {
+                oid: u8::MAX,
+                pidin_target_torque: i32::MIN,
+                pidin_target_flux: i32::MIN,
+                pidout_target_torque: i32::MIN,
+                pidout_target_flux: i32::MIN,
+                pid_torque_target_monitor: i16::MIN,
+                torque_error: i32::MIN,
+                flux_error: i32::MIN,
+                torque_error_sum: i32::MIN,
+                flux_error_sum: i32::MIN,
+            },
+            "torque sample pid result",
+        );
+    }
+
+    #[test]
+    fn torque_sample_detail_result_fits_one_frame() {
+        assert_fits(
+            &FociCurrentTorqueSampleDetailResult {
+                oid: u8::MAX,
+                encoder_before: WIDE_U32,
+                encoder_sample: WIDE_U32,
+                encoder_after: WIDE_U32,
+                encoder_delta_sample: i32::MIN,
+                encoder_delta_after: i32::MIN,
+                uq_prelimit: i16::MIN,
+                ud_prelimit: i16::MIN,
+                ff_velocity: i32::MIN,
+                ff_torque: i16::MIN,
+            },
+            "torque sample detail result",
         );
     }
 

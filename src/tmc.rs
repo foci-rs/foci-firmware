@@ -139,6 +139,25 @@ impl CurrentStepAxis {
     }
 }
 
+/// Which torque-sample diagnostic produced a `CurrentTorqueSampleReport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum TorqueSampleKind {
+    /// Open-loop torque/flux current-target sample.
+    CurrentTorqueSample,
+    /// Position-mode torque-offset sample.
+    PositionTorqueOffset,
+}
+
+impl TorqueSampleKind {
+    /// Wire value used by the `foci_current_torque_sample_result` reply.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::CurrentTorqueSample => 0,
+            Self::PositionTorqueOffset => 1,
+        }
+    }
+}
+
 /// Normalize host-provided diagnostic detail bytes into the supported range.
 pub const fn normalize_diagnostic_detail(detail: u8) -> u8 {
     if detail > MAX_DIAGNOSTIC_DETAIL {

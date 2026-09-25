@@ -14,6 +14,9 @@ pub trait DiagnosticReplySink {
     /// Emit a vector current-step diagnostic result.
     fn foci_current_vector_step_result(&mut self, report: CurrentStepReport);
 
+    /// Emit a current torque sample PID result.
+    fn foci_current_torque_sample_pid_result(&mut self, report: &CurrentTorqueSampleReport);
+
     /// Emit a current torque sample summary result.
     fn foci_current_torque_sample_result(&mut self, report: CurrentTorqueSampleReport);
 
@@ -41,11 +44,9 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             CurrentStepReply::Vector => sink.foci_current_vector_step_result(report),
             CurrentStepReply::Scalar(axis) => sink.foci_current_step_result(axis, report),
         },
-        DiagnosticReport::CurrentTorqueSample {
-            report,
-            emit_detail,
-        } => {
-            if emit_detail {
+        DiagnosticReport::CurrentTorqueSample(report) => {
+            if report.status == 0 {
+                sink.foci_current_torque_sample_pid_result(&report);
                 sink.foci_current_torque_sample_detail_result(&report);
             }
             sink.foci_current_torque_sample_result(report);
@@ -66,6 +67,10 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmc::TorqueSampleKind;
+    use crate::tmc_diagnostics::{
+        CURRENT_STEP_STATUS_HOST_LIVENESS, CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI,
+    };
     use std::vec::Vec;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,14 +87,17 @@ mod tests {
             torque_target: i16,
             flux_target: i16,
         },
+        TorquePid {
+            oid: u8,
+            torque_error_sum: i32,
+        },
         TorqueDetail {
             oid: u8,
-            target: i16,
-            torque_error: i32,
-            status_flags: u32,
+            encoder_sample: u32,
         },
         TorqueSummary {
             oid: u8,
+            kind: TorqueSampleKind,
             status: u8,
             target: i16,
             status_flags: u32,
@@ -141,9 +149,17 @@ mod tests {
             });
         }
 
+        fn foci_current_torque_sample_pid_result(&mut self, report: &CurrentTorqueSampleReport) {
+            self.events.push(Event::TorquePid {
+                oid: report.oid,
+                torque_error_sum: report.torque_error_sum,
+            });
+        }
+
         fn foci_current_torque_sample_result(&mut self, report: CurrentTorqueSampleReport) {
             self.events.push(Event::TorqueSummary {
                 oid: report.oid,
+                kind: report.kind,
                 status: report.status,
                 target: report.target,
                 status_flags: report.status_flags,
@@ -153,9 +169,7 @@ mod tests {
         fn foci_current_torque_sample_detail_result(&mut self, report: &CurrentTorqueSampleReport) {
             self.events.push(Event::TorqueDetail {
                 oid: report.oid,
-                target: report.target,
-                torque_error: report.torque_error,
-                status_flags: report.status_flags,
+                encoder_sample: report.encoder_sample,
             });
         }
 
@@ -218,6 +232,7 @@ mod tests {
     fn torque_report() -> CurrentTorqueSampleReport {
         CurrentTorqueSampleReport {
             oid: 8,
+            kind: TorqueSampleKind::CurrentTorqueSample,
             status: 0,
             target: 250,
             flux_target: -125,
@@ -360,28 +375,28 @@ mod tests {
     }
 
     #[test]
-    fn torque_sample_with_detail_emits_detail_before_summary() {
+    fn successful_torque_sample_emits_pid_then_detail_then_terminal() {
         let mut sink = RecordingSink::default();
 
         emit_diagnostic_report(
             &mut sink,
-            DiagnosticReport::CurrentTorqueSample {
-                report: torque_report(),
-                emit_detail: true,
-            },
+            DiagnosticReport::CurrentTorqueSample(torque_report()),
         );
 
         assert_eq!(
             sink.events,
             std::vec![
+                Event::TorquePid {
+                    oid: 8,
+                    torque_error_sum: 22
+                },
                 Event::TorqueDetail {
                     oid: 8,
-                    target: 250,
-                    torque_error: 20,
-                    status_flags: 0x1234,
+                    encoder_sample: 10
                 },
                 Event::TorqueSummary {
                     oid: 8,
+                    kind: TorqueSampleKind::CurrentTorqueSample,
                     status: 0,
                     target: 250,
                     status_flags: 0x1234,
@@ -391,26 +406,25 @@ mod tests {
     }
 
     #[test]
-    fn torque_sample_without_detail_emits_summary_only() {
-        let mut sink = RecordingSink::default();
+    fn failed_torque_sample_emits_terminal_only() {
+        for status in [
+            CURRENT_STEP_STATUS_NOT_READY,
+            CURRENT_STEP_STATUS_SPI,
+            CURRENT_STEP_STATUS_HOST_LIVENESS,
+        ] {
+            let mut sink = RecordingSink::default();
+            let report = CurrentTorqueSampleReport {
+                status,
+                ..torque_report()
+            };
 
-        emit_diagnostic_report(
-            &mut sink,
-            DiagnosticReport::CurrentTorqueSample {
-                report: torque_report(),
-                emit_detail: false,
-            },
-        );
+            emit_diagnostic_report(&mut sink, DiagnosticReport::CurrentTorqueSample(report));
 
-        assert_eq!(
-            sink.events,
-            std::vec![Event::TorqueSummary {
-                oid: 8,
-                status: 0,
-                target: 250,
-                status_flags: 0x1234,
-            }]
-        );
+            assert!(matches!(
+                sink.events.as_slice(),
+                [Event::TorqueSummary { .. }]
+            ));
+        }
     }
 
     #[test]

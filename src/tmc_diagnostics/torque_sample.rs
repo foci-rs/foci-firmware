@@ -1,5 +1,5 @@
 use crate::commissioning::encoder_domain::EncoderDomain;
-use crate::tmc::{TmcRequest, TmcRequestKind};
+use crate::tmc::{TmcRequest, TmcRequestKind, TorqueSampleKind};
 
 use super::helpers::{RunnerFailure, checked_delay_ms};
 use super::helpers::{clear_current_step_integrators, split_signed_halves};
@@ -13,14 +13,8 @@ const CURRENT_STEP_TORQUE_MODE: u32 = 0x8000_0001;
 const CURRENT_STEP_POSITION_MODE: u32 = 0x8000_0003;
 const CURRENT_STEP_SETTLE_MS: u64 = 20;
 
-fn handled_torque_sample(
-    report: CurrentTorqueSampleReport,
-    emit_detail: bool,
-) -> DiagnosticOutcome {
-    DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample {
-        report,
-        emit_detail,
-    })
+fn handled_torque_sample(report: CurrentTorqueSampleReport) -> DiagnosticOutcome {
+    DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report))
 }
 
 // `Option::as_deref_mut()` reborrowed inline at each `checked_delay_ms` call
@@ -74,17 +68,15 @@ where
                 || readiness.homing_active
                 || readiness.stepper_active
             {
-                return handled_torque_sample(
-                    empty_current_torque_sample_report(
-                        oid,
-                        CURRENT_STEP_STATUS_NOT_READY,
-                        target,
-                        flux_target,
-                        sample_delay_ms,
-                        voltage_limit,
-                    ),
-                    false,
-                );
+                return handled_torque_sample(empty_current_torque_sample_report(
+                    oid,
+                    TorqueSampleKind::CurrentTorqueSample,
+                    CURRENT_STEP_STATUS_NOT_READY,
+                    target,
+                    flux_target,
+                    sample_delay_ms,
+                    voltage_limit,
+                ));
             }
 
             let saved_mode = match tmc
@@ -93,17 +85,15 @@ where
             {
                 Ok(value) => value,
                 Err(_) => {
-                    return handled_torque_sample(
-                        empty_current_torque_sample_report(
-                            oid,
-                            CURRENT_STEP_STATUS_SPI,
-                            target,
-                            flux_target,
-                            sample_delay_ms,
-                            voltage_limit,
-                        ),
-                        false,
-                    );
+                    return handled_torque_sample(empty_current_torque_sample_report(
+                        oid,
+                        TorqueSampleKind::CurrentTorqueSample,
+                        CURRENT_STEP_STATUS_SPI,
+                        target,
+                        flux_target,
+                        sample_delay_ms,
+                        voltage_limit,
+                    ));
                 }
             };
             let saved_voltage_limit = readiness.saved_voltage_limit;
@@ -113,17 +103,15 @@ where
             {
                 Ok(value) => value,
                 Err(_) => {
-                    return handled_torque_sample(
-                        empty_current_torque_sample_report(
-                            oid,
-                            CURRENT_STEP_STATUS_SPI,
-                            target,
-                            flux_target,
-                            sample_delay_ms,
-                            voltage_limit,
-                        ),
-                        false,
-                    );
+                    return handled_torque_sample(empty_current_torque_sample_report(
+                        oid,
+                        TorqueSampleKind::CurrentTorqueSample,
+                        CURRENT_STEP_STATUS_SPI,
+                        target,
+                        flux_target,
+                        sample_delay_ms,
+                        voltage_limit,
+                    ));
                 }
             };
 
@@ -159,17 +147,15 @@ where
 
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before torque sample");
-                return handled_torque_sample(
-                    empty_current_torque_sample_report(
-                        oid,
-                        CURRENT_STEP_STATUS_SPI,
-                        target,
-                        flux_target,
-                        sample_delay_ms,
-                        voltage_limit,
-                    ),
-                    false,
-                );
+                return handled_torque_sample(empty_current_torque_sample_report(
+                    oid,
+                    TorqueSampleKind::CurrentTorqueSample,
+                    CURRENT_STEP_STATUS_SPI,
+                    target,
+                    flux_target,
+                    sample_delay_ms,
+                    voltage_limit,
+                ));
             }
 
             let result: Result<(), RunnerFailure> = async {
@@ -396,6 +382,7 @@ where
 
             let report = CurrentTorqueSampleReport {
                 oid,
+                kind: TorqueSampleKind::CurrentTorqueSample,
                 status,
                 target,
                 flux_target,
@@ -430,8 +417,7 @@ where
                 ff_torque,
                 status_flags,
             };
-            let emit_detail = status == 0;
-            handled_torque_sample(report, emit_detail)
+            handled_torque_sample(report)
         }
         req => DiagnosticOutcome::NotDiagnostic(req),
     }
@@ -473,17 +459,15 @@ where
                 || readiness.homing_active
                 || readiness.stepper_active
             {
-                return handled_torque_sample(
-                    empty_current_torque_sample_report(
-                        oid,
-                        CURRENT_STEP_STATUS_NOT_READY,
-                        target,
-                        0,
-                        sample_delay_ms,
-                        voltage_limit,
-                    ),
-                    false,
-                );
+                return handled_torque_sample(empty_current_torque_sample_report(
+                    oid,
+                    TorqueSampleKind::PositionTorqueOffset,
+                    CURRENT_STEP_STATUS_NOT_READY,
+                    target,
+                    0,
+                    sample_delay_ms,
+                    voltage_limit,
+                ));
             }
 
             let saved_mode = match tmc
@@ -492,31 +476,27 @@ where
             {
                 Ok(value) => value,
                 Err(_) => {
-                    return handled_torque_sample(
-                        empty_current_torque_sample_report(
-                            oid,
-                            CURRENT_STEP_STATUS_SPI,
-                            target,
-                            0,
-                            sample_delay_ms,
-                            voltage_limit,
-                        ),
-                        false,
-                    );
-                }
-            };
-            if saved_mode != CURRENT_STEP_POSITION_MODE {
-                return handled_torque_sample(
-                    empty_current_torque_sample_report(
+                    return handled_torque_sample(empty_current_torque_sample_report(
                         oid,
-                        CURRENT_STEP_STATUS_NOT_READY,
+                        TorqueSampleKind::PositionTorqueOffset,
+                        CURRENT_STEP_STATUS_SPI,
                         target,
                         0,
                         sample_delay_ms,
                         voltage_limit,
-                    ),
-                    false,
-                );
+                    ));
+                }
+            };
+            if saved_mode != CURRENT_STEP_POSITION_MODE {
+                return handled_torque_sample(empty_current_torque_sample_report(
+                    oid,
+                    TorqueSampleKind::PositionTorqueOffset,
+                    CURRENT_STEP_STATUS_NOT_READY,
+                    target,
+                    0,
+                    sample_delay_ms,
+                    voltage_limit,
+                ));
             }
 
             let saved_voltage_limit = readiness.saved_voltage_limit;
@@ -526,22 +506,21 @@ where
             {
                 Ok(value) => value,
                 Err(_) => {
-                    return handled_torque_sample(
-                        empty_current_torque_sample_report(
-                            oid,
-                            CURRENT_STEP_STATUS_SPI,
-                            target,
-                            0,
-                            sample_delay_ms,
-                            voltage_limit,
-                        ),
-                        false,
-                    );
+                    return handled_torque_sample(empty_current_torque_sample_report(
+                        oid,
+                        TorqueSampleKind::PositionTorqueOffset,
+                        CURRENT_STEP_STATUS_SPI,
+                        target,
+                        0,
+                        sample_delay_ms,
+                        voltage_limit,
+                    ));
                 }
             };
 
             let mut report = empty_current_torque_sample_report(
                 oid,
+                TorqueSampleKind::PositionTorqueOffset,
                 0,
                 target,
                 0,
@@ -747,8 +726,7 @@ where
                 .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, saved_mode)
                 .await;
 
-            let emit_detail = report.status == 0;
-            handled_torque_sample(report, emit_detail)
+            handled_torque_sample(report)
         }
         req => DiagnosticOutcome::NotDiagnostic(req),
     }

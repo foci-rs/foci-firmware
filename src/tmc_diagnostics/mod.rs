@@ -124,12 +124,7 @@ pub enum DiagnosticReport {
         report: CurrentStepReport,
     },
     /// Current-torque-sample or position-offset sample diagnostic.
-    CurrentTorqueSample {
-        /// Captured torque-sample report fields.
-        report: CurrentTorqueSampleReport,
-        /// Emit the detail reply before the summary reply.
-        emit_detail: bool,
-    },
+    CurrentTorqueSample(CurrentTorqueSampleReport),
     /// Open-loop voltage-step diagnostic.
     VoltageStep(VoltageStepReport),
     /// Shared resistance-identification diagnostic. Axis reports are absent
@@ -209,33 +204,29 @@ pub fn busy_diagnostic_report(
             flux_target,
             sample_delay_ms,
             voltage_limit,
-        } => DiagnosticReport::CurrentTorqueSample {
-            report: empty_current_torque_sample_report(
-                oid,
-                CURRENT_STEP_STATUS_NOT_READY,
-                target,
-                flux_target,
-                sample_delay_ms,
-                voltage_limit,
-            ),
-            emit_detail: false,
-        },
+        } => DiagnosticReport::CurrentTorqueSample(empty_current_torque_sample_report(
+            oid,
+            crate::tmc::TorqueSampleKind::CurrentTorqueSample,
+            CURRENT_STEP_STATUS_NOT_READY,
+            target,
+            flux_target,
+            sample_delay_ms,
+            voltage_limit,
+        )),
         TmcRequestKind::PositionTorqueOffsetSampleTest {
             oid,
             target,
             sample_delay_ms,
             voltage_limit,
-        } => DiagnosticReport::CurrentTorqueSample {
-            report: empty_current_torque_sample_report(
-                oid,
-                CURRENT_STEP_STATUS_NOT_READY,
-                target,
-                0,
-                sample_delay_ms,
-                voltage_limit,
-            ),
-            emit_detail: false,
-        },
+        } => DiagnosticReport::CurrentTorqueSample(empty_current_torque_sample_report(
+            oid,
+            crate::tmc::TorqueSampleKind::PositionTorqueOffset,
+            CURRENT_STEP_STATUS_NOT_READY,
+            target,
+            0,
+            sample_delay_ms,
+            voltage_limit,
+        )),
         TmcRequestKind::VoltageStepTest {
             oid,
             uq_ext,

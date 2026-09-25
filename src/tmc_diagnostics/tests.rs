@@ -1,6 +1,6 @@
 use super::*;
 use crate::tmc::{
-    CurrentStepAxis, tmc_current_step_test, tmc_current_torque_sample_test,
+    CurrentStepAxis, TorqueSampleKind, tmc_current_step_test, tmc_current_torque_sample_test,
     tmc_current_vector_step_test, tmc_position_torque_offset_sample_test, tmc_voltage_step_test,
 };
 use crate::tmc_control::TmcControlRuntime;
@@ -183,9 +183,17 @@ fn pack_voltage_ext_preserves_signed_halves() {
 
 #[test]
 fn empty_reports_preserve_headers_and_zero_samples() {
-    let torque =
-        empty_current_torque_sample_report(7, CURRENT_STEP_STATUS_NOT_READY, -11, 22, 3, 44);
+    let torque = empty_current_torque_sample_report(
+        7,
+        TorqueSampleKind::CurrentTorqueSample,
+        CURRENT_STEP_STATUS_NOT_READY,
+        -11,
+        22,
+        3,
+        44,
+    );
     assert_eq!(torque.oid, 7);
+    assert_eq!(torque.kind, TorqueSampleKind::CurrentTorqueSample);
     assert_eq!(torque.status, CURRENT_STEP_STATUS_NOT_READY);
     assert_eq!(torque.target, -11);
     assert_eq!(torque.flux_target, 22);
@@ -538,6 +546,28 @@ fn busy_current_vector_step_uses_vector_reply() {
 }
 
 #[test]
+fn busy_torque_samples_report_their_kind() {
+    for (req, kind) in [
+        (
+            tmc_current_torque_sample_test(0, 4, 22, 0, 3, 444),
+            TorqueSampleKind::CurrentTorqueSample,
+        ),
+        (
+            tmc_position_torque_offset_sample_test(0, 4, 22, 3, 444),
+            TorqueSampleKind::PositionTorqueOffset,
+        ),
+    ] {
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) =
+            busy_diagnostic_report(req, &TEST_TMC_CONFIG)
+        else {
+            panic!("expected torque sample report");
+        };
+        assert_eq!(report.kind, kind);
+        assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
+    }
+}
+
+#[test]
 fn current_step_invalid_ppr_aborts_before_excitation() {
     pollster::block_on(async {
         let raw_spi = DiagnosticMockSpi::default()
@@ -855,15 +885,12 @@ fn torque_sample_not_ready_does_not_emit_detail() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample {
-            report,
-            emit_detail,
-        }) = outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected torque sample report");
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
-        assert!(!emit_detail);
+        assert_eq!(report.kind, TorqueSampleKind::CurrentTorqueSample);
     });
 }
 
@@ -898,8 +925,7 @@ fn current_torque_sample_invalid_ppr_aborts_before_excitation() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected torque sample report");
         };
@@ -955,8 +981,7 @@ fn current_torque_sample_exact_half_turn_aborts_via_post_measurement_error() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected torque sample report");
         };
@@ -991,15 +1016,12 @@ fn position_offset_rejects_non_position_mode() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample {
-            report,
-            emit_detail,
-        }) = outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected position offset report");
         };
         assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
-        assert!(!emit_detail);
+        assert_eq!(report.kind, TorqueSampleKind::PositionTorqueOffset);
         assert!(
             tmc.into_inner()
                 .read_requests
@@ -1038,8 +1060,7 @@ fn position_offset_spi_failure_attempts_offset_restore() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected position offset report");
         };
@@ -1099,8 +1120,7 @@ fn position_torque_offset_sample_invalid_ppr_aborts_before_excitation() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected position offset report");
         };
@@ -1158,8 +1178,7 @@ fn position_torque_offset_sample_exact_half_turn_aborts_via_post_measurement_err
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected position offset report");
         };
@@ -1212,8 +1231,7 @@ fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_resto
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected torque sample report");
         };
@@ -1283,8 +1301,7 @@ fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() 
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected position offset report");
         };
@@ -1349,8 +1366,7 @@ fn current_torque_sample_pre_settle_host_liveness_expiry_reports_dedicated_statu
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected torque sample report");
         };
@@ -1399,8 +1415,7 @@ fn current_torque_sample_post_settle_host_liveness_expiry_reports_dedicated_stat
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected torque sample report");
         };
@@ -1463,8 +1478,7 @@ fn position_offset_post_settle_host_liveness_expiry_reports_dedicated_status() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample { report, .. }) =
-            outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentTorqueSample(report)) = outcome
         else {
             panic!("expected position offset report");
         };
@@ -1848,6 +1862,7 @@ struct RecordingDiagnosticSink {
 impl DiagnosticReplySink for RecordingDiagnosticSink {
     fn foci_current_step_result(&mut self, _axis: CurrentStepAxis, _report: CurrentStepReport) {}
     fn foci_current_vector_step_result(&mut self, _report: CurrentStepReport) {}
+    fn foci_current_torque_sample_pid_result(&mut self, _report: &CurrentTorqueSampleReport) {}
     fn foci_current_torque_sample_result(&mut self, _report: CurrentTorqueSampleReport) {}
     fn foci_current_torque_sample_detail_result(&mut self, _report: &CurrentTorqueSampleReport) {}
     fn foci_voltage_step_result(&mut self, _report: VoltageStepReport) {}
