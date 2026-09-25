@@ -5,7 +5,8 @@ use super::helpers::{RunnerFailure, checked_delay_ms};
 use super::helpers::{clear_current_step_integrators, split_signed_halves};
 use super::{
     CURRENT_STEP_STATUS_HOST_LIVENESS, CURRENT_STEP_STATUS_NOT_READY, CURRENT_STEP_STATUS_SPI,
-    CurrentStepReport, DiagnosticContext, DiagnosticDelay, DiagnosticOutcome, DiagnosticReport,
+    CurrentStepReply, CurrentStepReport, DiagnosticContext, DiagnosticDelay, DiagnosticOutcome,
+    DiagnosticReport,
 };
 
 const CURRENT_STEP_TORQUE_MODE: u32 = 0x8000_0001;
@@ -42,11 +43,8 @@ pub(super) fn empty_current_step_report(
     }
 }
 
-fn handled_current_step(vector_reply: bool, report: CurrentStepReport) -> DiagnosticOutcome {
-    DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep {
-        vector_reply,
-        report,
-    })
+fn handled_current_step(reply: CurrentStepReply, report: CurrentStepReport) -> DiagnosticOutcome {
+    DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { reply, report })
 }
 
 fn axis_value(axis: CurrentStepAxis, torque: i16, flux: i16) -> i16 {
@@ -148,13 +146,18 @@ where
                 ),
                 _ => unreachable!(),
             };
+            let reply = if vector_reply {
+                CurrentStepReply::Vector
+            } else {
+                CurrentStepReply::Scalar(scalar_axis)
+            };
             if !runtime.is_motor_enabled()
                 || !runtime.is_calibrated()
                 || readiness.homing_active
                 || readiness.stepper_active
             {
                 return handled_current_step(
-                    vector_reply,
+                    reply,
                     empty_current_step_report(
                         oid,
                         CURRENT_STEP_STATUS_NOT_READY,
@@ -173,7 +176,7 @@ where
                 Ok(value) => value,
                 Err(_) => {
                     return handled_current_step(
-                        vector_reply,
+                        reply,
                         empty_current_step_report(
                             oid,
                             CURRENT_STEP_STATUS_SPI,
@@ -193,7 +196,7 @@ where
                 Ok(value) => value,
                 Err(_) => {
                     return handled_current_step(
-                        vector_reply,
+                        reply,
                         empty_current_step_report(
                             oid,
                             CURRENT_STEP_STATUS_SPI,
@@ -223,7 +226,7 @@ where
             if !runtime.restore_phase_advance_now(tmc).await {
                 defmt::warn!("phase advance: failed to restore ABN offset before current step");
                 return handled_current_step(
-                    vector_reply,
+                    reply,
                     CurrentStepReport {
                         oid,
                         status: CURRENT_STEP_STATUS_SPI,
@@ -399,7 +402,7 @@ where
                 .await;
 
             handled_current_step(
-                vector_reply,
+                reply,
                 CurrentStepReport {
                     oid,
                     status,

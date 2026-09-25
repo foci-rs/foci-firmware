@@ -1,14 +1,15 @@
 //! Shared active diagnostic reply emission.
 
 use super::{
-    CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ResistanceAxisReport,
-    ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
+    CurrentStepReply, CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport,
+    ResistanceAxisReport, ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
 };
+use crate::tmc::CurrentStepAxis;
 
 /// Board-local active diagnostic reply sink.
 pub trait DiagnosticReplySink {
     /// Emit a scalar current-step diagnostic result.
-    fn foci_current_step_result(&mut self, report: CurrentStepReport);
+    fn foci_current_step_result(&mut self, axis: CurrentStepAxis, report: CurrentStepReport);
 
     /// Emit a vector current-step diagnostic result.
     fn foci_current_vector_step_result(&mut self, report: CurrentStepReport);
@@ -36,16 +37,10 @@ pub trait DiagnosticReplySink {
 /// Emit active diagnostic replies for a completed diagnostic report.
 pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: DiagnosticReport) {
     match report {
-        DiagnosticReport::CurrentStep {
-            vector_reply,
-            report,
-        } => {
-            if vector_reply {
-                sink.foci_current_vector_step_result(report);
-            } else {
-                sink.foci_current_step_result(report);
-            }
-        }
+        DiagnosticReport::CurrentStep { reply, report } => match reply {
+            CurrentStepReply::Vector => sink.foci_current_vector_step_result(report),
+            CurrentStepReply::Scalar(axis) => sink.foci_current_step_result(axis, report),
+        },
         DiagnosticReport::CurrentTorqueSample {
             report,
             emit_detail,
@@ -79,6 +74,7 @@ mod tests {
             oid: u8,
             status: u8,
             target: i16,
+            axis: CurrentStepAxis,
         },
         CurrentVectorStep {
             oid: u8,
@@ -127,11 +123,12 @@ mod tests {
     }
 
     impl DiagnosticReplySink for RecordingSink {
-        fn foci_current_step_result(&mut self, report: CurrentStepReport) {
+        fn foci_current_step_result(&mut self, axis: CurrentStepAxis, report: CurrentStepReport) {
             self.events.push(Event::CurrentStep {
                 oid: report.oid,
                 status: report.status,
                 target: report.torque_target,
+                axis,
             });
         }
 
@@ -298,7 +295,7 @@ mod tests {
         emit_diagnostic_report(
             &mut sink,
             DiagnosticReport::CurrentStep {
-                vector_reply: false,
+                reply: CurrentStepReply::Scalar(CurrentStepAxis::Torque),
                 report: current_step_report(),
             },
         );
@@ -309,8 +306,34 @@ mod tests {
                 oid: 7,
                 status: 0,
                 target: -123,
+                axis: CurrentStepAxis::Torque,
             }]
         );
+    }
+
+    #[test]
+    fn scalar_current_step_report_emits_its_axis() {
+        for axis in [CurrentStepAxis::Torque, CurrentStepAxis::Flux] {
+            let mut sink = RecordingSink::default();
+
+            emit_diagnostic_report(
+                &mut sink,
+                DiagnosticReport::CurrentStep {
+                    reply: CurrentStepReply::Scalar(axis),
+                    report: current_step_report(),
+                },
+            );
+
+            assert_eq!(
+                sink.events,
+                std::vec![Event::CurrentStep {
+                    oid: 7,
+                    status: 0,
+                    target: -123,
+                    axis
+                }]
+            );
+        }
     }
 
     #[test]
@@ -320,7 +343,7 @@ mod tests {
         emit_diagnostic_report(
             &mut sink,
             DiagnosticReport::CurrentStep {
-                vector_reply: true,
+                reply: CurrentStepReply::Vector,
                 report: current_step_report(),
             },
         );

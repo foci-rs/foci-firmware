@@ -104,13 +104,22 @@ pub struct DiagnosticContext<'a, B, D> {
     pub host_liveness_expired: Option<&'a mut dyn FnMut() -> bool>,
 }
 
+/// Which current-step reply a completed request should emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum CurrentStepReply {
+    /// Emit the scalar current-step reply, echoing the driven axis.
+    Scalar(crate::tmc::CurrentStepAxis),
+    /// Emit the vector current-step reply.
+    Vector,
+}
+
 /// Report produced by a handled active diagnostic request.
 #[allow(clippy::large_enum_variant)]
 pub enum DiagnosticReport {
     /// Current-step or current-vector-step diagnostic.
     CurrentStep {
-        /// Emit the vector reply if true; emit scalar current-step reply if false.
-        vector_reply: bool,
+        /// Which current-step reply to emit for this report.
+        reply: CurrentStepReply,
         /// Captured current-step report fields.
         report: CurrentStepReport,
     },
@@ -166,7 +175,7 @@ pub fn busy_diagnostic_report(
                 0
             };
             DiagnosticReport::CurrentStep {
-                vector_reply: false,
+                reply: CurrentStepReply::Scalar(axis),
                 report: current_step::empty_current_step_report(
                     oid,
                     CURRENT_STEP_STATUS_NOT_READY,
@@ -184,7 +193,7 @@ pub fn busy_diagnostic_report(
             duration_ms,
             voltage_limit,
         } => DiagnosticReport::CurrentStep {
-            vector_reply: true,
+            reply: CurrentStepReply::Vector,
             report: current_step::empty_current_step_report(
                 oid,
                 CURRENT_STEP_STATUS_NOT_READY,

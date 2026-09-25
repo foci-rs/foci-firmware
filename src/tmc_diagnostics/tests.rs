@@ -251,13 +251,15 @@ fn commissioning_busy_diagnostic_returns_not_ready_without_hardware() {
     let outcome =
         super::busy_diagnostic_report(request, &crate::config::TmcConfig::default_for_test());
 
-    let super::DiagnosticOutcome::Handled(super::DiagnosticReport::CurrentStep {
-        vector_reply: false,
-        report,
-    }) = outcome
+    let super::DiagnosticOutcome::Handled(super::DiagnosticReport::CurrentStep { reply, report }) =
+        outcome
     else {
         panic!("expected scalar current-step busy report");
     };
+    assert_eq!(
+        reply,
+        super::CurrentStepReply::Scalar(crate::tmc::CurrentStepAxis::Torque)
+    );
     assert_eq!(report.oid, 9);
     assert_eq!(report.status, super::CURRENT_STEP_STATUS_NOT_READY);
     assert_eq!(report.torque_target, 64);
@@ -290,14 +292,11 @@ fn current_step_not_ready_returns_status_without_writes() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep {
-            vector_reply,
-            report,
-        }) = outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { reply, report }) = outcome
         else {
             panic!("expected current step report");
         };
-        assert!(!vector_reply);
+        assert_eq!(reply, CurrentStepReply::Scalar(CurrentStepAxis::Torque));
         assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
         assert_eq!(report.oid, 7);
         assert_eq!(report.torque_target, 123);
@@ -333,14 +332,11 @@ fn current_vector_uses_vector_report_flag() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep {
-            vector_reply,
-            report,
-        }) = outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { reply, report }) = outcome
         else {
             panic!("expected current vector report");
         };
-        assert!(vector_reply);
+        assert_eq!(reply, CurrentStepReply::Vector);
         assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
         assert_eq!(report.torque_target, 11);
         assert_eq!(report.flux_target, -12);
@@ -492,10 +488,11 @@ fn flux_current_step_drives_and_reports_flux_axis() {
         )
         .await;
 
-        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { report, .. }) = outcome
+        let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { reply, report }) = outcome
         else {
             panic!("expected current step report");
         };
+        assert_eq!(reply, CurrentStepReply::Scalar(CurrentStepAxis::Flux));
         assert_eq!(report.status, 0);
         assert_eq!(report.torque_target, 20);
         assert_eq!(report.flux_target, 20);
@@ -510,6 +507,34 @@ fn flux_current_step_drives_and_reports_flux_axis() {
             crate::tmc::pack_torque_flux_target(0, 20),
         )));
     });
+}
+
+#[test]
+fn busy_flux_current_step_reports_flux_axis() {
+    let outcome = busy_diagnostic_report(
+        tmc_current_step_test(0, 7, CurrentStepAxis::Flux, 20, 30, 555),
+        &TEST_TMC_CONFIG,
+    );
+
+    let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { reply, report }) = outcome
+    else {
+        panic!("expected current step report");
+    };
+    assert_eq!(reply, CurrentStepReply::Scalar(CurrentStepAxis::Flux));
+    assert_eq!(report.status, CURRENT_STEP_STATUS_NOT_READY);
+}
+
+#[test]
+fn busy_current_vector_step_uses_vector_reply() {
+    let outcome = busy_diagnostic_report(
+        tmc_current_vector_step_test(0, 7, 20, -10, 30, 555),
+        &TEST_TMC_CONFIG,
+    );
+
+    let DiagnosticOutcome::Handled(DiagnosticReport::CurrentStep { reply, .. }) = outcome else {
+        panic!("expected current step report");
+    };
+    assert_eq!(reply, CurrentStepReply::Vector);
 }
 
 #[test]
@@ -1821,7 +1846,7 @@ struct RecordingDiagnosticSink {
 }
 
 impl DiagnosticReplySink for RecordingDiagnosticSink {
-    fn foci_current_step_result(&mut self, _report: CurrentStepReport) {}
+    fn foci_current_step_result(&mut self, _axis: CurrentStepAxis, _report: CurrentStepReport) {}
     fn foci_current_vector_step_result(&mut self, _report: CurrentStepReport) {}
     fn foci_current_torque_sample_result(&mut self, _report: CurrentTorqueSampleReport) {}
     fn foci_current_torque_sample_detail_result(&mut self, _report: &CurrentTorqueSampleReport) {}

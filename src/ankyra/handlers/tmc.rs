@@ -25,15 +25,15 @@ use crate::context::{ShutdownRecovery, TmcHost};
 use crate::shutdown::ShutdownReason;
 use crate::state::tmc::TmcChannelState;
 
-const MAX_CURRENT_STEP_TARGET: i16 = 1_000;
+pub(crate) const MAX_CURRENT_STEP_TARGET: i16 = 1_000;
 const MIN_CURRENT_STEP_DURATION_MS: u16 = 20;
-const MAX_CURRENT_STEP_DURATION_MS: u16 = 200;
+pub(crate) const MAX_CURRENT_STEP_DURATION_MS: u16 = 200;
 const MIN_CURRENT_SAMPLE_DELAY_MS: u16 = 1;
-const MAX_CURRENT_SAMPLE_DELAY_MS: u16 = MAX_CURRENT_STEP_DURATION_MS;
+pub(crate) const MAX_CURRENT_SAMPLE_DELAY_MS: u16 = MAX_CURRENT_STEP_DURATION_MS;
 const MAX_VOLTAGE_STEP_EXT: i16 = 1_024;
 const MIN_CURRENT_STEP_VOLTAGE_LIMIT: u16 =
     crate::state::tmc::MIN_OPERATIONAL_PIDOUT_UQ_UD_LIMIT as u16;
-const MAX_CURRENT_STEP_VOLTAGE_LIMIT: u16 = 29_000;
+pub(crate) const MAX_CURRENT_STEP_VOLTAGE_LIMIT: u16 = 29_000;
 
 /// Trigger TMC4671 initialization sequence (dev-only).
 #[cfg(feature = "dev")]
