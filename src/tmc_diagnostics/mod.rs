@@ -10,8 +10,6 @@ mod replies;
 mod reports;
 mod resistance;
 mod torque_sample;
-#[cfg(feature = "trace-velocity-limit-latch-test")]
-mod velocity_limit_latch;
 mod voltage_step;
 
 #[cfg(test)]
@@ -30,17 +28,10 @@ pub use reports::{
     ResistanceRunReport, VoltageStepReport, empty_current_torque_sample_report,
     empty_resistance_run_report, empty_voltage_step_report,
 };
-#[cfg(feature = "trace-velocity-limit-latch-test")]
-pub use reports::{
-    VELOCITY_LIMIT_LATCH_STATUS_NOT_READY, VELOCITY_LIMIT_LATCH_STATUS_SPI,
-    VelocityLimitLatchReport,
-};
 pub use resistance::run_resistance_test_request;
 pub use torque_sample::{
     run_current_torque_sample_request, run_position_torque_offset_sample_request,
 };
-#[cfg(feature = "trace-velocity-limit-latch-test")]
-pub use velocity_limit_latch::run_velocity_limit_latch_request;
 pub use voltage_step::run_voltage_step_request;
 
 use foci_tmc4671::spi::Tmc4671Spi;
@@ -143,9 +134,6 @@ pub enum DiagnosticReport {
         /// Per-axis fit results, present only on a successful run.
         axes: Option<[ResistanceAxisReport; 2]>,
     },
-    /// Focused trace-only velocity-output-limit persistence diagnostic.
-    #[cfg(feature = "trace-velocity-limit-latch-test")]
-    VelocityLimitLatch(VelocityLimitLatchReport),
 }
 
 /// Result of shared diagnostic request dispatch.
@@ -260,10 +248,6 @@ pub fn busy_diagnostic_report(
                 axes: None,
             }
         }
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        TmcRequestKind::VelocityLimitLatchTest { oid } => DiagnosticReport::VelocityLimitLatch(
-            velocity_limit_latch::empty_report(oid, VELOCITY_LIMIT_LATCH_STATUS_NOT_READY),
-        ),
         _ => return DiagnosticOutcome::NotDiagnostic(req),
     };
     DiagnosticOutcome::Handled(report)
@@ -294,10 +278,6 @@ where
         }
         crate::tmc::TmcRequestKind::ResistanceTest { .. } => {
             resistance::run_resistance_test_request(req, ctx).await
-        }
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        crate::tmc::TmcRequestKind::VelocityLimitLatchTest { .. } => {
-            velocity_limit_latch::run_velocity_limit_latch_request(req, ctx).await
         }
         _ => DiagnosticOutcome::NotDiagnostic(req),
     }

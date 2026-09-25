@@ -2641,8 +2641,6 @@ fn all_active_diagnostic_requests_are_delegated_without_mutation() {
         crate::tmc::tmc_position_torque_offset_sample_test(0, 13, 116, 18, 19),
         crate::tmc::tmc_voltage_step_test(0, 14, 120, -121, 20),
         crate::tmc::tmc_resistance_test(0, 15, 0),
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        crate::tmc::tmc_velocity_limit_latch_test(0, 16),
     ];
 
     for req in requests {

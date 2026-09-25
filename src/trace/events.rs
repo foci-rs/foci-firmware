@@ -107,7 +107,8 @@ pub const EVENT_COMMISSION_RESTORE_DISPOSITION: u16 = 142;
 pub const EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY: u16 = 143;
 /// Final command-lifetime outer-safety observation-gap summary marker.
 pub const EVENT_COMMISSION_OUTER_SAFETY_TIMING: u16 = 144;
-/// Focused velocity-output-limit persistence diagnostic.
+/// Retired: focused velocity-output-limit persistence diagnostic. The id stays
+/// reserved (never reassigned) so historical captures still decode.
 pub const EVENT_COMMISSION_VELOCITY_LIMIT_LATCH_TEST: u16 = 145;
 /// Fixed-I velocity fixed-gain-amplitude immutable plan.
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_PLAN: u16 = 146;

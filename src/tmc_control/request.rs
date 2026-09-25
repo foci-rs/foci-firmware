@@ -292,11 +292,6 @@ where
                 | TmcRequestKind::ResistanceTest { .. },
             ..
         } => sink.emit_busy_diagnostic(diagnostic_req),
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        diagnostic_req @ TmcRequest {
-            kind: TmcRequestKind::VelocityLimitLatchTest { .. },
-            ..
-        } => sink.emit_busy_diagnostic(diagnostic_req),
         #[cfg(feature = "dev")]
         TmcRequest {
             kind:
@@ -929,15 +924,6 @@ where
                 defmt::error!("Diagnostic rejected: PI representation unavailable");
                 return TmcControlRequestOutcome::skip_tick_tail();
             }
-            board
-                .run_diagnostic_request(diagnostic_req, runtime, tmc)
-                .await;
-        }
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        diagnostic_req @ TmcRequest {
-            kind: TmcRequestKind::VelocityLimitLatchTest { .. },
-            ..
-        } => {
             board
                 .run_diagnostic_request(diagnostic_req, runtime, tmc)
                 .await;

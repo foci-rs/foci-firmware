@@ -532,13 +532,6 @@ impl TmcControlRuntime {
                     BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
                 );
             }
-            #[cfg(feature = "trace-velocity-limit-latch-test")]
-            TmcRequestKind::VelocityLimitLatchTest { .. } => {
-                push_action(
-                    &mut actions,
-                    BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
-                );
-            }
             _ => {}
         }
         actions

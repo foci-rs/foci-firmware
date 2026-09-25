@@ -423,12 +423,6 @@ pub enum TmcRequestKind {
         /// Reserved verbosity/selector byte for future detail replies.
         detail: u8,
     },
-    /// Run the trace-only velocity-output-limit persistence diagnostic.
-    #[cfg(feature = "trace-velocity-limit-latch-test")]
-    VelocityLimitLatchTest {
-        /// Object id used by the reply.
-        oid: u8,
-    },
     /// Write a TMC4671 register via SPI (dev-only).
     #[cfg(feature = "dev")]
     Write { addr: u8, value: u32 },
@@ -892,12 +886,6 @@ pub fn tmc_voltage_step_test(
 /// Build a `ResistanceTest` request.
 pub fn tmc_resistance_test(channel: u8, oid: u8, detail: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::ResistanceTest { oid, detail })
-}
-
-/// Build a trace-only `VelocityLimitLatchTest` request.
-#[cfg(feature = "trace-velocity-limit-latch-test")]
-pub fn tmc_velocity_limit_latch_test(channel: u8, oid: u8) -> TmcRequest {
-    TmcRequest::new(channel, TmcRequestKind::VelocityLimitLatchTest { oid })
 }
 
 /// Build a `SetEnable` request.

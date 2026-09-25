@@ -1,7 +1,5 @@
 //! Shared active diagnostic reply emission.
 
-#[cfg(feature = "trace-velocity-limit-latch-test")]
-use super::VelocityLimitLatchReport;
 use super::{
     CurrentStepReport, CurrentTorqueSampleReport, DiagnosticReport, ResistanceAxisReport,
     ResistanceProfileReport, ResistanceRunReport, VoltageStepReport,
@@ -33,22 +31,6 @@ pub trait DiagnosticReplySink {
     /// Emit the resistance-test per-run status/warnings/readbacks result.
     /// This is the diagnostic's terminal reply.
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
-
-    /// Emit focused velocity-output-limit status snapshots.
-    #[cfg(feature = "trace-velocity-limit-latch-test")]
-    fn foci_velocity_limit_latch_flags(&mut self, _report: VelocityLimitLatchReport) {}
-
-    /// Emit focused velocity-output-limit timing and displacement.
-    #[cfg(feature = "trace-velocity-limit-latch-test")]
-    fn foci_velocity_limit_latch_motion(&mut self, _report: VelocityLimitLatchReport) {}
-
-    /// Emit focused velocity-output-limit restoration evidence.
-    #[cfg(feature = "trace-velocity-limit-latch-test")]
-    fn foci_velocity_limit_latch_restore(&mut self, _report: VelocityLimitLatchReport) {}
-
-    /// Emit the focused velocity-output-limit terminal core.
-    #[cfg(feature = "trace-velocity-limit-latch-test")]
-    fn foci_velocity_limit_latch_result(&mut self, _report: VelocityLimitLatchReport) {}
 }
 
 /// Emit active diagnostic replies for a completed diagnostic report.
@@ -82,14 +64,6 @@ pub fn emit_diagnostic_report<S: DiagnosticReplySink>(sink: &mut S, report: Diag
             }
             // Run reply last: it is the diagnostic's terminal/"done" signal.
             sink.foci_resistance_run(run);
-        }
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        DiagnosticReport::VelocityLimitLatch(report) => {
-            sink.foci_velocity_limit_latch_flags(report);
-            sink.foci_velocity_limit_latch_motion(report);
-            sink.foci_velocity_limit_latch_restore(report);
-            // Core reply last: it is the diagnostic's terminal/"done" signal.
-            sink.foci_velocity_limit_latch_result(report);
         }
     }
 }
@@ -143,32 +117,6 @@ mod tests {
             peak_abs_current_count: u16,
             max_abs_steady_mean_current_count: u16,
             current_ceiling_count: u16,
-            power_stage_tripped: bool,
-        },
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        VelocityLimitFlags {
-            active: u32,
-            post_pulse: u32,
-            delayed: u32,
-            post_clear: u32,
-        },
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        VelocityLimitMotion {
-            pulse_elapsed_us: u32,
-            delayed_read_elapsed_us: u32,
-            encoder_delta: i32,
-        },
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        VelocityLimitRestore {
-            saved_limit: u32,
-            restored_limit: u32,
-            restore_verified_mask: u8,
-        },
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        VelocityLimitDone {
-            oid: u8,
-            status: u8,
-            test_limit: u16,
             power_stage_tripped: bool,
         },
     }
@@ -242,44 +190,6 @@ mod tests {
                 peak_abs_current_count: report.peak_abs_current_count,
                 max_abs_steady_mean_current_count: report.max_abs_steady_mean_current_count,
                 current_ceiling_count: report.current_ceiling_count,
-                power_stage_tripped: report.power_stage_tripped,
-            });
-        }
-
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        fn foci_velocity_limit_latch_flags(&mut self, report: VelocityLimitLatchReport) {
-            self.events.push(Event::VelocityLimitFlags {
-                active: report.active_status_flags,
-                post_pulse: report.post_pulse_status_flags,
-                delayed: report.delayed_status_flags,
-                post_clear: report.post_clear_status_flags,
-            });
-        }
-
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        fn foci_velocity_limit_latch_motion(&mut self, report: VelocityLimitLatchReport) {
-            self.events.push(Event::VelocityLimitMotion {
-                pulse_elapsed_us: report.pulse_elapsed_us,
-                delayed_read_elapsed_us: report.delayed_read_elapsed_us,
-                encoder_delta: report.encoder_delta,
-            });
-        }
-
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        fn foci_velocity_limit_latch_restore(&mut self, report: VelocityLimitLatchReport) {
-            self.events.push(Event::VelocityLimitRestore {
-                saved_limit: report.saved_limit,
-                restored_limit: report.restored_limit_readback,
-                restore_verified_mask: report.restore_verified_mask,
-            });
-        }
-
-        #[cfg(feature = "trace-velocity-limit-latch-test")]
-        fn foci_velocity_limit_latch_result(&mut self, report: VelocityLimitLatchReport) {
-            self.events.push(Event::VelocityLimitDone {
-                oid: report.oid,
-                status: report.status,
-                test_limit: report.test_limit,
                 power_stage_tripped: report.power_stage_tripped,
             });
         }
@@ -609,53 +519,6 @@ mod tests {
                     peak_abs_current_count: 1200,
                     max_abs_steady_mean_current_count: 900,
                     current_ceiling_count: 1600,
-                    power_stage_tripped: true,
-                },
-            ]
-        );
-    }
-
-    #[cfg(feature = "trace-velocity-limit-latch-test")]
-    #[test]
-    fn velocity_limit_latch_emits_evidence_before_terminal_core() {
-        let mut report = super::super::velocity_limit_latch::empty_report(7, 0);
-        report.active_status_flags = 0x80;
-        report.post_pulse_status_flags = 0x80;
-        report.delayed_status_flags = 0x80;
-        report.pulse_elapsed_us = 100;
-        report.delayed_read_elapsed_us = 1_000;
-        report.encoder_delta = 1;
-        report.saved_limit = 2_816;
-        report.restored_limit_readback = 2_816;
-        report.restore_verified_mask = 0b1111;
-        report.power_stage_tripped = true;
-        let mut sink = RecordingSink::default();
-
-        emit_diagnostic_report(&mut sink, DiagnosticReport::VelocityLimitLatch(report));
-
-        assert_eq!(
-            sink.events,
-            std::vec![
-                Event::VelocityLimitFlags {
-                    active: 0x80,
-                    post_pulse: 0x80,
-                    delayed: 0x80,
-                    post_clear: 0,
-                },
-                Event::VelocityLimitMotion {
-                    pulse_elapsed_us: 100,
-                    delayed_read_elapsed_us: 1_000,
-                    encoder_delta: 1,
-                },
-                Event::VelocityLimitRestore {
-                    saved_limit: 2_816,
-                    restored_limit: 2_816,
-                    restore_verified_mask: 0b1111,
-                },
-                Event::VelocityLimitDone {
-                    oid: 7,
-                    status: 0,
-                    test_limit: 1,
                     power_stage_tripped: true,
                 },
             ]
