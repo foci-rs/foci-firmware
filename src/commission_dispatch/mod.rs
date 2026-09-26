@@ -1,7 +1,4 @@
 //! Board-agnostic post-processing for `CommissioningEngine::step()` results.
-//!
-//! Lifted from `openffboard-fw::tmc_control` per the design at
-//! `docs/specs/2026-04-23-commission-dispatch-extraction-design.md`.
 
 // pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.

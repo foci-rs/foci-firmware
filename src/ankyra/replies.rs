@@ -14,10 +14,8 @@
 //!
 //! Field declaration order is load-bearing: ankyra serializes the
 //! response in struct declaration order, and the Klipper host parses
-//! the data-dictionary format string in the same order. Each struct's
-//! field list mirrors the pre-migration `klipper_reply!(name, field:
-//! ty = expr, ...)` call-site order recorded in
-//! `docs/notes/anchor-datadict-baseline.txt`.
+//! the data-dictionary format string in the same order, so reordering a
+//! struct's fields changes the wire format.
 
 use ankyra::prelude::klipper_reply;
 
@@ -2366,18 +2364,14 @@ pub struct SpiTransferResponse<'a> {
 ///
 /// Wire name: `stats`. Field semantics match upstream Klipper's
 /// `sendf("stats count=%u sum=%u sumsq=%u", ...)` in
-/// `src/basecmd.c::stats_update`. Note: today's accumulator in
-/// `boards/openffboard-fw/src/heartbeat.rs` emits coarse values
-/// (`count` always 1, `sum` is wall time, `sumsq` saturated); accurate
-/// busy/total tick reporting is tracked in
-/// `docs/specs/2026-03-29-foci-design.md` Phase 5.
+/// `src/basecmd.c::stats_update`, filled from [`crate::cpu_load::take`].
 #[klipper_reply]
 pub struct Stats {
-    /// Number of accumulator iterations since the last emission.
+    /// Idle (`wfi`) laps since the last emission, at least 1.
     pub count: u32,
-    /// Sum of per-iteration busy clock-tick deltas.
+    /// Busy clock ticks since the last emission: wall time minus idle time.
     pub sum: u32,
-    /// Sum of squared per-iteration deltas, scaled by `STATS_SUMSQ_BASE`.
+    /// Always 0; per-iteration variance is not measured.
     pub sumsq: u32,
 }
 

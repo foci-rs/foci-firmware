@@ -478,9 +478,8 @@ pub(crate) const TRIP_IAE: u8 = 1 << 2;
 pub(crate) const ROBUSTNESS_BAND_FRACTION_PCT: u32 = 5;
 
 /// Minimum sustained dwell inside the settle band, in microseconds.
-/// ~48 ticks at the ~1 ms observation cadence (416 samples over 415,488 us
-/// in the scored-rest captures, `docs/logbook/2026-07-28.md`), under the
-/// 64-sample shortest stationary suffix (`VELOCITY_SUFFIX_LENGTHS[0]`).
+/// ~48 ticks at the ~1 ms observation cadence, under the 64-sample shortest
+/// stationary suffix (`VELOCITY_SUFFIX_LENGTHS[0]`).
 pub(crate) const ROBUSTNESS_BAND_DWELL_US: u32 = 48_000;
 
 /// Overall measurement budget for one reversal-robustness probe leg, in
