@@ -37,9 +37,6 @@ mod integral_sweep;
 mod integral_sweep_tests;
 #[cfg(test)]
 mod integral_test_point_contract_tests;
-pub mod operating_region;
-#[cfg(test)]
-mod operating_region_tests;
 pub(crate) mod recovery;
 #[cfg(test)]
 mod recovery_tests;

@@ -1,15 +1,11 @@
 //! Pure planning and response-selection rules for combined velocity tuning.
 
 use crate::autotune::velocity_measurement::VELOCITY_RATE_Q_SCALE;
-use foci_tmc4671::pid::PidPGain;
 
 use super::integral_plan::{
     INTEGRAL_OBSERVATIONS_PER_RUNG, INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US, VelocityIntegralLadder,
     VelocityIntegralPlanError, build_integral_ladder, confidence_family_size,
 };
-use super::operating_region::CompactSignedRate;
-use super::sweep_consensus::DirectionalConsensusClass;
-use super::sweep_evidence::CompactDirectionalRungReport;
 use super::sweep_plan::{SETTLE_ANALYSIS_BUDGET_US, VelocitySweepPlan, ZERO_SETTLE_US};
 
 /// Live Proportional schema for the shared Proportional velocity sweep planner.
@@ -44,8 +40,6 @@ pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
 /// be able to tell the two apart rather than widen the existing range.
 pub const BREAKAWAY_INTEGRAL_SCHEMA_REVISION: u16 = 18;
 
-const P_RESPONSE_LOW_PERCENT: i128 = 70;
-const P_RESPONSE_HIGH_PERCENT: i128 = 80;
 const I_RESPONSE_TARGET_PERCENT: i128 = 98;
 const PERCENT_SCALE: i128 = 100;
 const SECONDS_PER_MINUTE: i128 = 60;
@@ -97,23 +91,6 @@ pub struct CombinedRateInterval {
     pub high_q: i64,
 }
 
-/// Selected Proportional response retained only through the combined continuation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct CombinedSelectedResponse {
-    /// Proportional gain whose two directional intervals entered the band.
-    pub p: PidPGain,
-    /// Exact conservative compact bounds in forward, reverse order.
-    response_bounds_q: [[CompactSignedRate; 2]; 2],
-}
-
-impl CombinedSelectedResponse {
-    /// Decode both signed closed response intervals.
-    pub fn response_intervals_q(self) -> [[i64; 2]; 2] {
-        self.response_bounds_q
-            .map(|bounds| bounds.map(CompactSignedRate::decode))
-    }
-}
-
 impl CombinedRateInterval {
     /// Construct one ordered closed interval.
     pub const fn new(low_q: i64, high_q: i64) -> Result<Self, CombinedPlanError> {
@@ -134,45 +111,6 @@ pub enum CombinedPlanError {
     InvalidTarget,
     /// Checked response arithmetic exceeded its representation.
     Arithmetic,
-}
-
-/// Select one P directly from complete directional consensus reports.
-pub fn select_proportional_response(
-    forward: CompactDirectionalRungReport,
-    reverse: CompactDirectionalRungReport,
-    target_rpm: i32,
-    encoder_counts_per_rev: u32,
-) -> Result<Option<CombinedSelectedResponse>, CombinedPlanError> {
-    if forward.p != reverse.p {
-        return Err(CombinedPlanError::InvalidInterval);
-    }
-    if forward.classification != DirectionalConsensusClass::EligibleConsensus
-        || reverse.classification != DirectionalConsensusClass::EligibleConsensus
-        || forward.collected_mask != 0b1111
-        || reverse.collected_mask != 0b1111
-    {
-        return Ok(None);
-    }
-    let response_bounds_q = [
-        [
-            forward.settled_rate_bounds_q[2],
-            forward.settled_rate_bounds_q[3],
-        ],
-        [
-            reverse.settled_rate_bounds_q[2],
-            reverse.settled_rate_bounds_q[3],
-        ],
-    ];
-    let decoded = response_bounds_q
-        .map(|bounds| CombinedRateInterval::new(bounds[0].decode(), bounds[1].decode()));
-    let intervals = [decoded[0]?, decoded[1]?];
-    if !proportional_response_in_initial_band(target_rpm, encoder_counts_per_rev, intervals)? {
-        return Ok(None);
-    }
-    Ok(Some(CombinedSelectedResponse {
-        p: forward.p,
-        response_bounds_q,
-    }))
 }
 
 /// Build the combined ladder, appending the exact cap after the octave schedule.
@@ -300,54 +238,6 @@ fn micros_to_millis(value: u64) -> Result<u32, VelocityIntegralPlanError> {
         .map_err(|_| VelocityIntegralPlanError::Arithmetic)
 }
 
-/// Test whether both directional intervals lie wholly inside the initial band.
-pub fn proportional_response_in_initial_band(
-    target_rpm: i32,
-    encoder_counts_per_rev: u32,
-    responses: [CombinedRateInterval; 2],
-) -> Result<bool, CombinedPlanError> {
-    let (normalized, target_numerator) =
-        normalized_responses(target_rpm, encoder_counts_per_rev, responses)?;
-    let lower = target_numerator
-        .checked_mul(P_RESPONSE_LOW_PERCENT)
-        .ok_or(CombinedPlanError::Arithmetic)?;
-    let upper = target_numerator
-        .checked_mul(P_RESPONSE_HIGH_PERCENT)
-        .ok_or(CombinedPlanError::Arithmetic)?;
-    normalized.into_iter().try_fold(true, |inside, interval| {
-        let scaled_low = i128::from(interval.low_q)
-            .checked_mul(SECONDS_PER_MINUTE)
-            .and_then(|value| value.checked_mul(PERCENT_SCALE))
-            .ok_or(CombinedPlanError::Arithmetic)?;
-        let scaled_high = i128::from(interval.high_q)
-            .checked_mul(SECONDS_PER_MINUTE)
-            .and_then(|value| value.checked_mul(PERCENT_SCALE))
-            .ok_or(CombinedPlanError::Arithmetic)?;
-        Ok(inside && scaled_low >= lower && scaled_high <= upper)
-    })
-}
-
-/// Test whether both directional intervals have reached the integral target.
-pub fn integral_response_reaches_target(
-    target_rpm: i32,
-    encoder_counts_per_rev: u32,
-    responses: [CombinedRateInterval; 2],
-) -> Result<bool, CombinedPlanError> {
-    let (normalized, target_numerator) =
-        normalized_responses(target_rpm, encoder_counts_per_rev, responses)?;
-    let lower = target_numerator
-        .checked_mul(I_RESPONSE_TARGET_PERCENT)
-        .ok_or(CombinedPlanError::Arithmetic)?;
-
-    normalized.into_iter().try_fold(true, |reached, interval| {
-        let scaled_low = i128::from(interval.low_q)
-            .checked_mul(SECONDS_PER_MINUTE)
-            .and_then(|value| value.checked_mul(PERCENT_SCALE))
-            .ok_or(CombinedPlanError::Arithmetic)?;
-        Ok(reached && scaled_low >= lower)
-    })
-}
-
 /// Test whether signed deficit intervals prove at least the integral target response.
 pub fn integral_deficit_reaches_target(
     target_rpm: i32,
@@ -378,35 +268,4 @@ pub fn integral_deficit_reaches_target(
         .and_then(|value| value.checked_mul(PERCENT_SCALE))
         .ok_or(CombinedPlanError::Arithmetic)?;
     Ok(forward_response >= target_floor && reverse_response >= target_floor)
-}
-
-fn normalized_responses(
-    target_rpm: i32,
-    encoder_counts_per_rev: u32,
-    responses: [CombinedRateInterval; 2],
-) -> Result<([CombinedRateInterval; 2], i128), CombinedPlanError> {
-    if target_rpm <= 0 || encoder_counts_per_rev == 0 {
-        return Err(CombinedPlanError::InvalidTarget);
-    }
-    if responses[0].low_q < 0 || responses[1].high_q > 0 {
-        return Err(CombinedPlanError::InvalidInterval);
-    }
-    let normalized = [
-        responses[0],
-        CombinedRateInterval {
-            low_q: responses[1]
-                .high_q
-                .checked_neg()
-                .ok_or(CombinedPlanError::Arithmetic)?,
-            high_q: responses[1]
-                .low_q
-                .checked_neg()
-                .ok_or(CombinedPlanError::Arithmetic)?,
-        },
-    ];
-    let target_numerator = i128::from(target_rpm)
-        .checked_mul(i128::from(encoder_counts_per_rev))
-        .and_then(|value| value.checked_mul(i128::from(VELOCITY_RATE_Q_SCALE)))
-        .ok_or(CombinedPlanError::Arithmetic)?;
-    Ok((normalized, target_numerator))
 }

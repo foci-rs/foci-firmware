@@ -1984,12 +1984,6 @@ mod tests {
             size_of::<crate::commissioning::outer::velocity::sweep_plan::VelocitySweepExecutionPlan>(
             ) == 32
         );
-        assert_eq!(
-            size_of::<
-                crate::commissioning::outer::velocity::operating_region::OperatingRegionRuntime,
-            >(),
-            352
-        );
         // 224 before observations carried the rejection diagnostic, 256 before
         // that diagnostic also carried the slope and its half-width, 272 before
         // the diagnostic also carried the regression span. These events are
