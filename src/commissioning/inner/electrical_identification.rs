@@ -19,10 +19,10 @@ use crate::commissioning::capture_timing::{
 };
 use crate::commissioning::encoder_domain::{EncoderDelta, EncoderDomain, EncoderMathError};
 use crate::commissioning::types::{
-    CommissioningBackend, INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT,
-    INDUCTANCE_WARN_HIGH_RMS, INDUCTANCE_WARN_MAG_CROSSCHECK, INDUCTANCE_WARN_STATUS_FLAGS,
-    InductanceEstimateEvidence, InductanceEvidence, InductanceFrameEvidence, InductanceRunEvidence,
-    StepResult,
+    COMMISSION_TIMING_METHOD_INDUCTANCE, COMMISSION_TIMING_METHOD_RESISTANCE, CommissioningBackend,
+    INDUCTANCE_SOURCE_ROTATING_FIELD, INDUCTANCE_WARN_DRIFT, INDUCTANCE_WARN_HIGH_RMS,
+    INDUCTANCE_WARN_MAG_CROSSCHECK, INDUCTANCE_WARN_STATUS_FLAGS, InductanceEstimateEvidence,
+    InductanceEvidence, InductanceFrameEvidence, InductanceRunEvidence, StepResult,
 };
 use crate::electrical_capture::{
     PhaseDelayEstimate, PhaseDelayInput, PhaseDelayRejection, estimate_phase_delay,
@@ -1038,7 +1038,8 @@ pub(crate) async fn drive_deadline_capture<B: CommissioningBackend>(
                 Err(error) => {
                     let (evidence, overflowed) = capture.timing.snapshot();
                     data.inductance_timing = Some(evidence);
-                    data.timing_overflow_mask |= u8::from(overflowed) << 1;
+                    data.timing_overflow_mask |=
+                        u8::from(overflowed) << COMMISSION_TIMING_METHOD_INDUCTANCE;
                     return Some(begin_inductance_restore(
                         state,
                         backend,
@@ -1264,10 +1265,13 @@ fn electrical_timing_summaries(
 ) -> [crate::commissioning::types::CommissionTimingSummary; 3] {
     use crate::commissioning::types::CommissionTimingSummary;
 
-    let evidence = [data.resistance_timing, data.inductance_timing];
+    let evidence = [
+        (COMMISSION_TIMING_METHOD_RESISTANCE, data.resistance_timing),
+        (COMMISSION_TIMING_METHOD_INDUCTANCE, data.inductance_timing),
+    ];
     let mut summaries = [CommissionTimingSummary::NOT_RUN; 3];
-    for (method, evidence) in evidence.into_iter().enumerate() {
-        summaries[method] = CommissionTimingSummary {
+    for (method, evidence) in evidence {
+        summaries[usize::from(method)] = CommissionTimingSummary {
             status: (data.timing_states >> (method * 2)) & 0x03,
             overflowed: data.timing_overflow_mask & (1 << method) != 0,
             evidence: evidence
@@ -1277,7 +1281,7 @@ fn electrical_timing_summaries(
     summaries
 }
 
-fn set_timing_state(data: &mut ElectricalIdentificationData, method: usize, status: u8) {
+fn set_timing_state(data: &mut ElectricalIdentificationData, method: u8, status: u8) {
     let shift = method * 2;
     data.timing_states = (data.timing_states & !(0x03 << shift)) | ((status & 0x03) << shift);
 }
@@ -1344,34 +1348,38 @@ pub(crate) fn push_active_electrical_diagnostics(
     match state {
         ElectricalIdentificationState::ResistanceIdentify { runner } => {
             let timing = runner.timing_evidence_with_active();
-            summaries[0] = crate::commissioning::types::CommissionTimingSummary::rejected(
-                timing.capture_evidence(),
-                timing.overflowed,
-            );
+            summaries[usize::from(COMMISSION_TIMING_METHOD_RESISTANCE)] =
+                crate::commissioning::types::CommissionTimingSummary::rejected(
+                    timing.capture_evidence(),
+                    timing.overflowed,
+                );
             active_resistance_current = Some(runner.current_evidence());
         }
         ElectricalIdentificationState::InductanceSample { capture } => {
             let (evidence, overflowed) = capture.timing.snapshot();
-            summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
-                evidence, overflowed,
-            );
+            summaries[usize::from(COMMISSION_TIMING_METHOD_INDUCTANCE)] =
+                crate::commissioning::types::CommissionTimingSummary::rejected(
+                    evidence, overflowed,
+                );
         }
         ElectricalIdentificationState::InductanceReadStatus { timing, .. }
         | ElectricalIdentificationState::InductanceReadEncoder { timing, .. }
         | ElectricalIdentificationState::InductanceEvaluate { timing, .. } => {
-            summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
-                *timing,
-                data.timing_overflow_mask & (1 << 1) != 0,
-            );
+            summaries[usize::from(COMMISSION_TIMING_METHOD_INDUCTANCE)] =
+                crate::commissioning::types::CommissionTimingSummary::rejected(
+                    *timing,
+                    data.timing_overflow_mask & (1 << COMMISSION_TIMING_METHOD_INDUCTANCE) != 0,
+                );
         }
         ElectricalIdentificationState::InductanceRestore {
             timing: Some(timing),
             ..
         } => {
-            summaries[1] = crate::commissioning::types::CommissionTimingSummary::rejected(
-                *timing,
-                data.timing_overflow_mask & (1 << 1) != 0,
-            );
+            summaries[usize::from(COMMISSION_TIMING_METHOD_INDUCTANCE)] =
+                crate::commissioning::types::CommissionTimingSummary::rejected(
+                    *timing,
+                    data.timing_overflow_mask & (1 << COMMISSION_TIMING_METHOD_INDUCTANCE) != 0,
+                );
         }
         _ => {}
     }
@@ -1444,7 +1452,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             };
             set_timing_state(
                 data,
-                0,
+                COMMISSION_TIMING_METHOD_RESISTANCE,
                 crate::commissioning::types::COMMISSION_TIMING_REJECTED,
             );
             *electrical_identification_state =
@@ -1465,8 +1473,9 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 .await;
             let resistance_timing = runner.timing_evidence();
             data.resistance_timing = Some(resistance_timing.capture_evidence());
-            data.timing_overflow_mask =
-                (data.timing_overflow_mask & !1) | u8::from(resistance_timing.overflowed);
+            data.timing_overflow_mask = (data.timing_overflow_mask
+                & !(1 << COMMISSION_TIMING_METHOD_RESISTANCE))
+                | (u8::from(resistance_timing.overflowed) << COMMISSION_TIMING_METHOD_RESISTANCE);
 
             match poll {
                 crate::resistance_identification::ResistancePoll::ReadyNow => StepResult::ReadyNow,
@@ -1477,7 +1486,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     data.resistance_result = Some(resistance);
                     set_timing_state(
                         data,
-                        0,
+                        COMMISSION_TIMING_METHOD_RESISTANCE,
                         crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
                     );
                     *electrical_identification_state =
@@ -1777,7 +1786,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             };
             set_timing_state(
                 data,
-                1,
+                COMMISSION_TIMING_METHOD_INDUCTANCE,
                 crate::commissioning::types::COMMISSION_TIMING_REJECTED,
             );
             *electrical_identification_state = ElectricalIdentificationState::InductanceSample {
@@ -1825,7 +1834,8 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                 Err(error) => {
                     let (evidence, overflowed) = capture.timing.snapshot();
                     data.inductance_timing = Some(evidence);
-                    data.timing_overflow_mask |= u8::from(overflowed) << 1;
+                    data.timing_overflow_mask |=
+                        u8::from(overflowed) << COMMISSION_TIMING_METHOD_INDUCTANCE;
                     begin_inductance_restore(
                         electrical_identification_state,
                         backend,
@@ -2006,7 +2016,7 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             if *timing_accepted {
                 set_timing_state(
                     data,
-                    1,
+                    COMMISSION_TIMING_METHOD_INDUCTANCE,
                     crate::commissioning::types::COMMISSION_TIMING_ACCEPTED,
                 );
             }
