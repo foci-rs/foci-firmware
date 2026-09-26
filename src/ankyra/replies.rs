@@ -782,6 +782,8 @@ pub struct FociCurrentVectorStepResult {
 pub struct FociCurrentTorqueSamplePidResult {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
+    /// Sequence shared by every fragment and the terminal of this report.
+    pub report_seq: u8,
     /// TMC clipped torque input target at the sample point.
     pub pidin_target_torque: i32,
     /// TMC clipped flux input target at the sample point.
@@ -809,6 +811,8 @@ pub struct FociCurrentTorqueSamplePidResult {
 pub struct FociCurrentTorqueSampleResult {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
+    /// Sequence shared by every fragment and the terminal of this report.
+    pub report_seq: u8,
     /// Which torque-sample diagnostic produced this report: `TorqueSampleKind::as_u8()`.
     pub kind: u8,
     /// Status code: 0 success, 1 not enabled/calibrated, 2 SPI failure.
@@ -851,6 +855,8 @@ pub struct FociCurrentTorqueSampleResult {
 pub struct FociCurrentTorqueSampleDetailResult {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
+    /// Sequence shared by every fragment and the terminal of this report.
+    pub report_seq: u8,
     /// ABN decoder count before applying the pulse.
     pub encoder_before: u32,
     /// ABN decoder count at the sample point.
@@ -871,13 +877,15 @@ pub struct FociCurrentTorqueSampleDetailResult {
     pub ff_torque: i16,
 }
 
-/// `foci_voltage_step_result` reply - bounded open-loop voltage diagnostic.
+/// `foci_voltage_step_result` reply - bounded open-loop voltage diagnostic terminal.
 ///
 /// Wire name: `foci_voltage_step_result`.
 #[klipper_reply]
 pub struct FociVoltageStepResult {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
+    /// Sequence shared by the detail fragment and this terminal.
+    pub report_seq: u8,
     /// Status code: 0 success, 1 not enabled/calibrated, 2 SPI failure.
     pub status: u8,
     /// Requested signed q-axis voltage component for UQ_UD_EXT.
@@ -902,38 +910,28 @@ pub struct FociVoltageStepResult {
     pub uq_limited: i16,
     /// Limited UD at the sample point.
     pub ud_limited: i16,
-    /// FOC2 X/UX phase-voltage command at the sample point.
-    pub uux_sample: i16,
-    /// FOC2 Y/WY phase-voltage command at the sample point.
-    pub uwy_sample: i16,
-    /// PWM UX command at the sample point.
-    pub pwm_ux_sample: i16,
-    /// PWM WY command at the sample point.
-    pub pwm_wy_sample: i16,
-    /// PWM_SV_CHOP register value at the sample point.
-    pub pwm_sv_chop: u32,
-    /// PWM_BBM_H_BBM_L register value at the sample point.
-    pub pwm_bbm: u32,
-    /// PWM_MAXCNT register value at the sample point.
-    pub pwm_maxcnt: u32,
-    /// ABN electrical angle at the sample point.
-    pub phi_e_sample: i16,
-    /// ABN mechanical angle at the sample point.
-    pub phi_m_sample: i16,
+    /// Raw TMC4671 supply-voltage ADC sample at the sample point.
+    pub adc_vm_raw: u16,
+    /// TMC4671 status flags at the sample point.
+    pub status_flags: u32,
+}
+
+/// `foci_voltage_step_detail_result` reply - non-terminal encoder fragment.
+///
+/// Emitted before the terminal, only when the step succeeded.
+/// Wire name: `foci_voltage_step_detail_result`.
+#[klipper_reply]
+pub struct FociVoltageStepDetailResult {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Sequence shared by this fragment and the terminal.
+    pub report_seq: u8,
     /// ABN decoder count before applying the pulse.
     pub encoder_before: u32,
     /// ABN decoder count at the sample point.
     pub encoder_sample: u32,
     /// ABN decoder count after returning to position mode.
     pub encoder_after: u32,
-    /// Signed encoder delta from before to sample.
-    pub encoder_delta_sample: i32,
-    /// Signed encoder delta from before to after.
-    pub encoder_delta_after: i32,
-    /// Raw TMC4671 supply-voltage ADC sample at the sample point.
-    pub adc_vm_raw: u16,
-    /// TMC4671 status flags at the sample point.
-    pub status_flags: u32,
 }
 
 /// `foci_resistance_profile` reply - board/profile constants for display.
@@ -2687,6 +2685,7 @@ mod velocity_sweep_reply_tests {
         assert_fits(
             &FociCurrentTorqueSampleResult {
                 oid: u8::MAX,
+                report_seq: u8::MAX,
                 kind: 1,
                 status: u8::MAX,
                 target: -MAX_CURRENT_STEP_TARGET,
@@ -2713,6 +2712,7 @@ mod velocity_sweep_reply_tests {
         assert_fits(
             &FociCurrentTorqueSamplePidResult {
                 oid: u8::MAX,
+                report_seq: u8::MAX,
                 pidin_target_torque: i32::MIN,
                 pidin_target_flux: i32::MIN,
                 pidout_target_torque: i32::MIN,
@@ -2732,6 +2732,7 @@ mod velocity_sweep_reply_tests {
         assert_fits(
             &FociCurrentTorqueSampleDetailResult {
                 oid: u8::MAX,
+                report_seq: u8::MAX,
                 encoder_before: WIDE_U32,
                 encoder_sample: WIDE_U32,
                 encoder_after: WIDE_U32,
@@ -2743,6 +2744,45 @@ mod velocity_sweep_reply_tests {
                 ff_torque: i16::MIN,
             },
             "torque sample detail result",
+        );
+    }
+
+    #[test]
+    fn voltage_step_result_fits_one_frame() {
+        assert_fits(
+            &FociVoltageStepResult {
+                oid: u8::MAX,
+                report_seq: u8::MAX,
+                status: u8::MAX,
+                uq_ext: i16::MIN,
+                ud_ext: i16::MIN,
+                sample_delay_ms: u16::MAX,
+                torque_before: i16::MIN,
+                torque_sample: i16::MIN,
+                torque_after: i16::MIN,
+                flux_sample: i16::MIN,
+                iq_sample: i16::MIN,
+                id_sample: i16::MIN,
+                uq_limited: i16::MIN,
+                ud_limited: i16::MIN,
+                adc_vm_raw: u16::MAX,
+                status_flags: WIDE_U32,
+            },
+            "voltage step result",
+        );
+    }
+
+    #[test]
+    fn voltage_step_detail_result_fits_one_frame() {
+        assert_fits(
+            &FociVoltageStepDetailResult {
+                oid: u8::MAX,
+                report_seq: u8::MAX,
+                encoder_before: WIDE_U32,
+                encoder_sample: WIDE_U32,
+                encoder_after: WIDE_U32,
+            },
+            "voltage step detail result",
         );
     }
 

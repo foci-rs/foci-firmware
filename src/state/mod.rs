@@ -10,6 +10,7 @@
 //! and RTIC tasks.
 
 pub mod lifecycle;
+pub mod report_seq;
 pub mod stepper;
 pub mod tmc;
 pub mod trsync;

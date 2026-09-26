@@ -1982,26 +1982,48 @@ struct RecordingDiagnosticSink {
 }
 
 impl DiagnosticReplySink for RecordingDiagnosticSink {
-    fn foci_current_step_result(&mut self, _axis: CurrentStepAxis, _report: CurrentStepReport) {}
-    fn foci_current_vector_step_result(&mut self, _report: CurrentStepReport) {}
-    fn foci_current_torque_sample_pid_result(&mut self, _report: &CurrentTorqueSampleReport) {}
-    fn foci_current_torque_sample_result(&mut self, _report: CurrentTorqueSampleReport) {}
-    fn foci_current_torque_sample_detail_result(&mut self, _report: &CurrentTorqueSampleReport) {}
-    fn foci_voltage_step_result(&mut self, _report: VoltageStepReport) {}
+    fn foci_current_step_result(
+        &mut self,
+        _report_seq: u8,
+        _axis: CurrentStepAxis,
+        _report: CurrentStepReport,
+    ) {
+    }
+    fn foci_current_vector_step_result(&mut self, _report_seq: u8, _report: CurrentStepReport) {}
+    fn foci_current_torque_sample_pid_result(
+        &mut self,
+        _report_seq: u8,
+        _report: &CurrentTorqueSampleReport,
+    ) {
+    }
+    fn foci_current_torque_sample_result(
+        &mut self,
+        _report_seq: u8,
+        _report: CurrentTorqueSampleReport,
+    ) {
+    }
+    fn foci_current_torque_sample_detail_result(
+        &mut self,
+        _report_seq: u8,
+        _report: &CurrentTorqueSampleReport,
+    ) {
+    }
+    fn foci_voltage_step_result(&mut self, _report_seq: u8, _report: VoltageStepReport) {}
+    fn foci_voltage_step_detail_result(&mut self, _report_seq: u8, _report: &VoltageStepReport) {}
 
-    fn foci_resistance_profile(&mut self, report: ResistanceProfileReport) {
+    fn foci_resistance_profile(&mut self, _report_seq: u8, report: ResistanceProfileReport) {
         self.events
             .push(RecordedResistanceEvent::Profile { oid: report.oid });
     }
 
-    fn foci_resistance_axis(&mut self, report: ResistanceAxisReport) {
+    fn foci_resistance_axis(&mut self, _report_seq: u8, report: ResistanceAxisReport) {
         self.events.push(RecordedResistanceEvent::Axis {
             oid: report.oid,
             electrical_axis: report.electrical_axis,
         });
     }
 
-    fn foci_resistance_run(&mut self, report: ResistanceRunReport) {
+    fn foci_resistance_run(&mut self, _report_seq: u8, report: ResistanceRunReport) {
         self.events.push(RecordedResistanceEvent::Done {
             oid: report.oid,
             status: report.status,
@@ -2060,7 +2082,7 @@ async fn resistance_test_request_dispatches_to_shared_runner() {
     };
 
     let mut sink = RecordingDiagnosticSink::default();
-    emit_diagnostic_report(&mut sink, report);
+    emit_diagnostic_report(&mut sink, 0, report);
 
     assert!(
         sink.events
