@@ -1806,7 +1806,11 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     stroke_index: _stroke_index,
                     direction: integral_slot_direction(data.plan.slot_order, data.slot).unwrap_or(0)
                         as i8,
-                    flags: u8::from(_moving_peak >= data.plan.usable_torque_limit),
+                    flags: if _moving_peak >= data.plan.usable_torque_limit {
+                        crate::trace::stream::VELOCITY_OBSERVATION_FLAG_SATURATED
+                    } else {
+                        0
+                    },
                     peak_torque_target_abs: _moving_peak,
                     velocity_diagnostic_value: 0,
                 },
