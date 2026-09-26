@@ -3,8 +3,9 @@ use foci_tmc4671::registers::{
 };
 
 use super::{
-    AxisProgress, ResistancePoll, ResistanceRunner, ResistanceState, WindowPlan, WindowPurpose,
-    build_signed_anchor, next_point_predicted_unsafe, update_safe_anchor,
+    AxisProgress, RESTORE_WRITE_COUNT, ResistancePoll, ResistanceRunner, ResistanceState,
+    WindowPlan, WindowPurpose, build_signed_anchor, next_point_predicted_unsafe,
+    update_safe_anchor,
 };
 use crate::resistance_identification::fit::{evaluate_resistance_result, fit_resistance_axis};
 use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunMode};
@@ -209,7 +210,7 @@ impl ResistanceRunner {
         if backend.write_register(addr, value).await.is_err() {
             self.primary_error = Some(ResistanceError::BackendIo);
         }
-        if operation < 3 {
+        if operation + 1 < RESTORE_WRITE_COUNT {
             self.state = ResistanceState::Restore(operation + 1);
             return ResistancePoll::ReadyNow;
         }

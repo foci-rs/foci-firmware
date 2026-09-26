@@ -187,6 +187,9 @@ enum ResistanceState {
     Complete,
 }
 
+/// Register writes the safe-state restore issues at the end of every run.
+pub(super) const RESTORE_WRITE_COUNT: u8 = 4;
+
 /// Resumable shared resistance-identification runner.
 #[derive(Debug, defmt::Format)]
 pub struct ResistanceRunner {

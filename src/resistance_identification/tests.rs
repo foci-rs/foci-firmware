@@ -1118,11 +1118,10 @@ fn runner_sets_status_flags_warning_when_sampled_status_matches_mask() {
     assert_eq!(result.baseline_flags, 0);
 }
 
-/// Assert that `addr` was written with `value` before the safe-state restore
-/// pass (i.e. somewhere among the first `writes.len() - 4` entries, since
-/// `restore_safe_state` issues exactly 4 writes at the end of every run).
 fn assert_written_before_restore(writes: &[RecordedWrite], addr: u8, value: u32) {
-    let restore_start = writes.len().saturating_sub(4);
+    let restore_start = writes
+        .len()
+        .saturating_sub(usize::from(super::state::RESTORE_WRITE_COUNT));
     assert!(
         writes[..restore_start]
             .iter()
