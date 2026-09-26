@@ -287,7 +287,8 @@ impl InductanceEvidence {
 /// Used by the dispatch to choose the right reply payload at terminal arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum EngineKind {
-    /// Engine constructed via `new_commission_for_tmc_with_trace_seq` — Stage 1 commissioning.
+    /// Engine constructed via `new_commission_for_tmc_with_trace_seq` — current-loop
+    /// commissioning.
     Commission,
     /// Engine constructed via `new_calibrate_for_tmc_with_gains_and_trace_seq` — ADC
     /// calibration + alignment.
@@ -296,7 +297,7 @@ pub enum EngineKind {
     Selftest,
     /// Engine constructed via one of the live outer constructors
     /// (`new_outer_for_tmc_with_fixed_gain_amplitude_preflight`, `_with_integral_preflight`,
-    /// `_with_breakaway_campaign`, `_with_robustness`) — Stage 2 mechanical/velocity tune.
+    /// `_with_breakaway_campaign`, `_with_robustness`) — installed mechanical/velocity tuning.
     OuterTune,
 }
 
@@ -1660,23 +1661,23 @@ pub enum StepResult {
     CalibrateDone(AdcCalResult),
     /// Selftest phases completed. Hardware restored to safe state.
     SelftestDone,
-    /// Stage 1 commissioning complete. Motor is in closed-loop position mode.
+    /// Current-loop commissioning complete. Motor is in closed-loop position mode.
     /// Carries inner result + fallback outer gains for the Python host to
     /// cache and persist.
     CommissionDone(CommissionResult),
 }
 
-/// No Stage 2 safety-envelope fault was reported.
+/// No installed-tuning safety-envelope fault was reported.
 pub const OUTER_SAFETY_FAULT_NONE: u8 = 0;
-/// Host budget was structurally invalid before Stage 2 actuation.
+/// Host budget was structurally invalid before installed-tuning actuation.
 pub const OUTER_SAFETY_FAULT_INVALID_BUDGET: u8 = 1;
-/// Host budget was too small to collect useful Stage 2 evidence.
+/// Host budget was too small to collect useful installed-tuning evidence.
 pub const OUTER_SAFETY_FAULT_UNUSABLE_BUDGET: u8 = 2;
-/// Stage 2 primitive exceeded its host-provided duration cap.
+/// Installed-tuning primitive exceeded its host-provided duration cap.
 pub const OUTER_SAFETY_FAULT_DURATION: u8 = 3;
-/// Stage 2 encoder velocity exceeded its active safety cap.
+/// Installed-tuning encoder velocity exceeded its active safety cap.
 pub const OUTER_SAFETY_FAULT_VELOCITY: u8 = 4;
-/// Stage 2 accumulated encoder position exceeded its active travel window.
+/// Installed-tuning accumulated encoder position exceeded its active travel window.
 pub const OUTER_SAFETY_FAULT_POSITION: u8 = 5;
 /// Mechanical-ID position-to-torque handoff did not settle before timeout.
 pub const OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE: u8 = 6;
@@ -1688,15 +1689,15 @@ pub const OUTER_SAFETY_FAULT_QUARTER_TURN: u8 = 8;
 pub const OUTER_SAFETY_FAULT_CURRENT: u8 = 9;
 /// Rung-origin recovery increased absolute origin error beyond quantization allowance.
 pub const OUTER_SAFETY_FAULT_RECOVERY_WRONG_WAY: u8 = 10;
-/// Stage 2 primitive-local travel exceeded its per-stroke geometry window.
+/// Installed-tuning primitive-local travel exceeded its per-stroke geometry window.
 /// Distinct from [`OUTER_SAFETY_FAULT_POSITION`] (the absolute machine-headroom
 /// branch): this is displacement from the primitive start, a per-stroke sizing
-/// concern, whereas `POSITION` is absolute travel from Stage-2 entry approaching
+/// concern, whereas `POSITION` is absolute travel from installed-tuning entry approaching
 /// a physical limit. The payload reports the actually-compared excursion and the
 /// signed window it exceeded, so `|position_counts| > |position_window_counts|`.
 pub const OUTER_SAFETY_FAULT_POSITION_LOCAL: u8 = 11;
 
-/// Host-visible Stage 2 safety-envelope fault evidence.
+/// Host-visible installed-tuning safety-envelope fault evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct OuterSafetyFault {
     /// `OUTER_SAFETY_FAULT_*` reason code.
@@ -1717,11 +1718,11 @@ pub struct OuterSafetyFault {
     pub velocity_counts_per_ms: i32,
     /// Active velocity cap in encoder counts per millisecond.
     pub velocity_cap_counts_per_ms: i32,
-    /// Signed accumulated position from the Stage 2 start, in encoder counts.
+    /// Signed accumulated position from the installed-tuning start, in encoder counts.
     pub position_counts: i32,
     /// Active signed-position window in encoder counts.
     pub position_window_counts: i32,
-    /// Elapsed time from Stage 2 safety arming, in microseconds.
+    /// Elapsed time from installed-tuning safety arming, in microseconds.
     pub elapsed_us: u32,
     /// Active primitive duration cap in microseconds.
     pub duration_cap_us: u32,
@@ -2252,7 +2253,7 @@ pub struct AdcCalResult {
     pub adc_residual_chop7: AdcResidualEvidence,
 }
 
-/// Result of Stage 1 commissioning.
+/// Result of current-loop commissioning.
 ///
 /// Combines the inner result (current-loop gains, electrical model) with
 /// the fallback outer gains applied during closed-loop entry. The terminal

@@ -40,9 +40,9 @@ pub(crate) struct OuterMotionBudget {
     pub(crate) max_stroke_travel_mrev: u32,
     /// Host planning reserve inside the full displacement window.
     pub(crate) settle_travel_reserve_mrev: u32,
-    /// Negative absolute-position headroom from Stage-2 entry.
+    /// Negative absolute-position headroom from installed-tuning entry.
     pub(crate) negative_position_headroom_mrev: u32,
-    /// Positive absolute-position headroom from Stage-2 entry.
+    /// Positive absolute-position headroom from installed-tuning entry.
     pub(crate) positive_position_headroom_mrev: u32,
     /// Maximum primitive duration in milliseconds.
     pub(crate) max_duration_ms: u16,
@@ -185,9 +185,9 @@ pub(crate) struct OuterSafetyLimits {
     in_settle_phase: bool,
     /// Maximum distance from start position in encoder counts.
     pub(crate) position_window: u32,
-    /// Maximum negative displacement from the Stage-2 entry position.
+    /// Maximum negative displacement from the installed-tuning entry position.
     pub(crate) negative_position_window: u32,
-    /// Maximum positive displacement from the Stage-2 entry position.
+    /// Maximum positive displacement from the installed-tuning entry position.
     pub(crate) positive_position_window: u32,
     /// Inclusive single-observation quarter-turn fault threshold.
     pub(crate) quarter_turn_fault_counts: u32,

@@ -1,4 +1,4 @@
-//! Stage 1 (current-loop) commissioning: phase enum, dispatcher, and
+//! Current-loop commissioning: phase enum, dispatcher, and
 //! per-phase step submodules.
 //!
 //! `InnerPhase` encodes the current diagnostic / electrical-ID / current-
@@ -384,7 +384,7 @@ pub(crate) enum ElectricalIdentificationState {
     Validate,
 }
 
-/// Stage 1 inner-loop commissioning phase.
+/// Current-loop commissioning phase.
 ///
 /// Orderable cooperative state machine. Each variant either holds a
 /// nested sub-state for that phase or carries forward data needed by the
@@ -642,7 +642,7 @@ async fn step_inner_dispatch<B: CommissioningBackend>(
     }
 }
 
-/// Restore outer gains from an entry snapshot after Stage 2 soft failure.
+/// Restore outer gains from an entry snapshot after an installed-tuning soft failure.
 ///
 /// Zeros torque/velocity targets, disables motion mode, clears all PID
 /// integrators and status flags, reloads the snapshotted velocity/position

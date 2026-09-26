@@ -591,7 +591,7 @@ impl From<RestoreEntryGainsErrorKind> for crate::autotune::CommissionError {
     }
 }
 
-/// Restores outer gains from an entry snapshot after a Stage 2 soft failure
+/// Restores outer gains from an entry snapshot after an installed-tuning soft failure
 /// or a safety-fault gain restore, one raw backend operation per
 /// `advance()` call.
 #[derive(Clone, Copy)]

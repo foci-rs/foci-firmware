@@ -23,7 +23,7 @@ mod tests {
     use crate::commissioning::types::EngineKind;
 
     #[test]
-    fn closed_loop_activation_samples_only_stage1_commission() {
+    fn closed_loop_activation_samples_only_current_loop_commission() {
         assert!(commission_trace_phase_samples_closed_loop_activation(
             EngineKind::Commission,
             CommissionPhase::ClosedLoopActivation,

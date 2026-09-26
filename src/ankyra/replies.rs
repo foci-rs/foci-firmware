@@ -2020,7 +2020,7 @@ mod velocity_sweep_reply_tests {
     }
 }
 
-/// `foci_outer_safety_fault` reply — Stage 2 safety-envelope evidence.
+/// `foci_outer_safety_fault` reply — installed-tuning safety-envelope evidence.
 ///
 /// Wire name: `foci_outer_safety_fault`.
 #[klipper_reply]
@@ -2045,11 +2045,11 @@ pub struct FociOuterSafetyFault {
     pub velocity_counts_per_ms: i32,
     /// Active velocity cap in encoder counts per millisecond.
     pub velocity_cap_counts_per_ms: i32,
-    /// Signed accumulated position from the Stage 2 start, in encoder counts.
+    /// Signed accumulated position from the installed-tuning start, in encoder counts.
     pub position_counts: i32,
     /// Active signed-position window in encoder counts.
     pub position_window_counts: i32,
-    /// Elapsed time from Stage 2 safety arming, in microseconds.
+    /// Elapsed time from installed-tuning safety arming, in microseconds.
     pub elapsed_us: u32,
     /// Active primitive duration cap in microseconds.
     pub duration_cap_us: u32,

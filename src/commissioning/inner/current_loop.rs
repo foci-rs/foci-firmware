@@ -119,7 +119,7 @@ pub(crate) struct CurrentValidateData {
     /// Torque-axis validation evidence by sample delay.
     pub(crate) current_torque_validation:
         [CurrentValidationAxisEvidence; crate::autotune::CURRENT_VALIDATION_MAX_SAMPLES_PER_AXIS],
-    /// Warning bits accumulated through Stage 1.
+    /// Warning bits accumulated through current-loop commissioning.
     ///
     /// Bits 0, 1, and 3 come from Phase 5 model gates; bit 2 is unused. Bit 5
     /// is ORed if gains fell back to defaults.

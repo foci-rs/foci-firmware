@@ -1,9 +1,10 @@
 //! Cooperative commissioning state machine.
 //!
-//! [`CommissioningEngine`] is the entry point. Stage 1 (inner-loop)
-//! diagnostics, electrical identification, current-loop tuning, and
-//! closed-loop entry live in [`inner`]. Stage 2 (outer-loop) mechanical
-//! identification, velocity / position / filter tuning live in [`outer`].
+//! [`CommissioningEngine`] is the entry point. Current-loop commissioning
+//! (diagnostics, electrical identification, current-loop tuning, and
+//! closed-loop entry) lives in [`inner`]. Installed tuning (outer-loop
+//! mechanical identification, velocity / position / filter tuning) lives in
+//! [`outer`].
 //! Shared low-level register helpers live in [`helpers`]. The public data
 //! types live in [`types`], while hardware capability traits live in
 //! [`backend`].
@@ -86,13 +87,13 @@ pub struct OuterAutotuneInputs {
     pub profile: CommissionProfile,
     /// Operating mode (step/dir vs position).
     pub mode: OperatingMode,
-    /// Inner-loop time scale from Stage 1 (microseconds).
+    /// Inner-loop time scale from current-loop commissioning (microseconds).
     pub inner_lambda_us: u32,
-    /// Theta-E delay from Stage 1 (microseconds).
+    /// Theta-E delay from current-loop commissioning (microseconds).
     pub theta_e_us: u32,
-    /// Current-loop bandwidth from Stage 1 (Hz).
+    /// Current-loop bandwidth from current-loop commissioning (Hz).
     pub current_bandwidth_hz: u32,
-    /// Inner-confidence warning bitfield carried from Stage 1.
+    /// Inner-confidence warning bitfield carried from current-loop commissioning.
     pub inner_warning_flags: u8,
     /// Host-requested mechanical velocity amplitude in milli-revolutions/s.
     pub requested_velocity_mrev_s: u32,
@@ -105,9 +106,9 @@ pub struct OuterAutotuneInputs {
     pub max_stroke_travel_mrev: u32,
     /// Host planning reserve for braking and settle drift.
     pub settle_travel_reserve_mrev: u32,
-    /// Negative absolute-position headroom from the Stage-2 entry anchor.
+    /// Negative absolute-position headroom from the installed-tuning entry anchor.
     pub negative_position_headroom_mrev: u32,
-    /// Positive absolute-position headroom from the Stage-2 entry anchor.
+    /// Positive absolute-position headroom from the installed-tuning entry anchor.
     pub positive_position_headroom_mrev: u32,
     /// Host-computed max primitive duration in milliseconds.
     pub max_duration_ms: u16,
@@ -119,9 +120,9 @@ pub struct OuterAutotuneInputs {
     pub slot_order: crate::commissioning::outer::velocity::integral_plan::IntegralSlotOrder,
 }
 
-/// Snapshot of outer gains at Stage 2 entry, for soft-failure restoration.
+/// Snapshot of outer gains at installed-tuning entry, for soft-failure restoration.
 ///
-/// Current-loop gains are not included because Stage 2 never mutates them.
+/// Current-loop gains are not included because installed tuning never mutates them.
 /// Built by the caller in `main.rs` from firmware atomics and passed to
 /// the outer engine constructors.
 #[derive(Debug, Clone, Copy, defmt::Format)]
@@ -214,7 +215,7 @@ pub(crate) enum EngineMode {
         theta_e_us: u32,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
-        /// Inner-confidence warning bitfield carried from Stage 1.
+        /// Inner-confidence warning bitfield carried from current-loop commissioning.
         inner_warning_flags: u8,
         /// Gains snapshot at entry for soft-failure restoration.
         entry_snapshot: OuterGainRollbackSnapshot,
@@ -420,7 +421,7 @@ impl CommissioningEngine {
         Self::new_commission_with_trace_seq(oid, profile, 0)
     }
 
-    /// Create a Stage 1 commissioning engine with a caller-assigned trace sequence.
+    /// Create a current-loop commissioning engine with a caller-assigned trace sequence.
     #[cfg(test)]
     pub(crate) fn new_commission_with_trace_seq(
         oid: u8,
@@ -435,7 +436,7 @@ impl CommissioningEngine {
         )
     }
 
-    /// Create a Stage 1 commissioning engine bound to a TMC channel state and trace sequence.
+    /// Create a current-loop commissioning engine bound to a TMC channel state and trace sequence.
     ///
     /// Full diagnostics, electrical ID, current tune/validate, then
     /// closed-loop entry with fallback outer gains.
@@ -961,7 +962,7 @@ impl CommissioningEngine {
         }
     }
 
-    /// Return retained Stage 2 safety-envelope evidence for a safety terminal state.
+    /// Return retained installed-tuning safety-envelope evidence for a safety terminal state.
     pub fn outer_safety_fault(&self) -> Option<crate::commissioning::types::OuterSafetyFault> {
         match &self.engine_mode {
             EngineMode::Outer {
@@ -2235,7 +2236,7 @@ mod tests {
     }
 
     #[test]
-    fn stage1_terminal_path_uses_only_explicit_scheduling() {
+    fn current_loop_terminal_path_uses_only_explicit_scheduling() {
         pollster::block_on(async {
             use foci_tmc4671::registers::{
                 ABN_DECODER_PPR, ADC_I_SELECT, MOTOR_TYPE_N_POLE_PAIRS, PID_TORQUE_FLUX_LIMITS,
@@ -2246,7 +2247,7 @@ mod tests {
                 0,
                 crate::autotune::CommissionProfile::Balanced,
             );
-            // Focused phase tests cover the earlier Stage 1 schedules. Seed the
+            // Focused phase tests cover the earlier current-loop commissioning schedules. Seed the
             // final phase here to exercise engine dispatch through a successful
             // terminal result without reproducing analog estimator fixtures.
             let EngineMode::Inner { phase, .. } = &mut engine.engine_mode else {
@@ -2304,10 +2305,10 @@ mod tests {
                         );
                         return;
                     }
-                    other => panic!("unexpected Stage 1 terminal result: {other:?}"),
+                    other => panic!("unexpected current-loop terminal result: {other:?}"),
                 }
             }
-            panic!("Stage 1 terminal path exceeded its explicit schedule bound");
+            panic!("current-loop terminal path exceeded its explicit schedule bound");
         });
     }
 

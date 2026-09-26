@@ -584,7 +584,7 @@ async fn selftest_done_restores_gains_without_lifecycle_events() {
     ));
 }
 
-// --- commission (Stage 1) ------------------------------------------------
+// --- commission (current-loop) -------------------------------------------
 
 #[fixture_test]
 async fn commission_done_success_arms_electrical_before_preserve_position_arm() {
@@ -724,7 +724,7 @@ async fn commission_done_arm_failure_disarms_without_reaching_arm_for_steps() {
     assert!(!backend.enable_pin);
 }
 
-// --- outer (Stage 2) ------------------------------------------------------
+// --- outer (installed tuning) ---------------------------------------------
 
 #[fixture_test]
 async fn outer_done_success_disarms_without_arming() {

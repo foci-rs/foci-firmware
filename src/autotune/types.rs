@@ -831,11 +831,12 @@ pub const CLOSED_LOOP_ACTIVATION_STATUS_WARN_DRIFT: u8 = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum InnerSequence {
     /// Re-enable path: ADC cal -> encoder align -> closed-loop entry (saved gains).
-    /// Skips coil/wiring/encoder diagnostics -- trusts prior Stage 1 validation.
+    /// Skips coil/wiring/encoder diagnostics -- trusts prior current-loop commissioning validation.
     Calibrate,
     /// Diagnostic path: ADC cal -> coil -> wiring -> encoder -> align -> elec ID.
     Selftest,
-    /// Stage 1: full diagnostics -> elec ID -> current tune/validate -> closed-loop entry.
+    /// Current-loop commissioning path: full diagnostics -> elec ID -> current
+    /// tune/validate -> closed-loop entry.
     Commission,
 }
 

@@ -4,10 +4,10 @@ use super::FilterConfig;
 // Filter recommendation (Phase 12)
 // ---------------------------------------------------------------------------
 
-/// Recommend the Stage 2 filter configuration.
+/// Recommend the installed-tuning filter configuration.
 ///
 /// Velocity chatter and early position oscillation remain inputs so those observations are not
-/// discarded. Stage 2 does not currently select velocity or position filters.
+/// discarded. Installed tuning does not currently select velocity or position filters.
 ///
 /// Current ringing retains the existing interim torque/flux policy: both target filters use twice
 /// the current-loop bandwidth through the shared legacy 10–1000 Hz clamp.

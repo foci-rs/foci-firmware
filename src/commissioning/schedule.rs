@@ -70,7 +70,7 @@ pub enum CommissionTerminal {
     CalibrateDone(AdcCalResult),
     /// Self-test completed.
     SelftestDone,
-    /// Stage 1 commissioning completed.
+    /// Current-loop commissioning completed.
     CommissionDone(CommissionResult),
     /// Report-only Integral response sweep completed, remained inconclusive, or faulted.
     VelocityIntegral(VelocityIntegralTerminal),

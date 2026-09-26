@@ -150,7 +150,7 @@ pub(crate) struct PositionTuneState {
     /// The accepted rung, retained so the terminal is idempotent if the
     /// engine steps a completed phase again.
     accepted: Option<RungMeasurement>,
-    /// Outer gains as they stood at Stage 2 entry.
+    /// Outer gains as they stood at installed-tuning entry.
     ///
     /// This phase tunes position P and nothing else, so every other field of
     /// the terminal `OuterResult` is reported from here. The `OuterDone`

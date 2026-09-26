@@ -137,9 +137,9 @@ pub struct VelocitySweepRequest {
     pub max_stroke_travel_mrev: u32,
     /// Portion of the displacement window reserved for braking and settle drift.
     pub settle_travel_reserve_mrev: u32,
-    /// Negative unwrapped position headroom from the Stage-2 anchor.
+    /// Negative unwrapped position headroom from the installed-tuning anchor.
     pub negative_position_headroom_mrev: u32,
-    /// Positive unwrapped position headroom from the Stage-2 anchor.
+    /// Positive unwrapped position headroom from the installed-tuning anchor.
     pub positive_position_headroom_mrev: u32,
     /// Host-declared per-primitive safety cap.
     ///

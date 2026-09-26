@@ -248,13 +248,13 @@ pub enum ReplyPayload {
         status: u8,
         diagnostics: crate::selftest::CommissionDiagnostics,
     },
-    /// FociCommissionResult: Stage 1 commission complete.
+    /// FociCommissionResult: current-loop commissioning complete.
     CommissionResult {
         oid: u8,
         status: u8,
         result: CommissionResult,
     },
-    /// FociTuneResult: Stage 2 tune complete (success or any failure mode).
+    /// FociTuneResult: installed tuning complete (success or any failure mode).
     /// Zero-filled OuterResult on failure paths.
     TuneResult {
         oid: u8,

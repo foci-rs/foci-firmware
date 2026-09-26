@@ -1,4 +1,4 @@
-//! Stage 2 (velocity-integral, breakaway, and robustness-reversal) commissioning.
+//! Installed tuning: velocity-integral, breakaway, and robustness-reversal phases.
 //!
 //! `OuterPhase` is the cooperative state-machine type. `step_outer_with_trace`
 //! dispatches one tick to the per-phase submodule, prefixed by a

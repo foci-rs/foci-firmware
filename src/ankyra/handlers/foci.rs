@@ -241,7 +241,7 @@ pub fn foci_stack_watermark(ctx: &mut dyn TmcHost, oid: u8) {
     );
 }
 
-/// Start Stage 1 commissioning (diagnostics + current tune + closed-loop entry).
+/// Start current-loop commissioning (diagnostics + current tune + closed-loop entry).
 ///
 /// Only one commissioning operation may be in flight at a time.
 /// Concurrent requests are rejected with `CommissionError::AlreadyRunning`.

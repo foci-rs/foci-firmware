@@ -479,9 +479,9 @@ pub(crate) enum OuterPhase {
         /// reply carries real evidence instead of a zeroed block.
         provenance: crate::commissioning::types::PositionTuneProvenance,
     },
-    /// A phase failed because a Stage 2 safety envelope tripped.
+    /// A phase failed because an installed-tuning safety envelope tripped.
     FailedWithSafety {
-        /// Terminal Stage 2 status.
+        /// Terminal installed-tuning status.
         error: CommissionError,
         /// Host-visible safety-envelope evidence.
         safety_fault: OuterSafetyFault,

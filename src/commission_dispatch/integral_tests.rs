@@ -1199,7 +1199,7 @@ async fn promoted_complete_disarms_restores_baseline_and_installs_acceptance_poi
     assert!(!calibrated);
     assert!(!backend.enable_pin);
 
-    // The operator's Stage 2 entry baseline is restored to the registers
+    // The operator's installed-tuning entry baseline is restored to the registers
     // before the disarm safe-state overwrites the torque-limit register.
     let (velocity_reg, position_reg) = crate::pid::OuterLoopGains {
         position_p: baseline.position_p,

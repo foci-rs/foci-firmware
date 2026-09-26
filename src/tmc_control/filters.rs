@@ -162,7 +162,7 @@ where
 ///
 /// Writes `enable=0` directly, bypassing the zero-cutoff no-op in
 /// [`apply_one_backend_filter`] (which leaves an already-enabled filter
-/// active on `filter_hz == 0`). Used at Stage 2 dispatch so a commissioning
+/// active on `filter_hz == 0`). Used at installed-tuning dispatch so a commissioning
 /// measurement's filter state is deterministic and independent of whatever
 /// `printer.cfg` has configured, rather than inheriting it.
 ///
