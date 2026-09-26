@@ -114,8 +114,7 @@ where
             .map_err(|_| RegisterRequestError::Other)?;
             Ok(SharedTmcDispatch::Handled)
         }
-        TmcRequestKind::SetVelocityFeedforward { .. }
-        | TmcRequestKind::SetVelocityTransientFeedforward { .. }
+        TmcRequestKind::SetVelocityTransientFeedforward { .. }
         | TmcRequestKind::SetAccelFeedforward { .. }
         | TmcRequestKind::SetDecouplingFeedforward { .. }
         | TmcRequestKind::SetPositionLead { .. }

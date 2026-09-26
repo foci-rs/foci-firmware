@@ -162,7 +162,6 @@ pub fn classify_wait_request(kind: &TmcRequestKind) -> CommissionWaitRequestDisp
         | TmcRequestKind::SetPositionFilter { .. }
         | TmcRequestKind::SetFluxFilter { .. }
         | TmcRequestKind::SetPositionGains { .. }
-        | TmcRequestKind::SetVelocityFeedforward { .. }
         | TmcRequestKind::SetVelocityTransientFeedforward { .. }
         | TmcRequestKind::SetAccelFeedforward { .. }
         | TmcRequestKind::SetDecouplingFeedforward { .. }

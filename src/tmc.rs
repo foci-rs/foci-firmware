@@ -300,8 +300,6 @@ pub enum TmcRequestKind {
         velocity_p: foci_tmc4671::pid::PidPGain,
         velocity_i: foci_tmc4671::pid::PidIGain,
     },
-    /// Enable or disable velocity feedforward in the 1ms tick loop.
-    SetVelocityFeedforward { enable: bool, multiplier: u16 },
     /// Enable or disable velocity-surface transient feedforward.
     SetVelocityTransientFeedforward {
         enable: bool,

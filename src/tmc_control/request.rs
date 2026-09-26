@@ -557,16 +557,6 @@ where
             );
         }
         TmcRequest {
-            kind: TmcRequestKind::SetVelocityFeedforward { enable, multiplier },
-            ..
-        } => {
-            defmt::info!(
-                "Velocity feedforward: {} multiplier={} (via queue)",
-                enable,
-                multiplier
-            );
-        }
-        TmcRequest {
             kind:
                 TmcRequestKind::SetVelocityTransientFeedforward {
                     enable,
