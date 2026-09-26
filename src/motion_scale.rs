@@ -422,4 +422,49 @@ mod tests {
         assert_eq!(scale.physical_step_width(), 16);
         assert_eq!(scale.position_error_bound_half_units() / 2, 8);
     }
+
+    /// Drift guard (green on arrival, not a red TDD test): pins the host-side
+    /// `derived_exec_stats` formulas in `klipper-foci/diagnostics/stepper_scale.py` to the
+    /// firmware constants they mirror. It exists to fail if `StepPulseTiming` or
+    /// `PulseMapperConfig` ever change a formula the host duplicates, since the host cannot see
+    /// those firmware types directly.
+    #[test]
+    fn host_exec_stats_derivations_match_firmware_formulas() {
+        use crate::step_pulse::StepPulseTiming;
+        use foci_klipper::pulse_mapper::PulseMapperConfig;
+
+        fn expected_tmc_grid(planner_steps_per_rev: u32) -> u32 {
+            if planner_steps_per_rev == 0 {
+                0
+            } else {
+                planner_steps_per_rev.next_power_of_two().min(65_536)
+            }
+        }
+
+        for clock_freq in [84_000_000_u32, 260_000_000_u32] {
+            let timing = StepPulseTiming::new(clock_freq).unwrap();
+            let step_half_period_ticks = clock_freq.div_ceil(25_000_000);
+
+            assert_eq!(timing.half_period_ticks(), step_half_period_ticks);
+            assert_eq!(timing.dir_setup_ticks(), 2 * step_half_period_ticks);
+            assert_eq!(
+                timing.waveform_worst_case_ticks(),
+                6 * step_half_period_ticks
+            );
+            assert_eq!(timing.fatal_lateness_ticks(), clock_freq / 1_000);
+        }
+
+        for planner_steps_per_rev in [0_u32, 200, 6_400, 65_536, 70_000] {
+            let expected_grid = expected_tmc_grid(planner_steps_per_rev);
+
+            if planner_steps_per_rev == 0 {
+                assert_eq!(expected_grid, 0);
+                continue;
+            }
+
+            let config = PulseMapperConfig::new(planner_steps_per_rev).unwrap();
+            assert_eq!(config.tmc_grid(), expected_grid);
+            assert_eq!(config.step_width(), 65_536 / expected_grid);
+        }
+    }
 }

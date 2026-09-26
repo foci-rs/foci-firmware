@@ -1943,17 +1943,23 @@ pub struct FociStepperStatsResult {
     pub timer_active: u8,
     /// Current board-local queue length.
     pub queue_len: u16,
+    /// Frames dropped since boot for exceeding the 64-byte wire limit.
+    pub oversize_frame_drops: u32,
 }
 
 /// `foci_stepper_exec_stats_result` reply - step execution counters.
 ///
 /// Wire name: `foci_stepper_exec_stats_result`.
+///
+/// `channel`, `encoder_counts_per_rev`, `tmc_grid`, `physical_step_width`,
+/// `motion_scale_configured`, `step_half_period_ticks`, `dir_setup_ticks`,
+/// `waveform_worst_case_ticks` and `fatal_lateness_ticks` are dropped from the wire: the host
+/// derives them from `channel` (already delivered by `foci_stepper_stats_result` in the same
+/// sweep), `planner_steps_per_rev`, `encoder_ppr` and its own `CLOCK_FREQ` constant.
 #[klipper_reply]
 pub struct FociStepperExecStatsResult {
     /// Object id of the queried FOCI endpoint.
     pub oid: u8,
-    /// Board-local channel.
-    pub channel: u8,
     /// Executed positive-direction logical motor steps since boot.
     pub executed_pos_steps: u32,
     /// Executed negative-direction logical motor steps since boot.
@@ -1966,22 +1972,6 @@ pub struct FociStepperExecStatsResult {
     pub planner_steps_per_rev: u32,
     /// Configured encoder pulses per mechanical revolution, or zero when unconfigured.
     pub encoder_ppr: u32,
-    /// Configured quadrature encoder counts per revolution, or zero when unconfigured.
-    pub encoder_counts_per_rev: u32,
-    /// Configured physical TMC STEP pulses per revolution, or zero when unconfigured.
-    pub tmc_grid: u32,
-    /// Configured TMC position units per physical STEP pulse, or zero when unconfigured.
-    pub physical_step_width: u32,
-    /// Non-zero when a complete motion scale is currently configured.
-    pub motion_scale_configured: u8,
-    /// Timer ticks in one physical STEP high or low phase.
-    pub step_half_period_ticks: u32,
-    /// Timer ticks reserved between a DIR change and the first STEP edge.
-    pub dir_setup_ticks: u32,
-    /// Waveform-only two-pulse cost including DIR setup.
-    pub waveform_worst_case_ticks: u32,
-    /// One millisecond of fatal scheduler lateness in timer ticks.
-    pub fatal_lateness_ticks: u32,
     /// Times the step timer went idle because the queue was empty.
     pub queue_empty_count: u32,
     /// Combined missed-deadline count from segment-load and in-segment checks.
