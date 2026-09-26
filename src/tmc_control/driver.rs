@@ -1812,7 +1812,6 @@ mod tests {
         };
         let future = driver.drive(unit(UnitClass::Fast), &mut backend, ctx);
         let size = size_of_future(&future);
-        std::println!("drive future size on host: {size} B");
         assert!(size <= 12 * 1024, "drive future grew to {size} B on host");
     }
 }
