@@ -10,10 +10,8 @@ use crate::commissioning::types::{CommissioningBackend, EngineKind};
 use crate::pid::InnerLoopGains;
 use crate::state::stepper::StepperChannelState;
 use crate::state::tmc::TmcChannelState;
-use crate::tmc::{TmcRequest, TmcRequestKind};
 use crate::tmc_control::actions::{
-    BoardAction, BoardActions, DelegatedDiagnostic, ScheduledCommissionTickAction, ShutdownReason,
-    StepperAction, push_action,
+    BoardAction, BoardActions, ScheduledCommissionTickAction, StepperAction, push_action,
 };
 use crate::tmc_control::config::{TmcControlConfig, TmcControlHomingRefs, TmcControlStateRefs};
 use crate::tmc_control::signals::TmcControlSignals;
@@ -154,7 +152,6 @@ pub struct TmcControlRuntime {
     commission_engine: Option<CommissioningEngine>,
     restore_machine: Option<TerminalRestoreMachine>,
     restore_cancel_requested: bool,
-    shutdown_handled: bool,
     planner_velocity_scale: Option<crate::motion_scale::PlannerVelocityScale>,
     planner_rpm_scale: Option<crate::motion_scale::PlannerRpmScale>,
     feedforward_was_active: bool,
@@ -184,7 +181,6 @@ impl TmcControlRuntime {
             commission_engine: None,
             restore_machine: None,
             restore_cancel_requested: false,
-            shutdown_handled: false,
             planner_velocity_scale: None,
             planner_rpm_scale: None,
             feedforward_was_active: false,
@@ -295,7 +291,6 @@ impl TmcControlRuntime {
         self.calibrated = false;
         self.stored_gains = None;
         self.clear_or_cancel_commission();
-        self.shutdown_handled = false;
         self.planner_velocity_scale = None;
         self.planner_rpm_scale = None;
         self.feedforward_was_active = false;
@@ -427,98 +422,6 @@ impl TmcControlRuntime {
         self.pid_error_clear_countdown_ms = 0;
         self.clear_homing_runtime();
         push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
-        actions
-    }
-
-    /// Poll shutdown state and emit one-shot safe-state actions.
-    ///
-    /// Returns a `StopNow` stepper action on the first call while shutdown is
-    /// active, clearing `motor_enabled`, `calibrated`, and the commission
-    /// engine. Subsequent calls while shutdown remains active return an empty
-    /// action list. Clears `shutdown_handled` when shutdown is no longer active
-    /// so the next shutdown cycle fires again.
-    pub fn poll_shutdown(&mut self, signals: &TmcControlSignals) -> BoardActions {
-        let mut actions = BoardActions::new();
-        if signals.shutdown_active.load(Relaxed) {
-            if !self.shutdown_handled {
-                self.clear_or_cancel_commission();
-                self.applied_velocity_offset = None;
-                self.applied_torque_flux_offset = None;
-                push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
-                self.motor_enabled = false;
-                self.calibrated = false;
-                self.shutdown_handled = true;
-            }
-            return actions;
-        }
-
-        self.shutdown_handled = false;
-        actions
-    }
-
-    /// Consume an emergency-disable signal and emit shutdown actions.
-    ///
-    /// Returns nothing when the signal has not been raised. When the signal is
-    /// present, clears `fault_active`, disarms the motor, and returns a
-    /// `StopNow` action followed by a `Shutdown` action whose reason is
-    /// `AdcCurrentClipped` when `status_flags` is a successful read with bit 26
-    /// set, or `TmcFault` otherwise -- including when the register read itself
-    /// failed. A failed read is never coerced into a clean status value first:
-    /// it carries no evidence of clipping, so it falls through to the generic
-    /// fault reason exactly like a genuine non-clipped read.
-    pub fn poll_emergency_disable(
-        &mut self,
-        signals: &TmcControlSignals,
-        status_flags: Result<u32, ()>,
-    ) -> BoardActions {
-        let mut actions = BoardActions::new();
-        if signals.disable_signal.try_take().is_none() {
-            return actions;
-        }
-
-        signals.fault_active.store(false, Relaxed);
-        self.motor_enabled = false;
-        self.calibrated = false;
-        push_action(&mut actions, BoardAction::Stepper(StepperAction::StopNow));
-        let reason = if is_adc_current_clipped(status_flags) {
-            ShutdownReason::AdcCurrentClipped
-        } else {
-            ShutdownReason::TmcFault
-        };
-        push_action(&mut actions, BoardAction::Shutdown(reason));
-        actions
-    }
-
-    /// Classify a [`TmcRequest`] before SPI-heavy handling.
-    ///
-    /// Returns shutdown actions for wrong-channel requests and delegates active
-    /// diagnostic requests to the board shell via [`BoardAction::DelegatedDiagnostic`].
-    /// Non-diagnostic, correct-channel requests return an empty action list and
-    /// are processed by the caller's SPI path.
-    pub fn classify_request(&mut self, req: TmcRequest) -> BoardActions {
-        let mut actions = BoardActions::new();
-        if req.channel != self.channel {
-            push_action(
-                &mut actions,
-                BoardAction::Shutdown(ShutdownReason::InvalidTmcChannel),
-            );
-            return actions;
-        }
-
-        match req.kind {
-            TmcRequestKind::CurrentStepTest { .. }
-            | TmcRequestKind::CurrentVectorStepTest { .. }
-            | TmcRequestKind::CurrentTorqueSampleTest { .. }
-            | TmcRequestKind::PositionTorqueOffsetSampleTest { .. }
-            | TmcRequestKind::VoltageStepTest { .. }
-            | TmcRequestKind::ResistanceTest { .. } => {
-                push_action(
-                    &mut actions,
-                    BoardAction::DelegatedDiagnostic(DelegatedDiagnostic { request: req }),
-                );
-            }
-            _ => {}
-        }
         actions
     }
 
@@ -2267,21 +2170,6 @@ pub fn combine_emergency_disable_fault(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmc::tmc_resistance_test;
-
-    #[test]
-    fn classify_request_delegates_resistance_test() {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let request = tmc_resistance_test(0, 7, 1);
-
-        let actions = runtime.classify_request(request.clone());
-
-        assert_eq!(actions.len(), 1);
-        let BoardAction::DelegatedDiagnostic(diagnostic) = &actions[0] else {
-            panic!("expected delegated diagnostic action");
-        };
-        assert_eq!(diagnostic.request, request);
-    }
 
     #[test]
     fn control_period_us_returns_idle_period_when_disabled() {

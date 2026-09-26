@@ -8,7 +8,7 @@ use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::CommissioningEngine;
 use crate::config::TmcConfig;
 use crate::pid::InnerLoopGains;
-use crate::tmc::{TmcRequest, TmcRequestKind};
+use crate::tmc::TmcRequestKind;
 use crate::tmc_control::dispatch::{
     RegisterRequestError, SharedTmcDispatch, apply_shared_tmc_request,
 };
@@ -52,47 +52,6 @@ fn assert_stop_now_at(actions: &BoardActions, index: usize) {
         BoardAction::Shutdown(_) => panic!("expected StopNow, got Shutdown at index {index}"),
         BoardAction::SignalEmergencyDisable => {
             panic!("expected StopNow, got SignalEmergencyDisable at index {index}")
-        }
-        BoardAction::DelegatedDiagnostic(_) => {
-            panic!("expected StopNow, got DelegatedDiagnostic at index {index}")
-        }
-    }
-}
-
-fn assert_shutdown_at(actions: &BoardActions, index: usize, reason: ShutdownReason) {
-    match &actions[index] {
-        BoardAction::Shutdown(actual) => assert_eq!(*actual, reason),
-        BoardAction::Stepper(_) => panic!("expected Shutdown at index {index}, got Stepper"),
-        BoardAction::SignalEmergencyDisable => {
-            panic!("expected Shutdown at index {index}, got SignalEmergencyDisable")
-        }
-        BoardAction::DelegatedDiagnostic(_) => {
-            panic!("expected Shutdown at index {index}, got DelegatedDiagnostic")
-        }
-    }
-}
-
-fn assert_single_shutdown(actions: &BoardActions, reason: ShutdownReason) {
-    assert_eq!(actions.len(), 1, "expected one Shutdown action");
-    assert_shutdown_at(actions, 0, reason);
-}
-
-fn assert_stop_then_shutdown(actions: &BoardActions, reason: ShutdownReason) {
-    assert_eq!(actions.len(), 2, "expected StopNow then Shutdown actions");
-    assert_stop_now_at(actions, 0);
-    assert_shutdown_at(actions, 1, reason);
-}
-
-fn assert_single_delegated_request(actions: &BoardActions, expected: &TmcRequest) {
-    assert_eq!(actions.len(), 1, "expected one DelegatedDiagnostic action");
-    match &actions[0] {
-        BoardAction::DelegatedDiagnostic(delegated) => {
-            assert_eq!(&delegated.request, expected);
-        }
-        BoardAction::Stepper(_) => panic!("expected DelegatedDiagnostic, got Stepper"),
-        BoardAction::Shutdown(_) => panic!("expected DelegatedDiagnostic, got Shutdown"),
-        BoardAction::SignalEmergencyDisable => {
-            panic!("expected DelegatedDiagnostic, got SignalEmergencyDisable")
         }
     }
 }
@@ -150,15 +109,17 @@ fn channel_runtime_size_stays_bounded() {
     // baseline-relative margin check's fixed-point EMA state (two u64
     // accumulators, the ceiling/margin split, and per-check consecutive
     // counters) alongside the existing absolute-ceiling check.
+    // 8_176 -> 8_160 / 8_144 -> 8_128: the one-shot shutdown latch moved to
+    // the board loops and left the runtime.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_176);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_160);
     // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
     // and `OuterPhase::BreakawayCampaign` into the default build, so the
     // embedded `CommissioningEngine` is now the same largest-variant size as
     // the `trace` build (see `commissioning::tests::size_regression_gates`);
     // only the surrounding runtime's own trace-only fields still differ.
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_128);
 }
 
 #[test]
@@ -2345,41 +2306,6 @@ fn dispatch_state_remains_usable_after_shutdown_quiesce() {
 }
 
 #[test]
-fn shutdown_signal_emits_one_stop_action_until_reset() {
-    let shutdown_active = AtomicBool::new(true);
-    let queue_flush = AtomicBool::new(false);
-    let fault_active = AtomicBool::new(false);
-    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
-    let signals = TmcControlSignals::new(
-        &shutdown_active,
-        &queue_flush,
-        &fault_active,
-        &disable_signal,
-    );
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_calibrated_for_test(true);
-    runtime.set_motor_enabled_for_test(true);
-    runtime.set_commission_engine(CommissioningEngine::new_calibrate(7));
-
-    let first = runtime.poll_shutdown(&signals);
-
-    assert_single_stop_now(&first);
-    assert!(!runtime.is_motor_enabled());
-    assert!(!runtime.is_calibrated());
-    assert!(!runtime.is_commission_active());
-
-    let second = runtime.poll_shutdown(&signals);
-    assert_no_actions(&second);
-
-    shutdown_active.store(false, Relaxed);
-    assert_no_actions(&runtime.poll_shutdown(&signals));
-
-    shutdown_active.store(true, Relaxed);
-    let third = runtime.poll_shutdown(&signals);
-    assert_single_stop_now(&third);
-}
-
-#[test]
 fn adc_current_clipped_true_when_bit_set() {
     assert!(is_adc_current_clipped(Ok(1 << 26)));
 }
@@ -2458,153 +2384,6 @@ fn multi_channel_fold_retains_earlier_channel_clip_after_later_channel_read_fail
     fault = combine_emergency_disable_fault(fault, classify_emergency_disable_fault(Ok(1 << 26)));
     fault = combine_emergency_disable_fault(fault, classify_emergency_disable_fault(Err(())));
     assert_eq!(fault, EmergencyDisableFault::AdcCurrentClipped);
-}
-
-#[test]
-fn emergency_disable_without_signal_is_empty() {
-    let shutdown_active = AtomicBool::new(false);
-    let queue_flush = AtomicBool::new(false);
-    let fault_active = AtomicBool::new(true);
-    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
-    let signals = TmcControlSignals::new(
-        &shutdown_active,
-        &queue_flush,
-        &fault_active,
-        &disable_signal,
-    );
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_calibrated_for_test(true);
-    runtime.set_motor_enabled_for_test(true);
-
-    let actions = runtime.poll_emergency_disable(&signals, Ok(1 << 26));
-
-    assert_no_actions(&actions);
-    assert!(runtime.is_motor_enabled());
-    assert!(runtime.is_calibrated());
-    assert!(fault_active.load(Relaxed));
-}
-
-#[test]
-fn emergency_disable_consumes_signal_and_orders_stop_before_shutdown() {
-    let shutdown_active = AtomicBool::new(false);
-    let queue_flush = AtomicBool::new(false);
-    let fault_active = AtomicBool::new(true);
-    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
-    let signals = TmcControlSignals::new(
-        &shutdown_active,
-        &queue_flush,
-        &fault_active,
-        &disable_signal,
-    );
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_calibrated_for_test(true);
-    runtime.set_motor_enabled_for_test(true);
-
-    disable_signal.signal(());
-    let clipped = runtime.poll_emergency_disable(&signals, Ok(1 << 26));
-
-    assert_stop_then_shutdown(&clipped, ShutdownReason::AdcCurrentClipped);
-    assert!(disable_signal.try_take().is_none());
-    assert!(!fault_active.load(Relaxed));
-    assert!(!runtime.is_motor_enabled());
-    assert!(!runtime.is_calibrated());
-
-    runtime.set_calibrated_for_test(true);
-    runtime.set_motor_enabled_for_test(true);
-    fault_active.store(true, Relaxed);
-    disable_signal.signal(());
-    let non_clipping_fault = runtime.poll_emergency_disable(&signals, Ok(0));
-
-    assert_stop_then_shutdown(&non_clipping_fault, ShutdownReason::TmcFault);
-    assert!(disable_signal.try_take().is_none());
-    assert!(!fault_active.load(Relaxed));
-    assert!(!runtime.is_motor_enabled());
-    assert!(!runtime.is_calibrated());
-}
-
-#[test]
-fn emergency_disable_treats_failed_status_read_as_tmc_fault() {
-    let shutdown_active = AtomicBool::new(false);
-    let queue_flush = AtomicBool::new(false);
-    let fault_active = AtomicBool::new(true);
-    let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
-    let signals = TmcControlSignals::new(
-        &shutdown_active,
-        &queue_flush,
-        &fault_active,
-        &disable_signal,
-    );
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_calibrated_for_test(true);
-    runtime.set_motor_enabled_for_test(true);
-
-    disable_signal.signal(());
-    let read_failed = runtime.poll_emergency_disable(&signals, Err(()));
-
-    assert_stop_then_shutdown(&read_failed, ShutdownReason::TmcFault);
-    assert!(disable_signal.try_take().is_none());
-    assert!(!fault_active.load(Relaxed));
-    assert!(!runtime.is_motor_enabled());
-    assert!(!runtime.is_calibrated());
-}
-
-#[test]
-fn same_channel_regular_request_is_unhandled_without_mutating_runtime() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_calibrated_for_test(true);
-    runtime.set_motor_enabled_for_test(true);
-    runtime.set_commission_engine(CommissioningEngine::new_calibrate(8));
-    let req = TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 750 });
-
-    let actions = runtime.classify_request(req);
-
-    assert_no_actions(&actions);
-    assert!(runtime.is_motor_enabled());
-    assert!(runtime.is_calibrated());
-    assert!(runtime.is_commission_active());
-}
-
-#[test]
-fn wrong_channel_request_emits_only_invalid_channel_shutdown_without_mutation() {
-    let mut runtime = TmcControlRuntime::new_for_channel(0);
-    runtime.set_calibrated_for_test(true);
-    runtime.set_motor_enabled_for_test(true);
-    runtime.set_commission_engine(CommissioningEngine::new_calibrate(9));
-    let req = TmcRequest::new(1, TmcRequestKind::SetEnable(false));
-
-    let actions = runtime.classify_request(req);
-
-    assert_single_shutdown(&actions, ShutdownReason::InvalidTmcChannel);
-    assert!(runtime.is_motor_enabled());
-    assert!(runtime.is_calibrated());
-    assert!(runtime.is_commission_active());
-}
-
-#[test]
-fn all_active_diagnostic_requests_are_delegated_without_mutation() {
-    let requests = [
-        crate::tmc::tmc_current_step_test(0, 10, crate::tmc::CurrentStepAxis::Torque, 111, 12, 13),
-        crate::tmc::tmc_current_vector_step_test(0, 11, 112, -113, 14, 15),
-        crate::tmc::tmc_current_torque_sample_test(0, 12, 114, -115, 16, 17),
-        crate::tmc::tmc_position_torque_offset_sample_test(0, 13, 116, 18, 19),
-        crate::tmc::tmc_voltage_step_test(0, 14, 120, -121, 20),
-        crate::tmc::tmc_resistance_test(0, 15, 0),
-    ];
-
-    for req in requests {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        runtime.set_calibrated_for_test(true);
-        runtime.set_motor_enabled_for_test(true);
-        runtime.set_commission_engine(CommissioningEngine::new_calibrate(10));
-        let expected = req.clone();
-
-        let actions = runtime.classify_request(req);
-
-        assert_single_delegated_request(&actions, &expected);
-        assert!(runtime.is_motor_enabled());
-        assert!(runtime.is_calibrated());
-        assert!(runtime.is_commission_active());
-    }
 }
 
 #[test]
@@ -4281,17 +4060,7 @@ fn shutdown_mid_restore_drains_to_safe_state_before_clearing_slots() {
         let mut backend = MockBackend::new();
         armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
 
-        let shutdown_active = AtomicBool::new(true);
-        let queue_flush = AtomicBool::new(false);
-        let fault_active = AtomicBool::new(false);
-        let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
-        let signals = cancel_test_signals(
-            &shutdown_active,
-            &queue_flush,
-            &fault_active,
-            &disable_signal,
-        );
-        let _ = runtime.poll_shutdown(&signals);
+        let _ = runtime.prepare_shutdown_quiesce();
 
         assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
     });
@@ -4362,41 +4131,6 @@ fn queue_flush_mid_restore_drains_to_safe_state_before_clearing_slots() {
             crate::state::tmc::tmc_channel0(),
             crate::state::stepper::stepper_channel0(),
         );
-
-        assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
-    });
-}
-
-#[test]
-fn emergency_disable_mid_restore_drains_to_safe_state_before_clearing_slots() {
-    pollster::block_on(async {
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-            .lock()
-            .await;
-        crate::state::tmc::reset_all_tmc_channels();
-        crate::state::stepper::reset_all_stepper_channels();
-        let mut slot =
-            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
-            );
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut backend = MockBackend::new();
-        armed_runtime_mid_restore(&mut runtime, &mut backend, &mut slot).await;
-
-        let shutdown_active = AtomicBool::new(false);
-        let queue_flush = AtomicBool::new(false);
-        let fault_active = AtomicBool::new(false);
-        let disable_signal = Signal::<CriticalSectionRawMutex, ()>::new();
-        disable_signal.signal(());
-        let signals = cancel_test_signals(
-            &shutdown_active,
-            &queue_flush,
-            &fault_active,
-            &disable_signal,
-        );
-        // `poll_emergency_disable` never owned the engine slot; the board's exit
-        // path latches the cancel, exactly as the commissioning loop does.
-        let _ = runtime.poll_emergency_disable(&signals, Ok(0));
-        runtime.request_restore_cancel();
 
         assert_drain_reaches_safe_state(&mut runtime, &mut backend, &mut slot).await;
     });

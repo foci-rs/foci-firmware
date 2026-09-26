@@ -33,8 +33,8 @@ pub(crate) mod test_spi;
 mod tests;
 
 pub use actions::{
-    BoardAction, BoardActions, DelegatedDiagnostic, ScheduledCommissionTickAction, ShutdownReason,
-    StepperAction, TmcControlRequestOutcome, TmcControlRequestTail, push_action,
+    BoardAction, BoardActions, ScheduledCommissionTickAction, ShutdownReason, StepperAction,
+    TmcControlRequestOutcome, TmcControlRequestTail, push_action,
 };
 pub use bootstrap::{
     TmcSafetyBootstrapFailure, TmcSafetyBootstrapStage, bootstrap_tmc_safety,

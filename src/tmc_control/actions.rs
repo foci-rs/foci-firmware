@@ -2,7 +2,6 @@
 
 use crate::commission_dispatch::{PostActions, ReplyPayload, StepperPostAction};
 use crate::commissioning::schedule::CommissionEvent;
-use crate::tmc::TmcRequest;
 
 /// Shutdown reason emitted by board-local Klipper shutdown glue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -113,13 +112,6 @@ pub enum StepperAction {
     ApplyPostAction(StepperPostAction),
 }
 
-/// Active diagnostic request intentionally left board-local.
-#[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
-pub struct DelegatedDiagnostic {
-    /// Original request for board-local diagnostic handling.
-    pub request: TmcRequest,
-}
-
 /// One immediate effect for the board shell to apply.
 ///
 pub enum BoardAction {
@@ -129,14 +121,12 @@ pub enum BoardAction {
     SignalEmergencyDisable,
     /// Perform board-local stepper work.
     Stepper(StepperAction),
-    /// Run a board-local active diagnostic flow.
-    DelegatedDiagnostic(DelegatedDiagnostic),
 }
 
 /// Fixed-capacity list of board actions emitted by one runtime call.
 ///
 /// Capacity proof for this plan: current paths emit at most three actions
-/// (stop, shutdown, and one arm/diagnostic action). Keep capacity at 8 so a
+/// (stop, shutdown, and one arm action). Keep capacity at 8 so a
 /// future path can add compact routing actions without silently dropping safety work.
 pub type BoardActions = heapless::Vec<BoardAction, 8>;
 
