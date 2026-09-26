@@ -41,8 +41,8 @@ use crate::trace::events::{
     EVENT_COMMISSION_PHASE_END, EVENT_COMMISSION_PHASE_START,
     EVENT_COMMISSION_REST_SELECTION_DIAGNOSTIC, EVENT_COMMISSION_RUNG_ORIGIN_RECOVERY,
     EVENT_COMMISSION_SELECTED_RECOVERY_REST, EVENT_COMMISSION_VELOCITY_INTEGRAL_DERIVED,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN,
-    EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG, TraceEventLevel, u32_arg,
+    EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION, EVENT_COMMISSION_VELOCITY_INTEGRAL_RUNG,
+    TraceEventLevel, u32_arg,
 };
 // Raw FTRC trace-channel event ids: used only inside the raw-trace helpers
 // kept on `trace` (Integral/amplitude/breakaway terminal and evidence emission).
@@ -1417,10 +1417,6 @@ impl CommissioningEngine {
                     ),
                 );
                 let (event_id, sequence) = match event {
-                    crate::commissioning::types::VelocityIntegralEvent::Planned(report) => (
-                        EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN,
-                        report.evidence_sequence,
-                    ),
                     crate::commissioning::types::VelocityIntegralEvent::Observation(report) => (
                         EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION,
                         report.evidence_sequence,

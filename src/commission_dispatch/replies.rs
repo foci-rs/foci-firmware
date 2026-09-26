@@ -826,7 +826,6 @@ pub fn emit_velocity_integral_event<S: CommissionReplySink>(
     event: crate::commissioning::types::VelocityIntegralEvent,
 ) {
     match event {
-        crate::commissioning::types::VelocityIntegralEvent::Planned(_) => {}
         crate::commissioning::types::VelocityIntegralEvent::Observation(_) => {}
         crate::commissioning::types::VelocityIntegralEvent::Rung(_) => {}
         crate::commissioning::types::VelocityIntegralEvent::Recovery(_) => {}

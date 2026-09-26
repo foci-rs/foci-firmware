@@ -173,7 +173,6 @@ impl VelocityIntegralIntegrity {
             | VelocityIntegralEvent::RecoveryRest(_)
             | VelocityIntegralEvent::RestSelection(_)
             | VelocityIntegralEvent::Current(_) => {}
-            VelocityIntegralEvent::Planned(_) => {}
         }
         self.digest =
             extend_velocity_sweep_digest(self.digest, &encode_velocity_integral_event(event));
@@ -232,17 +231,6 @@ pub(crate) fn encode_velocity_integral_event(
     event: VelocityIntegralEvent,
 ) -> VelocitySweepCanonicalRecord {
     match event {
-        VelocityIntegralEvent::Planned(report) => {
-            let mut record = VelocitySweepCanonicalRecord::new();
-            record.push_u8(1);
-            record.push_u32(report.run_sequence);
-            record.push_u16(report.evidence_sequence);
-            push_u64(&mut record, report.plan_digest);
-            record.push_u16(report.fixed_p);
-            record.push_u8(report.positive_rung_count);
-            record.push_u32(report.maximum_workflow_ms);
-            record
-        }
         VelocityIntegralEvent::Observation(report) => encode_observation(report),
         VelocityIntegralEvent::Rung(report) => encode_rung(report),
         VelocityIntegralEvent::Recovery(report) => {
@@ -936,26 +924,6 @@ mod tests {
     }
 
     #[test]
-    fn encode_velocity_integral_planned_event_bytes_are_stable() {
-        use crate::commissioning::types::{VelocityIntegralEvent, VelocityIntegralPlanned};
-        let report = VelocityIntegralPlanned {
-            run_sequence: 0x0102_0304,
-            evidence_sequence: 0x0506,
-            plan_digest: 0x0708_090A_0B0C_0D0E,
-            fixed_p: 0x1011,
-            positive_rung_count: 0x12,
-            maximum_workflow_ms: 0x1314_1516,
-        };
-        let record = encode_velocity_integral_event(VelocityIntegralEvent::Planned(report));
-        // Baseline captured from the pre-change trace build. `1` tag + LE fields.
-        let expected: [u8; 22] = [
-            1, 0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x0E, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07,
-            0x11, 0x10, 0x12, 0x16, 0x15, 0x14, 0x13,
-        ];
-        assert_eq!(record.as_bytes(), &expected);
-    }
-
-    #[test]
     fn plan_trace_core_appends_i_top_cap_only_at_schema_seventeen_or_eighteen() {
         let mut positive_i = [0; super::super::integral_plan::INTEGRAL_MAX_POSITIVE_RUNGS];
         for (index, gain) in positive_i.iter_mut().enumerate() {
@@ -1322,23 +1290,32 @@ mod tests {
     /// agreement.
     #[test]
     fn production_integral_digest_matches_trace_baseline() {
-        use crate::commissioning::types::{VelocityIntegralEvent, VelocityIntegralPlanned};
-
-        let mut integrity = VelocityIntegralIntegrity::new(7, plan());
-        let planned = VelocityIntegralPlanned {
-            run_sequence: 7,
-            evidence_sequence: 1,
-            plan_digest: 0x0123_4567_89ab_cdef,
-            fixed_p: 1_448,
-            positive_rung_count: 5,
-            maximum_workflow_ms: 69_888,
+        use crate::commissioning::types::{
+            VelocityIntegralEvent, VelocityPrimitiveCurrentEvidence,
         };
 
-        integrity.record(VelocityIntegralEvent::Planned(planned));
+        let mut integrity = VelocityIntegralIntegrity::new(7, plan());
+        let current = VelocityPrimitiveCurrentEvidence {
+            run_sequence: 7,
+            evidence_sequence: 1,
+            stage: 1,
+            rung_index: 2,
+            slot: 5,
+            clamp_limit: 2_534,
+            clamp_readback: 2_534,
+            moving_pid_output_peak: 2_111,
+            zero_pid_output_peak: 2_534,
+            moving_status_flags: 0,
+            zero_status_flags: 1 << 15,
+            capability: 0,
+            contact: 2,
+        };
+
+        integrity.record(VelocityIntegralEvent::Current(current));
 
         // Baseline digest captured from the trace build for this exact
         // sequence.
-        const EXPECTED_BASELINE_DIGEST: u64 = 0xf3de_5916_35ba_9b2f;
+        const EXPECTED_BASELINE_DIGEST: u64 = 0x3b7f_c863_4c84_7223;
         assert_eq!(integrity.digest(), EXPECTED_BASELINE_DIGEST);
     }
 

@@ -42,12 +42,9 @@ pub enum CommissionEvent {
     /// The exact Integral plan an accepted breakaway campaign handed off to.
     ///
     /// Carried as its own variant because the host assembler refuses every
-    /// Integral observation until it has seen a complete plan, and no other
-    /// event can deliver one: [`VelocityIntegralEvent::Planned`] holds only a
-    /// digest and rung count, and the reply layer ignores it outright. The
-    /// combined Proportional path emits its plan through
-    /// `commission_dispatch`'s continuation reply instead; a breakaway campaign
-    /// reaches Integral on the scheduled-tick path, which only speaks
+    /// Integral observation until it has seen a complete plan, and no
+    /// [`VelocityIntegralEvent`] delivers one. A breakaway campaign reaches
+    /// Integral on the scheduled-tick path, which only speaks
     /// [`CommissionEvent`], so it needs this route.
     VelocityIntegralPlan {
         /// Object id of the commissioning channel.

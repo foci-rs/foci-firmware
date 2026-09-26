@@ -84,7 +84,8 @@ pub const EVENT_COMMISSION_POSITION_TUNE_METRICS: u16 = 132;
 /// Position-tune summary limits fragment.
 pub const EVENT_COMMISSION_POSITION_TUNE_LIMITS: u16 = 133;
 
-/// Velocity-integral immutable plan.
+/// Reserved for historical decoding: the retired velocity-integral plan
+/// event. No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_PLAN: u16 = 134;
 /// Velocity-integral observation summary.
 pub const EVENT_COMMISSION_VELOCITY_INTEGRAL_OBSERVATION: u16 = 135;

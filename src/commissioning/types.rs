@@ -623,23 +623,6 @@ pub struct VelocityPrimitiveCurrentEvidence {
     pub contact: u8,
 }
 
-/// Exact Integral plan identity disclosed before the first integral stroke.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct VelocityIntegralPlanned {
-    /// Caller-assigned run sequence.
-    pub run_sequence: u32,
-    /// Monotonic evidence sequence within the run.
-    pub evidence_sequence: u16,
-    /// Exact Integral stage-plan digest.
-    pub plan_digest: u64,
-    /// Firmware-authoritative fixed proportional gain.
-    pub fixed_p: u16,
-    /// Number of positive-I rungs between the two I=0 anchors.
-    pub positive_rung_count: u8,
-    /// Conservative complete Integral duration.
-    pub maximum_workflow_ms: u32,
-}
-
 /// Compact gate statistics retained at the Integral event boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StationarityRejectionDiagnostic {
@@ -750,8 +733,6 @@ pub struct VelocityIntegralRungReport {
 /// Nonterminal Integral evidence produced by one cooperative poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum VelocityIntegralEvent {
-    /// Exact Integral plan became authoritative before motion.
-    Planned(VelocityIntegralPlanned),
     /// One moving observation was analyzed.
     Observation(VelocityIntegralObservation),
     /// One complete anchor, positive, or bookend rung was folded.
@@ -1216,9 +1197,7 @@ pub struct AdditiveDiscoveryPlanned {
     /// (`BreakawayCampaignInputs::workflow_envelope_ms`); it never keeps a
     /// nominal figure downstream of the command-level
     /// `CommissioningWorkflowPlan` disclosure, so this record does not carry
-    /// one either -- matching `VelocityIntegralPlanned::maximum_workflow_ms`,
-    /// the existing combined-workflow wire field that also carries maximum
-    /// only.
+    /// one either.
     pub maximum_workflow_ms: u32,
 }
 

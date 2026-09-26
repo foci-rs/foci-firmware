@@ -12,8 +12,7 @@ use crate::commissioning::outer::velocity::integral_reproduction::{
 use crate::commissioning::outer::velocity::reproduction::BUILD_FEATURES;
 use crate::commissioning::outer::velocity::sweep_plan::VelocitySweepRequest;
 use crate::commissioning::types::{
-    IntegralOutcomeCause, VelocityIntegralEvent, VelocityIntegralOutcome, VelocityIntegralPlanned,
-    VelocityIntegralTerminal,
+    IntegralOutcomeCause, VelocityIntegralOutcome, VelocityIntegralTerminal,
 };
 
 /// Dedicated cause for retained or live Integral evidence violating its contract.
@@ -69,20 +68,6 @@ pub struct IntegralPreflight {
     pub identity: IntegralPlanIdentity,
     /// Caller-assigned trace sequence.
     pub run_sequence: u32,
-}
-
-impl IntegralPreflight {
-    /// Return the exact plan evidence emitted before the first Integral stroke.
-    pub const fn planned_event(self) -> VelocityIntegralEvent {
-        VelocityIntegralEvent::Planned(VelocityIntegralPlanned {
-            run_sequence: self.run_sequence,
-            evidence_sequence: 0,
-            plan_digest: self.identity.plan_digest,
-            fixed_p: self.plan.fixed_p,
-            positive_rung_count: self.plan.positive_rung_count,
-            maximum_workflow_ms: self.plan.maximum_workflow_ms,
-        })
-    }
 }
 
 /// Install retained Integral authority from one exact execution plan.
