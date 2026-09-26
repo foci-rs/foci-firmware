@@ -287,11 +287,12 @@ impl InductanceEvidence {
 /// Used by the dispatch to choose the right reply payload at terminal arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum EngineKind {
-    /// Engine constructed via `new_commission` — Stage 1 commissioning.
+    /// Engine constructed via `new_commission_for_tmc_with_trace_seq` — Stage 1 commissioning.
     Commission,
-    /// Engine constructed via `new_calibrate` — ADC calibration + alignment.
+    /// Engine constructed via `new_calibrate_for_tmc_with_gains_and_trace_seq` — ADC
+    /// calibration + alignment.
     Calibrate,
-    /// Engine constructed via `new_selftest` — diagnostic selftest run.
+    /// Engine constructed via `new_selftest_for_tmc_with_trace_seq` — diagnostic selftest run.
     Selftest,
     /// Engine constructed via one of the live outer constructors
     /// (`new_outer_for_tmc_with_fixed_gain_amplitude_preflight`, `_with_integral_preflight`,
@@ -2351,7 +2352,7 @@ impl AdcResidualEvidence {
     };
 }
 
-/// Result of the calibration subset requested by `new_calibrate`.
+/// Result of the calibration subset requested by a calibrate engine.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct AdcCalResult {
     /// ADC I0 offset.

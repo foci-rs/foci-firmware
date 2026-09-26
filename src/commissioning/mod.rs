@@ -286,17 +286,15 @@ struct OuterScaffold {
 }
 
 impl CommissioningEngine {
-    /// Create an engine for calibration (re-enable path).
-    ///
-    /// Runs ADC calibration, encoder alignment, and closed-loop entry
-    /// with saved gains. Skips coil/wiring/encoder diagnostics.
-    /// Returns `StepResult::CalibrateDone` on success.
-    pub fn new_calibrate(oid: u8) -> Self {
+    /// Create a channel-0 calibration engine with no stored gains.
+    #[cfg(test)]
+    pub(crate) fn new_calibrate(oid: u8) -> Self {
         Self::new_calibrate_with_trace_seq(oid, 0)
     }
 
     /// Create an engine for calibration with a caller-assigned trace sequence.
-    pub fn new_calibrate_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new_calibrate_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
         Self::new_calibrate_for_tmc_with_trace_seq(
             oid,
             crate::state::tmc::tmc_channel0(),
@@ -304,13 +302,9 @@ impl CommissioningEngine {
         )
     }
 
-    /// Create a calibration engine bound to a TMC channel state.
-    pub fn new_calibrate_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
-        Self::new_calibrate_for_tmc_with_trace_seq(oid, tmc_state, 0)
-    }
-
     /// Create a calibration engine bound to a TMC channel state with a trace sequence.
-    pub fn new_calibrate_for_tmc_with_trace_seq(
+    #[cfg(test)]
+    pub(crate) fn new_calibrate_for_tmc_with_trace_seq(
         oid: u8,
         tmc_state: &'static TmcChannelState,
         trace_engine_seq: u32,
@@ -325,7 +319,8 @@ impl CommissioningEngine {
     }
 
     /// Create a calibration engine bound to a TMC channel state and stored gains.
-    pub fn new_calibrate_for_tmc_with_gains(
+    #[cfg(test)]
+    pub(crate) fn new_calibrate_for_tmc_with_gains(
         oid: u8,
         tmc_state: &'static TmcChannelState,
         inner_gains: Option<InnerLoopGains>,
@@ -333,7 +328,12 @@ impl CommissioningEngine {
         Self::new_calibrate_for_tmc_with_gains_and_trace_seq(oid, tmc_state, inner_gains, 0, 0)
     }
 
-    /// Create a calibration engine bound to a TMC channel state, stored gains, and trace sequence.
+    /// Create a calibration engine (re-enable path) bound to a TMC channel state, stored gains,
+    /// and trace sequence.
+    ///
+    /// Runs ADC calibration, encoder alignment, and closed-loop entry
+    /// with saved gains. Skips coil/wiring/encoder diagnostics.
+    /// Returns `StepResult::CalibrateDone` on success.
     pub fn new_calibrate_for_tmc_with_gains_and_trace_seq(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -365,17 +365,15 @@ impl CommissioningEngine {
         }
     }
 
-    /// Create an engine for selftest (diagnostics + electrical ID).
-    ///
-    /// Runs ADC calibration, coil check, phase wiring, encoder check,
-    /// encoder alignment, and electrical identification, then stops with
-    /// `StepResult::SelftestDone` after restoring safe state.
-    pub fn new_selftest(oid: u8) -> Self {
+    /// Create a channel-0 selftest engine.
+    #[cfg(test)]
+    pub(crate) fn new_selftest(oid: u8) -> Self {
         Self::new_selftest_with_trace_seq(oid, 0)
     }
 
     /// Create a selftest engine with a caller-assigned trace sequence.
-    pub fn new_selftest_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new_selftest_with_trace_seq(oid: u8, trace_engine_seq: u32) -> Self {
         Self::new_selftest_for_tmc_with_trace_seq(
             oid,
             crate::state::tmc::tmc_channel0(),
@@ -384,11 +382,17 @@ impl CommissioningEngine {
     }
 
     /// Create a selftest engine bound to a TMC channel state.
-    pub fn new_selftest_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new_selftest_for_tmc(oid: u8, tmc_state: &'static TmcChannelState) -> Self {
         Self::new_selftest_for_tmc_with_trace_seq(oid, tmc_state, 0)
     }
 
-    /// Create a selftest engine bound to a TMC channel state with a trace sequence.
+    /// Create a selftest engine (diagnostics + electrical ID) bound to a TMC channel state with a
+    /// trace sequence.
+    ///
+    /// Runs ADC calibration, coil check, phase wiring, encoder check,
+    /// encoder alignment, and electrical identification, then stops with
+    /// `StepResult::SelftestDone` after restoring safe state.
     pub fn new_selftest_for_tmc_with_trace_seq(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -413,17 +417,15 @@ impl CommissioningEngine {
         }
     }
 
-    /// Create an engine for Stage 1 commissioning.
-    ///
-    /// Full diagnostics, electrical ID, current tune/validate, then
-    /// closed-loop entry with fallback outer gains.
-    /// Returns `StepResult::CommissionDone` on success.
-    pub fn new_commission(oid: u8, profile: CommissionProfile) -> Self {
+    /// Create a channel-0 Stage 1 commissioning engine.
+    #[cfg(test)]
+    pub(crate) fn new_commission(oid: u8, profile: CommissionProfile) -> Self {
         Self::new_commission_with_trace_seq(oid, profile, 0)
     }
 
     /// Create a Stage 1 commissioning engine with a caller-assigned trace sequence.
-    pub fn new_commission_with_trace_seq(
+    #[cfg(test)]
+    pub(crate) fn new_commission_with_trace_seq(
         oid: u8,
         profile: CommissionProfile,
         trace_engine_seq: u32,
@@ -436,16 +438,11 @@ impl CommissioningEngine {
         )
     }
 
-    /// Create a Stage 1 commissioning engine bound to a TMC channel state.
-    pub fn new_commission_for_tmc(
-        oid: u8,
-        tmc_state: &'static TmcChannelState,
-        profile: CommissionProfile,
-    ) -> Self {
-        Self::new_commission_for_tmc_with_trace_seq(oid, tmc_state, profile, 0)
-    }
-
     /// Create a Stage 1 commissioning engine bound to a TMC channel state and trace sequence.
+    ///
+    /// Full diagnostics, electrical ID, current tune/validate, then
+    /// closed-loop entry with fallback outer gains.
+    /// Returns `StepResult::CommissionDone` on success.
     pub fn new_commission_for_tmc_with_trace_seq(
         oid: u8,
         tmc_state: &'static TmcChannelState,
@@ -1044,7 +1041,8 @@ impl CommissioningEngine {
     }
 
     /// Mutably borrow the diagnostics collected during this run.
-    pub fn diagnostics_mut(&mut self) -> &mut crate::selftest::CommissionDiagnostics {
+    #[cfg(test)]
+    pub(crate) fn diagnostics_mut(&mut self) -> &mut crate::selftest::CommissionDiagnostics {
         &mut self.diagnostics
     }
 
