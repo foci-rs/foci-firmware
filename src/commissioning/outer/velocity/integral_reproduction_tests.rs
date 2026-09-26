@@ -6,7 +6,7 @@ use super::integral_reproduction::{
     AcceptancePoint, FixedGainAmplitudeProgress, IntegralAuthoritySummary, IntegralPlanIdentity,
     IntegralReproductionDecision, IntegralRestBoundaryReference, IntegralRetentionSlot,
     IntegralRetentionSlotState, IntegralRetentionSlots, RetainedIntegralEvidence,
-    closed_intersection, compare_integral_runs, delta_e, signed_divergence_gap,
+    closed_intersection, compare_integral_runs_with_boundaries, delta_e, signed_divergence_gap,
 };
 use super::reproduction::{BUILD_FEATURES, ProportionalDirectionalValidity};
 use crate::commission_dispatch::test_support::breakaway_acquisition_for_test;
@@ -161,7 +161,7 @@ fn channel_slots_invalidate_all_retention_on_board_fault() {
 }
 
 #[test]
-fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
+fn acceptance_point_progress_follows_the_declared_lifecycle() {
     assert_eq!(FixedGainAmplitudeProgress::ReadyAscending as u8, 0);
     assert_eq!(FixedGainAmplitudeProgress::ReadyDescending as u8, 1);
     assert_eq!(FixedGainAmplitudeProgress::Closed as u8, 2);
@@ -169,7 +169,6 @@ fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
     let point = acceptance_point(0, FixedGainAmplitudeProgress::ReadyAscending);
     let mut slot = IntegralRetentionSlot::new();
     slot.install_acceptance_point(point);
-    slot.observe_host_error();
     slot.preserve_for_same_channel_calibration(0);
     assert_eq!(slot.acceptance_point(), Some(point));
 
@@ -186,12 +185,6 @@ fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
     );
     assert!(!slot.close_matrix_progress());
 
-    assert!(!slot.begin_acceptance_replacement(1));
-    assert_eq!(slot.state(), IntegralRetentionSlotState::AcceptancePoint);
-    assert!(slot.begin_acceptance_replacement(0));
-    assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
-
-    slot.install_acceptance_point(point);
     slot.invalidate_for_channel(1);
     assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
     slot.install_acceptance_point(point);
@@ -200,16 +193,6 @@ fn acceptance_point_progress_and_replacement_follow_the_declared_lifecycle() {
     slot.install_acceptance_point(point);
     slot.observe_fault();
     assert_eq!(slot.state(), IntegralRetentionSlotState::Empty);
-}
-
-#[test]
-fn legacy_retained_states_refuse_acceptance_replacement() {
-    let legacy = authority(0, 7);
-    let mut slot = IntegralRetentionSlot::new();
-    slot.install_authority(legacy);
-
-    assert!(!slot.begin_acceptance_replacement(0));
-    assert_eq!(slot.authority(), Some(legacy));
 }
 
 #[test]
@@ -343,7 +326,7 @@ fn sparse_directional_cores_reproduce_without_cross_direction_gates() {
         [20, -40],
     );
 
-    let delta = compare_integral_runs(previous, current, 6).unwrap();
+    let delta = compare_integral_runs_with_boundaries(previous, current, 6, None, None).unwrap();
     assert_eq!(delta.reproduced_masks, [0b10_1011, 0b11_1000]);
     assert_eq!(delta.divergent_masks, [0, 0]);
     assert!(delta.reproduces());
@@ -377,7 +360,7 @@ fn eligibility_movement_and_response_divergence_are_separate() {
     );
     current.positive[1][4] = interval(100, 110);
 
-    let delta = compare_integral_runs(previous, current, 6).unwrap();
+    let delta = compare_integral_runs_with_boundaries(previous, current, 6, None, None).unwrap();
     assert_eq!(delta.previous_only_masks, [0b000001, 0]);
     assert_eq!(delta.current_only_masks, [0b010000, 0]);
     assert_eq!(delta.divergent_masks, [0, 0b010000]);
@@ -398,13 +381,13 @@ fn two_reproduced_rungs_or_out_of_range_masks_refuse_reproduction() {
         [0b000011, 0b000011],
         [10, 10],
     );
-    let delta = compare_integral_runs(two, two, 6).unwrap();
+    let delta = compare_integral_runs_with_boundaries(two, two, 6, None, None).unwrap();
     assert!(!delta.reproduces());
 
     let mut invalid = two;
     invalid.eligible_masks[0] = 1 << 6;
     assert_eq!(
-        compare_integral_runs(invalid, two, 6),
+        compare_integral_runs_with_boundaries(invalid, two, 6, None, None),
         Err(IntegralEvidenceError::MaskOutOfRange)
     );
 }
@@ -419,7 +402,6 @@ fn authority_only_lifecycle_preserves_authority_on_safe_insufficiency() {
 
     slot.observe_inconclusive();
     assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
-    slot.observe_host_error();
     slot.preserve_for_same_channel_calibration(0);
     assert_eq!(slot.state(), IntegralRetentionSlotState::AuthorityOnly);
 

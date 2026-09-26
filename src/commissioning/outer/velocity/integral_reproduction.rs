@@ -357,20 +357,6 @@ impl IntegralRetentionSlot {
         self.retained = RetainedIntegral::AcceptancePoint(point);
     }
 
-    /// Clear a same-channel acceptance point immediately before replacement motion.
-    pub fn begin_acceptance_replacement(&mut self, channel: u8) -> bool {
-        match self.retained {
-            RetainedIntegral::Empty => true,
-            RetainedIntegral::AcceptancePoint(point) if point.identity.channel == channel => {
-                self.retained = RetainedIntegral::Empty;
-                true
-            }
-            RetainedIntegral::AuthorityOnly(_)
-            | RetainedIntegral::Candidate(_)
-            | RetainedIntegral::AcceptancePoint(_) => false,
-        }
-    }
-
     /// Advance a completed ascending amplitude to the descending acquisition.
     pub fn advance_matrix_progress(&mut self) -> bool {
         let RetainedIntegral::AcceptancePoint(mut point) = self.retained else {
@@ -460,9 +446,6 @@ impl IntegralRetentionSlot {
     pub fn observe_fault(&mut self) {
         self.retained = RetainedIntegral::Empty;
     }
-
-    /// A host-side error does not rewrite a completed firmware terminal or slot state.
-    pub const fn observe_host_error(&mut self) {}
 
     /// Same-channel explicit homing calibration preserves retained Integral state.
     pub fn preserve_for_same_channel_calibration(&mut self, channel: u8) {
@@ -587,15 +570,7 @@ pub fn signed_divergence_gap(
 }
 
 /// Compare two sufficient raw curves without contiguity or cross-direction gates.
-pub fn compare_integral_runs(
-    previous: IntegralRunEvidence,
-    current: IntegralRunEvidence,
-    positive_rung_count: usize,
-) -> Result<IntegralReproductionDelta, IntegralEvidenceError> {
-    compare_integral_runs_with_boundaries(previous, current, positive_rung_count, None, None)
-}
-
-fn compare_integral_runs_with_boundaries(
+pub(super) fn compare_integral_runs_with_boundaries(
     previous: IntegralRunEvidence,
     current: IntegralRunEvidence,
     positive_rung_count: usize,

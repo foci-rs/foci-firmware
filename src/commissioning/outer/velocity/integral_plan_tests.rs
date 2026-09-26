@@ -17,10 +17,9 @@ use super::integral_plan::{
     bind_breakaway_integral_authority, breakaway_confirmation_slots_us,
     breakaway_discovery_slots_us, breakaway_probe_slots_us, breakaway_workflow_envelope_ms,
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
-    integral_gain_at, integral_top_gap_candidate, integral_workflow_maximum_ms,
-    max_transition_capable_p, native_rung_count, native_velocity_i_at,
-    plan_breakaway_velocity_integral_response, recovery_quantization_exposed, response_horizon,
-    transition_capable_integral_gain, velocity_i_tau_us,
+    integral_gain_at, integral_top_gap_candidate, max_transition_capable_p, native_rung_count,
+    native_velocity_i_at, plan_breakaway_velocity_integral_response, recovery_quantization_exposed,
+    response_horizon, transition_capable_integral_gain, velocity_i_tau_us,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -328,11 +327,6 @@ fn confidence_family_counts_both_anchors() {
         confidence_family_size(31),
         Err(VelocityIntegralPlanError::ConfidenceFamilyTooLarge)
     );
-}
-
-#[test]
-fn preflight_duration_reserves_the_fixed_cleanup_window() {
-    assert_eq!(integral_workflow_maximum_ms(25_000, 3_000), Ok(182_512));
 }
 
 #[test]
@@ -678,8 +672,7 @@ fn confirmation_is_eight_strokes_at_the_declared_family_size() {
 fn envelope_sums_microseconds_across_every_phase_and_rounds_outward_once() {
     let recovery_slot_count = 56_u32;
     let recovery_maximum_slot_us = 3_000_000_u32;
-    let integral_maximum_us =
-        u64::from(integral_workflow_maximum_ms(25_000, 3_000).unwrap()) * 1_000;
+    let integral_maximum_us = 182_512_000_u64;
 
     let total_us = breakaway_workflow_envelope_us(
         recovery_slot_count,
