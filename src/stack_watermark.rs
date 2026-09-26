@@ -16,7 +16,7 @@
 //! formality: a word an interrupt pushes can hold *any* bit pattern, the
 //! sentinel included, so a racing read can just as easily over-report headroom
 //! as under-report it. To keep the masked window bounded the walk stops after
-//! [`MAX_SCAN_WORDS`], reporting a lower bound rather than an exact watermark
+//! `MAX_SCAN_WORDS`, reporting a lower bound rather than an exact watermark
 //! when it runs out of window.
 //!
 //! Masking that long is only tolerable while nothing time-critical is running,
@@ -100,7 +100,7 @@ fn intact_prefix_words(len_words: usize, mut read_word: impl FnMut(usize) -> u32
 /// predicate over interrupt-driven state stays true for as long as it gates:
 /// there is no window between deciding and masking for an interrupt to slip
 /// through. `admit` therefore runs with interrupts masked and must be short and
-/// non-blocking; see [`MAX_SCAN_WORDS`] for the window the walk itself holds.
+/// non-blocking; see `MAX_SCAN_WORDS` for the window the walk itself holds.
 pub fn scan_admitted_by(admit: impl FnOnce() -> bool) -> StackScan {
     critical_section::with(|_| {
         if !admit() {

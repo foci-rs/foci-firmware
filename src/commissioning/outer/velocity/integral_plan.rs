@@ -58,11 +58,11 @@ pub struct IntegralAcquisitionAuthority {
     /// Reproduced pooled intervals, or `[0, 0]` where model comparison is unavailable.
     pub directional_pooled_intervals: [[i32; 2]; 2],
     /// Held-out confirmation confidence in Q0.16, or `0` off the breakaway path.
-    /// See [`super::band_confirmation::BandConfirmationAcceptance::confidence_q`].
+    /// See `super::band_confirmation::BandConfirmationAcceptance::confidence_q`.
     pub confidence_q: u16,
     /// Held-out confirmation band position in Q0.16, or `0` off the breakaway
     /// path. See
-    /// [`super::band_confirmation::BandConfirmationAcceptance::band_position_q`].
+    /// `super::band_confirmation::BandConfirmationAcceptance::band_position_q`.
     pub band_position_q: u16,
 }
 
@@ -567,12 +567,12 @@ pub enum VelocityIntegralPlanError {
     NoTransitionCapableOperatingPoint(IntegralFailedAdmission),
     /// A breakaway confirmation plan's recomputed digest, or its fixed family
     /// size, capture profile, or acceptance rule, did not match what
-    /// [`plan_breakaway_velocity_integral_response`] requires before it may
+    /// `plan_breakaway_velocity_integral_response` requires before it may
     /// authorize Integral.
     InvalidConfirmationPlan,
     /// The breakaway campaign's confirmed proportional gain -- the exact
     /// candidate a held-out confirmation accepted, with no reselection --
-    /// failed [`transition_capable_integral_gain`]. Carries the digest of the
+    /// failed `transition_capable_integral_gain`. Carries the digest of the
     /// rejected [`BandConfirmationPlan`].
     ConfirmedGainNotTransitionCapable(u64),
     /// The plan-time physical acquisition context frozen into the confirmation
@@ -585,7 +585,7 @@ pub enum VelocityIntegralPlanError {
 
 /// Rejected attempt to bind Integral authority to a breakaway confirmation.
 ///
-/// Returned only by [`bind_breakaway_integral_authority`], the single gate
+/// Returned only by `bind_breakaway_integral_authority`, the single gate
 /// that may produce the digest a breakaway-schema [`IntegralAcquisitionAuthority::
 /// proportional_plan_digest`] carries. Every rejection is fail-closed: no digest,
 /// discovery or otherwise, ever authorizes Integral unless it is exactly the
@@ -608,7 +608,7 @@ pub enum BreakawayAuthorityBindingError {
 ///
 /// The inner field is private, and this module exposes no way to construct
 /// one from a raw `u64`: the only path to a value of this type is a
-/// successful call to [`bind_breakaway_integral_authority`], which requires an
+/// successful call to `bind_breakaway_integral_authority`, which requires an
 /// `Ok` [`BandConfirmationAcceptance`] whose candidate matches the bound
 /// [`BandConfirmationPlan`] and whose digest matches the candidate digest
 /// under review. A sibling module -- including this module's own test
@@ -617,7 +617,7 @@ pub enum BreakawayAuthorityBindingError {
 /// code inside `integral_plan.rs` can. This makes "Integral authorized by
 /// anything other than an accepted confirmation" a compile-time
 /// impossibility for every breakaway authority built through
-/// [`IntegralAcquisitionAuthority::new_breakaway`], not merely an untested code path.
+/// `IntegralAcquisitionAuthority::new_breakaway`, not merely an untested code path.
 ///
 /// The type is `pub` only so [`IntegralAcquisitionAuthority::acquisition`] can name it.
 /// Its field is private and no public constructor exists, so the

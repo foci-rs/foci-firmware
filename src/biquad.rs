@@ -74,8 +74,8 @@ pub(crate) const CURRENT_CUTOFF_MAX_HZ: u16 = 10_000;
 ///   `10..=max_hz`
 /// - `pwm_maxcnt`: TMC4671 PWM_MAXCNT register value, must be `> 0`
 /// - `max_hz`: the caller-supplied ceiling for this filter target —
-///   [`MOTION_CUTOFF_MAX_HZ`] for velocity/position,
-///   [`CURRENT_CUTOFF_MAX_HZ`] for torque/flux
+///   `MOTION_CUTOFF_MAX_HZ` for velocity/position,
+///   `CURRENT_CUTOFF_MAX_HZ` for torque/flux
 ///
 /// # Returns
 ///

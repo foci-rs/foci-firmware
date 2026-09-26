@@ -1018,7 +1018,7 @@ pub struct BreakawayProbeResolved {
 }
 
 /// Detailed terminal evidence for a probe campaign that did not resolve a
-/// breakaway (every [`crate::commissioning::outer::velocity::breakaway_campaign::BreakawayProbeOutcome`]
+/// breakaway (every `crate::commissioning::outer::velocity::breakaway_campaign::BreakawayProbeOutcome`
 /// variant other than `BreakawayFound`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BreakawayProbeTerminal {

@@ -276,7 +276,7 @@ pub struct DiscoveryRungNominationInput {
 /// [`rung_nomination_bounds`] has folded them. `lower_percent`/`upper_percent`
 /// are computed with the NOMINATION parameters (the family-eight multiplier,
 /// [`NOMINATION_SCREEN_C_SIGMA`], outward rounding), the same parameters
-/// [`nominate_confirmation_candidate`]'s own [`rung_confirmable_margin_percent`]
+/// [`nominate_confirmation_candidate`]'s own `rung_confirmable_margin_percent`
 /// uses -- see [`rung_nomination_bounds`] for the equivalence this depends on.
 /// When `nominatable` is `false`, `lower_percent`/`upper_percent` carry no
 /// meaning and must not be read.
@@ -298,7 +298,7 @@ pub struct DiscoveryRungNominationBounds {
 /// Fold one rung's raw discovery evidence into its compact nomination bounds,
 /// using the NOMINATION parameters: the family-eight multiplier,
 /// [`NOMINATION_SCREEN_C_SIGMA`], and outward rounding -- the same three
-/// parameters [`rung_confirmable_margin_percent`] uses internally. Intended to
+/// parameters `rung_confirmable_margin_percent` uses internally. Intended to
 /// run once per rung at discovery collection time, so the raw atoms can be
 /// dropped afterward: see `breakaway_campaign.rs`'s `CollectedInBandRungs`.
 ///
@@ -614,10 +614,10 @@ pub fn nominate_confirmation_candidate(
 /// most robust candidate the band admits.
 ///
 /// Runs the SAME selection as [`nominate_confirmation_candidate`] --
-/// [`select_nominated_candidate`] -- but from the compact bounds discovery
+/// `select_nominated_candidate` -- but from the compact bounds discovery
 /// retains after collection instead of recomputing from raw observation
 /// atoms. A non-nominatable rung (`nominatable == false`) is excluded, exactly
-/// as a rung that fails [`rung_response_bounds_percent`] is excluded from the
+/// as a rung that fails `rung_response_bounds_percent` is excluded from the
 /// raw-atom path. When no rung qualifies, this returns
 /// [`TargetBandUnconfirmableFromDiscovery`] and no confirmation strokes may be
 /// spent.
@@ -657,9 +657,9 @@ pub enum NominationRejection {
 /// transition-capable (`p <= transition_ceiling`), so nomination never selects a
 /// gain that Integral admission would later refuse without motion.
 ///
-/// `transition_ceiling` is [`super::integral_plan::max_transition_capable_p`]
+/// `transition_ceiling` is `super::integral_plan::max_transition_capable_p`
 /// for the campaign's live acquisition context -- the exact monotone inverse of
-/// [`super::integral_plan::transition_capable_integral_gain`], so filtering by
+/// `super::integral_plan::transition_capable_integral_gain`, so filtering by
 /// `p <= transition_ceiling` admits exactly the gains that gate would admit.
 /// Wraps the unconstrained [`nominate_confirmation_candidate_from_bounds`]
 /// primitive rather than reimplementing selection, so the two cannot diverge.
@@ -721,7 +721,7 @@ pub enum BandConfirmationFailureCause {
     /// atom was absent, for a reason other than current-headroom exclusion.
     ///
     /// The name predates the acceptance rule dropping `included_mask`; the
-    /// wire code ([`super::breakaway_reporting::BreakawayTerminalCause::ConfirmationLossOfConsensus`],
+    /// wire code (`super::breakaway_reporting::BreakawayTerminalCause::ConfirmationLossOfConsensus`,
     /// 17) is stable, so it is retained. A split depth-three consensus alone no
     /// longer reaches here.
     LossOfConsensus,
@@ -747,10 +747,10 @@ pub struct TargetBandConfirmationInconclusive(pub BandConfirmationFailureCause);
 /// fresh intervals passed. A module outside `band_confirmation` therefore
 /// cannot write `BandConfirmationAcceptance { nominated_p, .. }` or otherwise
 /// mint one, so an `Ok(acceptance)` handed to
-/// [`super::integral_plan::bind_breakaway_integral_authority`] can only have
+/// `super::integral_plan::bind_breakaway_integral_authority` can only have
 /// come from a genuine all-eight-contained held-out pass -- it can never be
 /// synthesized to bypass the confirmation gate. Read the confirmed gain with
-/// [`Self::nominated_p`].
+/// `Self::nominated_p`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct BandConfirmationAcceptance {
     /// Confirmed proportional gain. Private so no sibling module can construct
@@ -847,7 +847,7 @@ fn directional_input_is_complete(input: &ConfirmationDirectionalInput) -> bool {
 /// shrinking it (spec section 7, "Confirmation block").
 ///
 /// The depth-three `included_mask` is not part of the gate; see
-/// [`directional_input_is_complete`] for why. `c_sigma` does not appear here
+/// `directional_input_is_complete` for why. `c_sigma` does not appear here
 /// either: this is real held-out data, not a discovery-derived prediction, so
 /// the interval uses `h = m(8) * SE` directly.
 pub fn evaluate_band_confirmation(

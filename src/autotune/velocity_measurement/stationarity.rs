@@ -484,7 +484,7 @@ impl StationarityWork {
     /// Advance analysis by one bounded raw-observation quantum.
     ///
     /// Moving and diagnostic work visit at most
-    /// [`STATIONARITY_WORK_OBSERVATIONS_PER_STEP`] observations. Rest-witness
+    /// `STATIONARITY_WORK_OBSERVATIONS_PER_STEP` observations. Rest-witness
     /// reconstruction visits at most 16 after the diagnostic is complete.
     pub fn poll<const LEVELS: usize, S>(
         &mut self,

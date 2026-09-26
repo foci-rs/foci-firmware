@@ -9,7 +9,7 @@
 //!   current-representable span.
 //!
 //! The additive ladder is deliberately **not** built by re-anchoring
-//! [`super::sweep_plan::build_gain_ladder`] at the breakaway gain. That generator
+//! `super::sweep_plan::build_gain_ladder` at the breakaway gain. That generator
 //! anchors its geometric rounding to its supplied start, so re-anchoring at a
 //! breakaway gain that is itself a half-octave grid value silently produces a
 //! different set of rungs and loses the measured value.

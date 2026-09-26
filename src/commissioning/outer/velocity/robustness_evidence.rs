@@ -5,7 +5,7 @@
 //! overshoot-peak count, and per-direction valid-cycle/trip/retry counts
 //! reduced from a K-cycle probe run. [`RobustnessEvidence`] bundles both
 //! directions' summaries with the off-terminal residual/IAE medians and the
-//! per-cycle wire triples. [`summary_cause`] derives the summary
+//! per-cycle wire triples. `summary_cause` derives the summary
 //! `ROBUSTNESS_CAUSE_*` code a terminal reply reports from both directions'
 //! tripped masks and inconclusive flags.
 

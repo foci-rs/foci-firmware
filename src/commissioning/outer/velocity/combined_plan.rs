@@ -27,7 +27,7 @@ pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
 /// An Integral plan built under this schema binds the accepted
 /// [`super::band_confirmation::BandConfirmationPlan`] digest instead of a
 /// Proportional sweep digest -- see
-/// [`super::integral_plan::bind_breakaway_integral_authority`]. Historical
+/// `super::integral_plan::bind_breakaway_integral_authority`. Historical
 /// schemas up to and including [`INTEGRAL_PLAN_SCHEMA_REVISION`] keep
 /// their exact digest and behavior; this schema is additive.
 ///

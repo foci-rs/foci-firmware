@@ -1916,7 +1916,7 @@ impl TmcControlRuntime {
     /// Compute the requested control period in microseconds from current state.
     ///
     /// Returns [`crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US`] whenever the
-    /// motor is disabled or [`Self::planner_paths_allowed`] is false.
+    /// motor is disabled or `Self::planner_paths_allowed` is false.
     /// Otherwise, returns the fast transient period when the planner
     /// velocity scale is configured and the `velocity_transient_feedforward`
     /// atomic in channel state is `true`; otherwise
