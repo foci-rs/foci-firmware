@@ -279,30 +279,6 @@ pub fn arm_motor_for_steps(state: &mut DispatchState<'_>) {
         .store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Electrically arm the motor for open-loop voltage-vector diagnostics.
-///
-/// This path deliberately does not call [`arm_motor_for_steps`]. It verifies
-/// the same calibration sentinel and enable-state contract as
-/// [`arm_motor_electrical`], then leaves the terminal stepper-armed flag clear
-/// so STEP/DIR pulses remain rejected while the diagnostic owns voltage
-/// authority.
-///
-/// # Errors
-///
-/// Returns [`crate::autotune::CommissionError::ChipResetDetected`] if the
-/// sentinel is inactive or does not match the TMC4671 readback.
-pub async fn arm_motor_for_voltage_vectors<B: CommissioningBackend>(
-    backend: &mut B,
-    state: &mut DispatchState<'_>,
-) -> Result<(), crate::autotune::CommissionError> {
-    arm_motor_electrical(backend, state).await?;
-    state
-        .tmc
-        .motor_armed
-        .store(false, core::sync::atomic::Ordering::Relaxed);
-    Ok(())
-}
-
 /// De-energize the motor and clear all armed/enabled state.
 ///
 /// Clears the channel motor-armed flag first so the step-timer ISR stops
@@ -404,9 +380,9 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
 /// Scope Note) per `advance()` tick.
 ///
 /// Mirrors `arm_motor_electrical` exactly, including its fail-fast error
-/// policy at every phase. The flat `arm_motor_electrical` function is left in
-/// place, unmodified, for `arm_motor_for_voltage_vectors` and for this type's
-/// own characterization tests.
+/// policy at every phase. The flat `arm_motor_electrical` function remains the
+/// arming path the boards' request handlers call directly, and this type's
+/// characterization tests compare against it.
 ///
 /// The final tick (`FinalizeEnable`) intentionally performs the interlock
 /// check, the `config_apply_pending` recheck, and the enable-pin assertion
@@ -1023,38 +999,6 @@ mod tests {
         arm_motor_for_steps(&mut state);
         assert!(tmc_state().motor_armed.load(Ordering::Relaxed));
         tmc_state().motor_armed.store(false, Ordering::Relaxed);
-        tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
-    }
-
-    #[fixture_test]
-    async fn arm_motor_for_voltage_vectors_keeps_stepper_disarmed() {
-        use core::sync::atomic::Ordering;
-        use foci_tmc4671::current_limit::PidTorqueFluxLimit;
-        let mut backend = MockBackend::new();
-        let (_, mut en, mut gains) = fresh_state_locals();
-        let mut cal = true;
-        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-        tmc_state()
-            .motor_sentinel
-            .store(0x0002_0032, Ordering::Relaxed);
-        tmc_state()
-            .store_current_limit(PidTorqueFluxLimit::new(0x1234).unwrap(), Ordering::Relaxed);
-        let _ = backend
-            .write_register(
-                foci_tmc4671::registers::MOTOR_TYPE_N_POLE_PAIRS,
-                0x0002_0032,
-            )
-            .await;
-
-        arm_motor_for_voltage_vectors(&mut backend, &mut state)
-            .await
-            .expect("sentinel should match");
-
-        assert!(backend.enable_pin);
-        assert!(*state.motor_enabled);
-        assert!(!tmc_state().motor_armed.load(Ordering::Relaxed));
-
-        disarm_motor(&mut backend, &mut state).await;
         tmc_state().motor_sentinel.store(0, Ordering::Relaxed);
     }
 
