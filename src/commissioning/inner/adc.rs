@@ -286,14 +286,17 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                 || !(ADC_OFFSET_MIN..=ADC_OFFSET_MAX).contains(&offset_i1)
             {
                 if matches!(sequence, InnerSequence::Selftest) {
-                    selftest_results.set(1, crate::selftest::SelftestStageValue::fail(0));
+                    selftest_results.set(
+                        crate::selftest::SelftestStage::AdcCalibration,
+                        crate::selftest::SelftestStageValue::fail(0),
+                    );
                 }
                 return super::fail_inner(phase, CommissionError::AdcFault);
             }
 
             if matches!(sequence, InnerSequence::Selftest) {
                 selftest_results.set(
-                    1,
+                    crate::selftest::SelftestStage::AdcCalibration,
                     crate::selftest::SelftestStageValue::adc_offsets(offset_i0, offset_i1),
                 );
             }

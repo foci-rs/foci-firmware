@@ -1350,7 +1350,7 @@ mod tests {
     };
     use crate::selftest::{
         COMMISSION_DIAGNOSTIC_CAPACITY, CommissionDiagnostic, CommissionDiagnostics,
-        SelftestResults, SelftestStageValue,
+        SelftestResults, SelftestStage, SelftestStageValue,
     };
 
     #[test]
@@ -2714,14 +2714,14 @@ mod tests {
     fn selftest_emits_details_results_then_done() {
         let mut results = SelftestResults::default();
         results.set(
-            1,
+            SelftestStage::AdcCalibration,
             SelftestStageValue {
                 status: 0,
                 value: 111,
             },
         );
         results.set(
-            3,
+            SelftestStage::CoilB,
             SelftestStageValue {
                 status: 2,
                 value: 333,

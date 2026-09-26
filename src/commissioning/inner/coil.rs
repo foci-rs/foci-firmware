@@ -143,7 +143,11 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 // Validate coil presence.
                 if sample_failed {
                     if matches!(sequence, InnerSequence::Selftest) {
-                        let stage = if is_coil_b { 3 } else { 2 };
+                        let stage = if is_coil_b {
+                            crate::selftest::SelftestStage::CoilB
+                        } else {
+                            crate::selftest::SelftestStage::CoilA
+                        };
                         selftest_results.set(stage, crate::selftest::SelftestStageValue::fail(0));
                     }
                     return super::fail_inner(phase, CommissionError::CoilFault);
@@ -162,7 +166,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 if !is_coil_b {
                     if matches!(sequence, InnerSequence::Selftest) {
                         selftest_results.set(
-                            2,
+                            crate::selftest::SelftestStage::CoilA,
                             crate::selftest::SelftestStageValue::coil_current(obs.expected),
                         );
                     }
@@ -170,7 +174,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 } else {
                     if matches!(sequence, InnerSequence::Selftest) {
                         selftest_results.set(
-                            3,
+                            crate::selftest::SelftestStage::CoilB,
                             crate::selftest::SelftestStageValue::coil_current(obs.expected),
                         );
                     }

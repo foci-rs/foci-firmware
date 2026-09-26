@@ -48,7 +48,8 @@ impl CommissionDiagnostics {
 }
 
 impl SelftestStageValue {
-    /// Pack two ADC channel offsets into a single u32 for stage 1.
+    /// Pack two ADC channel offsets into a single u32 for
+    /// [`SelftestStage::AdcCalibration`].
     pub fn adc_offsets(offset_i0: u16, offset_i1: u16) -> Self {
         Self {
             status: 0,
@@ -56,7 +57,8 @@ impl SelftestStageValue {
         }
     }
 
-    /// Coil current measurement (stages 2, 3).
+    /// Coil current measurement for [`SelftestStage::CoilA`] and
+    /// [`SelftestStage::CoilB`].
     ///
     /// The i16 is bit-reinterpreted as u16 (two's-complement bit pattern
     /// preserved), then zero-extended to u32. The host decoder must treat
@@ -84,39 +86,79 @@ impl SelftestStageValue {
     }
 }
 
+/// A selftest stage. The discriminant is the stage id sent to the host,
+/// which names stages by the same ids (`SELFTEST_STAGES` in
+/// klipper-foci's `selftest.py`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[repr(u8)]
+pub enum SelftestStage {
+    /// ADC zero-current offsets for both current channels.
+    AdcCalibration = 1,
+    /// Coil A presence and current measurement.
+    CoilA = 2,
+    /// Coil B presence and current measurement.
+    CoilB = 3,
+    /// Phase wiring check across both coils.
+    PhaseWiring = 4,
+    /// Encoder count delta across the alignment sweep.
+    Encoder = 5,
+    /// Encoder direction relative to PHI_E (0 = forward, 1 = reversed).
+    EncoderDirection = 6,
+    /// Resistance-model evidence from electrical identification.
+    RModelEvidence = 7,
+    /// Inductance control-model evidence from electrical identification.
+    LModelEvidence = 8,
+}
+
+impl SelftestStage {
+    /// Every stage, in wire-id order.
+    pub const ALL: [Self; 8] = [
+        Self::AdcCalibration,
+        Self::CoilA,
+        Self::CoilB,
+        Self::PhaseWiring,
+        Self::Encoder,
+        Self::EncoderDirection,
+        Self::RModelEvidence,
+        Self::LModelEvidence,
+    ];
+
+    /// Stage id sent to the host.
+    pub const fn id(self) -> u8 {
+        self as u8
+    }
+
+    const fn index(self) -> usize {
+        self as usize - 1
+    }
+}
+
 /// Per-stage results collected during a selftest run.
 ///
 /// Stages are populated in phase order as they complete; `None` means
 /// the stage was skipped or aborted before running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]
 pub struct SelftestResults {
-    stages: [Option<SelftestStageValue>; 8],
+    stages: [Option<SelftestStageValue>; SelftestStage::ALL.len()],
 }
 
 impl SelftestResults {
-    /// Write a stage result. `stage` is 1-indexed (1..=8). Out-of-range
-    /// stages are silently ignored.
-    pub fn set(&mut self, stage: u8, value: SelftestStageValue) {
-        if (1..=8).contains(&stage) {
-            self.stages[(stage - 1) as usize] = Some(value);
-        }
+    /// Write a stage result.
+    pub fn set(&mut self, stage: SelftestStage, value: SelftestStageValue) {
+        self.stages[stage.index()] = Some(value);
     }
 
-    /// Read a stage result. Returns `None` if unpopulated or out of range.
-    pub fn stage(&self, stage: u8) -> Option<SelftestStageValue> {
-        if (1..=8).contains(&stage) {
-            self.stages[(stage - 1) as usize]
-        } else {
-            None
-        }
+    /// Read a stage result. Returns `None` if unpopulated.
+    pub fn stage(&self, stage: SelftestStage) -> Option<SelftestStageValue> {
+        self.stages[stage.index()]
     }
 
     /// Iterate populated stages in order, yielding `(stage_id, value)` pairs.
     pub fn iter(&self) -> impl Iterator<Item = (u8, SelftestStageValue)> + '_ {
-        self.stages
-            .iter()
-            .enumerate()
-            .filter_map(|(i, o)| o.map(|v| (i as u8 + 1, v)))
+        SelftestStage::ALL
+            .into_iter()
+            .zip(self.stages)
+            .filter_map(|(stage, o)| o.map(|v| (stage.id(), v)))
     }
 }
 
@@ -125,26 +167,47 @@ mod selftest_results_tests {
     use super::*;
 
     #[test]
-    fn results_default_has_all_stages_unpopulated() {
-        let r = SelftestResults::default();
-        for stage in 1..=8u8 {
-            assert!(r.stage(stage).is_none(), "stage {} should be None", stage);
+    fn stage_wire_ids_match_host_selftest_stage_table() {
+        let ids: [(SelftestStage, u8); 8] = [
+            (SelftestStage::AdcCalibration, 1),
+            (SelftestStage::CoilA, 2),
+            (SelftestStage::CoilB, 3),
+            (SelftestStage::PhaseWiring, 4),
+            (SelftestStage::Encoder, 5),
+            (SelftestStage::EncoderDirection, 6),
+            (SelftestStage::RModelEvidence, 7),
+            (SelftestStage::LModelEvidence, 8),
+        ];
+        assert_eq!(SelftestStage::ALL.len(), ids.len());
+        for ((stage, id), listed) in ids.into_iter().zip(SelftestStage::ALL) {
+            assert_eq!(stage.id(), id);
+            assert_eq!(stage, listed);
         }
     }
 
     #[test]
-    fn set_and_get_round_trips_value() {
+    fn results_default_has_all_stages_unpopulated() {
+        let r = SelftestResults::default();
+        for stage in SelftestStage::ALL {
+            assert!(r.stage(stage).is_none(), "{stage:?} should be None");
+        }
+    }
+
+    #[test]
+    fn set_and_get_round_trips_value_under_its_wire_id() {
         let mut r = SelftestResults::default();
         r.set(
-            3,
+            SelftestStage::CoilB,
             SelftestStageValue {
                 status: 0,
                 value: 0x1234,
             },
         );
-        let got = r.stage(3).expect("stage 3 populated");
+        let got = r.stage(SelftestStage::CoilB).expect("coil B populated");
         assert_eq!(got.status, 0);
         assert_eq!(got.value, 0x1234);
+        let emitted: heapless::Vec<(u8, SelftestStageValue), 8> = r.iter().collect();
+        assert_eq!(emitted.as_slice(), &[(3, got)]);
     }
 
     #[test]

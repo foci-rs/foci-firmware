@@ -2069,14 +2069,14 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
             match sequence {
                 InnerSequence::Selftest => {
                     selftest_results.set(
-                        7,
+                        crate::selftest::SelftestStage::RModelEvidence,
                         crate::selftest::SelftestStageValue {
                             status: 0,
                             value: assembly.model.r_count_milli,
                         },
                     );
                     selftest_results.set(
-                        8,
+                        crate::selftest::SelftestStage::LModelEvidence,
                         crate::selftest::SelftestStageValue {
                             status: 0,
                             value: assembly.model.l_count_micro,

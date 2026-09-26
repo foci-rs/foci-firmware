@@ -602,7 +602,10 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 // the next reading. Fail immediately instead.
                 if above_window {
                     if matches!(sequence, InnerSequence::Selftest) {
-                        selftest_results.set(5, crate::selftest::SelftestStageValue::fail(0));
+                        selftest_results.set(
+                            crate::selftest::SelftestStage::Encoder,
+                            crate::selftest::SelftestStageValue::fail(0),
+                        );
                     }
                     return super::fail_inner(phase, CommissionError::EncoderFault);
                 }
@@ -630,7 +633,10 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
                 }
 
                 if matches!(sequence, InnerSequence::Selftest) {
-                    selftest_results.set(5, crate::selftest::SelftestStageValue::fail(0));
+                    selftest_results.set(
+                        crate::selftest::SelftestStage::Encoder,
+                        crate::selftest::SelftestStageValue::fail(0),
+                    );
                 }
                 return super::fail_inner(phase, CommissionError::EncoderFault);
             }
@@ -640,19 +646,18 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             // baseline because the rotor is still held at the displaced
             // sweep angle; EncoderAlign::Setup will drive back to PHI=0.
             if matches!(sequence, InnerSequence::Selftest) {
-                // Raw encoder delta magnitude; direction captured in stage 6.
+                // Raw encoder delta magnitude; the sign goes to EncoderDirection.
                 selftest_results.set(
-                    5,
+                    crate::selftest::SelftestStage::Encoder,
                     crate::selftest::SelftestStageValue {
                         status: 0,
                         value: delta.absolute_counts(),
                     },
                 );
-                // Stage 6: encoder direction (0=forward, 1=reversed).
                 // Reversed when the encoder count decreases as PHI_E increases.
                 let reversed = delta.signed_counts() < 0;
                 selftest_results.set(
-                    6,
+                    crate::selftest::SelftestStage::EncoderDirection,
                     crate::selftest::SelftestStageValue {
                         status: 0,
                         value: if reversed { 1 } else { 0 },
@@ -1398,8 +1403,20 @@ mod tests {
                 result,
                 StepResult::PhaseChanged(CommissionPhase::EncoderAlign)
             ));
-            assert_eq!(selftest_results.stage(5).unwrap().value, 4);
-            assert_eq!(selftest_results.stage(6).unwrap().value, 0);
+            assert_eq!(
+                selftest_results
+                    .stage(crate::selftest::SelftestStage::Encoder)
+                    .unwrap()
+                    .value,
+                4
+            );
+            assert_eq!(
+                selftest_results
+                    .stage(crate::selftest::SelftestStage::EncoderDirection)
+                    .unwrap()
+                    .value,
+                0
+            );
         });
     }
 
@@ -1887,7 +1904,11 @@ mod tests {
                 phase,
                 InnerPhase::Failed(CommissionError::EncoderFault)
             ));
-            assert!(selftest_results.stage(6).is_none());
+            assert!(
+                selftest_results
+                    .stage(crate::selftest::SelftestStage::EncoderDirection)
+                    .is_none()
+            );
         });
     }
 
