@@ -5,7 +5,6 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::autotune::CommissionError;
 use crate::commission_dispatch::{DispatchState, TerminalRestoreMachine};
 use crate::commissioning::CommissioningEngine;
-use crate::commissioning::schedule::CommissionEvent;
 use crate::commissioning::schedule::{CommissionPoll, CommissionTerminal, adapt_step_result};
 use crate::commissioning::types::{CommissioningBackend, EngineKind};
 use crate::pid::InnerLoopGains;
@@ -175,20 +174,6 @@ pub struct TmcControlRuntime {
 }
 
 impl TmcControlRuntime {
-    fn retain_integral_authority_from_event(
-        channel: u8,
-        event: &Option<CommissionEvent>,
-        retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
-    ) {
-        if let Some(CommissionEvent::VelocityIntegralPlan { plan, .. }) = event {
-            crate::commission_dispatch::integral::install_authority_from_plan(
-                channel,
-                retention.integral,
-                *plan,
-            );
-        }
-    }
-
     /// Create a runtime for one board-local TMC channel.
     pub const fn new_for_channel(channel: u8) -> Self {
         Self {
@@ -977,212 +962,6 @@ impl TmcControlRuntime {
         } else {
             None
         }
-    }
-
-    /// Dispatch a terminal commissioning result into the board-facing action.
-    ///
-    /// Drives the restore machine to completion in one call. Boards poll
-    /// [`Self::poll_commissioning_terminal`] instead so a shutdown or lease
-    /// expiry can interrupt the restore between backend operations.
-    pub async fn drive_commissioning_terminal_with_stages<B, E>(
-        &mut self,
-        result: CommissionTerminal,
-        backend: &mut B,
-        context: crate::commission_dispatch::CommissionTerminalContext<'_, E>,
-        tmc: &'static TmcChannelState,
-        stepper: &'static StepperChannelState,
-        config: &TmcControlConfig,
-    ) -> Option<ScheduledCommissionTickAction>
-    where
-        B: CommissioningBackend,
-        E: FnOnce(crate::commission_dispatch::ReplyPayload),
-    {
-        self.commission_engine.as_ref()?;
-        let crate::commission_dispatch::CommissionTerminalContext {
-            mut retention,
-            emit_evidence,
-        } = context;
-        self.begin_commissioning_terminal(result, config);
-        let outcome = loop {
-            if let Some(outcome) = self
-                .poll_restore_outcome(backend, &mut retention, tmc, stepper)
-                .await
-            {
-                break outcome;
-            }
-        };
-        match outcome {
-            crate::commission_dispatch::CommissionOutcome::Terminal { reply, actions } => {
-                Some(ScheduledCommissionTickAction::Terminal { reply, actions })
-            }
-            crate::commission_dispatch::CommissionOutcome::Evidence { reply } => {
-                emit_evidence(reply);
-                Some(ScheduledCommissionTickAction::WorkflowContinuation)
-            }
-            crate::commission_dispatch::CommissionOutcome::PhaseChanged {
-                oid,
-                phase_id,
-                engine_kind,
-            } => Some(ScheduledCommissionTickAction::ReadyNow {
-                event: Some(
-                    crate::commissioning::schedule::CommissionEvent::PhaseChanged {
-                        oid,
-                        phase_id,
-                        engine_kind,
-                    },
-                ),
-            }),
-            crate::commission_dispatch::CommissionOutcome::Continue => {
-                unreachable!("terminal poll produced a nonterminal dispatch action")
-            }
-        }
-    }
-
-    /// Classify one explicit poll, starting a terminal restore when the poll is
-    /// terminal.
-    ///
-    /// Returns `None` when a restore was started (or when no engine is
-    /// installed); the caller then polls [`Self::poll_commissioning_terminal`]
-    /// until it reports the terminal action.
-    pub fn begin_commissioning_poll_with_stages(
-        &mut self,
-        poll: CommissionPoll,
-        retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
-        config: &TmcControlConfig,
-    ) -> Option<ScheduledCommissionTickAction> {
-        match poll {
-            CommissionPoll::ReadyNow { event } => {
-                Self::retain_integral_authority_from_event(self.channel, &event, retention);
-                self.classify_commission_poll(CommissionPoll::ReadyNow { event })
-            }
-            CommissionPoll::At {
-                timestamp_us,
-                event,
-            } => {
-                Self::retain_integral_authority_from_event(self.channel, &event, retention);
-                self.classify_commission_poll(CommissionPoll::At {
-                    timestamp_us,
-                    event,
-                })
-            }
-            CommissionPoll::Terminal { result } => {
-                self.commission_engine.as_ref()?;
-                self.begin_commissioning_terminal(result, config);
-                None
-            }
-        }
-    }
-
-    /// Convert an explicit poll into the board-facing scheduled action.
-    pub async fn drive_commissioning_poll_with_stages<B, E>(
-        &mut self,
-        poll: CommissionPoll,
-        backend: &mut B,
-        mut context: crate::commission_dispatch::CommissionTerminalContext<'_, E>,
-        tmc: &'static TmcChannelState,
-        stepper: &'static StepperChannelState,
-        config: &TmcControlConfig,
-    ) -> Option<ScheduledCommissionTickAction>
-    where
-        B: CommissioningBackend,
-        E: FnOnce(crate::commission_dispatch::ReplyPayload),
-    {
-        match poll {
-            CommissionPoll::ReadyNow { event } => {
-                Self::retain_integral_authority_from_event(
-                    self.channel,
-                    &event,
-                    &mut context.retention,
-                );
-                self.classify_commission_poll(CommissionPoll::ReadyNow { event })
-            }
-            CommissionPoll::At {
-                timestamp_us,
-                event,
-            } => {
-                Self::retain_integral_authority_from_event(
-                    self.channel,
-                    &event,
-                    &mut context.retention,
-                );
-                self.classify_commission_poll(CommissionPoll::At {
-                    timestamp_us,
-                    event,
-                })
-            }
-            CommissionPoll::Terminal { result } => {
-                self.drive_commissioning_terminal_with_stages(
-                    result, backend, context, tmc, stepper, config,
-                )
-                .await
-            }
-        }
-    }
-
-    /// Dispatch a terminal with temporary empty Integral retention.
-    ///
-    /// Delegates to [`Self::drive_commissioning_terminal_with_stages`] with a
-    /// throwaway Integral candidate slot, for callers that do not carry a
-    /// persistent cross-call retention context.
-    pub async fn drive_commissioning_terminal<B>(
-        &mut self,
-        result: CommissionTerminal,
-        backend: &mut B,
-        tmc: &'static TmcChannelState,
-        stepper: &'static StepperChannelState,
-        config: &TmcControlConfig,
-    ) -> Option<ScheduledCommissionTickAction>
-    where
-        B: CommissioningBackend,
-    {
-        let mut integral_candidate =
-            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
-            );
-        self.drive_commissioning_terminal_with_stages(
-            result,
-            backend,
-            crate::commission_dispatch::CommissionTerminalContext::new(
-                &mut integral_candidate,
-                |_| unreachable!("temporary Integral retention cannot continue a workflow"),
-            ),
-            tmc,
-            stepper,
-            config,
-        )
-        .await
-    }
-
-    /// Dispatch one poll with temporary empty Integral retention.
-    ///
-    /// Delegates to [`Self::drive_commissioning_poll_with_stages`] with a
-    /// throwaway Integral candidate slot, for callers that do not carry a
-    /// persistent cross-call retention context.
-    pub async fn drive_commissioning_poll<B>(
-        &mut self,
-        poll: CommissionPoll,
-        backend: &mut B,
-        tmc: &'static TmcChannelState,
-        stepper: &'static StepperChannelState,
-        config: &TmcControlConfig,
-    ) -> Option<ScheduledCommissionTickAction>
-    where
-        B: CommissioningBackend,
-    {
-        let mut integral_candidate =
-            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
-            );
-        self.drive_commissioning_poll_with_stages(
-            poll,
-            backend,
-            crate::commission_dispatch::CommissionTerminalContext::new(
-                &mut integral_candidate,
-                |_| unreachable!("temporary Integral retention cannot continue a workflow"),
-            ),
-            tmc,
-            stepper,
-            config,
-        )
-        .await
     }
 
     /// Prepare an enable request up to the point where SPI or backend work begins.
@@ -2251,6 +2030,32 @@ impl TmcControlRuntime {
             crate::tmc::VELOCITY_TRANSIENT_DEFAULT_RATE_HZ
         };
         crate::tmc::velocity_transient_period_us(rate_hz)
+    }
+
+    /// Begin a terminal restore and poll it to completion, as the board's
+    /// commission unit does across ticks.
+    #[cfg(test)]
+    pub(crate) async fn drive_commissioning_terminal_for_test<B>(
+        &mut self,
+        result: CommissionTerminal,
+        backend: &mut B,
+        retention: &mut crate::commission_dispatch::CommissionRetention<'_>,
+        config: &TmcControlConfig,
+    ) -> ScheduledCommissionTickAction
+    where
+        B: CommissioningBackend,
+    {
+        let tmc = crate::state::tmc::tmc_channel0();
+        let stepper = crate::state::stepper::stepper_channel0();
+        self.begin_commissioning_terminal(result, config);
+        loop {
+            if let Some(action) = self
+                .poll_commissioning_terminal(backend, retention, tmc, stepper)
+                .await
+            {
+                return action;
+            }
+        }
     }
 
     #[cfg(test)]

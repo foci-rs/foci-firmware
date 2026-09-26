@@ -81,27 +81,6 @@ impl<'a> CommissionRetention<'a> {
     }
 }
 
-/// Stage-retention and immediate evidence emission for one terminal dispatch.
-pub struct CommissionTerminalContext<'a, E> {
-    /// Mutable Integral retained evidence for this dispatch.
-    pub retention: CommissionRetention<'a>,
-    /// Board-owned emitter used before returning the compact scheduler action.
-    pub emit_evidence: E,
-}
-
-impl<'a, E> CommissionTerminalContext<'a, E> {
-    /// Borrow the retained Integral slot and bind the board's reply emitter.
-    pub fn new(
-        integral: &'a mut crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot,
-        emit_evidence: E,
-    ) -> Self {
-        Self {
-            retention: CommissionRetention::new(integral),
-            emit_evidence,
-        }
-    }
-}
-
 impl<'a> DispatchState<'a> {
     /// Build a dispatch-state view for one board-local motor channel.
     pub fn new(

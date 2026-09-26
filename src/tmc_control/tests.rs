@@ -787,46 +787,6 @@ fn scheduled_capture_shutdown_uses_canonical_engine_failure_path() {
 }
 
 #[test]
-fn scheduled_dispatch_preserves_wait_action() {
-    pollster::block_on(async {
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-            .lock()
-            .await;
-        crate::state::tmc::reset_all_tmc_channels();
-        crate::state::stepper::reset_all_stepper_channels();
-        let tmc = crate::state::tmc::tmc_channel0();
-        let stepper = crate::state::stepper::stepper_channel0();
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut backend = MockBackend::new();
-        let config = commissioning_runtime_config();
-        runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
-
-        let action = runtime
-            .drive_commissioning_poll(
-                crate::commissioning::schedule::CommissionPoll::At {
-                    timestamp_us: 43_000,
-                    event: None,
-                },
-                &mut backend,
-                tmc,
-                stepper,
-                &config,
-            )
-            .await
-            .expect("engine should be active");
-
-        assert!(matches!(
-            action,
-            ScheduledCommissionTickAction::At {
-                timestamp_us: 43_000,
-                event: None,
-            }
-        ));
-        assert!(runtime.is_commission_active());
-    });
-}
-
-#[test]
 fn scheduled_classification_is_synchronous_for_at_action() {
     let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
     crate::state::tmc::reset_all_tmc_channels();
@@ -852,63 +812,54 @@ fn scheduled_classification_is_synchronous_for_at_action() {
 }
 
 #[test]
-fn scheduled_dispatch_preserves_phase_event_context_without_delay() {
-    pollster::block_on(async {
-        let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX
-            .lock()
-            .await;
-        crate::state::tmc::reset_all_tmc_channels();
-        crate::state::stepper::reset_all_stepper_channels();
-        let tmc = crate::state::tmc::tmc_channel0();
-        let stepper = crate::state::stepper::stepper_channel0();
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut backend = MockBackend::new();
-        let config = commissioning_runtime_config();
-        runtime.set_commission_engine(CommissioningEngine::new_commission(
-            37,
-            crate::autotune::CommissionProfile::Balanced,
-        ));
-        let poll = crate::commissioning::schedule::adapt_step_result(
-            crate::commissioning::types::StepResult::PhaseChanged(
-                crate::autotune::CommissionPhase::ElectricalIdentification,
+fn scheduled_classification_preserves_phase_event_context_without_delay() {
+    let _guard = crate::commission_dispatch::test_support::SHARED_STATE_MUTEX.blocking_lock();
+    crate::state::tmc::reset_all_tmc_channels();
+    crate::state::stepper::reset_all_stepper_channels();
+    let mut runtime = TmcControlRuntime::new_for_channel(0);
+    runtime.set_commission_engine(CommissioningEngine::new_commission(
+        37,
+        crate::autotune::CommissionProfile::Balanced,
+    ));
+    let poll = crate::commissioning::schedule::adapt_step_result(
+        crate::commissioning::types::StepResult::PhaseChanged(
+            crate::autotune::CommissionPhase::ElectricalIdentification,
+        ),
+        81_250,
+        Some((37, crate::commissioning::types::EngineKind::Commission)),
+    )
+    .expect("phase change should produce a scheduled poll");
+
+    assert!(matches!(
+        &poll,
+        crate::commissioning::schedule::CommissionPoll::ReadyNow {
+            event: Some(
+                crate::commissioning::schedule::CommissionEvent::PhaseChanged {
+                    oid: 37,
+                    phase_id: crate::autotune::CommissionPhase::ElectricalIdentification,
+                    engine_kind: crate::commissioning::types::EngineKind::Commission,
+                }
             ),
-            81_250,
-            Some((37, crate::commissioning::types::EngineKind::Commission)),
-        )
-        .expect("phase change should produce a scheduled poll");
+        }
+    ));
 
-        assert!(matches!(
-            &poll,
-            crate::commissioning::schedule::CommissionPoll::ReadyNow {
-                event: Some(
-                    crate::commissioning::schedule::CommissionEvent::PhaseChanged {
-                        oid: 37,
-                        phase_id: crate::autotune::CommissionPhase::ElectricalIdentification,
-                        engine_kind: crate::commissioning::types::EngineKind::Commission,
-                    }
-                ),
-            }
-        ));
+    let action = runtime
+        .classify_commission_poll(poll)
+        .expect("engine should be active");
 
-        let action = runtime
-            .drive_commissioning_poll(poll, &mut backend, tmc, stepper, &config)
-            .await
-            .expect("engine should be active");
-
-        assert!(matches!(
-            action,
-            ScheduledCommissionTickAction::ReadyNow {
-                event: Some(
-                    crate::commissioning::schedule::CommissionEvent::PhaseChanged {
-                        oid: 37,
-                        phase_id: crate::autotune::CommissionPhase::ElectricalIdentification,
-                        engine_kind: crate::commissioning::types::EngineKind::Commission,
-                    }
-                ),
-            }
-        ));
-        assert!(runtime.is_commission_active());
-    });
+    assert!(matches!(
+        action,
+        ScheduledCommissionTickAction::ReadyNow {
+            event: Some(
+                crate::commissioning::schedule::CommissionEvent::PhaseChanged {
+                    oid: 37,
+                    phase_id: crate::autotune::CommissionPhase::ElectricalIdentification,
+                    engine_kind: crate::commissioning::types::EngineKind::Commission,
+                }
+            ),
+        }
+    ));
+    assert!(runtime.is_commission_active());
 }
 
 #[test]
@@ -920,24 +871,22 @@ fn scheduled_dispatch_preserves_terminal_reply_and_actions() {
         crate::state::tmc::reset_all_tmc_channels();
         crate::state::stepper::reset_all_stepper_channels();
         let tmc = crate::state::tmc::tmc_channel0();
-        let stepper = crate::state::stepper::stepper_channel0();
         let mut runtime = TmcControlRuntime::new_for_channel(0);
         let mut backend = MockBackend::new();
         let config = commissioning_runtime_config();
         runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(7, tmc));
 
+        let mut integral =
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
+            );
         let action = runtime
-            .drive_commissioning_poll(
-                crate::commissioning::schedule::CommissionPoll::Terminal {
-                    result: crate::commissioning::schedule::CommissionTerminal::SelftestDone,
-                },
+            .drive_commissioning_terminal_for_test(
+                crate::commissioning::schedule::CommissionTerminal::SelftestDone,
                 &mut backend,
-                tmc,
-                stepper,
+                &mut crate::commission_dispatch::CommissionRetention::new(&mut integral),
                 &config,
             )
-            .await
-            .expect("terminal dispatch should produce an action");
+            .await;
 
         match action {
             ScheduledCommissionTickAction::Terminal {
@@ -985,20 +934,19 @@ fn scheduled_dispatch_preserves_accepted_commission_reply_and_actions() {
             crate::autotune::CommissionProfile::Balanced,
         ));
 
+        let mut integral =
+            crate::commissioning::outer::velocity::integral_reproduction::IntegralRetentionSlot::new(
+            );
         let action = runtime
-            .drive_commissioning_poll(
-                crate::commissioning::schedule::CommissionPoll::Terminal {
-                    result: crate::commissioning::schedule::CommissionTerminal::CommissionDone(
-                        accepted_commission_result(),
-                    ),
-                },
+            .drive_commissioning_terminal_for_test(
+                crate::commissioning::schedule::CommissionTerminal::CommissionDone(
+                    accepted_commission_result(),
+                ),
                 &mut backend,
-                tmc,
-                stepper,
+                &mut crate::commission_dispatch::CommissionRetention::new(&mut integral),
                 &config,
             )
-            .await
-            .expect("terminal dispatch should produce an action");
+            .await;
 
         match action {
             ScheduledCommissionTickAction::Terminal {

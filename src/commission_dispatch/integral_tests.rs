@@ -815,68 +815,6 @@ async fn breakaway_integral_plan_ready_retains_terminal_authority() {
     ));
 }
 
-#[fixture_test]
-async fn scheduled_integral_plan_event_retains_terminal_authority() {
-    crate::state::tmc::reset_all_tmc_channels();
-    crate::state::stepper::reset_all_stepper_channels();
-
-    use crate::commission_dispatch::test_support::MockBackend;
-    use crate::commissioning::CommissioningEngine;
-    use crate::commissioning::schedule::{CommissionEvent, CommissionPoll};
-    use crate::config::TmcConfig;
-    use crate::tmc_control::{ScheduledCommissionTickAction, TmcControlConfig};
-
-    let plan = breakaway_integral_plan();
-    let expected_authority = retained_authority();
-    let mut runtime = crate::tmc_control::TmcControlRuntime::new_for_channel(CHANNEL);
-    runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(
-        1,
-        crate::state::tmc::tmc_channel0(),
-    ));
-    let mut integral_slot = IntegralRetentionSlot::new();
-    let mut backend = MockBackend::new();
-    let config = TmcControlConfig::new(84_000_000, PWM_HZ, 0.03125, TmcConfig::default_for_test());
-    let poll = CommissionPoll::ReadyNow {
-        event: Some(CommissionEvent::VelocityIntegralPlan {
-            oid: 1,
-            run_sequence: 9,
-            plan,
-        }),
-    };
-    let mut emitted_reply = None;
-
-    let action = runtime
-        .drive_commissioning_poll_with_stages(
-            poll,
-            &mut backend,
-            super::CommissionTerminalContext::new(&mut integral_slot, |reply| {
-                emitted_reply = Some(reply)
-            }),
-            crate::state::tmc::tmc_channel0(),
-            crate::state::stepper::stepper_channel0(),
-            &config,
-        )
-        .await
-        .expect("active engine should classify the scheduled plan event");
-
-    assert_eq!(
-        integral_slot.state(),
-        IntegralRetentionSlotState::AuthorityOnly
-    );
-    assert_eq!(integral_slot.authority(), Some(expected_authority));
-    assert!(emitted_reply.is_none());
-    assert!(matches!(
-        action,
-        ScheduledCommissionTickAction::ReadyNow {
-            event: Some(CommissionEvent::VelocityIntegralPlan {
-                oid: 1,
-                run_sequence: 9,
-                plan: reported,
-            }),
-        } if reported == plan
-    ));
-}
-
 #[test]
 fn outer_safety_timing_terminal_order_integral_resume() {
     pollster::block_on(async {
@@ -1370,20 +1308,14 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
     );
     second.rest_boundary_rung_plus_one = 3;
 
-    let mut emitted_reply = None;
     let action = runtime
-        .drive_commissioning_terminal_with_stages(
+        .drive_commissioning_terminal_for_test(
             CommissionTerminal::VelocityIntegral(second),
             &mut backend,
-            super::CommissionTerminalContext::new(&mut integral_slot, |reply| {
-                emitted_reply = Some(reply)
-            }),
-            crate::state::tmc::tmc_channel0(),
-            crate::state::stepper::stepper_channel0(),
+            &mut super::CommissionRetention::new(&mut integral_slot),
             &config,
         )
-        .await
-        .expect("active engine should drive the promoted terminal");
+        .await;
 
     // A promoted RepeatabilityConfirmed from the terminal poll ends the workflow
     // like any other terminal outcome, disarming instead of continuing into
@@ -1399,9 +1331,6 @@ async fn promoted_complete_from_terminal_poll_emits_terminal_reply() {
         terminal.outcome,
         VelocityIntegralOutcome::RepeatabilityConfirmed
     );
-    // The Terminal action already carries the reply; the terminal poll must
-    // not also forward it through the report-only evidence channel.
-    assert!(emitted_reply.is_none());
 }
 
 #[fixture_test]

@@ -88,10 +88,7 @@ impl IntegralPreflight {
 /// Install retained Integral authority from one exact execution plan.
 ///
 /// Public so a board can retain authority directly from the scheduled plan
-/// event. Boards whose budget keeps nonterminal classification outside the
-/// terminal async dispatch future cannot reach the retention inside
-/// [`crate::tmc_control::TmcControlRuntime::drive_commissioning_poll_with_stages`],
-/// and an Integral terminal arriving with an empty slot fails closed.
+/// event; an Integral terminal arriving with an empty slot fails closed.
 pub fn install_authority_from_plan(
     channel: u8,
     integral_candidate: &mut IntegralRetentionSlot,
