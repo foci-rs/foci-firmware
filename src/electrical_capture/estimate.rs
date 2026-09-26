@@ -1,4 +1,4 @@
-use super::{ElectricalCaptureSample, R_SENSITIVITY_MAX_L_SHIFT_PERMILLE};
+use super::ElectricalCaptureSample;
 use crate::autotune::Permille;
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
@@ -52,36 +52,6 @@ pub struct LinearFit {
     pub sample_count: u16,
     /// Elapsed capture time covered by the fit.
     pub elapsed_us: u32,
-}
-
-/// Resistance drop model used to estimate inductance sensitivity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct RDropModel {
-    /// R drop in voltage-count millis per current count.
-    pub r_count_slope_milli: i32,
-    /// Applied d-axis voltage count.
-    pub ud_count: i16,
-    /// Symmetric R perturbation in permille.
-    pub perturb_permille: u16,
-}
-
-/// Inductance sensitivity evidence under an R perturbation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct InductanceEvidence {
-    /// Nominal inductance estimate in microseconds.
-    pub l_nominal_us: u32,
-    /// L shift when R is perturbed downward, in permille of nominal L.
-    pub l_shift_minus_permille: u16,
-    /// L shift when R is perturbed upward, in permille of nominal L.
-    pub l_shift_plus_permille: u16,
-}
-
-impl InductanceEvidence {
-    /// Return true when both R-perturbation shifts satisfy the 3% structural gate.
-    pub fn passes_3_percent_gate(&self) -> bool {
-        self.l_shift_minus_permille <= R_SENSITIVITY_MAX_L_SHIFT_PERMILLE
-            && self.l_shift_plus_permille <= R_SENSITIVITY_MAX_L_SHIFT_PERMILLE
-    }
 }
 
 /// Current delta threshold for theta-onset detection.
@@ -759,31 +729,6 @@ pub fn fit_current_slope(
     })
 }
 
-/// Estimate nominal inductance and sensitivity to R-model perturbation.
-///
-/// Returns `None` when the slope or nominal inductance is zero, the R
-/// perturbation exceeds 1000 permille, or checked arithmetic/conversions fail.
-pub fn inductance_sensitivity(fit: LinearFit, model: RDropModel) -> Option<InductanceEvidence> {
-    if model.perturb_permille > 1_000 {
-        return None;
-    }
-
-    let nominal = inductance_us_for_r_scale_permille(fit, model, 1_000)?;
-    if nominal == 0 {
-        return None;
-    }
-
-    let perturb = i32::from(model.perturb_permille);
-    let minus = inductance_us_for_r_scale_permille(fit, model, 1_000_i32.checked_sub(perturb)?)?;
-    let plus = inductance_us_for_r_scale_permille(fit, model, 1_000_i32.checked_add(perturb)?)?;
-
-    Some(InductanceEvidence {
-        l_nominal_us: u32::try_from(nominal).ok()?,
-        l_shift_minus_permille: shift_permille(nominal, minus)?,
-        l_shift_plus_permille: shift_permille(nominal, plus)?,
-    })
-}
-
 /// Detect the first timestamp where primary current departs from the initial sample.
 ///
 /// Returns `None` when there are no samples or no sample reaches the threshold.
@@ -949,27 +894,6 @@ pub fn realized_frequency_millihz(phi_delta_counts: u32, elapsed_us: u32) -> Opt
         .checked_add(denominator.checked_div(2)?)?
         .checked_div(denominator)?;
     u32::try_from(millihz).ok()
-}
-
-fn inductance_us_for_r_scale_permille(
-    fit: LinearFit,
-    model: RDropModel,
-    r_scale_permille: i32,
-) -> Option<u64> {
-    let slope = fit.slope_count_per_s.unsigned_abs();
-    if slope == 0 {
-        return None;
-    }
-
-    let r_drop_count = i64::from(fit.mean_current_count)
-        .checked_mul(i64::from(model.r_count_slope_milli))?
-        .checked_mul(i64::from(r_scale_permille))?
-        / 1_000_000;
-    let effective_voltage = i64::from(model.ud_count).checked_sub(r_drop_count)?;
-    effective_voltage
-        .unsigned_abs()
-        .checked_mul(1_000_000)?
-        .checked_div(slope)
 }
 
 fn shift_permille(nominal: u64, perturbed: u64) -> Option<u16> {
@@ -1524,87 +1448,6 @@ mod tests {
                 FitWindow {
                     start_index: 0,
                     end_index: 3,
-                },
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn r_sensitivity_reports_l_shift_permille() {
-        let fit = LinearFit {
-            slope_count_per_s: 400_000,
-            mean_current_count: 100,
-            intercept_count: 10,
-            intercept_micro_count: 10_000_000,
-            residual_rms_count: 0,
-            residual_rms_micro_count: 0,
-            sample_count: 4,
-            elapsed_us: 300,
-        };
-
-        let evidence = inductance_sensitivity(
-            fit,
-            RDropModel {
-                r_count_slope_milli: 1_000,
-                ud_count: 2_000,
-                perturb_permille: 200,
-            },
-        )
-        .expect("nonzero slope should produce evidence");
-
-        assert_eq!(evidence.l_nominal_us, 4_750);
-        assert_eq!(evidence.l_shift_minus_permille, 11);
-        assert_eq!(evidence.l_shift_plus_permille, 11);
-        assert!(evidence.passes_3_percent_gate());
-    }
-
-    #[test]
-    fn r_sensitivity_accepts_full_negative_perturbation_boundary() {
-        let fit = LinearFit {
-            slope_count_per_s: 400_000,
-            mean_current_count: 100,
-            intercept_count: 10,
-            intercept_micro_count: 10_000_000,
-            residual_rms_count: 0,
-            residual_rms_micro_count: 0,
-            sample_count: 4,
-            elapsed_us: 300,
-        };
-
-        assert!(
-            inductance_sensitivity(
-                fit,
-                RDropModel {
-                    r_count_slope_milli: 1_000,
-                    ud_count: 2_000,
-                    perturb_permille: 1_000,
-                },
-            )
-            .is_some()
-        );
-    }
-
-    #[test]
-    fn r_sensitivity_rejects_over_full_negative_perturbation() {
-        let fit = LinearFit {
-            slope_count_per_s: 400_000,
-            mean_current_count: 100,
-            intercept_count: 10,
-            intercept_micro_count: 10_000_000,
-            residual_rms_count: 0,
-            residual_rms_micro_count: 0,
-            sample_count: 4,
-            elapsed_us: 300,
-        };
-
-        assert_eq!(
-            inductance_sensitivity(
-                fit,
-                RDropModel {
-                    r_count_slope_milli: 1_000,
-                    ud_count: 2_000,
-                    perturb_permille: 1_001,
                 },
             ),
             None
