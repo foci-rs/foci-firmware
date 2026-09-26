@@ -34,20 +34,6 @@ impl BlockLevel {
         self.completed_totals = Some(completed_totals);
         Ok(())
     }
-
-    fn merge_completed(&mut self, other: &Self) -> Result<(), VelocityMeasurementError> {
-        let mut completed = self.completed;
-        completed.merge(other.completed)?;
-        let completed_totals = match (self.completed_totals, other.completed_totals) {
-            (Some(left), Some(right)) => Some(left.checked_merge(right)?),
-            (Some(totals), None) | (None, Some(totals)) => Some(totals),
-            (None, None) => None,
-        };
-
-        self.completed = completed;
-        self.completed_totals = completed_totals;
-        Ok(())
-    }
 }
 
 /// Signed mechanical direction owning one independent velocity evidence stream.
@@ -117,14 +103,6 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
         for level in &mut self.levels {
             level.pending_child = None;
         }
-    }
-
-    /// Merge completed block populations without joining partial blocks across strokes.
-    pub fn merge_completed(&mut self, other: &Self) -> Result<(), VelocityMeasurementError> {
-        for (target, source) in self.levels.iter_mut().zip(other.levels.iter()) {
-            target.merge_completed(source)?;
-        }
-        Ok(())
     }
 
     /// Return exact completed-block totals for one blocking level.
@@ -197,100 +175,6 @@ impl<const LEVELS: usize> DyadicBlocker<LEVELS> {
     }
 }
 
-/// Bounded same-direction evidence accumulated across signed strokes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VelocityDirectionEvidence<const LEVELS: usize> {
-    direction: VelocityDirection,
-    blocker: DyadicBlocker<LEVELS>,
-    observation_count: u32,
-    current_stroke_observations: u32,
-    stroke_count: u16,
-}
-
-impl<const LEVELS: usize> VelocityDirectionEvidence<LEVELS> {
-    /// Construct empty evidence for one signed mechanical direction.
-    pub const fn new(direction: VelocityDirection) -> Self {
-        Self {
-            direction,
-            blocker: DyadicBlocker::new(),
-            observation_count: 0,
-            current_stroke_observations: 0,
-            stroke_count: 0,
-        }
-    }
-
-    /// Add one eligible raw observation to the current signed stroke.
-    pub fn observe(
-        &mut self,
-        observation: RawVelocityObservation,
-    ) -> Result<(), VelocityMeasurementError> {
-        let observation_count = self
-            .observation_count
-            .checked_add(1)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        let current_stroke_observations = self
-            .current_stroke_observations
-            .checked_add(1)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        self.blocker.observe(observation)?;
-        self.observation_count = observation_count;
-        self.current_stroke_observations = current_stroke_observations;
-        Ok(())
-    }
-
-    /// Finish the current stroke without carrying partial blocks across its boundary.
-    pub fn finish_stroke(&mut self) -> Result<(), VelocityMeasurementError> {
-        self.blocker.discard_partial_blocks();
-        if self.current_stroke_observations > 0 {
-            self.stroke_count = self
-                .stroke_count
-                .checked_add(1)
-                .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-            self.current_stroke_observations = 0;
-        }
-        Ok(())
-    }
-
-    /// Merge completed same-direction evidence without joining partial blocks.
-    pub fn merge_completed(&mut self, other: &Self) -> Result<(), VelocityMeasurementError> {
-        if self.direction != other.direction {
-            return Err(VelocityMeasurementError::DirectionMismatch);
-        }
-        let observation_count = self
-            .observation_count
-            .checked_add(other.observation_count)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        let stroke_count = self
-            .stroke_count
-            .checked_add(other.stroke_count)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        self.blocker.merge_completed(&other.blocker)?;
-        self.observation_count = observation_count;
-        self.stroke_count = stroke_count;
-        Ok(())
-    }
-
-    /// Return the number of eligible raw observations seen in this direction.
-    pub const fn observation_count(&self) -> u32 {
-        self.observation_count
-    }
-
-    /// Return the number of completed nonempty strokes in this direction.
-    pub const fn stroke_count(&self) -> u16 {
-        self.stroke_count
-    }
-
-    /// Return exact completed-block totals for one blocking level.
-    pub fn level_totals(&self, level: usize) -> Option<RateBlock> {
-        self.blocker.level_totals(level)
-    }
-
-    /// Select the coarsest supported confidence plateau for this direction.
-    pub fn select_plateau(&self) -> Option<PlateauSelection> {
-        self.blocker.select_plateau()
-    }
-}
-
 impl<const LEVELS: usize> Default for DyadicBlocker<LEVELS> {
     fn default() -> Self {
         Self::new()
@@ -325,8 +209,7 @@ mod tests {
 
     use super::{
         BlockMoments, DyadicBlocker, PlateauSelection, RateBlock, RawVelocityObservation,
-        VELOCITY_MIN_SELECTED_BLOCKS, VelocityDirection, VelocityDirectionEvidence,
-        VelocityMeasurementError, plateau_like,
+        VELOCITY_MIN_SELECTED_BLOCKS, plateau_like,
     };
 
     const TEST_LEVELS: usize = 8;
@@ -415,77 +298,6 @@ mod tests {
             assert_eq!(blocker.levels[level].completed.count, expected_count);
             assert!(blocker.levels[level].pending_child.is_none());
         }
-    }
-
-    #[test]
-    fn completed_moments_merge_without_crossing_stroke_boundaries() {
-        let mut first = DyadicBlocker::<TEST_LEVELS>::new();
-        let mut second = DyadicBlocker::<TEST_LEVELS>::new();
-        for delta_counts in [1, 0, 1] {
-            first.observe(observation(delta_counts)).unwrap();
-        }
-        for delta_counts in [0, 1, 0] {
-            second.observe(observation(delta_counts)).unwrap();
-        }
-
-        first.merge_completed(&second).unwrap();
-
-        assert_eq!(first.levels[0].completed.count, 6);
-        assert_eq!(first.levels[1].completed.count, 2);
-        assert!(first.levels[2].completed.count == 0);
-        assert!(first.levels[0].pending_child.is_some());
-        assert_eq!(
-            first.levels[0].completed_totals,
-            Some(RateBlock {
-                delta_counts: 3,
-                elapsed_us: 6_000,
-                observation_count: 6,
-            })
-        );
-        assert_eq!(
-            first.levels[1].completed_totals,
-            Some(RateBlock {
-                delta_counts: 2,
-                elapsed_us: 4_000,
-                observation_count: 4,
-            })
-        );
-    }
-
-    #[test]
-    fn direction_evidence_discards_partial_blocks_between_strokes() {
-        let mut evidence =
-            VelocityDirectionEvidence::<TEST_LEVELS>::new(VelocityDirection::Forward);
-        for delta_counts in [1, 1, 1] {
-            evidence.observe(observation(delta_counts)).unwrap();
-        }
-        evidence.finish_stroke().unwrap();
-        for delta_counts in [1, 1, 1] {
-            evidence.observe(observation(delta_counts)).unwrap();
-        }
-        evidence.finish_stroke().unwrap();
-
-        assert_eq!(evidence.observation_count(), 6);
-        assert_eq!(evidence.stroke_count(), 2);
-        assert_eq!(
-            evidence.level_totals(1),
-            Some(RateBlock {
-                delta_counts: 4,
-                elapsed_us: 4_000,
-                observation_count: 4,
-            })
-        );
-    }
-
-    #[test]
-    fn direction_evidence_refuses_opposite_direction_merge() {
-        let mut forward = VelocityDirectionEvidence::<TEST_LEVELS>::new(VelocityDirection::Forward);
-        let reverse = VelocityDirectionEvidence::<TEST_LEVELS>::new(VelocityDirection::Reverse);
-
-        assert_eq!(
-            forward.merge_completed(&reverse),
-            Err(VelocityMeasurementError::DirectionMismatch)
-        );
     }
 
     #[test]

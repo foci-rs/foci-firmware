@@ -12,8 +12,6 @@ pub enum VelocityMeasurementError {
     InvalidConfidenceFamilySize,
     /// A checked integer operation exceeded its representation.
     ArithmeticOverflow,
-    /// Evidence from opposite signed directions was combined.
-    DirectionMismatch,
 }
 
 /// One signed encoder displacement observed over an actual elapsed interval.
@@ -155,50 +153,6 @@ impl BlockMoments {
         Ok(())
     }
 
-    /// Merge independently accumulated completed-block moments.
-    pub fn merge(&mut self, other: Self) -> Result<(), VelocityMeasurementError> {
-        if other.count == 0 {
-            return Ok(());
-        }
-        if self.count == 0 {
-            *self = other;
-            return Ok(());
-        }
-
-        let combined_count = self
-            .count
-            .checked_add(other.count)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        let self_count = i128::from(self.count);
-        let other_count = i128::from(other.count);
-        let combined_count_i128 = i128::from(combined_count);
-        let delta = i128::from(other.mean_rate_q) - i128::from(self.mean_rate_q);
-        let mean_adjustment = delta
-            .checked_mul(other_count)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?
-            / combined_count_i128;
-        let combined_mean = i128::from(self.mean_rate_q)
-            .checked_add(mean_adjustment)
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-        let cross = delta
-            .checked_mul(delta)
-            .and_then(|value| value.checked_mul(self_count))
-            .and_then(|value| value.checked_mul(other_count))
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?
-            / combined_count_i128;
-        let combined_m2 = self
-            .m2_rate_q2
-            .checked_add(other.m2_rate_q2)
-            .and_then(|value| value.checked_add(cross))
-            .ok_or(VelocityMeasurementError::ArithmeticOverflow)?;
-
-        self.count = combined_count;
-        self.mean_rate_q = i64::try_from(combined_mean)
-            .map_err(|_| VelocityMeasurementError::ArithmeticOverflow)?;
-        self.m2_rate_q2 = combined_m2;
-        Ok(())
-    }
-
     /// Return the completed-block sample variance in squared fixed-point rate units.
     pub fn sample_variance_rate_q2(self) -> Option<u128> {
         if self.count < 2 {
@@ -304,35 +258,6 @@ mod tests {
         assert_eq!(moments.mean_rate_q, 2_000);
         assert_eq!(moments.m2_rate_q2, 2_000_000);
         assert_eq!(moments.sample_variance_rate_q2(), Some(2_000_000));
-    }
-
-    #[test]
-    fn independently_collected_moments_merge_without_losing_variance() {
-        let mut lower = BlockMoments::new();
-        lower.observe_rate_q(1_000).unwrap();
-        lower.observe_rate_q(3_000).unwrap();
-        let mut upper = BlockMoments::new();
-        upper.observe_rate_q(5_000).unwrap();
-        upper.observe_rate_q(7_000).unwrap();
-
-        lower.merge(upper).unwrap();
-
-        assert_eq!(lower.count, 4);
-        assert_eq!(lower.mean_rate_q, 4_000);
-        assert_eq!(lower.m2_rate_q2, 20_000_000);
-        assert_eq!(lower.sample_variance_rate_q2(), Some(6_666_666));
-    }
-
-    #[test]
-    fn empty_moments_adopt_nonempty_moments_exactly() {
-        let mut empty = BlockMoments::new();
-        let mut populated = BlockMoments::new();
-        populated.observe_rate_q(-1_000).unwrap();
-        populated.observe_rate_q(-3_000).unwrap();
-
-        empty.merge(populated).unwrap();
-
-        assert_eq!(empty, populated);
     }
 
     #[test]

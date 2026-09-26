@@ -8,7 +8,6 @@ mod stationarity;
 
 pub use blocker::{
     BlockLevel, DyadicBlocker, PlateauSelection, VELOCITY_MIN_SELECTED_BLOCKS, VelocityDirection,
-    VelocityDirectionEvidence,
 };
 pub use decision::{
     AccuracyDecision, ConfidenceEstimate, MAX_CONFIDENCE_FAMILY_SIZE, TwoIntervalRateWindow,
