@@ -230,6 +230,7 @@ impl VelocityIntegralIntegrity {
 pub(crate) fn encode_velocity_integral_event(
     event: VelocityIntegralEvent,
 ) -> VelocitySweepCanonicalRecord {
+    // Tag 1 is reserved for the retired plan event; never reassign it.
     match event {
         VelocityIntegralEvent::Observation(report) => encode_observation(report),
         VelocityIntegralEvent::Rung(report) => encode_rung(report),
