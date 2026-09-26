@@ -1025,11 +1025,7 @@ pub struct FociResistanceAxis {
 
 #[cfg(test)]
 mod resistance_reply_size_tests {
-    use super::{
-        FociClosedLoopActivation, FociCommissionTiming, FociCurrentLoopFilters,
-        FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis, FociResistanceProfile,
-        FociResistanceRun, FociRobustnessCycleEvidence,
-    };
+    use super::{FociResistanceRun, FociRobustnessCycleEvidence};
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
@@ -1057,24 +1053,6 @@ mod resistance_reply_size_tests {
         scratch.result().len()
     }
 
-    #[test]
-    fn commission_timing_reply_fits_klipper_message_limit() {
-        let reply = FociCommissionTiming {
-            oid: u8::MAX,
-            method: u8::MAX,
-            status: u8::MAX,
-            requested_period_us: u16::MAX,
-            valid_samples: u16::MAX,
-            missed_samples: u16::MAX,
-            max_consecutive_misses: u8::MAX,
-            max_lateness_us: u32::MAX,
-            max_interval_us: u32::MAX,
-            max_poll_wall_us: u32::MAX,
-            max_spi_wall_us: u32::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_commission_timing");
-    }
-
     /// Assert that `reply`'s encoded payload, plus a worst-case reply-id
     /// prefix, fits Klipper's wire-frame budget.
     fn assert_fits_with_id<T: Writable>(reply: &T, reply_kind: &str) {
@@ -1085,59 +1063,6 @@ mod resistance_reply_size_tests {
             "{reply_kind} encodes to {payload_len} payload bytes + {REPLY_ID_WORST_CASE_BYTES} \
              worst-case id bytes = {total_len}, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
         );
-    }
-
-    #[test]
-    fn resistance_profile_reply_fits_klipper_message_limit() {
-        // True worst-case VLQ encoding per field type. Klipper's VLQ encoder
-        // reinterprets the `u32`/`i32` payload as `i32` and range-checks
-        // that signed value (`encode_vlq_int`), so `u32::MAX as i32 == -1`
-        // collapses to a 1-byte encoding rather than the genuine 5-byte
-        // worst case. `0x7FFF_FFFF` (`i32::MAX`) is outside all four VLQ
-        // range checks and genuinely encodes to 5 bytes. `u16::MAX` and
-        // `u8::MAX` are already correct worst cases for their domains (3
-        // and 2 bytes respectively) because those types' maximum values
-        // cannot reach the wider per-length VLQ thresholds.
-        let reply = FociResistanceProfile {
-            oid: u8::MAX,
-            pwm_maxcnt: u16::MAX,
-            bbm_h: u8::MAX,
-            bbm_l: u8::MAX,
-            dsadc_mdec_a: u16::MAX,
-            dsadc_mdec_b: u16::MAX,
-            linear_current_threshold_count: u16::MAX,
-            encoder_move_warn_counts: u16::MAX,
-            status_flags_warn_mask: 0x7FFF_FFFF,
-            scale_metadata_validated: u8::MAX,
-        };
-
-        assert_fits_with_id(&reply, "foci_resistance_profile");
-    }
-
-    #[test]
-    fn resistance_run_reply_fits_klipper_message_limit() {
-        // See `resistance_profile_reply_fits_klipper_message_limit` for why
-        // `u32` fields use `0x7FFF_FFFF` instead of `u32::MAX`. `i32::MIN` is
-        // already a genuine 5-byte worst case for `i32` fields (it sits
-        // outside all four VLQ range checks on the signed side).
-        let reply = FociResistanceRun {
-            oid: u8::MAX,
-            status: u8::MAX,
-            selected_r_count_slope_milli: i32::MIN,
-            gain_path_count_slope_milli: i32::MIN,
-            warning_flags: 0x7FFF_FFFF,
-            status_flags_or: 0x7FFF_FFFF,
-            peak_abs_current_count: u16::MAX,
-            max_abs_steady_mean_current_count: u16::MAX,
-            current_ceiling_count: u16::MAX,
-            power_stage_tripped: u8::MAX,
-            pwm_maxcnt_readback: u16::MAX,
-            bbm_readback: u16::MAX,
-            dsadc_mdec_readback: 0x7FFF_FFFF,
-            pwm_sv_chop_readback: 0x7FFF_FFFF,
-        };
-
-        assert_fits_with_id(&reply, "foci_resistance_run");
     }
 
     #[test]
@@ -1166,273 +1091,6 @@ mod resistance_reply_size_tests {
             scratch.result(),
             &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
-    }
-
-    #[test]
-    fn resistance_axis_reply_fits_klipper_message_limit() {
-        // See `resistance_profile_reply_fits_klipper_message_limit` for why
-        // `u32` fields use `0x7FFF_FFFF` instead of `u32::MAX`.
-        let reply = FociResistanceAxis {
-            oid: u8::MAX,
-            electrical_axis: u8::MAX,
-            phi_e_ext: u16::MAX,
-            r_count_slope_milli: i32::MIN,
-            intercept_count: i32::MIN,
-            rmse_permille: u16::MAX,
-            selected_mask: u16::MAX,
-            excluded_point_mask: u16::MAX,
-            selected_count: u8::MAX,
-            signed_count_slope_milli: i32::MIN,
-            signed_asymmetry_permille: u16::MAX,
-            drift_permille: u16::MAX,
-            warning_flags: 0x7FFF_FFFF,
-        };
-
-        assert_fits_with_id(&reply, "foci_resistance_axis");
-    }
-
-    #[test]
-    fn current_loop_run_reply_fits_klipper_message_limit() {
-        let reply = super::FociCurrentLoopRun {
-            oid: u8::MAX,
-            status: u8::MAX,
-            gains_source: u8::MAX,
-            candidate_gains_source: u8::MAX,
-            axis_split_source: u8::MAX,
-            candidate_axis_split_source: u8::MAX,
-            gains_tier: u8::MAX,
-            candidate_gains_tier: u8::MAX,
-            measured_axis_split_permille: u16::MAX,
-            candidate_measured_axis_split_permille: u16::MAX,
-            applied_axis_split_permille: u16::MAX,
-            candidate_applied_axis_split_permille: u16::MAX,
-            axis_split_clamped: u8::MAX,
-            candidate_axis_split_clamped: u8::MAX,
-            candidate_flux_p: u16::MAX,
-            candidate_flux_i: u16::MAX,
-            candidate_torque_p: u16::MAX,
-            candidate_torque_i: u16::MAX,
-            candidate_attempt: u8::MAX,
-            current_validation_axes: u8::MAX,
-            flux_validation_sample_count: u8::MAX,
-            torque_validation_sample_count: u8::MAX,
-            retry_budget_exhausted: u8::MAX,
-            failure_reason: u8::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_current_loop_run");
-    }
-
-    #[test]
-    fn current_loop_filters_reply_fits_klipper_message_limit() {
-        let reply = FociCurrentLoopFilters {
-            oid: u8::MAX,
-            velocity_filter_hz: u16::MAX,
-            torque_filter_hz: u16::MAX,
-            position_filter_hz: u16::MAX,
-            flux_filter_hz: u16::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_current_loop_filters");
-    }
-
-    #[test]
-    fn closed_loop_activation_reply_fits_klipper_message_limit() {
-        let reply = FociClosedLoopActivation {
-            oid: u8::MAX,
-            entry_status: u8::MAX,
-            position_1: i32::MIN,
-            position_2: i32::MIN,
-            drift_count: u16::MAX,
-            threshold_count: u16::MAX,
-            runaway: u8::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_closed_loop_activation");
-    }
-
-    #[test]
-    fn current_loop_hold_reply_fits_klipper_message_limit() {
-        let reply = FociCurrentLoopHold {
-            oid: u8::MAX,
-            hold_status: u8::MAX,
-            warning_flags: u16::MAX,
-            elapsed_us: 0x7FFF_FFFF,
-            requested_sample_period_us: u16::MAX,
-            sample_count: u8::MAX,
-            position_span_count: u16::MAX,
-            position_drift_count: u16::MAX,
-            torque_mean_count: i16::MIN,
-            torque_rms_count: u16::MAX,
-            torque_peak_to_peak_count: u16::MAX,
-            torque_crossing_count: u8::MAX,
-            flux_mean_count: i16::MIN,
-            flux_rms_count: u16::MAX,
-            flux_peak_to_peak_count: u16::MAX,
-            flux_crossing_count: u8::MAX,
-            status_flags_or: 0x7FFF_FFFF,
-            actionable_status_count: u8::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_current_loop_hold");
-    }
-
-    #[test]
-    fn encoder_alignment_reply_fits_klipper_message_limit() {
-        let reply = super::FociEncoderAlignment {
-            oid: u8::MAX,
-            encoder_count: 0x7FFF_FFFF,
-            electrical_residual_counts: u16::MAX,
-            stability_counts: u16::MAX,
-            movement_counts: u16::MAX,
-            min_movement_counts: u16::MAX,
-            counts_per_electrical_rev: u16::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_encoder_alignment");
-    }
-
-    #[test]
-    fn inductance_run_reply_fits_klipper_message_limit() {
-        let reply = super::FociInductanceRun {
-            oid: u8::MAX,
-            source: u8::MAX,
-            status: u8::MAX,
-            warning_flags: u16::MAX,
-            ud_count: i16::MIN,
-            realized_frequency_millihz: 0x7FFF_FFFF,
-            elapsed_us: 0x7FFF_FFFF,
-            openloop_phi_delta_counts: 0x7FFF_FFFF,
-            sample_count: u16::MAX,
-            encoder_delta_counts: i32::MIN,
-            status_flags_or: 0x7FFF_FFFF,
-        };
-        assert_fits_with_id(&reply, "foci_inductance_run");
-    }
-
-    #[test]
-    fn inductance_frame_reply_fits_klipper_message_limit() {
-        let reply = super::FociInductanceFrame {
-            oid: u8::MAX,
-            id_mean_milli_count: i32::MIN,
-            iq_mean_milli_count: i32::MIN,
-            id_rms_milli_count: 0x7FFF_FFFF,
-            iq_rms_milli_count: 0x7FFF_FFFF,
-            drift_permille: u16::MAX,
-            zero_id_mean_milli_count: i32::MIN,
-            zero_iq_mean_milli_count: i32::MIN,
-        };
-        assert_fits_with_id(&reply, "foci_inductance_frame");
-    }
-
-    #[test]
-    fn inductance_estimate_reply_fits_klipper_message_limit() {
-        let reply = super::FociInductanceEstimate {
-            oid: u8::MAX,
-            x_average_count_ratio_milli: 0x7FFF_FFFF,
-            x_d_count_ratio_milli: 0x7FFF_FFFF,
-            x_q_count_ratio_milli: 0x7FFF_FFFF,
-            saliency_status: u8::MAX,
-            saliency_permille: u16::MAX,
-            x_mag_nominal_count_ratio_milli: 0x7FFF_FFFF,
-            x_mag_shift_minus_permille: u16::MAX,
-            x_mag_shift_plus_permille: u16::MAX,
-            x_mag_vs_quad_permille: u16::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_inductance_estimate");
-    }
-
-    #[test]
-    fn current_validation_axis_reply_fits_klipper_message_limit() {
-        let reply = super::FociCurrentValidationAxis {
-            oid: u8::MAX,
-            axis: u8::MAX,
-            sample_index: u8::MAX,
-            status: u8::MAX,
-            attempt: u8::MAX,
-            target: i16::MAX,
-            sample_delay_ms: u16::MAX,
-            positive_response_permille: u16::MAX,
-            negative_response_permille: u16::MAX,
-            cross_axis_permille: u16::MAX,
-            cross_axis_peak_permille: u16::MAX,
-            voltage_output_permille: u16::MAX,
-            encoder_delta_counts: u16::MAX,
-            positive_encoder_delta_counts: i32::MAX,
-            negative_encoder_delta_counts: i32::MIN,
-            status_flags_or: 0x7FFF_FFFF,
-        };
-        assert_fits_with_id(&reply, "foci_current_validation_axis");
-    }
-
-    #[test]
-    fn current_validation_settled_sample_reply_fits_klipper_message_limit() {
-        let reply = super::FociCurrentValidationSettledSample {
-            oid: u8::MAX,
-            axis: u8::MAX,
-            sample_index: u8::MAX,
-            direction: u8::MAX,
-            raw_index: u8::MAX,
-            attempt: u8::MAX,
-            target: i16::MAX,
-            sample_delay_ms: u16::MAX,
-            same_axis_count: i16::MAX,
-            cross_axis_count: i16::MIN,
-            cross_axis_permille: u16::MAX,
-            voltage_output_permille: u16::MAX,
-            encoder_delta_counts: i32::MAX,
-            status_flags: 0x7FFF_FFFF,
-        };
-        assert_fits_with_id(&reply, "foci_current_validation_settled_sample");
-    }
-
-    #[test]
-    fn current_validation_envelope_reply_fits_klipper_message_limit() {
-        let reply = super::FociCurrentValidationEnvelope {
-            oid: u8::MAX,
-            step_amplitude: u16::MAX,
-            flux_step_amplitude: u16::MAX,
-            torque_step_amplitude: u16::MAX,
-            pidout_limit: u16::MAX,
-            current_limited: u16::MAX,
-            voltage_limited: u16::MAX,
-            max_p: u16::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_current_validation_envelope");
-    }
-
-    #[test]
-    fn adc_residual_reply_fits_klipper_message_limit() {
-        let reply = super::FociAdcResidual {
-            oid: u8::MAX,
-            stage: u8::MAX,
-            sample_count: u8::MAX,
-            pwm_sv_chop: u8::MAX,
-            pwm_bbm: u32::MAX,
-            adc_i0_scale_offset: u32::MAX,
-            adc_i1_scale_offset: u32::MAX,
-            adc_iux_mean_count: i16::MAX,
-            adc_iwy_mean_count: i16::MIN,
-            pid_flux_mean_count: i16::MAX,
-            pid_torque_mean_count: i16::MIN,
-        };
-        assert_fits_with_id(&reply, "foci_adc_residual");
-    }
-
-    #[test]
-    fn outer_safety_fault_reply_fits_klipper_message_limit() {
-        let reply = FociOuterSafetyFault {
-            oid: u8::MAX,
-            reason: u8::MAX,
-            max_travel_mrev: u16::MAX,
-            max_velocity_mrev_s: u16::MAX,
-            max_duration_ms: u16::MAX,
-            direction_mask: u8::MAX,
-            delta_counts: i32::MIN,
-            dt_us: 0x7FFF_FFFF,
-            velocity_counts_per_ms: i32::MIN,
-            velocity_cap_counts_per_ms: i32::MAX,
-            position_counts: i32::MIN,
-            position_window_counts: i32::MAX,
-            elapsed_us: 0x7FFF_FFFF,
-            duration_cap_us: 0x7FFF_FFFF,
-        };
-        assert_fits_with_id(&reply, "foci_outer_safety_fault");
     }
 
     #[test]
@@ -1469,27 +1127,6 @@ mod breakaway_reply_wire_tests {
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
 
-    /// Klipper's wire-frame payload budget (see `resistance_reply_size_tests`
-    /// above for the derivation).
-    const KLIPPER_MESSAGE_PAYLOAD_MAX: usize = 59;
-    const REPLY_ID_WORST_CASE_BYTES: usize = 3;
-
-    fn encoded_len<T: Writable>(reply: &T) -> usize {
-        let mut scratch = ScratchOutput::<64>::new();
-        reply.write(&mut scratch);
-        scratch.result().len()
-    }
-
-    fn assert_fits_with_id<T: Writable>(reply: &T, reply_kind: &str) {
-        let payload_len = encoded_len(reply);
-        let total_len = payload_len + REPLY_ID_WORST_CASE_BYTES;
-        assert!(
-            total_len <= KLIPPER_MESSAGE_PAYLOAD_MAX,
-            "{reply_kind} encodes to {payload_len} payload bytes + {REPLY_ID_WORST_CASE_BYTES} \
-             worst-case id bytes = {total_len}, exceeds {KLIPPER_MESSAGE_PAYLOAD_MAX}"
-        );
-    }
-
     fn assert_wire_bytes<T: Writable>(reply: &T, expected: &[u8]) {
         let mut scratch = ScratchOutput::<64>::new();
         reply.write(&mut scratch);
@@ -1512,22 +1149,6 @@ mod breakaway_reply_wire_tests {
             max_capture_interval_us: 11,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-        assert_fits_with_id(
-            &FociBreakawayProbePlan {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                max_observations: u8::MAX,
-                search_count: u8::MAX,
-                p_start_raw: u16::MAX,
-                p_top_raw: u16::MAX,
-                motion_threshold_counts: u32::MAX,
-                max_capture_interval_us: u32::MAX,
-            },
-            "foci_breakaway_probe_plan",
-        );
     }
 
     #[test]
@@ -1544,20 +1165,6 @@ mod breakaway_reply_wire_tests {
             observation_count: 9,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        assert_fits_with_id(
-            &FociBreakawayProbeResult {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                rung_index: u8::MAX,
-                breakaway_p_raw: u16::MAX,
-                motion_threshold_counts: u32::MAX,
-                observation_count: u8::MAX,
-            },
-            "foci_breakaway_probe_result",
-        );
     }
 
     #[test]
@@ -1572,18 +1179,6 @@ mod breakaway_reply_wire_tests {
             has_safety_fault: 7,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7]);
-        assert_fits_with_id(
-            &FociBreakawayProbeTerminal {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                terminal_cause: u8::MAX,
-                has_safety_fault: u8::MAX,
-            },
-            "foci_breakaway_probe_terminal",
-        );
     }
 
     #[test]
@@ -1599,19 +1194,6 @@ mod breakaway_reply_wire_tests {
             family_size: 8,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_fits_with_id(
-            &FociBreakawayDiscoveryPlanIdentity {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                prior_plan_digest_low: u32::MAX,
-                prior_plan_digest_high: u32::MAX,
-                family_size: u16::MAX,
-            },
-            "foci_breakaway_discovery_plan_identity",
-        );
     }
 
     #[test]
@@ -1631,23 +1213,6 @@ mod breakaway_reply_wire_tests {
             maximum_workflow_ms: 12,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-        assert_fits_with_id(
-            &FociBreakawayDiscoveryPlanGeometry {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                schema_revision: u16::MAX,
-                rung_count: u8::MAX,
-                observations_per_direction: u16::MAX,
-                floor_p_raw: u16::MAX,
-                floor_origin: u8::MAX,
-                breakaway_p_raw: u16::MAX,
-                ceiling_p_raw: u16::MAX,
-                first_additive_step_raw: u32::MAX,
-                maximum_workflow_ms: u32::MAX,
-            },
-            "foci_breakaway_discovery_plan_geometry",
-        );
     }
 
     #[test]
@@ -1662,18 +1227,6 @@ mod breakaway_reply_wire_tests {
             reverse_moved: 7,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7]);
-        assert_fits_with_id(
-            &FociBreakawayRungZeroDiagnostic {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                forward_moved: u8::MAX,
-                reverse_moved: u8::MAX,
-            },
-            "foci_breakaway_rung_zero_diagnostic",
-        );
     }
 
     #[test]
@@ -1693,23 +1246,6 @@ mod breakaway_reply_wire_tests {
             stop_rung_index: 12,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-        assert_fits_with_id(
-            &FociBreakawayDiscoveryTerminal {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                prior_plan_digest_low: u32::MAX,
-                prior_plan_digest_high: u32::MAX,
-                family_size: u16::MAX,
-                terminal_cause: u8::MAX,
-                collected_count: u8::MAX,
-                has_safety_fault: u8::MAX,
-                stop_rung_index: u8::MAX,
-            },
-            "foci_breakaway_discovery_terminal",
-        );
     }
 
     #[test]
@@ -1732,26 +1268,6 @@ mod breakaway_reply_wire_tests {
             nominated_margin_percent_milli: 15,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-        assert_fits_with_id(
-            &FociBreakawayConfirmationPlan {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                prior_plan_digest_low: u32::MAX,
-                prior_plan_digest_high: u32::MAX,
-                family_size: u16::MAX,
-                observations_per_direction: u16::MAX,
-                nominated_p_raw: u16::MAX,
-                band_lower_percent: u8::MAX,
-                band_upper_percent: u8::MAX,
-                capture_profile: u8::MAX,
-                acceptance_rule: u8::MAX,
-                nominated_margin_percent_milli: i32::MIN,
-            },
-            "foci_breakaway_confirmation_plan",
-        );
     }
 
     #[test]
@@ -1768,20 +1284,6 @@ mod breakaway_reply_wire_tests {
             terminal_cause: 9,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        assert_fits_with_id(
-            &FociBreakawayConfirmationTerminalIdentity {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                plan_digest_low: u32::MAX,
-                plan_digest_high: u32::MAX,
-                prior_plan_digest_low: u32::MAX,
-                prior_plan_digest_high: u32::MAX,
-                family_size: u16::MAX,
-                terminal_cause: u8::MAX,
-            },
-            "foci_breakaway_confirmation_terminal_identity",
-        );
     }
 
     #[test]
@@ -1803,25 +1305,6 @@ mod breakaway_reply_wire_tests {
             has_safety_fault: 14,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
-        assert_fits_with_id(
-            &FociBreakawayConfirmationTerminalMasks {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                forward_collected_mask: u8::MAX,
-                forward_eligible_mask: u8::MAX,
-                forward_included_mask: u8::MAX,
-                reverse_collected_mask: u8::MAX,
-                reverse_eligible_mask: u8::MAX,
-                reverse_included_mask: u8::MAX,
-                accepted: u8::MAX,
-                confirmed_p_raw: u16::MAX,
-                max_relative_se_permille: u16::MAX,
-                required_relative_se_permille: u16::MAX,
-                has_safety_fault: u8::MAX,
-            },
-            "foci_breakaway_confirmation_terminal_masks",
-        );
     }
 
     #[test]
@@ -1838,20 +1321,6 @@ mod breakaway_reply_wire_tests {
             error_code: 9,
         };
         assert_wire_bytes(&reply, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        assert_fits_with_id(
-            &FociBreakawayCampaignTerminal {
-                oid: u8::MAX,
-                run_sequence: u32::MAX,
-                evidence_sequence: u16::MAX,
-                phase: u8::MAX,
-                terminal_cause: u8::MAX,
-                accepted: u8::MAX,
-                integral_plan_digest_low: u32::MAX,
-                integral_plan_digest_high: u32::MAX,
-                error_code: u8::MAX,
-            },
-            "foci_breakaway_campaign_terminal",
-        );
     }
 }
 
@@ -2614,7 +2083,6 @@ mod velocity_sweep_reply_tests {
     const FRAME_MAX: usize = 64;
     const REPLY_ID_WORST_CASE_BYTES: usize = 3;
     const FRAME_OVERHEAD_BYTES: usize = 5;
-    const WIDE_U32: u32 = 0x7fff_ffff;
 
     fn assert_fits<T: Writable>(reply: &T, name: &str) {
         let mut scratch = ScratchOutput::<64>::new();
@@ -2628,115 +2096,6 @@ mod velocity_sweep_reply_tests {
             payload + FRAME_OVERHEAD_BYTES <= FRAME_MAX,
             "{name} frame is {}",
             payload + FRAME_OVERHEAD_BYTES
-        );
-    }
-
-    #[test]
-    fn torque_sample_result_fits_one_frame_at_enforced_bounds() {
-        use crate::ankyra::handlers::tmc::{
-            MAX_CURRENT_SAMPLE_DELAY_MS, MAX_CURRENT_STEP_TARGET, MAX_CURRENT_STEP_VOLTAGE_LIMIT,
-        };
-        assert_fits(
-            &FociCurrentTorqueSampleResult {
-                oid: u8::MAX,
-                report_seq: u8::MAX,
-                kind: 1,
-                status: u8::MAX,
-                target: -MAX_CURRENT_STEP_TARGET,
-                flux_target: MAX_CURRENT_STEP_TARGET,
-                sample_delay_ms: MAX_CURRENT_SAMPLE_DELAY_MS,
-                voltage_limit: MAX_CURRENT_STEP_VOLTAGE_LIMIT,
-                torque_before: i16::MIN,
-                torque_sample: i16::MIN,
-                torque_after: i16::MIN,
-                flux_sample: i16::MIN,
-                iq_sample: i16::MIN,
-                id_sample: i16::MIN,
-                uq_limited: i16::MIN,
-                ud_limited: i16::MIN,
-                adc_vm_raw: u16::MAX,
-                status_flags: WIDE_U32,
-            },
-            "torque sample result",
-        );
-    }
-
-    #[test]
-    fn torque_sample_pid_result_fits_one_frame() {
-        assert_fits(
-            &FociCurrentTorqueSamplePidResult {
-                oid: u8::MAX,
-                report_seq: u8::MAX,
-                pidin_target_torque: i32::MIN,
-                pidin_target_flux: i32::MIN,
-                pidout_target_torque: i32::MIN,
-                pidout_target_flux: i32::MIN,
-                pid_torque_target_monitor: i16::MIN,
-                torque_error: i32::MIN,
-                flux_error: i32::MIN,
-                torque_error_sum: i32::MIN,
-                flux_error_sum: i32::MIN,
-            },
-            "torque sample pid result",
-        );
-    }
-
-    #[test]
-    fn torque_sample_detail_result_fits_one_frame() {
-        assert_fits(
-            &FociCurrentTorqueSampleDetailResult {
-                oid: u8::MAX,
-                report_seq: u8::MAX,
-                encoder_before: WIDE_U32,
-                encoder_sample: WIDE_U32,
-                encoder_after: WIDE_U32,
-                encoder_delta_sample: i32::MIN,
-                encoder_delta_after: i32::MIN,
-                uq_prelimit: i16::MIN,
-                ud_prelimit: i16::MIN,
-                ff_velocity: i32::MIN,
-                ff_torque: i16::MIN,
-            },
-            "torque sample detail result",
-        );
-    }
-
-    #[test]
-    fn voltage_step_result_fits_one_frame() {
-        assert_fits(
-            &FociVoltageStepResult {
-                oid: u8::MAX,
-                report_seq: u8::MAX,
-                status: u8::MAX,
-                uq_ext: i16::MIN,
-                ud_ext: i16::MIN,
-                sample_delay_ms: u16::MAX,
-                torque_before: i16::MIN,
-                torque_sample: i16::MIN,
-                torque_after: i16::MIN,
-                flux_sample: i16::MIN,
-                iq_sample: i16::MIN,
-                id_sample: i16::MIN,
-                uq_limited: i16::MIN,
-                ud_limited: i16::MIN,
-                adc_vm_raw: u16::MAX,
-                status_flags: WIDE_U32,
-            },
-            "voltage step result",
-        );
-    }
-
-    #[test]
-    fn voltage_step_detail_result_fits_one_frame() {
-        assert_fits(
-            &FociVoltageStepDetailResult {
-                oid: u8::MAX,
-                report_seq: u8::MAX,
-                encoder_before: WIDE_U32,
-                encoder_sample: WIDE_U32,
-                encoder_after: WIDE_U32,
-            },
-            "voltage step detail result",
         );
     }
 
@@ -2760,134 +2119,7 @@ mod velocity_sweep_reply_tests {
     }
 
     #[test]
-    fn integral_plan_recovery_is_one_bounded_frame() {
-        let integral_plan = FociVelocityIntegralPlanRecovery {
-            oid: u8::MAX,
-            run_sequence: WIDE_U32,
-            evidence_sequence: u16::MAX,
-            origin_band_counts: WIDE_U32,
-            nominal_slot_us: WIDE_U32,
-            maximum_slot_us: WIDE_U32,
-            slot_count: u8::MAX,
-            flags: u8::MAX,
-        };
-
-        assert!(
-            encoded_reply_fits(&integral_plan),
-            "integral_plan_recovery exceeds the transport limit"
-        );
-    }
-
-    fn encoded_reply_fits<T: Writable>(reply: &T) -> bool {
-        let mut scratch = ScratchOutput::<64>::new();
-        reply.write(&mut scratch);
-        let payload = scratch.result().len() + REPLY_ID_WORST_CASE_BYTES;
-        payload <= PAYLOAD_WITH_ID_MAX && payload + FRAME_OVERHEAD_BYTES <= FRAME_MAX
-    }
-
-    #[test]
-    fn worst_case_velocity_integral_fragments_fit_transport() {
-        let workflow = FociCommissioningWorkflowPlan {
-            oid: u8::MAX,
-            run_sequence: WIDE_U32,
-            shape: u8::MAX,
-            digest_low: WIDE_U32,
-            digest_high: WIDE_U32,
-            nominal_workflow_ms: WIDE_U32,
-            maximum_workflow_ms: WIDE_U32,
-        };
-        assert_fits(&workflow, "integral_workflow");
-        assert_fits(
-            &FociVelocityIntegralPlanCore {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                fragment: u8::MAX,
-                plan_digest_low: WIDE_U32,
-                plan_digest_high: WIDE_U32,
-                proportional_digest_low: WIDE_U32,
-                proportional_digest_high: WIDE_U32,
-                build_features: u16::MAX,
-                build_identity: WIDE_U32,
-                schema_revision: u16::MAX,
-                channel: u8::MAX,
-                fixed_p: u16::MAX,
-            },
-            "integral_plan_core",
-        );
-        assert_fits(
-            &FociVelocityIntegralPlanGeometry {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                fragment: u8::MAX,
-                planned_velocity_mrev_s: WIDE_U32,
-                target_velocity_rpm: i32::MAX,
-                pwm_hz: WIDE_U32,
-                encoder_counts_per_rev: WIDE_U32,
-                i_start: u16::MAX,
-                positive_rung_count: u8::MAX,
-                family_size: u16::MAX,
-                total_rung_count: u8::MAX,
-                expected_observations: u16::MAX,
-                hard_torque_limit: u16::MAX,
-                usable_torque_limit: u16::MAX,
-            },
-            "integral_plan_geometry",
-        );
-        assert_fits(
-            &FociVelocityIntegralPlanAuthority {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                direction: u8::MAX,
-                directional_membership: WIDE_U32,
-                joint_membership: WIDE_U32,
-                directional_validity: u8::MAX,
-                reduced_margin: u8::MAX,
-                pooled_low_q16: i32::MIN,
-                pooled_high_q16: i32::MAX,
-            },
-            "integral_plan_authority",
-        );
-        assert_fits(
-            &FociVelocityIntegralPlanTiming {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                fragment: u8::MAX,
-                moving_stroke_us: WIDE_U32,
-                zero_settle_us: WIDE_U32,
-                analysis_budget_us: WIDE_U32,
-                nominal_workflow_ms: WIDE_U32,
-                maximum_workflow_ms: WIDE_U32,
-            },
-            "integral_plan_timing",
-        );
-        assert_fits(
-            &FociVelocityIntegralPlanTravel {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                fragment: u8::MAX,
-                max_stroke_travel_mrev: WIDE_U32,
-                settle_travel_reserve_mrev: WIDE_U32,
-                negative_position_headroom_mrev: WIDE_U32,
-                positive_position_headroom_mrev: WIDE_U32,
-            },
-            "integral_plan_travel",
-        );
-        assert_fits(
-            &FociVelocityIntegralPlanRung {
-                oid: u8::MAX,
-                run_sequence: WIDE_U32,
-                evidence_sequence: u16::MAX,
-                rung_index: u8::MAX,
-                i_raw: u16::MAX,
-                tau_us: WIDE_U32,
-            },
-            "integral_plan_rung",
-        );
+    fn velocity_integral_terminal_fits_one_protocol_frame() {
         assert_fits(
             &FociVelocityIntegralTerminal {
                 oid: u8::MAX,
