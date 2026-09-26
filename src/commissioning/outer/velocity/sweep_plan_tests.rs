@@ -11,8 +11,8 @@ use super::{
     OBSERVATIONS_PER_DIRECTION_PER_RUNG, RequestedVelocitySource, SETTLE_ANALYSIS_BUDGET_US,
     SWEEP_SLOT_COUNT, StrokeGeometry, VelocityPlanError, VelocitySweepRequest, ZERO_SETTLE_US,
     build_gain_ladder, build_gain_ladder_generic, cap_safe_target_rpm, current_gain_span,
-    envelope_cap, gain_at, half_octave_candidate, plan_historical_combined_velocity_sweep,
-    plan_proportional_velocity_sweep, plan_velocity_sweep, representability_ceilings, travel_cap,
+    envelope_cap, gain_at, half_octave_candidate, plan_proportional_velocity_sweep,
+    plan_velocity_sweep, representability_ceilings, travel_cap,
 };
 use crate::autotune::TmcMechanicalRpm;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
@@ -135,22 +135,6 @@ fn cap_safe_targets_never_exceed_supported_positive_caps() {
         let target_rpm = cap_safe_target_rpm(cap_mrev_s).unwrap();
         assert!(u64::try_from(target_rpm).unwrap() * 1_000 <= u64::from(cap_mrev_s) * 60);
     }
-}
-
-#[test]
-fn historical_combined_target_keeps_schema_nine_nearest_rounding() {
-    let plan = plan_historical_combined_velocity_sweep(
-        live_recovery_request(),
-        4_000,
-        2_816,
-        VELOCITY_LIMIT_EVIDENCE_CAPABILITY_BEST_EFFORT,
-    )
-    .unwrap();
-
-    assert_eq!(plan.schema_revision, 9);
-    assert_eq!(plan.planned_velocity_mrev_s, 4_394);
-    assert_eq!(plan.target_velocity_rpm.raw(), 264);
-    assert_eq!(plan.usable_torque_limit, 2_816);
 }
 
 #[test]

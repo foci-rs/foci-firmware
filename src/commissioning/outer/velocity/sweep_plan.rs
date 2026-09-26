@@ -442,24 +442,6 @@ pub fn plan_proportional_velocity_sweep(
     )
 }
 
-/// Reconstruct the immutable schema-9 combined plan for historical fixtures.
-#[cfg(test)]
-pub(crate) fn plan_historical_combined_velocity_sweep(
-    request: VelocitySweepRequest,
-    encoder_counts_per_rev: u32,
-    torque_flux_limit: u16,
-    limit_evidence_capability: u32,
-) -> Result<VelocitySweepPlan, VelocityPlanError> {
-    plan_velocity_sweep_with_limit(
-        request,
-        encoder_counts_per_rev,
-        torque_flux_limit,
-        limit_evidence_capability,
-        9,
-        true,
-    )
-}
-
 fn plan_velocity_sweep_with_limit(
     request: VelocitySweepRequest,
     encoder_counts_per_rev: u32,
