@@ -7,12 +7,10 @@
 /// bounded by `profile_timing_is_measured_from_the_generated_runs`.
 /// `MAX_STROKE_SEGMENTS` and `RampRuns`' capacity scale with it, so raise
 /// it deliberately rather than for convenience.
-#[allow(dead_code)]
 pub(crate) const RAMP_SEGMENTS: u64 = 32;
 
 /// Smallest cruise interval accepted: below this the one-tick rounding of
 /// `clock / speed` alone exceeds the two-percent cruise-speed bar.
-#[allow(dead_code)]
 pub(crate) const MIN_CRUISE_INTERVAL_TICKS: u64 = 50;
 
 /// One reversal stroke as the phase requests it, in the host budget's units.
@@ -55,7 +53,6 @@ pub(crate) enum StrokePlanError {
     SegmentOverflow,
 }
 
-#[allow(dead_code)]
 fn steps_per_second(speed_mrev_s: u64, steps_per_rev: u64) -> u64 {
     speed_mrev_s * steps_per_rev / 1_000
 }
@@ -63,7 +60,6 @@ fn steps_per_second(speed_mrev_s: u64, steps_per_rev: u64) -> u64 {
 /// The discrete leg at `speed`, or `None` when its ramps plus the minimum
 /// cruise (in emitted ticks) do not fit the excursion. `steps_per_leg` and
 /// `accel_steps` are precomputed by the caller.
-#[allow(dead_code)]
 fn leg_at(
     request: &StrokeRequest,
     steps_per_leg: u64,
@@ -89,7 +85,6 @@ fn leg_at(
 }
 
 /// Whether a leg at exactly `speed_mrev_s` keeps the minimum cruise.
-#[allow(dead_code)]
 pub(crate) fn leg_fits(request: &StrokeRequest, speed_mrev_s: u32) -> bool {
     let steps_per_rev = u64::from(request.steps_per_rev);
     let steps_per_leg = u64::from(request.excursion_mrev) * steps_per_rev / 1_000;
@@ -98,7 +93,6 @@ pub(crate) fn leg_fits(request: &StrokeRequest, speed_mrev_s: u32) -> bool {
         && leg_at(request, steps_per_leg, accel_steps, u64::from(speed_mrev_s)).is_some()
 }
 
-#[allow(dead_code)]
 pub(crate) fn plan_leg(request: &StrokeRequest) -> Result<LegPlan, StrokePlanError> {
     if request.speed_mrev_s == 0
         || request.accel_mrev_s2 == 0
@@ -163,7 +157,6 @@ pub(crate) fn plan_leg(request: &StrokeRequest) -> Result<LegPlan, StrokePlanErr
     })
 }
 
-#[allow(dead_code)]
 fn narrow(value: u64) -> Result<u32, StrokePlanError> {
     u32::try_from(value).map_err(|_| StrokePlanError::SegmentOverflow)
 }
@@ -190,7 +183,6 @@ pub(crate) struct StrokeSegment {
 impl StrokeSegment {
     /// The queue-format move; direction is applied by the consumer through
     /// `set_next_step_dir` before enqueueing, exactly as the host path does.
-    #[allow(dead_code)]
     pub(crate) fn step_move(&self) -> foci_klipper::stepper::StepMove {
         foci_klipper::stepper::StepMove::new(self.interval, self.count, self.add)
     }
@@ -198,7 +190,6 @@ impl StrokeSegment {
 
 /// A planned reversal stroke: the solved leg plus every run of both legs,
 /// forward leg first, with the exact tick boundaries of one leg.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
 pub(crate) struct StrokeProfile {
     pub leg: LegPlan,
@@ -211,7 +202,6 @@ pub(crate) struct StrokeProfile {
     pub cruise_run_count: u8,
 }
 
-#[allow(dead_code)]
 impl StrokeProfile {
     fn ticks_to_us(&self, ticks: u64) -> u32 {
         // Widen before multiplying: `ticks` alone can approach u64::MAX
@@ -244,7 +234,6 @@ impl StrokeProfile {
 
 /// Exact timer ticks one `(interval, count, add)` run occupies, as the
 /// step ISR walks it: the intervals form an arithmetic series.
-#[allow(dead_code)]
 pub(crate) fn run_ticks(interval: u32, count: u16, add: i16) -> u64 {
     let n = i128::from(count);
     let total = n * i128::from(interval) + i128::from(add) * n * (n - 1) / 2;
@@ -254,13 +243,11 @@ pub(crate) fn run_ticks(interval: u32, count: u16, add: i16) -> u64 {
 /// One leg's emitted acceleration runs (ramp runs, their `u16` splits,
 /// and the join run), plus the cruise step count after the join took its
 /// steps.
-#[allow(dead_code)]
 type RampRuns = heapless::Vec<StrokeSegment, { 2 * RAMP_SEGMENTS as usize + 18 }>;
 
 /// One leg emitted at exactly `speed_mrev_s`: `Ok(None)` when the speed
 /// does not fit (before or after the join) or exceeds what was requested,
 /// `Err` on a representation overflow.
-#[allow(dead_code)]
 fn emit_leg(
     request: &StrokeRequest,
     speed_mrev_s: u32,
@@ -292,12 +279,10 @@ fn emit_leg(
 /// cruise after the join has taken its steps. Always `false` above the
 /// phase's own `request.speed_mrev_s` (see `emit_leg`), so the search this
 /// predicate drives never plans faster than what was asked for.
-#[allow(dead_code)]
 pub(crate) fn stroke_fits(request: &StrokeRequest, speed_mrev_s: u32) -> bool {
     matches!(emit_leg(request, speed_mrev_s), Ok(Some(_)))
 }
 
-#[allow(dead_code)]
 pub(crate) fn plan_stroke(request: &StrokeRequest) -> Result<StrokeProfile, StrokePlanError> {
     let upper = plan_leg(request)?.speed_mrev_s;
     let floor = u32::try_from(1_000_u64.div_ceil(u64::from(request.steps_per_rev)).max(1))
@@ -389,14 +374,12 @@ pub(crate) fn plan_stroke(request: &StrokeRequest) -> Result<StrokeProfile, Stro
 
 /// Step index at the start of ramp run `k`: equal velocity increments,
 /// since velocity grows with the square root of distance.
-#[allow(dead_code)]
 fn ramp_boundary(ramp_steps: u64, k: u64) -> u64 {
     ramp_steps * k * k / (RAMP_SEGMENTS * RAMP_SEGMENTS)
 }
 
 /// Exact interval at step `s` of a ramp from rest: `clock / sqrt(2 a s)`,
 /// with step 0 evaluated at step 1 so the first interval is finite.
-#[allow(dead_code)]
 fn ramp_interval(clock: u64, accel_steps: u64, step: u64) -> u64 {
     let velocity = (2 * accel_steps * step.max(1)).isqrt().max(1);
     clock / velocity
@@ -405,7 +388,6 @@ fn ramp_interval(clock: u64, accel_steps: u64, step: u64) -> u64 {
 /// Ceiling division for a non-positive numerator: the per-step change that
 /// reaches at least `numerator` in `denominator` steps without overshooting
 /// below it. Acceleration deltas are always non-positive.
-#[allow(dead_code)]
 fn ceil_div_toward_zero(numerator: i128, denominator: i128) -> i128 {
     debug_assert!(numerator <= 0 && denominator > 0);
     -((-numerator) / denominator)
@@ -503,7 +485,6 @@ fn push_ramp_partition(
     Ok(prev)
 }
 
-#[allow(dead_code)]
 fn push_ramp_run(
     runs: &mut RampRuns,
     mut interval: i128,
@@ -533,7 +514,6 @@ fn push_ramp_run(
 /// join run of `diff` steps at `add = -1` lands exactly on the cruise
 /// interval, taking those steps from the cruise.
 /// Returns the runs and the cruise step count that remains.
-#[allow(dead_code)]
 fn acceleration_runs(
     leg: &LegPlan,
     accel_steps: u64,
@@ -604,7 +584,6 @@ fn acceleration_runs(
 
 /// Push one constant-`add` run, split at the `u16` count limit with the
 /// interval carried across the split.
-#[allow(dead_code)]
 fn push_run(
     segments: &mut heapless::Vec<StrokeSegment, MAX_STROKE_SEGMENTS>,
     forward: bool,
