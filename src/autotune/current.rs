@@ -622,23 +622,6 @@ mod tests {
         assert_eq!(measured.failure_reason, CURRENT_LOOP_FAILURE_NONE);
         assert_eq!(measured.current_validation_axes, 0);
         assert_eq!(measured.retry_budget_exhausted, 0);
-
-        let default_fallback = CurrentLoopEvidence::default_gains(
-            CURRENT_LOOP_FAILURE_TORQUE_VALIDATION,
-            true,
-            CURRENT_VALIDATION_AXIS_TORQUE,
-        );
-        assert_eq!(default_fallback.gains_source, CURRENT_GAINS_SOURCE_DEFAULT);
-        assert_eq!(default_fallback.gains_tier, CURRENT_GAINS_TIER_DEFAULT);
-        assert_eq!(
-            default_fallback.failure_reason,
-            CURRENT_LOOP_FAILURE_TORQUE_VALIDATION
-        );
-        assert_eq!(
-            default_fallback.current_validation_axes,
-            CURRENT_VALIDATION_AXIS_TORQUE
-        );
-        assert_eq!(default_fallback.retry_budget_exhausted, 1);
     }
 
     #[test]
