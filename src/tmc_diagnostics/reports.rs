@@ -371,53 +371,6 @@ pub struct ResistanceAxisReport {
     pub warning_flags: u32,
 }
 
-/// Encoder D-axis alignment evidence emitted before the terminal
-/// `foci_commission_result` reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EncoderAlignmentReport {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Encoder count captured immediately before alignment zeroed the ABN count.
-    pub encoder_count: u32,
-    /// Folded residual of `encoder_count` modulo one electrical revolution.
-    pub electrical_residual_counts: u16,
-    /// Difference between the two post-settle alignment reads.
-    pub stability_counts: u16,
-    /// Largest movement from the pre-alignment count to a post-settle read.
-    pub movement_counts: u16,
-    /// Minimum movement required for the alignment to be accepted.
-    pub min_movement_counts: u16,
-    /// Encoder counts per electrical revolution for this motor.
-    pub counts_per_electrical_rev: u16,
-}
-
-/// Post-ADC-calibration zero-current residual evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdcResidualReport {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// `ADC_RESIDUAL_STAGE_*` discriminator.
-    pub stage: u8,
-    /// Number of samples folded into the means.
-    pub sample_count: u8,
-    /// `PWM_SV_CHOP` readback for this residual block.
-    pub pwm_sv_chop: u8,
-    /// `PWM_BBM_H_BBM_L` readback for this residual block.
-    pub pwm_bbm: u32,
-    /// `ADC_I0_SCALE_OFFSET` readback after programming.
-    pub adc_i0_scale_offset: u32,
-    /// `ADC_I1_SCALE_OFFSET` readback after programming.
-    pub adc_i1_scale_offset: u32,
-    /// Mean low-half raw phase-current monitor from `ADC_IWY_IUX`.
-    pub adc_iux_mean_count: i16,
-    /// Mean high-half raw phase-current monitor from `ADC_IWY_IUX`.
-    pub adc_iwy_mean_count: i16,
-    /// Mean low-half measured flux current from `PID_TORQUE_FLUX_ACTUAL`.
-    pub pid_flux_mean_count: i16,
-    /// Mean high-half measured torque current from `PID_TORQUE_FLUX_ACTUAL`.
-    pub pid_torque_mean_count: i16,
-}
-
 /// Run-level current-loop commissioning evidence emitted before the terminal
 /// `foci_commission_result` reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -658,62 +611,6 @@ pub struct CurrentValidationAxisReport {
     pub negative_encoder_delta_counts: i32,
     /// TMC4671 `STATUS_FLAGS` accumulated across the sample.
     pub status_flags_or: u32,
-}
-
-/// One raw read contributing to the settled-flux current-validation gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CurrentValidationSettledSampleReport {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Stable `CURRENT_AXIS_*` axis identifier.
-    pub axis: u8,
-    /// Zero-based sample index for this axis.
-    pub sample_index: u8,
-    /// Direction index: 0 for positive pulse, 1 for negative pulse.
-    pub direction: u8,
-    /// Raw read index within the settled averaging window.
-    pub raw_index: u8,
-    /// Validation attempt that produced this raw read.
-    pub attempt: u8,
-    /// Signed current target used for this pulse.
-    pub target: i16,
-    /// Delay between target write and this settled gate, in milliseconds.
-    pub sample_delay_ms: u16,
-    /// Same-axis current count from `PID_TORQUE_FLUX_ACTUAL`.
-    pub same_axis_count: i16,
-    /// Cross-axis current count from `PID_TORQUE_FLUX_ACTUAL`.
-    pub cross_axis_count: i16,
-    /// Cross-axis response normalized to target, in permille.
-    pub cross_axis_permille: u16,
-    /// Voltage output normalized to the configured limit, in permille.
-    pub voltage_output_permille: u16,
-    /// Signed encoder movement observed at this raw read.
-    pub encoder_delta_counts: i32,
-    /// TMC4671 `STATUS_FLAGS` captured at this raw read.
-    pub status_flags: u32,
-}
-
-/// Current-validation target envelope emitted once per commissioning run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CurrentValidationEnvelopeReport {
-    /// Object id of the FOCI endpoint.
-    pub oid: u8,
-    /// Primary validation target after all safety caps.
-    ///
-    /// Retained for compatibility and mirrors the flux-axis target.
-    pub step_amplitude: u16,
-    /// Flux-axis validation target after all safety caps.
-    pub flux_step_amplitude: u16,
-    /// Torque-axis validation target after all safety caps.
-    pub torque_step_amplitude: u16,
-    /// PIDOUT limit active while collecting validation samples.
-    pub pidout_limit: u16,
-    /// Target cap derived from the configured current limit.
-    pub current_limited: u16,
-    /// Target cap derived from PIDOUT headroom and candidate P gain.
-    pub voltage_limited: u16,
-    /// Maximum candidate P gain used for voltage-limited target sizing.
-    pub max_p: u16,
 }
 
 /// Construct a zero-filled [`ResistanceRunReport`] carrying only the header
