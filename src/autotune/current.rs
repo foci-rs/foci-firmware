@@ -719,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_current_p_anchor_matches_foc108_evidence() {
+    fn physical_current_p_anchor_matches_measured_axis_bandwidths() {
         let x_bw_for_p1422 =
             physical_current_bandwidth_hz_for_p_raw(1_346, 1_422).expect("valid X anchor");
         let y_bw_for_p1422 =

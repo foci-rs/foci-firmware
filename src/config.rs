@@ -89,7 +89,7 @@ impl TmcConfig {
 
     /// Default torque/flux target-path filter cutoff in Hz.
     ///
-    /// FOCI-162's hardware comparison ladder found no measurable difference
+    /// A hardware comparison ladder found no measurable difference
     /// in current-step tracking, saturation, or coefficient quantization
     /// across 6-10 kHz on the current-loop bandwidths tested, so the cutoff
     /// no longer tracks bandwidth: it is `0.4 * fPWM`, capped at the torque/flux
