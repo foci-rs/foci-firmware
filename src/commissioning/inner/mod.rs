@@ -560,7 +560,7 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
     )
     .await;
     if matches!(result, StepResult::InnerFailed(_)) {
-        // Defense in depth: `commission_dispatch::drive_commission_result`
+        // Defense in depth: `commission_dispatch::TerminalRestoreMachine`
         // already runs the canonical safe-state helper on
         // `StepResult::InnerFailed`. We run it again here so the chip is
         // guaranteed de-energized before the failure even leaves the

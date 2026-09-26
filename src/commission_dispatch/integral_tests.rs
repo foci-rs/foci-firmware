@@ -752,13 +752,12 @@ fn integral_terminal_causes_reserve_recovery_and_lifecycle_values() {
     assert_eq!(super::integral::INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH, 7);
 }
 
-#[fixture_test]
-async fn breakaway_integral_plan_ready_retains_terminal_authority() {
-    crate::state::tmc::reset_all_tmc_channels();
-    crate::state::stepper::reset_all_stepper_channels();
-
-    use crate::commission_dispatch::test_support::{MockBackend, fresh_state_locals};
-    use crate::commissioning::types::StepResult;
+/// Mirrors the scheduled-tick path: `adapt_step_result` carries the plan out as
+/// an event, and `tmc_control` installs its authority from that event.
+#[test]
+fn breakaway_integral_plan_ready_retains_terminal_authority() {
+    use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, adapt_step_result};
+    use crate::commissioning::types::{EngineKind, StepResult};
 
     let plan = breakaway_integral_plan();
     let expected_authority = IntegralAuthoritySummary::from_plan(
@@ -770,49 +769,35 @@ async fn breakaway_integral_plan_ready_retains_terminal_authority() {
         plan.authority,
     );
     let mut integral_slot = IntegralRetentionSlot::new();
-    let mut backend = MockBackend::new();
-    let (_, _, mut gains) = fresh_state_locals();
-    let mut calibrated = true;
-    let mut enabled = true;
-    let mut state = super::DispatchState::new(
-        0,
-        crate::state::tmc::tmc_channel0(),
-        crate::state::stepper::stepper_channel0(),
-        &mut calibrated,
-        &mut enabled,
-        &mut gains,
-    );
-    let mut engine = Some(breakaway_engine(plan, &expected_authority));
 
-    let outcome = super::drive_commission_result_with_stages(
+    let poll = adapt_step_result(
         StepResult::BreakawayIntegralPlanReady {
             run_sequence: 9,
             plan,
         },
-        &mut engine,
-        &mut backend,
-        &mut state,
-        4_095,
-        CHANNEL,
-        super::CommissionRetention::new(&mut integral_slot),
+        0,
+        Some((1, EngineKind::OuterTune)),
     )
-    .await;
+    .expect("the hand-off adapts");
+    let CommissionPoll::ReadyNow {
+        event:
+            Some(CommissionEvent::VelocityIntegralPlan {
+                oid: 1,
+                run_sequence: 9,
+                plan: reported,
+            }),
+    } = poll
+    else {
+        panic!("the hand-off must carry the Integral plan as an event: {poll:?}");
+    };
+    assert_eq!(reported, plan);
+    super::integral::install_authority_from_plan(CHANNEL, &mut integral_slot, reported);
 
     assert_eq!(
         integral_slot.state(),
         IntegralRetentionSlotState::AuthorityOnly
     );
     assert_eq!(integral_slot.authority(), Some(expected_authority));
-    assert!(matches!(
-        outcome,
-        CommissionOutcome::Evidence {
-            reply: ReplyPayload::VelocityIntegralPlan {
-                oid: 1,
-                run_sequence: 9,
-                plan: reported,
-            },
-        } if reported == plan
-    ));
 }
 
 #[test]

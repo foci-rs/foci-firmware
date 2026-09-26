@@ -1,4 +1,4 @@
-//! Tests for drive_commission_result. Populated per-variant in Tasks 12-18.
+//! Terminal-restore tests driven through `drive_commission_result`.
 
 use super::test_support::{
     MockBackend, SpiOp, accepted_commission_result as sample_commission_result, current_limit,
@@ -697,71 +697,6 @@ fn seed_stability_clock(backend: &mut MockBackend) {
         0, 5_000, 5_000, 10_000, 10_000, 15_000, 15_000, 20_000, 20_000, 25_000, 25_000,
     ]);
     backend.elapsed_us_value = 25_000;
-}
-
-#[test]
-fn ready_now_returns_minimal_outcome() {
-    pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-        let mut backend = MockBackend::new();
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-        let mut engine = Some(CommissioningEngine::new_calibrate(0));
-        let outcome = drive_commission_result(
-            crate::commissioning::types::StepResult::ReadyNow,
-            &mut engine,
-            &mut backend,
-            &mut state,
-            4095,
-        )
-        .await;
-        assert!(matches!(outcome, CommissionOutcome::Continue));
-        assert!(backend.spi_log.is_empty());
-        assert!(engine.is_some()); // engine is not consumed on ReadyNow
-    });
-}
-
-#[test]
-fn phase_changed_returns_oid_phase_kind() {
-    pollster::block_on(async {
-        let _guard = test_support::SHARED_STATE_MUTEX.lock().await;
-        let mut backend = MockBackend::new();
-        let (mut cal, mut en, mut gains) = fresh_state_locals();
-        let mut state = dispatch_state(&mut cal, &mut en, &mut gains);
-        let mut engine = Some(CommissioningEngine::new_commission(
-            7,
-            CommissionProfile::Balanced,
-        ));
-        let outcome = drive_commission_result(
-            crate::commissioning::types::StepResult::PhaseChanged(
-                crate::autotune::CommissionPhase::ClosedLoopActivation,
-            ),
-            &mut engine,
-            &mut backend,
-            &mut state,
-            4095,
-        )
-        .await;
-        match outcome {
-            CommissionOutcome::PhaseChanged {
-                oid,
-                phase_id,
-                engine_kind,
-            } => {
-                assert_eq!(oid, 7);
-                assert_eq!(
-                    phase_id,
-                    crate::autotune::CommissionPhase::ClosedLoopActivation
-                );
-                assert_eq!(
-                    engine_kind,
-                    crate::commissioning::types::EngineKind::Commission
-                );
-            }
-            _ => panic!("expected PhaseChanged"),
-        }
-        assert!(engine.is_some()); // not consumed
-    });
 }
 
 #[fixture_test]

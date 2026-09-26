@@ -3,9 +3,10 @@
 //! Lifted from `openffboard-fw::tmc_control` per the design at
 //! `docs/specs/2026-04-23-commission-dispatch-extraction-design.md`.
 //!
-//! Public surface: a single `drive_commission_result` function plus the
-//! types it returns. The board calls this once per engine.step() result
-//! and matches `CommissionOutcome` to fire RTIC primitives + emit replies.
+//! `tmc_control` adapts each `engine.step()` result with
+//! [`crate::commissioning::schedule::adapt_step_result`] and polls terminals
+//! through [`TerminalRestoreMachine`]; the board matches the resulting
+//! `CommissionOutcome` to fire RTIC primitives + emit replies.
 
 // pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
@@ -35,15 +36,11 @@ pub use replies::{CommissionReplySink, emit_phase_reply, emit_terminal_reply};
 pub use restore_machine::{RestoreStep, TerminalRestoreMachine};
 
 use crate::autotune::CommissionPhase;
-// CommissioningEngine lives in commissioning/mod.rs (the engine impl); the
-// data types live in commissioning/types.rs.
-use crate::commissioning::{
-    CommissioningEngine,
-    types::{
-        AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult,
-        OuterSafetyFault, StepResult,
-    },
+use crate::commissioning::types::{
+    AdcCalResult, CommissionResult, CommissioningBackend, EngineKind, OuterResult, OuterSafetyFault,
 };
+#[cfg(test)]
+use crate::commissioning::{CommissioningEngine, types::StepResult};
 use crate::pid::{InnerLoopGains, OuterLoopGains};
 use crate::selftest::SelftestResults;
 use crate::state::stepper::StepperChannelState;
@@ -559,21 +556,17 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
     calibration_error.status_code()
 }
 
-/// Dispatch a single `StepResult` from `CommissioningEngine::step()` to the
-/// appropriate outcome, executing any required SPI work, state mutations, and
-/// atomic stores along the way.
+/// Drive one terminal `StepResult` through a [`TerminalRestoreMachine`] to completion.
 ///
-/// # Parameters
-/// - `result`: The `StepResult` returned by the most recent engine step.
-/// - `engine`: Mutable reference to the `Option<CommissioningEngine>` task-local
-///   slot. Terminal variants consume the engine (`engine.take()`); non-terminal
-///   variants leave it in place.
-/// - `backend`: SPI + GPIO backend for register access.
-/// - `state`: Borrowed task-local mutable state (calibrated flag, motor-enabled
-///   flag, stored PID gains).
-/// - `pwm_maxcnt`: PWM period counter used when re-applying filters or limits
-///   after a terminal outcome.
-pub async fn drive_commission_result<B: CommissioningBackend>(
+/// Test-only: `tmc_control` maps `StepResult`s with
+/// [`crate::commissioning::schedule::adapt_step_result`] and polls the restore
+/// machine once per tick instead.
+///
+/// # Panics
+///
+/// Panics on a non-terminal `result`.
+#[cfg(test)]
+pub(crate) async fn drive_commission_result<B: CommissioningBackend>(
     result: StepResult,
     engine: &mut Option<CommissioningEngine>,
     backend: &mut B,
@@ -581,57 +574,14 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
     pwm_maxcnt: u16,
 ) -> CommissionOutcome {
     match result {
-        StepResult::ReadyNow | StepResult::At(_) => CommissionOutcome::Continue,
-        StepResult::PhaseChanged(phase_id) => {
-            let engine_ref = engine
-                .as_ref()
-                .expect("engine slot is None on PhaseChanged");
-            CommissionOutcome::PhaseChanged {
-                oid: engine_ref.oid(),
-                phase_id,
-                engine_kind: engine_ref.kind(),
-            }
-        }
-        StepResult::VelocityIntegralEvent(event) => {
-            let engine_ref = engine
-                .as_ref()
-                .expect("engine slot is None on VelocityIntegralEvent");
-            CommissionOutcome::Evidence {
-                reply: ReplyPayload::VelocityIntegralEvent {
-                    oid: engine_ref.oid(),
-                    event,
-                },
-            }
-        }
-        StepResult::FixedGainAmplitudeEvent(_) => CommissionOutcome::Continue,
-        StepResult::BreakawayCampaignEvent(event) => {
-            let engine_ref = engine
-                .as_ref()
-                .expect("engine slot is None on BreakawayCampaignEvent");
-            CommissionOutcome::Evidence {
-                reply: ReplyPayload::BreakawayCampaignEvent {
-                    oid: engine_ref.oid(),
-                    event,
-                },
-            }
-        }
-        // A breakaway campaign normally reaches Integral on the scheduled-tick
-        // path, where `adapt_step_result` carries the plan out as a
-        // `CommissionEvent`. This arm covers the request-driven path so the
-        // plan is reported either way. Trace records are not emitted here: the
-        // engine's own trace hook already emits them for this result, and doing
-        // it twice would duplicate the plan on the wire.
-        StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
-            let engine_ref = engine
-                .as_ref()
-                .expect("engine slot is None on BreakawayIntegralPlanReady");
-            CommissionOutcome::Evidence {
-                reply: ReplyPayload::VelocityIntegralPlan {
-                    oid: engine_ref.oid(),
-                    run_sequence,
-                    plan,
-                },
-            }
+        StepResult::ReadyNow
+        | StepResult::At(_)
+        | StepResult::PhaseChanged(_)
+        | StepResult::VelocityIntegralEvent(_)
+        | StepResult::FixedGainAmplitudeEvent(_)
+        | StepResult::BreakawayCampaignEvent(_)
+        | StepResult::BreakawayIntegralPlanReady { .. } => {
+            unreachable!("non-terminal step reached the terminal restore driver")
         }
         terminal @ (StepResult::VelocityIntegralTerminal(_)
         | StepResult::FixedGainAmplitudeTerminal(_)
@@ -648,10 +598,7 @@ pub async fn drive_commission_result<B: CommissioningBackend>(
     }
 }
 
-/// Drive a terminal restore to completion in one call.
-///
-/// The board polls [`TerminalRestoreMachine::poll_step`] once per tick instead;
-/// this driver serves the callers that own the whole dispatch inline.
+#[cfg(test)]
 async fn drive_restore_machine<B: CommissioningBackend>(
     machine: &mut TerminalRestoreMachine,
     engine: &mut Option<CommissioningEngine>,
@@ -668,8 +615,9 @@ async fn drive_restore_machine<B: CommissioningBackend>(
     }
 }
 
-/// Dispatch one Integral terminal while applying its retained-evidence lifecycle.
-pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
+/// Drive one Integral terminal's staged restore, including its retained-evidence lifecycle.
+#[cfg(test)]
+pub(crate) async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
     terminal: crate::commissioning::types::VelocityIntegralTerminal,
     engine: &mut Option<CommissioningEngine>,
     backend: &mut B,
@@ -686,8 +634,13 @@ pub async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBacken
     drive_restore_machine(&mut machine, engine, backend, state, Some(&mut retention)).await
 }
 
-/// Dispatch one Proportional result while applying its retained-evidence lifecycle.
-pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
+/// Drive one Proportional terminal's staged restore, including its retained-evidence lifecycle.
+///
+/// # Panics
+///
+/// Panics unless `result` is a fixed-gain amplitude or robustness reversal terminal.
+#[cfg(test)]
+pub(crate) async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     result: StepResult,
     engine: &mut Option<CommissioningEngine>,
     backend: &mut B,
@@ -703,23 +656,10 @@ pub async fn drive_commission_result_with_stages<B: CommissioningBackend>(
         StepResult::RobustnessReversalTerminal(terminal) => {
             crate::commissioning::schedule::CommissionTerminal::RobustnessReversal(terminal)
         }
-        StepResult::BreakawayIntegralPlanReady { run_sequence, plan } => {
-            integral::install_authority_from_plan(channel, retention.integral, plan);
-            let engine_ref = engine
-                .as_ref()
-                .expect("engine slot is None on BreakawayIntegralPlanReady");
-            return CommissionOutcome::Evidence {
-                reply: ReplyPayload::VelocityIntegralPlan {
-                    oid: engine_ref.oid(),
-                    run_sequence,
-                    plan,
-                },
-            };
-        }
         StepResult::VelocityIntegralTerminal(_) => {
             unreachable!("Integral terminals use their stage-owned dispatcher")
         }
-        _ => unreachable!("non-velocity terminal reached retained velocity dispatch"),
+        _ => unreachable!("non-Proportional step reached retained velocity dispatch"),
     };
     let mut machine = TerminalRestoreMachine::start_staged(staged, channel, pwm_maxcnt);
     drive_restore_machine(&mut machine, engine, backend, state, Some(&mut retention)).await
