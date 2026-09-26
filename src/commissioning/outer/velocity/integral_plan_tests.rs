@@ -1601,9 +1601,10 @@ fn integral_gain_at_final_rung_closing_bookend_and_first_out_of_range() {
 fn integral_gain_at_zero_sentinel_is_unbounded_like_the_pre_existing_behavior() {
     // integral_gain_at itself does not bound the sentinel case (matching
     // native_velocity_i_at's own pre-existing unbounded behavior) --
-    // guarding against the round-5 mistake (a Breakaway plan whose
-    // positive_rung_count disagrees with what integral_gain_at can produce)
-    // is Task 4's responsibility (the count and the accessor must be
+    // guarding against a Breakaway plan whose positive_rung_count disagrees
+    // with what integral_gain_at can produce is
+    // plan_velocity_integral_response_from_source's responsibility (the
+    // count and the accessor must be
     // derived from the same construction), checked by
     // breakaway_plan_includes_the_half_octave_rung_and_real_cap
     // and breakaway_plan_i_top_cap_is_zero_and_rungs_are_unaugmented in

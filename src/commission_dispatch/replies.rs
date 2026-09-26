@@ -233,13 +233,14 @@ pub trait CommissionReplySink {
 
     /// Emit the resistance-identification per-run evidence captured during
     /// commissioning. `FociCommissionResult` is size-capped, so this
-    /// reuses the `foci_resistance_run` reply (Task 6) to carry the evidence
+    /// reuses the standalone resistance test's `foci_resistance_run` reply
+    /// to carry the evidence
     /// that lives on `InnerResult` to the host.
     fn foci_resistance_run(&mut self, report: ResistanceRunReport);
 
     /// Emit one resistance-identification per-axis fit result captured
-    /// during commissioning. Reuses the `foci_resistance_axis` reply
-    /// (Task 6) for the same reason as [`Self::foci_resistance_run`].
+    /// during commissioning. Reuses the `foci_resistance_axis` reply for
+    /// the same reason as [`Self::foci_resistance_run`].
     fn foci_resistance_axis(&mut self, report: ResistanceAxisReport);
 
     /// Emit run-level production inductance evidence captured during

@@ -1602,7 +1602,7 @@ async fn assert_disarm_phase_one_op_per_poll(variant: &TerminalVariant) {
         }
         if disarm_phase {
             // `verified_write_calls`/`raw_ops_attributed_to_verified_calls`
-            // (Task 1, Step 0) attribute every raw op to whether it belongs
+            // attribute every raw op to whether it belongs
             // to a completed verified-write call, measured via length diff
             // rather than a persistent flag (cancellation-safe). Exactly one
             // verified call: every raw op this poll performed must be

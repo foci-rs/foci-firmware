@@ -8,14 +8,9 @@
 //! `tmc_position_torque_offset_sample_test`, `tmc_voltage_step_test`,
 //! `tmc_resistance_test`, `tmc_set_auto_calibrate_on_enable`, `tmc_test_spin`.
 //!
-//! Lifted from `boards/openffboard-fw/src/ankyra/handlers/tmc.rs` in
-//! Task 16 of the foci-firmware handler-lift plan. Handler bodies bind to
-//! the capability traits declared in [`crate::context`]; the board crate
-//! wires up the trait impls on its own `FirmwareCtx`.
-//!
-//! See the handler audit at
-//! `docs/notes/foci-firmware-lift-handler-audit.md` for the exact
-//! capability bound used by each handler.
+//! Handler bodies bind to the capability traits declared in
+//! [`crate::context`]; the board crate wires up the trait impls on its
+//! own `FirmwareCtx`.
 
 use ankyra::prelude::klipper_command;
 use core::sync::atomic::Ordering;
@@ -813,7 +808,7 @@ pub fn tmc_set_auto_calibrate_on_enable(ctx: &mut dyn ShutdownRecovery, oid: u8,
 /// `&mut dyn Trait1 + Trait2` is not a valid trait-object type in stable
 /// Rust for two non-auto traits; this named supertrait is the dyn-safe way
 /// to compose `ShutdownRecovery` (shutdown + clock) and `TmcHost` (request
-/// enqueue). Mirrors the `LifecycleReset` pattern introduced in Task 12.
+/// enqueue), the same pattern as [`crate::context::LifecycleReset`].
 pub trait TmcWriteHost: ShutdownRecovery + TmcHost {}
 impl<T: ?Sized + ShutdownRecovery + TmcHost> TmcWriteHost for T {}
 

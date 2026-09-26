@@ -2520,9 +2520,9 @@ fn rest_rejection_after_sufficiency_is_discriminated_from_a_partial_acquisition(
 
 #[test]
 fn rest_rejection_before_sufficiency_leaves_the_discriminator_unset() {
-    // Case (a): the existing partial-acquisition path. Confirms Task 2's
-    // plumbing default still holds once Task 3's real logic is in place,
-    // for a run that never reached sufficiency at all.
+    // Case (a): the existing partial-acquisition path. Confirms the
+    // discriminator's unset default holds for a run that never reached
+    // sufficiency at all.
     let mut phase = phase();
     let mut workspace = TransientBuffer::new();
     let OuterPhase::VelocityIntegral { state, data, .. } = &mut phase else {

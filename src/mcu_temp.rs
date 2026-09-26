@@ -71,8 +71,8 @@ mod tests {
     }
 
     /// (temp_c, expected_adc_fraction) computed by directly importing and
-    /// calling the real `klippy/extras/thermistor.py` module (see this
-    /// task's header) -- an independent oracle, not a Rust
+    /// calling the real `klippy/extras/thermistor.py` module -- an
+    /// independent oracle, not a Rust
     /// reimplementation of the same formula being tested.
     const KLIPPER_FIXTURES: [(f32, f32); 7] = [
         (-20.0, 0.994_504_45),
@@ -202,8 +202,8 @@ mod calibration_tests {
     /// klipper_decoded_temp_c)` for `stm32f4_style_calibration()`'s
     /// (30C/1500, 110C/1900) calibration points, `ADC_MAX = 4095`, spanning
     /// the spec's full -20..200C operating range (`raw_internal` values
-    /// chosen so this calibration maps them exactly onto Task 4's -20, 0,
-    /// 25, 60, 100, 150, 200C fixture points). Computed independently by
+    /// chosen so this calibration maps them exactly onto
+    /// `KLIPPER_FIXTURES`' -20, 0, 25, 60, 100, 150, 200C points). Computed independently by
     /// importing and calling the real `klippy/extras/thermistor.py` module
     /// (`calc_adc`/`calc_temp`) with `internal_sensor_raw_to_celsius`'s own
     /// linear-interpolation formula evaluated in Python at each

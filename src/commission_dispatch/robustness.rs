@@ -55,7 +55,7 @@ pub const ROBUSTNESS_CAUSE_NO_ACCEPTED_CANDIDATE: u8 = 5;
 /// `safety_fault` field; internal (non-envelope) faults use one of the
 /// dedicated internal-fault causes below so the host can tell them apart.
 pub const ROBUSTNESS_CAUSE_SAFETY_FAULT: u8 = 6;
-/// Accepted-point identity mismatch, set at terminal application (Task 6).
+/// Accepted-point identity mismatch, set at terminal application.
 /// Never returned by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY: u8 = 7;
 // Code 8 is retired: it was the generic internal-fault bucket, since split into

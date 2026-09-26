@@ -1,15 +1,10 @@
 //! SPI command handlers: `config_spi`, `config_spi_without_cs`,
 //! `spi_set_bus`, `config_spi_shutdown`, `spi_send`, `spi_transfer`.
 //!
-//! Lifted out of `boards/openffboard-fw/src/ankyra/handlers/spi.rs`
-//! in Task 14 of the foci-firmware handler-lift plan. These are stub
-//! handlers: the TMC4671 SPI bus is managed internally by the firmware,
-//! so host-side SPI commands are accepted for protocol compatibility
-//! but forward to no-op helpers in `foci_klipper::commands::spi`.
-//!
-//! See the handler audit at
-//! `docs/notes/foci-firmware-lift-handler-audit.md` (lines 323–342) for
-//! the exact capability bound used by each handler.
+//! These are stub handlers: the TMC4671 SPI bus is managed internally by
+//! the firmware, so host-side SPI commands are accepted for protocol
+//! compatibility but forward to no-op helpers in
+//! `foci_klipper::commands::spi`.
 
 use ankyra::prelude::klipper_command;
 

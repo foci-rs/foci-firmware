@@ -8,11 +8,8 @@
 //! capabilities (`StateAccess + TmcHost`), use a supertrait bound
 //! (`trait X: StateAccess + TmcHost {}` with blanket impl).
 //!
-//! Trait surface is driven by the Stage-4 handler audit
-//! (`docs/notes/foci-firmware-lift-handler-audit.md`). Each trait
-//! method exists because at least one handler body requires it —
-//! methods from the initial scaffold that no handler used have been
-//! removed.
+//! Each trait method exists because at least one handler body requires
+//! it.
 
 pub mod stepper;
 pub mod stepper_reconcile;
@@ -156,8 +153,9 @@ impl<T: ?Sized + EndstopHost> EndstopHost for &mut T {
 /// implementing board's context type just forwards to its own
 /// `board_config::analog_pin_channel`. All *stateful* sampling data lives
 /// in `analog_in::ANALOG_CHANNELS`, a process-wide static reachable
-/// without going through this trait at all (see analog_in_state's own
-/// RTIC task in Task 8, which never implements or needs this trait).
+/// without going through this trait at all (each board's heartbeat, which
+/// samples the channels and sends `analog_in_state`, never implements or
+/// needs this trait).
 pub trait AnalogInHost {
     fn resolve_analog_pin(&self, pin: u8) -> Option<u8>;
 }

@@ -1,15 +1,9 @@
 //! Endstop command handlers: `config_endstop`, `endstop_home`,
 //! `endstop_query_state`.
 //!
-//! Lifted out of `boards/openffboard-fw/src/ankyra/handlers/endstop.rs`
-//! in Task 12 of the foci-firmware handler-lift plan. Handler bodies now
-//! bind to the capability traits declared in [`crate::context`] instead
-//! of concrete board types; the board crate wires up the trait impls on
-//! its own `FirmwareCtx`.
-//!
-//! See the handler audit at
-//! `docs/notes/foci-firmware-lift-handler-audit.md` for the exact
-//! capability bound used by each handler.
+//! Handler bodies bind to the capability traits declared in
+//! [`crate::context`] instead of concrete board types; the board crate
+//! wires up the trait impls on its own `FirmwareCtx`.
 
 use ankyra::prelude::klipper_command;
 

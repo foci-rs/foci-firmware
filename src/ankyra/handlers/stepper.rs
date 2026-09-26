@@ -2,15 +2,9 @@
 //! `set_next_step_dir`, `reset_step_clock`, `stepper_get_position`,
 //! `stepper_get_commanded_position`, `stepper_stop_on_trigger`.
 //!
-//! Lifted out of `boards/openffboard-fw/src/ankyra/handlers/stepper.rs`
-//! in Task 15 of the foci-firmware handler-lift plan. Handler bodies now
-//! bind to the capability traits declared in [`crate::context`] instead
-//! of concrete board types; the board crate wires up the trait impls on
-//! its own `FirmwareCtx`.
-//!
-//! See the handler audit at
-//! `docs/notes/foci-firmware-lift-handler-audit.md` for the exact
-//! capability bound used by each handler.
+//! Handler bodies bind to the capability traits declared in
+//! [`crate::context`] instead of concrete board types; the board crate
+//! wires up the trait impls on its own `FirmwareCtx`.
 
 use core::sync::atomic::Ordering::Relaxed;
 

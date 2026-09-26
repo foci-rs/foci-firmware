@@ -1,15 +1,9 @@
 //! Trsync command handlers: `config_trsync`, `trsync_start`,
 //! `trsync_set_timeout`, `trsync_trigger`.
 //!
-//! Lifted out of `boards/openffboard-fw/src/ankyra/handlers/trsync.rs`
-//! in Task 13 of the foci-firmware handler-lift plan. Handler bodies now
-//! bind to the capability traits declared in [`crate::context`] instead
-//! of concrete board types; the board crate wires up the trait impls on
-//! its own `FirmwareCtx`.
-//!
-//! See the handler audit at
-//! `docs/notes/foci-firmware-lift-handler-audit.md` (lines 281–319) for
-//! the exact capability bound used by each handler.
+//! Handler bodies bind to the capability traits declared in
+//! [`crate::context`] instead of concrete board types; the board crate
+//! wires up the trait impls on its own `FirmwareCtx`.
 
 use ankyra::prelude::klipper_command;
 

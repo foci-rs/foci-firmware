@@ -39,7 +39,7 @@ pub const PENDING_OUTER_GAINS: u8 = 1 << 5;
 /// `TmcChannelState::config_apply_pending`); `tmc_set_motion_scale` is the
 /// one deliberate exception and still enqueues one request per call. Each
 /// board's `TMC_CHANNEL_SIZE` compile-time assertion multiplies this by
-/// `TMC_CHANNEL_COUNT` to guard the headroom this plan established.
+/// `TMC_CHANNEL_COUNT` to guard that headroom.
 pub const CONNECT_TIME_QUEUE_SLOTS_PER_CHANNEL: usize = 1;
 
 const OPTIONAL_FILTER_HZ_UNSET: u32 = u32::MAX;

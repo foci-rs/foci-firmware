@@ -125,7 +125,7 @@ pub enum BoardAction {
 
 /// Fixed-capacity list of board actions emitted by one runtime call.
 ///
-/// Capacity proof for this plan: current paths emit at most three actions
+/// Capacity proof: current paths emit at most three actions
 /// (stop, shutdown, and one arm action). Keep capacity at 8 so a
 /// future path can add compact routing actions without silently dropping safety work.
 pub type BoardActions = heapless::Vec<BoardAction, 8>;

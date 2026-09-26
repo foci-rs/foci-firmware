@@ -4,7 +4,7 @@
 //!   trait objects. Each subsystem has its own module.
 //! - `replies.rs` — `#[klipper_reply]` struct declarations.
 //! - `constants.rs` — firmware-wide `#[klipper_constant]` items.
-//! - `provider.rs` — `FOCI_FIRMWARE_PROVIDER` (added in Stage 6).
+//! - `provider.rs` — `FOCI_FIRMWARE_PROVIDER`.
 //!
 //! Board crates compose this provider with their own `BOARD_PROVIDER`
 //! in `ankyra_config!`.

@@ -1326,7 +1326,8 @@ fn current_torque_sample_host_liveness_expiry_reports_dedicated_status_and_resto
         // sample_delay_ms=150 makes the main delay 2 slices ([100, 50]);
         // the pre-settle delay (20ms, 1 slice) is let through so this test
         // reaches the SECOND checked-delay call site and its final slice,
-        // same reasoning as the current-step test in Task 3.
+        // same reasoning as
+        // current_step_host_liveness_expiry_reports_dedicated_status_and_restores.
         let mut calls = 0u32;
         let mut expire_during_main_delay_final_slice = || {
             calls += 1;
@@ -1455,8 +1456,8 @@ fn position_offset_host_liveness_expiry_reports_dedicated_status_and_restores() 
 
 #[test]
 fn current_torque_sample_pre_settle_host_liveness_expiry_reports_dedicated_status() {
-    // Same reasoning as current_step_pre_settle_host_liveness_expiry_reports_dedicated_status
-    // in Task 3: an independent call site (this function's own pre-settle
+    // Same reasoning as current_step_pre_settle_host_liveness_expiry_reports_dedicated_status:
+    // an independent call site (this function's own pre-settle
     // delay) needs its own regression coverage, since a mistake converting
     // only the main delay would not be caught by the test above.
     pollster::block_on(async {

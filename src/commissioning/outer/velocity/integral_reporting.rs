@@ -1769,7 +1769,9 @@ mod tests {
     }
 
     /// A breakaway acceptance terminal's firmware-internal target derivations
-    /// let the installer (Task 4) read them, but `terminal_recovery_flags`
+    /// let the acceptance-point installer
+    /// (`commission_dispatch::integral::breakaway_acceptance_point`) read them,
+    /// but `terminal_recovery_flags`
     /// packs no target-status field for any terminal -- that packed field
     /// belonged only to the retired live combined P-then-I workflow.
     #[test]

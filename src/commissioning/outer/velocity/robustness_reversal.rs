@@ -3353,7 +3353,7 @@ mod tests {
     /// `overshoot_peak_counts` -- proving the new accumulator value actually
     /// propagates through `PendingCycle`/`session.peak_overshoot_counts` to the
     /// terminal, not just that the accumulator computes it correctly in
-    /// isolation (Step 1's tests already cover that).
+    /// isolation (the `robustness_metrics` overshoot tests already cover that).
     #[test]
     fn overshoot_reaches_the_terminal_when_a_reverse_leg_outpaces_its_target() {
         let (terminal, _backend, session) =

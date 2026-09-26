@@ -68,7 +68,7 @@ pub(crate) fn fit_accel_raw(
     // overflow an i128-fixed-point sum-of-t^4-times-y term risks at the
     // domain's extremes (200 samples, t up to ~6_000, |y| up to i32::MAX).
     // This mirrors the current-response fit's own choice of floating point
-    // (Task 4) for the same class of one-shot, non-hot-path commissioning
+    // for the same class of one-shot, non-hot-path commissioning
     // math — this codebase already accepts f32 in `autotune/current.rs` for
     // exactly this reason; f64 here is a deliberate step up in precision
     // for the wider dynamic range a t^4 term spans, not a new convention.
@@ -107,7 +107,8 @@ pub(crate) fn fit_accel_raw(
     }
 
     // Return accel_raw scaled by 2^32 (Q32 fixed point) so the caller
-    // (Task 7's accel_per_count conversion) carries the sub-unit precision
+    // (`measure_step`, feeding `gains::accel_raw_per_count_to_accel_per_count`
+    // via the plant-gain fit) carries the sub-unit precision
     // this value needs through to the final PidPGain — the f64 value
     // itself must not cross the fit/consumer boundary, since downstream
     // register-domain math in this codebase is integer, not float.
@@ -374,7 +375,7 @@ mod tests {
 
     #[test]
     fn valid_curvature_still_fits_across_a_position_register_wrap() {
-        // The caller (Task 7) centers samples via wrapping_sub against the
+        // The caller (`measure_step`) centers samples via wrapping_sub against the
         // first sample before calling this function, so a signed
         // register-domain wrap must not appear as a large discontinuity here —
         // simulate that by generating already-centered samples whose magnitude

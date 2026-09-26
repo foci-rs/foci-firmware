@@ -664,7 +664,7 @@ pub(crate) async fn step_encoder_check<B: CommissioningBackend>(
             // locks PHI_E_SELECTION to ABN at a known D-axis zero before
             // any later closed-loop or electrical-ID work.
             // Direction value (0=forward, 1=reversed) is carried as
-            // commissioning-local data; persistence is outside this plan.
+            // commissioning-local data and is not persisted.
             *phase = InnerPhase::EncoderAlign {
                 state: EncoderAlignState::Setup {
                     count_before: count_end,

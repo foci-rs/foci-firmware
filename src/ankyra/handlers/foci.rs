@@ -1,15 +1,11 @@
 //! FOCI-specific command handlers: `foci_selftest`, `foci_calibrate`,
 //! `foci_dump_registers`, `foci_commission`.
 //!
-//! Lifted out of `boards/openffboard-fw/src/ankyra/handlers/foci.rs` in
-//! Task 17 of the foci-firmware handler-lift plan. Handler bodies now
-//! bind to the [`TmcHost`] capability trait declared in
-//! [`crate::context`]; the board crate wires up the trait impl on its
-//! own `FirmwareCtx`. The seventh FOCI handler (`foci_tune`) stays
-//! board-local per the handler audit at
-//! `docs/notes/foci-firmware-lift-handler-audit.md` (line 461) because
-//! its implementation calls `foci_tune_inner`, which emits replies via
-//! the board-local ankyra transport sender.
+//! Handler bodies bind to the capability traits declared in
+//! [`crate::context`]; the board crate wires up the trait impls on its
+//! own `FirmwareCtx`. `foci_tune` stays board-local because its
+//! implementation calls `foci_tune_inner`, which emits replies via the
+//! board-local ankyra transport sender.
 //!
 //! Failure replies for commissioning/calibration are emitted
 //! synchronously so the host always sees a terminal reply even when the

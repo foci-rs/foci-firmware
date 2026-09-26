@@ -1306,7 +1306,7 @@ pub static SHARED_STATE_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::cons
 ///
 /// Returns `(calibrated, motor_enabled, stored_gains)` with zero/false/None
 /// defaults. Tests borrow these as `&mut` to construct a `DispatchState`
-/// (added in Task 11+) per call site.
+/// per call site.
 pub fn fresh_state_locals() -> (bool, bool, Option<crate::pid::InnerLoopGains>) {
     (false, false, None)
 }

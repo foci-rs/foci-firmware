@@ -518,7 +518,8 @@ pub enum PositionTuneOutcome {
 
 impl PositionTuneOutcome {
     /// Stable wire code, `0` reserved to mean "not applicable" (the phase
-    /// succeeded, or did not run) on the host-visible field Task 7 adds.
+    /// succeeded, or did not run) on the host-visible
+    /// `position_tune_outcome_code` field.
     ///
     /// Codes 1, 2, 3 and 5 are retired (the floor/ceiling-conflict sweep this
     /// phase replaced) and reserved: never reused.

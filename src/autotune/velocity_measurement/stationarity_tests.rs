@@ -392,9 +392,8 @@ fn cooperative_polling_yields_the_same_span_as_the_synchronous_path() {
     // depending on which path read it.
     //
     // The fixture is the one the neighbouring selection test already uses: a
-    // repeating pattern whose fitted slope is zero, so it passes the significance
-    // gate still in force at this point in the plan. Task 4 has not landed yet, and
-    // a decelerating fixture would be rejected before the span is ever compared.
+    // repeating pattern whose fitted slope is zero, so it clears every stationarity
+    // gate and the span comparison is always reached.
     let samples = observations::<256>(|index| [1, 0, 1, 1, 0][index % 5]);
 
     let mut synchronous_blocker = DyadicBlocker::<LEVELS>::new();

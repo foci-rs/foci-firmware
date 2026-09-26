@@ -546,8 +546,8 @@ mod tests {
                 .count();
             let outside_delta = total_raw.saturating_sub(attributed_delta);
             // Exactly one verified-write call: every raw op its retry loop
-            // performed is attributed inside it (measured by length diff, Task
-            // 1 Step 0), so nothing may land outside. Zero verified calls: at
+            // performed is attributed inside it (measured by length diff),
+            // so nothing may land outside. Zero verified calls: at
             // most one plain Write or Read (the eight unverified sub-register
             // writes) counts as "outside". More than one verified call in a
             // single poll is always a violation.

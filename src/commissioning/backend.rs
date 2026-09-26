@@ -1656,7 +1656,7 @@ mod tests {
         );
 
         // Channel 3's TEST_FEEDBACK_CONFIGS entry is deliberately distinct from
-        // every other channel's (see Step 4) — this only passes if the lookup is
+        // every other channel's — this only passes if the lookup is
         // genuinely indexed by `self.channel`, not a hard-coded index or a
         // channel-blind constant.
         assert_eq!(

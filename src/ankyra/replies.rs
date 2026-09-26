@@ -1,7 +1,7 @@
 //! `#[klipper_reply]` struct declarations for openffboard-fw.
 //!
 //! Each struct in this module is a reply shape that a `#[klipper_command]`
-//! handler (or Task 8's background reply emitters) sends back to the
+//! handler (or a background reply emitter) sends back to the
 //! Klipper host via `::ankyra::klipper_reply!(Path, field: ty = expr, ...)`.
 //!
 //! # Wire-name preservation

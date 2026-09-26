@@ -74,7 +74,7 @@ mod tests {
 
     /// Maps every pin to channel `pin as u8` -- a trivial identity mock,
     /// sufficient since these tests exercise oid/channel bookkeeping, not
-    /// pin-resolution logic (that's Task 1's job, already tested there).
+    /// pin-resolution logic (each board's `analog_pin_channel`, tested there).
     struct MockAnalogInHost;
     impl AnalogInHost for MockAnalogInHost {
         fn resolve_analog_pin(&self, pin: u8) -> Option<u8> {

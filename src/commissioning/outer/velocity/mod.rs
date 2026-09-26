@@ -14,9 +14,7 @@ pub mod fixed_gain_amplitude_plan;
 mod fixed_gain_amplitude_plan_tests;
 pub(crate) mod fixed_gain_amplitude_reporting;
 // breakaway_trace_reporting is the raw FTRC trace-record encoder for the
-// breakaway campaign; kept on `trace` per the established general rule,
-// which now applies uniformly since Task 12 removed the old
-// fixed-gain-amplitude-only trace feature.
+// breakaway campaign; gated on `trace` like every other raw trace encoder.
 #[cfg(feature = "trace")]
 pub(crate) mod breakaway_trace_reporting;
 pub mod combined_plan;
