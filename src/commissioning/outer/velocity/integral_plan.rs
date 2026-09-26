@@ -33,6 +33,7 @@ pub const INTEGRAL_SLOT_TRANSITION_ALLOWANCE_US: u32 = 20_000;
 
 const MICROS_PER_SECOND: u64 = 1_000_000;
 const CONFIDENCE_FAMILY_MAX: u16 = 128;
+const RETIRED_COMBINED_RESPONSE_PRESENCE: u8 = 0;
 
 /// Reproduced Proportional evidence that authorizes one fixed-P Integral plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -240,7 +241,7 @@ impl VelocityIntegralPlan {
         // the same constant zero. Do not turn this back into a real
         // `combined_selected_response` read -- the field is gone; this is a
         // frozen digest-compatibility constant.
-        hash_value!(0u8);
+        hash_value!(RETIRED_COMBINED_RESPONSE_PRESENCE);
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.target_velocity_rpm);
         hash_value!(self.pwm_hz);
