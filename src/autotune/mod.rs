@@ -90,39 +90,3 @@ pub use types::{
     PositionTuneOutcome, SavedGains, ValidationResult,
 };
 pub use velocity_units::{TmcMechanicalRpm, VelocityUnitError};
-
-/// Compute symmetry metric from forward and reverse rise times.
-///
-/// Returns `|a - b| / avg(a, b)` in 0.1% units (200 = 20.0%).
-/// Returns 0 if both values are zero.
-pub fn compute_symmetry_permille(rise_fwd: u32, rise_rev: u32) -> Permille {
-    metrics::normalized_difference(rise_fwd, rise_rev)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- Symmetry ---
-
-    #[test]
-    fn compute_symmetry_identical() {
-        assert_eq!(compute_symmetry_permille(500, 500), Permille::ZERO);
-    }
-
-    #[test]
-    fn compute_symmetry_20_percent() {
-        // |600 - 500| / 550 ≈ 18.2% → 181 in 0.1% units
-        let result = compute_symmetry_permille(600, 500);
-        assert!(
-            (170..=190).contains(&result.raw()),
-            "symmetry {} expected ~181",
-            result.raw()
-        );
-    }
-
-    #[test]
-    fn compute_symmetry_zero_avg() {
-        assert_eq!(compute_symmetry_permille(0, 0), Permille::ZERO);
-    }
-}

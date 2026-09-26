@@ -87,12 +87,6 @@ impl TmcConfig {
         4 * self.tmc_clock_hz / (self.pwm_maxcnt as u32 + 1)
     }
 
-    /// PWM period in nanoseconds.
-    /// `T = (PWM_MAXCNT + 1) * 10ns` (100 MHz internal counter)
-    pub const fn pwm_period_ns(&self) -> u32 {
-        (self.pwm_maxcnt as u32 + 1) * 10
-    }
-
     /// Default torque/flux target-path filter cutoff in Hz.
     ///
     /// FOCI-162's hardware comparison ladder found no measurable difference
@@ -231,12 +225,6 @@ mod tests {
         let mut cfg = test_config();
         cfg.pwm_maxcnt = 49_999;
         assert_eq!(cfg.default_current_filter_hz(), 800);
-    }
-
-    #[test]
-    fn pwm_period_ns_matches_freq() {
-        let cfg = test_config();
-        assert_eq!(cfg.pwm_period_ns(), 40_000);
     }
 
     #[test]

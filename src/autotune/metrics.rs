@@ -8,8 +8,6 @@ pub struct Permille(u16);
 impl Permille {
     /// Zero thousandths.
     pub const ZERO: Self = Self(0);
-    /// One hundred percent, represented as 1000 thousandths.
-    pub const HUNDRED_PERCENT: Self = Self(1000);
     /// Largest representable saturated ratio.
     pub const MAX: Self = Self(u16::MAX);
 
@@ -36,15 +34,6 @@ impl Permille {
     }
 }
 
-pub(crate) fn normalized_difference(a: u32, b: u32) -> Permille {
-    if a == 0 && b == 0 {
-        return Permille::ZERO;
-    }
-    let numerator = u64::from(a.abs_diff(b)) * 2;
-    let denominator = u64::from(a) + u64::from(b);
-    Permille::checked_ratio(numerator, denominator).expect("nonzero normalized-difference sum")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,14 +46,11 @@ mod tests {
     #[test]
     fn checked_ratio_handles_exact_values_and_full_u64_domain() {
         assert_eq!(Permille::checked_ratio(0, 7), Some(Permille::ZERO));
-        assert_eq!(
-            Permille::checked_ratio(1, 1),
-            Some(Permille::HUNDRED_PERCENT)
-        );
+        assert_eq!(Permille::checked_ratio(1, 1), Some(Permille::new(1000)));
         assert_eq!(Permille::checked_ratio(2, 1), Some(Permille::new(2000)));
         assert_eq!(
             Permille::checked_ratio(u64::MAX, u64::MAX),
-            Some(Permille::HUNDRED_PERCENT),
+            Some(Permille::new(1000)),
         );
     }
 
@@ -83,13 +69,5 @@ mod tests {
             assert!(current >= previous);
             previous = current;
         }
-    }
-
-    #[test]
-    fn normalized_difference_handles_domain_boundaries() {
-        assert_eq!(normalized_difference(0, 0), Permille::ZERO);
-        assert_eq!(normalized_difference(500, 500), Permille::ZERO);
-        assert_eq!(normalized_difference(0, 500), Permille::new(2000));
-        assert_eq!(normalized_difference(600, 500), Permille::new(181));
     }
 }

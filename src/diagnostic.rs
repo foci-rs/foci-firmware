@@ -572,58 +572,6 @@ pub struct StepperExecutionSnapshot {
     pub queue_len: u16,
 }
 
-/// Live motion-scale and physical-pulse timing diagnostic values.
-///
-/// Scale values are zero when no complete scale is published. Like the
-/// execution snapshot, this is a best-effort cross-atomic view intended for
-/// host diagnostics rather than synchronization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub struct MotionScaleDiagnosticSnapshot {
-    /// Configured logical planner steps per mechanical revolution.
-    pub planner_steps_per_rev: u32,
-    /// Configured encoder pulses per mechanical revolution.
-    pub encoder_ppr: u32,
-    /// Configured quadrature encoder counts per mechanical revolution.
-    pub encoder_counts_per_rev: u32,
-    /// Configured physical TMC STEP pulses per mechanical revolution.
-    pub tmc_grid: u32,
-    /// Configured TMC position units per physical STEP pulse.
-    pub physical_step_width: u32,
-    /// Whether a complete motion scale is currently configured.
-    pub configured: bool,
-    /// Timer ticks in one physical STEP high or low phase.
-    pub step_half_period_ticks: u32,
-    /// Timer ticks reserved between a DIR change and the first STEP edge.
-    pub dir_setup_ticks: u32,
-    /// Waveform-only two-pulse cost including DIR setup.
-    pub waveform_worst_case_ticks: u32,
-    /// One millisecond of fatal scheduler lateness in timer ticks.
-    pub fatal_lateness_ticks: u32,
-}
-
-impl MotionScaleDiagnosticSnapshot {
-    /// Read current scale atomics and combine them with immutable board timing.
-    pub fn from_state(
-        tmc_state: &crate::state::tmc::TmcChannelState,
-        stepper_state: &crate::state::stepper::StepperChannelState,
-        timing: crate::step_pulse::StepPulseTiming,
-    ) -> Self {
-        let configured = tmc_state.motion_scale_configured();
-        Self {
-            planner_steps_per_rev: stepper_state.planner_steps_per_rev(tmc_state).unwrap_or(0),
-            encoder_ppr: tmc_state.encoder_ppr().unwrap_or(0),
-            encoder_counts_per_rev: tmc_state.encoder_counts_per_rev().unwrap_or(0),
-            tmc_grid: tmc_state.tmc_grid().unwrap_or(0),
-            physical_step_width: tmc_state.physical_step_width().unwrap_or(0),
-            configured,
-            step_half_period_ticks: timing.half_period_ticks(),
-            dir_setup_ticks: timing.dir_setup_ticks(),
-            waveform_worst_case_ticks: timing.waveform_worst_case_ticks(),
-            fatal_lateness_ticks: timing.fatal_lateness_ticks(),
-        }
-    }
-}
-
 struct StepperExecutionCounters {
     queued_segments: AtomicU32,
     queued_steps: AtomicU32,
@@ -1356,48 +1304,6 @@ mod tests {
         assert_eq!(snapshot.physical_neg_pulses, 0);
         assert_eq!(snapshot.executed_pos_steps, 1);
         assert_eq!(snapshot.executed_neg_steps, 1);
-    }
-
-    #[test]
-    fn motion_scale_diagnostic_snapshot_reports_unconfigured_state_and_timing() {
-        let tmc = crate::state::tmc::TmcChannelState::new();
-        let stepper = crate::state::stepper::StepperChannelState::new();
-        let timing = crate::step_pulse::StepPulseTiming::new(84_000_000).unwrap();
-
-        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing);
-
-        assert_eq!(snapshot.planner_steps_per_rev, 0);
-        assert_eq!(snapshot.encoder_ppr, 0);
-        assert_eq!(snapshot.encoder_counts_per_rev, 0);
-        assert_eq!(snapshot.tmc_grid, 0);
-        assert_eq!(snapshot.physical_step_width, 0);
-        assert!(!snapshot.configured);
-        assert_eq!(snapshot.step_half_period_ticks, 4);
-        assert_eq!(snapshot.dir_setup_ticks, 8);
-        assert_eq!(snapshot.waveform_worst_case_ticks, 24);
-        assert_eq!(snapshot.fatal_lateness_ticks, 84_000);
-    }
-
-    #[test]
-    fn motion_scale_diagnostic_snapshot_reports_configured_scale() {
-        let tmc = crate::state::tmc::TmcChannelState::new();
-        let stepper = crate::state::stepper::StepperChannelState::new();
-        tmc.configure_motion_scale(&stepper, 1_000, 3_200)
-            .expect("valid motion scale");
-        let timing = crate::step_pulse::StepPulseTiming::new(260_000_000).unwrap();
-
-        let snapshot = MotionScaleDiagnosticSnapshot::from_state(&tmc, &stepper, timing);
-
-        assert_eq!(snapshot.planner_steps_per_rev, 3_200);
-        assert_eq!(snapshot.encoder_ppr, 1_000);
-        assert_eq!(snapshot.encoder_counts_per_rev, 4_000);
-        assert_eq!(snapshot.tmc_grid, 4_096);
-        assert_eq!(snapshot.physical_step_width, 16);
-        assert!(snapshot.configured);
-        assert_eq!(snapshot.step_half_period_ticks, 11);
-        assert_eq!(snapshot.dir_setup_ticks, 22);
-        assert_eq!(snapshot.waveform_worst_case_ticks, 66);
-        assert_eq!(snapshot.fatal_lateness_ticks, 260_000);
     }
 
     #[test]

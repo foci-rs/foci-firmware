@@ -143,20 +143,6 @@ impl MotionScale {
         self.pulse_mapper.position_error_bound_half_units()
     }
 
-    /// Converts signed encoder counts to TMC4671 mechanical-position units.
-    ///
-    /// Exact half-unit ties round away from zero, symmetrically by sign.
-    pub fn encoder_count_to_position_units(&self, count: i32) -> i64 {
-        round_signed_ratio(count, POSITION_UNITS_PER_REV, self.encoder_counts_per_rev)
-    }
-
-    /// Converts signed logical planner steps to TMC4671 mechanical-position units.
-    ///
-    /// Exact half-unit ties round away from zero, symmetrically by sign.
-    pub fn planner_steps_to_position_units(&self, steps: i32) -> i64 {
-        round_signed_ratio(steps, POSITION_UNITS_PER_REV, self.planner_steps_per_rev())
-    }
-
     /// Builds the exact planner-timing velocity ratio for a control loop.
     ///
     /// Returns `None` when either supplied frequency is zero.
@@ -274,18 +260,6 @@ pub(crate) fn greatest_common_divisor(mut left: u64, mut right: u64) -> u64 {
     left
 }
 
-fn round_signed_ratio(value: i32, numerator: u64, denominator: u32) -> i64 {
-    let scaled = i128::from(value) * i128::from(numerator);
-    let denominator = i128::from(denominator);
-    let rounding = denominator / 2;
-    let rounded = if scaled < 0 {
-        (scaled - rounding) / denominator
-    } else {
-        (scaled + rounding) / denominator
-    };
-    rounded as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,32 +318,6 @@ mod tests {
             low_resolution.physical_step_width(),
             high_resolution.physical_step_width()
         );
-    }
-
-    #[test]
-    fn signed_position_conversions_round_ties_away_from_zero() {
-        let scale = MotionScale::new(8_192, 32_768).unwrap();
-
-        assert_eq!(scale.encoder_count_to_position_units(1), 2);
-        assert_eq!(scale.encoder_count_to_position_units(-1), -2);
-        assert_eq!(scale.planner_steps_to_position_units(1), 2);
-        assert_eq!(scale.planner_steps_to_position_units(-1), -2);
-
-        let half_unit_scale = MotionScale::new(32_768, 131_072).unwrap();
-        assert_eq!(half_unit_scale.encoder_count_to_position_units(1), 1);
-        assert_eq!(half_unit_scale.encoder_count_to_position_units(-1), -1);
-        assert_eq!(half_unit_scale.planner_steps_to_position_units(1), 1);
-        assert_eq!(half_unit_scale.planner_steps_to_position_units(-1), -1);
-    }
-
-    #[test]
-    fn position_conversions_use_their_independent_exact_rationals() {
-        let scale = MotionScale::new(1_000, 3_200).unwrap();
-
-        assert_eq!(scale.encoder_count_to_position_units(125), 2_048);
-        assert_eq!(scale.planner_steps_to_position_units(125), 2_560);
-        assert_eq!(scale.encoder_count_to_position_units(-125), -2_048);
-        assert_eq!(scale.planner_steps_to_position_units(-125), -2_560);
     }
 
     #[test]

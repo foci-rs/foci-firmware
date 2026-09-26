@@ -62,24 +62,9 @@ impl StepPulseTiming {
         self.dir_setup_ticks
     }
 
-    /// Waveform-only ticks for zero, one, or two complete pulses.
-    pub const fn pulse_train_ticks(&self, pulse_count: u8) -> Option<u32> {
-        match pulse_count {
-            0 => Some(0),
-            1 => Some(self.half_period_ticks * 2),
-            2 => Some(self.half_period_ticks * 4),
-            _ => None,
-        }
-    }
-
     /// Waveform-only two-pulse cost including DIR setup.
     pub const fn waveform_worst_case_ticks(&self) -> u32 {
         self.waveform_worst_case_ticks
-    }
-
-    /// Waveform-only logical-event ceiling for the DIR plus two-pulse case.
-    pub const fn waveform_ceiling_hz(&self) -> u32 {
-        self.step_timer_hz / self.waveform_worst_case_ticks()
     }
 
     /// One millisecond of actual scheduler lateness in step-timer ticks.
@@ -104,9 +89,7 @@ mod tests {
         let timing = StepPulseTiming::new(84_000_000).unwrap();
         assert_eq!(timing.half_period_ticks(), 4);
         assert_eq!(timing.dir_setup_ticks(), 8);
-        assert_eq!(timing.pulse_train_ticks(2), Some(16));
         assert_eq!(timing.waveform_worst_case_ticks(), 24);
-        assert_eq!(timing.waveform_ceiling_hz(), 3_500_000);
         assert_eq!(timing.fatal_lateness_ticks(), 84_000);
     }
 
