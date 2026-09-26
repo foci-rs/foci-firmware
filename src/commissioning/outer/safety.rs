@@ -569,13 +569,13 @@ impl OuterSafetyLimits {
     /// Uncensored, unlike a trip fault's `position_counts`: it is updated on
     /// every sample regardless of pass/fail, so it survives a passing run
     /// where the local-window check never fires.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn max_local_position_excursion(&self) -> u32 {
         self.max_local_position_excursion
     }
 
     /// Whether the latest accepted observation met the 1 kHz scoring cadence.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn last_observation_scoring_eligible(&self) -> bool {
         self.last_observation_scoring_eligible
     }
