@@ -1,4 +1,4 @@
-//! `#[klipper_reply]` struct declarations for openffboard-fw.
+//! `#[klipper_reply]` struct declarations shared by every board.
 //!
 //! Each struct in this module is a reply shape that a `#[klipper_command]`
 //! handler (or a background reply emitter) sends back to the

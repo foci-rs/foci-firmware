@@ -1,5 +1,6 @@
-//! FOCI-specific command handlers: `foci_selftest`, `foci_calibrate`,
-//! `foci_dump_registers`, `foci_commission`.
+//! FOCI-specific `foci_*` command handlers: selftest, calibration,
+//! commissioning and its cancel, homing configuration, stall query, and
+//! diagnostic readouts (register dump, ADC VM offset, stack watermark).
 //!
 //! Handler bodies bind to the capability traits declared in
 //! [`crate::context`]; the board crate wires up the trait impls on its
