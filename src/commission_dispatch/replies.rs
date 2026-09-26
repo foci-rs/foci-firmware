@@ -276,7 +276,17 @@ pub trait CommissionReplySink {
     fn foci_current_validation_axis(&mut self, report: CurrentValidationAxisReport);
 
     /// Emit the installed-tuning result.
-    fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult);
+    fn foci_tune_result(&mut self, oid: u8, report_seq: u8, status: u8, result: &OuterResult);
+
+    /// Emit position-tune evidence fields dropped from the terminal tune
+    /// result to stay under the frame budget. Emitted immediately before
+    /// the terminal reply when `rungs_measured > 0`.
+    fn foci_tune_position_evidence(
+        &mut self,
+        oid: u8,
+        report_seq: u8,
+        position_tune: &crate::commissioning::types::PositionTuneProvenance,
+    );
 
     /// Emit installed-tuning safety-envelope evidence before the terminal tune result.
     fn foci_outer_safety_fault(&mut self, oid: u8, fault: OuterSafetyFault);
@@ -863,7 +873,11 @@ pub fn emit_velocity_integral_terminal<S: CommissionReplySink>(
 }
 
 /// Emit all Klipper replies represented by one terminal commissioning payload.
-pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyPayload) {
+pub fn emit_terminal_reply<S: CommissionReplySink>(
+    sink: &mut S,
+    channel: u8,
+    payload: ReplyPayload,
+) {
     match payload {
         ReplyPayload::CommissionPhase {
             oid,
@@ -930,7 +944,11 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             if let Some(evidence) = robustness_evidence {
                 emit_robustness_cycle_evidence(sink, oid, &evidence);
             }
-            sink.foci_tune_result(oid, status, &result);
+            let report_seq = crate::state::report_seq::next_report_seq(channel);
+            if result.position_tune.rungs_measured > 0 {
+                sink.foci_tune_position_evidence(oid, report_seq, &result.position_tune);
+            }
+            sink.foci_tune_result(oid, report_seq, status, &result);
         }
         ReplyPayload::Selftest {
             oid,
@@ -1312,6 +1330,8 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
+    use foci_firmware_macros::fixture_test;
+
     use super::*;
     use crate::ankyra::velocity_sweep_encoding::{
         encode_rate_values, upper_bound_i64, upper_bound_u128,
@@ -1527,10 +1547,17 @@ mod tests {
         },
         Tune {
             oid: u8,
+            report_seq: u8,
             status: u8,
             velocity_p: u16,
             position_p: u16,
             warning_code: u8,
+        },
+        TunePositionEvidence {
+            oid: u8,
+            report_seq: u8,
+            last_rung_p: u16,
+            rungs_measured: u8,
         },
         OuterSafetyFault {
             oid: u8,
@@ -1789,13 +1816,28 @@ mod tests {
             });
         }
 
-        fn foci_tune_result(&mut self, oid: u8, status: u8, result: &OuterResult) {
+        fn foci_tune_result(&mut self, oid: u8, report_seq: u8, status: u8, result: &OuterResult) {
             self.events.push(Event::Tune {
                 oid,
+                report_seq,
                 status,
                 velocity_p: result.velocity_p,
                 position_p: result.position_p,
                 warning_code: result.warning_code,
+            });
+        }
+
+        fn foci_tune_position_evidence(
+            &mut self,
+            oid: u8,
+            report_seq: u8,
+            position_tune: &crate::commissioning::types::PositionTuneProvenance,
+        ) {
+            self.events.push(Event::TunePositionEvidence {
+                oid,
+                report_seq,
+                last_rung_p: position_tune.last_rung_p,
+                rungs_measured: position_tune.rungs_measured,
             });
         }
 
@@ -2278,6 +2320,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionResult {
                 oid: 6,
                 status: 7,
@@ -2364,6 +2407,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionResult {
                 oid: 6,
                 status: 0,
@@ -2395,6 +2439,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionResult {
                 oid: 6,
                 status: 0,
@@ -2434,6 +2479,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionResult {
                 oid: 7,
                 status: 0,
@@ -2480,6 +2526,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionResult {
                 oid: 7,
                 status: 0,
@@ -2528,6 +2575,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionResult {
                 oid: 6,
                 status: CommissionError::CurrentValidationFailed.status_code(),
@@ -2572,6 +2620,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionPhase {
                 oid: 7,
                 phase: 9,
@@ -2616,6 +2665,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionPhase {
                 oid: 7,
                 phase: electrical_id,
@@ -2681,6 +2731,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::Selftest {
                 oid: 8,
                 results,
@@ -2728,6 +2779,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionPhase {
                 oid: 9,
                 phase: 2,
@@ -2753,6 +2805,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CalibrateResult {
                 oid: 1,
                 status: 8,
@@ -2807,6 +2860,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::Selftest {
                 oid: 10,
                 results: SelftestResults::default(),
@@ -2821,11 +2875,13 @@ mod tests {
         );
     }
 
-    #[test]
+    #[fixture_test]
     fn result_variants_emit_single_result_events() {
+        crate::state::report_seq::reset_report_seq();
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CalibrateResult {
                 oid: 1,
                 status: 2,
@@ -2846,6 +2902,7 @@ mod tests {
         );
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::CommissionResult {
                 oid: 6,
                 status: 7,
@@ -2854,6 +2911,7 @@ mod tests {
         );
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::TuneResult {
                 oid: 8,
                 status: 9,
@@ -2935,6 +2993,7 @@ mod tests {
             },
             Event::Tune {
                 oid: 8,
+                report_seq: 0,
                 status: 9,
                 velocity_p: 41,
                 position_p: 44,
@@ -2945,12 +3004,14 @@ mod tests {
         assert_eq!(sink.events, expected);
     }
 
-    #[test]
+    #[fixture_test]
     fn tune_result_emits_outer_safety_fault_before_terminal_result() {
+        crate::state::report_seq::reset_report_seq();
         let mut sink = RecordingSink::default();
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::TuneResult {
                 oid: 3,
                 status: CommissionError::SafetyEnvelopeViolation.status_code(),
@@ -2986,12 +3047,86 @@ mod tests {
                 },
                 Event::Tune {
                     oid: 3,
+                    report_seq: 0,
                     status: CommissionError::SafetyEnvelopeViolation.status_code(),
                     velocity_p: 41,
                     position_p: 44,
                     warning_code: 52,
                 },
             ]
+        );
+    }
+
+    #[fixture_test]
+    fn tune_result_emits_position_evidence_before_terminal_when_rungs_measured() {
+        crate::state::report_seq::reset_report_seq();
+        let mut result = outer_result();
+        result.position_tune.rungs_measured = 3;
+        result.position_tune.last_rung_p = 388;
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            0,
+            ReplyPayload::TuneResult {
+                oid: 8,
+                status: 9,
+                result,
+                safety_fault: None,
+                robustness_evidence: None,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![
+                Event::TunePositionEvidence {
+                    oid: 8,
+                    report_seq: 0,
+                    last_rung_p: 388,
+                    rungs_measured: 3,
+                },
+                Event::Tune {
+                    oid: 8,
+                    report_seq: 0,
+                    status: 9,
+                    velocity_p: 41,
+                    position_p: 44,
+                    warning_code: 52,
+                },
+            ]
+        );
+    }
+
+    #[fixture_test]
+    fn tune_result_emits_only_terminal_when_no_rungs_measured() {
+        crate::state::report_seq::reset_report_seq();
+        let mut result = outer_result();
+        result.position_tune.rungs_measured = 0;
+
+        let mut sink = RecordingSink::default();
+        emit_terminal_reply(
+            &mut sink,
+            0,
+            ReplyPayload::TuneResult {
+                oid: 8,
+                status: 9,
+                result,
+                safety_fault: None,
+                robustness_evidence: None,
+            },
+        );
+
+        assert_eq!(
+            sink.events,
+            std::vec![Event::Tune {
+                oid: 8,
+                report_seq: 0,
+                status: 9,
+                velocity_p: 41,
+                position_p: 44,
+                warning_code: 52,
+            }]
         );
     }
 
@@ -3056,6 +3191,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::VelocityIntegralTerminal {
                 oid: 3,
                 terminal,
@@ -3081,6 +3217,7 @@ mod tests {
 
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::VelocityIntegralRefusal {
                 oid: 3,
                 terminal: missing_authority_integral_terminal(21),
@@ -3175,6 +3312,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::RobustnessReversalTerminal { oid: 3, terminal },
         );
 
@@ -3211,13 +3349,14 @@ mod tests {
         );
     }
 
-    #[test]
+    #[fixture_test]
     fn emit_terminal_reply_emits_cycle_evidence_before_a_deployed_tune_result() {
         use crate::commission_dispatch::robustness::{
             RobustnessPreflightRejection, failed_robustness_terminal,
         };
         use crate::commissioning::outer::velocity::robustness_reporting::encode_robustness_cycle_evidence;
 
+        crate::state::report_seq::reset_report_seq();
         let mut evidence =
             failed_robustness_terminal(1, RobustnessPreflightRejection::NoAcceptedCandidate)
                 .evidence;
@@ -3228,6 +3367,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::TuneResult {
                 oid: 8,
                 status: 9,
@@ -3252,6 +3392,7 @@ mod tests {
                 },
                 Event::Tune {
                     oid: 8,
+                    report_seq: 0,
                     status: 9,
                     velocity_p: result.velocity_p,
                     position_p: result.position_p,
@@ -3325,6 +3466,7 @@ mod tests {
         let mut sink = RecordingSink::default();
         emit_terminal_reply(
             &mut sink,
+            0,
             ReplyPayload::RobustnessReversalTerminal { oid: 3, terminal },
         );
 

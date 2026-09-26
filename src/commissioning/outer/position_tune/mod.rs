@@ -2045,4 +2045,27 @@ mod tests {
         // accepted rung rather than from the snapshot.
         assert_ne!(result.position_p, entry.position_p.raw());
     }
+
+    // Pins `nominal_bandwidth_hz` against the host's independent
+    // reimplementation (`autotune.py`) so the two never drift apart --
+    // green on arrival, not a behavior change.
+    #[test]
+    fn nominal_bandwidth_hz_matches_the_host_formula() {
+        let cases: [(u16, u32); 7] = [
+            (0, 0),
+            (1, 1),
+            (256, 174),
+            (640, 435),
+            (1_000, 679),
+            (32_768, 22_251),
+            (u16::MAX, 44_502),
+        ];
+        for (position_p_raw, expected) in cases {
+            assert_eq!(
+                nominal_bandwidth_hz(position_p_raw),
+                expected,
+                "nominal_bandwidth_hz({position_p_raw}) drifted from the pinned value"
+            );
+        }
+    }
 }

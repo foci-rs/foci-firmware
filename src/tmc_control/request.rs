@@ -130,7 +130,7 @@ pub trait CommissionBusyReplySink {
     /// Return the board's normal request-tail policy.
     fn normal_tail(&self) -> TmcControlRequestTail;
     /// Emit one established commissioning-family busy response.
-    fn emit_reply(&mut self, payload: ReplyPayload);
+    fn emit_reply(&mut self, channel: u8, payload: ReplyPayload);
     /// Emit one established diagnostic not-ready response.
     fn emit_busy_diagnostic(&mut self, request: TmcRequest);
 }
@@ -194,7 +194,7 @@ where
     );
 
     /// Emit a host reply using board-local sender glue.
-    fn emit_reply(&mut self, payload: ReplyPayload);
+    fn emit_reply(&mut self, channel: u8, payload: ReplyPayload);
     /// Record one canonical Proportional record in the trace stream. No-op unless a
     /// board provides a `trace`-gated implementation.
     fn record_velocity_sweep_trace_record(
@@ -256,6 +256,7 @@ pub fn handle_commission_wait_reject<Sink>(
 where
     Sink: CommissionBusyReplySink,
 {
+    let channel = req.channel;
     match req {
         TmcRequest {
             kind: TmcRequestKind::SetEnable(true) | TmcRequestKind::DumpRegisters { .. },
@@ -264,24 +265,24 @@ where
         TmcRequest {
             kind: TmcRequestKind::Calibrate { oid },
             ..
-        } => sink.emit_reply(calibrate_failure_payload(
-            oid,
-            CalibrationError::InternalError.status_code(),
-        )),
+        } => sink.emit_reply(
+            channel,
+            calibrate_failure_payload(oid, CalibrationError::InternalError.status_code()),
+        ),
         TmcRequest {
             kind: TmcRequestKind::SelfTest { oid },
             ..
-        } => sink.emit_reply(selftest_failure_payload(
-            oid,
-            CommissionError::AlreadyRunning.status_code(),
-        )),
+        } => sink.emit_reply(
+            channel,
+            selftest_failure_payload(oid, CommissionError::AlreadyRunning.status_code()),
+        ),
         TmcRequest {
             kind: TmcRequestKind::Commission { oid, .. } | TmcRequestKind::Tune { oid, .. },
             ..
-        } => sink.emit_reply(commission_phase_failure_payload(
-            oid,
-            CommissionError::AlreadyRunning.status_code(),
-        )),
+        } => sink.emit_reply(
+            channel,
+            commission_phase_failure_payload(oid, CommissionError::AlreadyRunning.status_code()),
+        ),
         diagnostic_req @ TmcRequest {
             kind:
                 TmcRequestKind::CurrentStepTest { .. }
@@ -1143,7 +1144,10 @@ where
                                 crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
                                     encode_fixed_gain_amplitude_terminal(&terminal),
                             );
-                    board.emit_reply(ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal });
+                    board.emit_reply(
+                        board.channel(),
+                        ReplyPayload::FixedGainAmplitudeTerminal { oid, terminal },
+                    );
                     board
                         .tmc_state()
                         .commission_in_flight
@@ -1159,20 +1163,26 @@ where
                             preflight.plan.maximum_workflow_ms,
                         )
                         .expect("a valid amplitude plan has a valid workflow envelope");
-            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                oid,
-                plan: workflow,
-            });
+            board.emit_reply(
+                board.channel(),
+                ReplyPayload::CommissioningWorkflowPlan {
+                    oid,
+                    plan: workflow,
+                },
+            );
             for record in crate::commissioning::outer::velocity::fixed_gain_amplitude_reporting::
                         encode_fixed_gain_amplitude_plan(run_sequence, preflight.plan)
                     {
                         board.record_velocity_sweep_trace_record(record);
                     }
-            board.emit_reply(ReplyPayload::FixedGainAmplitudePlan {
-                oid,
-                run_sequence,
-                plan: preflight.plan,
-            });
+            board.emit_reply(
+                board.channel(),
+                ReplyPayload::FixedGainAmplitudePlan {
+                    oid,
+                    run_sequence,
+                    plan: preflight.plan,
+                },
+            );
             TuneRoute::FixedGainAmplitude(preflight)
         }
         crate::tmc::AutotuneAction::IntegralResume => {
@@ -1210,7 +1220,10 @@ where
                                 crate::commissioning::outer::velocity::integral_reporting::
                                     encode_velocity_integral_terminal(&terminal),
                             );
-                    board.emit_reply(ReplyPayload::VelocityIntegralRefusal { oid, terminal });
+                    board.emit_reply(
+                        board.channel(),
+                        ReplyPayload::VelocityIntegralRefusal { oid, terminal },
+                    );
                     board
                         .tmc_state()
                         .commission_in_flight
@@ -1223,10 +1236,13 @@ where
                 preflight.plan.maximum_workflow_ms,
                 preflight.plan.recovery_maximum_slot_us,
             );
-            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                oid,
-                plan: workflow,
-            });
+            board.emit_reply(
+                board.channel(),
+                ReplyPayload::CommissioningWorkflowPlan {
+                    oid,
+                    plan: workflow,
+                },
+            );
             // The workflow envelope only discloses the shape and its
             // durations. The exact plan is a separate reply, and the
             // host refuses Integral evidence that arrives before it, so
@@ -1236,11 +1252,14 @@ where
                     {
                         board.record_velocity_sweep_trace_record(record);
                     }
-            board.emit_reply(ReplyPayload::VelocityIntegralPlan {
-                oid,
-                run_sequence,
-                plan: preflight.plan,
-            });
+            board.emit_reply(
+                board.channel(),
+                ReplyPayload::VelocityIntegralPlan {
+                    oid,
+                    run_sequence,
+                    plan: preflight.plan,
+                },
+            );
             TuneRoute::IntegralResume(preflight)
         }
         crate::tmc::AutotuneAction::BreakawaySeeded => {
@@ -1268,10 +1287,13 @@ where
                                 return Err(TmcControlRequestOutcome::skip_tick_tail());
                             }
                         };
-            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                oid,
-                plan: workflow,
-            });
+            board.emit_reply(
+                board.channel(),
+                ReplyPayload::CommissioningWorkflowPlan {
+                    oid,
+                    plan: workflow,
+                },
+            );
             TuneRoute::Breakaway(campaign)
         }
         crate::tmc::AutotuneAction::RobustnessReversal => {
@@ -1287,8 +1309,10 @@ where
                                 run_sequence,
                                 rejection,
                             );
-                        board
-                            .emit_reply(ReplyPayload::RobustnessReversalTerminal { oid, terminal });
+                        board.emit_reply(
+                            board.channel(),
+                            ReplyPayload::RobustnessReversalTerminal { oid, terminal },
+                        );
                         board
                             .tmc_state()
                             .commission_in_flight
@@ -1309,10 +1333,13 @@ where
                             ),
                         )
                         .expect("robustness workflow envelope is always valid");
-            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                oid,
-                plan: workflow,
-            });
+            board.emit_reply(
+                board.channel(),
+                ReplyPayload::CommissioningWorkflowPlan {
+                    oid,
+                    plan: workflow,
+                },
+            );
             TuneRoute::Robustness(preflight)
         }
         // No preflight, unlike every sibling action: this phase's
@@ -1362,10 +1389,13 @@ where
                         ),
                 )
                 .expect("position tune workflow envelope is always valid");
-            board.emit_reply(ReplyPayload::CommissioningWorkflowPlan {
-                oid,
-                plan: workflow,
-            });
+            board.emit_reply(
+                board.channel(),
+                ReplyPayload::CommissioningWorkflowPlan {
+                    oid,
+                    plan: workflow,
+                },
+            );
             TuneRoute::PositionTune(run_sequence)
         }
     };
@@ -1608,7 +1638,7 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    board.emit_reply(calibrate_failure_payload(oid, status));
+    board.emit_reply(board.channel(), calibrate_failure_payload(oid, status));
 }
 
 fn calibrate_failure_payload(oid: u8, status: u8) -> ReplyPayload {
@@ -1636,7 +1666,10 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    board.emit_reply(commission_phase_failure_payload(oid, status));
+    board.emit_reply(
+        board.channel(),
+        commission_phase_failure_payload(oid, status),
+    );
 }
 
 fn commission_phase_failure_payload(oid: u8, status: u8) -> ReplyPayload {
@@ -1653,7 +1686,7 @@ where
     Spi: SpiDevice<u8>,
     Board: TmcRequestBoard<Spi>,
 {
-    board.emit_reply(selftest_failure_payload(oid, status));
+    board.emit_reply(board.channel(), selftest_failure_payload(oid, status));
 }
 
 fn selftest_failure_payload(oid: u8, status: u8) -> ReplyPayload {
@@ -1791,6 +1824,7 @@ mod tests {
         register_result: Result<(), crate::tmc_control::dispatch::RegisterRequestError>,
         arm_result: Result<(), CommissionError>,
         replies: std::vec::Vec<ReplyPayload>,
+        reply_channels: std::vec::Vec<u8>,
         #[cfg(feature = "trace")]
         velocity_sweep_records:
             std::vec::Vec<crate::ankyra::velocity_sweep_encoding::VelocitySweepCanonicalRecord>,
@@ -1824,6 +1858,7 @@ mod tests {
                 register_result: Ok(()),
                 arm_result: Ok(()),
                 replies: std::vec::Vec::new(),
+                reply_channels: std::vec::Vec::new(),
                 #[cfg(feature = "trace")]
                 velocity_sweep_records: std::vec::Vec::new(),
                 busy_diagnostic_requests: std::vec::Vec::new(),
@@ -1910,7 +1945,8 @@ mod tests {
             self.motion_scale_rejections.push((oid, rejection));
         }
 
-        fn emit_reply(&mut self, payload: ReplyPayload) {
+        fn emit_reply(&mut self, channel: u8, payload: ReplyPayload) {
+            self.reply_channels.push(channel);
             self.replies.push(payload);
         }
 
@@ -1990,7 +2026,8 @@ mod tests {
             self.normal_tail
         }
 
-        fn emit_reply(&mut self, payload: ReplyPayload) {
+        fn emit_reply(&mut self, channel: u8, payload: ReplyPayload) {
+            self.reply_channels.push(channel);
             self.replies.push(payload);
         }
 

@@ -291,8 +291,17 @@ impl CommissionReplySink for ReplyRecorder {
     fn foci_tune_result(
         &mut self,
         _oid: u8,
+        _report_seq: u8,
         _status: u8,
         _result: &crate::commissioning::types::OuterResult,
+    ) {
+    }
+
+    fn foci_tune_position_evidence(
+        &mut self,
+        _oid: u8,
+        _report_seq: u8,
+        _position_tune: &crate::commissioning::types::PositionTuneProvenance,
     ) {
     }
 
@@ -1533,6 +1542,7 @@ fn commission_result_maps_current_loop_evidence() {
     let mut sink = ReplyRecorder::default();
     emit_terminal_reply(
         &mut sink,
+        0,
         ReplyPayload::CommissionResult {
             oid: 6,
             status: 0,

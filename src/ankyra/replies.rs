@@ -2963,28 +2963,16 @@ pub struct FociStallResult {
 pub struct FociTuneResult {
     /// Object id of the FOCI endpoint.
     pub oid: u8,
+    /// Sequence shared by the position-evidence fragment and this terminal.
+    pub report_seq: u8,
     /// Status code (0 = success, non-zero = error code).
     pub status: u8,
     /// Velocity P gain.
     pub velocity_p: u16,
     /// Velocity I gain.
     pub velocity_i: u16,
-    /// Velocity limit.
-    pub velocity_limit: u32,
     /// Position P gain.
     pub position_p: u16,
-    /// Position I gain.
-    pub position_i: u16,
-    /// Velocity filter cutoff in Hz.
-    pub velocity_filter_hz: u16,
-    /// Position filter cutoff in Hz.
-    pub position_filter_hz: u16,
-    /// Flux filter cutoff in Hz.
-    pub flux_filter_hz: u16,
-    /// Torque filter cutoff in Hz.
-    pub torque_filter_hz: u16,
-    /// Warning bitfield for non-fatal tune anomalies.
-    pub warning_code: u8,
     /// Probed velocity, in milli-revolutions/second. Same domain as the
     /// request field `requested_velocity_mrev_s`.
     pub probed_velocity_mrev_s: u32,
@@ -3002,6 +2990,27 @@ pub struct FociTuneResult {
     pub band_position_q: u16,
     /// `PositionTune` closed-form start rung the sweep predicted.
     pub predicted_start_p: u16,
+    /// `PositionTune` count of rungs measured before this terminal.
+    pub rungs_measured: u8,
+    /// `PositionTune` feedforward paths live on the last admitted
+    /// motion stroke (bit 0 velocity, 1 transient, 2 acceleration,
+    /// 3 decoupling, 4 phase advance).
+    pub stimulus_feedforward_paths: u8,
+    /// Wire code of the specific `PositionTuneOutcome` behind a
+    /// `CommissionError::PositionTuneFailed` (0 = not applicable).
+    pub position_tune_outcome_code: u8,
+}
+
+/// `foci_tune_position_evidence` reply - non-terminal `PositionTune` fragment.
+///
+/// Emitted before the terminal, only when `rungs_measured > 0`.
+/// Wire name: `foci_tune_position_evidence`.
+#[klipper_reply]
+pub struct FociTunePositionEvidence {
+    /// Object id of the FOCI endpoint.
+    pub oid: u8,
+    /// Sequence shared by this fragment and the terminal.
+    pub report_seq: u8,
     /// `PositionTune` position P of the last rung measured.
     pub last_rung_p: u16,
     /// `PositionTune` position P of the rung that set the
@@ -3030,118 +3039,86 @@ pub struct FociTuneResult {
     /// `PositionTune` last rung's median motion-leg cruise RMS
     /// tracking error.
     pub motion_cruise_rms_units: u32,
-    /// `PositionTune` nominal position-loop bandwidth in Hz for the
-    /// last rung.
-    pub nominal_bandwidth_hz: u32,
     /// `PositionTune` last rung's median ceiling ratio, scaled by
     /// 1000.
     pub dither_margin_milli: i32,
-    /// `PositionTune` count of rungs measured before this terminal.
-    pub rungs_measured: u8,
-    /// `PositionTune` feedforward paths live on the last admitted
-    /// motion stroke (bit 0 velocity, 1 transient, 2 acceleration,
-    /// 3 decoupling, 4 phase advance).
-    pub stimulus_feedforward_paths: u8,
-    /// Wire code of the specific `PositionTuneOutcome` behind a
-    /// `CommissionError::PositionTuneFailed` (0 = not applicable).
-    pub position_tune_outcome_code: u8,
 }
 
 #[cfg(test)]
 mod tune_result_reply_wire_tests {
-    //! Pins the `foci_tune_result` wire order: the provenance block must
-    //! serialize after every pre-existing field, and must not disturb their
-    //! encoding. Mirrors the ascending-small-value idiom
-    //! in `breakaway_reply_wire_tests` above (every field here VLQ-encodes
-    //! values `1..=18` as a single raw byte -- see `encode_vlq_int`'s
+    //! Pins the `foci_tune_result` and `foci_tune_position_evidence` wire
+    //! orders. Mirrors the ascending-small-value idiom in
+    //! `breakaway_reply_wire_tests` above (every field here VLQ-encodes
+    //! values `1..=16` as a single raw byte -- see `encode_vlq_int`'s
     //! single-byte range of `-32..96`).
-    use super::FociTuneResult;
+    use super::{FociTunePositionEvidence, FociTuneResult};
     use ankyra::ScratchOutput;
     use ankyra::encoding::{Readable, Writable};
 
-    /// Pre-provenance field values, in struct-declaration order.
-    const LEGACY_FIELD_BYTES: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-
-    fn reply_with_known_provenance() -> FociTuneResult {
+    fn reply_with_known_fields() -> FociTuneResult {
         FociTuneResult {
             oid: 1,
-            status: 2,
-            velocity_p: 3,
-            velocity_i: 4,
-            velocity_limit: 5,
+            report_seq: 2,
+            status: 3,
+            velocity_p: 4,
+            velocity_i: 5,
             position_p: 6,
-            position_i: 7,
-            velocity_filter_hz: 8,
-            position_filter_hz: 9,
-            flux_filter_hz: 10,
-            torque_filter_hz: 11,
-            warning_code: 12,
-            probed_velocity_mrev_s: 13,
-            d_eq_q: 14,
-            confidence_q: 15,
-            band_lower_percent: 16,
-            band_upper_percent: 17,
-            band_position_q: 18,
-            predicted_start_p: 19,
-            last_rung_p: 20,
-            min_overshoot_p: 21,
-            min_overshoot_units: 22,
-            bound_units: 23,
-            homing_speed_mrev_s: 24,
-            motion_speed_mrev_s: 25,
-            homing_peak_abs_units: 26,
-            motion_cruise_mean_abs_units: 27,
-            motion_overshoot_units: 28,
-            motion_cruise_rms_units: 29,
-            nominal_bandwidth_hz: 30,
-            dither_margin_milli: 31,
-            rungs_measured: 32,
-            stimulus_feedforward_paths: 33,
-            position_tune_outcome_code: 34,
+            probed_velocity_mrev_s: 7,
+            d_eq_q: 8,
+            confidence_q: 9,
+            band_lower_percent: 10,
+            band_upper_percent: 11,
+            band_position_q: 12,
+            predicted_start_p: 13,
+            rungs_measured: 14,
+            stimulus_feedforward_paths: 15,
+            position_tune_outcome_code: 16,
+        }
+    }
+
+    fn evidence_with_known_fields() -> FociTunePositionEvidence {
+        FociTunePositionEvidence {
+            oid: 1,
+            report_seq: 2,
+            last_rung_p: 3,
+            min_overshoot_p: 4,
+            min_overshoot_units: 5,
+            bound_units: 6,
+            homing_speed_mrev_s: 7,
+            motion_speed_mrev_s: 8,
+            homing_peak_abs_units: 9,
+            motion_cruise_mean_abs_units: 10,
+            motion_overshoot_units: 11,
+            motion_cruise_rms_units: 12,
+            dither_margin_milli: 13,
         }
     }
 
     #[test]
-    fn provenance_fields_encode_after_existing_fields_in_declared_order() {
-        let reply = reply_with_known_provenance();
+    fn terminal_fields_encode_in_declared_order() {
+        let reply = reply_with_known_fields();
         let mut scratch = ScratchOutput::<64>::new();
         reply.write(&mut scratch);
         let encoded = scratch.result();
 
         assert_eq!(
-            &encoded[..LEGACY_FIELD_BYTES.len()],
-            &LEGACY_FIELD_BYTES[..],
-            "existing fields must keep their wire order and values"
-        );
-        let provenance_end = LEGACY_FIELD_BYTES.len() + 6;
-        assert_eq!(
-            &encoded[LEGACY_FIELD_BYTES.len()..provenance_end],
-            &[13, 14, 15, 16, 17, 18],
-            "known provenance values must round-trip through the encoder unchanged"
+            encoded,
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            "terminal fields must serialize in declared order"
         );
     }
 
     #[test]
-    fn position_tune_fields_round_trip_after_provenance_in_declared_order() {
-        let reply = reply_with_known_provenance();
+    fn evidence_fields_encode_in_declared_order() {
+        let evidence = evidence_with_known_fields();
         let mut scratch = ScratchOutput::<64>::new();
-        reply.write(&mut scratch);
+        evidence.write(&mut scratch);
         let encoded = scratch.result();
 
-        let position_tune_start = LEGACY_FIELD_BYTES.len() + 6;
         assert_eq!(
-            encoded.len(),
-            position_tune_start + 16,
-            "the 15 PositionTuneProvenance fields plus position_tune_outcome_code must \
-             append exactly sixteen bytes to the existing payload"
-        );
-        assert_eq!(
-            &encoded[position_tune_start..],
-            &[
-                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34
-            ],
-            "known PositionTune fields must round-trip through the encoder unchanged, in \
-             declared order"
+            encoded,
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            "evidence fields must serialize in declared order"
         );
     }
 
@@ -3149,17 +3126,11 @@ mod tune_result_reply_wire_tests {
     fn position_tune_failure_reply_carries_the_last_rungs_evidence() {
         let reply = FociTuneResult {
             oid: 1,
+            report_seq: 0,
             status: 12, // CommissionError::PositionTuneFailed
             velocity_p: 0,
             velocity_i: 0,
-            velocity_limit: 0,
             position_p: 0,
-            position_i: 0,
-            velocity_filter_hz: 0,
-            position_filter_hz: 0,
-            flux_filter_hz: 0,
-            torque_filter_hz: 0,
-            warning_code: 0,
             probed_velocity_mrev_s: 0,
             d_eq_q: 0,
             confidence_q: 0,
@@ -3167,6 +3138,13 @@ mod tune_result_reply_wire_tests {
             band_upper_percent: 0,
             band_position_q: 0,
             predicted_start_p: 0,
+            rungs_measured: 3,
+            stimulus_feedforward_paths: 0,
+            position_tune_outcome_code: 8, // PositionTuneOutcome::Conflict
+        };
+        let evidence = FociTunePositionEvidence {
+            oid: 1,
+            report_seq: 0,
             last_rung_p: 388,
             min_overshoot_p: 195,
             min_overshoot_units: 40,
@@ -3177,52 +3155,71 @@ mod tune_result_reply_wire_tests {
             motion_cruise_mean_abs_units: 0,
             motion_overshoot_units: 500,
             motion_cruise_rms_units: 0,
-            nominal_bandwidth_hz: 0,
             dither_margin_milli: 0,
-            rungs_measured: 3,
-            stimulus_feedforward_paths: 0,
-            position_tune_outcome_code: 8, // PositionTuneOutcome::Conflict
         };
+
         let mut scratch = ScratchOutput::<64>::new();
         reply.write(&mut scratch);
         let mut cursor = scratch.result();
 
-        for _ in 0..12 {
-            let _ = u8::read(&mut cursor).expect("legacy u8 field");
-        }
-        let _ = u32::read(&mut cursor).expect("probed_velocity_mrev_s");
-        let _ = i32::read(&mut cursor).expect("d_eq_q");
-        let _ = u16::read(&mut cursor).expect("confidence_q");
-        let _ = u8::read(&mut cursor).expect("band_lower_percent");
-        let _ = u8::read(&mut cursor).expect("band_upper_percent");
-        let _ = u16::read(&mut cursor).expect("band_position_q");
-
+        let _oid = u8::read(&mut cursor).expect("oid");
+        let _report_seq = u8::read(&mut cursor).expect("report_seq");
+        let status = u8::read(&mut cursor).expect("status");
+        let _velocity_p = u16::read(&mut cursor).expect("velocity_p");
+        let _velocity_i = u16::read(&mut cursor).expect("velocity_i");
+        let _position_p = u16::read(&mut cursor).expect("position_p");
+        let _probed_velocity_mrev_s = u32::read(&mut cursor).expect("probed_velocity_mrev_s");
+        let _d_eq_q = i32::read(&mut cursor).expect("d_eq_q");
+        let _confidence_q = u16::read(&mut cursor).expect("confidence_q");
+        let _band_lower_percent = u8::read(&mut cursor).expect("band_lower_percent");
+        let _band_upper_percent = u8::read(&mut cursor).expect("band_upper_percent");
+        let _band_position_q = u16::read(&mut cursor).expect("band_position_q");
         let predicted_start_p = u16::read(&mut cursor).expect("predicted_start_p");
-        let last_rung_p = u16::read(&mut cursor).expect("last_rung_p");
-        let min_overshoot_p = u16::read(&mut cursor).expect("min_overshoot_p");
-        let min_overshoot_units = u32::read(&mut cursor).expect("min_overshoot_units");
-        let bound_units = u32::read(&mut cursor).expect("bound_units");
-        let _ = u32::read(&mut cursor).expect("homing_speed_mrev_s");
-        let _ = u32::read(&mut cursor).expect("motion_speed_mrev_s");
-        let _ = u32::read(&mut cursor).expect("homing_peak_abs_units");
-        let _ = u32::read(&mut cursor).expect("motion_cruise_mean_abs_units");
-        let motion_overshoot_units = u32::read(&mut cursor).expect("motion_overshoot_units");
-        let _ = u32::read(&mut cursor).expect("motion_cruise_rms_units");
-        let _ = u32::read(&mut cursor).expect("nominal_bandwidth_hz");
-        let _ = i32::read(&mut cursor).expect("dither_margin_milli");
         let rungs_measured = u8::read(&mut cursor).expect("rungs_measured");
-        let _ = u8::read(&mut cursor).expect("stimulus_feedforward_paths");
+        let _stimulus_feedforward_paths =
+            u8::read(&mut cursor).expect("stimulus_feedforward_paths");
         let outcome_code = u8::read(&mut cursor).expect("position_tune_outcome_code");
 
+        assert_eq!(status, 12);
         assert_eq!(predicted_start_p, 0);
+        assert_eq!(rungs_measured, 3);
+        assert_eq!(outcome_code, 8);
+        assert!(
+            cursor.is_empty(),
+            "every terminal field must have been decoded"
+        );
+
+        let mut evidence_scratch = ScratchOutput::<64>::new();
+        evidence.write(&mut evidence_scratch);
+        let mut evidence_cursor = evidence_scratch.result();
+
+        let _oid = u8::read(&mut evidence_cursor).expect("oid");
+        let _report_seq = u8::read(&mut evidence_cursor).expect("report_seq");
+        let last_rung_p = u16::read(&mut evidence_cursor).expect("last_rung_p");
+        let min_overshoot_p = u16::read(&mut evidence_cursor).expect("min_overshoot_p");
+        let min_overshoot_units = u32::read(&mut evidence_cursor).expect("min_overshoot_units");
+        let bound_units = u32::read(&mut evidence_cursor).expect("bound_units");
+        let _homing_speed_mrev_s = u32::read(&mut evidence_cursor).expect("homing_speed_mrev_s");
+        let _motion_speed_mrev_s = u32::read(&mut evidence_cursor).expect("motion_speed_mrev_s");
+        let _homing_peak_abs_units =
+            u32::read(&mut evidence_cursor).expect("homing_peak_abs_units");
+        let _motion_cruise_mean_abs_units =
+            u32::read(&mut evidence_cursor).expect("motion_cruise_mean_abs_units");
+        let motion_overshoot_units =
+            u32::read(&mut evidence_cursor).expect("motion_overshoot_units");
+        let _motion_cruise_rms_units =
+            u32::read(&mut evidence_cursor).expect("motion_cruise_rms_units");
+        let _dither_margin_milli = i32::read(&mut evidence_cursor).expect("dither_margin_milli");
+
         assert_eq!(last_rung_p, 388);
         assert_eq!(min_overshoot_p, 195);
         assert_eq!(min_overshoot_units, 40);
         assert_eq!(bound_units, 0);
         assert_eq!(motion_overshoot_units, 500);
-        assert_eq!(rungs_measured, 3);
-        assert_eq!(outcome_code, 8);
-        assert!(cursor.is_empty(), "every field must have been decoded");
+        assert!(
+            evidence_cursor.is_empty(),
+            "every evidence field must have been decoded"
+        );
     }
 }
 
