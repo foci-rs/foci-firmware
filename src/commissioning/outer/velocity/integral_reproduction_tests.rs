@@ -521,15 +521,6 @@ fn integral_candidate_size_is_measured_without_padding() {
     // Exact sizes, so retained Integral state cannot grow unnoticed on a target
     // with no heap. A failure here is a prompt to justify the growth, not to
     // update the number reflexively.
-    // 232 -> 216: removes the `combined_selected_response`
-    // field entirely (only the retired live combined P-then-I workflow ever
-    // populated it).
-    // 216 -> 216 (unchanged): `i_top_cap: u16` is needed so response-ladder
-    // plans can regenerate their half-octave rung during execution; existing
-    // padding absorbed the two extra bytes, so the measured total did not grow.
-    // 120 -> 128: `acceptance_plan_digest: u64` and `qualifier_bits: u16`
-    // replaced a tunnel through `selected_response_intervals_q`; see
-    // integral_plan.rs's own size assertion for the rationale.
     assert_eq!(core::mem::size_of::<VelocityIntegralPlan>(), 208);
     assert_eq!(core::mem::size_of::<VelocityIntegralExecutionPlan>(), 128);
     assert_eq!(core::mem::size_of::<IntegralAuthoritySummary>(), 96);

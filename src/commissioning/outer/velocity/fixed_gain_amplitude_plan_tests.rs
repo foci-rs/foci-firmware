@@ -383,9 +383,6 @@ fn compact_execution_plan_carries_fixed_i_and_literal_targets() {
     );
     assert_eq!(execution.qualifier_bits, ascending.qualifier_bits);
     assert_eq!(execution.selected_response_intervals_q, [[0, 0], [0, 0]]);
-    // 120 -> 128: `acceptance_plan_digest: u64` and `qualifier_bits: u16`
-    // replaced the tunnel through `selected_response_intervals_q`; see
-    // integral_plan.rs's own size assertion for the exact byte count.
     assert_eq!(core::mem::size_of_val(&execution), 128);
 }
 

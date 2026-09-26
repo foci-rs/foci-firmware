@@ -526,14 +526,6 @@ pub struct VelocityIntegralExecutionPlan {
     pub slot_order: IntegralSlotOrder,
 }
 
-// 112 -> 120: `i_top_cap: u16` is needed so response-ladder plans can
-// regenerate their half-octave rung during execution; unlike
-// `VelocityIntegralPlan`, this struct has no unused padding to absorb it
-// (its leading `u64` field forces 8-byte alignment, so the two extra bytes
-// push the total past the previous 112-byte boundary to the next multiple).
-// 120 -> 128: `acceptance_plan_digest: u64` and `qualifier_bits: u16`
-// replaced a tunnel through `selected_response_intervals_q`, adding real
-// storage instead of reusing the existing array.
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() == 128);
 const _: () = assert!(core::mem::size_of::<VelocityIntegralExecutionPlan>() <= 128);
 

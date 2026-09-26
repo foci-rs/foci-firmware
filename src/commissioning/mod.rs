@@ -2021,10 +2021,6 @@ mod tests {
         // outweigh the classic VelocitySweep variant. Exact, so retained
         // engine state cannot grow unnoticed; the audited F407 ceiling is
         // the `<= 6_144` bound below.
-        // 5_760 -> 5_744: removes the `combined_workflow`
-        // bool from the embedded Integral execution plan.
-        // 5_744 -> 5_760: `OuterSafetyLimits` gains a `u32` peak local-window
-        // excursion field for uncensored characterization data.
         assert_eq!(size_of::<CommissioningEngine>(), 5_760);
         assert!(size_of::<CommissioningEngine>() <= 5_776);
         assert!(size_of::<CommissioningEngine>() <= 6_144);
@@ -2036,21 +2032,6 @@ mod tests {
         // budget is roughly 4 KB each. Treat a failure here as a design
         // question: a future that grows past its bound has overflowed the
         // interrupt stack on real hardware before.
-        // `SafeStateRestoreStep` carries its `index`/`report` state across
-        // every `.await` point in the abort/disarm path, since a Rust future
-        // must hold all state live across a suspension point; the flat
-        // sequential restore it replaced let each write complete before the
-        // next one was polled, so it never needed to carry that state.
-        // The electrical-identification future no longer carries a capture
-        // buffer across an await point now that theta comes from the
-        // inductance excitation phase instead of a paced delay capture.
-        // The GainFloorMeasurement phase keeps its 200-sample capture
-        // workspace in `InnerPhase` (pinned above) and fits each capture in
-        // a synchronous helper, so neither the samples nor the fit inputs
-        // are live across the capture awaits, and these futures are the
-        // same size as before that phase existed.
-        // `EngineMode::Outer` shrinks below now that the wire reply and tune
-        // request no longer carry the dead `current_ringing` bool.
         assert_eq!(engine_step, 4_400);
         assert!(engine_step <= 4_400);
         assert_eq!(step_inner, 4_352);
