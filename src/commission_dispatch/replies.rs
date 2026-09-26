@@ -888,7 +888,7 @@ pub fn emit_terminal_reply<S: CommissionReplySink>(sink: &mut S, payload: ReplyP
             status,
             result,
         } => {
-            // FociCommissionResult is size-capped (23 fields, near the
+            // FociCommissionResult is size-capped (17 fields, near the
             // 64-byte Klipper message limit) and cannot carry the evidence
             // that lives alongside `InnerResult`. Emit supplemental evidence
             // before the terminal commission result so the result stays the
@@ -1996,9 +1996,7 @@ mod tests {
                 lambda_us: 19,
                 theta_e_us: 20,
                 theta_source: 0,
-                ringing_count: 21,
                 bandwidth_hz: 22,
-                tau_e_us: 23,
                 inductance: InductanceEvidence::test_fixture(),
                 inner_warning_flags: 26,
                 timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],

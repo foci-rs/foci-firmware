@@ -142,7 +142,6 @@ mod tests {
                     mode: 1,
                     inner_lambda_us: 20,
                     theta_e_us: 30,
-                    current_ringing_count: 0,
                     current_bandwidth_hz: 1000,
                     inner_warning_flags: 0,
                     requested_velocity_mrev_s: 6000,

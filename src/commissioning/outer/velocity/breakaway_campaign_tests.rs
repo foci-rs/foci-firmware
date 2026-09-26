@@ -4180,7 +4180,6 @@ fn dispatch_campaign_tick(phase: &mut OuterPhase, backend: &mut MockBackend) -> 
         crate::autotune::OperatingMode::Nominal,
         0,
         0,
-        false,
         0,
         0,
         &mut trace_summary_seqs,

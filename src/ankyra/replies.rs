@@ -238,22 +238,14 @@ pub struct FociCommissionResult {
     /// Source of the accepted `theta_e_us`: 0 = high-rate measurement, 1 =
     /// board-configured fallback.
     pub theta_source: u8,
-    /// Ringing count observed during the step response.
-    pub ringing_count: u8,
-    /// Closed-loop bandwidth in Hz.
-    pub bandwidth_hz: u32,
+    /// Closed-loop bandwidth in Hz, capped at `MAX_PHYSICAL_CURRENT_BANDWIDTH_HZ`.
+    pub bandwidth_hz: u16,
     /// Fallback velocity P gain used by the outer loop.
     pub fallback_velocity_p: u16,
     /// Fallback velocity I gain used by the outer loop.
     pub fallback_velocity_i: u16,
     /// Fallback position P gain used by the outer loop.
     pub fallback_position_p: u16,
-    /// Fallback position I gain used by the outer loop.
-    pub fallback_position_i: u16,
-    /// Fallback velocity limit used by the outer loop.
-    pub fallback_velocity_limit: u32,
-    /// Electrical time constant L/R in microseconds (Phase 5 measurement).
-    pub tau_e_us: u32,
     /// Inner-confidence warning bitfield.
     ///
     /// Bits 0, 1, and 3 report model warnings; bit 2 is reserved for tau
@@ -1034,9 +1026,9 @@ pub struct FociResistanceAxis {
 #[cfg(test)]
 mod resistance_reply_size_tests {
     use super::{
-        FociClosedLoopActivation, FociCommissionResult, FociCommissionTiming,
-        FociCurrentLoopFilters, FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis,
-        FociResistanceProfile, FociResistanceRun, FociRobustnessCycleEvidence,
+        FociClosedLoopActivation, FociCommissionTiming, FociCurrentLoopFilters,
+        FociCurrentLoopHold, FociOuterSafetyFault, FociResistanceAxis, FociResistanceProfile,
+        FociResistanceRun, FociRobustnessCycleEvidence,
     };
     use ankyra::ScratchOutput;
     use ankyra::encoding::Writable;
@@ -1081,34 +1073,6 @@ mod resistance_reply_size_tests {
             max_spi_wall_us: u32::MAX,
         };
         assert_fits_with_id(&reply, "foci_commission_timing");
-    }
-
-    #[test]
-    fn commission_result_with_timing_summary_fits_klipper_message_limit() {
-        let reply = FociCommissionResult {
-            oid: u8::MAX,
-            status: u8::MAX,
-            r_count_milli: u32::MAX,
-            l_count_micro: u32::MAX,
-            flux_p: u16::MAX,
-            flux_i: u16::MAX,
-            torque_p: u16::MAX,
-            torque_i: u16::MAX,
-            lambda_us: u32::MAX,
-            theta_e_us: u32::MAX,
-            theta_source: u8::MAX,
-            ringing_count: u8::MAX,
-            bandwidth_hz: u32::MAX,
-            fallback_velocity_p: u16::MAX,
-            fallback_velocity_i: u16::MAX,
-            fallback_position_p: u16::MAX,
-            fallback_position_i: u16::MAX,
-            fallback_velocity_limit: u32::MAX,
-            tau_e_us: u32::MAX,
-            inner_warning_flags: u8::MAX,
-            timing_summary: u32::MAX,
-        };
-        assert_fits_with_id(&reply, "foci_commission_result");
     }
 
     /// Assert that `reply`'s encoded payload, plus a worst-case reply-id

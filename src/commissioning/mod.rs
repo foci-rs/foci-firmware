@@ -90,8 +90,6 @@ pub struct OuterAutotuneInputs {
     pub inner_lambda_us: u32,
     /// Theta-E delay from Stage 1 (microseconds).
     pub theta_e_us: u32,
-    /// Whether the Stage 1 current step response showed ringing.
-    pub current_ringing: bool,
     /// Current-loop bandwidth from Stage 1 (Hz).
     pub current_bandwidth_hz: u32,
     /// Inner-confidence warning bitfield carried from Stage 1.
@@ -214,8 +212,6 @@ pub(crate) enum EngineMode {
         inner_lambda_us: u32,
         /// Electrical transport delay in microseconds.
         theta_e_us: u32,
-        /// Whether current-loop ringing was detected during inner validation.
-        current_ringing: bool,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
         /// Inner-confidence warning bitfield carried from Stage 1.
@@ -281,7 +277,6 @@ struct OuterScaffold {
     mode: OperatingMode,
     inner_lambda_us: u32,
     theta_e_us: u32,
-    current_ringing: bool,
     current_bandwidth_hz: u32,
     inner_warning_flags: u8,
     entry_snapshot: OuterGainRollbackSnapshot,
@@ -493,7 +488,6 @@ impl CommissioningEngine {
             mode,
             inner_lambda_us,
             theta_e_us,
-            current_ringing,
             current_bandwidth_hz,
             inner_warning_flags,
             requested_velocity_mrev_s,
@@ -528,7 +522,6 @@ impl CommissioningEngine {
             mode,
             inner_lambda_us,
             theta_e_us,
-            current_ringing,
             current_bandwidth_hz,
             inner_warning_flags,
             entry_snapshot,
@@ -546,7 +539,6 @@ impl CommissioningEngine {
             mode,
             inner_lambda_us,
             theta_e_us,
-            current_ringing,
             current_bandwidth_hz,
             inner_warning_flags,
             entry_snapshot,
@@ -562,7 +554,6 @@ impl CommissioningEngine {
                 mode,
                 inner_lambda_us,
                 theta_e_us,
-                current_ringing,
                 current_bandwidth_hz,
                 inner_warning_flags,
                 entry_snapshot,
@@ -1848,7 +1839,6 @@ impl CommissioningEngine {
                     mode,
                     inner_lambda_us,
                     theta_e_us,
-                    current_ringing,
                     current_bandwidth_hz,
                     inner_warning_flags,
                     ..
@@ -1860,7 +1850,6 @@ impl CommissioningEngine {
                         *mode,
                         *inner_lambda_us,
                         *theta_e_us,
-                        *current_ringing,
                         *current_bandwidth_hz,
                         *inner_warning_flags,
                         trace_summary_seqs,
@@ -2074,17 +2063,19 @@ mod tests {
         // a synchronous helper, so neither the samples nor the fit inputs
         // are live across the capture awaits, and these futures are the
         // same size as before that phase existed.
-        assert_eq!(engine_step, 4_416);
-        assert!(engine_step <= 4_416);
-        assert_eq!(step_inner, 4_368);
-        assert!(step_inner <= 4_368);
+        // 4_416 -> 4_400: `EngineMode::Outer` drops the dead `current_ringing`
+        // bool now that the wire reply and tune request no longer carry it.
+        assert_eq!(engine_step, 4_400);
+        assert!(engine_step <= 4_400);
+        assert_eq!(step_inner, 4_352);
+        assert!(step_inner <= 4_352);
         assert_eq!(electrical_id, 640);
         assert!(electrical_id <= 640);
         assert!(electrical_id <= 720);
-        assert_eq!(scheduled_step, 4_496);
+        assert_eq!(scheduled_step, 4_480);
         // The hot path keeps nonterminal classification outside the terminal
         // async dispatch future.
-        assert!(scheduled_step <= 4_496);
+        assert!(scheduled_step <= 4_480);
     }
 
     fn tmc_state() -> &'static crate::state::tmc::TmcChannelState {
@@ -2099,7 +2090,6 @@ mod tests {
             mode: crate::autotune::OperatingMode::Nominal,
             inner_lambda_us: 100,
             theta_e_us: 50,
-            current_ringing: false,
             current_bandwidth_hz: 1000,
             inner_warning_flags: 0,
             requested_velocity_mrev_s: 6000,
@@ -2154,9 +2144,7 @@ mod tests {
             lambda_us: 100,
             theta_e_us: 50,
             theta_source: 0,
-            ringing_count: 0,
             bandwidth_hz: 1000,
-            tau_e_us: 730,
             inductance: crate::commissioning::types::InductanceEvidence::EMPTY,
             inner_warning_flags: 0,
             timing: [crate::commissioning::types::CommissionTimingSummary::NOT_RUN; 3],

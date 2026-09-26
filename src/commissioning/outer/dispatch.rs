@@ -157,10 +157,10 @@ fn velocity_timing_context(
     }
 }
 
-// `profile`/`mode`/`inner_lambda_us`/`theta_e_us`/`current_ringing`/
-// `current_bandwidth_hz`/`inner_warning_flags` were consumed by the dead
-// VelocityTune/VelocityValidate arms this task removed; the parameters stay
-// (unread) so the caller's `EngineMode::Outer` threading is untouched.
+// `profile`/`mode`/`inner_lambda_us`/`theta_e_us`/`current_bandwidth_hz`/
+// `inner_warning_flags` were consumed by the dead VelocityTune/VelocityValidate
+// arms this task removed; the parameters stay (unread) so the caller's
+// `EngineMode::Outer` threading is untouched.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     phase: &mut OuterPhase,
@@ -169,7 +169,6 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
     _mode: OperatingMode,
     _inner_lambda_us: u32,
     _theta_e_us: u32,
-    _current_ringing: bool,
     _current_bandwidth_hz: u32,
     _inner_warning_flags: u8,
     trace_summary_seqs: &mut TraceSummarySeqs,

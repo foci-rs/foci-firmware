@@ -709,7 +709,6 @@ fn outer_params() -> crate::commissioning::OuterAutotuneInputs {
         mode: crate::autotune::OperatingMode::Nominal,
         inner_lambda_us: 100,
         theta_e_us: 50,
-        current_ringing: false,
         current_bandwidth_hz: 1_000,
         inner_warning_flags: 0,
         requested_velocity_mrev_s: request().requested_velocity_mrev_s,

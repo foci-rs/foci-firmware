@@ -266,8 +266,6 @@ pub enum TmcRequestKind {
         mode: u8,
         inner_lambda_us: u32,
         theta_e_us: u32,
-        /// Current-loop ringing count from inner validation (>1 = ringing).
-        current_ringing_count: u8,
         /// Current-loop effective bandwidth Hz from inner commissioning.
         current_bandwidth_hz: u32,
         /// Inner-confidence warning bitfield carried from commissioning.
@@ -559,7 +557,6 @@ pub fn tmc_tune(
     mode: u8,
     inner_lambda_us: u32,
     theta_e_us: u32,
-    current_ringing_count: u8,
     current_bandwidth_hz: u32,
     inner_warning_flags: u8,
     requested_velocity_mrev_s: u32,
@@ -582,7 +579,6 @@ pub fn tmc_tune(
         mode,
         inner_lambda_us,
         theta_e_us,
-        current_ringing_count,
         current_bandwidth_hz,
         inner_warning_flags,
         requested_velocity_mrev_s,
@@ -608,7 +604,6 @@ pub fn tmc_tune_with_action(
     mode: u8,
     inner_lambda_us: u32,
     theta_e_us: u32,
-    current_ringing_count: u8,
     current_bandwidth_hz: u32,
     inner_warning_flags: u8,
     requested_velocity_mrev_s: u32,
@@ -632,7 +627,6 @@ pub fn tmc_tune_with_action(
             mode,
             inner_lambda_us,
             theta_e_us,
-            current_ringing_count,
             current_bandwidth_hz,
             inner_warning_flags,
             requested_velocity_mrev_s,
