@@ -71,55 +71,10 @@ fn runtime_starts_disarmed_and_uncalibrated() {
 fn channel_runtime_size_stays_bounded() {
     // The runtime embeds the `CommissioningEngine`, so it tracks that engine's
     // size plus the runtime's own fixed overhead.
-    // 5_872 -> 5_856: removes the `combined_workflow` bool
-    // from the embedded Integral execution plan.
-    // Both builds grow because the runtime now caches the planner mechanical-RPM
-    // ratio alongside the position-per-PWM ratio; the trace build absorbs part of
-    // it into existing padding.
-    // 5_872 -> 5_888: the trace-only runtime state gains a per-sample velocity
-    // feedforward clamp-engaged flag.
-    // 5_888 -> 7_552 / 5_856 -> 7_520: the runtime now embeds the poll-driven
-    // terminal restore machine. Its owned terminal payload used to live in the
-    // `tmc_control` task future for the duration of the awaited restore, so
-    // this is a move out of that future's frame, not new state.
-    // 7_552 -> 7_568 / 7_520 -> 7_536: the embedded `OuterSafetyLimits` gains
-    // a `u32` peak local-window excursion field (see
-    // `commissioning::tests::size_regression_gates`).
-    // 7_568 -> 7_584 / 7_536 -> 7_552: the runtime now owns the homing
-    // `Option<StallDetector>` and its state-1/state-3 retry counters.
-    // The three gain-restore cursor states (`SelftestRestoreGains`,
-    // `InnerFailedRestoreGains`, `CalibrateRestoreGains`) now carry an
-    // `Option<CalibrateGainsRestoreStep>` so each polls one register
-    // operation at a time instead of one shot; the runtime grows by that
-    // step state's size.
-    // 7_600 -> 7_984 / 7_568 -> 7_952: `CalibrateApplyFilters` and
-    // `OuterDoneApplyFilters` now carry an `Option<FilterCutoffsStep>` so
-    // each applies one filter-cutoff register write per poll instead of one
-    // shot; the runtime grows by that step state's size.
-    // 7_984 -> 8_000 / 7_952 -> 7_968: `RobustnessRestoreBaseline` and
-    // `VelocityStagedRestoreBaseline` now carry an
-    // `Option<restore::EntrySnapshotRestoreStep>`, whose `Filters` variant
-    // embeds a `FilterCutoffsStep`; it becomes `RestoreCursor`'s largest
-    // variant, so the runtime grows by the resulting size delta.
-    // 8_000 -> 8_144 / 7_968 -> 8_112: the restore machine's per-terminal
-    // state carries an `Option<RobustnessEvidence>` so a robustness pass, which
-    // deploys through `OuterDone` and never emits its terminal, can still put
-    // the per-direction cycle evidence on the wire ahead of the tune result.
-    // 8_144 -> 8_176 / 8_112 -> 8_144: `StallDetector` gained the
-    // baseline-relative margin check's fixed-point EMA state (two u64
-    // accumulators, the ceiling/margin split, and per-check consecutive
-    // counters) alongside the existing absolute-ceiling check.
-    // 8_176 -> 8_160 / 8_144 -> 8_128: the one-shot shutdown latch moved to
-    // the board loops and left the runtime.
     #[cfg(feature = "trace")]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_160);
-    // 3_920 -> 5_824: un-gates `OuterPhase::VelocityIntegral`
-    // and `OuterPhase::BreakawayCampaign` into the default build, so the
-    // embedded `CommissioningEngine` is now the same largest-variant size as
-    // the `trace` build (see `commissioning::tests::size_regression_gates`);
-    // only the surrounding runtime's own trace-only fields still differ.
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_176);
     #[cfg(not(feature = "trace"))]
-    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_128);
+    assert_eq!(core::mem::size_of::<TmcControlRuntime>(), 8_144);
 }
 
 #[test]
@@ -1439,6 +1394,13 @@ fn homing_state(runtime: &mut TmcControlRuntime) -> crate::state::tmc::TmcChanne
     tmc_state.stall_margin_units.store(99, Relaxed);
     tmc_state.stall_persistence.store(2, Relaxed);
     tmc_state.store_current_limit(homing_limit_for(2300), Relaxed);
+    tmc_state
+        .configure_motion_scale(
+            &crate::state::stepper::StepperChannelState::new(),
+            1_000,
+            3_200,
+        )
+        .unwrap();
     runtime.set_motor_enabled_for_test(true);
     runtime.set_calibrated_for_test(true);
     tmc_state
@@ -1479,6 +1441,37 @@ const fn expected_exhausted_homing_state_1_budget() -> [HomingMaintenanceResult;
         HomingMaintenanceResult::RetryCurrentState,
         HomingMaintenanceResult::FailClosed,
     ]
+}
+
+#[test]
+fn homing_prepare_fails_closed_without_a_motion_scale() {
+    pollster::block_on(async {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        let tmc_state = homing_state(&mut runtime);
+        let stepper_state = crate::state::stepper::StepperChannelState::new();
+        tmc_state.clear_motion_scale(&stepper_state);
+        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
+
+        let result = runtime
+            .apply_homing_channel_tick(
+                &mut tmc,
+                TmcControlStateRefs::new(&tmc_state, &stepper_state),
+                &homing_runtime_config(),
+                1,
+                due_homing_window(),
+            )
+            .await;
+
+        assert_eq!(result, HomingMaintenanceResult::FailClosed);
+        let writes = tmc.into_inner().writes;
+        assert!(
+            !writes
+                .iter()
+                .any(|(addr, _)| *addr == PID_TORQUE_FLUX_LIMITS.addr())
+        );
+        assert!(!tmc_state.homing_clamp_active.load(Relaxed));
+        assert!(!runtime.stall_detector_armed_for_test());
+    });
 }
 
 #[test]

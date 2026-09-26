@@ -1727,6 +1727,10 @@ impl TmcControlRuntime {
             defmt::error!("homing: channel not armed for steps, refusing clamp");
             return HomingMaintenanceResult::FailClosed;
         }
+        let Some(encoder_counts_per_rev) = refs.tmc.encoder_counts_per_rev() else {
+            defmt::error!("homing: no motion scale published, refusing clamp");
+            return HomingMaintenanceResult::FailClosed;
+        };
         let limit = match crate::tmc_control::current_limit::current_limit_from_run_ma(
             homing_ma,
             config.current_scale_ma_per_lsb,
@@ -1760,6 +1764,7 @@ impl TmcControlRuntime {
             refs.tmc.stall_ceiling_units.load(Relaxed),
             refs.tmc.stall_margin_units.load(Relaxed),
             refs.tmc.stall_persistence.load(Relaxed),
+            encoder_counts_per_rev,
         ));
         defmt::info!("homing: clamp {} mA, detector armed", homing_ma);
         HomingMaintenanceResult::ReadyToAdvance
@@ -2030,6 +2035,7 @@ impl TmcControlRuntime {
             ceiling,
             margin,
             persistence,
+            4_000,
         ));
     }
 

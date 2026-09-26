@@ -28,37 +28,8 @@ impl StallTriggerPath {
     }
 }
 
-/// A following-error delta a tick must exceed to count as "real motion" for
-/// baseline purposes. Firmware constant, not host-configurable (see spec's
-/// Config surface). Position units (65536 per revolution).
-///
-/// Sized against two bounds, not picked as a round number:
-///
-/// - **Above realistic encoder jitter.** The ABN encoder is 4000 counts/rev
-///   (`docs/notes/openffboard-hardware.md`), so one count is
-///   `65536 / 4000 ~= 16.384` position units. The project's own
-///   "+/-2 counts jitter" precedent for a stationary axis
-///   (`docs/notes/decisions.md`, 2026-04-05) is therefore `~=33` units of
-///   realistic settling noise, with observed excursions up to `~=49` units
-///   (3 counts). A stalled axis that is genuinely not moving can still show
-///   deltas in that range every tick; the floor must sit above it or a
-///   stall never stops "confirming motion" and the EMA baseline keeps
-///   chasing the rising following error instead of staying gated.
-/// - **Far below real per-tick motion at the slowest homing speed in use.**
-///   The homing maintenance tick runs on the shared 1 ms maintenance grid
-///   (`scheduler::MAINTENANCE_PERIOD_US`), so 1 tick = 1 ms. At this
-///   printer's slowest homing speed, 100 mm/s, and its `rotation_distance`
-///   of 40 mm/rev (`POSITION_UNITS_PER_REV = 65536` in `config.py`), one
-///   tick of real cruise motion is `0.1 mm * 65536 / 40 ~= 164` position
-///   units -- comfortably above this floor, so genuine motion still
-///   registers on essentially every tick and the baseline still warms up
-///   promptly.
-///
-/// 64 sits well clear of both bounds: ~1.9x the ~33-unit documented jitter
-/// precedent, ~1.3x the ~49-unit observed excursion, and about 2.5x below
-/// per-tick motion at the slowest homing speed (100 mm/s; 175 mm/s gives
-/// even more headroom).
-const MOTION_NOISE_FLOOR_UNITS: u32 = 64;
+const STALLED_ENCODER_JITTER_COUNTS: u32 = 3;
+const MOTION_NOISE_FLOOR_COUNTS: u32 = STALLED_ENCODER_JITTER_COUNTS + 1;
 
 /// Consecutive motion-confirmed ticks required before the baseline is
 /// trusted. Firmware constant; see spec's residual-risk section for why
@@ -95,6 +66,7 @@ pub struct StallDetector {
     ceiling_units: u32,
     margin_units: u32,
     persistence: u8,
+    motion_noise_floor_units: u32,
     ceiling_consecutive: u8,
     margin_consecutive: u8,
     ticks: u32,
@@ -115,12 +87,22 @@ pub struct StallDetector {
 }
 
 impl StallDetector {
-    /// Create an armed detector. `persistence` is clamped to at least 1.
-    pub const fn new(ceiling_units: u32, margin_units: u32, persistence: u8) -> Self {
+    /// Create an armed detector. `persistence` is clamped to at least 1;
+    /// `encoder_counts_per_rev` comes from a published motion scale, which
+    /// is never zero.
+    pub const fn new(
+        ceiling_units: u32,
+        margin_units: u32,
+        persistence: u8,
+        encoder_counts_per_rev: u32,
+    ) -> Self {
         Self {
             ceiling_units,
             margin_units,
             persistence: if persistence == 0 { 1 } else { persistence },
+            motion_noise_floor_units: (MOTION_NOISE_FLOOR_COUNTS
+                * crate::motion_scale::POSITION_UNITS_PER_REV as u32)
+                .div_ceil(encoder_counts_per_rev),
             ceiling_consecutive: 0,
             margin_consecutive: 0,
             ticks: 0,
@@ -151,7 +133,7 @@ impl StallDetector {
         // margin breach on this same tick already sees the fresh baseline.
         let motion_confirmed = !first_tick
             && (actual.wrapping_sub(self.prev_actual) as i32).unsigned_abs()
-                >= MOTION_NOISE_FLOOR_UNITS;
+                >= self.motion_noise_floor_units;
         self.prev_actual = actual;
         let mut baseline_valid = self.motion_warmup_ticks >= MOTION_WARMUP_TICKS;
         let error_scaled = (error as u64) << BASELINE_FRAC_BITS;
@@ -253,6 +235,12 @@ impl StallDetector {
 mod tests {
     use super::*;
 
+    const COUNTS_PER_REV: u32 = 4_000;
+
+    fn units_from_counts(counts: u32, counts_per_rev: u32) -> u32 {
+        counts * crate::motion_scale::POSITION_UNITS_PER_REV as u32 / counts_per_rev
+    }
+
     #[test]
     fn following_error_wraps_across_revolution_boundary() {
         assert_eq!(following_error_units(10, u32::MAX - 5), 16);
@@ -266,7 +254,10 @@ mod tests {
         // ceiling well before MOTION_WARMUP_TICKS worth of real motion could
         // ever be observed, so the margin check cannot be the one that fires.
         let mut det = StallDetector::new(
-            /* ceiling */ 100, /* margin */ 10, /* persistence */ 2,
+            /* ceiling */ 100,
+            /* margin */ 10,
+            /* persistence */ 2,
+            COUNTS_PER_REV,
         );
         assert!(!det.observe(50, 0));
         assert!(!det.observe(100, 0));
@@ -276,28 +267,20 @@ mod tests {
     }
 
     #[test]
-    fn ceiling_check_latches_under_encoder_jitter_within_the_new_noise_floor() {
-        // Companion to `ceiling_check_latches_on_gross_error_before_baseline_
-        // warms_up` above, but with `actual` jittering by 50 units a tick
-        // (below MOTION_NOISE_FLOOR_UNITS's 64, above the old 4-unit floor,
-        // and above the documented +/-2-count / ~33-unit encoder jitter
-        // precedent) instead of holding perfectly still. A real stalled
-        // axis's encoder reading jitters like this; it must not look like
-        // "real motion" to the baseline, so only the ceiling backstop may
-        // latch here, exactly as it does in the zero-jitter case.
+    fn ceiling_check_latches_under_encoder_jitter_within_the_noise_floor() {
         let mut det = StallDetector::new(
-            /* ceiling */ 200, /* margin */ 10, /* persistence */ 2,
+            /* ceiling */ 200,
+            /* margin */ 10,
+            /* persistence */ 2,
+            COUNTS_PER_REV,
         );
+        let jitter = units_from_counts(STALLED_ENCODER_JITTER_COUNTS, COUNTS_PER_REV);
         assert!(!det.observe(100, 0));
-        assert!(!det.observe(150, 50));
+        assert!(!det.observe(150, jitter));
         assert!(!det.observe(205, 0));
-        assert!(det.observe(250, 50));
+        assert!(det.observe(250, jitter));
         assert!(det.latched());
         assert_eq!(det.trigger_path(), StallTriggerPath::Ceiling);
-        // The baseline never warmed up: every tick-to-tick jitter delta (50
-        // units) stayed under MOTION_NOISE_FLOOR_UNITS, so motion was never
-        // confirmed and the margin path could not have been the one that
-        // fired.
         assert_eq!(det.peak_margin_delta_units(), 0);
     }
 
@@ -309,7 +292,10 @@ mod tests {
         // A large ceiling means only the margin path could latch here, and
         // it must not.
         let mut det = StallDetector::new(
-            /* ceiling */ 10_000, /* margin */ 10, /* persistence */ 2,
+            /* ceiling */ 10_000,
+            /* margin */ 10,
+            /* persistence */ 2,
+            COUNTS_PER_REV,
         );
         for _ in 0..50 {
             assert!(!det.observe(1000, 0));
@@ -323,7 +309,10 @@ mod tests {
         // once warmed up, a sustained rise above baseline by margin_units
         // latches via the margin path, well under a loose ceiling.
         let mut det = StallDetector::new(
-            /* ceiling */ 10_000, /* margin */ 20, /* persistence */ 2,
+            /* ceiling */ 10_000,
+            /* margin */ 20,
+            /* persistence */ 2,
+            COUNTS_PER_REV,
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 2 {
@@ -340,9 +329,48 @@ mod tests {
     }
 
     #[test]
+    fn slow_motion_on_a_fine_encoder_warms_the_baseline() {
+        const FINE_COUNTS_PER_REV: u32 = 40_000;
+        let mut det = StallDetector::new(
+            /* ceiling */ 10_000,
+            /* margin */ 20,
+            /* persistence */ 2,
+            FINE_COUNTS_PER_REV,
+        );
+        let mut actual = 0u32;
+        for _ in 0..MOTION_WARMUP_TICKS + 2 {
+            actual += units_from_counts(MOTION_NOISE_FLOOR_COUNTS * 3, FINE_COUNTS_PER_REV);
+            assert!(!det.observe(actual + 5, actual));
+        }
+        assert!(!det.observe(actual + 30, actual));
+        assert!(det.observe(actual + 30, actual));
+        assert_eq!(det.trigger_path(), StallTriggerPath::Margin);
+    }
+
+    #[test]
+    fn jitter_on_a_coarse_encoder_never_confirms_motion() {
+        const COARSE_COUNTS_PER_REV: u32 = 1_000;
+        let mut det = StallDetector::new(
+            /* ceiling */ 10_000,
+            /* margin */ 10,
+            /* persistence */ 2,
+            COARSE_COUNTS_PER_REV,
+        );
+        let jitter = units_from_counts(STALLED_ENCODER_JITTER_COUNTS, COARSE_COUNTS_PER_REV);
+        for tick in 0..50u32 {
+            let actual = if tick % 2 == 0 { 0 } else { jitter };
+            assert!(!det.observe(1_000, actual));
+        }
+        assert_eq!(det.peak_margin_delta_units(), 0);
+    }
+
+    #[test]
     fn normal_cruise_within_ceiling_and_margin_never_latches() {
         let mut det = StallDetector::new(
-            /* ceiling */ 10_000, /* margin */ 20, /* persistence */ 2,
+            /* ceiling */ 10_000,
+            /* margin */ 20,
+            /* persistence */ 2,
+            COUNTS_PER_REV,
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 20 {
@@ -357,7 +385,10 @@ mod tests {
         // A ceiling low enough to coincide with an already-warmed-up
         // margin breach on the same tick: the tie rule picks Ceiling.
         let mut det = StallDetector::new(
-            /* ceiling */ 40, /* margin */ 5, /* persistence */ 1,
+            /* ceiling */ 40,
+            /* margin */ 5,
+            /* persistence */ 1,
+            COUNTS_PER_REV,
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 1 {
@@ -374,7 +405,10 @@ mod tests {
     #[test]
     fn gross_failure_latches_via_ceiling_even_after_baseline_valid() {
         let mut det = StallDetector::new(
-            /* ceiling */ 500, /* margin */ 20, /* persistence */ 1,
+            /* ceiling */ 500,
+            /* margin */ 20,
+            /* persistence */ 1,
+            COUNTS_PER_REV,
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 5 {
@@ -388,7 +422,7 @@ mod tests {
 
     #[test]
     fn latch_is_sticky_and_tracks_peak() {
-        let mut det = StallDetector::new(10, 5, 1);
+        let mut det = StallDetector::new(10, 5, 1, COUNTS_PER_REV);
         assert!(det.observe(500, 0));
         assert!(det.observe(0, 0));
         assert!(det.latched());
@@ -397,13 +431,13 @@ mod tests {
 
     #[test]
     fn zero_persistence_behaves_as_one() {
-        let mut det = StallDetector::new(10, 5, 0);
+        let mut det = StallDetector::new(10, 5, 0, COUNTS_PER_REV);
         assert!(det.observe(10, 0));
     }
 
     #[test]
     fn unlatched_detector_reports_no_trigger_path() {
-        let det = StallDetector::new(10_000, 20, 1);
+        let det = StallDetector::new(10_000, 20, 1, COUNTS_PER_REV);
         assert_eq!(det.trigger_path(), StallTriggerPath::None);
     }
 
@@ -416,7 +450,10 @@ mod tests {
         // accumulator must still converge for an error smaller than
         // 2^EMA_SHIFT.
         let mut det = StallDetector::new(
-            /* ceiling */ 10_000, /* margin */ 1, /* persistence */ 1,
+            /* ceiling */ 10_000,
+            /* margin */ 1,
+            /* persistence */ 1,
+            COUNTS_PER_REV,
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 40 {
@@ -439,7 +476,10 @@ mod tests {
         // and this test exists so a future change to the EMA constants
         // cannot silently alter that property without a test noticing.
         let mut det = StallDetector::new(
-            /* ceiling */ 10_000, /* margin */ 20, /* persistence */ 2,
+            /* ceiling */ 10_000,
+            /* margin */ 20,
+            /* persistence */ 2,
+            COUNTS_PER_REV,
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 5 {
@@ -469,7 +509,10 @@ mod tests {
         // toward zero could let a hardware validation run pass a
         // margin-headroom threshold it actually violated.
         let mut det = StallDetector::new(
-            /* ceiling */ 10_000, /* margin */ 10_000, /* persistence */ 1,
+            /* ceiling */ 10_000,
+            /* margin */ 10_000,
+            /* persistence */ 1,
+            COUNTS_PER_REV,
         );
         let mut actual = 0u32;
         for _ in 0..MOTION_WARMUP_TICKS + 5 {
