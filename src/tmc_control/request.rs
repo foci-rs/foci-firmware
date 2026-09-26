@@ -31,8 +31,6 @@ pub enum TmcPreRequestDisposition {
     ContinueRequest,
     /// The board already consumed this request.
     RequestHandled,
-    /// Run the delegated active diagnostic request in board context.
-    RunDiagnostic(TmcRequest),
 }
 
 // The breakaway campaign carries the whole admitted campaign by value; boxing is
@@ -330,16 +328,6 @@ where
     match pre_request {
         TmcPreRequestDisposition::ContinueRequest => {}
         TmcPreRequestDisposition::RequestHandled => {
-            return normal_outcome(board.normal_tail());
-        }
-        TmcPreRequestDisposition::RunDiagnostic(diagnostic_req) => {
-            if !pi_representation_available(tmc, board.tmc_state()).await {
-                defmt::error!("Diagnostic rejected: PI representation unavailable");
-                return TmcControlRequestOutcome::skip_tick_tail();
-            }
-            board
-                .run_diagnostic_request(diagnostic_req, runtime, tmc)
-                .await;
             return normal_outcome(board.normal_tail());
         }
     }
@@ -3746,35 +3734,6 @@ mod tests {
         assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
         assert_eq!(outcome.shutdown, Some(ShutdownReason::CurrentLimitInvalid));
         assert!(!outcome.should_refresh_velocity_scale);
-    }
-
-    #[fixture_test]
-    async fn pre_request_diagnostic_disposition_uses_board_tail() {
-        let mut runtime = TmcControlRuntime::new_for_channel(0);
-        let mut board = RecordingBoard::fall_through();
-        let mut tmc = Tmc4671Spi::new(RuntimeMockSpi::default());
-
-        let outcome = handle_tmc_control_request(
-            TmcRequest::new(0, TmcRequestKind::SetCurrent { run_ma: 1000 }),
-            TmcPreRequestDisposition::RunDiagnostic(TmcRequest::new(
-                0,
-                TmcRequestKind::CurrentStepTest {
-                    oid: 1,
-                    axis: crate::tmc::CurrentStepAxis::Torque,
-                    target: 10,
-                    duration_ms: 20,
-                    voltage_limit: 12000,
-                },
-            )),
-            &mut runtime,
-            &mut tmc,
-            &mut board,
-        )
-        .await;
-
-        assert_eq!(board.diagnostic_calls, 1);
-        assert!(board.replies.is_empty());
-        assert_eq!(outcome.tail, TmcControlRequestTail::FallThrough);
     }
 
     #[fixture_test]
