@@ -58,14 +58,8 @@ pub const ROBUSTNESS_CAUSE_SAFETY_FAULT: u8 = 6;
 /// Accepted-point identity mismatch, set at terminal application (Task 6).
 /// Never returned by `summary_cause`.
 pub const ROBUSTNESS_CAUSE_EVIDENCE_INTEGRITY: u8 = 7;
-/// Retired: was the single generic internal (non-envelope) fault bucket for
-/// SPI/encoder I/O, analysis deadline, invalid gains, and ring overflow.
-/// Split into the dedicated internal-fault causes below (codes 12-22); not
-/// reused for a new meaning. Distinct from `ROBUSTNESS_CAUSE_SAFETY_FAULT`,
-/// which is reserved for a real envelope/velocity-limit trip carrying an
-/// `OuterSafetyFault`.
-#[allow(dead_code)]
-const ROBUSTNESS_CAUSE_INTERNAL_FAULT: u8 = 8;
+// Code 8 is retired: it was the generic internal-fault bucket, since split into
+// the dedicated causes 12-22. Do not reuse it for a new meaning.
 /// The rest after a conclusive cycle was never confirmed, even after the one
 /// bounded re-opened rest window. A rejected rest after an inconclusive leg
 /// proceeds to origin recovery instead and fails there, if at all, with
