@@ -658,29 +658,6 @@ pub const fn velocity_i_tau_us(i_raw: u16, pwm_hz: u32) -> Option<u64> {
     Some(numerator.div_ceil(denominator))
 }
 
-/// Classify one declared integral time constant against the moving horizon.
-pub const fn response_horizon(
-    i_raw: u16,
-    pwm_hz: u32,
-    moving_horizon_us: u32,
-) -> Option<(u64, crate::commissioning::types::ResponseHorizonClass)> {
-    use crate::commissioning::types::ResponseHorizonClass;
-
-    if i_raw == 0 {
-        return Some((0, ResponseHorizonClass::NotApplicable));
-    }
-    let tau_us = match velocity_i_tau_us(i_raw, pwm_hz) {
-        Some(value) => value,
-        None => return None,
-    };
-    let class = if tau_us > moving_horizon_us as u64 {
-        ResponseHorizonClass::SubHorizon
-    } else {
-        ResponseHorizonClass::HorizonResolved
-    };
-    Some((tau_us, class))
-}
-
 /// Return one positive rung from the fixed native-Q4.12 schedule.
 pub(crate) const fn native_velocity_i_at(index: u8) -> Option<u16> {
     match index {

@@ -2604,19 +2604,12 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
             }
             data.emitted_rungs = data.emitted_rungs.saturating_add(1);
             let i_raw = integral_i_at(data.plan, data.rung_index).unwrap_or(0);
-            let (tau_us, horizon_class) = (
-                0,
-                crate::commissioning::types::ResponseHorizonClass::NotApplicable,
-            );
             let report = VelocityIntegralRungReport {
                 run_sequence: data.integrity.run_sequence(),
                 evidence_sequence: data.integrity.next_evidence_sequence(),
                 plan_digest: data.plan.plan_digest,
                 rung_index: data.rung_index,
                 i_raw,
-                tau_us,
-                moving_horizon_us: 0,
-                horizon_class,
                 directions,
                 target_terminus_plus_one: data.target_terminus.map_or(0, |rung| rung + 1),
             };

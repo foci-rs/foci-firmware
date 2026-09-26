@@ -19,7 +19,7 @@ use super::integral_plan::{
     breakaway_workflow_envelope_us, build_integral_ladder, confidence_family_size,
     integral_gain_at, integral_top_gap_candidate, max_transition_capable_p, native_rung_count,
     native_velocity_i_at, plan_breakaway_velocity_integral_response, recovery_quantization_exposed,
-    response_horizon, transition_capable_integral_gain, velocity_i_tau_us,
+    transition_capable_integral_gain, velocity_i_tau_us,
 };
 use super::sweep_consensus::{
     CONSENSUS_OBSERVATIONS_PER_DIRECTION, DirectionalConsensus, DirectionalConsensusClass,
@@ -34,7 +34,6 @@ use super::workflow_plan::{CommissioningWorkflowPlan, VelocityAutotuneWorkflowKi
 use crate::autotune::velocity_measurement::VelocityDirection;
 use crate::commissioning::outer::velocity::reproduction::ProportionalDirectionalValidity;
 use crate::commissioning::outer::{OUTER_MAX_VELOCITY_I, OuterMotionBudget};
-use crate::commissioning::types::ResponseHorizonClass;
 use foci_tmc4671::pid::PidPGain;
 
 fn proportional_request() -> VelocitySweepRequest {
@@ -228,22 +227,6 @@ fn native_q4_12_geometry_derives_the_fixed_prefix_and_octaves() {
     assert_eq!(
         shorter_stroke.rungs.as_slice(),
         &[1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1_024]
-    );
-}
-
-#[test]
-fn response_horizon_classifies_anchors_and_the_64_to_128_boundary() {
-    assert_eq!(
-        response_horizon(0, 25_000, 512_000),
-        Some((0, ResponseHorizonClass::NotApplicable))
-    );
-    assert_eq!(
-        response_horizon(64, 25_000, 512_000),
-        Some((655_360, ResponseHorizonClass::SubHorizon))
-    );
-    assert_eq!(
-        response_horizon(128, 25_000, 512_000),
-        Some((327_680, ResponseHorizonClass::HorizonResolved))
     );
 }
 

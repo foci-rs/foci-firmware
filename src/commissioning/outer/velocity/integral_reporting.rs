@@ -664,11 +664,6 @@ fn encode_rung(report: VelocityIntegralRungReport) -> VelocitySweepCanonicalReco
     push_u64(&mut record, report.plan_digest);
     record.push_u8(report.rung_index);
     record.push_u16(report.i_raw);
-    if report.moving_horizon_us != 0 {
-        push_u64(&mut record, report.tau_us);
-        record.push_u32(report.moving_horizon_us);
-        record.push_u8(report.horizon_class as u8);
-    }
     for direction in report.directions {
         record.push_u8(direction_code(direction.direction));
         record.push_u8(rung_kind_code(direction.kind));
@@ -867,8 +862,8 @@ mod tests {
         VelocityCurrentContact, VelocityCurrentPhaseEvidence, VelocityLimitEvidenceCapability,
     };
     use crate::commissioning::types::IntegralOutcomeCause;
+    use crate::commissioning::types::RecoveryRestDiagnostic;
     use crate::commissioning::types::VelocityIntegralObservation;
-    use crate::commissioning::types::{RecoveryRestDiagnostic, ResponseHorizonClass};
     use foci_tmc4671::pid::PidPGain;
 
     /// Byte offset of `drift_ratio_ppm` in an encoded Integral observation record.
@@ -1040,46 +1035,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_nine_rung_appends_exact_response_horizon_fields() {
+    fn rung_record_carries_no_response_horizon_fields() {
         let report = VelocityIntegralRungReport {
             run_sequence: 7,
             evidence_sequence: 9,
             plan_digest: 0x0123_4567_89ab_cdef,
             rung_index: 9,
             i_raw: 64,
-            tau_us: 655_360,
-            moving_horizon_us: 512_000,
-            horizon_class: ResponseHorizonClass::SubHorizon,
-            directions: [
-                eligible_rung(VelocityDirection::Forward),
-                eligible_rung(VelocityDirection::Reverse),
-            ],
-            target_terminus_plus_one: 4,
-        };
-
-        let record = encode_velocity_integral_event(VelocityIntegralEvent::Rung(report));
-
-        assert_eq!(record.as_bytes().len(), 84);
-        assert_eq!(&record.as_bytes()[18..26], &655_360_u64.to_le_bytes());
-        assert_eq!(&record.as_bytes()[26..30], &512_000_u32.to_le_bytes());
-        assert_eq!(
-            record.as_bytes()[30],
-            ResponseHorizonClass::SubHorizon as u8
-        );
-        assert_eq!(*record.as_bytes().last().unwrap(), 4);
-    }
-
-    #[test]
-    fn historical_rung_omits_response_horizon_fields() {
-        let report = VelocityIntegralRungReport {
-            run_sequence: 7,
-            evidence_sequence: 9,
-            plan_digest: 0x0123_4567_89ab_cdef,
-            rung_index: 9,
-            i_raw: 64,
-            tau_us: 0,
-            moving_horizon_us: 0,
-            horizon_class: ResponseHorizonClass::NotApplicable,
             directions: [
                 eligible_rung(VelocityDirection::Forward),
                 eligible_rung(VelocityDirection::Reverse),
