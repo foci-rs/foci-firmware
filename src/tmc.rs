@@ -108,9 +108,6 @@ pub struct PhaseAdvanceOutput {
 /// Maximum phase-advance cap accepted by firmware for live diagnostics.
 pub const PHASE_ADVANCE_MAX_SAFE_COUNTS: u16 = 512;
 
-/// Highest diagnostic detail level accepted by firmware command surfaces.
-pub const MAX_DIAGNOSTIC_DETAIL: u8 = 2;
-
 /// Axis selected by the scalar current-step diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CurrentStepAxis {
@@ -155,15 +152,6 @@ impl TorqueSampleKind {
             Self::CurrentTorqueSample => 0,
             Self::PositionTorqueOffset => 1,
         }
-    }
-}
-
-/// Normalize host-provided diagnostic detail bytes into the supported range.
-pub const fn normalize_diagnostic_detail(detail: u8) -> u8 {
-    if detail > MAX_DIAGNOSTIC_DETAIL {
-        MAX_DIAGNOSTIC_DETAIL
-    } else {
-        detail
     }
 }
 
@@ -548,52 +536,6 @@ pub fn tmc_commission(channel: u8, oid: u8, profile: u8) -> TmcRequest {
     TmcRequest::new(channel, TmcRequestKind::Commission { oid, profile })
 }
 
-/// Build a `Tune` request (installed tuning: mechanical ID + velocity/position + filters).
-#[allow(clippy::too_many_arguments)]
-pub fn tmc_tune(
-    channel: u8,
-    oid: u8,
-    profile: u8,
-    mode: u8,
-    inner_lambda_us: u32,
-    theta_e_us: u32,
-    current_bandwidth_hz: u32,
-    inner_warning_flags: u8,
-    requested_velocity_mrev_s: u32,
-    machine_velocity_ceiling_mrev_s: u32,
-    requested_velocity_source:
-        crate::commissioning::outer::velocity::sweep_plan::RequestedVelocitySource,
-    max_stroke_travel_mrev: u32,
-    settle_travel_reserve_mrev: u32,
-    negative_position_headroom_mrev: u32,
-    positive_position_headroom_mrev: u32,
-    max_duration_ms: u16,
-    homing_speed_mrev_s: u32,
-    max_accel_mrev_s2: u32,
-) -> TmcRequest {
-    tmc_tune_with_action(
-        channel,
-        oid,
-        AutotuneAction::BreakawaySeeded,
-        profile,
-        mode,
-        inner_lambda_us,
-        theta_e_us,
-        current_bandwidth_hz,
-        inner_warning_flags,
-        requested_velocity_mrev_s,
-        machine_velocity_ceiling_mrev_s,
-        requested_velocity_source,
-        max_stroke_travel_mrev,
-        settle_travel_reserve_mrev,
-        negative_position_headroom_mrev,
-        positive_position_headroom_mrev,
-        max_duration_ms,
-        homing_speed_mrev_s,
-        max_accel_mrev_s2,
-    )
-}
-
 /// Build a `Tune` request with an explicit firmware-owned acquisition action.
 #[allow(clippy::too_many_arguments)]
 pub fn tmc_tune_with_action(
@@ -679,14 +621,6 @@ pub fn tmc_set_position_gains(
             velocity_p,
             velocity_i,
         },
-    )
-}
-
-/// Build a `SetVelocityFeedforward` request.
-pub fn tmc_set_velocity_feedforward(channel: u8, enable: bool, multiplier: u16) -> TmcRequest {
-    TmcRequest::new(
-        channel,
-        TmcRequestKind::SetVelocityFeedforward { enable, multiplier },
     )
 }
 
@@ -907,6 +841,7 @@ pub fn tmc_set_enable(channel: u8, enable: bool) -> TmcRequest {
 }
 
 /// Set whether a raw enable may trigger firmware-side auto-calibration.
+#[cfg(test)]
 pub fn set_auto_calibrate_on_enable_allowed(channel: u8, enable: bool) -> bool {
     let Some(state) = crate::state::tmc::tmc_channel(channel) else {
         return false;
@@ -926,28 +861,6 @@ pub fn auto_calibrate_on_enable_allowed(channel: u8) -> bool {
                 .load(Ordering::Relaxed)
         })
         .unwrap_or(false)
-}
-
-/// Compute the velocity feedforward offset value for PID_VELOCITY_OFFSET.
-///
-/// # Parameters
-/// - `scale`: exact planner-timing velocity ratio
-/// - `step_interval`: current step interval in TIM5 clock ticks (from atomic)
-/// - `dir_high`: true if the TMC4671 DIR input is high
-///
-/// Returns 0 if `step_interval == 0` (motor idle).
-///
-/// The result is in TMC4671 velocity units (position change per PWM period)
-/// and is written directly to PID_VELOCITY_OFFSET (0x67, s32).
-///
-/// With a positive STEP_WIDTH, the TMC4671 STEP/DIR input reports a
-/// negative velocity for DIR high and a positive velocity for DIR low.
-pub fn compute_planner_velocity_offset(
-    scale: crate::motion_scale::PlannerVelocityScale,
-    step_interval: u32,
-    dir_high: bool,
-) -> i32 {
-    compute_planner_velocity_offset_scaled(scale, step_interval, dir_high, 1)
 }
 
 /// Compute the signed command-velocity reference used by trace diagnostics.
@@ -1765,35 +1678,35 @@ mod tests {
     #[test]
     fn velocity_offset_dir_high_matches_tmc_negative_velocity() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
-        let offset = compute_planner_velocity_offset(scale, 420, true);
+        let offset = compute_planner_command_velocity_reference(scale, 420, true);
         assert_eq!(offset, -648);
     }
 
     #[test]
     fn velocity_offset_dir_low_matches_tmc_positive_velocity() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
-        let offset = compute_planner_velocity_offset(scale, 420, false);
+        let offset = compute_planner_command_velocity_reference(scale, 420, false);
         assert_eq!(offset, 648);
     }
 
     #[test]
     fn velocity_offset_zero_interval() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
-        let offset = compute_planner_velocity_offset(scale, 0, true);
+        let offset = compute_planner_command_velocity_reference(scale, 0, true);
         assert_eq!(offset, 0);
     }
 
     #[test]
     fn velocity_offset_high_speed() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
-        let offset = compute_planner_velocity_offset(scale, 84, true);
+        let offset = compute_planner_command_velocity_reference(scale, 84, true);
         assert_eq!(offset, -3240);
     }
 
     #[test]
     fn velocity_offset_low_speed() {
         let scale = crate::motion_scale::PlannerVelocityScale::from_reduced(272_160, 1);
-        let offset = compute_planner_velocity_offset(scale, 84_000, true);
+        let offset = compute_planner_command_velocity_reference(scale, 84_000, true);
         assert_eq!(offset, -3);
     }
 
