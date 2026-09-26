@@ -181,146 +181,9 @@ where
     tmc.write_sub_register(CONFIG_BIQUAD_X_ENABLE, 0).await
 }
 
-/// Re-apply biquad filters from stored atomics.
-///
-/// Called after `CalibrateDone` to restore filters that the commissioning
-/// engine's `ClosedLoopActivation` phase disabled (it has no access to the filter
-/// Hz atomics).
-///
-/// `pwm_maxcnt` is board-specific and must be supplied by the caller
-/// (e.g. `TMC_CONFIG.pwm_maxcnt`).
-///
-/// # Errors
-///
-/// Returns the first SPI write error encountered while restoring a filter.
-pub async fn apply_stored_filters<B>(
-    tmc: &mut Tmc4671Spi<B>,
-    tmc_state: &TmcChannelState,
-    pwm_maxcnt: u16,
-) -> Result<(), SpiError<B::Error>>
-where
-    B: SpiDevice<u8>,
-{
-    use core::sync::atomic::Ordering::Relaxed;
-    use foci_tmc4671::registers::{SubRegister, *};
-
-    struct BiquadFilterSubRegs {
-        a_1: SubRegister,
-        a_2: SubRegister,
-        b_0: SubRegister,
-        b_1: SubRegister,
-        b_2: SubRegister,
-        enable: SubRegister,
-    }
-
-    async fn apply_one<B>(
-        tmc: &mut Tmc4671Spi<B>,
-        target: BiquadFilterTarget,
-        filter_hz: u16,
-        pwm_maxcnt: u16,
-        regs: BiquadFilterSubRegs,
-    ) -> Result<(), SpiError<B::Error>>
-    where
-        B: SpiDevice<u8>,
-    {
-        if filter_hz == 0 {
-            return Ok(());
-        }
-        let Some(coeffs) =
-            crate::biquad::butterworth_lowpass(filter_hz, pwm_maxcnt, cutoff_ceiling_hz(target))
-        else {
-            return Ok(());
-        };
-
-        tmc.write_sub_register(regs.a_1, coeffs.a_1 as u32).await?;
-        tmc.write_sub_register(regs.a_2, coeffs.a_2 as u32).await?;
-        tmc.write_sub_register(regs.b_0, coeffs.b_0 as u32).await?;
-        tmc.write_sub_register(regs.b_1, coeffs.b_1 as u32).await?;
-        tmc.write_sub_register(regs.b_2, coeffs.b_2 as u32).await?;
-        tmc.write_sub_register(regs.enable, 1).await?;
-        Ok(())
-    }
-
-    apply_one(
-        tmc,
-        BiquadFilterTarget::Velocity,
-        tmc_state.velocity_filter_hz.load_or_zero(Relaxed),
-        pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_V_A_1,
-            a_2: CONFIG_BIQUAD_V_A_2,
-            b_0: CONFIG_BIQUAD_V_B_0,
-            b_1: CONFIG_BIQUAD_V_B_1,
-            b_2: CONFIG_BIQUAD_V_B_2,
-            enable: CONFIG_BIQUAD_V_ENABLE,
-        },
-    )
-    .await?;
-    apply_one(
-        tmc,
-        BiquadFilterTarget::Torque,
-        tmc_state.torque_filter_hz.load_or_zero(Relaxed),
-        pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_T_A_1,
-            a_2: CONFIG_BIQUAD_T_A_2,
-            b_0: CONFIG_BIQUAD_T_B_0,
-            b_1: CONFIG_BIQUAD_T_B_1,
-            b_2: CONFIG_BIQUAD_T_B_2,
-            enable: CONFIG_BIQUAD_T_ENABLE,
-        },
-    )
-    .await?;
-    apply_one(
-        tmc,
-        BiquadFilterTarget::Position,
-        tmc_state.position_filter_hz.load_or_zero(Relaxed),
-        pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_X_A_1,
-            a_2: CONFIG_BIQUAD_X_A_2,
-            b_0: CONFIG_BIQUAD_X_B_0,
-            b_1: CONFIG_BIQUAD_X_B_1,
-            b_2: CONFIG_BIQUAD_X_B_2,
-            enable: CONFIG_BIQUAD_X_ENABLE,
-        },
-    )
-    .await?;
-    apply_one(
-        tmc,
-        BiquadFilterTarget::Flux,
-        tmc_state.flux_filter_hz.load_or_zero(Relaxed),
-        pwm_maxcnt,
-        BiquadFilterSubRegs {
-            a_1: CONFIG_BIQUAD_F_A_1,
-            a_2: CONFIG_BIQUAD_F_A_2,
-            b_0: CONFIG_BIQUAD_F_B_0,
-            b_1: CONFIG_BIQUAD_F_B_1,
-            b_2: CONFIG_BIQUAD_F_B_2,
-            enable: CONFIG_BIQUAD_F_ENABLE,
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
-/// Apply biquad filters via `CommissioningBackend`.
-///
-/// Mirror of [`apply_stored_filters`] (which uses raw `Tmc4671Spi<B>`), but
-/// routes all writes through the backend trait so dispatch can call it without
-/// holding a raw SPI device.
-///
-/// Each `SubRegister` write reproduces the addr-then-data sequence that
-/// `Tmc4671Spi::write_sub_register` does internally: write `sub_addr` to the
-/// `addr` register, then write the value to the `data` register.
-///
-/// # Parameters
-///
-/// - `backend` — mutable reference to a `CommissioningBackend` implementation.
-/// - `pwm_maxcnt` — board-specific PWM counter maximum, used to derive
-///   the biquad sampling frequency for coefficient calculation.
-pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
+/// Flat apply of the stored cutoffs, used as the oracle for `FilterCutoffsStep`.
+#[cfg(test)]
+pub(crate) async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     backend: &mut B,
     tmc_state: &TmcChannelState,
     pwm_maxcnt: u16,
@@ -340,60 +203,6 @@ pub async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     .await
 }
 
-/// Apply Stage 2 filter cutoffs directly from an unpublished outer result.
-///
-/// This uses the same backend write path as [`apply_stored_filters_via_backend`]
-/// without reading or changing the published filter cache.
-///
-/// # Errors
-///
-/// Returns the first backend register-write error.
-pub async fn apply_outer_result_filters_via_backend<B: CommissioningBackend>(
-    backend: &mut B,
-    outer: &crate::commissioning::types::OuterResult,
-    pwm_maxcnt: u16,
-) -> Result<(), B::Error> {
-    apply_backend_filter_cutoffs(
-        backend,
-        BackendFilterCutoffs {
-            velocity_hz: outer.velocity_filter_hz,
-            torque_hz: outer.torque_filter_hz,
-            position_hz: outer.position_filter_hz,
-            flux_hz: outer.flux_filter_hz,
-        },
-        pwm_maxcnt,
-    )
-    .await
-}
-
-/// Apply Stage 2 entry-snapshot filter cutoffs, the inverse of
-/// [`force_velocity_position_filters_disabled`].
-///
-/// Used to restore the operator's baseline filters on a commissioning
-/// terminal that returns registers to their pre-Stage-2 state without
-/// publishing a new tuned result.
-///
-/// # Errors
-///
-/// Returns the first backend register-write error.
-pub async fn apply_entry_snapshot_filters_via_backend<B: CommissioningBackend>(
-    backend: &mut B,
-    snapshot: &crate::commissioning::OuterGainRollbackSnapshot,
-    pwm_maxcnt: u16,
-) -> Result<(), B::Error> {
-    apply_backend_filter_cutoffs(
-        backend,
-        BackendFilterCutoffs {
-            velocity_hz: snapshot.velocity_filter_hz,
-            torque_hz: snapshot.torque_filter_hz,
-            position_hz: snapshot.position_filter_hz,
-            flux_hz: snapshot.flux_filter_hz,
-        },
-        pwm_maxcnt,
-    )
-    .await
-}
-
 #[derive(Clone, Copy)]
 struct BackendFilterCutoffs {
     velocity_hz: u16,
@@ -402,6 +211,7 @@ struct BackendFilterCutoffs {
     flux_hz: u16,
 }
 
+#[cfg(test)]
 async fn write_backend_sub_register<B: CommissioningBackend>(
     backend: &mut B,
     sub: SubRegister,
@@ -413,6 +223,7 @@ async fn write_backend_sub_register<B: CommissioningBackend>(
     backend.write_register(sub.data, value).await
 }
 
+#[cfg(test)]
 async fn apply_one_backend_filter<B: CommissioningBackend>(
     backend: &mut B,
     target: BiquadFilterTarget,
@@ -436,6 +247,7 @@ async fn apply_one_backend_filter<B: CommissioningBackend>(
     write_backend_sub_register(backend, regs.enable, 1).await
 }
 
+#[cfg(test)]
 async fn apply_backend_filter_cutoffs<B: CommissioningBackend>(
     backend: &mut B,
     cutoffs: BackendFilterCutoffs,
@@ -626,39 +438,6 @@ mod tests {
     }
 
     #[fixture_test]
-    async fn apply_stored_filters_skips_velocity_above_motion_ceiling() {
-        use core::sync::atomic::Ordering;
-        tmc_state()
-            .velocity_filter_hz
-            .store(Some(2000), Ordering::Relaxed);
-        tmc_state()
-            .torque_filter_hz
-            .store(Some(0), Ordering::Relaxed);
-        tmc_state()
-            .position_filter_hz
-            .store(Some(0), Ordering::Relaxed);
-        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
-
-        let raw_spi = MockRawSpi::default();
-        let mut tmc = Tmc4671Spi::new(raw_spi);
-
-        apply_stored_filters(&mut tmc, tmc_state(), 3999)
-            .await
-            .expect("restore should succeed even when a filter is skipped");
-
-        let raw_spi = tmc.into_inner();
-        assert!(
-            raw_spi.writes.is_empty(),
-            "a 2000 Hz velocity cutoff must produce zero SPI writes on restore -- it \
-             exceeds the motion-filter ceiling"
-        );
-
-        tmc_state()
-            .velocity_filter_hz
-            .store(None, Ordering::Relaxed);
-    }
-
-    #[fixture_test]
     async fn apply_stored_filters_via_backend_skips_velocity_above_motion_ceiling() {
         use core::sync::atomic::Ordering;
         tmc_state()
@@ -750,38 +529,6 @@ mod tests {
         assert!(
             !has_sub_write(CONFIG_BIQUAD_F_ENABLE, 1),
             "flux filter should not have been enabled"
-        );
-
-        tmc_state()
-            .velocity_filter_hz
-            .store(None, Ordering::Relaxed);
-    }
-
-    #[fixture_test]
-    async fn apply_stored_filters_reports_raw_spi_write_failure() {
-        use core::sync::atomic::Ordering;
-        tmc_state()
-            .velocity_filter_hz
-            .store(Some(100), Ordering::Relaxed);
-        tmc_state()
-            .torque_filter_hz
-            .store(Some(0), Ordering::Relaxed);
-        tmc_state()
-            .position_filter_hz
-            .store(Some(0), Ordering::Relaxed);
-        tmc_state().flux_filter_hz.store(Some(0), Ordering::Relaxed);
-
-        let raw_spi = MockRawSpi {
-            fail_write_after: Some(1),
-            ..MockRawSpi::default()
-        };
-        let mut tmc = Tmc4671Spi::new(raw_spi);
-
-        let result = apply_stored_filters(&mut tmc, tmc_state(), 4095).await;
-
-        assert!(
-            result.is_err(),
-            "raw stored-filter restore should report SPI write failures"
         );
 
         tmc_state()
