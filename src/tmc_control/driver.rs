@@ -16,9 +16,6 @@ use crate::tmc_control::config::{TmcControlConfig, TmcControlStateRefs};
 use crate::tmc_control::scheduler::{ChannelMode, Unit, UnitClass};
 use crate::tmc_control::state::{HomingClockWindow, HomingMaintenanceResult, TmcControlRuntime};
 
-/// TMC4671 `CHIPINFO_SI_TYPE` value for a genuine chip.
-const EXPECTED_CHIP_ID: u32 = 0x3436_3731;
-
 /// Startup steps, one per `Bootstrap` unit, in OpenFFBoard order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum BootstrapStep {
@@ -280,7 +277,7 @@ impl ChannelDriver {
                     .read_sub_register(foci_tmc4671::registers::CHIPINFO_SI_TYPE)
                     .await
                 {
-                    Ok(EXPECTED_CHIP_ID) => {
+                    Ok(foci_tmc4671::CHIP_ID) => {
                         defmt::info!("TMC4671 channel {} chip ID verified", self.channel());
                         BootstrapStep::PiRepresentation
                     }
@@ -728,13 +725,12 @@ mod tests {
     use crate::tmc_control::scheduler::{ChannelMode, Unit, UnitClass};
     use crate::tmc_control::test_spi::{RuntimeMockSpi, TEST_CONFIG, TestBackend, TestPin};
     use foci_firmware_macros::fixture_test;
+    use foci_tmc4671::CHIP_ID;
     use foci_tmc4671::registers::{
         ABN_DECODER_PHI_E_PHI_M_OFFSET, PID_TORQUE_FLUX_OFFSET, PID_VELOCITY_OFFSET, STATUS_FLAGS,
         STATUS_MASK,
     };
     use foci_tmc4671::spi::Tmc4671Spi;
-
-    const CHIP_ID: u32 = 0x3436_3731;
 
     fn config() -> TmcControlConfig {
         TmcControlConfig::new(168_000_000, 25_000, 1.0, TEST_CONFIG)
