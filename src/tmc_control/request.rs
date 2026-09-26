@@ -2183,12 +2183,15 @@ mod tests {
                 ),
                 ExpectedReply::Diagnostic,
             ),
+            // Non-zero channel: the busy reply must carry the request's own
+            // channel, not the board's (RecordingBoard::channel stays 0), so a
+            // hardcoded 0 in emit_reply's channel argument fails this case.
             (
-                TmcRequest::new(0, TmcRequestKind::Calibrate { oid: 4 }),
+                TmcRequest::new(1, TmcRequestKind::Calibrate { oid: 4 }),
                 ExpectedReply::Calibrate(4),
             ),
             (
-                TmcRequest::new(0, TmcRequestKind::SelfTest { oid: 5 }),
+                TmcRequest::new(1, TmcRequestKind::SelfTest { oid: 5 }),
                 ExpectedReply::Selftest(5),
             ),
             (
@@ -2199,6 +2202,7 @@ mod tests {
         ];
 
         for (request, expected) in cases {
+            let expected_channel = request.channel;
             let mut runtime = TmcControlRuntime::new_for_channel(0);
             runtime.set_commission_engine(CommissioningEngine::new_selftest_for_tmc(
                 11,
@@ -2231,6 +2235,7 @@ mod tests {
                         oid,
                         CalibrationError::InternalError.status_code(),
                     );
+                    assert_eq!(board.reply_channels, std::vec![expected_channel]);
                 }
                 ExpectedReply::Selftest(oid) => {
                     assert_selftest_failure(
@@ -2238,6 +2243,7 @@ mod tests {
                         oid,
                         CommissionError::AlreadyRunning.status_code(),
                     );
+                    assert_eq!(board.reply_channels, std::vec![expected_channel]);
                 }
                 ExpectedReply::Commission(oid) => {
                     assert_commission_phase_failure(
@@ -2245,9 +2251,11 @@ mod tests {
                         oid,
                         CommissionError::AlreadyRunning.status_code(),
                     );
+                    assert_eq!(board.reply_channels, std::vec![expected_channel]);
                 }
                 ExpectedReply::Diagnostic => {
                     assert!(board.replies.is_empty());
+                    assert!(board.reply_channels.is_empty());
                     assert_eq!(board.busy_diagnostic_requests, std::vec![request]);
                 }
             }
@@ -2571,6 +2579,7 @@ mod tests {
             .await;
 
             assert_eq!(board.replies.len(), 1);
+            assert_eq!(board.reply_channels, std::vec![0]);
             match board.replies.first().unwrap() {
                 reply @ ReplyPayload::CalibrateResult { .. } => assert_calibrate_failure(
                     reply,
@@ -2621,6 +2630,7 @@ mod tests {
         assert_eq!(outcome.tail, TmcControlRequestTail::SkipTickTail);
         assert_eq!(runtime.pending_commission_kind(), None);
         assert_eq!(board.replies.len(), 1);
+        assert_eq!(board.reply_channels, std::vec![0]);
         assert_commission_phase_failure(
             &board.replies[0],
             2,
@@ -2736,6 +2746,7 @@ mod tests {
         // emitted before the phase-advance restore runs; its failure then adds
         // the commission-phase failure. Both builds emit the same two replies.
         assert_eq!(board.replies.len(), 2);
+        assert_eq!(board.reply_channels, std::vec![0, 0]);
         assert!(matches!(
             board.replies[0],
             ReplyPayload::CommissioningWorkflowPlan { .. }
@@ -2774,6 +2785,7 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 1);
+        assert_eq!(board.reply_channels, std::vec![0]);
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
             panic!("breakaway admission must emit exactly the workflow envelope")
@@ -2862,6 +2874,7 @@ mod tests {
         // construction; the probe's Planned evidence is recorded on its first
         // engine step, not at admission, so exactly one reply is emitted.
         assert_eq!(board.replies.len(), 1);
+        assert_eq!(board.reply_channels, std::vec![0]);
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
             panic!("breakaway workflow envelope must be the only admission reply")
@@ -2912,6 +2925,7 @@ mod tests {
         // that the host's "envelope before evidence" gate rejects with a cryptic
         // protocol error while discarding the real cause.
         assert_eq!(board.replies.len(), 1);
+        assert_eq!(board.reply_channels, std::vec![0]);
         assert_commission_phase_failure(
             &board.replies[0],
             4,
@@ -2946,6 +2960,7 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 1);
+        assert_eq!(board.reply_channels, std::vec![0]);
         let ReplyPayload::FixedGainAmplitudeTerminal { terminal, .. } = board.replies[0] else {
             panic!("missing point must use the amplitude terminal namespace")
         };
@@ -2999,6 +3014,7 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 2);
+        assert_eq!(board.reply_channels, std::vec![0, 0]);
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
             panic!("amplitude workflow envelope must be first")
@@ -3057,6 +3073,7 @@ mod tests {
 
         // The worst-case-duration envelope is the very first reply, before the
         // engine and any motion, so the host arms its extended run timeout.
+        assert_eq!(board.reply_channels.first(), Some(&0));
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
             panic!("robustness workflow envelope must be first")
@@ -3122,6 +3139,7 @@ mod tests {
         // The worst-case-duration envelope is the very first reply, before the
         // engine and any motion, so the host arms its extended run timeout
         // instead of capping the sweep at its 5 s plan window.
+        assert_eq!(board.reply_channels.first(), Some(&0));
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
             panic!("position tune workflow envelope must be first")
@@ -3276,6 +3294,7 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 2);
+        assert_eq!(board.reply_channels, std::vec![0, 0]);
         let ReplyPayload::CommissioningWorkflowPlan { plan: workflow, .. } = board.replies[0]
         else {
             panic!("resume workflow envelope must be first")
@@ -3372,6 +3391,7 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 1);
+        assert_eq!(board.reply_channels, std::vec![0]);
         // The refusal namespace, not the ordinary terminal: an ordinary terminal
         // expands to leading evidence fragments describing a run that never ran.
         let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
@@ -3441,6 +3461,7 @@ mod tests {
         .await;
 
         assert_eq!(board.replies.len(), 1);
+        assert_eq!(board.reply_channels, std::vec![0]);
         // The refusal namespace, not the ordinary terminal: an ordinary terminal
         // expands to leading evidence fragments describing a run that never ran.
         let ReplyPayload::VelocityIntegralRefusal { terminal, .. } = board.replies[0] else {
@@ -3492,6 +3513,7 @@ mod tests {
         )
         .await;
 
+        assert_eq!(board.reply_channels, std::vec![0]);
         let ReplyPayload::FixedGainAmplitudeTerminal { terminal, .. } = board.replies[0] else {
             panic!("wrong order must use the amplitude terminal namespace")
         };
