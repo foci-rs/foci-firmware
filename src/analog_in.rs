@@ -6,8 +6,7 @@
 //! samples within a burst are spaced `sample_ticks` apart (not the
 //! caller's poll interval), and a consecutive-invalid-report counter
 //! trips a caller-visible shutdown signal at `range_check_count`,
-//! resetting on any in-range report -- see
-//! `docs/specs/2026-09-09-foci-367-thermistor-mcu-temp-support.md`.
+//! resetting on any in-range report.
 
 use core::sync::atomic::{
     AtomicU8, AtomicU16, AtomicU32,

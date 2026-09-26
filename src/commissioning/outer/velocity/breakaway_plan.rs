@@ -12,9 +12,7 @@
 //! [`super::sweep_plan::build_gain_ladder`] at the breakaway gain. That generator
 //! anchors its geometric rounding to its supplied start, so re-anchoring at a
 //! breakaway gain that is itself a half-octave grid value silently produces a
-//! different set of rungs and loses the measured value. See
-//! `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md` section 1 for the
-//! worked example.
+//! different set of rungs and loses the measured value.
 
 use foci_tmc4671::pid::PidPGain;
 
@@ -295,10 +293,8 @@ pub(crate) struct CandidateAdditiveLadder {
 
 /// Realize one candidate additive ladder for a requested structural rung count.
 ///
-/// Implements the normative generator from
-/// `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md` section 5: reserve
-/// two rungs for `floor` and the appended exact `ceiling`, spend the rest on a fixed
-/// additive step, and anchor the final rung exactly on `ceiling`. `floor` is deduped
+/// Reserves two rungs for `floor` and the appended exact `ceiling`, spends the rest on a fixed
+/// additive step, and anchors the final rung exactly on `ceiling`. `floor` is deduped
 /// against `breakaway` when the grid floor was clamped
 /// ([`GridFloorOrigin::ClampedAtBreakaway`]).
 pub(crate) fn realize_candidate_additive_ladder(

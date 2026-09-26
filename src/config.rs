@@ -94,8 +94,7 @@ impl TmcConfig {
     /// across 6-10 kHz on the current-loop bandwidths tested, so the cutoff
     /// no longer tracks bandwidth: it is `0.4 * fPWM`, capped at the torque/flux
     /// biquad ceiling, a PWM-relative constant that is self-limiting relative
-    /// to Nyquist by construction
-    /// (`docs/validation/foci-162-2026-09-19-target-filter-cutoff/`).
+    /// to Nyquist by construction.
     pub fn default_current_filter_hz(&self) -> u16 {
         ((self.pwm_freq_hz() as f32 * CURRENT_FILTER_PWM_RATIO) as u16)
             .min(crate::biquad::CURRENT_CUTOFF_MAX_HZ)

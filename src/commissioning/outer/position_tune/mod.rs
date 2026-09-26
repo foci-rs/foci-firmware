@@ -1,7 +1,6 @@
 //! PositionTune: two-bound position-P sweep commissioning phase.
 //!
-//! See `docs/specs/2026-09-13-foci-340-position-tune-two-bound-design.md` for
-//! the full design. This module drives the position-P ladder over the
+//! This module drives the position-P ladder over the
 //! step-queue stimulus: `Predict` computes a config-derived start rung from
 //! the tracking bound and the planned homing/motion strokes, `Stroke` runs
 //! each rung's homing and motion legs through the trapezoid planner with

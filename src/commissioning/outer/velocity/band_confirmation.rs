@@ -2,8 +2,7 @@
 //!
 //! Discovery is an adaptive search: selecting a candidate proportional gain on
 //! the same data that then accepts it contaminates the interval. This module
-//! implements the two-part remedy from
-//! `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md` section 7:
+//! implements a two-part remedy:
 //!
 //! - [`nominate_confirmation_candidate`]: a pointwise screen, computed purely
 //!   from discovery data, that predicts which rung is most likely to survive a

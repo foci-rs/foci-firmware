@@ -103,8 +103,7 @@ pub const fn current_loop_actionable_status_mask(
 // preceding phase legitimately leaves set (ipark circular-limit 16-18,
 // reference-switch 20-22, PWM duty rails 24-25, flux/torque target and
 // errsum limits 8/10/12/14). They remain full-mask actionable on the
-// finish-phase checks. Datasheet classification:
-// docs/notes/2026-09-03-foci-305-entry-mask-audit.md
+// finish-phase checks.
 const CURRENT_AXIS_ENTRY_DEMOTED_STATUS_MASK: u32 = (1 << 8)
     | (1 << 10)
     | (1 << 12)

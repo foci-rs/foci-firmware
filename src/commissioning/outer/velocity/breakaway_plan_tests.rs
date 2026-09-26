@@ -137,7 +137,7 @@ fn resolve_grid_floor_rejects_an_out_of_range_breakaway_index() {
 
 #[test]
 fn every_candidate_rung_count_matches_the_representative_geometry() {
-    // floor=181, breakaway=256, ceiling=1088 (docs/specs/2026-07-31-foc-213-...).
+    // floor=181, breakaway=256, ceiling=1088.
     // step and realized rung count for every n from 5 through 32.
     const EXPECTED: [(u8, u32, u8); 28] = [
         (5, 278, 5),
@@ -375,8 +375,7 @@ fn additive_ladder_resolution_budget_boundary() {
 
 #[test]
 fn the_superseded_breakaway_minus_floor_rule_fails_its_own_budget() {
-    // docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md section 5: deriving
-    // the additive step from `breakaway - floor` is structurally invalid. This pins
+    // Deriving the additive step from `breakaway - floor` is structurally invalid. This pins
     // the two documented failure shapes so the rule cannot be silently reintroduced.
     let ceiling = 1_088_u32;
 

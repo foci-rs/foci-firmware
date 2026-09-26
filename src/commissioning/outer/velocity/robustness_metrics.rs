@@ -13,10 +13,9 @@ use crate::autotune::velocity_measurement::VelocityObservationSource;
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
 
-/// `SCALE` in the spec's Algorithm section: multiplying `target_rate_q *
-/// elapsed_us` for one tick yields `expected_delta_counts * SCALE`, by the
-/// same identity `per_tick_rate_q` divides out. See
-/// `docs/specs/2026-08-22-foc-274-overshoot-metric-redesign.md`, "Units".
+/// Multiplying `target_rate_q * elapsed_us` for one tick yields
+/// `expected_delta_counts * OVERSHOOT_SCALE_Q`, by the same identity
+/// `per_tick_rate_q` divides out.
 const OVERSHOOT_SCALE_Q: i64 = 1_000_000 * VELOCITY_RATE_Q_SCALE;
 
 /// Reconvergence and recovery metrics for one reversal-robustness probe.
@@ -138,9 +137,8 @@ pub(crate) fn recovery_iae_q(
 /// Demeaned first-difference RMS of the per-tick rate error over
 /// `[start_index, start_index + len)` of `source`.
 ///
-/// Mirrors `docs/validation/foc-250-2026-08-18-p-sweep-stepper-x/analyze_sweep.py`'s
-/// `over_gain_metrics`: demean the window's rate error against `target_rate_q`,
-/// then take the RMS of the demeaned series' first difference. Missing
+/// Demeans the window's rate error against `target_rate_q`,
+/// then takes the RMS of the demeaned series' first difference. Missing
 /// indices (past what `source` holds) are skipped, not treated as zero.
 /// Returns 0 for fewer than 2 available samples.
 pub(crate) fn dac_rms_q<S: VelocityObservationSource + ?Sized>(
@@ -262,8 +260,7 @@ impl ReversalOnlineAccumulator {
     /// (`actual_position_counts`, `expected_position_q`, `peak_excess_q`):
     /// unlike the old whole-cycle peak this design replaces, the excess
     /// tracker is scoped to one leg, so the reverse leg's own `reset()` call
-    /// is the reversal-command instant it anchors at. See
-    /// `docs/specs/2026-08-22-foc-274-overshoot-metric-redesign.md`.
+    /// is the reversal-command instant it anchors at.
     ///
     /// Band membership is judged on the mean rate of the last
     /// `band_window_samples` observations (1 for each raw tick, at most
@@ -383,8 +380,7 @@ impl ReversalOnlineAccumulator {
     /// Peak positive excess of actual displacement over the ideal
     /// constant-target-rate trajectory, observed since the last `reset()`
     /// -- i.e. scoped to one leg. Zero for a leg that never ran ahead of its
-    /// commanded target rate. See
-    /// `docs/specs/2026-08-22-foc-274-overshoot-metric-redesign.md`.
+    /// commanded target rate.
     pub(crate) fn reversal_overshoot_counts(&self) -> u16 {
         u16::try_from(self.peak_excess_q / OVERSHOOT_SCALE_Q).unwrap_or(u16::MAX)
     }

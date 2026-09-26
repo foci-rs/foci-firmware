@@ -1037,11 +1037,7 @@ fn drift_ratio_saturates_rather_than_wrapping() {
 
 #[test]
 fn drift_ratio_matches_a_hand_computed_case_at_capture_scale() {
-    // Magnitudes from rung 0 slot 3 of
-    // foc-192-stepper-y-rejection-slope-20260729-221033.bin, at a 60 ms span.
-    // The capture does not report the block level on the rejection path, so the
-    // real span is unknown; this pins the arithmetic at a realistic scale, not
-    // the observation's actual ratio.
+    // Pins the arithmetic at realistic capture magnitudes over a 60 ms span.
     assert_eq!(drift_ratio_ppm(-8_823_529, 2 * 60_000, 13_750_000), 38_503);
 }
 

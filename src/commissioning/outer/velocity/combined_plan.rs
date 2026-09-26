@@ -18,8 +18,7 @@ pub const INTEGRAL_PLAN_SCHEMA_REVISION: u16 = 13;
 ///
 /// The breakaway probe, additive discovery, and held-out confirmation plans
 /// replace the combined proportional sweep entirely; there is no Proportional
-/// sweep plan under this schema. See
-/// `docs/specs/2026-07-31-foc-213-breakaway-seeded-p-ladder.md`. Historical
+/// sweep plan under this schema. Historical
 /// schemas 8 through [`PROPORTIONAL_PLAN_SCHEMA_REVISION`] keep their exact
 /// digest and behavior; this schema is additive.
 pub const BREAKAWAY_PROPORTIONAL_SCHEMA_REVISION: u16 = 17;
