@@ -146,6 +146,7 @@ impl PiRepresentationVerifyStep {
 /// Verify the fixed PI representation through a commissioning backend.
 ///
 /// This verifier never repairs missing or mismatching state.
+#[cfg(test)]
 pub(crate) async fn verify_pi_representation<B: CommissionRegisterIo>(
     backend: &mut B,
     state: &TmcChannelState,
@@ -160,7 +161,7 @@ pub(crate) async fn verify_pi_representation<B: CommissionRegisterIo>(
 
 /// Verify the fixed PI representation through the raw request-path SPI owner.
 ///
-/// This has the same fail-closed semantics as [`verify_pi_representation`].
+/// This has the same fail-closed semantics as [`PiRepresentationVerifyStep`].
 pub(crate) async fn verify_pi_representation_spi<Spi: SpiDevice<u8>>(
     tmc: &mut Tmc4671Spi<Spi>,
     state: &TmcChannelState,

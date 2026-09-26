@@ -149,8 +149,8 @@ pub struct TmcChannelState {
     /// Set by every `restore_safe_state_via_backend` pass, whether or not it
     /// had failures — a restore alone does not confirm the chip is safe to
     /// arm, only a fresh sentinel pass does. Cleared only by
-    /// `arm_motor_electrical` immediately after `verify_motor_sentinel`
-    /// succeeds, before any settling write or enable-pin assertion, or by a
+    /// `arm_motor_electrical` immediately after the sentinel and
+    /// PI-representation readbacks succeed, before any settling write or enable-pin assertion, or by a
     /// full `TmcChannelState::reset()`. This is the compound "safe-state
     /// pass AND fresh sentinel pass" latch the re-arm gate is built on; do
     /// not clear it anywhere else.
