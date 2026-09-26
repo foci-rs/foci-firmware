@@ -1,6 +1,4 @@
-use super::sweep_consensus::{
-    DirectionalConsensusClass, consensus_class_report_code, depth_three_consensus,
-};
+use super::sweep_consensus::{DirectionalConsensusClass, depth_three_consensus};
 use super::sweep_evidence::VelocityObservationClass;
 use crate::autotune::velocity_measurement::StationarityExclusion;
 use crate::autotune::{EquivalentTorqueTargetInterval, EquivalentTorqueTargetQ16};
@@ -179,24 +177,4 @@ fn three_collected_observations_are_an_incomplete_rung() {
     );
     assert_eq!(result.collected_mask, 0b0111);
     assert_eq!(result.included_mask, 0);
-}
-
-#[test]
-fn consensus_class_report_codes_are_stable() {
-    assert_eq!(
-        consensus_class_report_code(DirectionalConsensusClass::EligibleConsensus),
-        0
-    );
-    assert_eq!(
-        consensus_class_report_code(DirectionalConsensusClass::AmbiguousConsensus),
-        1
-    );
-    assert_eq!(
-        consensus_class_report_code(DirectionalConsensusClass::InsufficientConsensus),
-        2
-    );
-    assert_eq!(
-        consensus_class_report_code(DirectionalConsensusClass::IncompleteRung),
-        3
-    );
 }

@@ -125,16 +125,6 @@ pub fn depth_three_consensus<I: ConsensusInterval>(
     }
 }
 
-/// Return the stable wire/report code for a consensus class.
-pub const fn consensus_class_report_code(class: DirectionalConsensusClass) -> u8 {
-    match class {
-        DirectionalConsensusClass::EligibleConsensus => 0,
-        DirectionalConsensusClass::AmbiguousConsensus => 1,
-        DirectionalConsensusClass::InsufficientConsensus => 2,
-        DirectionalConsensusClass::IncompleteRung => 3,
-    }
-}
-
 fn empty_consensus(
     classification: DirectionalConsensusClass,
     collected_mask: u8,
