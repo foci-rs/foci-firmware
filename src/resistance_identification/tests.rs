@@ -1766,34 +1766,6 @@ fn warning_only_status_is_retained_without_terminating_sample() {
 }
 
 #[test]
-fn new_status_flags_excludes_bits_also_present_in_baseline() {
-    let mut backend = FakeResistanceBackend::standard();
-    // read 1 (baseline, op 8) = bit 28; read 2 (post-clear verify, op 10) =
-    // bit 28 re-asserted; read 3 (first sample) adds bit 29.
-    backend.script_status_reads(&[1 << 28, 1 << 28, (1 << 28) | (1 << 29)]);
-    let mut runner = ResistanceRunner::new(
-        ResistanceRunMode::CommissioningManagedEnable,
-        backend.profile(),
-        1_000,
-    )
-    .unwrap();
-    let due = drive_to_first_sample(&mut runner, &mut backend, 1_000);
-
-    assert!(matches!(
-        poll_runner(&mut runner, &mut backend, due),
-        ResistancePoll::At(_)
-    ));
-    assert_eq!(runner.baseline_status_flags(), 1 << 28);
-    assert_eq!(runner.status_flags_or(), (1 << 28) | (1 << 29));
-    assert_eq!(
-        runner.new_status_flags(),
-        1 << 29,
-        "a bit re-observed during the run that also appeared in the \
-         pre-clear baseline must not count as newly raised"
-    );
-}
-
-#[test]
 fn resumable_success_matches_compatibility_loop_and_remains_terminal() {
     let mut compatibility_backend = FakeResistanceBackend::standard();
     let expected = block_on(run_resistance_identification(

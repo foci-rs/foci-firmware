@@ -99,10 +99,6 @@ impl ResistanceProfile {
         }
     }
 
-    pub const fn energized_windows_per_axis(&self) -> u8 {
-        self.ud_points.len() as u8 + 2
-    }
-
     pub fn max_abs_ud(&self) -> i16 {
         let mut max = self.signed_anchor_ud.abs();
         for point in self.ud_points {
@@ -138,7 +134,6 @@ mod tests {
             [512, 640, 800, 960, 1120, 1280, 1440, 1600]
         );
         assert_eq!(profile.signed_anchor_ud, 960);
-        assert_eq!(profile.energized_windows_per_axis(), 10);
 
         let expected_anchor_exposure = 2
             * u64::from(profile.signed_anchor_ud.unsigned_abs()).pow(2)

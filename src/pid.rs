@@ -1,6 +1,6 @@
 //! PID gain register helpers for TMC4671 control loops.
 
-use foci_tmc4671::pid::{PidGainOutOfRange, PidGainPair, PidIGain, PidPGain};
+use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 
 /// Computed PI gains for TMC4671 flux and torque controllers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -49,8 +49,9 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     },
 };
 
-/// Outer-loop gains applied before any measured floor exists. Not tuned for
-/// any specific motor.
+/// Nonzero outer-loop gains for test fixtures. Production seeds
+/// [`CONFIG_RESET_PLACEHOLDER_GAINS`] until a gain-floor result exists.
+#[cfg(test)]
 pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
     position_p: match PidPGain::new(640) {
         Ok(gain) => gain,
@@ -133,18 +134,6 @@ impl InnerLoopGains {
         let torque = PidGainPair::new(self.torque_p, self.torque_i).register_value();
         (flux, torque)
     }
-
-    /// Unpack gains from TMC4671 register values.
-    pub fn from_registers(flux_reg: u32, torque_reg: u32) -> Result<Self, PidGainOutOfRange> {
-        let flux = PidGainPair::try_from_register(flux_reg)?;
-        let torque = PidGainPair::try_from_register(torque_reg)?;
-        Ok(Self {
-            flux_p: PidPGain::new(flux.p.raw())?,
-            flux_i: PidIGain::new(flux.i.raw())?,
-            torque_p: PidPGain::new(torque.p.raw())?,
-            torque_i: PidIGain::new(torque.i.raw())?,
-        })
-    }
 }
 
 impl OuterLoopGains {
@@ -191,25 +180,6 @@ mod tests {
             assert!(DEFAULT_OUTER_GAINS.position_p.raw() > 0);
             assert!(DEFAULT_OUTER_GAINS.velocity_p.raw() > 0);
         }
-    }
-
-    #[test]
-    fn maximum_inner_gains_round_trip() {
-        let gains = InnerLoopGains {
-            flux_p: PidPGain::MAX,
-            flux_i: PidIGain::MAX,
-            torque_p: PidPGain::MAX,
-            torque_i: PidIGain::MAX,
-        };
-        let (flux_reg, torque_reg) = gains.to_registers();
-        let restored = InnerLoopGains::from_registers(flux_reg, torque_reg).unwrap();
-        assert_eq!(gains, restored);
-    }
-
-    #[test]
-    fn inner_loop_gains_reject_invalid_register_half() {
-        assert!(InnerLoopGains::from_registers(0x8000_0001, 0).is_err());
-        assert!(InnerLoopGains::from_registers(0, 0x0001_8000).is_err());
     }
 
     #[test]

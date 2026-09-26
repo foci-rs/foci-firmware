@@ -263,7 +263,8 @@ impl ResistanceRunner {
 
     /// Return the raw `STATUS_FLAGS` value read once before excitation,
     /// prior to the pre-excitation clear. Never contributes to
-    /// `status_flags_or`, `new_status_flags`, or `warning_flags`.
+    /// `status_flags_or` or `warning_flags`.
+    #[cfg(test)]
     #[must_use]
     pub const fn baseline_status_flags(&self) -> u32 {
         self.baseline_status_flags
@@ -274,15 +275,6 @@ impl ResistanceRunner {
     #[must_use]
     pub const fn status_flags_or(&self) -> u32 {
         self.status_flags_or
-    }
-
-    /// Return the subset of `status_flags_or` not already present in
-    /// `baseline_status_flags`: bits genuinely first observed during the
-    /// run, as opposed to a bit that was already sticky beforehand and
-    /// happened to reassert after the clear.
-    #[must_use]
-    pub const fn new_status_flags(&self) -> u32 {
-        self.status_flags_or & !self.baseline_status_flags
     }
 
     /// Return the primary failure retained while restoration is in progress.
