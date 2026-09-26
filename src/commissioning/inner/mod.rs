@@ -560,14 +560,9 @@ pub(crate) async fn step_inner<B: CommissioningBackend>(
     )
     .await;
     if matches!(result, StepResult::InnerFailed(_)) {
-        // Defense in depth: `commission_dispatch::TerminalRestoreMachine`
-        // already runs the canonical safe-state helper on
-        // `StepResult::InnerFailed`. We run it again here so the chip is
-        // guaranteed de-energized before the failure even leaves the
-        // engine — the dispatcher boundary is one layer up. The duplicate
-        // 6 SPI writes are harmless on the failure path; if a deferred
-        // drive of the dispatcher is added later, this layer keeps the
-        // safety contract intact.
+        // The terminal restore also runs this helper, but it is polled one
+        // backend op per commission tick after this result is returned, so
+        // this is the pass that de-energizes the chip immediately.
         crate::tmc_safe_state::restore_safe_state_via_backend(backend).await;
     }
     result
