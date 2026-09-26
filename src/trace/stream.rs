@@ -742,8 +742,10 @@ mod tests {
 
     #[test]
     fn critical_payload_carries_signed_chip_position_error_at_bytes_8_to_12() {
-        let mut sample = CriticalSample::default();
-        sample.position_error = -1234;
+        let sample = CriticalSample {
+            position_error: -1234,
+            ..Default::default()
+        };
         let mut payload = [0xAA; CRITICAL_PAYLOAD_LEN];
         encode_critical_payload(&sample, &mut payload);
         assert_eq!(&payload[8..12], &(-1234i32).to_le_bytes());
