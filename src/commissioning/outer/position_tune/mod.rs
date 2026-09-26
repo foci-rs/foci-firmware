@@ -1160,7 +1160,7 @@ mod tests {
                 PositionTuneStep::StandstillHold { rung, .. } => {
                     let sample_index = workspace.len();
                     let predicted = dither_for(rung.raw(), state.k_q16);
-                    let torque = if sample_index % 2 == 0 { 0 } else { predicted };
+                    let torque = if sample_index.is_multiple_of(2) { 0 } else { predicted };
                     let _ = backend.registers.insert(
                         PID_TORQUE_FLUX_TARGET.addr(),
                         torque_target_register(torque),
@@ -1280,7 +1280,7 @@ mod tests {
             &mut phase,
             &mut backend,
             |_state, _idx| 50,
-            |rung, k_q16| quantization_only(rung, k_q16),
+            quantization_only,
         );
 
         let StepResult::OuterDone(result) = terminal else {
@@ -1397,7 +1397,7 @@ mod tests {
                     50
                 }
             },
-            |rung, k_q16| quantization_only(rung, k_q16),
+            quantization_only,
         );
 
         let StepResult::OuterDone(result) = terminal else {
@@ -1448,7 +1448,7 @@ mod tests {
                     }
                 }
             },
-            |rung, k_q16| quantization_only(rung, k_q16),
+            quantization_only,
         );
 
         assert!(matches!(
@@ -1506,7 +1506,7 @@ mod tests {
                     }
                 }
             },
-            |rung, k_q16| quantization_only(rung, k_q16),
+            quantization_only,
         );
 
         assert!(matches!(
@@ -1545,7 +1545,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(!backend.stimulus_log.iter().any(|op| *op == StimulusOp::Arm));
+        assert!(!backend.stimulus_log.contains(&StimulusOp::Arm));
         assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
     }
 
@@ -1702,7 +1702,7 @@ mod tests {
                 PositionTuneStep::StandstillHold { rung, .. } => {
                     let sample_index = workspace.len();
                     let predicted = quantization_only(rung.raw(), state.k_q16);
-                    let torque = if sample_index % 2 == 0 { 0 } else { predicted };
+                    let torque = if sample_index.is_multiple_of(2) { 0 } else { predicted };
                     let _ = backend.registers.insert(
                         PID_TORQUE_FLUX_TARGET.addr(),
                         torque_target_register(torque),
@@ -1827,7 +1827,7 @@ mod tests {
                 PositionTuneStep::StandstillHold { rung, .. } => {
                     let sample_index = workspace.len();
                     let predicted = quantization_only(rung.raw(), state.k_q16);
-                    let torque = if sample_index % 2 == 0 { 0 } else { predicted };
+                    let torque = if sample_index.is_multiple_of(2) { 0 } else { predicted };
                     let _ = backend.registers.insert(
                         PID_TORQUE_FLUX_TARGET.addr(),
                         torque_target_register(torque),
@@ -1926,7 +1926,7 @@ mod tests {
             &mut phase,
             &mut backend,
             |_state, _idx| 50,
-            |rung, k_q16| quantization_only(rung, k_q16),
+            quantization_only,
         );
 
         let StepResult::OuterDone(result) = terminal else {
@@ -1974,7 +1974,7 @@ mod tests {
                         }
                     }
                 },
-                |rung, k_q16| quantization_only(rung, k_q16),
+                quantization_only,
             );
             assert_ends_with_stop_and_feedforward_false(&backend.stimulus_log);
         }
@@ -2027,7 +2027,7 @@ mod tests {
             &mut phase,
             &mut backend,
             |_state, _idx| 50,
-            |rung, k_q16| quantization_only(rung, k_q16),
+            quantization_only,
         );
 
         let StepResult::OuterDone(result) = terminal else {

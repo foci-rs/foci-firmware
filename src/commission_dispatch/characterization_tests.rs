@@ -1480,7 +1480,7 @@ fn trace_of(
         }
     };
     TraceSummary {
-        events: backend.spi_log.iter().copied().collect(),
+        events: backend.spi_log.to_vec(),
         outcome_tag,
         terminal_cause,
         engine_consumed: engine.is_none(),
