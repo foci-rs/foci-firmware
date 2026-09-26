@@ -236,11 +236,10 @@ impl VelocityIntegralPlan {
         // constant byte 0 here. Hashing that same constant keeps `digest()`
         // byte-identical to pre-removal for every plan that ever existed in
         // production, which foci-trace's independent offline recomputation
-        // (`velocity_integral.py::integral_plan_digest`) still assumes: it
-        // hashes `int(plan.get("combined_selected_response", False))`, which
-        // is the same `0` for a capture that never carried the key. Do not
-        // turn this back into a real `combined_selected_response` read --
-        // the field is gone; this is a frozen digest-compatibility constant.
+        // (`velocity_integral.py::integral_plan_digest`) mirrors by hashing
+        // the same constant zero. Do not turn this back into a real
+        // `combined_selected_response` read -- the field is gone; this is a
+        // frozen digest-compatibility constant.
         hash_value!(0u8);
         hash_value!(self.planned_velocity_mrev_s);
         hash_value!(self.target_velocity_rpm);
