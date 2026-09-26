@@ -80,7 +80,8 @@ pub struct TimedRegisterIo<T> {
 }
 
 /// Read a register and measure wall time around the existing backend await.
-pub async fn timed_read_register<B>(
+#[cfg(test)]
+pub(crate) async fn timed_read_register<B>(
     backend: &mut B,
     reg: Register,
 ) -> TimedRegisterIo<Result<u32, B::Error>>
@@ -118,27 +119,9 @@ where
     }
 }
 
-/// Read one capture register and measure its wall time.
-pub async fn timed_read_capture_register<B>(
-    backend: &mut B,
-    reg: Register,
-) -> TimedRegisterIo<Result<u32, B::Error>>
-where
-    B: CommissioningBackend,
-{
-    let start_us = backend.elapsed_us();
-    let result = backend.read_capture_register(reg).await;
-    let end_us = backend.elapsed_us();
-    let (wall_us, overflowed) = measured_wall_us(start_us, end_us);
-    TimedRegisterIo {
-        result,
-        wall_us,
-        overflowed,
-    }
-}
-
 /// Write a register and measure wall time around the existing backend await.
-pub async fn timed_write_register<B>(
+#[cfg(test)]
+pub(crate) async fn timed_write_register<B>(
     backend: &mut B,
     reg: Register,
     value: u32,
