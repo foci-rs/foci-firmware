@@ -1,5 +1,3 @@
-//! Terminal-restore tests driven through `drive_commission_result`.
-
 use super::test_support::{
     MockBackend, SpiOp, accepted_commission_result as sample_commission_result, current_limit,
     fresh_state_locals, sample_entry_snapshot, sample_outer_params,

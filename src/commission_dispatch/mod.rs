@@ -2,11 +2,6 @@
 //!
 //! Lifted from `openffboard-fw::tmc_control` per the design at
 //! `docs/specs/2026-04-23-commission-dispatch-extraction-design.md`.
-//!
-//! `tmc_control` adapts each `engine.step()` result with
-//! [`crate::commissioning::schedule::adapt_step_result`] and polls terminals
-//! through [`TerminalRestoreMachine`]; the board matches the resulting
-//! `CommissionOutcome` to fire RTIC primitives + emit replies.
 
 // pub(crate) so sibling test modules (commissioning, diagnostics, ...) can
 // import MockBackend + helpers via crate::commission_dispatch::test_support::*.
@@ -556,15 +551,6 @@ fn calibration_status_from_commission_error(error: crate::autotune::CommissionEr
     calibration_error.status_code()
 }
 
-/// Drive one terminal `StepResult` through a [`TerminalRestoreMachine`] to completion.
-///
-/// Test-only: `tmc_control` maps `StepResult`s with
-/// [`crate::commissioning::schedule::adapt_step_result`] and polls the restore
-/// machine once per tick instead.
-///
-/// # Panics
-///
-/// Panics on a non-terminal `result`.
 #[cfg(test)]
 pub(crate) async fn drive_commission_result<B: CommissioningBackend>(
     result: StepResult,
@@ -615,7 +601,6 @@ async fn drive_restore_machine<B: CommissioningBackend>(
     }
 }
 
-/// Drive one Integral terminal's staged restore, including its retained-evidence lifecycle.
 #[cfg(test)]
 pub(crate) async fn drive_velocity_integral_terminal_with_stages<B: CommissioningBackend>(
     terminal: crate::commissioning::types::VelocityIntegralTerminal,
@@ -634,11 +619,6 @@ pub(crate) async fn drive_velocity_integral_terminal_with_stages<B: Commissionin
     drive_restore_machine(&mut machine, engine, backend, state, Some(&mut retention)).await
 }
 
-/// Drive one Proportional terminal's staged restore, including its retained-evidence lifecycle.
-///
-/// # Panics
-///
-/// Panics unless `result` is a fixed-gain amplitude or robustness reversal terminal.
 #[cfg(test)]
 pub(crate) async fn drive_commission_result_with_stages<B: CommissioningBackend>(
     result: StepResult,

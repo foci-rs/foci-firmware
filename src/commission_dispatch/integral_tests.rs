@@ -752,8 +752,6 @@ fn integral_terminal_causes_reserve_recovery_and_lifecycle_values() {
     assert_eq!(super::integral::INTEGRAL_DISPATCH_CAUSE_PLAN_MISMATCH, 7);
 }
 
-/// Mirrors the scheduled-tick path: `adapt_step_result` carries the plan out as
-/// an event, and `tmc_control` installs its authority from that event.
 #[test]
 fn breakaway_integral_plan_ready_retains_terminal_authority() {
     use crate::commissioning::schedule::{CommissionEvent, CommissionPoll, adapt_step_result};

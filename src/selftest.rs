@@ -1,7 +1,4 @@
 //! Selftest stage-result types and commissioning diagnostic events.
-//!
-//! Contains the [`SelftestStageValue`] / [`SelftestResults`] containers
-//! streamed to the host during a selftest run.
 
 /// Result of one selftest stage, streamed to the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, defmt::Format)]

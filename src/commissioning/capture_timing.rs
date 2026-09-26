@@ -43,7 +43,6 @@ impl TimingEnvelope {
         max_consecutive_misses: 2,
     };
 
-    /// Permits no missed slots.
     #[cfg(test)]
     pub const DELAY: Self = Self {
         max_missed_samples: Some(0),

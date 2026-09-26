@@ -5,9 +5,6 @@
 //! [`TerminalRestoreMachine::poll_step`]. The machine holds only owned values;
 //! the engine slot, dispatch view, backend, and velocity-integral retention are borrows
 //! supplied per poll, so nothing borrowed lives across a tick boundary.
-//!
-//! Ordering, fault stamping, reply shape, and `engine.take()` policy are pinned
-//! by the characterization goldens in `characterization_tests.rs`.
 
 use core::sync::atomic::Ordering::Relaxed;
 

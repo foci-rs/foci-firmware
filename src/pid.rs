@@ -49,8 +49,6 @@ pub const DEFAULT_INNER_GAINS: InnerLoopGains = InnerLoopGains {
     },
 };
 
-/// Nonzero outer-loop gains for test fixtures. Production seeds
-/// [`CONFIG_RESET_PLACEHOLDER_GAINS`] until a gain-floor result exists.
 #[cfg(test)]
 pub const DEFAULT_OUTER_GAINS: OuterLoopGains = OuterLoopGains {
     position_p: match PidPGain::new(640) {

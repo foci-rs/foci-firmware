@@ -181,7 +181,6 @@ where
     tmc.write_sub_register(CONFIG_BIQUAD_X_ENABLE, 0).await
 }
 
-/// Flat apply of the stored cutoffs, used as the oracle for `FilterCutoffsStep`.
 #[cfg(test)]
 pub(crate) async fn apply_stored_filters_via_backend<B: CommissioningBackend>(
     backend: &mut B,

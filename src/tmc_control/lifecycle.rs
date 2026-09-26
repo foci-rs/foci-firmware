@@ -380,9 +380,7 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
 /// Scope Note) per `advance()` tick.
 ///
 /// Mirrors `arm_motor_electrical` exactly, including its fail-fast error
-/// policy at every phase. The flat `arm_motor_electrical` function remains the
-/// arming path the boards' request handlers call directly, and this type's
-/// characterization tests compare against it.
+/// policy at every phase.
 ///
 /// The final tick (`FinalizeEnable`) intentionally performs the interlock
 /// check, the `config_apply_pending` recheck, and the enable-pin assertion

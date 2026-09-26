@@ -286,7 +286,6 @@ struct OuterScaffold {
 }
 
 impl CommissioningEngine {
-    /// Create a channel-0 calibration engine with no stored gains.
     #[cfg(test)]
     pub(crate) fn new_calibrate(oid: u8) -> Self {
         Self::new_calibrate_with_trace_seq(oid, 0)
@@ -365,7 +364,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Create a channel-0 selftest engine.
     #[cfg(test)]
     pub(crate) fn new_selftest(oid: u8) -> Self {
         Self::new_selftest_with_trace_seq(oid, 0)
@@ -417,7 +415,6 @@ impl CommissioningEngine {
         }
     }
 
-    /// Create a channel-0 Stage 1 commissioning engine.
     #[cfg(test)]
     pub(crate) fn new_commission(oid: u8, profile: CommissionProfile) -> Self {
         Self::new_commission_with_trace_seq(oid, profile, 0)

@@ -73,8 +73,7 @@ fn release(tmc_state: &TmcChannelState, bit: u8) {
 ///
 /// Each bit is checked and cleared individually, so a failure writing one
 /// item does not prevent retrying on the next control tick. Routes through
-/// [`apply_live_filter`] so a recorded `0` disables its filter, which the
-/// `FilterCutoffsStep` restore path does not do.
+/// [`apply_live_filter`] so a recorded `0` disables its filter.
 ///
 /// On `Ok`, every bit observed on entry has been applied. Config handlers run
 /// at a higher priority than the control and arming paths, so a bit can be
