@@ -15,9 +15,11 @@ pub const SUBSYSTEM_TMC_CONTROL: u8 = 1;
 pub const SUBSYSTEM_STEP_TIMER: u8 = 2;
 /// USB trace subsystem ID for USB trace transport events.
 pub const SUBSYSTEM_USB_TRACE: u8 = 3;
-/// USB trace subsystem ID for Klipper protocol events.
+/// Reserved USB trace subsystem ID for Klipper protocol events. Nothing emits
+/// under it yet; never reassign.
 pub const SUBSYSTEM_KLIPPER: u8 = 4;
-/// USB trace subsystem ID for homing and endstop events.
+/// Reserved USB trace subsystem ID for homing and endstop events. Nothing
+/// emits under it yet; never reassign.
 pub const SUBSYSTEM_HOMING_ENDSTOP: u8 = 5;
 /// USB trace subsystem ID for safety shutdown events.
 pub const SUBSYSTEM_SAFETY_SHUTDOWN: u8 = 6;
@@ -54,34 +56,49 @@ pub const EVENT_COMMISSION_MECHANICAL_ID_RESPONSE: u16 = 112;
 /// summary classification fragment. No live phase emits this event.
 pub const EVENT_COMMISSION_MECHANICAL_ID_CLASSIFICATION: u16 = 113;
 
-/// Velocity-validation summary result fragment.
+/// Reserved for historical decoding: the retired velocity-validation summary result fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_VALIDATE_RESULT: u16 = 120;
-/// Velocity-validation summary gain fragment.
+/// Reserved for historical decoding: the retired velocity-validation summary gain fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_VALIDATE_GAIN: u16 = 121;
-/// Velocity-validation summary metrics fragment.
+/// Reserved for historical decoding: the retired velocity-validation summary metrics fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_VALIDATE_METRICS: u16 = 122;
-/// Velocity-validation summary limits fragment.
+/// Reserved for historical decoding: the retired velocity-validation summary limits fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_VALIDATE_LIMITS: u16 = 123;
-/// Disturbance-based velocity-sweep immutable plan.
+/// Reserved for historical decoding: the retired velocity-sweep plan.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_PLAN: u16 = 124;
-/// Disturbance-based velocity-sweep observation summary.
+/// Reserved for historical decoding: the retired velocity-sweep observation summary.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_OBSERVATION: u16 = 125;
-/// Disturbance-based velocity-sweep rung verdict.
+/// Reserved for historical decoding: the retired velocity-sweep rung verdict.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_RUNG: u16 = 126;
-/// Derived Proportional structured-boundary, region, and handoff evidence.
+/// Reserved for historical decoding: the retired Proportional boundary, region
+/// and handoff evidence.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_DERIVED: u16 = 127;
-/// Disturbance-based velocity-sweep detailed terminal.
+/// Reserved for historical decoding: the retired velocity-sweep terminal.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_TERMINAL: u16 = 128;
-/// Disturbance-based velocity-sweep complete marker.
+/// Reserved for historical decoding: the retired velocity-sweep complete marker.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_VELOCITY_SWEEP_COMPLETE: u16 = 129;
 
-/// Position-tune summary result fragment.
+/// Reserved for historical decoding: the retired position-tune summary result fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_POSITION_TUNE_RESULT: u16 = 130;
-/// Position-tune summary target fragment.
+/// Reserved for historical decoding: the retired position-tune summary target fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_POSITION_TUNE_TARGET: u16 = 131;
-/// Position-tune summary metrics fragment.
+/// Reserved for historical decoding: the retired position-tune summary metrics fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_POSITION_TUNE_METRICS: u16 = 132;
-/// Position-tune summary limits fragment.
+/// Reserved for historical decoding: the retired position-tune summary limits fragment.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_POSITION_TUNE_LIMITS: u16 = 133;
 
 /// Reserved for historical decoding: the retired velocity-integral plan
@@ -111,7 +128,8 @@ pub const EVENT_COMMISSION_OUTER_SAFETY_TIMING: u16 = 144;
 /// Retired: focused velocity-output-limit persistence diagnostic. The id stays
 /// reserved (never reassigned) so historical captures still decode.
 pub const EVENT_COMMISSION_VELOCITY_LIMIT_LATCH_TEST: u16 = 145;
-/// Fixed-I velocity fixed-gain-amplitude immutable plan.
+/// Reserved for historical decoding: the retired fixed-gain-amplitude plan event.
+/// No live phase emits this event.
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_PLAN: u16 = 146;
 /// Fixed-I velocity fixed-gain-amplitude observation evidence.
 pub const EVENT_COMMISSION_FIXED_GAIN_AMPLITUDE_OBSERVATION: u16 = 147;
@@ -164,7 +182,8 @@ pub const EVENT_COMMISSION_BREAKAWAY_RECOVERY_REST_REJECTED: u16 = 163;
 /// between the tick that captured it and the tick recovery began.
 pub const EVENT_COMMISSION_BREAKAWAY_RECOVERY_ORIGIN_MISMATCH: u16 = 164;
 
-/// Single-frame commissioning diagnostic warning event.
+/// Reserved single-frame commissioning diagnostic warning event. No live phase
+/// emits it.
 pub const EVENT_COMMISSION_DIAGNOSTIC_WARNING: u16 = 200;
 
 /// USB trace event severity level.

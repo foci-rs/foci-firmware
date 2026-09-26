@@ -73,7 +73,7 @@ pub const SOURCE_INDEX_NA: u8 = 0xff;
 
 /// First good frame after drops in the same producer queue.
 pub const FLAG_DROP_GAP_BEFORE_THIS_FRAME: u8 = 1 << 0;
-/// Payload was shortened.
+/// Reserved: payload was shortened. No producer sets it; never reassign.
 pub const FLAG_PAYLOAD_TRUNCATED: u8 = 1 << 1;
 /// Critical sample contains at least one invalid field due to SPI failure.
 pub const SAMPLE_FLAG_SPI_ERROR: u8 = 1 << 0;
@@ -118,9 +118,11 @@ pub const EVENT_PAYLOAD_LEN: usize = 24;
 pub const VELOCITY_OBSERVATION_PAYLOAD_LEN: usize = 22;
 /// Velocity observation met the existing torque-saturation threshold.
 pub const VELOCITY_OBSERVATION_FLAG_SATURATED: u8 = 1 << 0;
-/// Velocity observation includes a sampled `PID_VELOCITY_ACTUAL` value.
+/// Reserved, historical-only: the observation carried a sampled
+/// `PID_VELOCITY_ACTUAL` value. No live producer sets it; never reassign.
 pub const VELOCITY_OBSERVATION_FLAG_PID_VELOCITY_ACTUAL_VALID: u8 = 1 << 1;
-/// `velocity_diagnostic_value` carries `ACTUAL_VELOCITY_PPTM`.
+/// Reserved, historical-only: `velocity_diagnostic_value` carried
+/// `ACTUAL_VELOCITY_PPTM`. No live producer sets it; never reassign.
 pub const VELOCITY_OBSERVATION_FLAG_PPTM_ACTUAL_VALID: u8 = 1 << 2;
 /// Maximum metadata string bytes in firmware frames.
 pub const METADATA_STRING_MAX: usize = 31;

@@ -427,11 +427,11 @@ pub mod operation {
     pub const QUEUE_STEP: u8 = 1;
     /// `set_next_step_dir`.
     pub const SET_NEXT_STEP_DIR: u8 = 2;
-    /// `reset_step_clock`.
+    /// Reserved: `reset_step_clock`. No diagnostic reports it; never reassign.
     pub const RESET_STEP_CLOCK: u8 = 3;
     /// `tmc_control`.
     pub const TMC_CONTROL: u8 = 4;
-    /// `stepper_stop`.
+    /// Reserved: `stepper_stop`. No diagnostic reports it; never reassign.
     pub const STEPPER_STOP: u8 = 5;
     /// Stepper OID/channel lookup before a motion command.
     pub const STEPPER_LOOKUP: u8 = 6;

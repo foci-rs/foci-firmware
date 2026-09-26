@@ -1661,7 +1661,9 @@ pub const OUTER_SAFETY_FAULT_DURATION: u8 = 3;
 pub const OUTER_SAFETY_FAULT_VELOCITY: u8 = 4;
 /// Installed-tuning accumulated encoder position exceeded its active travel window.
 pub const OUTER_SAFETY_FAULT_POSITION: u8 = 5;
-/// Mechanical-ID position-to-torque handoff did not settle before timeout.
+/// Reserved, historical-only: the retired mechanical-ID position-to-torque
+/// handoff did not settle before timeout. No live phase reports it; never
+/// reassign.
 pub const OUTER_SAFETY_FAULT_POST_SWITCH_SETTLE: u8 = 6;
 /// Encoder observations were separated by too much time for wrap-safe interpretation.
 pub const OUTER_SAFETY_FAULT_OBSERVATION_GAP: u8 = 7;
