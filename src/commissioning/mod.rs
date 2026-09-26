@@ -2063,8 +2063,8 @@ mod tests {
         // a synchronous helper, so neither the samples nor the fit inputs
         // are live across the capture awaits, and these futures are the
         // same size as before that phase existed.
-        // 4_416 -> 4_400: `EngineMode::Outer` drops the dead `current_ringing`
-        // bool now that the wire reply and tune request no longer carry it.
+        // `EngineMode::Outer` shrinks below now that the wire reply and tune
+        // request no longer carry the dead `current_ringing` bool.
         assert_eq!(engine_step, 4_400);
         assert!(engine_step <= 4_400);
         assert_eq!(step_inner, 4_352);
