@@ -1160,7 +1160,11 @@ mod tests {
                 PositionTuneStep::StandstillHold { rung, .. } => {
                     let sample_index = workspace.len();
                     let predicted = dither_for(rung.raw(), state.k_q16);
-                    let torque = if sample_index.is_multiple_of(2) { 0 } else { predicted };
+                    let torque = if sample_index.is_multiple_of(2) {
+                        0
+                    } else {
+                        predicted
+                    };
                     let _ = backend.registers.insert(
                         PID_TORQUE_FLUX_TARGET.addr(),
                         torque_target_register(torque),
@@ -1702,7 +1706,11 @@ mod tests {
                 PositionTuneStep::StandstillHold { rung, .. } => {
                     let sample_index = workspace.len();
                     let predicted = quantization_only(rung.raw(), state.k_q16);
-                    let torque = if sample_index.is_multiple_of(2) { 0 } else { predicted };
+                    let torque = if sample_index.is_multiple_of(2) {
+                        0
+                    } else {
+                        predicted
+                    };
                     let _ = backend.registers.insert(
                         PID_TORQUE_FLUX_TARGET.addr(),
                         torque_target_register(torque),
@@ -1827,7 +1835,11 @@ mod tests {
                 PositionTuneStep::StandstillHold { rung, .. } => {
                     let sample_index = workspace.len();
                     let predicted = quantization_only(rung.raw(), state.k_q16);
-                    let torque = if sample_index.is_multiple_of(2) { 0 } else { predicted };
+                    let torque = if sample_index.is_multiple_of(2) {
+                        0
+                    } else {
+                        predicted
+                    };
                     let _ = backend.registers.insert(
                         PID_TORQUE_FLUX_TARGET.addr(),
                         torque_target_register(torque),
