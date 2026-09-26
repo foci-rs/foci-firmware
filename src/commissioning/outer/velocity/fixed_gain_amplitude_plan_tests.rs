@@ -3,9 +3,8 @@ use super::band_confirmation::{
     evaluate_band_confirmation, plan_band_confirmation,
 };
 use super::fixed_gain_amplitude_plan::{
-    FIXED_GAIN_AMPLITUDE_CAPTURE_ALLOWANCE_S, FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION,
-    FIXED_GAIN_AMPLITUDE_TARGETS, FixedGainAmplitudeOrder, FixedGainAmplitudePlanError,
-    decode_schedule_order_code, derive_fixed_gain_amplitude_targets, plan_fixed_gain_amplitude,
+    FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION, FIXED_GAIN_AMPLITUDE_TARGETS, FixedGainAmplitudeOrder,
+    FixedGainAmplitudePlanError, derive_fixed_gain_amplitude_targets, plan_fixed_gain_amplitude,
     schedule_order_code,
 };
 use super::integral_plan::{
@@ -245,7 +244,6 @@ fn live_amplitude_geometry_and_orders_are_exact() {
     assert_eq!(FixedGainAmplitudeOrder::Ascending as u8, 1);
     assert_eq!(FixedGainAmplitudeOrder::Descending as u8, 2);
     assert_eq!(FIXED_GAIN_AMPLITUDE_TARGETS, 5);
-    assert_eq!(FIXED_GAIN_AMPLITUDE_CAPTURE_ALLOWANCE_S, 110);
     let current = breakaway_plan();
     let ascending = plan_fixed_gain_amplitude(
         breakaway_point(current),
@@ -490,7 +488,7 @@ fn amplitude_digest_binds_every_explicit_plan_dimension() {
 /// size and, because ForwardFirst encodes as zero, keeps the historical byte
 /// unchanged for every non-mirrored run.
 #[test]
-fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
+fn schedule_order_code_preserves_the_historical_byte() {
     for order in [
         FixedGainAmplitudeOrder::Ascending,
         FixedGainAmplitudeOrder::Descending,
@@ -500,31 +498,7 @@ fn schedule_order_code_round_trips_and_preserves_the_historical_byte() {
             order as u8,
             "forward-first must not change the wire byte"
         );
-        for slot_order in IntegralSlotOrder::ALL {
-            let code = schedule_order_code(order, slot_order);
-            assert_eq!(decode_schedule_order_code(code), Some((order, slot_order)));
-        }
     }
-    assert_eq!(
-        decode_schedule_order_code(0),
-        None,
-        "order zero is not valid"
-    );
-    assert_eq!(decode_schedule_order_code(0x23), None, "unknown slot order");
-    // 0x11 and 0x22 were the wire encodings for `ReverseFirst` and
-    // `PairedOutAndBack`. Their only producers were removed and the
-    // variants themselves followed, so a byte naming either
-    // high nibble must now decode as a failure rather than a removed variant.
-    assert_eq!(
-        decode_schedule_order_code(0x11),
-        None,
-        "reverse-first is no longer a valid slot order"
-    );
-    assert_eq!(
-        decode_schedule_order_code(0x22),
-        None,
-        "paired-out-and-back is no longer a valid slot order"
-    );
 }
 
 /// Forward-first must hash exactly as it did before slot order was recorded.

@@ -16,8 +16,6 @@ use crate::autotune::velocity_measurement::VelocityDirection;
 pub const FIXED_GAIN_AMPLITUDE_SCHEMA_REVISION: u16 = 6;
 /// Number of frozen target amplitudes in each run.
 pub const FIXED_GAIN_AMPLITUDE_TARGETS: usize = 5;
-/// Capture-wrapper allowance for one amplitude command.
-pub const FIXED_GAIN_AMPLITUDE_CAPTURE_ALLOWANCE_S: u32 = 110;
 
 const TARGET_DIVISORS: [i32; FIXED_GAIN_AMPLITUDE_TARGETS] = [16, 8, 4, 2, 1];
 const MICROS_PER_MILLISECOND: u64 = 1_000;
@@ -43,28 +41,6 @@ pub const fn schedule_order_code(
     slot_order: IntegralSlotOrder,
 ) -> u8 {
     (order as u8) | (slot_order.report_code() << 4)
-}
-
-/// Recover the amplitude and slot orders from one packed wire byte.
-pub const fn decode_schedule_order_code(
-    code: u8,
-) -> Option<(FixedGainAmplitudeOrder, IntegralSlotOrder)> {
-    let order = match code & 0x0f {
-        1 => FixedGainAmplitudeOrder::Ascending,
-        2 => FixedGainAmplitudeOrder::Descending,
-        _ => return None,
-    };
-    let slot_order = match code >> 4 {
-        0 => IntegralSlotOrder::ForwardFirst,
-        // 1 and 2 were `ReverseFirst`/`PairedOutAndBack`. Their only producers
-        // (the live combined P-then-I workflow and the mirrored-amplitude
-        // actions) were removed, and with them the variants themselves,
-        // so a wire byte carrying either nibble can no
-        // longer name a live order. Reject it as decode failure rather than
-        // reintroducing removed variants.
-        _ => return None,
-    };
-    Some((order, slot_order))
 }
 
 /// Failure to construct one exact fixed-I fixed-gain amplitude plan.

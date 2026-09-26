@@ -36,7 +36,6 @@ pub mod mcu_temp;
 pub mod motion_scale;
 pub mod pid;
 pub mod resistance_identification;
-pub mod sample_timing;
 pub mod selftest;
 pub mod shutdown;
 pub mod stack_watermark;

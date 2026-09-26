@@ -357,6 +357,7 @@ pub enum IntegralSlotOrder {
 
 impl IntegralSlotOrder {
     /// Every declared order, so a new variant cannot be added untested.
+    #[cfg(test)]
     pub const ALL: [Self; 1] = [Self::ForwardFirst];
 
     /// Parity offset applied to one same-direction observation ordinal.
@@ -387,13 +388,14 @@ impl IntegralSlotOrder {
     ///
     /// Independent of the order: mirroring changes a slot's direction, not which
     /// repeat within that direction it is.
+    #[cfg(test)]
     pub const fn observation_index(self, slot: u8) -> usize {
         (slot / 2) as usize
     }
 
     /// Slot carrying one same-direction observation ordinal.
     ///
-    /// Inverse of [`Self::direction_index`] and [`Self::observation_index`]. The
+    /// Inverse of [`Self::direction_index`] and `Self::observation_index`. The
     /// two are pinned together by test, because evidence is written by raw slot
     /// and read back by observation and direction.
     pub const fn slot_for(self, observation: usize, direction: usize) -> u8 {

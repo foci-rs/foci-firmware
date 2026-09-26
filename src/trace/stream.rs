@@ -102,6 +102,10 @@ pub const VELOCITY_FF_FLAG_CLAMPED: u8 = 1 << 0;
 pub const CRITICAL_PAYLOAD_LEN: usize = 88;
 /// Version-5 current-path payload length.
 pub const CURRENT_PATH_PAYLOAD_LEN: usize = 16;
+
+const _: () = assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
+const _: () = assert!(HEADER_LEN + CURRENT_PATH_PAYLOAD_LEN <= CONTROL_DETAIL_FRAME_BUDGET);
+
 /// Version-1 phase-advance payload length.
 pub const PHASE_ADVANCE_PAYLOAD_LEN: usize = 12;
 /// Version-1 control-detail payload length.
@@ -730,8 +734,6 @@ mod tests {
         assert_eq!(STATUS_PAYLOAD_LEN, 48);
         assert_eq!(EVENT_PAYLOAD_LEN, 24);
         const {
-            assert!(HEADER_LEN + CRITICAL_PAYLOAD_LEN <= CRITICAL_FRAME_BUDGET);
-            assert!(HEADER_LEN + CURRENT_PATH_PAYLOAD_LEN <= CONTROL_DETAIL_FRAME_BUDGET);
             assert!(HEADER_LEN + PHASE_ADVANCE_PAYLOAD_LEN <= 64);
             assert!(HEADER_LEN + VELOCITY_OBSERVATION_PAYLOAD_LEN <= 64);
             assert!(HEADER_LEN + METADATA_PAYLOAD_MAX <= FRAME_BUF_CAPACITY);
