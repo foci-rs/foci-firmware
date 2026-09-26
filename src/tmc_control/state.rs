@@ -234,7 +234,8 @@ impl TmcControlRuntime {
     }
 
     /// Store inner-loop gains for future calibration/commissioning.
-    pub fn set_stored_gains(&mut self, gains: InnerLoopGains) {
+    #[cfg(test)]
+    pub(crate) fn set_stored_gains(&mut self, gains: InnerLoopGains) {
         self.stored_gains = Some(gains);
     }
 
@@ -959,7 +960,8 @@ impl TmcControlRuntime {
     }
 
     /// Store whether velocity feedforward is active for the current control tick.
-    pub fn set_feedforward_was_active(&mut self, active: bool) {
+    #[cfg(test)]
+    pub(crate) fn set_feedforward_was_active(&mut self, active: bool) {
         self.feedforward_was_active = active;
     }
 
@@ -979,7 +981,8 @@ impl TmcControlRuntime {
     }
 
     /// Store the remaining PID error-clear settle countdown in milliseconds.
-    pub fn set_pid_error_clear_countdown_ms(&mut self, value: u8) {
+    #[cfg(test)]
+    pub(crate) fn set_pid_error_clear_countdown_ms(&mut self, value: u8) {
         self.pid_error_clear_countdown_ms = value;
     }
 
