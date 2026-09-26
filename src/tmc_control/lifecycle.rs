@@ -24,57 +24,12 @@ pub enum LifecycleFlag {
 pub(crate) async fn settle_closed_loop_hold_before_enable<B: CommissioningBackend>(
     backend: &mut B,
 ) -> Result<(), crate::autotune::CommissionError> {
-    use foci_tmc4671::registers::{
-        MODE_RAMP_MODE_MOTION, PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
-        PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, PID_POSITION_ACTUAL,
-    };
-
-    let mode = backend
-        .read_register(MODE_RAMP_MODE_MOTION)
-        .await
-        .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    if mode != CLOSED_LOOP_POSITION_MODE {
-        return Ok(());
+    let mut step = ClosedLoopHoldSettleStep::start();
+    loop {
+        if let Some(result) = step.advance(backend).await {
+            return result;
+        }
     }
-
-    let actual = backend
-        .read_register(PID_POSITION_ACTUAL)
-        .await
-        .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    backend
-        .write_register(PID_POSITION_ACTUAL, actual)
-        .await
-        .map_err(|_| crate::autotune::CommissionError::Spi)?;
-
-    crate::commissioning::helpers::write_sub_register_checked(
-        backend,
-        PID_ERROR_PID_TORQUE_ERROR_SUM,
-        0,
-    )
-    .await
-    .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    crate::commissioning::helpers::write_sub_register_checked(
-        backend,
-        PID_ERROR_PID_FLUX_ERROR_SUM,
-        0,
-    )
-    .await
-    .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    crate::commissioning::helpers::write_sub_register_checked(
-        backend,
-        PID_ERROR_PID_VELOCITY_ERROR_SUM,
-        0,
-    )
-    .await
-    .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    crate::commissioning::helpers::write_sub_register_checked(
-        backend,
-        PID_ERROR_PID_POSITION_ERROR_SUM,
-        0,
-    )
-    .await
-    .map_err(|_| crate::autotune::CommissionError::Spi)?;
-    crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await
 }
 
 /// Mark the motor electrically energized after verified calibration.
@@ -262,6 +217,105 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
     phase_advance_restored
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ClosedLoopHoldSettleStep {
+    CheckMode,
+    ReadPositionActual,
+    WritePositionActual {
+        actual: u32,
+    },
+    ClearIntegrators {
+        ops: [(foci_tmc4671::registers::Register, u32); 8],
+        next: u8,
+    },
+    ClearStatusFlags,
+}
+
+impl ClosedLoopHoldSettleStep {
+    pub(crate) const fn start() -> Self {
+        Self::CheckMode
+    }
+
+    pub(crate) async fn advance<B: CommissioningBackend>(
+        &mut self,
+        backend: &mut B,
+    ) -> Option<Result<(), crate::autotune::CommissionError>> {
+        use crate::autotune::CommissionError;
+
+        match self {
+            Self::CheckMode => {
+                let mode = match backend
+                    .read_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION)
+                    .await
+                {
+                    Ok(mode) => mode,
+                    Err(_) => return Some(Err(CommissionError::Spi)),
+                };
+                if mode != CLOSED_LOOP_POSITION_MODE {
+                    return Some(Ok(()));
+                }
+                *self = Self::ReadPositionActual;
+                None
+            }
+            Self::ReadPositionActual => {
+                match backend
+                    .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
+                    .await
+                {
+                    Ok(actual) => {
+                        *self = Self::WritePositionActual { actual };
+                        None
+                    }
+                    Err(_) => Some(Err(CommissionError::Spi)),
+                }
+            }
+            Self::WritePositionActual { actual } => {
+                let actual = *actual;
+                if backend
+                    .write_register(foci_tmc4671::registers::PID_POSITION_ACTUAL, actual)
+                    .await
+                    .is_err()
+                {
+                    return Some(Err(CommissionError::Spi));
+                }
+                use foci_tmc4671::registers::{
+                    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
+                    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, Register,
+                };
+                let mut ops = [(Register::new(0), 0u32); 8];
+                for (i, sub) in [
+                    PID_ERROR_PID_TORQUE_ERROR_SUM,
+                    PID_ERROR_PID_FLUX_ERROR_SUM,
+                    PID_ERROR_PID_VELOCITY_ERROR_SUM,
+                    PID_ERROR_PID_POSITION_ERROR_SUM,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    ops[i * 2] = (sub.addr, u32::from(sub.sub_addr));
+                    ops[i * 2 + 1] = (sub.data, 0);
+                }
+                *self = Self::ClearIntegrators { ops, next: 0 };
+                None
+            }
+            Self::ClearIntegrators { ops, next } => {
+                let (reg, value) = ops[*next as usize];
+                if backend.write_register(reg, value).await.is_err() {
+                    return Some(Err(CommissionError::Spi));
+                }
+                *next += 1;
+                if *next >= 8 {
+                    *self = Self::ClearStatusFlags;
+                }
+                None
+            }
+            Self::ClearStatusFlags => {
+                Some(crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await)
+            }
+        }
+    }
+}
+
 /// The [`arm_motor_electrical`] sequence, advanced one backend operation (or
 /// one `drain_pending_config` call, kept atomic — see the module-level
 /// Scope Note) per `advance()` tick. `arm_motor_electrical` drives it to
@@ -273,7 +327,6 @@ pub async fn apply_shutdown_safe_state<B: CommissioningBackend>(
 /// `arm_motor_electrical`'s doc comment describes (config recorded by a
 /// preempting handler between the recheck and the enable-pin write).
 #[derive(Clone, Copy)]
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum ArmMotorElectricalStep {
     Drain,
     /// FOCI's re-arm gate after a chip reset. A reset restores
@@ -287,16 +340,7 @@ pub(crate) enum ArmMotorElectricalStep {
     VerifySentinelReadback,
     VerifyPiRepresentation(crate::tmc_control::pi_representation::PiRepresentationVerifyStep),
     WriteCurrentLimit,
-    SettleCheckMode,
-    SettleReadPositionActual,
-    SettleWritePositionActual {
-        actual: u32,
-    },
-    SettleClearIntegrators {
-        ops: [(foci_tmc4671::registers::Register, u32); 8],
-        next: u8,
-    },
-    SettleClearStatusFlags,
+    Settle(ClosedLoopHoldSettleStep),
     FinalizeEnable,
 }
 
@@ -390,85 +434,17 @@ impl ArmMotorElectricalStep {
                 {
                     return Some(Err(CommissionError::Spi));
                 }
-                *self = Self::SettleCheckMode;
+                *self = Self::Settle(ClosedLoopHoldSettleStep::start());
                 None
             }
-            Self::SettleCheckMode => {
-                let mode = match backend
-                    .read_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION)
-                    .await
-                {
-                    Ok(mode) => mode,
-                    Err(_) => return Some(Err(CommissionError::Spi)),
-                };
-                *self = if mode == CLOSED_LOOP_POSITION_MODE {
-                    Self::SettleReadPositionActual
-                } else {
-                    Self::FinalizeEnable
-                };
-                None
-            }
-            Self::SettleReadPositionActual => {
-                match backend
-                    .read_register(foci_tmc4671::registers::PID_POSITION_ACTUAL)
-                    .await
-                {
-                    Ok(actual) => {
-                        *self = Self::SettleWritePositionActual { actual };
-                        None
-                    }
-                    Err(_) => Some(Err(CommissionError::Spi)),
+            Self::Settle(settle) => match settle.advance(backend).await {
+                None => None,
+                Some(Ok(())) => {
+                    *self = Self::FinalizeEnable;
+                    None
                 }
-            }
-            Self::SettleWritePositionActual { actual } => {
-                let actual = *actual;
-                if backend
-                    .write_register(foci_tmc4671::registers::PID_POSITION_ACTUAL, actual)
-                    .await
-                    .is_err()
-                {
-                    return Some(Err(CommissionError::Spi));
-                }
-                use foci_tmc4671::registers::{
-                    PID_ERROR_PID_FLUX_ERROR_SUM, PID_ERROR_PID_POSITION_ERROR_SUM,
-                    PID_ERROR_PID_TORQUE_ERROR_SUM, PID_ERROR_PID_VELOCITY_ERROR_SUM, Register,
-                };
-                let mut ops = [(Register::new(0), 0u32); 8];
-                for (i, sub) in [
-                    PID_ERROR_PID_TORQUE_ERROR_SUM,
-                    PID_ERROR_PID_FLUX_ERROR_SUM,
-                    PID_ERROR_PID_VELOCITY_ERROR_SUM,
-                    PID_ERROR_PID_POSITION_ERROR_SUM,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    ops[i * 2] = (sub.addr, u32::from(sub.sub_addr));
-                    ops[i * 2 + 1] = (sub.data, 0);
-                }
-                *self = Self::SettleClearIntegrators { ops, next: 0 };
-                None
-            }
-            Self::SettleClearIntegrators { ops, next } => {
-                let (reg, value) = ops[*next as usize];
-                if backend.write_register(reg, value).await.is_err() {
-                    return Some(Err(CommissionError::Spi));
-                }
-                *next += 1;
-                if *next >= 8 {
-                    *self = Self::SettleClearStatusFlags;
-                }
-                None
-            }
-            Self::SettleClearStatusFlags => {
-                match crate::tmc_control::interlock::clear_status_flags_via_backend(backend).await {
-                    Ok(()) => {
-                        *self = Self::FinalizeEnable;
-                        None
-                    }
-                    Err(error) => Some(Err(error)),
-                }
-            }
+                Some(Err(error)) => Some(Err(error)),
+            },
             Self::FinalizeEnable => {
                 if backend.interlock_tripped() {
                     return Some(Err(CommissionError::FaultInterlock));
