@@ -12,6 +12,10 @@ use crate::commissioning::types::{
     ADC_RESIDUAL_STAGE_CHOP_OFF, ADC_RESIDUAL_STAGE_CHOP_ON, AdcCalResult, AdcResidualEvidence,
     CommissioningBackend, StepResult,
 };
+use crate::tmc_register_values::{
+    MOTION_STOPPED, PWM_CHOP_CENTERED_FOC, PWM_CHOP_OFF, STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
+    adc_i0_scale_offset, adc_i1_scale_offset,
+};
 
 /// Number of ADC samples for offset calibration.
 const ADC_CALIBRATION_SAMPLES: u16 = 128;
@@ -104,7 +108,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             // Stop motor, disable outputs, set voltage limit.
             backend.set_enable_pin(false);
             if backend
-                .write_register(MODE_RAMP_MODE_MOTION, 0)
+                .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                 .await
                 .is_err()
                 || backend
@@ -146,17 +150,21 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            if backend.write_register(PWM_SV_CHOP, 0).await.is_err() {
+            if backend
+                .write_register(PWM_SV_CHOP, PWM_CHOP_OFF)
+                .await
+                .is_err()
+            {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
 
             // Verify MODE=0 and PWM_SV_CHOP=0.
             if backend
-                .read_register_verified(MODE_RAMP_MODE_MOTION, 0)
+                .read_register_verified(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                 .await
                 .is_err()
                 || backend
-                    .read_register_verified(PWM_SV_CHOP, 0)
+                    .read_register_verified(PWM_SV_CHOP, PWM_CHOP_OFF)
                     .await
                     .is_err()
             {
@@ -182,23 +190,22 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             // sentinel that doesn't match what's actually on the chip and trip
             // the safety check, but worse, MOTOR_TYPE=0 plus stepper PWM
             // excitation is the AGENTS.md "destroys steppers" case.
-            const MOTOR_TYPE_VALUE: u32 = (2 << 16) | 50;
             if backend
-                .write_register_verified(MOTOR_TYPE_N_POLE_PAIRS, MOTOR_TYPE_VALUE)
+                .write_register_verified(MOTOR_TYPE_N_POLE_PAIRS, STEPPER_MOTOR_TYPE_N_POLE_PAIRS)
                 .await
                 .is_err()
             {
                 return super::fail_inner(phase, CommissionError::Spi);
             }
-            backend.store_motor_sentinel(MOTOR_TYPE_VALUE);
+            backend.store_motor_sentinel(STEPPER_MOTOR_TYPE_N_POLE_PAIRS);
 
             // Clear offsets, enable outputs.
             if backend
-                .write_register_verified(ADC_I0_SCALE_OFFSET, 256 << 16)
+                .write_register_verified(ADC_I0_SCALE_OFFSET, adc_i0_scale_offset(0))
                 .await
                 .is_err()
                 || backend
-                    .write_register_verified(ADC_I1_SCALE_OFFSET, 256 << 16)
+                    .write_register_verified(ADC_I1_SCALE_OFFSET, adc_i1_scale_offset(0))
                     .await
                     .is_err()
             {
@@ -302,14 +309,14 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             }
 
             // Program calibrated offsets.
-            let adc_i0_scale_offset = (256 << 16) | offset_i0 as u32;
-            let adc_i1_scale_offset = (256 << 16) | offset_i1 as u32;
+            let adc_i0_word = adc_i0_scale_offset(offset_i0);
+            let adc_i1_word = adc_i1_scale_offset(offset_i1);
             if backend
-                .write_register_verified(ADC_I0_SCALE_OFFSET, adc_i0_scale_offset)
+                .write_register_verified(ADC_I0_SCALE_OFFSET, adc_i0_word)
                 .await
                 .is_err()
                 || backend
-                    .write_register_verified(ADC_I1_SCALE_OFFSET, adc_i1_scale_offset)
+                    .write_register_verified(ADC_I1_SCALE_OFFSET, adc_i1_word)
                     .await
                     .is_err()
             {
@@ -320,7 +327,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             // residual reads measure ADC/bridge bias instead of a PI loop
             // nulling the error at a zero-current target.
             if backend
-                .write_register(MODE_RAMP_MODE_MOTION, 0)
+                .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                 .await
                 .is_err()
                 || backend
@@ -329,7 +336,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
                     .is_err()
                 || backend.write_register(UQ_UD_EXT, 0).await.is_err()
                 || backend
-                    .write_register_verified(PWM_SV_CHOP, 0)
+                    .write_register_verified(PWM_SV_CHOP, PWM_CHOP_OFF)
                     .await
                     .is_err()
             {
@@ -463,7 +470,7 @@ pub(crate) async fn step_adc_calibrate<B: CommissioningBackend>(
             match *stage {
                 AdcResidualStage::ChopOff => {
                     if backend
-                        .write_register_verified(PWM_SV_CHOP, 7)
+                        .write_register_verified(PWM_SV_CHOP, PWM_CHOP_CENTERED_FOC)
                         .await
                         .is_err()
                     {

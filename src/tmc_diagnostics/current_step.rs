@@ -1,5 +1,6 @@
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::tmc::{CurrentStepAxis, TmcRequest, TmcRequestKind};
+use crate::tmc_register_values::{MOTION_POSITION_ADVANCED_PI, MOTION_TORQUE_ADVANCED_PI};
 
 use super::helpers::{RunnerFailure, checked_delay_ms};
 use super::helpers::{clear_current_step_integrators, split_signed_halves};
@@ -9,8 +10,6 @@ use super::{
     DiagnosticReport,
 };
 
-const CURRENT_STEP_TORQUE_MODE: u32 = 0x8000_0001;
-const CURRENT_STEP_POSITION_MODE: u32 = 0x8000_0003;
 const CURRENT_STEP_SETTLE_MS: u64 = 20;
 
 pub(super) fn empty_current_step_report(
@@ -262,7 +261,7 @@ where
                 clear_current_step_integrators(tmc)
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
-                tmc.write_register(MODE_RAMP_MODE_MOTION, CURRENT_STEP_TORQUE_MODE)
+                tmc.write_register(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
 
@@ -393,7 +392,7 @@ where
                 )
                 .await;
             let restore_mode = if saved_mode == 0 {
-                CURRENT_STEP_POSITION_MODE
+                MOTION_POSITION_ADVANCED_PI
             } else {
                 saved_mode
             };

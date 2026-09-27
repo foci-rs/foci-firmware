@@ -1,5 +1,6 @@
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::tmc::{TmcRequest, TmcRequestKind, TorqueSampleKind};
+use crate::tmc_register_values::{MOTION_POSITION_ADVANCED_PI, MOTION_TORQUE_ADVANCED_PI};
 
 use super::helpers::{RunnerFailure, checked_delay_ms};
 use super::helpers::{clear_current_step_integrators, split_signed_halves};
@@ -9,8 +10,6 @@ use super::{
     DiagnosticReport, empty_current_torque_sample_report,
 };
 
-const CURRENT_STEP_TORQUE_MODE: u32 = 0x8000_0001;
-const CURRENT_STEP_POSITION_MODE: u32 = 0x8000_0003;
 const CURRENT_STEP_SETTLE_MS: u64 = 20;
 
 fn handled_torque_sample(report: CurrentTorqueSampleReport) -> DiagnosticOutcome {
@@ -173,7 +172,7 @@ where
                 crate::tmc_control::interlock::clear_status_flags(tmc, tmc_state)
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
-                tmc.write_register(MODE_RAMP_MODE_MOTION, CURRENT_STEP_TORQUE_MODE)
+                tmc.write_register(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
 
@@ -372,7 +371,7 @@ where
                 )
                 .await;
             let restore_mode = if saved_mode == 0 {
-                CURRENT_STEP_POSITION_MODE
+                MOTION_POSITION_ADVANCED_PI
             } else {
                 saved_mode
             };
@@ -487,7 +486,7 @@ where
                     ));
                 }
             };
-            if saved_mode != CURRENT_STEP_POSITION_MODE {
+            if saved_mode != MOTION_POSITION_ADVANCED_PI {
                 return handled_torque_sample(empty_current_torque_sample_report(
                     oid,
                     TorqueSampleKind::PositionTorqueOffset,

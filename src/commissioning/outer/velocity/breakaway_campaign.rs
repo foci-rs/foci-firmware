@@ -76,6 +76,7 @@ use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterSafetyFault,
 };
 use crate::diagnostic::BreakawayCheckpoint;
+use crate::tmc_register_values::MOTION_VELOCITY_ADVANCED_PI;
 
 use super::band_confirmation::{
     BandConfirmationAcceptance, BandConfirmationFailureCause, BandConfirmationPlan,
@@ -143,11 +144,6 @@ use super::velocity_clamp::{
 };
 use super::workflow_plan::CommissioningWorkflowPlan;
 use super::{clear_velocity_error_sum, clear_velocity_offset};
-
-/// Outer velocity ramp mode written to `MODE_RAMP_MODE_MOTION`. Shared by the
-/// probe, the additive discovery driver, and the held-out confirmation driver:
-/// all three command a single-direction velocity ramp with I held at zero.
-const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 
 /// Borrowed single-stroke scratch space: capture ring, stationarity analysis, and
 /// current-clamp evidence for one guarded stroke at a time.
@@ -473,7 +469,7 @@ pub(crate) async fn step_breakaway_probe<B: CommissioningBackend>(
             }
             checkpoint_breakaway_operation(BreakawayCheckpoint::ProbeRampModeWrite);
             if backend
-                .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
+                .write_register(MODE_RAMP_MODE_MOTION, MOTION_VELOCITY_ADVANCED_PI)
                 .await
                 .is_err()
             {
@@ -1952,7 +1948,7 @@ pub(crate) async fn step_additive_discovery<B: CommissioningBackend>(
                 .await
                 .is_err()
                 || backend
-                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_VELOCITY_ADVANCED_PI)
                     .await
                     .is_err()
                 || clear_velocity_error_sum(backend).await.is_err()
@@ -3074,7 +3070,7 @@ pub(crate) async fn step_band_confirmation<B: CommissioningBackend>(
                 .await
                 .is_err()
                 || backend
-                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_VELOCITY_ADVANCED_PI)
                     .await
                     .is_err()
                 || clear_velocity_error_sum(backend).await.is_err()

@@ -3,6 +3,7 @@
 use crate::autotune::{CommissionError, CommissionProfile, OperatingMode, TransientBuffer};
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::types::{OuterSafetyFault, PositionTuneProvenance, StepResult};
+use crate::tmc_register_values::MOTION_STOPPED;
 
 use super::safety::outer_safety_mut;
 use super::{
@@ -246,7 +247,10 @@ pub(crate) async fn step_outer_with_trace<B: CommissioningBackend>(
                     .write_register(foci_tmc4671::registers::PID_VELOCITY_TARGET, 0)
                     .await;
                 let _ = backend
-                    .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
+                    .write_register(
+                        foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                        MOTION_STOPPED,
+                    )
                     .await;
                 let err = safety_error_for_phase(phase);
                 if matches!(

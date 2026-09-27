@@ -27,6 +27,9 @@ use crate::commissioning::types::{
 use crate::electrical_capture::{
     PhaseDelayEstimate, PhaseDelayInput, PhaseDelayRejection, estimate_phase_delay,
 };
+use crate::tmc_register_values::{
+    MOTION_STOPPED, MOTION_UQ_UD_EXT, PWM_CHOP_CENTERED_FOC, PWM_CHOP_OFF,
+};
 use foci_tmc4671::registers::Register;
 
 /// Cooldown time after disabling a per-coil measurement (microseconds).
@@ -589,20 +592,20 @@ fn inductance_restore_write(
         RetainedOpenloopVelocity => (OPENLOOP_VELOCITY_TARGET, 0, Some(RetainedMotionStop)),
         RetainedMotionStop => (
             MODE_RAMP_MODE_MOTION,
-            MotionMode::Stopped as u32,
+            MOTION_STOPPED,
             Some(RetainedPhiSelection),
         ),
         RetainedPhiSelection => (PHI_E_SELECTION, 0, Some(CanonicalMotionStop)),
         CanonicalMotionStop => (
             MODE_RAMP_MODE_MOTION,
-            MotionMode::Stopped as u32,
+            MOTION_STOPPED,
             Some(CanonicalTorqueFluxTarget),
         ),
         CanonicalTorqueFluxTarget => (PID_TORQUE_FLUX_TARGET, 0, Some(CanonicalTorqueFluxOffset)),
         CanonicalTorqueFluxOffset => (PID_TORQUE_FLUX_OFFSET, 0, Some(CanonicalUqUdExt)),
         CanonicalUqUdExt => (UQ_UD_EXT, 0, Some(CanonicalPhiSelection)),
         CanonicalPhiSelection => (PHI_E_SELECTION, 0, Some(CanonicalPwmChop)),
-        CanonicalPwmChop => (PWM_SV_CHOP, 0, Some(CanonicalVelocityOffset)),
+        CanonicalPwmChop => (PWM_SV_CHOP, PWM_CHOP_OFF, Some(CanonicalVelocityOffset)),
         CanonicalVelocityOffset => (PID_VELOCITY_OFFSET, 0, Some(CanonicalVoltageLimit)),
         CanonicalVoltageLimit => (PIDOUT_UQ_UD_LIMITS, 1024, Some(TorqueErrorSelect)),
         TorqueErrorSelect => (
@@ -1548,11 +1551,11 @@ pub(crate) async fn step_electrical_identification<B: CommissioningBackend>(
                     .await
                     .map_err(|_| CommissionError::Spi),
                 7 => backend
-                    .write_register(MODE_RAMP_MODE_MOTION, MotionMode::UqUdExt as u32)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_UQ_UD_EXT)
                     .await
                     .map_err(|_| CommissionError::Spi),
                 8 => backend
-                    .write_register_verified(PWM_SV_CHOP, 7)
+                    .write_register_verified(PWM_SV_CHOP, PWM_CHOP_CENTERED_FOC)
                     .await
                     .map(|_| ())
                     .map_err(|_| CommissionError::Spi),
@@ -2522,7 +2525,7 @@ mod tests {
     /// matching the runner's `InvalidMotorType` entry check.
     fn two_phase_motor_type_n_pole_pairs() -> u32 {
         foci_tmc4671::registers::MotorTypeNPolePairs::new()
-            .with_motor_type(foci_tmc4671::registers::MotorType::TwoPhase as u8)
+            .with_motor_type(foci_tmc4671::registers::MotorType::TwoPhase)
             .with_n_pole_pairs(50)
             .into()
     }

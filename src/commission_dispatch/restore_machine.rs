@@ -24,6 +24,7 @@ use crate::commissioning::types::{
 };
 use crate::pid::OuterLoopGains;
 use crate::tmc_control::lifecycle::{ArmMotorElectricalStep, LifecycleFlag};
+use crate::tmc_register_values::MOTION_STOPPED;
 use crate::tmc_safe_state::SafeStateRestoreStep;
 
 /// One advance of a terminal restore.
@@ -1002,7 +1003,10 @@ impl TerminalRestoreMachine {
                 }
                 RestoreCursor::OuterFailedModeRamp => {
                     let _ = backend
-                        .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
+                        .write_register(
+                            foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                            MOTION_STOPPED,
+                        )
                         .await;
                     self.cursor =
                         RestoreCursor::OuterFailedFaultDisarm(SafeStateRestoreStep::default());

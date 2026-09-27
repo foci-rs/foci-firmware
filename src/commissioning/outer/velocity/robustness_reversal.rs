@@ -43,6 +43,7 @@ use crate::commissioning::types::{
     OUTER_SAFETY_FAULT_OBSERVATION_GAP, OUTER_SAFETY_FAULT_QUARTER_TURN, OuterResult,
     OuterSafetyFault, RobustnessOutcome, RobustnessReversalTerminal, StepResult, TuneProvenance,
 };
+use crate::tmc_register_values::MOTION_VELOCITY_ADVANCED_PI;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, MODE_RAMP_MODE_MOTION, PID_VELOCITY_ACTUAL, PID_VELOCITY_OFFSET,
@@ -75,11 +76,6 @@ use super::sweep_plan::{
 };
 use super::velocity_clamp::{VelocityCurrentObserver, VelocityLimitEvidenceCapability};
 use super::{clear_velocity_error_sum, clear_velocity_offset};
-
-/// Outer velocity ramp mode: single-direction velocity ramp, I applied through
-/// the gain pair. Matches the shared outer-velocity mode used by the Integral
-/// sweep and the breakaway campaign.
-const OUTER_VELOCITY_RAMP_MODE: u32 = 0x8000_0002;
 
 /// Extra in-band capture after band entry, in microseconds, so the ring's
 /// settled tail holds at least the 64-sample shortest stationary suffix for the
@@ -677,7 +673,7 @@ pub(crate) async fn step_robustness_reversal<B: CommissioningBackend>(
                     .await
                     .is_err()
                 || backend
-                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_RAMP_MODE)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_VELOCITY_ADVANCED_PI)
                     .await
                     .is_err()
                 || clear_velocity_error_sum(backend).await.is_err()

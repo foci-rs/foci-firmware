@@ -15,6 +15,7 @@ use crate::autotune::current_loop_actionable_status_mask;
 use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope, sample_slot};
 use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunMode};
 use crate::resistance_identification::types::{ResistanceError, ResistanceWarningFlags};
+use crate::tmc_register_values::MOTION_STOPPED;
 
 impl ResistanceRunner {
     pub(super) async fn read_saved_limit<B: ResistanceBackend>(
@@ -49,7 +50,7 @@ impl ResistanceRunner {
         backend: &mut B,
     ) -> ResistancePoll {
         match backend.read_register(MOTOR_TYPE_N_POLE_PAIRS.addr()).await {
-            Ok(raw) if MotorTypeNPolePairs::from(raw).motor_type() == MotorType::TwoPhase as u8 => {
+            Ok(raw) if MotorTypeNPolePairs::from(raw).motor_type() == Ok(MotorType::TwoPhase) => {
                 self.state = ResistanceState::Setup(0);
                 ResistancePoll::ReadyNow
             }
@@ -64,14 +65,7 @@ impl ResistanceRunner {
         operation: u8,
     ) -> ResistancePoll {
         let result = match operation {
-            0 => {
-                write(
-                    backend,
-                    MODE_RAMP_MODE_MOTION.addr(),
-                    MotionMode::Stopped as u32,
-                )
-                .await
-            }
+            0 => write(backend, MODE_RAMP_MODE_MOTION.addr(), MOTION_STOPPED).await,
             1 => write(backend, UQ_UD_EXT.addr(), 0).await,
             2 => {
                 write(

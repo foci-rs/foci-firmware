@@ -49,7 +49,7 @@ struct FakeResistanceBackend {
     /// Whether ADC offsets are ready.
     adc_offsets_ready: bool,
     /// Motor type returned via MOTOR_TYPE_N_POLE_PAIRS.
-    motor_type: u8,
+    motor_type: MotorType,
     /// Saved PIDOUT_UQ_UD_LIMITS value read at entry and restored on exit.
     saved_voltage_limit: u32,
     /// PWM_MAXCNT readback.
@@ -144,7 +144,7 @@ impl FakeResistanceBackend {
             profile,
             armed_for_open_loop_voltage: true,
             adc_offsets_ready: true,
-            motor_type: MotorType::TwoPhase as u8,
+            motor_type: MotorType::TwoPhase,
             saved_voltage_limit: 16_000,
             readback_pwm_maxcnt: u32::from(profile.pwm_maxcnt),
             readback_pwm_bbm: (u32::from(profile.bbm_h) << 8) | u32::from(profile.bbm_l),
@@ -1191,7 +1191,7 @@ fn externally_armed_mode_rejects_wrong_motor_type_without_restore() {
     // restore sequence over an externally armed motor the runner never
     // energized.
     let mut backend = FakeResistanceBackend::standard();
-    backend.motor_type = foci_tmc4671::registers::MotorType::ThreePhase as u8;
+    backend.motor_type = foci_tmc4671::registers::MotorType::ThreePhase;
 
     let err = block_on(run_resistance_identification(
         &mut backend,

@@ -21,6 +21,9 @@ use crate::commissioning::types::{
     AdcResidualEvidence, CommissionResult, CommissioningBackend, CurrentValidationAxisEvidence,
     CurrentValidationSettledSampleEvidence, InductanceEvidence, InnerResult, StepResult,
 };
+use crate::tmc_register_values::{
+    MOTION_STOPPED, MOTION_TORQUE_ADVANCED_PI, PWM_CHOP_CENTERED_FOC,
+};
 use foci_tmc4671::pid::PidGainPair;
 #[cfg(test)]
 use foci_tmc4671::pid::{PidIGain, PidPGain};
@@ -211,17 +214,6 @@ const CURRENT_VALIDATE_PIDOUT_LIMIT: u32 = 2000;
 const VALIDATION_RAIL_CURRENT_MULTIPLE: u32 = 3;
 pub(crate) const CURRENT_SAFE_PIDOUT_LIMIT: u32 = 1024;
 
-/// `MODE_RAMP_MODE_MOTION` value for advanced PI torque mode.
-///
-/// High bit selects the advanced controller structure used by the tuned
-/// current loop; low bits select torque mode. `pub(crate)` so
-/// `gain_floor::step_gain_floor_measurement` can enter the same mode
-/// before its own torque step -- `CurrentValidate`'s own teardown leaves
-/// the chip in stopped mode (`restore_current_validation_safe_state`
-/// writes `MODE_RAMP_MODE_MOTION = 0`), so the gain-floor phase must
-/// explicitly re-enter torque mode or its commanded target has no effect.
-pub(crate) const CURRENT_TORQUE_MODE: u32 = 0x8000_0001;
-const CURRENT_VALIDATE_PWM_SV_CHOP: u32 = 7;
 const CURRENT_VALIDATE_PHI_E_SELECTION: u32 = 3;
 
 /// Current-loop step overshoot the highest gain-floor step must fit under
@@ -1344,7 +1336,7 @@ async fn restore_current_validation_safe_state<B: CommissioningBackend>(
         failed = true;
     }
     if backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0)
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
         .await
         .is_err()
     {
@@ -1550,7 +1542,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
                     .await
                     .is_err()
                 || backend
-                    .write_register(PWM_SV_CHOP, CURRENT_VALIDATE_PWM_SV_CHOP)
+                    .write_register(PWM_SV_CHOP, PWM_CHOP_CENTERED_FOC)
                     .await
                     .is_err()
                 || backend
@@ -1602,7 +1594,7 @@ pub(crate) async fn step_current_validate<B: CommissioningBackend>(
             // Switch to torque mode using the same advanced PI
             // controller structure as the tuned current loop.
             if backend
-                .write_register(MODE_RAMP_MODE_MOTION, CURRENT_TORQUE_MODE)
+                .write_register(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
                 .await
                 .is_err()
             {

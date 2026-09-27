@@ -102,7 +102,10 @@ impl TmcConfig {
 
     /// BBM register value: `(bbm_h << 8) | bbm_l`.
     pub const fn bbm_register(&self) -> u32 {
-        ((self.bbm_h as u32) << 8) | (self.bbm_l as u32)
+        foci_tmc4671::registers::PwmBbmHBbmL::new()
+            .with_pwm_bbm_h(self.bbm_h)
+            .with_pwm_bbm_l(self.bbm_l)
+            .into_bits()
     }
 
     /// DSADC_MDEC_B_MDEC_A register value: group A in bits 15:0, group B in bits 31:16.

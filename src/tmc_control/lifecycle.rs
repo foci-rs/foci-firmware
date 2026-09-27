@@ -2,8 +2,7 @@
 
 use crate::commission_dispatch::DispatchState;
 use crate::commissioning::types::CommissioningBackend;
-
-const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
+use crate::tmc_register_values::MOTION_POSITION_ADVANCED_PI;
 
 /// A motor lifecycle flag transitioned by [`arm_motor_electrical`],
 /// [`arm_motor_for_steps`], or [`disarm_motor`].
@@ -251,7 +250,7 @@ impl ClosedLoopHoldSettleStep {
                     Ok(mode) => mode,
                     Err(_) => return Some(Err(CommissionError::Spi)),
                 };
-                if mode != CLOSED_LOOP_POSITION_MODE {
+                if mode != MOTION_POSITION_ADVANCED_PI {
                     return Some(Ok(()));
                 }
                 *self = Self::ReadPositionActual;
@@ -1384,7 +1383,7 @@ mod tests {
         let mut backend = MockBackend::new();
         backend
             .registers
-            .insert(MODE_RAMP_MODE_MOTION.addr(), CLOSED_LOOP_POSITION_MODE)
+            .insert(MODE_RAMP_MODE_MOTION.addr(), MOTION_POSITION_ADVANCED_PI)
             .unwrap();
         backend.interlock_tripped = true;
 
@@ -1478,7 +1477,7 @@ mod tests {
             let _ = backend
                 .write_register(
                     foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                    CLOSED_LOOP_POSITION_MODE,
+                    MOTION_POSITION_ADVANCED_PI,
                 )
                 .await;
         }
@@ -1571,7 +1570,7 @@ mod tests {
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                CLOSED_LOOP_POSITION_MODE,
+                MOTION_POSITION_ADVANCED_PI,
             )
             .await;
         backend.spi_log.clear();
@@ -1819,7 +1818,7 @@ mod tests {
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                CLOSED_LOOP_POSITION_MODE,
+                MOTION_POSITION_ADVANCED_PI,
             )
             .await;
         backend.fail_on_read = Some(foci_tmc4671::registers::PID_POSITION_ACTUAL.addr());
@@ -1859,7 +1858,7 @@ mod tests {
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                CLOSED_LOOP_POSITION_MODE,
+                MOTION_POSITION_ADVANCED_PI,
             )
             .await;
         backend.fail_on_write = Some(foci_tmc4671::registers::PID_POSITION_ACTUAL.addr());
@@ -1899,7 +1898,7 @@ mod tests {
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                CLOSED_LOOP_POSITION_MODE,
+                MOTION_POSITION_ADVANCED_PI,
             )
             .await;
         backend.fail_on_write = Some(
@@ -1943,7 +1942,7 @@ mod tests {
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                CLOSED_LOOP_POSITION_MODE,
+                MOTION_POSITION_ADVANCED_PI,
             )
             .await;
         backend.fail_on_write = Some(foci_tmc4671::registers::STATUS_FLAGS.addr());
@@ -1983,7 +1982,7 @@ mod tests {
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                CLOSED_LOOP_POSITION_MODE,
+                MOTION_POSITION_ADVANCED_PI,
             )
             .await;
         backend.interlock_tripped = true;
@@ -2033,7 +2032,7 @@ mod tests {
         let _ = backend
             .write_register(
                 foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
-                CLOSED_LOOP_POSITION_MODE,
+                MOTION_POSITION_ADVANCED_PI,
             )
             .await;
 

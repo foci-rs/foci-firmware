@@ -89,7 +89,7 @@ impl ResistanceProfile {
             bbm_l: 9,
             dsadc_mdec_a: 331,
             dsadc_mdec_b: 331,
-            pwm_sv_chop: 7,
+            pwm_sv_chop: crate::tmc_register_values::PWM_CHOP_CENTERED_FOC,
             max_expected_current_count: 1600,
             encoder_move_warn_counts: 128,
             status_flags_warn_mask: resistance_run_actionable_status_mask(),

@@ -1,5 +1,6 @@
 use crate::commissioning::encoder_domain::EncoderDomain;
 use crate::tmc::{TmcRequest, TmcRequestKind};
+use crate::tmc_register_values::{MOTION_POSITION_ADVANCED_PI, MOTION_STOPPED, MOTION_UQ_UD_EXT};
 
 use super::helpers::{RunnerFailure, checked_delay_ms};
 use super::helpers::{pack_voltage_ext, split_signed_halves};
@@ -9,8 +10,6 @@ use super::{
     empty_voltage_step_report,
 };
 
-const CURRENT_STEP_POSITION_MODE: u32 = 0x8000_0003;
-const CURRENT_STEP_OPEN_LOOP_VOLTAGE_MODE: u32 = 0x0000_0008;
 const CURRENT_STEP_SETTLE_MS: u64 = 20;
 
 fn handled_voltage_step(report: super::VoltageStepReport) -> DiagnosticOutcome {
@@ -91,7 +90,7 @@ where
                     ));
                 }
             };
-            if saved_mode != CURRENT_STEP_POSITION_MODE {
+            if saved_mode != MOTION_POSITION_ADVANCED_PI {
                 return handled_voltage_step(empty_voltage_step_report(
                     oid,
                     CURRENT_STEP_STATUS_NOT_READY,
@@ -140,7 +139,7 @@ where
                 tmc.write_register(UQ_UD_EXT, pack_voltage_ext(uq_ext, ud_ext))
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
-                tmc.write_register(MODE_RAMP_MODE_MOTION, CURRENT_STEP_OPEN_LOOP_VOLTAGE_MODE)
+                tmc.write_register(MODE_RAMP_MODE_MOTION, MOTION_UQ_UD_EXT)
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
 
@@ -243,7 +242,7 @@ where
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
 
-                tmc.write_register(MODE_RAMP_MODE_MOTION, 0)
+                tmc.write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                     .await
                     .map_err(|_| RunnerFailure::Other)?;
                 tmc.write_register(UQ_UD_EXT, 0)
@@ -287,7 +286,10 @@ where
                     RunnerFailure::HostLiveness => CURRENT_STEP_STATUS_HOST_LIVENESS,
                 };
                 let _ = tmc
-                    .write_register(foci_tmc4671::registers::MODE_RAMP_MODE_MOTION, 0)
+                    .write_register(
+                        foci_tmc4671::registers::MODE_RAMP_MODE_MOTION,
+                        MOTION_STOPPED,
+                    )
                     .await;
                 let _ = tmc
                     .write_register(foci_tmc4671::registers::UQ_UD_EXT, 0)

@@ -22,6 +22,10 @@ use crate::commissioning::types::{
 };
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
 use crate::tmc::{decode_signed_lower_half, decode_signed_upper_half};
+use crate::tmc_register_values::{
+    MOTION_POSITION_ADVANCED_PI, MOTION_STOPPED, PWM_CHOP_CENTERED_FOC,
+    STEPPER_MOTOR_TYPE_N_POLE_PAIRS,
+};
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 /// `phi_m_abn` feedback (low byte) with the standard velocity meter (high byte).
@@ -55,10 +59,7 @@ const CLOSED_LOOP_VELOCITY_SELECTION: u32 = 0x0000_0009;
 pub(crate) const STANDARD_VELOCITY_METER_COUNTS_PER_MINUTE: u32 = 262_144;
 // phi_m_abn selects the mechanical ABN angle directly; no pole-pair scaling applies.
 const CLOSED_LOOP_POSITION_SELECTION: u32 = 9;
-const CLOSED_LOOP_PWM_SV_CHOP: u32 = 7;
-const CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS: u32 = (2 << 16) | 50;
 const CLOSED_LOOP_PHI_E_SELECTION: u32 = 3;
-const CLOSED_LOOP_POSITION_MODE: u32 = 0x8000_0003;
 const CLOSED_LOOP_ACTIVATION_STABILITY_THRESHOLD: u32 = 2;
 const CLOSED_LOOP_ACTIVATION_BOUNDED_DRIFT_WARN_THRESHOLD: u32 = 64;
 const CLOSED_LOOP_ACTIVATION_RUNAWAY_THRESHOLD: u32 = 32760; // ~40 steps
@@ -129,9 +130,9 @@ async fn verify_closed_loop_armed_state<B: CommissioningBackend>(
 
     let checks = [
         (PIDOUT_UQ_UD_LIMITS, backend.operational_voltage_limit()),
-        (PWM_SV_CHOP, CLOSED_LOOP_PWM_SV_CHOP),
-        (MODE_RAMP_MODE_MOTION, CLOSED_LOOP_POSITION_MODE),
-        (MOTOR_TYPE_N_POLE_PAIRS, CLOSED_LOOP_MOTOR_TYPE_N_POLE_PAIRS),
+        (PWM_SV_CHOP, PWM_CHOP_CENTERED_FOC),
+        (MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI),
+        (MOTOR_TYPE_N_POLE_PAIRS, STEPPER_MOTOR_TYPE_N_POLE_PAIRS),
         (PHI_E_SELECTION, CLOSED_LOOP_PHI_E_SELECTION),
         (POSITION_SELECTION, CLOSED_LOOP_POSITION_SELECTION),
         (VELOCITY_SELECTION, CLOSED_LOOP_VELOCITY_SELECTION),
@@ -683,7 +684,7 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
         ClosedLoopActivationState::EnterPositionMode => {
             // MODE_PID_TYPE=1 (bit 31), MODE_MOTION=3 (position).
             if backend
-                .write_register(MODE_RAMP_MODE_MOTION, CLOSED_LOOP_POSITION_MODE)
+                .write_register(MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI)
                 .await
                 .is_err()
             {
@@ -856,7 +857,9 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                 {
                     return result;
                 }
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                let _ = backend
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+                    .await;
                 return super::fail_inner(phase, CommissionError::ClosedLoopActivationUnstable);
             }
 
@@ -907,7 +910,9 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
                     pos2,
                     drift,
                 );
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                let _ = backend
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+                    .await;
 
                 let next_attempt = attempt + 1;
                 if next_attempt < CLOSED_LOOP_ACTIVATION_MAX_ATTEMPTS {
@@ -1019,21 +1024,27 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
             let pid_torque_flux_actual = match backend.read_register(PID_TORQUE_FLUX_ACTUAL).await {
                 Ok(value) => value,
                 Err(_) => {
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    let _ = backend
+                        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+                        .await;
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
             };
             let position_count = match backend.read_register(PID_POSITION_ACTUAL).await {
                 Ok(value) => value as i32,
                 Err(_) => {
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    let _ = backend
+                        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+                        .await;
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
             };
             let status_flags = match backend.read_register(STATUS_FLAGS).await {
                 Ok(value) => value,
                 Err(_) => {
-                    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                    let _ = backend
+                        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+                        .await;
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
             };
@@ -1066,7 +1077,9 @@ pub(crate) async fn step_closed_loop_activation<B: CommissioningBackend>(
             let elapsed_us = now.saturating_sub(*started_us).min(u64::from(u32::MAX)) as u32;
             let metrics = accumulator.finish(elapsed_us, false);
             let Some(mut inner) = inner_result.take() else {
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                let _ = backend
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+                    .await;
                 return super::fail_inner(phase, CommissionError::Spi);
             };
             copy_hold_metrics(&mut inner, metrics);

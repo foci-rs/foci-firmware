@@ -13,6 +13,7 @@ use crate::commissioning::CalibrateEntryGains;
 use crate::commissioning::encoder_domain::{EncoderCount, EncoderDomain};
 use crate::commissioning::types::{AdcCalResult, CommissioningBackend, StepResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
+use crate::tmc_register_values::{MOTION_STOPPED, MOTION_TORQUE_ADVANCED_PI};
 
 /// Number of PHI_E steps for encoder direction sweep.
 const ENCODER_DIRECTION_STEPS: u16 = 50;
@@ -327,7 +328,7 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
 
     backend.set_enable_pin(false);
     backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0)
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend
@@ -370,7 +371,7 @@ pub(crate) async fn start_encoder_current_drive<B: CommissioningBackend>(
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0001)
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend.set_enable_pin(true);
@@ -391,7 +392,9 @@ pub(crate) async fn stop_encoder_current_drive<B: CommissioningBackend>(
 
     let flux_target = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
     let uq_ud_ext = backend.write_register(UQ_UD_EXT, 0).await;
-    let ramp_mode = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+    let ramp_mode = backend
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+        .await;
 
     flux_target
         .and(uq_ud_ext)
@@ -719,7 +722,7 @@ pub(crate) async fn step_encoder_align<B: CommissioningBackend>(
                 .await
                 .is_err()
                 || backend
-                    .read_register_verified(MODE_RAMP_MODE_MOTION, 0x8000_0001)
+                    .read_register_verified(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
                     .await
                     .is_err()
             {

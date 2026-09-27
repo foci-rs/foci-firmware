@@ -8,6 +8,7 @@ use super::{CoilCheckState, CoilObservation, CoilTestState, InnerPhase};
 use crate::autotune::{CommissionError, CommissionPhase, InnerSequence};
 use crate::commissioning::types::{CommissioningBackend, StepResult};
 use crate::selftest::{CommissionDiagnostic, CommissionDiagnostics};
+use crate::tmc_register_values::{MOTION_STOPPED, MOTION_UQ_UD_EXT};
 
 const DIAG_COIL_CHECK_A_SAMPLE: u8 = 1;
 const DIAG_COIL_CHECK_B_SAMPLE: u8 = 2;
@@ -67,7 +68,7 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                     return super::fail_inner(phase, CommissionError::Spi);
                 }
                 if backend
-                    .write_register(MODE_RAMP_MODE_MOTION, 8)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_UQ_UD_EXT)
                     .await
                     .is_err()
                 {
@@ -107,7 +108,9 @@ pub(crate) async fn step_coil_check<B: CommissioningBackend>(
                 };
 
                 // Stop motor and disable.
-                let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+                let _ = backend
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+                    .await;
                 let _ = backend.write_register(UQ_UD_EXT, 0).await;
                 backend.set_enable_pin(false);
 

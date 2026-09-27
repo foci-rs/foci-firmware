@@ -1,6 +1,4 @@
-use foci_tmc4671::registers::{
-    MODE_RAMP_MODE_MOTION, MotionMode, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, UQ_UD_EXT,
-};
+use foci_tmc4671::registers::{MODE_RAMP_MODE_MOTION, PIDOUT_UQ_UD_LIMITS, PWM_SV_CHOP, UQ_UD_EXT};
 
 use super::{
     AxisProgress, RESTORE_WRITE_COUNT, ResistancePoll, ResistanceRunner, ResistanceState,
@@ -10,6 +8,7 @@ use super::{
 use crate::resistance_identification::fit::{evaluate_resistance_result, fit_resistance_axis};
 use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunMode};
 use crate::resistance_identification::types::{ResistanceError, ResistancePoint};
+use crate::tmc_register_values::{MOTION_STOPPED, PWM_CHOP_OFF};
 
 impl ResistanceRunner {
     pub(super) fn finish_window<B: ResistanceBackend>(
@@ -202,9 +201,9 @@ impl ResistanceRunner {
         operation: u8,
     ) -> ResistancePoll {
         let (addr, value) = match operation {
-            0 => (MODE_RAMP_MODE_MOTION.addr(), MotionMode::Stopped as u32),
+            0 => (MODE_RAMP_MODE_MOTION.addr(), MOTION_STOPPED),
             1 => (UQ_UD_EXT.addr(), 0),
-            2 => (PWM_SV_CHOP.addr(), 0),
+            2 => (PWM_SV_CHOP.addr(), PWM_CHOP_OFF),
             _ => (PIDOUT_UQ_UD_LIMITS.addr(), self.saved_voltage_limit),
         };
         if backend.write_register(addr, value).await.is_err() {

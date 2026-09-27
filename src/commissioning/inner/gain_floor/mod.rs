@@ -21,6 +21,7 @@ use crate::autotune::{ClosedLoopActivationState, CommissionError, CommissionPhas
 use crate::commissioning::backend::CommissioningBackend;
 use crate::commissioning::inner::InnerPhase;
 use crate::commissioning::types::StepResult;
+use crate::tmc_register_values::MOTION_TORQUE_ADVANCED_PI;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
 /// Coast time after each step so the next one starts from rest with the
@@ -290,10 +291,7 @@ where
     // voltage limit; the first ignores the torque target and the second
     // clips the current loop below anything that moves a loaded axis.
     backend
-        .write_register(
-            MODE_RAMP_MODE_MOTION,
-            super::current_loop::CURRENT_TORQUE_MODE,
-        )
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_TORQUE_ADVANCED_PI)
         .await
         .map_err(|_| CommissionError::Spi)?;
     backend
@@ -1142,7 +1140,7 @@ mod tests {
                     op,
                     SpiOp::Write(addr, val)
                         if *addr == foci_tmc4671::registers::MODE_RAMP_MODE_MOTION.addr()
-                            && *val == super::super::current_loop::CURRENT_TORQUE_MODE
+                            && *val == crate::tmc_register_values::MOTION_TORQUE_ADVANCED_PI
                 )
             });
             let torque_target_write_index = backend.spi_log.iter().position(|op| {
@@ -1155,7 +1153,7 @@ mod tests {
             });
             assert!(
                 mode_write_index.is_some(),
-                "must write MODE_RAMP_MODE_MOTION=CURRENT_TORQUE_MODE before commanding a torque step"
+                "must write MODE_RAMP_MODE_MOTION=MOTION_TORQUE_ADVANCED_PI before commanding a torque step"
             );
             assert!(
                 mode_write_index < torque_target_write_index,

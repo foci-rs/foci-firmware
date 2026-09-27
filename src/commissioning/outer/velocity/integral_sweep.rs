@@ -23,6 +23,7 @@ use crate::commissioning::types::{
     VelocityIntegralEvent, VelocityIntegralObservation, VelocityIntegralOutcome,
     VelocityIntegralRungReport, VelocityIntegralTerminal, VelocityPrimitiveCurrentEvidence,
 };
+use crate::tmc_register_values::{MOTION_STOPPED, MOTION_VELOCITY_ADVANCED_PI};
 use foci_tmc4671::current_limit::PidTorqueFluxLimit;
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
@@ -69,7 +70,6 @@ use super::velocity_clamp::{
 };
 use super::{clear_velocity_error_sum, clear_velocity_offset};
 
-const OUTER_VELOCITY_MODE: u32 = 0x8000_0002;
 #[cfg(feature = "trace")]
 const SETTLE_TRACE_STROKE_MARKER: u16 = 1 << 15;
 const INTEGRAL_CAUSE_NONE: u8 = 0;
@@ -1073,7 +1073,9 @@ async fn fail_integral<B: CommissioningBackend>(
 ) -> StepResult {
     let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
     let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+    let _ = backend
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+        .await;
     integral_fault_terminal(phase, error, None)
 }
 
@@ -1084,7 +1086,9 @@ async fn fail_integral_with_safety<B: CommissioningBackend>(
 ) -> StepResult {
     let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
     let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+    let _ = backend
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+        .await;
     integral_fault_terminal(phase, CommissionError::SafetyEnvelopeViolation, Some(fault))
 }
 
@@ -1625,7 +1629,7 @@ pub(crate) async fn step_velocity_integral_with_trace<B: CommissioningBackend>(
                     .await
                     .is_err()
                 || backend
-                    .write_register(MODE_RAMP_MODE_MOTION, OUTER_VELOCITY_MODE)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_VELOCITY_ADVANCED_PI)
                     .await
                     .is_err()
             {

@@ -28,6 +28,7 @@ use crate::commissioning::stimulus::trapezoid::{LegPlan, StrokeRequest, plan_leg
 use crate::commissioning::types::{
     OuterResult, PositionTuneProvenance, StepResult, TuneProvenance,
 };
+use crate::tmc_register_values::{MOTION_POSITION_ADVANCED_PI, MOTION_STOPPED};
 use ceiling::{ceiling_trips, compute_k};
 use foci_tmc4671::pid::{PidGainPair, PidIGain, PidPGain};
 use foci_tmc4671::registers::{
@@ -71,11 +72,6 @@ pub(crate) const RESTORE_WAIT_US: u32 = 50_000;
 /// active. Samples are pushed only on the derived sample period, not on
 /// every poll.
 pub(crate) const STROKE_POLL_US: u32 = 1_000;
-
-/// `MODE_RAMP_MODE_MOTION` value for position mode with the advanced PI
-/// representation bit set (bit 31), matching `integral_sweep.rs`'s
-/// `OUTER_VELOCITY_MODE` convention.
-const POSITION_TUNE_POSITION_MODE: u32 = 0x8000_0003;
 
 /// `2*pi` as a Q16.16 fixed-point integer, the same scaled-integer
 /// convention `ceiling::compute_k`'s `k_q16` uses. `6.283185307 * 65536 =
@@ -283,7 +279,9 @@ async fn fail_position_tune<B: CommissioningBackend>(
     abort_stimulus(backend);
     let _ = backend.write_register(PID_VELOCITY_TARGET, 0).await;
     let _ = backend.write_register(PID_TORQUE_FLUX_TARGET, 0).await;
-    let _ = backend.write_register(MODE_RAMP_MODE_MOTION, 0).await;
+    let _ = backend
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
+        .await;
     let provenance = match &*phase {
         OuterPhase::PositionTune { state, .. } => state.provenance,
         _ => PositionTuneProvenance::default(),
@@ -528,7 +526,7 @@ async fn arm_stroke<B: CommissioningBackend>(
     )
     .await?;
     write_sub_register(backend, PID_ERROR_PID_POSITION_ERROR_SUM, 0).await?;
-    write_register(backend, MODE_RAMP_MODE_MOTION, POSITION_TUNE_POSITION_MODE).await?;
+    write_register(backend, MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI).await?;
     // A soft position loop overshoots the slower homing leg's cruise speed at
     // the end of its ramp by about as much as the per-leg margin allows, so
     // both legs share the faster leg's runaway bound.

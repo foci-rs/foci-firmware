@@ -22,6 +22,8 @@ use crate::commissioning::types::{
     AdcCalResult, CommissioningBackend, InductanceEvidence, InnerResult, StepResult,
 };
 #[cfg(test)]
+use crate::tmc_register_values::{MOTION_POSITION_ADVANCED_PI, MOTION_STOPPED};
+#[cfg(test)]
 use foci_tmc4671::pid::PidGainPair;
 use foci_tmc4671::pid::{PidIGain, PidPGain};
 
@@ -677,7 +679,7 @@ pub(crate) async fn restore_entry_gains<B: CommissioningBackend>(
 
     // 2. Disable motion mode.
     backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0)
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
         .await
         .map_err(|_| CommissionError::Spi)?;
 
@@ -791,7 +793,7 @@ pub(crate) async fn restore_entry_gains<B: CommissioningBackend>(
 
     // 8. Re-enter position mode.
     backend
-        .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+        .write_register(MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI)
         .await
         .map_err(|_| CommissionError::Spi)?;
 

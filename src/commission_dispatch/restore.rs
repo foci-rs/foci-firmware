@@ -4,6 +4,7 @@
 use crate::commissioning::backend::CommissionTiming;
 use crate::commissioning::types::CommissioningBackend;
 use crate::state::tmc::TmcChannelState;
+use crate::tmc_register_values::{MOTION_POSITION_ADVANCED_PI, MOTION_STOPPED};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum PositionStabilityErrorKind {
@@ -696,7 +697,7 @@ impl RestoreEntryGainsStep {
             Self::DisableMotionMode { snapshot } => {
                 let snapshot = *snapshot;
                 if backend
-                    .write_register(MODE_RAMP_MODE_MOTION, 0)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_STOPPED)
                     .await
                     .is_err()
                 {
@@ -841,7 +842,7 @@ impl RestoreEntryGainsStep {
             }
             Self::EnterPositionMode => {
                 if backend
-                    .write_register(MODE_RAMP_MODE_MOTION, 0x8000_0003)
+                    .write_register(MODE_RAMP_MODE_MOTION, MOTION_POSITION_ADVANCED_PI)
                     .await
                     .is_err()
                 {

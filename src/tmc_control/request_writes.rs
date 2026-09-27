@@ -185,7 +185,7 @@ where
 {
     use foci_tmc4671::registers::*;
 
-    let mode = if invert { 1u32 << 12 } else { 0 };
+    let mode = AbnDecoderMode::new().with_abn_direction(invert).into_bits();
     if tmc.write_register(ABN_DECODER_MODE, mode).await.is_err() {
         defmt::error!("TMC4671 SPI write failed: ABN_DECODER_MODE");
         return Err(());

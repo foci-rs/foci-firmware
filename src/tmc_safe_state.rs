@@ -10,6 +10,7 @@
 //! safe-state SPI errors as the user-visible result.
 
 use crate::commissioning::types::CommissioningBackend;
+use crate::tmc_register_values::{MOTION_STOPPED, PWM_CHOP_OFF};
 use foci_tmc4671::registers::Register;
 
 /// Diagnostic summary for a safe-state restore attempt.
@@ -73,12 +74,20 @@ impl SafeStateRestoreStep {
             backend.set_enable_pin(false);
         }
         match self.index {
-            0 => safe_state_write(backend, MODE_RAMP_MODE_MOTION, 0, &mut self.report).await,
+            0 => {
+                safe_state_write(
+                    backend,
+                    MODE_RAMP_MODE_MOTION,
+                    MOTION_STOPPED,
+                    &mut self.report,
+                )
+                .await
+            }
             1 => safe_state_write(backend, PID_TORQUE_FLUX_TARGET, 0, &mut self.report).await,
             2 => safe_state_write(backend, PID_TORQUE_FLUX_OFFSET, 0, &mut self.report).await,
             3 => safe_state_write(backend, UQ_UD_EXT, 0, &mut self.report).await,
             4 => safe_state_write(backend, PHI_E_SELECTION, 0, &mut self.report).await,
-            5 => safe_state_write(backend, PWM_SV_CHOP, 0, &mut self.report).await,
+            5 => safe_state_write(backend, PWM_SV_CHOP, PWM_CHOP_OFF, &mut self.report).await,
             6 => safe_state_write(backend, PID_VELOCITY_OFFSET, 0, &mut self.report).await,
             7 => safe_state_write(backend, PIDOUT_UQ_UD_LIMITS, 1024, &mut self.report).await,
             8 => {

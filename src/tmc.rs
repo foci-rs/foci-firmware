@@ -1213,10 +1213,9 @@ pub fn compute_phase_advance_counts(
 /// The lower halfword is PHI_M and is preserved. The upper halfword is PHI_E
 /// and receives the signed wrapping advance.
 pub fn pack_abn_phi_offset(base_register: u32, phase_advance_counts: i16) -> u32 {
-    let phi_m = base_register & 0x0000_FFFF;
-    let base_phi_e = (base_register >> 16) as u16 as i16;
-    let next_phi_e = base_phi_e.wrapping_add(phase_advance_counts);
-    phi_m | (u32::from(next_phi_e as u16) << 16)
+    let base = foci_tmc4671::registers::AbnDecoderPhiOffset::from_bits(base_register);
+    base.with_phi_e_offset(base.phi_e_offset().wrapping_add(phase_advance_counts))
+        .into_bits()
 }
 
 fn scale_decoupling_axis(
