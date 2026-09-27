@@ -563,6 +563,24 @@ mod tests {
     }
 
     #[test]
+    fn queue_step_move_propagates_motion_scale_query_error_without_enqueue() {
+        let mut state = TriggerDomainState::new();
+        let mut board = MockStepperBoard {
+            motion_scale_error: Some(CommandError::InvalidChannel(0)),
+            ..MockStepperBoard::default()
+        };
+
+        assert_eq!(
+            queue_step_move(&mut state, &mut board, 0, StepMove::new(100, 1, 0)),
+            Err(StepperEnqueueError::Command(CommandError::InvalidChannel(
+                0
+            )))
+        );
+        assert_eq!(board.enqueue_calls, 0);
+        assert!(board.events.is_empty());
+    }
+
+    #[test]
     fn queue_step_move_accepts_interval_shorter_than_waveform_cost() {
         let mut state = TriggerDomainState::new();
         let mut board = MockStepperBoard::default();
