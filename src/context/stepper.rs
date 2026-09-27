@@ -25,20 +25,6 @@ pub trait StepperHost: super::StateAccess {
     fn reset_step_clock(&mut self, channel: u8, clock: u32) -> Result<(), CommandError>;
 }
 
-impl<T: ?Sized + StepperHost> StepperHost for &mut T {
-    fn set_next_step_dir(&mut self, channel: u8, forward: bool) {
-        (**self).set_next_step_dir(channel, forward)
-    }
-
-    fn queue_step_move(&mut self, channel: u8, move_: StepMove) -> Result<(), StepperEnqueueError> {
-        (**self).queue_step_move(channel, move_)
-    }
-
-    fn reset_step_clock(&mut self, channel: u8, clock: u32) -> Result<(), CommandError> {
-        (**self).reset_step_clock(channel, clock)
-    }
-}
-
 /// Queue drain accounting returned by board-local reset hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct StepperDrainStats {

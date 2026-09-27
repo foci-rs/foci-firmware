@@ -30,31 +30,6 @@ pub trait TmcHost: StateAccess {
     );
 }
 
-impl<T: ?Sized + TmcHost> TmcHost for &mut T {
-    fn enqueue_request(&self, req: crate::tmc::TmcRequest) -> Result<(), QueueFull> {
-        (**self).enqueue_request(req)
-    }
-
-    fn motion_scale_idle(
-        &self,
-        channel: u8,
-    ) -> Result<(), crate::motion_scale::MotionScaleRejection> {
-        (**self).motion_scale_idle(channel)
-    }
-
-    fn motion_quiescent(&self) -> bool {
-        (**self).motion_quiescent()
-    }
-
-    fn report_motion_scale_rejection(
-        &mut self,
-        oid: u8,
-        rejection: crate::motion_scale::MotionScaleRejection,
-    ) {
-        (**self).report_motion_scale_rejection(oid, rejection);
-    }
-}
-
 /// Board hook for the RTIC TMC request sender.
 pub trait TmcRequestQueueBoard {
     /// Try to send one request to the board TMC control task.
