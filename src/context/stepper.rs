@@ -96,9 +96,6 @@ pub trait StepperQueueBoard: StepperTimerStateBoard {
     /// Map an already validated command channel to a trigger-domain stepper.
     fn queue_stepper_index(&self, channel: u8) -> Result<usize, CommandError>;
 
-    /// Return whether the board queue is empty before enqueue.
-    fn queue_was_empty(&self, channel: u8) -> Result<bool, CommandError>;
-
     /// Return whether the channel's logical-to-physical mapper is installed.
     fn motion_scale_configured(&self, channel: u8) -> Result<bool, CommandError>;
 
@@ -177,9 +174,7 @@ pub fn queue_step_move<B: StepperQueueBoard + ?Sized>(
         .map_err(StepperEnqueueError::Command)?;
     let need_reset = state.stepper_stop[stepper_idx].need_reset;
 
-    // Resolve reset discard and zero count before consulting any fallible board
-    // state. The placeholder values admit every positive, non-reset move.
-    match queue_step_hw(need_reset, move_.count, false, true) {
+    match queue_step_hw(need_reset, move_.count) {
         Ok(QueueStepResult::Discarded) => {
             board.record_discarded_segment(channel, u32::from(move_.count));
             if note_host_segment_discarded(state, stepper_idx, board.motor_armed(channel)) {
@@ -194,38 +189,29 @@ pub fn queue_step_move<B: StepperQueueBoard + ?Sized>(
             return Err(StepperEnqueueError::ZeroCount { channel });
         }
         Err(err) => return Err(StepperEnqueueError::Command(err)),
-        Ok(QueueStepResult::Queued | QueueStepResult::QueuedFirstMove) => {}
+        Ok(QueueStepResult::Admitted) => {}
     }
 
-    let queue_was_empty = board
-        .queue_was_empty(channel)
-        .map_err(StepperEnqueueError::Command)?;
-    let motion_scale_configured = board
+    if !board
         .motion_scale_configured(channel)
-        .map_err(StepperEnqueueError::Command)?;
-
-    match queue_step_hw(false, move_.count, queue_was_empty, motion_scale_configured) {
-        Ok(QueueStepResult::Discarded) | Err(CommandError::ZeroCount) => unreachable!(),
-        Err(CommandError::MotionScaleUnconfigured) => {
-            Err(StepperEnqueueError::MissingMotionScale { channel })
-        }
-        Err(err) => Err(StepperEnqueueError::Command(err)),
-        Ok(QueueStepResult::Queued | QueueStepResult::QueuedFirstMove) => {
-            let queue_len = board
-                .prepare_and_enqueue(channel, move_)
-                .map_err(|queue_len| {
-                    board.record_queue_full(channel, queue_len);
-                    StepperEnqueueError::QueueFull { channel, queue_len }
-                })?;
-
-            board.record_queued_segment(channel, u32::from(move_.count), queue_len);
-
-            if !state.stepper_stop[stepper_idx].timer_active && board.motor_armed(channel) {
-                board.arm_queue_step_timer(state, stepper_idx, channel);
-            }
-            Ok(())
-        }
+        .map_err(StepperEnqueueError::Command)?
+    {
+        return Err(StepperEnqueueError::MissingMotionScale { channel });
     }
+
+    let queue_len = board
+        .prepare_and_enqueue(channel, move_)
+        .map_err(|queue_len| {
+            board.record_queue_full(channel, queue_len);
+            StepperEnqueueError::QueueFull { channel, queue_len }
+        })?;
+
+    board.record_queued_segment(channel, u32::from(move_.count), queue_len);
+
+    if !state.stepper_stop[stepper_idx].timer_active && board.motor_armed(channel) {
+        board.arm_queue_step_timer(state, stepper_idx, channel);
+    }
+    Ok(())
 }
 
 /// Shared command-path reset-step-clock policy.
@@ -312,8 +298,6 @@ mod tests {
 
     struct MockStepperBoard {
         index: Option<usize>,
-        queue_empty: bool,
-        queue_empty_error: Option<CommandError>,
         enqueue_full: bool,
         motion_scale_configured: bool,
         motion_scale_error: Option<CommandError>,
@@ -330,8 +314,6 @@ mod tests {
         fn default() -> Self {
             Self {
                 index: Some(0),
-                queue_empty: true,
-                queue_empty_error: None,
                 enqueue_full: false,
                 motion_scale_configured: true,
                 motion_scale_error: None,
@@ -361,12 +343,6 @@ mod tests {
     impl StepperQueueBoard for MockStepperBoard {
         fn queue_stepper_index(&self, channel: u8) -> Result<usize, CommandError> {
             self.index.ok_or(CommandError::InvalidChannel(channel))
-        }
-
-        fn queue_was_empty(&self, _channel: u8) -> Result<bool, CommandError> {
-            self.queue_empty_error
-                .clone()
-                .map_or(Ok(self.queue_empty), Err)
         }
 
         fn motion_scale_configured(&self, _channel: u8) -> Result<bool, CommandError> {
@@ -525,8 +501,7 @@ mod tests {
         let mut state = TriggerDomainState::new();
         state.stepper_stop[0].need_reset = true;
         let mut board = MockStepperBoard {
-            queue_empty_error: Some(CommandError::QueueFull),
-            motion_scale_error: Some(CommandError::MotionScaleUnconfigured),
+            motion_scale_error: Some(CommandError::InvalidChannel(0)),
             ..MockStepperBoard::default()
         };
 
@@ -558,8 +533,7 @@ mod tests {
     fn queue_step_move_zero_count_precedes_fallible_ancillary_hooks() {
         let mut state = TriggerDomainState::new();
         let mut board = MockStepperBoard {
-            queue_empty_error: Some(CommandError::QueueFull),
-            motion_scale_error: Some(CommandError::MotionScaleUnconfigured),
+            motion_scale_error: Some(CommandError::InvalidChannel(0)),
             ..MockStepperBoard::default()
         };
 
