@@ -1,8 +1,7 @@
 use foci_tmc4671::registers::{
     ABN_DECODER_COUNT, ADC_IWY_IUX, DSADC_MDEC_B_MDEC_A, MODE_RAMP_MODE_MOTION,
-    MOTOR_TYPE_N_POLE_PAIRS, MotionMode, MotorType, MotorTypeNPolePairs, PHI_E_EXT,
-    PHI_E_SELECTION, PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS,
-    UQ_UD_EXT,
+    MOTOR_TYPE_N_POLE_PAIRS, MotorType, MotorTypeNPolePairs, PHI_E_EXT, PHI_E_SELECTION,
+    PIDOUT_UQ_UD_LIMITS, PWM_BBM_H_BBM_L, PWM_MAXCNT, PWM_SV_CHOP, STATUS_FLAGS, UQ_UD_EXT,
 };
 
 use super::{
@@ -15,7 +14,7 @@ use crate::autotune::current_loop_actionable_status_mask;
 use crate::commissioning::capture_timing::{CaptureTiming, TimingEnvelope, sample_slot};
 use crate::resistance_identification::runner::{ResistanceBackend, ResistanceRunMode};
 use crate::resistance_identification::types::{ResistanceError, ResistanceWarningFlags};
-use crate::tmc_register_values::MOTION_STOPPED;
+use crate::tmc_register_values::{MOTION_STOPPED, MOTION_UQ_UD_EXT};
 
 impl ResistanceRunner {
     pub(super) async fn read_saved_limit<B: ResistanceBackend>(
@@ -232,12 +231,11 @@ impl ResistanceRunner {
             }
             1 => {
                 let mode = if capture.plan.ud == 0 {
-                    MotionMode::Stopped
+                    MOTION_STOPPED
                 } else {
-                    MotionMode::UqUdExt
+                    MOTION_UQ_UD_EXT
                 };
-                if let Err(error) = write(backend, MODE_RAMP_MODE_MOTION.addr(), mode as u32).await
-                {
+                if let Err(error) = write(backend, MODE_RAMP_MODE_MOTION.addr(), mode).await {
                     return self.fail(backend, error);
                 }
                 if capture.plan.ud != 0 {
