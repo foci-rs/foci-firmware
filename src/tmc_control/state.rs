@@ -1915,32 +1915,17 @@ impl TmcControlRuntime {
 
     /// Compute the requested control period in microseconds from current state.
     ///
-    /// Returns [`crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US`] whenever the
-    /// motor is disabled or `Self::planner_paths_allowed` is false.
-    /// Otherwise, returns the fast transient period when the planner
-    /// velocity scale is configured and the `velocity_transient_feedforward`
-    /// atomic in channel state is `true`; otherwise
-    /// `velocity_transient_period_us(VELOCITY_TRANSIENT_DEFAULT_RATE_HZ)`.
+    /// Returns [`crate::tmc::CONTROL_PERIOD_IDLE_US`] whenever the motor is
+    /// disabled or `Self::planner_paths_allowed` is false, otherwise
+    /// [`crate::tmc::CONTROL_PERIOD_ACTIVE_US`].
     ///
     /// # Parameters
     /// - `refs`: Borrowed channel atomics for this motor.
     pub fn control_period_us(&self, refs: TmcControlStateRefs<'_>) -> u32 {
         if !self.motor_enabled || !self.planner_paths_allowed(refs) {
-            return crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US;
+            return crate::tmc::CONTROL_PERIOD_IDLE_US;
         }
-        let fast_active = self.planner_velocity_scale.is_some()
-            && refs
-                .tmc
-                .velocity_transient_feedforward
-                .load(core::sync::atomic::Ordering::Relaxed);
-        let rate_hz = if fast_active {
-            refs.tmc
-                .velocity_transient_rate_hz
-                .load(core::sync::atomic::Ordering::Relaxed)
-        } else {
-            crate::tmc::VELOCITY_TRANSIENT_DEFAULT_RATE_HZ
-        };
-        crate::tmc::velocity_transient_period_us(rate_hz)
+        crate::tmc::CONTROL_PERIOD_ACTIVE_US
     }
 
     /// Begin a terminal restore and poll it to completion, as the board's
@@ -2181,29 +2166,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn control_period_constants_are_pinned() {
+        assert_eq!(crate::tmc::CONTROL_PERIOD_IDLE_US, 10_000);
+        assert_eq!(crate::tmc::CONTROL_PERIOD_ACTIVE_US, 1_000);
+    }
+
+    #[test]
     fn control_period_us_returns_idle_period_when_disabled() {
         let runtime = TmcControlRuntime::new_for_channel(0);
         let tmc = crate::state::tmc::TmcChannelState::new();
         let stepper = crate::state::stepper::StepperChannelState::new();
         let refs = TmcControlStateRefs::new(&tmc, &stepper);
 
-        // Default-constructed runtime has motor_enabled = false.
         assert_eq!(
             runtime.control_period_us(refs),
-            crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US
+            crate::tmc::CONTROL_PERIOD_IDLE_US
         );
     }
 
     #[test]
-    fn control_period_us_idle_period_bypasses_rate_normalization() {
-        // Regression guard: routing the idle period through velocity_transient_period_us
-        // would silently clamp 100 Hz up to the 1000 Hz floor, defeating
-        // the fix. This asserts the idle period independently of whatever
-        // normalize_velocity_transient_rate_hz's clamp range is today.
-        assert_eq!(crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US, 10_000);
-        assert_ne!(
-            crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US,
-            crate::tmc::velocity_transient_period_us(100)
+    fn control_period_us_returns_active_period_when_enabled_regardless_of_transient_state() {
+        let mut runtime = TmcControlRuntime::new_for_channel(0);
+        runtime.set_motor_enabled_for_test(true);
+        let tmc = crate::state::tmc::TmcChannelState::new();
+        let stepper = crate::state::stepper::StepperChannelState::new();
+        let refs = TmcControlStateRefs::new(&tmc, &stepper);
+
+        assert_eq!(
+            runtime.control_period_us(refs),
+            crate::tmc::CONTROL_PERIOD_ACTIVE_US
+        );
+
+        tmc.velocity_transient_feedforward
+            .store(true, core::sync::atomic::Ordering::Relaxed);
+        tmc.velocity_transient_rate_hz
+            .store(10_000, core::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            runtime.control_period_us(refs),
+            crate::tmc::CONTROL_PERIOD_ACTIVE_US
         );
     }
 

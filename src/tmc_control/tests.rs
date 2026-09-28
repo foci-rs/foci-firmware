@@ -2810,7 +2810,7 @@ fn control_period_goes_fast_under_commissioning_only_with_the_stimulus_opt_in() 
 
     assert_eq!(
         runtime.control_period_us(refs),
-        crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US
+        crate::tmc::CONTROL_PERIOD_IDLE_US
     );
 
     tmc_state.commission_stimulus_active.store(true, Relaxed);

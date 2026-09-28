@@ -194,6 +194,13 @@ pub const VELOCITY_TRANSIENT_MAX_RATE_HZ: u16 = 10_000;
 /// would otherwise silently override any period below it.
 pub const VELOCITY_TRANSIENT_IDLE_PERIOD_US: u32 = 10_000;
 
+/// Control-tick period while a channel is not `motor_enabled` or planner paths
+/// are not allowed, in microseconds (100 Hz).
+pub const CONTROL_PERIOD_IDLE_US: u32 = 10_000;
+/// Control-tick period while the motor is enabled and planner paths are
+/// allowed, in microseconds (1 kHz).
+pub const CONTROL_PERIOD_ACTIVE_US: u32 = 1_000;
+
 /// Normalize a requested velocity-transient update rate.
 pub fn normalize_velocity_transient_rate_hz(rate_hz: u16) -> u16 {
     if rate_hz == 0 {

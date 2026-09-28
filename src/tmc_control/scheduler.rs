@@ -713,11 +713,11 @@ mod tests {
 
     #[test]
     fn enable_transition_bound_is_one_idle_period() {
-        let idle_period_us = u64::from(crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US);
+        let idle_period_us = u64::from(crate::tmc::CONTROL_PERIOD_IDLE_US);
         let fast_period_us: u32 = 1_000;
 
         // Channel starts Ready-but-disabled at the new idle period.
-        let mut s = ready(0, [crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US]);
+        let mut s = ready(0, [crate::tmc::CONTROL_PERIOD_IDLE_US]);
         let mut now = 0u64;
         let mut fast_deadlines = std::vec::Vec::new();
         let mut enable_time = None;
@@ -996,7 +996,7 @@ mod tests {
 
     #[test]
     fn maintenance_arm_rearm_is_immediate_without_idle_catch_up() {
-        let mut s = ready(0, [crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US; 2]);
+        let mut s = ready(0, [crate::tmc::CONTROL_PERIOD_IDLE_US; 2]);
         for _ in 0..2 {
             let fast = s.pick(0, 0).unwrap();
             assert_eq!(fast.class, UnitClass::Fast);
@@ -1022,7 +1022,7 @@ mod tests {
 
         s.set_maintenance_arm(MaintenanceArm::Disarmed, 4_500);
         let remaining = s.earliest_due_us().unwrap() - 4_500;
-        assert!(remaining <= u64::from(crate::tmc::VELOCITY_TRANSIENT_IDLE_PERIOD_US));
+        assert!(remaining <= u64::from(crate::tmc::CONTROL_PERIOD_IDLE_US));
     }
 
     #[test]
