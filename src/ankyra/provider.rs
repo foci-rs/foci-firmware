@@ -15,7 +15,7 @@
 ankyra::ankyra_provider! {
     name: FOCI_FIRMWARE_PROVIDER,
     commands: [
-        // Lifecycle (10)
+        // Lifecycle
         crate::ankyra::handlers::lifecycle::get_clock,
         crate::ankyra::handlers::lifecycle::get_uptime,
         crate::ankyra::handlers::lifecycle::get_config,
@@ -26,14 +26,14 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::lifecycle::emergency_stop,
         crate::ankyra::handlers::lifecycle::reset,
         crate::ankyra::handlers::lifecycle::debug_nop,
-        // Analog in (2)
+        // Analog in
         crate::ankyra::handlers::analog_in::config_analog_in,
         crate::ankyra::handlers::analog_in::query_analog_in,
-        // Digital out (3)
+        // Digital out
         crate::ankyra::handlers::digital_out::config_digital_out,
         crate::ankyra::handlers::digital_out::queue_digital_out,
         crate::ankyra::handlers::digital_out::update_digital_out,
-        // Stepper (7)
+        // Stepper
         crate::ankyra::handlers::stepper::config_stepper,
         crate::ankyra::handlers::stepper::queue_step,
         crate::ankyra::handlers::stepper::set_next_step_dir,
@@ -41,23 +41,23 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::stepper::stepper_get_position,
         crate::ankyra::handlers::stepper::stepper_get_commanded_position,
         crate::ankyra::handlers::stepper::stepper_stop_on_trigger,
-        // Endstop (3)
+        // Endstop
         crate::ankyra::handlers::endstop::config_endstop,
         crate::ankyra::handlers::endstop::endstop_home,
         crate::ankyra::handlers::endstop::endstop_query_state,
-        // Trsync (4)
+        // Trsync
         crate::ankyra::handlers::trsync::config_trsync,
         crate::ankyra::handlers::trsync::trsync_set_timeout,
         crate::ankyra::handlers::trsync::trsync_start,
         crate::ankyra::handlers::trsync::trsync_trigger,
-        // SPI (6)
+        // SPI
         crate::ankyra::handlers::spi::config_spi,
         crate::ankyra::handlers::spi::config_spi_shutdown,
         crate::ankyra::handlers::spi::config_spi_without_cs,
         crate::ankyra::handlers::spi::spi_send,
         crate::ankyra::handlers::spi::spi_set_bus,
         crate::ankyra::handlers::spi::spi_transfer,
-        // TMC plain (17)
+        // TMC plain
         crate::ankyra::handlers::tmc::tmc_set_auto_calibrate_on_enable,
         crate::ankyra::handlers::tmc::tmc_set_accel_feedforward,
         crate::ankyra::handlers::tmc::tmc_set_current,
@@ -80,12 +80,12 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_position_torque_offset_sample_test,
         crate::ankyra::handlers::tmc::tmc_voltage_step_test,
         crate::ankyra::handlers::tmc::tmc_resistance_test,
-        // TMC dev-gated (4)
+        // TMC dev-gated
         crate::ankyra::handlers::tmc::tmc_init,
         crate::ankyra::handlers::tmc::tmc_test_spin,
         crate::ankyra::handlers::tmc::tmc_write_register,
         crate::ankyra::handlers::tmc::tmc_read_register,
-        // FOCI (8 — foci_tune stays board-local)
+        // FOCI (foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_adc_vm_offset,
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,
@@ -186,7 +186,7 @@ ankyra::ankyra_provider! {
 ankyra::ankyra_provider! {
     name: FOCI_FIRMWARE_PROVIDER,
     commands: [
-        // Lifecycle (10)
+        // Lifecycle
         crate::ankyra::handlers::lifecycle::get_clock,
         crate::ankyra::handlers::lifecycle::get_uptime,
         crate::ankyra::handlers::lifecycle::get_config,
@@ -197,14 +197,14 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::lifecycle::emergency_stop,
         crate::ankyra::handlers::lifecycle::reset,
         crate::ankyra::handlers::lifecycle::debug_nop,
-        // Analog in (2)
+        // Analog in
         crate::ankyra::handlers::analog_in::config_analog_in,
         crate::ankyra::handlers::analog_in::query_analog_in,
-        // Digital out (3)
+        // Digital out
         crate::ankyra::handlers::digital_out::config_digital_out,
         crate::ankyra::handlers::digital_out::queue_digital_out,
         crate::ankyra::handlers::digital_out::update_digital_out,
-        // Stepper (7)
+        // Stepper
         crate::ankyra::handlers::stepper::config_stepper,
         crate::ankyra::handlers::stepper::queue_step,
         crate::ankyra::handlers::stepper::set_next_step_dir,
@@ -212,16 +212,16 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::stepper::stepper_get_position,
         crate::ankyra::handlers::stepper::stepper_get_commanded_position,
         crate::ankyra::handlers::stepper::stepper_stop_on_trigger,
-        // Endstop (3)
+        // Endstop
         crate::ankyra::handlers::endstop::config_endstop,
         crate::ankyra::handlers::endstop::endstop_home,
         crate::ankyra::handlers::endstop::endstop_query_state,
-        // Trsync (4)
+        // Trsync
         crate::ankyra::handlers::trsync::config_trsync,
         crate::ankyra::handlers::trsync::trsync_set_timeout,
         crate::ankyra::handlers::trsync::trsync_start,
         crate::ankyra::handlers::trsync::trsync_trigger,
-        // SPI (6)
+        // SPI
         crate::ankyra::handlers::spi::config_spi,
         crate::ankyra::handlers::spi::config_spi_shutdown,
         crate::ankyra::handlers::spi::config_spi_without_cs,
@@ -251,7 +251,7 @@ ankyra::ankyra_provider! {
         crate::ankyra::handlers::tmc::tmc_position_torque_offset_sample_test,
         crate::ankyra::handlers::tmc::tmc_voltage_step_test,
         crate::ankyra::handlers::tmc::tmc_resistance_test,
-        // FOCI (8 — foci_tune stays board-local)
+        // FOCI (foci_tune stays board-local)
         crate::ankyra::handlers::foci::foci_adc_vm_offset,
         crate::ankyra::handlers::foci::foci_calibrate,
         crate::ankyra::handlers::foci::foci_commission,
